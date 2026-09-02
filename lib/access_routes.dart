@@ -11,10 +11,10 @@
 ///
 /// **The nine, and why each one.**
 ///
-/// * Page Editor, Alarm Editor and Key Repository need `configure`: they
-///   author what the station shows and how it alarms, and the key repository
-///   surfaces stored secrets (`centroid-hmi/lib/navigation.dart:48-50` says
-///   so in as many words).
+/// * Page Editor, Alarm Editor, Report Editor and Key Repository need
+///   `configure`: they author what the station shows, how it alarms and what
+///   it reports, and the key repository surfaces stored secrets
+///   (`centroid-hmi/lib/navigation.dart:48-50` says so in as many words).
 /// * Knowledge Base needs `configure` too, for the reason below — it is not
 ///   the read surface its menu label suggests.
 /// * Server Config, IP Settings and Preferences need `administer`: they point
@@ -192,7 +192,19 @@ const String kAuditTrailRoute = '/advanced/audit-trail';
 /// equals `kAccessAdminGroup` in `lib/core/access_admin_store.dart`.
 const String kAccessAdminRoute = '/advanced/access';
 
-/// The nine routes raised above `operate`, and the group each one needs.
+/// The report editor route — `configure`, for the same reason the alarm
+/// editor is: it authors what the station reports on, and a report definition
+/// is station configuration somebody wrote.
+///
+/// The Reports *viewer* is deliberately absent from [kRaisedRoutes]. Reading
+/// last night's shift is operate-level work — the same ruling
+/// `guarded_history_views.dart` records for history, and for the same reason.
+/// What the viewer may reach is bounded instead at the control: a report's SQL
+/// section cannot name the access tables (`ReportEngine.validateSqlQuery`),
+/// so authoring a report cannot become a way to read them.
+const String kReportEditorRoute = '/advanced/report-editor';
+
+/// The ten routes raised above `operate`, and the group each one needs.
 ///
 /// One const map so that the route table and the navigation menu can never
 /// disagree about which entries are locked. Paths are spelled exactly as in
@@ -203,6 +215,7 @@ const Map<String, AccessGroup> kRaisedRoutes = {
   '/advanced/alarm-editor': AccessGroup.configure,
   '/advanced/key-repository': AccessGroup.configure,
   '/advanced/knowledge-base': AccessGroup.configure,
+  kReportEditorRoute: AccessGroup.configure,
   kServerConfigRoute: AccessGroup.administer,
   '/advanced/ip-settings': AccessGroup.administer,
   '/advanced/preferences': AccessGroup.administer,

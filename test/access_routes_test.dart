@@ -1,4 +1,4 @@
-/// The nine raised routes. This map is the entire blast radius of route
+/// The ten raised routes. This map is the entire blast radius of route
 /// gating: a path that is missing from it, or spelled differently from
 /// `centroid-hmi/lib/main.dart`, is a route that silently stays open.
 library;
@@ -25,7 +25,7 @@ void main() {
   });
 
   group('kRaisedRoutes', () {
-    test('names exactly the nine routes, each with its group', () {
+    test('names exactly the ten routes, each with its group', () {
       // Spelled literally rather than derived, so that a change to the map
       // has to be made twice on purpose.
       expect(kRaisedRoutes, {
@@ -33,6 +33,7 @@ void main() {
         '/advanced/alarm-editor': AccessGroup.configure,
         '/advanced/key-repository': AccessGroup.configure,
         '/advanced/knowledge-base': AccessGroup.configure,
+        '/advanced/report-editor': AccessGroup.configure,
         '/advanced/server-config': AccessGroup.administer,
         '/advanced/ip-settings': AccessGroup.administer,
         '/advanced/preferences': AccessGroup.administer,
@@ -41,8 +42,8 @@ void main() {
       });
     });
 
-    test('has exactly nine entries', () {
-      expect(kRaisedRoutes, hasLength(9));
+    test('has exactly ten entries', () {
+      expect(kRaisedRoutes, hasLength(10));
     });
 
     test('the three editors need configure', () {
@@ -179,7 +180,7 @@ void main() {
   });
 
   group('installRaisedRoutes', () {
-    test('declares each of the nine into the registry', () {
+    test('declares each of the ten into the registry', () {
       installRaisedRoutes();
 
       kRaisedRoutes.forEach((path, group) {

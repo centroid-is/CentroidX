@@ -34,6 +34,7 @@ bool historyViewIsTopLevel(List<String> topLevelOrder) => topLevelOrder.contains
 /// Advanced.
 List<MenuItem> builtinTopLevelMenuItems({required bool historyAtTopLevel}) => [
       const MenuItem(label: 'Alarm View', path: AppRoutes.alarmView, icon: Icons.alarm),
+      const MenuItem(label: 'Reports', path: AppRoutes.reports, icon: Icons.summarize),
       if (historyAtTopLevel) historyViewMenuItem,
     ];
 
@@ -69,6 +70,7 @@ List<MenuItem> buildTopLevelMenuItems({
     MenuItem(label: 'Page Editor', path: '/advanced/page-editor', icon: Icons.edit),
     MenuItem(label: 'Preferences', path: '/advanced/preferences', icon: Icons.settings),
     MenuItem(label: 'Alarm Editor', path: '/advanced/alarm-editor', icon: Icons.alarm),
+    MenuItem(label: 'Report Editor', path: AppRoutes.reportEditor, icon: Icons.summarize),
     // History View's default home (its pre-#154 spot). The operator can
     // promote it to the top level from the page editor.
     if (!historyAtTopLevel) historyViewMenuItem,

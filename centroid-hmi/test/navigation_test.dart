@@ -140,7 +140,8 @@ void main() {
         pageMenuItems: [_page('Home', '/'), _page('Chiller', '/chiller')],
         historyAtTopLevel: true,
       );
-      expect(items.map((m) => m.path).take(4), ['/', '/chiller', '/alarm-view', '/history-view']);
+      expect(items.map((m) => m.path).take(5),
+          ['/', '/chiller', '/alarm-view', '/reports', '/history-view']);
       expect(items.last.path, '/advanced', reason: 'Advanced stays pinned last, outside the ordering');
     });
   });

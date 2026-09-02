@@ -30,6 +30,8 @@ import 'package:tfc/pages/alarm_view.dart';
 import 'package:tfc/pages/ip_settings.dart';
 import 'package:tfc/pages/dbus_login.dart';
 import 'package:tfc/pages/history_view.dart';
+import 'package:tfc/pages/reports_page.dart';
+import 'package:tfc/pages/report_editor.dart';
 import 'package:tfc/pages/server_config.dart';
 import 'package:tfc/pages/key_repository.dart';
 import 'package:tfc/pages/about_linux.dart';
@@ -558,7 +560,7 @@ RoutesLocationBuilder createLocationBuilder(
         child: child,
       );
 
-  // Nine routes are gated, and only nine. Two of them sit at `users`.
+  // Ten routes are gated, and only ten. Two of them sit at `users`.
   // '/advanced/audit-trail' is raised for what it *displays* rather than what
   // it writes: the trail is every write anybody ever made, with old and new
   // values, so it sits beside the roles that govern it. '/advanced/access'
@@ -717,6 +719,12 @@ RoutesLocationBuilder createLocationBuilder(
         key: const ValueKey('/advanced/access'),
         title: 'Access',
         child: gated('/advanced/access', 'Access', const AccessAdminPage())),
+    AppRoutes.reports: (context, state, args) =>
+        BeamPage(key: const ValueKey(AppRoutes.reports), title: 'Reports', child: const ReportsPage()),
+    AppRoutes.reportEditor: (context, state, args) => BeamPage(
+        key: const ValueKey(AppRoutes.reportEditor),
+        title: 'Report Editor',
+        child: gated(AppRoutes.reportEditor, 'Report Editor', const ReportEditorPage())),
   };
 
   // Statement-level const guard rather than a collection-if inside the map
