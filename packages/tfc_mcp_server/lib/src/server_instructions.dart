@@ -97,6 +97,18 @@ create_alarm returns the alarm `uid`, and alarm beacon assets bind BY uid:
 create the alarm first, then the asset. Replacing an alarm means replacing
 its asset as a pair.
 
+## Static reports — the exception to the proposal rule
+
+list_reports, get_report_definition, generate_report, resolve_shift and
+get_shift_calendar read the report system; create_report, update_report,
+delete_report and set_shift_calendar change its configuration DIRECTLY
+(audited, no proposal banner) — a report definition only describes how to
+read collected data and alarm history, it can never touch the plant.
+generate_report renders one period: offset 0 is the current shift/day/week
+"so far", -1 the previous one; resolve_shift tells you what interval a
+given offset means. Shift-based reports need a shift calendar configured
+(set_shift_calendar) first.
+
 ## Looking at the screen
 
 screenshot_window returns a PNG of the HMI window as the operator sees it --

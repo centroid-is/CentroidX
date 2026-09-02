@@ -50,6 +50,18 @@ page and asset configuration (list_pages, list_assets, get_asset_detail) and
 can PROPOSE pages and assets (propose_page, propose_asset, update_asset).
 The operator's Accept is what applies them.
 
+### Reports
+Static shift/production reporting over the Collector's timeseries tables and
+the alarm history. A report is a declarative JSON definition (KPI rows,
+aggregate tables, charts, alarm summaries, downtime paretos, text sections)
+bound to a period kind — shift, day or week — and generated on demand for
+any period (offset 0 = current, negative = backwards in time). Shifts come
+from a configurable shift calendar. The AI can READ (list_reports,
+get_report_definition, generate_report, resolve_shift, get_shift_calendar)
+and can WRITE definitions DIRECTLY (create_report, update_report,
+delete_report, set_shift_calendar) — the one tool group whose writes are not
+proposals, because a report definition only reads data. Writes are audited.
+
 ## Proposals: the only way anything changes
 
 Every write tool builds a proposal and returns it. It does not touch the
