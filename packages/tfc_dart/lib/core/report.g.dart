@@ -9,6 +9,12 @@ part of 'report.dart';
 ReportMetricConfig _$ReportMetricConfigFromJson(Map<String, dynamic> json) =>
     ReportMetricConfig(
       key: json['key'] as String,
+      additionalKeys: (json['additional_keys'] as List<dynamic>?)
+              ?.map((e) => e as String)
+              .toList() ??
+          [],
+      combine: $enumDecodeNullable(_$MetricCombineEnumMap, json['combine']) ??
+          MetricCombine.sum,
       member: json['member'] as String?,
       label: json['label'] as String?,
       aggregate:
@@ -21,12 +27,21 @@ ReportMetricConfig _$ReportMetricConfigFromJson(Map<String, dynamic> json) =>
 Map<String, dynamic> _$ReportMetricConfigToJson(ReportMetricConfig instance) =>
     <String, dynamic>{
       'key': instance.key,
+      'additional_keys': instance.additionalKeys,
+      'combine': _$MetricCombineEnumMap[instance.combine]!,
       'member': instance.member,
       'label': instance.label,
       'aggregate': _$ReportAggregateEnumMap[instance.aggregate]!,
       'unit': instance.unit,
       'decimals': instance.decimals,
     };
+
+const _$MetricCombineEnumMap = {
+  MetricCombine.sum: 'sum',
+  MetricCombine.mean: 'mean',
+  MetricCombine.min: 'min',
+  MetricCombine.max: 'max',
+};
 
 const _$ReportAggregateEnumMap = {
   ReportAggregate.first: 'first',
@@ -151,6 +166,20 @@ Map<String, dynamic> _$DowntimeSectionConfigToJson(
     <String, dynamic>{
       'title': instance.title,
       'top_n': instance.topN,
+    };
+
+SqlSectionConfig _$SqlSectionConfigFromJson(Map<String, dynamic> json) =>
+    SqlSectionConfig(
+      title: json['title'] as String?,
+      query: json['query'] as String? ?? '',
+      maxRows: (json['max_rows'] as num?)?.toInt() ?? 200,
+    );
+
+Map<String, dynamic> _$SqlSectionConfigToJson(SqlSectionConfig instance) =>
+    <String, dynamic>{
+      'title': instance.title,
+      'query': instance.query,
+      'max_rows': instance.maxRows,
     };
 
 TextSectionConfig _$TextSectionConfigFromJson(Map<String, dynamic> json) =>

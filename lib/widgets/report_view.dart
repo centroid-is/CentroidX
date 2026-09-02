@@ -80,6 +80,7 @@ class ReportView extends StatelessWidget {
       ChartSectionResult s => _chart(context, s),
       AlarmSummarySectionResult s => _alarmSummary(context, s),
       DowntimeSectionResult s => _downtime(context, s),
+      SqlSectionResult s => _sql(context, s),
       TextSectionResult s => _text(context, s),
     };
   }
@@ -167,6 +168,61 @@ class ReportView extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ],
+    );
+  }
+
+  Widget _sql(BuildContext context, SqlSectionResult s) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionTitle(context, s.title),
+        Card(
+          margin: EdgeInsets.zero,
+          child: s.error != null
+              ? Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text('Query failed: ${s.error}',
+                      style: TextStyle(color: theme.colorScheme.error)),
+                )
+              : s.rows.isEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text('No rows',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant)),
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: DataTable(
+                            columns: [
+                              for (final c in s.columns)
+                                DataColumn(label: Text(c)),
+                            ],
+                            rows: [
+                              for (final row in s.rows)
+                                DataRow(cells: [
+                                  for (final cell in row)
+                                    DataCell(Text(cell)),
+                                ]),
+                            ],
+                          ),
+                        ),
+                        if (s.truncated)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                            child: Text('Truncated to ${s.rows.length} rows',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                    color:
+                                        theme.colorScheme.onSurfaceVariant)),
+                          ),
+                      ],
+                    ),
         ),
       ],
     );

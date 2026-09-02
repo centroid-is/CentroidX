@@ -332,6 +332,54 @@ class DowntimeSectionResult extends ReportSectionResult {
   }
 }
 
+/// A custom query's result: stringified cells, already capped.
+class SqlSectionResult extends ReportSectionResult {
+  final List<String> columns;
+  final List<List<String>> rows;
+
+  /// True when the query returned more rows than the section's cap.
+  final bool truncated;
+
+  final String? error;
+
+  const SqlSectionResult({
+    super.title,
+    required this.columns,
+    required this.rows,
+    this.truncated = false,
+    this.error,
+  });
+
+  @override
+  String get type => SqlSectionConfig.kType;
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'type': type,
+        if (title != null) 'title': title,
+        'columns': columns,
+        'rows': rows,
+        if (truncated) 'truncated': true,
+        if (error != null) 'error': error,
+      };
+
+  @override
+  String toText() {
+    final b = StringBuffer();
+    if (title != null) b.writeln('## $title');
+    if (error != null) {
+      b.writeln('Query failed: $error');
+      return b.toString().trimRight();
+    }
+    b.writeln(columns.join(' | '));
+    for (final row in rows) {
+      b.writeln(row.join(' | '));
+    }
+    if (truncated) b.writeln('… truncated');
+    return b.toString().trimRight();
+  }
+}
+
 class TextSectionResult extends ReportSectionResult {
   final String text;
 

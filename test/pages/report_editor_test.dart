@@ -103,6 +103,8 @@ void main() {
 
     await tester.tap(find.text('Add report'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Empty report'));
+    await tester.pumpAndSettle();
     expect(find.text('New report'), findsOneWidget);
 
     expect(find.text('Unsaved changes'), findsOneWidget);
@@ -116,6 +118,22 @@ void main() {
     expect(reports.reports.single.name, 'New report');
     // The default new report starts with an empty KPI section.
     expect(reports.reports.single.sections.single, isA<KpiSectionConfig>());
+  });
+
+  testWidgets('the shift template seeds the standard section list',
+      (tester) async {
+    await pump(tester);
+    await tester.tap(find.text('Add report'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Standard shift report'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final report = (await store.loadReports()).reports.single;
+    expect(report.name, 'Shift report');
+    expect(report.sections.map((s) => s.type),
+        ['kpi', 'downtime', 'alarm_summary', 'text']);
   });
 
   testWidgets('sections can be added and reordered with the arrows',

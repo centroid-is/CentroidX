@@ -295,16 +295,49 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
               children: [
                 Text('Reports', style: theme.textTheme.titleMedium),
                 const Spacer(),
-                TextButton.icon(
-                  onPressed: () => setState(() {
-                    reports.add(ReportConfig(
-                      id: 'report-${DateTime.now().millisecondsSinceEpoch}',
-                      name: 'New report',
-                      sections: [KpiSectionConfig()],
-                    ));
+                PopupMenuButton<String>(
+                  onSelected: (choice) => setState(() {
+                    final id =
+                        'report-${DateTime.now().millisecondsSinceEpoch}';
+                    reports.add(switch (choice) {
+                      // The sections every shift report in the research
+                      // survey had: headline figures, what stopped us, what
+                      // alarmed, and the handover note.
+                      'shift' => ReportConfig(
+                          id: id,
+                          name: 'Shift report',
+                          sections: [
+                            KpiSectionConfig(title: 'Key figures'),
+                            DowntimeSectionConfig(title: 'Downtime'),
+                            AlarmSummarySectionConfig(title: 'Alarms'),
+                            TextSectionConfig(title: 'Handover'),
+                          ],
+                        ),
+                      _ => ReportConfig(
+                          id: id,
+                          name: 'New report',
+                          sections: [KpiSectionConfig()],
+                        ),
+                    });
                   }),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add report'),
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(
+                        value: 'shift',
+                        child: Text('Standard shift report')),
+                    PopupMenuItem(
+                        value: 'empty', child: Text('Empty report')),
+                  ],
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.add),
+                        SizedBox(width: 4),
+                        Text('Add report'),
+                      ],
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -407,6 +440,7 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
                 AlarmSummarySectionConfig.kType =>
                   AlarmSummarySectionConfig(),
                 DowntimeSectionConfig.kType => DowntimeSectionConfig(),
+                SqlSectionConfig.kType => SqlSectionConfig(),
                 _ => TextSectionConfig(),
               });
             }),
@@ -424,6 +458,9 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
                   value: DowntimeSectionConfig.kType,
                   child: Text('Downtime')),
               PopupMenuItem(
+                  value: SqlSectionConfig.kType,
+                  child: Text('Custom query (SQL)')),
+              PopupMenuItem(
                   value: TextSectionConfig.kType, child: Text('Text')),
             ],
           ),
@@ -438,6 +475,7 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
         ChartSectionConfig() => 'Chart',
         AlarmSummarySectionConfig() => 'Alarm summary',
         DowntimeSectionConfig() => 'Downtime',
+        SqlSectionConfig() => 'Custom query',
         TextSectionConfig() => 'Text',
       };
 
@@ -589,6 +627,46 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
         return _topNField(report, index, s.topN, (n) => s.topN = n);
       case DowntimeSectionConfig s:
         return _topNField(report, index, s.topN, (n) => s.topN = n);
+      case SqlSectionConfig s:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextFormField(
+              key: ValueKey('sql-${report.id}-$index'),
+              initialValue: s.query,
+              decoration: const InputDecoration(
+                labelText: 'SELECT …',
+                helperText:
+                    ':from and :to are bound to the range as ISO-8601 UTC '
+                    'text — against timestamptz write :from::timestamptz. '
+                    'Read-only: one SELECT statement.',
+                helperMaxLines: 3,
+                isDense: true,
+              ),
+              style: const TextStyle(fontFamily: 'roboto-mono'),
+              maxLines: 6,
+              minLines: 2,
+              onChanged: (v) => setState(() => s.query = v),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: 120,
+              child: TextFormField(
+                key: ValueKey('sql-rows-${report.id}-$index'),
+                initialValue: '${s.maxRows}',
+                decoration: const InputDecoration(
+                    labelText: 'Max rows', isDense: true),
+                keyboardType: TextInputType.number,
+                onChanged: (v) {
+                  final n = int.tryParse(v);
+                  if (n != null && n > 0 && n <= 1000) {
+                    setState(() => s.maxRows = n);
+                  }
+                },
+              ),
+            ),
+          ],
+        );
       case TextSectionConfig s:
         return TextFormField(
           key: ValueKey('text-${report.id}-$index'),
@@ -673,6 +751,66 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
     );
   }
 
+  /// Sampled member paths of [key], straight from its collection config —
+  /// the editor already knows which struct members are in the table, so the
+  /// user should not have to remember them.
+  List<String> _membersFor(String key) {
+    final nodes =
+        ref.watch(stateManProvider).valueOrNull?.keyMappings.nodes ?? const {};
+    return nodes[key]?.collect?.sampleMembers ?? const [];
+  }
+
+  /// A member field that suggests the key's sampled members. Free text stays
+  /// allowed — scalar keys have no members and need none.
+  Widget _memberField(
+      String id, String key, String value, void Function(String) onChanged) {
+    final members = _membersFor(key);
+    return SizedBox(
+      width: 170,
+      child: RawAutocomplete<String>(
+        key: ValueKey(id),
+        initialValue: TextEditingValue(text: value),
+        optionsBuilder: (text) {
+          if (members.isEmpty) return const Iterable<String>.empty();
+          if (text.text.isEmpty) return members.take(20);
+          final q = text.text.toLowerCase();
+          return members.where((m) => m.toLowerCase().contains(q)).take(20);
+        },
+        onSelected: (v) => setState(() => onChanged(v)),
+        fieldViewBuilder: (context, controller, focusNode, onSubmitted) =>
+            TextFormField(
+          controller: controller,
+          focusNode: focusNode,
+          decoration:
+              const InputDecoration(labelText: 'Member', isDense: true),
+          onChanged: (v) => setState(() => onChanged(v)),
+        ),
+        optionsViewBuilder: (context, onSelected, options) => Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 4,
+            child: ConstrainedBox(
+              constraints:
+                  const BoxConstraints(maxHeight: 240, maxWidth: 300),
+              child: ListView(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                children: [
+                  for (final o in options)
+                    ListTile(
+                      dense: true,
+                      title: Text(o),
+                      onTap: () => onSelected(o),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _smallField(String id, String label, String value, double width,
       void Function(String) onChanged) {
     return SizedBox(
@@ -698,7 +836,25 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           _keyField('$id-key', m.key, (v) => m.key = v),
-          _smallField('$id-member', 'Member', m.member ?? '', 150,
+          // The "plant total" field: more keys folded into this metric.
+          _smallField('$id-extra', 'Also keys (comma-sep)',
+              m.additionalKeys.join(', '), 200, (v) {
+            m.additionalKeys = [
+              for (final part in v.split(','))
+                if (part.trim().isNotEmpty) part.trim(),
+            ];
+          }),
+          if (m.additionalKeys.isNotEmpty)
+            DropdownButton<MetricCombine>(
+              value: m.combine,
+              isDense: true,
+              items: [
+                for (final c in MetricCombine.values)
+                  DropdownMenuItem(value: c, child: Text('Combine: ${c.name}')),
+              ],
+              onChanged: (c) => setState(() => m.combine = c ?? m.combine),
+            ),
+          _memberField('$id-member', m.key, m.member ?? '',
               (v) => m.member = v.isEmpty ? null : v),
           _smallField('$id-label', 'Label', m.label ?? '', 150,
               (v) => m.label = v.isEmpty ? null : v),
@@ -740,7 +896,7 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           _keyField('$id-key', row.key, (v) => row.key = v),
-          _smallField('$id-member', 'Member', row.member ?? '', 150,
+          _memberField('$id-member', row.key, row.member ?? '',
               (v) => row.member = v.isEmpty ? null : v),
           _smallField('$id-label', 'Label', row.label ?? '', 150,
               (v) => row.label = v.isEmpty ? null : v),
@@ -772,7 +928,7 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           _keyField('$id-key', s.key, (v) => s.key = v),
-          _smallField('$id-member', 'Member', s.member ?? '', 150,
+          _memberField('$id-member', s.key, s.member ?? '',
               (v) => s.member = v.isEmpty ? null : v),
           _smallField('$id-label', 'Label', s.label ?? '', 150,
               (v) => s.label = v.isEmpty ? null : v),

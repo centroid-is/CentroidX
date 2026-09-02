@@ -191,30 +191,50 @@ class ReportEngine {
     Future<MetricResult> metric({
       required String label,
       required String key,
+      List<String> additionalKeys = const [],
+      MetricCombine combine = MetricCombine.sum,
       required String? member,
       required ReportAggregate aggregate_,
       String? unit,
       int decimals = 1,
     }) async {
-      try {
-        final w = await windowFor(key, member);
+      final values = <double>[];
+      final problems = <String>[];
+      for (final k in [key, ...additionalKeys]) {
+        try {
+          final v = aggregate(aggregate_, await windowFor(k, member));
+          if (v != null) values.add(v);
+        } on Exception catch (e) {
+          problems.add('$k: $e');
+        } on StateError catch (e) {
+          problems.add(e.message);
+        }
+      }
+      if (values.isEmpty) {
         return MetricResult(
           label: label,
           aggregate: aggregate_,
           unit: unit,
           decimals: decimals,
-          value: aggregate(aggregate_, w),
+          error: problems.isEmpty ? null : problems.join('; '),
         );
-      } on Exception catch (e) {
-        return MetricResult(
-            label: label, aggregate: aggregate_, unit: unit, error: '$e');
-      } on StateError catch (e) {
-        return MetricResult(
-            label: label,
-            aggregate: aggregate_,
-            unit: unit,
-            error: e.message);
       }
+      final combined = switch (combine) {
+        MetricCombine.sum => values.fold(0.0, (a, b) => a + b),
+        MetricCombine.mean =>
+          values.fold(0.0, (a, b) => a + b) / values.length,
+        MetricCombine.min => values.reduce((a, b) => a < b ? a : b),
+        MetricCombine.max => values.reduce((a, b) => a > b ? a : b),
+      };
+      return MetricResult(
+        label: label,
+        aggregate: aggregate_,
+        unit: unit,
+        decimals: decimals,
+        value: combined,
+        // A partial fold still shows a number, but says what it is missing.
+        error: problems.isEmpty ? null : problems.join('; '),
+      );
     }
 
     List<_Activation>? activations;
@@ -234,6 +254,8 @@ class ReportEngine {
                 await metric(
                   label: m.displayLabel,
                   key: m.key,
+                  additionalKeys: m.additionalKeys,
+                  combine: m.combine,
                   member: m.member,
                   aggregate_: m.aggregate,
                   unit: m.unit,
@@ -284,6 +306,8 @@ class ReportEngine {
         case DowntimeSectionConfig s:
           sections.add(_downtime(s, await alarmActivations(), alarmMeta,
               rangeStart, effectiveEnd));
+        case SqlSectionConfig s:
+          sections.add(await _sqlSection(s, rangeStart, effectiveEnd));
         case TextSectionConfig s:
           sections.add(TextSectionResult(title: s.title, text: s.text));
       }
@@ -299,6 +323,79 @@ class ReportEngine {
       partial: partial,
       sections: sections,
     );
+  }
+
+  /// Rejects anything that is not one single SELECT (or WITH … SELECT).
+  ///
+  /// This is a report, so the query is read-only by contract; the check
+  /// enforces the contract before the statement reaches the database. It is
+  /// a guard against mistakes and section configs written by an LLM, not a
+  /// sandbox — whoever can edit reports could already reach the database.
+  static String? validateSqlQuery(String query) {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return 'Query is empty.';
+    final head = trimmed.toLowerCase();
+    if (!head.startsWith('select') && !head.startsWith('with')) {
+      return 'Only a single SELECT (or WITH … SELECT) statement is allowed.';
+    }
+    if (trimmed.contains(';')) {
+      return 'Multiple statements are not allowed — remove the ";".';
+    }
+    return null;
+  }
+
+  /// Runs a custom query section. `:from`/`:to` tokens become bound
+  /// parameters carrying the range as ISO-8601 UTC text.
+  Future<SqlSectionResult> _sqlSection(
+      SqlSectionConfig config, DateTime start, DateTime end) async {
+    final invalid = validateSqlQuery(config.query);
+    if (invalid != null) {
+      return SqlSectionResult(
+          title: config.title, columns: const [], rows: const [],
+          error: invalid);
+    }
+
+    // Each :from/:to occurrence becomes its own placeholder, in order.
+    final variables = <Variable>[];
+    final substituted = config.query.trim().replaceAllMapped(
+      RegExp(r':(from|to)\b'),
+      (m) {
+        variables.add(Variable.withString(m[1] == 'from'
+            ? start.toUtc().toIso8601String()
+            : end.toUtc().toIso8601String()));
+        return '?';
+      },
+    );
+
+    try {
+      final rows = await _db
+          .customSelect(_sql(substituted), variables: variables)
+          .get();
+      if (rows.isEmpty) {
+        return SqlSectionResult(
+            title: config.title, columns: const [], rows: const []);
+      }
+      final columns = rows.first.data.keys.toList();
+      final capped = rows.take(config.maxRows).toList();
+      String cell(dynamic v) => switch (v) {
+            null => '',
+            DateTime d => d.toIso8601String(),
+            _ => '$v',
+          };
+      return SqlSectionResult(
+        title: config.title,
+        columns: columns,
+        rows: [
+          for (final row in capped)
+            [for (final c in columns) cell(row.data[c])],
+        ],
+        truncated: rows.length > config.maxRows,
+      );
+    } on Exception catch (e) {
+      return SqlSectionResult(
+          title: config.title, columns: const [], rows: const [],
+          error: '$e');
+    }
   }
 
   /// Alarm activations overlapping the range: closed ones from

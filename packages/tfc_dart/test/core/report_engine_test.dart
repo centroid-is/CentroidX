@@ -106,6 +106,42 @@ void main() {
     expect(result.partial, isFalse);
   });
 
+  test('additional keys fold per-key aggregates into one metric', () async {
+    // A second counter, so "plant total" spans two machines.
+    await db.customStatement(
+        'CREATE TABLE "Line4.counter" ("value" INTEGER, "time" TEXT)');
+    await db.customStatement(
+        'INSERT INTO "Line4.counter" ("time", "value") VALUES (?, ?)',
+        [iso(at(-5)), 50]);
+    await db.customStatement(
+        'INSERT INTO "Line4.counter" ("time", "value") VALUES (?, ?)',
+        [iso(at(300)), 250]);
+
+    final config = ReportConfig(id: 'r1', name: 'R', sections: [
+      KpiSectionConfig(metrics: [
+        ReportMetricConfig(
+            key: 'Line3.counter',
+            additionalKeys: ['Line4.counter'],
+            label: 'Total produced',
+            aggregate: ReportAggregate.delta,
+            decimals: 0),
+        ReportMetricConfig(
+            key: 'Line3.counter',
+            additionalKeys: ['not.collected'],
+            label: 'Partial',
+            aggregate: ReportAggregate.delta),
+      ]),
+    ]);
+    final result = await engine.generate(config,
+        rangeStart: shiftStart, rangeEnd: shiftEnd, now: at(600));
+    final kpi = result.sections.single as KpiSectionResult;
+    // Line3 delta is 700 (rollover-aware), Line4 adds 200.
+    expect(kpi.metrics[0].value, 900);
+    // A missing member of the fold still yields the rest, with a note.
+    expect(kpi.metrics[1].value, 700);
+    expect(kpi.metrics[1].error, contains('not.collected'));
+  });
+
   test('a missing table is an error cell, not a failed report', () async {
     final config = ReportConfig(id: 'r1', name: 'R', sections: [
       KpiSectionConfig(metrics: [
@@ -262,6 +298,77 @@ void main() {
       final straddler =
           summary.topByCount.singleWhere((a) => a.uid == 'straddler');
       expect(straddler.count, 1);
+    });
+  });
+
+  group('sql sections', () {
+    test('runs a read-only query with :from/:to bound to the range',
+        () async {
+      final config = ReportConfig(id: 'r1', name: 'R', sections: [
+        SqlSectionConfig(
+          title: 'Counter rows',
+          query: 'SELECT time, value FROM "Line3.counter" '
+              'WHERE time > :from AND time <= :to ORDER BY time',
+        ),
+      ]);
+      final result = await engine.generate(config,
+          rangeStart: shiftStart, rangeEnd: shiftEnd, now: at(600));
+      final sql = result.sections.single as SqlSectionResult;
+      expect(sql.error, isNull);
+      expect(sql.columns, ['time', 'value']);
+      // The three in-shift counter samples; the pre-shift one is excluded.
+      expect(sql.rows, hasLength(3));
+      expect(sql.rows.map((r) => r[1]), ['1400', '0', '300']);
+      expect(result.toText(), contains('Counter rows'));
+    });
+
+    test('rejects non-SELECT and multi-statement queries without running',
+        () async {
+      for (final bad in [
+        'DELETE FROM "Line3.counter"',
+        'SELECT 1; SELECT 2',
+        '',
+      ]) {
+        final config = ReportConfig(id: 'r1', name: 'R', sections: [
+          SqlSectionConfig(query: bad),
+        ]);
+        final result = await engine.generate(config,
+            rangeStart: shiftStart, rangeEnd: shiftEnd, now: at(600));
+        final sql = result.sections.single as SqlSectionResult;
+        expect(sql.error, isNotNull, reason: bad);
+        expect(sql.rows, isEmpty);
+      }
+      // The table is untouched by the rejected DELETE.
+      final rows =
+          await db.customSelect('SELECT count(*) AS c FROM "Line3.counter"')
+              .getSingle();
+      expect(rows.read<int>('c'), 4);
+    });
+
+    test('a failing query is an error section, not a failed report',
+        () async {
+      final config = ReportConfig(id: 'r1', name: 'R', sections: [
+        SqlSectionConfig(query: 'SELECT * FROM "no.such.table"'),
+        TextSectionConfig(text: 'still here'),
+      ]);
+      final result = await engine.generate(config,
+          rangeStart: shiftStart, rangeEnd: shiftEnd, now: at(600));
+      expect((result.sections.first as SqlSectionResult).error, isNotNull);
+      expect((result.sections.last as TextSectionResult).text, 'still here');
+    });
+
+    test('rows past max_rows are dropped and flagged', () async {
+      final config = ReportConfig(id: 'r1', name: 'R', sections: [
+        SqlSectionConfig(
+            query: 'SELECT value FROM "Line3.counter" ORDER BY time',
+            maxRows: 2),
+      ]);
+      final result = await engine.generate(config,
+          rangeStart: shiftStart, rangeEnd: shiftEnd, now: at(600));
+      final sql = result.sections.single as SqlSectionResult;
+      expect(sql.rows, hasLength(2));
+      expect(sql.truncated, isTrue);
+      expect(sql.toText(), contains('truncated'));
     });
   });
 

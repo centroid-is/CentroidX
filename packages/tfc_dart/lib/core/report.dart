@@ -61,6 +61,9 @@ extension ReportAggregateLabel on ReportAggregate {
       this == ReportAggregate.durationFalse;
 }
 
+/// How a multi-key metric folds its per-key aggregates into one number.
+enum MetricCombine { sum, mean, min, max }
+
 /// One value a report computes: a collected key (optionally one struct
 /// member of it) condensed by one aggregate.
 @JsonSerializable(explicitToJson: true)
@@ -68,6 +71,16 @@ class ReportMetricConfig {
   /// The collected key — which is also the timeseries table name once
   /// resolved through StateMan's `$variable` substitution.
   String key;
+
+  /// Further keys aggregated the same way and folded in with [combine] —
+  /// the "plant total is the three SpeedBatchers summed" case. [member]
+  /// applies to every key, which fits identical machines sharing a struct
+  /// layout.
+  @JsonKey(name: 'additional_keys', defaultValue: <String>[])
+  List<String> additionalKeys;
+
+  /// How the per-key results merge when [additionalKeys] is non-empty.
+  MetricCombine combine;
 
   /// Dotted member path into a `sample_members` table, or null for the
   /// scalar `value` column.
@@ -85,12 +98,14 @@ class ReportMetricConfig {
 
   ReportMetricConfig({
     required this.key,
+    List<String>? additionalKeys,
+    this.combine = MetricCombine.sum,
     this.member,
     this.label,
     this.aggregate = ReportAggregate.timeWeightedMean,
     this.unit,
     this.decimals = 1,
-  });
+  }) : additionalKeys = additionalKeys ?? [];
 
   String get displayLabel =>
       (label == null || label!.isEmpty) ? key : label!;
@@ -122,6 +137,7 @@ sealed class ReportSectionConfig {
       AlarmSummarySectionConfig.kType =>
         AlarmSummarySectionConfig.fromJson(json),
       DowntimeSectionConfig.kType => DowntimeSectionConfig.fromJson(json),
+      SqlSectionConfig.kType => SqlSectionConfig.fromJson(json),
       TextSectionConfig.kType => TextSectionConfig.fromJson(json),
       _ => throw ArgumentError('Unknown report section type: $type'),
     };
@@ -285,6 +301,37 @@ class DowntimeSectionConfig extends ReportSectionConfig {
   @override
   Map<String, dynamic> toJson() =>
       _$DowntimeSectionConfigToJson(this)..['type'] = kType;
+}
+
+/// An arbitrary read-only SQL query rendered as a table — the escape hatch
+/// every SCADA reporting product grows (Ignition's SQL data source): joins
+/// across key tables, `alarm_history` breakdowns the fixed sections don't
+/// cover, anything a SELECT can say.
+///
+/// The tokens `:from` and `:to` are bound to the report range as ISO-8601
+/// UTC text; against a timestamptz column write `:from::timestamptz`. Only a
+/// single SELECT/WITH statement is accepted — the engine rejects anything
+/// else before it reaches the database.
+@JsonSerializable(explicitToJson: true)
+class SqlSectionConfig extends ReportSectionConfig {
+  static const kType = 'sql';
+
+  String query;
+
+  /// Rows past this are dropped and the result marked truncated.
+  @JsonKey(name: 'max_rows')
+  int maxRows;
+
+  SqlSectionConfig({super.title, this.query = '', this.maxRows = 200});
+
+  @override
+  String get type => kType;
+
+  factory SqlSectionConfig.fromJson(Map<String, dynamic> json) =>
+      _$SqlSectionConfigFromJson(json);
+  @override
+  Map<String, dynamic> toJson() =>
+      _$SqlSectionConfigToJson(this)..['type'] = kType;
 }
 
 /// Free text. Also the slot where LLM-written shift commentary lands later —

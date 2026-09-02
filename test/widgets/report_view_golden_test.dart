@@ -183,6 +183,15 @@ ReportResult _fixture() => ReportResult(
                 openNow: false),
           ],
         ),
+        const SqlSectionResult(
+          title: 'Per-product totals',
+          columns: ['product', 'boxes', 'avg_weight_g'],
+          rows: [
+            ['Cod loins 5kg', '2841', '5012.4'],
+            ['Cod fillets 3kg', '1610', '3004.1'],
+            ['Haddock 5kg', '780', '5018.9'],
+          ],
+        ),
         const TextSectionResult(
             title: 'Handover',
             text: 'Film tracking drifted all morning; reel changed at 11:40. '

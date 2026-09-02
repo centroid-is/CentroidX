@@ -31,6 +31,7 @@ class ReportService {
     ChartSectionConfig.kType,
     AlarmSummarySectionConfig.kType,
     DowntimeSectionConfig.kType,
+    SqlSectionConfig.kType,
     TextSectionConfig.kType,
   ];
 
