@@ -78,7 +78,16 @@ void main() {
     //
     // Driven off the enum rather than a hardcoded list, so a sixth machine
     // added later has to answer this test too.
-    for (final kind in ThirdPartyEquipmentKind.values) {
+    //
+    // It has to answer it in one of two ways, and both are asserted below. A
+    // kind whose PLC publishes a handshake gets Equipment + Status and one
+    // rule between them. A kind whose PLC publishes NOTHING — the Optimar
+    // palletising row — gets Equipment alone, and therefore no rule at all:
+    // there is no second section for one to sit between, and a hairline under
+    // a lone section is a rule to nowhere. Skipping such a kind instead would
+    // let a genuinely missing Status section pass unnoticed, so it is asserted
+    // rather than excluded.
+    for (final kind in ThirdPartyEquipmentKind.values.where(hasStatusTable)) {
       testWidgets('${kind.name} draws exactly one rule between its sections',
           (tester) async {
         addTearDown(closeSidePane);
@@ -118,6 +127,50 @@ void main() {
           findsOneWidget,
           reason: '${kind.name} must have one hairline between Equipment and '
               'Status — no more, no fewer',
+        );
+      });
+    }
+
+    for (final kind
+        in ThirdPartyEquipmentKind.values.where((k) => !hasStatusTable(k))) {
+      testWidgets('${kind.name} draws no rule, having only one section',
+          (tester) async {
+        addTearDown(closeSidePane);
+        final config = ThirdPartyEquipmentConfig(runKey: '')
+          ..kind = kind
+          // Set anyway, to prove it changes nothing: this kind has no table
+          // for a status key to feed, so a leftover key from another kind must
+          // not conjure a Status section.
+          ..statusKey = 'BER02';
+
+        await tester.pumpWidget(ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              body: Center(
+                child: SizedBox(
+                  width: 300,
+                  height: 160,
+                  child: ThirdPartyEquipment(config: config),
+                ),
+              ),
+            ),
+          ),
+        ));
+        await tester.tap(find.byType(ThirdPartyEquipment));
+        await tester.pumpAndSettle();
+
+        expect(find.text('EQUIPMENT'), findsOneWidget);
+        expect(find.text('STATUS'), findsNothing,
+            reason: '${kind.name} has no handshake to draw a Status section '
+                'from, configured key or not.');
+        expect(
+          find.descendant(
+            of: find.byType(PaneBody),
+            matching: find.byType(Divider),
+          ),
+          findsNothing,
+          reason: '${kind.name} has one section, so there is nothing for a '
+              'hairline to divide.',
         );
       });
     }
