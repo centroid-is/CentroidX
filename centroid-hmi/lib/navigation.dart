@@ -26,15 +26,32 @@ const historyViewMenuItem = MenuItem(label: 'History View', path: AppRoutes.hist
 /// History under Advanced.
 bool historyViewIsTopLevel(List<String> topLevelOrder) => topLevelOrder.contains(AppRoutes.historyView);
 
+/// Reports' menu entry. Same deal as History View: under Advanced by
+/// default, promoted to the top level from the page editor's Pages dialog,
+/// with membership in the persisted order as the only record (see
+/// [reportsIsTopLevel]).
+const reportsMenuItem = MenuItem(label: 'Reports', path: AppRoutes.reports, icon: Icons.summarize);
+
+/// Whether the operator moved Reports to the top level. Membership in the
+/// persisted top-level order is the single source of truth — the same rule
+/// [historyViewIsTopLevel] uses, which works precisely because Advanced is
+/// the default: an install that never arranged its menu has no entry, and
+/// no entry means "leave it where it started".
+bool reportsIsTopLevel(List<String> topLevelOrder) => topLevelOrder.contains(AppRoutes.reports);
+
 /// Top-level menu entries the app itself provides. They are not pages in the
 /// page editor, but they share the top level with the pages and order with
 /// them through `PageManager.sortTopLevel`. Home is *not* here: Home is an
 /// ordinary page in the page manager, deletable and reorderable like any
-/// other. History View joins only when the operator moved it out of
-/// Advanced.
-List<MenuItem> builtinTopLevelMenuItems({required bool historyAtTopLevel}) => [
+/// other. Reports and History View join only when the operator moved them
+/// out of Advanced.
+List<MenuItem> builtinTopLevelMenuItems({
+  required bool historyAtTopLevel,
+  bool reportsAtTopLevel = false,
+}) =>
+    [
       const MenuItem(label: 'Alarm View', path: AppRoutes.alarmView, icon: Icons.alarm),
-      const MenuItem(label: 'Reports', path: AppRoutes.reports, icon: Icons.summarize),
+      if (reportsAtTopLevel) reportsMenuItem,
       if (historyAtTopLevel) historyViewMenuItem,
     ];
 
@@ -63,6 +80,7 @@ List<MenuItem> buildTopLevelMenuItems({
   required bool isLinux,
   required List<MenuItem> pageMenuItems,
   bool historyAtTopLevel = false,
+  bool reportsAtTopLevel = false,
 }) {
   final advancedChildren = <MenuItem>[
     if (isLinux) MenuItem(label: 'IP Settings', path: '/advanced/ip-settings', icon: Icons.settings_ethernet),
@@ -71,6 +89,12 @@ List<MenuItem> buildTopLevelMenuItems({
     MenuItem(label: 'Preferences', path: '/advanced/preferences', icon: Icons.settings),
     MenuItem(label: 'Alarm Editor', path: '/advanced/alarm-editor', icon: Icons.alarm),
     MenuItem(label: 'Report Editor', path: AppRoutes.reportEditor, icon: Icons.summarize),
+    // The two movable operator destinations, in their default home.
+    // Both can be promoted to the top level from the page editor.
+    // Reports is unraised: reading a shift report is operate-level
+    // work. Editing the definitions is the Report Editor above it,
+    // which kRaisedRoutes puts at `configure`.
+    if (!reportsAtTopLevel) reportsMenuItem,
     // History View's default home (its pre-#154 spot). The operator can
     // promote it to the top level from the page editor.
     if (!historyAtTopLevel) historyViewMenuItem,
@@ -84,7 +108,9 @@ List<MenuItem> buildTopLevelMenuItems({
 
   return [
     ...pageMenuItems,
-    ...builtinTopLevelMenuItems(historyAtTopLevel: historyAtTopLevel),
+    ...builtinTopLevelMenuItems(
+        historyAtTopLevel: historyAtTopLevel,
+        reportsAtTopLevel: reportsAtTopLevel),
     // An Advanced section with nothing in it would just be a dead menu entry.
     if (advancedChildren.isNotEmpty)
       MenuItem(

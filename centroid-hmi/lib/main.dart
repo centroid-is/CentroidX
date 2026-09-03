@@ -1081,9 +1081,11 @@ List<MenuItem> _composeTopLevelMenu(PageManager pageManager) {
   final items = buildTopLevelMenuItems(
     isLinux: Platform.isLinux,
     pageMenuItems: pageManager.getRootMenuItems(),
-    // History View sits under Advanced unless the operator promoted it to the
-    // top level in the page editor (recorded in the top-level order).
+    // History View and Reports sit under Advanced unless the operator
+    // promoted them to the top level in the page editor (recorded in the
+    // top-level order).
     historyAtTopLevel: historyViewIsTopLevel(pageManager.topLevelOrder),
+    reportsAtTopLevel: reportsIsTopLevel(pageManager.topLevelOrder),
   );
   // Then the order arranged in the page editor — built-ins included. No stored
   // order leaves the composition order above untouched. Ordering happens here,
