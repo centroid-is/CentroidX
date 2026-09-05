@@ -47,6 +47,7 @@
 library;
 
 import 'dart:async';
+import 'dart:isolate';
 
 import 'package:open62541/open62541.dart' show UA_STATUSCODE_BADNOTWRITABLE;
 import 'package:postgres/postgres.dart' show Endpoint;
@@ -211,6 +212,54 @@ Future<void> _subscribeAndSettle(_Rig rig, String key) async {
   );
 }
 
+/// A write left in flight when its worker was killed.
+class _KilledWrite {
+  _KilledWrite(this.pending, this.sinceKill);
+
+  /// The caller's future, still unsettled at the moment of the kill.
+  final Future<relay.WriteResult> pending;
+
+  /// Started at the kill, so a measurement is "how long after the death", not
+  /// "how long after the button".
+  final Stopwatch sinceKill;
+}
+
+/// Starts a write the link will not answer, waits until the SERVER has it, and
+/// then kills the owning isolate out from under it.
+///
+/// Two details carry the weight:
+///
+///  * the link is blackholed **before** the write, so the request is genuinely
+///    in flight rather than already answered — otherwise the kill would race a
+///    completed future and the arm would pass on nothing;
+///  * the kill waits for `writeCount` to reach 1, so the request provably
+///    reached the far end. Without that wait, "the server saw one write" could
+///    be satisfied by a re-send after the respawn and the no-retry oracle would
+///    be vacuous (12-06's mutation H: an arm that asserts an absence proves
+///    nothing until the presence has been made possible).
+///
+/// The isolate is killed directly rather than through
+/// [DataAcquisitionWorker.kill], which sets the no-respawn guard — this arm
+/// needs a crash the supervisor will answer, not a shutdown.
+Future<_KilledWrite> _writeThenKillOwner(
+    _Rig rig, String key, Object? value) async {
+  rig.fixture.proxy!.bufferServerToClient = true;
+
+  final pending = rig.pipe.write(key, relay.DynamicValue(value: value));
+  await _waitUntil(
+    () => rig.fixture.writeCount(key) >= 1,
+    const Duration(seconds: 20),
+    reason: 'the write never reached the server, so there is nothing in '
+        'flight to kill and nothing a retry could duplicate',
+  );
+
+  final isolate = rig.worker.isolate;
+  expect(isolate, isNotNull, reason: 'nothing to kill');
+  final sinceKill = Stopwatch()..start();
+  isolate!.kill(priority: Isolate.immediate);
+  return _KilledWrite(pending, sinceKill);
+}
+
 /// A [relay.WriteResult] as a failure message reads it.
 ///
 /// The sealed type's `toString` is the class name, so a failed arm would say
@@ -332,6 +381,106 @@ void main() {
           reason: 'the worker answers at 4s and main at 5s; anything past '
               'that is an await nothing bounds. Measured: '
               '${stopwatch.elapsedMilliseconds}ms');
+    });
+  });
+
+  group('a worker killed with a write in flight', () {
+    test('resolves that write UNKNOWN well inside the deadline', () async {
+      const key = 'gate.command';
+      final rig = await _startRig(
+          writeKeys: const <String>[key], viaProxy: true);
+      await _subscribeAndSettle(rig, key);
+
+      final killed = await _writeThenKillOwner(rig, key, 5);
+
+      final result = await killed.pending.timeout(kPipeWriteDeadline,
+          onTimeout: () => fail('the pending write outlived the deadline — a '
+              'write whose isolate is gone must not be left to a timer, and '
+              'must certainly not hang'));
+      killed.sinceKill.stop();
+
+      expect(result, isA<relay.WriteUnknown>(),
+          reason: 'the isolate that held the request is gone; nobody can say '
+              'whether the PLC moved. Got ${_describe(result)}');
+      expect((result as relay.WriteUnknown).reason.kind, 'worker_died',
+          reason: 'the onExit fast path answered, not a deadline. A '
+              'pipe_timeout here would mean main learned of the death from a '
+              'timer rather than from the death itself. Got '
+              '${_describe(result)}');
+      expect(killed.sinceKill.elapsed, lessThan(const Duration(seconds: 3)),
+          reason: 'death is an EVENT: the answer arrives on the turn the null '
+              'sentinel does. The 5s deadline would have answered roughly 4.7s '
+              'after this kill, so a figure near that is the timer winning — '
+              'the exact decay this phase replaced. Measured: '
+              '${killed.sinceKill.elapsedMilliseconds}ms');
+    });
+
+    test('never re-sends it across the respawn, and the pipe recovers',
+        () async {
+      const key = 'gate.command';
+      final rig = await _startRig(
+          writeKeys: const <String>[key], viaProxy: true);
+      await _subscribeAndSettle(rig, key);
+
+      final killed = await _writeThenKillOwner(rig, key, 5);
+      final result = await killed.pending.timeout(kPipeWriteDeadline,
+          onTimeout: () => fail('the pending write never settled'));
+      expect(result, isA<relay.WriteUnknown>(),
+          reason: 'precondition for the no-retry claim: the operator has '
+              'already been told the outcome is unknown. Got '
+              '${_describe(result)}');
+
+      // The link comes back before the replacement dials it. Nothing about the
+      // no-retry property depends on the link being down — the point is that
+      // the pipe has every opportunity to re-send and does not take it.
+      rig.fixture.proxy!.bufferServerToClient = false;
+
+      await _waitUntil(
+        () => rig.worker.generation >= 2 && rig.worker.controlPort != null,
+        const Duration(seconds: 90),
+        reason: 'the supervisor never brought the worker back (backoff floor '
+            'is 2s), so there was no respawn for a re-send to ride',
+      );
+      // The replacement is not merely alive: it has been replayed main's
+      // subscription snapshot and is piping again. Waiting for the value the
+      // dead generation's write left at the server is what makes the count
+      // below a measurement rather than a race — a re-send would have to have
+      // happened by now to be a re-send at all.
+      await _waitUntil(
+        () => rig.pipe.read(key).value == 5,
+        const Duration(seconds: 60),
+        reason: 'the new generation never piped a reading — main replays a '
+            'snapshot on ready, and without it the respawned worker sends '
+            'nothing and this arm cannot see a re-send either',
+      );
+
+      expect(rig.fixture.writeCount(key), 1,
+          reason: 'ONE operator write, one write at the server. The pipe held '
+              'a request whose fate it had already reported unknown; '
+              're-sending it here would execute a command the operator was '
+              'told did not necessarily happen, on a machine somebody may be '
+              'standing next to. Server saw: ${rig.fixture.writeLog(key).map(
+                    (v) => v.value,
+                  ).toList()}');
+
+      // Recovery is the other half: only the in-flight write was dropped.
+      final after = await rig.pipe
+          .write(key, relay.DynamicValue(value: 9))
+          .timeout(const Duration(seconds: 20),
+              onTimeout: () => fail('the post-respawn write never settled'));
+      expect(after, isA<relay.WriteApplied>(),
+          reason: 'the pipe survived the death of one generation; a worker '
+              'that comes back and cannot be written to is a pipe that only '
+              'looks recovered. Got ${_describe(after)}');
+      expect(rig.fixture.writeCount(key), 2,
+          reason: 'two operator writes, two writes at the server — the '
+              'invariant is one per write, not one for all time');
+      await _waitUntil(
+        () => rig.pipe.read(key).value == 9,
+        const Duration(seconds: 20),
+        reason: 'the post-respawn write was reported applied but the served '
+            'value never moved',
+      );
     });
   });
 }
