@@ -56,6 +56,7 @@ class M2400UpstreamLink extends DeviceClientUpstreamLink {
   M2400UpstreamLink({
     required super.alias,
     required super.client,
+    super.answersTo,
     super.health,
     super.staleAfter,
   }) : super(supportsWrites: false, supportsBrowse: false);
@@ -83,8 +84,10 @@ class M2400UpstreamLink extends DeviceClientUpstreamLink {
     // M2400-shaped takes weigher3's key, and the router cannot see it because
     // the two links have different aliases. `_resolveM2400Key`
     // (`state_man.dart:1774-1783`) already does this and this is why.
+    // Against `answersTo`, not `alias`: the live plant file spells the
+    // unnamed server, which the name can never be (RIG-TEST-FINDINGS.md F1).
     if (StateManConfig.normalizeAlias(node.serverAlias) !=
-        StateManConfig.normalizeAlias(alias)) {
+        StateManConfig.normalizeAlias(answersTo)) {
       return null;
     }
     final recordKey = m2400RecordKeys[node.recordType];

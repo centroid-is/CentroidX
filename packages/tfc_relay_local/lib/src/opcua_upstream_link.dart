@@ -248,6 +248,7 @@ final class OpcUaUpstreamLink implements UpstreamLink {
   OpcUaUpstreamLink({
     required this.alias,
     required String endpoint,
+    String? answersTo,
     this.useIsolate = true,
     this.supportsWrites = true,
     this.supportsBrowse = true,
@@ -259,7 +260,8 @@ final class OpcUaUpstreamLink implements UpstreamLink {
     ua.NodeId? buildStampNode,
     ua.ClientApi? client,
     void Function(Object error, StackTrace stack)? onIterateError,
-  })  : _endpoint = endpoint,
+  })  : answersTo = answersTo ?? alias,
+        _endpoint = endpoint,
         _iteratePeriod = iteratePeriod,
         _epochReader = epochReader,
         _buildStampNode = buildStampNode,
@@ -273,6 +275,14 @@ final class OpcUaUpstreamLink implements UpstreamLink {
 
   @override
   final String alias;
+
+  /// The keymapping `server_alias` this link serves; [alias] when omitted.
+  ///
+  /// `''` is the unnamed server — the live plant file's spelling — and
+  /// [resolve] compares through `StateManConfig.normalizeAlias`, which
+  /// buckets it with null. See `UpstreamLinkConfig.answersTo` for why the
+  /// name and the answers-to cannot be one field (RIG-TEST-FINDINGS.md F1).
+  final String answersTo;
 
   @override
   final bool supportsWrites;
@@ -456,15 +466,18 @@ final class OpcUaUpstreamLink implements UpstreamLink {
     if (mappingEntry is! KeyMappingEntry) return null;
     final node = mappingEntry.opcuaNode;
     if (node == null) return null;
-    // **The adapter checks its own alias.** 08-04's handoff, in one line: the
-    // router does not filter candidates by `server_alias`, it offers the key to
-    // every link in order and takes the first claim. A resolve that claims
-    // anything OPC-UA-shaped takes ST201's key on a two-PLC plant, and the
-    // router's ambiguity check does not catch it because the two links have
-    // different aliases. `_resolveM2400Key` (`state_man.dart:1774-1783`) and
-    // `_resolveModbusDeviceClient` (`:1787-1799`) both do this and this is why.
+    // **The adapter checks the alias it answers to.** 08-04's handoff, in one
+    // line: the router does not filter candidates by `server_alias`, it offers
+    // the key to every link in order and takes the first claim. A resolve that
+    // claims anything OPC-UA-shaped takes ST201's key on a two-PLC plant, and
+    // the router's ambiguity check does not catch it because the two links
+    // have different aliases. `_resolveM2400Key` (`state_man.dart:1774-1783`)
+    // and `_resolveModbusDeviceClient` (`:1787-1799`) both do this and this is
+    // why. Compared against [answersTo] and never [alias]: the live plant
+    // file's entries all carry `server_alias: null`, a value the *name* can
+    // never legally take (RIG-TEST-FINDINGS.md F1).
     if (StateManConfig.normalizeAlias(node.serverAlias) !=
-        StateManConfig.normalizeAlias(alias)) {
+        StateManConfig.normalizeAlias(answersTo)) {
       return null;
     }
     final (nodeId, arrayIndex) = node.toNodeId();

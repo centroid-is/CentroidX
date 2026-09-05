@@ -117,7 +117,8 @@ authoritative shape is `packages/tfc_relay_local/lib/src/gateway_config.dart`.
 | Field | What it is | Where to get it |
 | --- | --- | --- |
 | `links[].endpoint` | `opc.tcp://<host>:4840` per PLC | the `opcua[].endpoint` entries in the rig's `stateman.json` |
-| `links[].alias` | the name keymappings, health keys and status notifications use | the `opcua[].server_alias` in the same file — **use the same spelling**, or the keymappings will not route |
+| `links[].alias` | the link's *name*: health keys (`PIPE.upstream.<alias>.*`) and status notifications use it | pick something short and real (`ST101`, `RIG`) — it can never be null |
+| `links[].answers_to` | which keymapping `server_alias` this link serves | the `opcua[].server_alias` in the rig's `stateman.json`. **If it is `null` there — the single-server era's spelling, and what the live plant file has on every entry — you must write `"answers_to": null` here.** Omitting the field makes the link answer to its own `alias`, and every `server_alias: null` key reads `errorConfig` (q=770) on every panel, with the session connected and nothing in the log (RIG-TEST-FINDINGS.md F1) |
 | `links[].username` / `.password` | the OPC UA **user token** | `opcua[].username` / `.password` in the rig's `stateman.json` — see below |
 | `links[].certificate_path` / `.private_key_path` | the OPC UA **application certificate**, which is what selects an encrypted channel | `opcua[].ssl_cert` / `.ssl_key` in the same file, converted to DER — see below |
 | `key_mappings` | container path to the plant's key→node map | export it out of the database — see below |

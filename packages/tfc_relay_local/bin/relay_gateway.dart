@@ -125,6 +125,18 @@ Future<void> main(List<String> args) async {
         'served: ${gateway.refusedKeys.join(', ')}');
   }
 
+  // The same rule for the failure the rig actually shipped with
+  // (RIG-TEST-FINDINGS.md F2): a mapped key no link claims looks servable to
+  // every panel and answers errorConfig forever. The usual cause is an
+  // `answers_to` that does not match the file's `server_alias` — the live
+  // plant file says null on every OPC UA entry.
+  final unclaimed = gateway.plant.router.unclaimedKeys;
+  if (unclaimed.isNotEmpty) {
+    log.w('${unclaimed.length} mapped keys are claimed by no configured '
+        'link and will read errorConfig until the mapping or a link\'s '
+        'answers_to changes: ${unclaimed.join(', ')}');
+  }
+
   // SRV-08's status wiring is NOT here. It was, for exactly as long as it took
   // the end-to-end leg to notice that a gateway composed by anything but this
   // file announced nothing: it belongs to `buildGateway`, beside everything

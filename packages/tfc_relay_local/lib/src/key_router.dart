@@ -334,6 +334,25 @@ class KeyRouter {
   /// Rejected keys are **not** here. A refused mapping is not a mapping.
   Iterable<String> get keys => _mappings.nodes.keys;
 
+  /// Mapped keys no configured link claims — for the boot log.
+  ///
+  /// A key in this set is the worst kind of broken: it passed ingest, it
+  /// appears servable to every panel, and it will answer `errorConfig`
+  /// forever. The rig ran a whole shift with 14/14 subscribed keys in this
+  /// state and the only trace anywhere was q=770 on the wire
+  /// (RIG-TEST-FINDINGS.md F2). Named once, at boot, next to the reserved-
+  /// prefix offenders — not one line per panel that asks.
+  ///
+  /// Only [RouteRefusal.unmapped]: a disabled alias is an operator's
+  /// deliberate act, an ambiguous one already refuses loudly per key, and a
+  /// reserved name is already logged by `reservedKeyMappingNames`.
+  Set<String> get unclaimedKeys => <String>{
+        for (final key in keys)
+          if (route(key)
+              case RefusedRoute(reason: RouteRefusal.unmapped))
+            key,
+      };
+
   /// What the most recent ingest — including the one at construction —
   /// applied and refused.
   KeyMappingsIngestResult get lastIngest => _lastIngest;

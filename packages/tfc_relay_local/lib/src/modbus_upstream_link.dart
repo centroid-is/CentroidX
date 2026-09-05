@@ -101,16 +101,26 @@ abstract class DeviceClientUpstreamLink implements UpstreamLink {
   DeviceClientUpstreamLink({
     required this.alias,
     required this.client,
+    String? answersTo,
     EffectiveStatusSource? health,
     bool supportsWrites = true,
     bool supportsBrowse = false,
     this.staleAfter = const Duration(seconds: 10),
-  })  : _health = health,
+  })  : answersTo = answersTo ?? alias,
+        _health = health,
         _supportsWrites = supportsWrites,
         _supportsBrowse = supportsBrowse;
 
   @override
   final String alias;
+
+  /// The keymapping `server_alias` this link serves; [alias] when omitted.
+  ///
+  /// `''` is the unnamed server, compared through
+  /// `StateManConfig.normalizeAlias` in each subclass's [claim]. The name and
+  /// the answers-to are two facts (`key_router.dart:163-176`), and the rig
+  /// showed what conflating them costs (RIG-TEST-FINDINGS.md F1).
+  final String answersTo;
 
   /// The wrapped client. Protected rather than private because a subclass's
   /// [performWrite] is the only thing that touches it.
@@ -666,6 +676,7 @@ class ModbusUpstreamLink extends DeviceClientUpstreamLink {
   ModbusUpstreamLink({
     required super.alias,
     required super.client,
+    super.answersTo,
     super.health,
     super.supportsWrites,
     super.staleAfter,
@@ -681,11 +692,13 @@ class ModbusUpstreamLink extends DeviceClientUpstreamLink {
   factory ModbusUpstreamLink.wrapping(
     ModbusDeviceClientAdapter adapter, {
     required String alias,
+    String? answersTo,
     bool supportsWrites = true,
     Duration staleAfter = const Duration(seconds: 10),
   }) =>
       ModbusUpstreamLink(
         alias: alias,
+        answersTo: answersTo,
         client: adapter,
         health: _AdapterHealth(adapter),
         supportsWrites: supportsWrites,
@@ -721,8 +734,10 @@ class ModbusUpstreamLink extends DeviceClientUpstreamLink {
     // anything Modbus-shaped takes ST201's key on a two-PLC plant, and the
     // router's ambiguity check does not catch it because the two links have
     // different aliases.
+    // Against [answersTo], not [alias]: the live plant file spells the
+    // unnamed server, which the name can never be (RIG-TEST-FINDINGS.md F1).
     if (StateManConfig.normalizeAlias(node.serverAlias) !=
-        StateManConfig.normalizeAlias(alias)) {
+        StateManConfig.normalizeAlias(answersTo)) {
       return null;
     }
     _pollGroups[key] = node.pollGroup;

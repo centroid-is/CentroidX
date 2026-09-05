@@ -98,6 +98,7 @@ final class UpstreamLinkConfig {
     required this.alias,
     required this.protocol,
     required this.endpoint,
+    String? answersTo,
     this.username,
     this.password,
     this.certificatePath,
@@ -107,7 +108,7 @@ final class UpstreamLinkConfig {
     this.buildStampNamespace = 4,
     this.useIsolate = true,
     this.unitId = 1,
-  }) {
+  }) : answersTo = answersTo ?? alias {
     if (alias.trim().isEmpty) {
       throw ArgumentError.value(alias, 'alias',
           'a link with no alias cannot be addressed by a keymapping entry, '
@@ -137,6 +138,12 @@ final class UpstreamLinkConfig {
       alias: json['alias'] as String? ?? '',
       protocol: protocol,
       endpoint: json['endpoint'] as String? ?? '',
+      // `containsKey` and not `json['answers_to']`: an absent key means "my
+      // own name" while a present null means the unnamed server, and reading
+      // the value alone erases exactly the distinction the field exists for.
+      answersTo: json.containsKey('answers_to')
+          ? (json['answers_to'] as String? ?? '')
+          : null,
       username: json['username'] as String?,
       password: json['password'] as String?,
       certificatePath: json['certificate_path'] as String?,
@@ -155,9 +162,25 @@ final class UpstreamLinkConfig {
     );
   }
 
-  /// The name this link answers to in keymappings, health keys and status
-  /// notifications. Unique across the gateway — see [GatewayConfig].
+  /// The link's *name*: what owns the `PIPE.upstream.<alias>.*` health keys
+  /// and what a status notification reports. Unique across the gateway — see
+  /// [GatewayConfig].
   final String alias;
+
+  /// The keymapping `server_alias` this link serves. **Two different facts
+  /// live on one link** (`key_router.dart:163-176`): [alias] must be a real,
+  /// dot-free string because health keys are minted from it, while the live
+  /// plant file carries `"server_alias": null` on every OPC UA entry — a
+  /// value the alias can never legally take. The rig proved what conflating
+  /// them costs (RIG-TEST-FINDINGS.md F1): every key `errorConfig`, silently,
+  /// with the session connected.
+  ///
+  /// Wire spelling: absent → this link answers to its own [alias] (the
+  /// integrator named the servers, nothing changes); `null` or `""` → the
+  /// unnamed server (`StateManConfig.normalizeAlias` already buckets those
+  /// two); any other string → that alias. Stored resolved, so `''` here *is*
+  /// the unnamed server and never means "unset".
+  final String answersTo;
 
   /// Which adapter this link is built from.
   final UpstreamProtocol protocol;
@@ -223,6 +246,7 @@ final class UpstreamLinkConfig {
         'alias': alias,
         'protocol': _wireNameOf(protocol),
         'endpoint': endpoint,
+        if (answersTo != alias) 'answers_to': answersTo,
         if (username != null) 'username': username,
         if (password != null && includeSecrets) 'password': password,
         if (certificatePath != null) 'certificate_path': certificatePath,
@@ -579,8 +603,19 @@ Future<Gateway> buildGateway(
   // *refuses* a reserved name, per key, and it hands back the refusals. Passing
   // the mappings to the constructor would put them in force without anything
   // ever naming what it dropped, which is HLTH-03 happening silently.
-  final router =
-      KeyRouter.overLinks(links, mappings: KeyMappings(nodes: {}));
+  //
+  // Bindings carry each link's `answers_to`, not its name, so the router's
+  // disabled/ambiguous bookkeeping judges the same alias the adapters claim
+  // by (RIG-TEST-FINDINGS.md F1). `config.links` and `links` are index-
+  // aligned — the loop above appends one link per config, in order.
+  final router = KeyRouter(
+    links: [
+      for (var i = 0; i < links.length; i++)
+        UpstreamLinkBinding(links[i],
+            serverAlias: config.links[i].answersTo),
+    ],
+    mappings: KeyMappings(nodes: {}),
+  );
   router.applyKeyMappings(mappings);
   final plant = LocalStateMan(
     links: links,
@@ -667,6 +702,7 @@ Future<UpstreamLink> buildUpstreamLink(
     case UpstreamProtocol.opcUa:
       return OpcUaUpstreamLink(
         alias: config.alias,
+        answersTo: config.answersTo,
         endpoint: config.endpoint,
         useIsolate: config.useIsolate,
         buildStampNode: config.buildStampKey == null
@@ -693,7 +729,11 @@ Future<UpstreamLink> buildUpstreamLink(
       final clients = buildModbusDeviceClients(
         <ModbusConfig>[
           ModbusConfig(host: host, port: port, unitId: config.unitId)
-            ..serverAlias = config.alias
+            // The answers-to, not the name: `buildModbusDeviceClients`
+            // selects mapping entries by this field
+            // (`modbus_device_client.dart:1469-1476`), so the name here
+            // reproduces F1 for Modbus — a client built over zero specs.
+            ..serverAlias = StateManConfig.normalizeAlias(config.answersTo)
             ..umasEnabled = config.protocol == UpstreamProtocol.umas,
         ],
         mappings,
@@ -707,11 +747,13 @@ Future<UpstreamLink> buildUpstreamLink(
       return ModbusUpstreamLink.wrapping(
         clients.single as ModbusDeviceClientAdapter,
         alias: config.alias,
+        answersTo: config.answersTo,
       );
     case UpstreamProtocol.m2400:
       final (host, port) = config.hostPort;
       return M2400UpstreamLink(
         alias: config.alias,
+        answersTo: config.answersTo,
         client: M2400DeviceClientAdapter(
           // The weighers are the plant's Latin-1 devices (08-RESEARCH §H.3),
           // so this is the wire that makes `"string_encoding": "latin1"` mean
@@ -721,7 +763,7 @@ Future<UpstreamLink> buildUpstreamLink(
           // module exists to replace.
           M2400ClientWrapper(host, port,
               decodeBytes: latin1DecoderFor(config.stringEncoding)),
-          serverAlias: config.alias,
+          serverAlias: StateManConfig.normalizeAlias(config.answersTo),
         ),
       );
   }
