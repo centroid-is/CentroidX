@@ -61,9 +61,13 @@ class _FakeUpstream implements PipeUpstream {
     if (error != null) throw error;
   }
 
-  Future<void> dispose() async {
+  /// Deliberately does NOT await `close()`. A single-subscription controller
+  /// that never had a listener — or whose listener was cancelled — never
+  /// completes its close future, and an arm where a key was unsubscribed before
+  /// its stream attached is exactly that case.
+  void dispose() {
     for (final c in controllers.values) {
-      if (!c.isClosed) await c.close();
+      if (!c.isClosed) c.close();
     }
   }
 }
@@ -103,9 +107,9 @@ void main() {
     );
   });
 
-  tearDown(() async {
+  tearDown(() {
     endpoint.dispose();
-    await upstream.dispose();
+    upstream.dispose();
     port.close();
   });
 
@@ -200,13 +204,24 @@ void main() {
     });
 
     test('unsubscribe drops the key pending in the buffer', () async {
-      endpoint.handleControl(const PipeSubscribe('k'));
-      await ticks(1);
+      // A period long enough that the whole subscribe → sample → unsubscribe
+      // sequence provably fits inside ONE window. At the suite's 10 ms period
+      // an overdue tick can fire between the sample's delivery microtask and
+      // the next timer, which would make this arm a coin toss rather than a
+      // statement about the buffer.
+      final slow = PipeWorkerEndpoint(
+        stateMan: upstream,
+        toMain: port.sendPort,
+        drainInterval: const Duration(milliseconds: 300),
+      );
+      addTearDown(slow.dispose);
+
+      slow.handleControl(const PipeSubscribe('k'));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
       upstream.controllerFor('k').add(_sample(7));
-      // No tick in between: the value is still pending in the buffer.
       await Future<void>.delayed(Duration.zero);
-      endpoint.handleControl(const PipeUnsubscribe('k'));
-      await ticks(3);
+      slow.handleControl(const PipeUnsubscribe('k'));
+      await Future<void>.delayed(const Duration(milliseconds: 400));
 
       final values = frames().expand((f) => f.values.entries).toList();
       expect(values.where((e) => e.key == 'k'), isEmpty,
