@@ -330,21 +330,81 @@ class PipeWorkerEndpoint {
       arrivedAt: _now(),
       onSourceTimeFallback: () => _sourceTimeFallbacks++,
     );
+    // The key answered. Whatever permanent fault was last reported for it is
+    // over, so the NEXT occurrence is a transition again and must speak.
+    if (!value.quality.isError) _permanentError.remove(key);
     _buffer.putValue(key, value);
   }
 
   void _onStreamError(String key, Object error) {
-    _logger.e('pipe endpoint: stream error for "$key": $error');
+    _reportKeyFault(key, error, 'stream error');
   }
 
   void _onSubscribeFailed(String key, Object error) {
-    _logger.e('pipe endpoint: subscribe failed for "$key": $error');
+    // The subscribe never produced a stream, so there is nothing to cancel.
+    // The key stays in [_subscribed] — that is main's intent, and main is the
+    // only thing that retracts it.
+    _reportKeyFault(key, error, 'subscribe failed');
+  }
+
+  /// Puts one key fault on the priority lane, once per transition.
+  ///
+  /// The quality is read from the typed exception's `.statusCode` when there is
+  /// one — `StateMan`'s monitored-item streams deliver `UaStatusException`, so
+  /// the code is available rather than only a formatted sentence — and from the
+  /// text otherwise, which is the branch `useIsolate: true` forces because
+  /// `isolate.dart` marshals every error across its port as `e.toString()`.
+  ///
+  /// **Permanent bands are emitted on transition only** (OQ-6), mirroring
+  /// `AutoDisposingStream._loggedPermanentError`. `BadNodeIdUnknown` is the
+  /// server's final answer and `_monitorLoop` re-asks it on a ladder forever; a
+  /// per-retry event would bury every actionable fault behind one dead mapping.
+  /// Transient bands (`badCommFault`, `uncertainLastKnown`) are NOT suppressed —
+  /// they are news each time, because each one may be the one that recovers.
+  void _reportKeyFault(String key, Object error, String what) {
+    final quality = error is UaStatusException
+        ? qualityForOpcUaStatus(error.statusCode)
+        : qualityForOpcUaErrorText(error.toString());
+    if (quality.isError) {
+      if (_permanentError[key] == quality) return;
+      _permanentError[key] = quality;
+    }
+    _logger.e('pipe endpoint: $what for "$key": $error');
+    _emitPriority(PipeKeyError(key, quality, _describe(error)));
   }
 
   void _onDone(String key) {
     _streams.remove(key);
+    // Cancel the pending telemetry FIRST: a reading for a key that no longer
+    // exists is worse than no reading, because it is indistinguishable from a
+    // live one. `remove` never touches the priority lane, so the announcement
+    // below cannot be lost to it.
     _buffer.remove(key);
+    _permanentError.remove(key);
     _logger.w('pipe endpoint: "$key" was retired by the upstream');
+    _emitPriority(PipeKeyRetired(key));
+  }
+
+  /// How much of an upstream error crosses the port.
+  ///
+  /// Bounded because a key fault becomes a plant-visible string and an
+  /// unbounded one is an unbounded thing to fan out. It is NOT redacted here:
+  /// main is the same process and already holds the endpoint configuration, and
+  /// the redaction boundary is the relay's own write/lastError surface.
+  static String _describe(Object error) {
+    final text = error.toString();
+    return text.length <= 200 ? text : '${text.substring(0, 200)}…';
+  }
+
+  /// Appends [event] to the un-conflated priority lane.
+  ///
+  /// When no tick is armed the frame goes out immediately. An idle worker runs
+  /// no timer by design, and an answer that waits for a tick that will never
+  /// come is silence — which on the write path is the difference between
+  /// "rejected" and "the operator was told nothing".
+  void _emitPriority(PipeEvent event) {
+    _buffer.putPriority(event);
+    if (_tick == null) _flush();
   }
 
   // ------------------------------------------------------------- the tick

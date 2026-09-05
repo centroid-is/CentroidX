@@ -84,10 +84,17 @@ void main() {
   late List<Object?> received;
   late PipeWorkerEndpoint endpoint;
 
-  /// Waits out [n] drain periods plus a margin, so a tick that was going to
-  /// fire has fired and its message has been delivered.
-  Future<void> ticks([int n = 2]) =>
-      Future<void>.delayed(_interval * n + const Duration(milliseconds: 8));
+  /// Waits out [n] drain periods plus a margin, then drains the event queue.
+  ///
+  /// The second half is not optional. `SendPort.send` inside one isolate still
+  /// goes through the message queue, so a frame the tick has already handed
+  /// over is not yet in [received] when a plain `Future.delayed` resumes — and
+  /// under load (the logger's PrettyPrinter is the usual culprit) that race
+  /// loses about one run in three.
+  Future<void> ticks([int n = 2]) async {
+    await Future<void>.delayed(_interval * n + const Duration(milliseconds: 8));
+    await pumpEventQueue(times: 10);
+  }
 
   /// Every frame main received, in order.
   List<PipeFrame> frames() => received.whereType<PipeFrame>().toList();
@@ -222,6 +229,7 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       slow.handleControl(const PipeUnsubscribe('k'));
       await Future<void>.delayed(const Duration(milliseconds: 400));
+      await pumpEventQueue(times: 10);
 
       final values = frames().expand((f) => f.values.entries).toList();
       expect(values.where((e) => e.key == 'k'), isEmpty,
@@ -403,6 +411,7 @@ void main() {
       endpoint.handleControl(
           PipeWriteRequest(11, 'k', relay.DynamicValue(value: 1)));
       await Future<void>.delayed(const Duration(milliseconds: 120));
+      await pumpEventQueue(times: 10);
 
       final outcome = priority().whereType<PipeWriteOutcome>().single;
       expect(outcome.id, 11);
