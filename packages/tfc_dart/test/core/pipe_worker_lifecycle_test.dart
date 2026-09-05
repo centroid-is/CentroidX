@@ -12,8 +12,37 @@ library;
 import 'dart:async';
 import 'dart:isolate';
 
+import 'package:logger/logger.dart';
+import 'package:postgres/postgres.dart' show Endpoint;
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/data_acquisition_isolate.dart';
+import 'package:tfc_dart/core/database.dart';
+import 'package:tfc_dart/core/state_man.dart';
+
+import '../support/free_port.dart';
+
+/// A [Database] that answers everything and connects to nothing.
+///
+/// Same shape as the one in `acquisition_isolate_fatal_test.dart`, which is
+/// where this pattern was established: the acquisition stack takes a
+/// [Database] object, not a connection, so it can be stood up with one that
+/// has no server behind it.
+class NoopDatabase implements Database {
+  @override
+  Future<void> registerRetentionPolicy(String t, RetentionPolicy r) async {}
+
+  @override
+  Future<void> insertTimeseriesData(String t, DateTime time, dynamic v) async {}
+
+  @override
+  Future<List<TimeseriesData<dynamic>>> queryTimeseriesData(
+          String tableName, DateTime to,
+          {String? orderBy = 'time ASC', DateTime? from}) async =>
+      [];
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
 
 /// How many data messages the chatty worker sends before it exits.
 ///
@@ -155,6 +184,93 @@ void main() {
               'tell a kill from a crash and resurrects the worker main just '
               'shut down, so the process never exits');
       expect(worker.isolate, isNull);
+    });
+  });
+
+  group('handshake deadline', () {
+    test('a worker that never announces itself is killed, not waited on',
+        () async {
+      final worker = await spawnWorkerForTest(
+        _config(),
+        'wedged',
+        entryPoint: wedgedEntry,
+        readyDeadline: const Duration(milliseconds: 300),
+      ).timeout(const Duration(seconds: 10),
+          onTimeout: () => fail('spawn parked main on a handshake that never '
+              'comes — the deadline is the whole point'));
+
+      addTearDown(worker.kill);
+
+      expect(worker.handshakeTimeouts, 1);
+      expect(worker.controlPort, isNull);
+
+      final seen = <Object?>[];
+      worker.messages.listen(seen.add);
+      expect(seen, isEmpty, reason: 'the stream is buffered until listened to');
+
+      await waitUntil(() => seen.contains(null), const Duration(seconds: 5),
+          reason: 'a wedged worker must be killed, not left running beside '
+              'its replacement — two live workers on one server is worse '
+              'than none');
+      expect(seen, contains('alive-but-never-ready'),
+          reason: 'it really was alive; the deadline is what ended it');
+    });
+
+    test('the real worker announces itself before it stands anything up',
+        () async {
+      // The production entry point, pointed at a database that is not there.
+      // The handshake must still arrive: it means "this worker exists and can
+      // be talked to", not "acquisition is running". If it were sent after
+      // Database.connectWithRetry, a Postgres outage would look identical to
+      // a wedged spawn and the supervisor would kill a worker that was merely
+      // waiting — turning a recoverable outage into a crash loop.
+      final worker = await spawnWorkerForTest(
+        DataAcquisitionIsolateConfig(
+          dbConfigJson: DatabaseConfig(
+            postgres: Endpoint(
+                host: '127.0.0.1', port: await freePort(), database: 'nowhere'),
+          ).toJson(),
+          keyMappingsJson: KeyMappings(nodes: {}).toJson(),
+        ),
+        'real-entry',
+        entryPoint: dataAcquisitionIsolateEntry,
+      );
+      addTearDown(worker.kill);
+
+      await worker.ready.timeout(const Duration(seconds: 20));
+      expect(worker.controlPort, isNotNull);
+      expect(worker.handshakeTimeouts, 0);
+    });
+  });
+
+  group('database injection', () {
+    test('the acquisition stack stands up without a Postgres server',
+        () async {
+      // A port nothing is listening on: if the stack still called
+      // Database.connectWithRetry, this would retry until the test timed out.
+      final deadPort = await freePort();
+      final stack = await buildAcquisitionStack(
+        DataAcquisitionIsolateConfig(
+          dbConfigJson: DatabaseConfig(
+            postgres: Endpoint(
+                host: '127.0.0.1', port: deadPort, database: 'nowhere'),
+          ).toJson(),
+          keyMappingsJson: KeyMappings(nodes: {}).toJson(),
+        ),
+        Logger(),
+        database: NoopDatabase(),
+      ).timeout(const Duration(seconds: 20),
+          onTimeout: () => fail('the injected Database was ignored and the '
+              'stack dialled Postgres anyway'));
+
+      addTearDown(() => stack.stateMan
+          .close()
+          .timeout(const Duration(seconds: 5), onTimeout: () {}));
+
+      expect(stack.database, isA<NoopDatabase>());
+      expect(stack.collector, isNotNull,
+          reason: 'the collector is still built — injection changes where the '
+              'Database comes from, not what the worker assembles');
     });
   });
 }
