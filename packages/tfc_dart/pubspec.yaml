@@ -4,7 +4,10 @@ version: 1.0.0
 publish_to: none
 
 environment:
-  sdk: ^3.5.1
+  # Bumped from ^3.5.1 to match tfc_relay_protocol's floor (below): the protocol
+  # package requires ^3.6.0 (digit separators), and a dependency's floor is a
+  # floor on ours. The repo runs Dart 3.11.5.
+  sdk: ^3.6.0
 
 dependencies:
   # JSON serialization
@@ -47,6 +50,14 @@ dependencies:
   tfc_access:
     path: ../tfc_access
 
+  # The pure-Dart value vocabulary the acquisition pipe speaks. One-way edge:
+  # tfc_dart -> tfc_relay_protocol (the protocol package has ZERO runtime deps,
+  # so it cannot cycle). This is the pipe's boundary vocabulary: the C-coupled
+  # open62541 DynamicValue stops at the worker edge and everything crossing the
+  # port is a protocol type.
+  tfc_relay_protocol:
+    path: ../tfc_relay_protocol
+
   # Utilities
   collection: ^1.18.0
   path: ^1.9.1
@@ -54,6 +65,15 @@ dependencies:
   basic_utils: ^5.7.0
 
 dependency_overrides:
+  open62541:
+    git:
+      url: https://github.com/centroid-is/open62541_dart.git
+      # `monitor-quality-sourcetime`: 1.5.7+3 (main) plus DynamicValue
+      # .statusCode / .sourceTimestamp and opt-in `deliverBadStatus` —
+      # PIPE-11's source timestamps. Keep in step with the root
+      # pubspec.yaml; every open62541 override in this repo carries this
+      # same SHA.
+      ref: 0251aa099d1779c2ab0c4f408123d63c8b6c0e12
   postgres:
     git:
       url: https://github.com/centroid-is/postgresql-dart.git
