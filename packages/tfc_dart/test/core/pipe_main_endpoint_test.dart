@@ -155,6 +155,18 @@ void main() {
       expect(endpoint.workerOf('nobody.owns.me'), isNull);
     });
 
+    test('a key a later worker also claims stays with its first owner', () {
+      final gamma = _FakeLink('gamma');
+      addTearDown(gamma.dispose);
+      // The spawn already happened with the first partition; re-pointing the
+      // key here would mean a write could reach a worker that was never given
+      // the mapping for it.
+      final index = endpoint.addWorker(gamma, const ['a.one', 'g.one']);
+
+      expect(endpoint.workerOf('a.one'), isNot(index));
+      expect(endpoint.workerOf('g.one'), index);
+    });
+
     test('a key no worker owns is refused without touching any worker',
         () async {
       final result = await endpoint.write('nobody.owns.me', _good(1));
