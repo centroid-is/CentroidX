@@ -49,6 +49,30 @@ final class _PipeError {
   const _PipeError(this.key, this.detail);
 }
 
+/// **The sabotage stub.** A buffer that does the obvious wrong thing: it
+/// appends every notification instead of keeping latest-per-key — one message
+/// per notification, which is exactly `data_acquisition_isolate.dart`'s
+/// pre-pipe behaviour and exactly the shape that measured 24 s of staleness.
+///
+/// It lives in the test file and must never appear in `lib/`. Its whole job is
+/// to make the conflation claim falsifiable: the real buffer and this one are
+/// fed the identical burst, and the arm asserts their message counts
+/// **disagree**. If a future refactor quietly drops the conflating map, the two
+/// arms converge and this test fails — which is the only way "conflation is
+/// load-bearing" is a measurement rather than a hope.
+final class _NonConflatingSendBuffer {
+  final _messages = <(String, relay.DynamicValue)>[];
+
+  void putValue(String key, relay.DynamicValue value) =>
+      _messages.add((key, value));
+
+  List<(String, relay.DynamicValue)> drain() {
+    final out = List.of(_messages);
+    _messages.clear();
+    return out;
+  }
+}
+
 void main() {
   group('PipeSendBuffer — conflation (PIPE-11 criterion 1)', () {
     test('a 200-notification burst for one key drains to exactly one value, '
@@ -229,6 +253,59 @@ void main() {
       expect(frame.values, isEmpty);
       expect(frame.priority, hasLength(1),
           reason: 'silence about a retired key is not acceptable');
+    });
+  });
+
+  // The mandatory criterion-1 disagreeing arm. Two buffers, one burst; if they
+  // agree, conflation has stopped being load-bearing and the claim in
+  // PipeSendBuffer's library doc is no longer true.
+  group('sabotage — conflation must be load-bearing, not incidental', () {
+    test('the same 200-notification burst: real drains 1, the non-conflating '
+        'stub drains 200, and the counts must disagree', () {
+      final real = PipeSendBuffer();
+      final sabotage = _NonConflatingSendBuffer();
+
+      for (var i = 0; i < 200; i++) {
+        final sample = _sample(i);
+        real.putValue('a', sample);
+        sabotage.putValue('a', sample);
+      }
+
+      final realCount = real.drain().values.length;
+      final sabotageCount = sabotage.drain().length;
+
+      expect(realCount, 1,
+          reason: 'one message per key per tick, whatever the plant does');
+      expect(sabotageCount, 200,
+          reason: 'the stub really is non-conflating — if this ever reads 1 '
+              'the stub is broken and the arm proves nothing');
+      expect(realCount, isNot(equals(sabotageCount)),
+          reason: 'THE arm: swapping the real buffer for a non-conflating one '
+              'must make the drained message count explode. Convergence here '
+              'means the conflating map was removed or defeated.');
+    });
+
+    test('the gap widens with the burst, it is not a fixed offset', () {
+      final real = PipeSendBuffer();
+      final sabotage = _NonConflatingSendBuffer();
+
+      // Three keys, 200 notifications each: the real buffer is bounded by the
+      // KEY count (3), the stub by the NOTIFICATION count (600). That is the
+      // difference between a bound and a backlog.
+      for (var i = 0; i < 200; i++) {
+        for (final key in ['a', 'b', 'c']) {
+          final sample = _sample(i);
+          real.putValue(key, sample);
+          sabotage.putValue(key, sample);
+        }
+      }
+
+      final realCount = real.drain().values.length;
+      final sabotageCount = sabotage.drain().length;
+
+      expect(realCount, 3, reason: 'bounded by subscribed keys');
+      expect(sabotageCount, 600, reason: 'bounded by nothing');
+      expect(realCount, isNot(equals(sabotageCount)));
     });
   });
 }
