@@ -154,6 +154,21 @@ void main() {
       expect(v.sourceTime, stamped);
     });
 
+    test('a sample carries the node data type main needs to write it back',
+        () async {
+      endpoint.handleControl(const PipeSubscribe('k'));
+      await ticks(1);
+      upstream.controllerFor('k').add(_sample(42)
+        ..typeId = NodeId.fromNumeric(0, Namespace0Id.int16.value));
+      await ticks(2);
+
+      final values = frames().expand((f) => f.values.entries).toList();
+      // The write payload's ONLY honest source of an integer width. Without
+      // it main can offer the worker nothing but the Dart runtime type, which
+      // makes every Int16 setpoint an Int64 guess and a Bad_TypeMismatch.
+      expect(values.single.value.sourceTypeId, 'ns=0;i=4');
+    });
+
     test('100 notifications between two ticks conflate to one value', () async {
       endpoint.handleControl(const PipeSubscribe('k'));
       await ticks(1);
