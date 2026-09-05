@@ -132,6 +132,17 @@ String _bodyOf(String source, String signature) {
   return '';
 }
 
+/// The whole statement beginning at [anchor], up to its terminating `;`.
+///
+/// Empty when [anchor] is absent — which reads as "the thing is not there" in
+/// every arm that uses it, and is the answer those arms want.
+String _statementAt(String source, String anchor) {
+  final start = source.indexOf(anchor);
+  if (start < 0) return '';
+  final end = source.indexOf(';', start);
+  return end < 0 ? source.substring(start) : source.substring(start, end + 1);
+}
+
 void main() {
   late Map<String, String> code;
 
@@ -172,11 +183,9 @@ void main() {
 
   test('one shutdown covers SIGTERM and the config-watch restart', () {
     final main = code['bin/main.dart']!;
-    final sigterm = main
-        .split('\n')
-        .where((l) => l.contains('sigterm'))
-        .join(' ');
-    expect(sigterm, contains('shutdown('),
+    // The whole statement, not the line: the handler is a wrapped chain, and a
+    // line-at-a-time scan would report the absence of its own last line.
+    expect(_statementAt(main, 'ProcessSignal.sigterm'), contains('shutdown('),
         reason: 'SIGTERM must not exit(0) past the workers');
 
     // R-4: the config-watch restart is a shutdown too. It fires on every

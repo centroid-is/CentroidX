@@ -9,14 +9,45 @@ import 'package:tfc_dart/core/alarm.dart';
 
 import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/log_config.dart';
+import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'data_acquisition_isolate.dart';
 
-void main() async {
-  // Exit cleanly on SIGTERM (Docker stop) even if stuck in a retry loop
-  ProcessSignal.sigterm.watch().listen((_) => exit(0));
+/// The one way this process stops (PIPE-13).
+///
+/// Both exit paths reach it: the SIGTERM handler below and the config-watch
+/// restart. Two of them existed and only one used to be thought about, which is
+/// how the multi-second stall would have come back on the most common restart
+/// in the plant — an operator saving a key mapping — rather than on the rare
+/// one.
+///
+/// It kills every acquisition worker with `Isolate.immediate` and then exits.
+/// **It awaits nothing, and it must never learn to.** `StateMan.close()` awaits
+/// an OPC UA `disconnect()` and `delete()`; that await has been measured at
+/// 5.76 s against a server that stopped answering, and a container that takes
+/// 5.76 s to stop is a container Docker SIGKILLs in the middle of whatever it
+/// was doing. `Never` is the signature saying so: there is no future here for a
+/// caller to wait on. `test/core/pipe_shutdown_structure_test.dart` scans this
+/// file and fails if anything on this path grows an await.
+Never _shutdown(PipeMainEndpoint pipe, Logger logger, String reason) {
+  logger.w('Shutting down ($reason): killing acquisition workers');
+  pipe.shutdown();
+  exit(0);
+}
 
+void main() async {
   initLogConfig();
   final logger = Logger();
+
+  // Main's end of the acquisition pipe: the value cache, the write router and
+  // the handles PIPE-13 kills. Built here, before anything that can fail or
+  // block, so the signal handler on the next line already has something to
+  // kill — the workers register themselves into it as they are spawned.
+  final pipe = PipeMainEndpoint();
+
+  // Exit cleanly on SIGTERM (Docker stop) even if stuck in a retry loop
+  ProcessSignal.sigterm
+      .watch()
+      .listen((_) => _shutdown(pipe, logger, 'SIGTERM'));
 
   final dbConfig = await DatabaseConfig.fromEnv();
   final db = await Database.connectWithRetry(dbConfig);
@@ -87,11 +118,15 @@ void main() async {
     logger.i(
         'Spawning isolate for server ${server.serverAlias} ${server.endpoint} with ${filtered.nodes.length} keys (${collectedKeys.length} collected):\n${collectedKeys.map((k) => '  - $k').join('\n')}');
 
-    await spawnDataAcquisitionIsolate(
+    // The handle, not a discarded future: it is what the pipe writes through
+    // and what shutdown kills. The keys it is registered with are this exact
+    // partition, so the router cannot disagree with the spawn.
+    final worker = await spawnDataAcquisitionIsolate(
       server: server,
       dbConfig: dbConfig,
       keyMappings: filtered,
     );
+    pipe.addWorker(AcquisitionWorkerLink(worker), filtered.keys);
   }
 
   // Spawn one isolate for all M2400 servers
@@ -108,11 +143,12 @@ void main() async {
     logger.i(
         'Spawning M2400 isolate for [$aliases] with ${m2400KeyMappings.nodes.length} keys (${collectedKeys.length} collected):\n${collectedKeys.map((k) => '  - $k').join('\n')}');
 
-    await spawnM2400DataAcquisitionIsolate(
+    final worker = await spawnM2400DataAcquisitionIsolate(
       servers: jbtmServersToSpawn,
       dbConfig: dbConfig,
       keyMappings: m2400KeyMappings,
     );
+    pipe.addWorker(AcquisitionWorkerLink(worker), m2400KeyMappings.keys);
   }
 
   // Spawn one isolate for all Modbus servers
@@ -128,14 +164,16 @@ void main() async {
     logger.i(
         'Spawning Modbus isolate for [$aliases] with ${modbusKeyMappings.nodes.length} keys (${collectedKeys.length} collected):\n${collectedKeys.map((k) => '  - $k').join('\n')}');
 
-    await spawnModbusDataAcquisitionIsolate(
+    final worker = await spawnModbusDataAcquisitionIsolate(
       servers: modbusServersToSpawn,
       dbConfig: dbConfig,
       keyMappings: modbusKeyMappings,
     );
+    pipe.addWorker(AcquisitionWorkerLink(worker), modbusKeyMappings.keys);
   }
 
-  logger.i('All isolates spawned, main thread waiting...');
+  logger.i('All isolates spawned (${pipe.workerCount} in the pipe), '
+      'main thread waiting...');
 
   // Key mappings and alarm definitions were loaded above and then baked into
   // the spawned isolates; an HMI station editing them would otherwise need a
@@ -161,7 +199,14 @@ void main() async {
     logger.w('Configuration "$key" changed in database; restarting backend '
         'in ${restartQuiet.inSeconds}s to apply it');
     restartTimer?.cancel();
-    restartTimer = Timer(restartQuiet, () => exit(0));
+    // The same shutdown as SIGTERM, deliberately (R-4). This path fires on
+    // every operator config save, so an exit(0) that walked past the workers
+    // would leave their OPC UA sessions to be torn down by process exit on the
+    // most frequent restart this backend has.
+    restartTimer = Timer(
+      restartQuiet,
+      () => _shutdown(pipe, logger, 'configuration "$key" changed'),
+    );
   });
 
   // Keep main alive indefinitely
