@@ -2,27 +2,34 @@ import 'dart:async';
 import 'dart:isolate';
 
 import 'package:test/test.dart';
+import 'package:tfc_dart/core/data_acquisition_isolate.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import 'docker_compose.dart';
 
-// We can't directly import the isolate file because it has a main() conflict,
-// so we recreate the key structures here for testing
-class TestIsolateConfig {
-  final Map<String, dynamic> serverJson;
-  final Map<String, dynamic> dbConfigJson;
-  final Map<String, dynamic> keyMappingsJson;
-
-  TestIsolateConfig({
-    required this.serverJson,
-    required this.dbConfigJson,
-    required this.keyMappingsJson,
-  });
-}
+// The isolate body used to live in `bin/`, so this file carried a local
+// `TestIsolateConfig` copy and a comment claiming the real one could not be
+// imported ("it has a main() conflict"). The body now lives in
+// `lib/core/data_acquisition_isolate.dart` and is imported above; the copy is
+// gone. The retry/respawn harness below is still deliberately a local
+// re-implementation — it drives a DB-only entry point so it can stop the
+// database out from under it, which the real body (an OPC UA session and a
+// collector) cannot be asked to do here.
 
 void main() {
+  test('the real isolate config and entry point are importable', () {
+    // Guards the move: if the body ever slides back into `bin/`, this file
+    // stops compiling instead of silently re-growing a divergent copy.
+    final config = DataAcquisitionIsolateConfig(
+      dbConfigJson: const {},
+      keyMappingsJson: const {},
+    );
+    expect(config.enableStatsLogging, isFalse);
+    expect(dataAcquisitionIsolateEntry, isA<Function>());
+  });
+
   group('DataAcquisition Isolate Integration', () {
     setUpAll(() async {
       await stopDockerCompose();
