@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:isolate';
 
 import 'package:logger/logger.dart';
+import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/log_config.dart';
@@ -17,6 +18,25 @@ class DataAcquisitionIsolateConfig {
   final List<Map<String, dynamic>> modbusJson;
   final bool enableStatsLogging;
 
+  /// Where the worker sends everything main is meant to see.
+  ///
+  /// Injected by the supervisor, not by the caller that builds the config —
+  /// see [withToMain]. It is null only for a config that has not been handed
+  /// to [_spawnWithRespawn] yet. A [SendPort] is explicitly sendable across
+  /// `Isolate.spawn`, so it may live on the message object itself.
+  ///
+  /// This port carries three kinds of thing, distinguished by runtime type
+  /// because the vocabulary is process-internal and must stay this small:
+  ///   * the worker's own control [SendPort], sent once as its FIRST message —
+  ///     the ready handshake;
+  ///   * worker payloads (drained pipe frames, write outcomes);
+  ///   * `null`, which the VM itself sends when the isolate exits — the death
+  ///     sentinel. It is deliberately on this port and no other, so a single
+  ///     ReceivePort's FIFO guarantee orders the worker's last batch ahead of
+  ///     its own death notice. Two ports have no such guarantee, and main
+  ///     would mark keys bad while their final values were still in flight.
+  final SendPort? toMain;
+
   DataAcquisitionIsolateConfig({
     this.serverJson,
     required this.dbConfigJson,
@@ -24,7 +44,111 @@ class DataAcquisitionIsolateConfig {
     this.jbtmJson = const [],
     this.modbusJson = const [],
     this.enableStatsLogging = false,
+    this.toMain,
   });
+
+  /// The same config, addressed to [port].
+  ///
+  /// The supervisor owns one ReceivePort for the whole worker handle — it
+  /// outlives every respawn — so this is called once, not per attempt.
+  DataAcquisitionIsolateConfig withToMain(SendPort port) =>
+      DataAcquisitionIsolateConfig(
+        serverJson: serverJson,
+        dbConfigJson: dbConfigJson,
+        keyMappingsJson: keyMappingsJson,
+        jbtmJson: jbtmJson,
+        modbusJson: modbusJson,
+        enableStatsLogging: enableStatsLogging,
+        toMain: port,
+      );
+}
+
+/// A supervised acquisition worker, from main's side of the port.
+///
+/// The handle outlives every respawn; the [Isolate] inside it is replaced.
+/// That is what lets main hold one object per server — one subscription to
+/// [messages], one entry in the write router — across a crash loop.
+class DataAcquisitionWorker {
+  DataAcquisitionWorker._(this.name, this._fromWorker);
+
+  /// The supervisor's name for this worker (server alias, or the group name
+  /// for the M2400/Modbus workers). Log-facing only.
+  final String name;
+
+  final ReceivePort _fromWorker;
+
+  /// Single-subscription on purpose: there is exactly one main-side endpoint
+  /// per worker, and a broadcast controller would silently drop everything
+  /// sent between the handshake and main's `listen`.
+  final StreamController<Object?> _out = StreamController<Object?>();
+
+  final Completer<void> _firstReady = Completer<void>();
+
+  Isolate? _isolate;
+  SendPort? _controlPort;
+  bool _shuttingDown = false;
+  int _generation = 0;
+
+  /// Everything the worker sent, plus `null` each time one dies.
+  ///
+  /// Ordering is the ReceivePort's, unaltered: a generation's payloads, then
+  /// its `null`, then the next generation's control port.
+  Stream<Object?> get messages => _out.stream;
+
+  /// The live worker, or null before the first spawn and between a death and
+  /// its replacement. This is what PIPE-13 kills.
+  Isolate? get isolate => _isolate;
+
+  /// The current worker's control port, or null until it handshakes.
+  SendPort? get controlPort => _controlPort;
+
+  /// Completes when the FIRST generation is ready. Later generations announce
+  /// themselves by putting their control [SendPort] on [messages]; main
+  /// replays its subscription snapshot from there.
+  Future<void> get ready => _firstReady.future;
+
+  /// How many workers have completed the handshake. 1 after a clean start;
+  /// bumped by every respawn that gets far enough to talk.
+  int get generation => _generation;
+
+  /// True once [kill] has been called — the supervisor stops respawning.
+  bool get isShuttingDown => _shuttingDown;
+
+  /// Shut this worker down for good.
+  ///
+  /// `Isolate.immediate` runs no `finally` and flushes nothing: no shutdown
+  /// path may await `disconnect()`/`delete()`/`StateMan.close()`, because
+  /// those are what make an OPC UA teardown take seconds. Setting
+  /// [_shuttingDown] first is what keeps the exit listener from reading this
+  /// kill as a crash and respawning the worker we just stopped.
+  void kill() {
+    _shuttingDown = true;
+    _isolate?.kill(priority: Isolate.immediate);
+  }
+
+  void _onSpawned(Isolate isolate) {
+    _isolate = isolate;
+  }
+
+  void _onReady(SendPort control) {
+    _controlPort = control;
+    _generation++;
+    if (!_firstReady.isCompleted) _firstReady.complete();
+  }
+
+  void _onExit() {
+    _isolate = null;
+    _controlPort = null;
+  }
+
+  void _forward(Object? message) {
+    if (!_out.isClosed) _out.add(message);
+  }
+
+  void _dispose() {
+    _fromWorker.close();
+    if (!_out.isClosed) _out.close();
+  }
 }
 
 /// Isolate entry point for running DataAcquisition.
@@ -154,7 +278,7 @@ Future<void> _runDataAcquisition(
 
 /// Spawn a DataAcquisition isolate for a single OPC UA server.
 /// Automatically respawns the isolate on failure with exponential backoff.
-Future<void> spawnDataAcquisitionIsolate({
+Future<DataAcquisitionWorker> spawnDataAcquisitionIsolate({
   required OpcUAConfig server,
   required DatabaseConfig dbConfig,
   required KeyMappings keyMappings,
@@ -168,12 +292,12 @@ Future<void> spawnDataAcquisitionIsolate({
   );
 
   final serverName = server.serverAlias ?? server.endpoint;
-  await _spawnWithRespawn(config, serverName);
+  return _spawnWithRespawn(config, serverName);
 }
 
 /// Spawn a single DataAcquisition isolate for all M2400 servers.
 /// Automatically respawns on failure with exponential backoff.
-Future<void> spawnM2400DataAcquisitionIsolate({
+Future<DataAcquisitionWorker> spawnM2400DataAcquisitionIsolate({
   required List<M2400Config> servers,
   required DatabaseConfig dbConfig,
   required KeyMappings keyMappings,
@@ -187,12 +311,12 @@ Future<void> spawnM2400DataAcquisitionIsolate({
   );
 
   final aliases = servers.map((s) => s.serverAlias ?? s.host).join(', ');
-  await _spawnWithRespawn(config, 'jbtm[$aliases]');
+  return _spawnWithRespawn(config, 'jbtm[$aliases]');
 }
 
 /// Spawn a single DataAcquisition isolate for all Modbus servers.
 /// Automatically respawns on failure with exponential backoff.
-Future<void> spawnModbusDataAcquisitionIsolate({
+Future<DataAcquisitionWorker> spawnModbusDataAcquisitionIsolate({
   required List<ModbusConfig> servers,
   required DatabaseConfig dbConfig,
   required KeyMappings keyMappings,
@@ -206,11 +330,29 @@ Future<void> spawnModbusDataAcquisitionIsolate({
   );
 
   final aliases = servers.map((s) => s.serverAlias ?? s.host).join(', ');
-  await _spawnWithRespawn(config, 'modbus[$aliases]');
+  return _spawnWithRespawn(config, 'modbus[$aliases]');
 }
 
-Future<void> _spawnWithRespawn(
-    DataAcquisitionIsolateConfig config, String name) async {
+/// Test seam for [_spawnWithRespawn]: the real supervisor, driven with a
+/// stand-in worker body so its lifecycle can be exercised without a Postgres
+/// server, an OPC UA session or a Docker container.
+///
+/// [entryPoint] must be a top-level or static function — closures are not
+/// sendable (dartbug.com/36983).
+@visibleForTesting
+Future<DataAcquisitionWorker> spawnWorkerForTest(
+  DataAcquisitionIsolateConfig config,
+  String name, {
+  required void Function(DataAcquisitionIsolateConfig) entryPoint,
+}) =>
+    _spawnWithRespawn(config, name, entryPoint: entryPoint);
+
+Future<DataAcquisitionWorker> _spawnWithRespawn(
+  DataAcquisitionIsolateConfig config,
+  String name, {
+  void Function(DataAcquisitionIsolateConfig) entryPoint =
+      dataAcquisitionIsolateEntry,
+}) async {
   final logger = Logger();
   var restartDelay = const Duration(seconds: 2);
   const maxDelay = Duration(seconds: 30);
@@ -221,22 +363,67 @@ Future<void> _spawnWithRespawn(
   const healthyAfter = Duration(seconds: 60);
   Timer? healthyTimer;
 
+  // ONE port for the worker's data AND its onExit notice, for the whole life
+  // of the handle. See [DataAcquisitionIsolateConfig.toMain]: sharing the port
+  // is what makes `null` a death sentinel that is FIFO-ordered behind the
+  // worker's last batch. It is created here, not per attempt, so main keeps a
+  // single subscription across respawns.
+  final fromWorker = ReceivePort();
+  final handle = DataAcquisitionWorker._(name, fromWorker);
+  final spawnConfig = config.withToMain(fromWorker.sendPort);
+
+  // The current attempt's respawn trigger. The port listener below outlives
+  // any one attempt, so it cannot close over a single `scheduleRespawn`.
+  void Function(String reason)? respawnCurrentAttempt;
+
+  fromWorker.listen((message) {
+    if (message == null) {
+      // The VM's onExit notice. Announce the death before anything else acts
+      // on it — a shutting-down worker is still a worker that died, and main
+      // marks its keys bad either way.
+      handle._onExit();
+      handle._forward(null);
+      if (handle._shuttingDown) {
+        handle._dispose();
+        return;
+      }
+      logger.e('Isolate exited unexpectedly for $name');
+      respawnCurrentAttempt?.call('unexpected exit');
+      return;
+    }
+    if (message is SendPort) {
+      // The handshake: the worker's first message is its control port.
+      handle._onReady(message);
+    }
+    handle._forward(message);
+  });
+
   Future<void> spawn() async {
     final errorPort = ReceivePort();
-    final exitPort = ReceivePort();
+
+    // One attempt schedules at most one respawn. Both the error path and the
+    // exit path can fire for the same dying worker (and a handshake timeout
+    // kills the worker, producing an exit of its own), and each of those used
+    // to be a separate turn of the ladder.
+    var respawnScheduled = false;
 
     void scheduleRespawn(String reason) {
+      if (handle._shuttingDown) return;
+      if (respawnScheduled) return;
+      respawnScheduled = true;
       healthyTimer?.cancel();
       errorPort.close();
-      exitPort.close();
       logger.w(
           'Respawning isolate for $name in ${restartDelay.inSeconds}s ($reason)');
       Future.delayed(restartDelay, () {
+        if (handle._shuttingDown) return;
         restartDelay = restartDelay * 2;
         if (restartDelay > maxDelay) restartDelay = maxDelay;
         spawn();
       });
     }
+
+    respawnCurrentAttempt = scheduleRespawn;
 
     errorPort.listen((message) {
       final error = message[0];
@@ -245,18 +432,15 @@ Future<void> _spawnWithRespawn(
       scheduleRespawn('uncaught error');
     });
 
-    exitPort.listen((_) {
-      logger.e('Isolate exited unexpectedly for $name');
-      scheduleRespawn('unexpected exit');
-    });
-
     try {
-      await Isolate.spawn(
-        dataAcquisitionIsolateEntry,
-        config,
+      final isolate = await Isolate.spawn(
+        entryPoint,
+        spawnConfig,
         onError: errorPort.sendPort,
-        onExit: exitPort.sendPort,
+        // Same port as the worker's data — see the listener above.
+        onExit: fromWorker.sendPort,
       );
+      handle._onSpawned(isolate);
       // Reset the backoff only once the isolate has proven it can STAY up.
       //
       // This used to reset immediately here, on a successful spawn — but a
@@ -278,4 +462,5 @@ Future<void> _spawnWithRespawn(
   }
 
   await spawn();
+  return handle;
 }
