@@ -122,6 +122,8 @@ dependency_overrides:
   archive: 4.0.2 # TODO remove, 4.0.7 made clashes with pointycastle and or basic_utils
 
 dev_dependencies:
+  # StreamQueue, for the slow-upstream rig's command/reply channel.
+  async: ^2.11.0
   # Same analyzer-recommended lint set as the other relay packages.
   lints: ^4.0.0
   # The suite runner. Never a production dependency here for the same reason it
