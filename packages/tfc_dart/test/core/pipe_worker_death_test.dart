@@ -259,6 +259,11 @@ void main() {
 
     test('a write in flight across the death is unknown and never re-sent',
         () async {
+      // Subscribed first, deliberately: the replay path only runs for a worker
+      // with a non-empty snapshot, so without this the arm would be asserting
+      // that a code path which never executed sent no writes.
+      endpoint.subscribe('a.one');
+      await _settle();
       final pending = endpoint.write('a.one', _good(1));
       await _settle();
       expect(alpha.received.whereType<PipeWriteRequest>(), hasLength(1));
@@ -292,6 +297,8 @@ void main() {
 
     test('a write minted while the worker is dead is answered, not queued',
         () async {
+      endpoint.subscribe('a.one'); // so the respawn has a snapshot to replay
+      await _settle();
       alpha.die();
       await _settle();
 
