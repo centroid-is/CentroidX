@@ -46,6 +46,7 @@ library;
 import 'dart:async';
 
 import 'package:open62541/open62541.dart' as ua;
+import 'package:tfc_dart/core/opcua_value_translation.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
@@ -53,102 +54,13 @@ import 'epoch.dart';
 import 'upstream_link.dart';
 import 'write_translation.dart';
 
-// --------------------------------------------------------- the status codes
-//
-// Named constants rather than magic numbers, because the mapping below is the
-// document a future reader checks against Part 4 and a hex literal in a switch
-// is not checkable.
-
-/// `Good`. Also what an *absent* status means (Part 4), which is why a null
-/// code and a zero code answer the same quality — and why the adapter still
-/// keeps them apart on the way in: `0` is a positive claim, `null` is the
-/// absence of one.
-const int opcUaStatusCodeGood = 0x00000000;
-
-/// The `Uncertain` band's high bit.
-const int opcUaUncertainMask = 0x40000000;
-
-/// The `Bad` band's high bit.
-const int opcUaBadMask = 0x80000000;
-
-/// The tag is not in the address space at all.
-const int opcUaBadNodeIdUnknown = 0x80340000;
-
-/// The node id was syntactically refused.
-const int opcUaBadNodeIdInvalid = 0x80330000;
-
-/// The attribute does not exist on that node.
-const int opcUaBadAttributeIdInvalid = 0x80350000;
-
-/// The value does not fit the node's data type.
-const int opcUaBadTypeMismatch = 0x80740000;
-
-/// The link itself failed.
-const int opcUaBadCommunicationError = 0x80050000;
-
-/// The session or its channel is gone.
-const int opcUaBadSessionIdInvalid = 0x80250000;
-
-/// A read callback on the server threw. The fixture produces this one, and so
-/// does a real PLC with an unhappy data source.
-const int opcUaBadInternalError = 0x80020000;
-
-/// The server is serving the last value it had, and says so.
-const int opcUaUncertainLastUsableValue = 0x40900000;
-
-/// Maps an OPC UA `StatusCode` onto the relay quality an operator reads.
-///
-/// The table is 08-RESEARCH §C.4's, and the reason it is a table rather than a
-/// band check is that the two bad answers mean opposite things to the person
-/// standing next to the machine:
-///
-/// | StatusCode | Quality | Why |
-/// |---|---|---|
-/// | absent, or `Good` (0) | [Quality.good] | An absent status means Good (Part 4) |
-/// | `BadNodeIdUnknown` (0x80340000) | [Quality.errorConfig] | The tag left the address space. **Waiting will not fix it** |
-/// | `BadNodeIdInvalid` (0x80330000) | [Quality.errorConfig] | Same: the configuration names a node this server does not have |
-/// | `BadAttributeIdInvalid` (0x80350000) | [Quality.errorConfig] | Same, one level down |
-/// | `BadTypeMismatch` (0x80740000) | [Quality.errorTypeMismatch] | The mapping and the PLC disagree about the type |
-/// | any other `Bad` (0x8…) | [Quality.badCommFault] | Something went wrong on the link and waiting **might** fix it |
-/// | any `Uncertain` (0x4…) | [Quality.uncertainLastKnown] | A number, openly labelled as not vouched for |
-///
-/// The default for an unrecognised `Bad` is deliberately the *transient* one.
-/// Guessing `errorConfig` for a code this table does not name tells an operator
-/// to stop waiting for something that may be seconds away from coming back,
-/// and that is the more expensive of the two mistakes.
-Quality qualityForOpcUaStatus(int? code) {
-  if (code == null || code == opcUaStatusCodeGood) return Quality.good;
-  switch (code) {
-    case opcUaBadNodeIdUnknown:
-    case opcUaBadNodeIdInvalid:
-    case opcUaBadAttributeIdInvalid:
-      return Quality.errorConfig;
-    case opcUaBadTypeMismatch:
-      return Quality.errorTypeMismatch;
-  }
-  if (code & opcUaBadMask != 0) return Quality.badCommFault;
-  if (code & opcUaUncertainMask != 0) return Quality.uncertainLastKnown;
-  // Everything below 0x40000000 is the Good band with sub-codes.
-  return Quality.good;
-}
-
-/// The same table, read out of a formatted error string.
-///
-/// The binding's `read`/`connect` failures arrive as text — and under
-/// `useIsolate: true` they arrive as text *by construction*, because
-/// `isolate.dart` marshals every error across the port as `e.toString()`
-/// (08-01's finding, the same one that made the write path's numeric code a
-/// non-contained change). So the string branch is not a fallback for sloppy
-/// servers; it is the only branch the isolate path can take, and 08-06's
-/// `WriteErrorText` exists for the same reason on the write side.
-Quality qualityForOpcUaErrorText(String text) {
-  if (text.contains('BadNodeIdUnknown') || text.contains('BadNodeIdInvalid')) {
-    return Quality.errorConfig;
-  }
-  if (text.contains('BadAttributeIdInvalid')) return Quality.errorConfig;
-  if (text.contains('BadTypeMismatch')) return Quality.errorTypeMismatch;
-  return Quality.badCommFault;
-}
+// The OPC-UA → relay-protocol value converter — the status-code constants,
+// `qualityForOpcUaStatus`, `qualityForOpcUaErrorText` and `translateOpcUaSample`
+// — moved DOWN into tfc_dart in Phase 12 so tfc_dart (which cannot depend on
+// tfc_relay_local) holds the single source of truth. Re-exported here so this
+// package's own call sites and its barrel keep naming them unchanged. This is a
+// legal DOWNward import: tfc_relay_local depends on tfc_dart, never the reverse.
+export 'package:tfc_dart/core/opcua_value_translation.dart';
 
 /// `EffectiveDeviceStatus` → the five wire states.
 ///
@@ -173,74 +85,6 @@ UpstreamLinkState mapEffectiveStatus(EffectiveDeviceStatus status) {
     case EffectiveDeviceStatus.umasUnhealthy:
       return UpstreamLinkState.unhealthy;
   }
-}
-
-/// One monitored-item sample, translated.
-///
-/// Three facts from 08-01 shape this function and none of them are optional:
-///
-///  1. **Quality and source time come from the VALUE attribute only.** One
-///     logical key is four monitored items — `monitor()` asks for DataType,
-///     Value, Description and DisplayName — and only the VALUE attribute
-///     arrives with a source timestamp. The binding already restricts the
-///     recording to that attribute; this function is downstream of it and does
-///     not have to re-check, but a caller that starts feeding it other
-///     attributes' samples will clobber a Bad code with Good.
-///  2. **A Bad sample carries no payload.** `hasValue` is clear on it, so
-///     `statusCode != 0` arrives with a stale-or-null value. The value is
-///     therefore dropped rather than published under a bad badge: a number
-///     nobody measured, rendered greyed-out, is still a number nobody measured.
-///  3. **Arrival is not freshness.** A sample arriving says something reached
-///     the socket; [DynamicValue.quality] is what says whether it is worth
-///     reading.
-///
-/// When the server sends no source timestamp, [arrivedAt] is used and
-/// [onSourceTimeFallback] is called — a counter or a one-time log, **not
-/// silence** — and the quality is deliberately **not** degraded for it. A
-/// server that omits the timestamp is not a server sending a bad reading, and
-/// degrading it would make every such server permanently suspect (threat
-/// T-08-25's other half).
-DynamicValue translateOpcUaSample(
-  ua.DynamicValue sample, {
-  required DateTime arrivedAt,
-  required void Function() onSourceTimeFallback,
-}) {
-  final quality = qualityForOpcUaStatus(sample.statusCode);
-  final stamped = sample.sourceTimestamp;
-  if (stamped == null) onSourceTimeFallback();
-  final sourceTime = stamped ?? arrivedAt;
-  final bad = quality.isBad || quality.isError;
-  return DynamicValue(
-    value: bad ? null : _plainValueOf(sample),
-    quality: quality,
-    sourceTime: sourceTime,
-  );
-}
-
-/// The payload of a binding value, as something the relay's sanitizing
-/// constructor will accept.
-///
-/// Structs and arrays are handed over as-is and `DynamicValue`'s own
-/// normalisation does the rest — including the depth bound, whose refusal is
-/// the standing "one tag, never a poll cycle" constraint.
-Object? _plainValueOf(ua.DynamicValue sample) {
-  final raw = sample.value;
-  if (raw is ua.DynamicValue) return _plainValueOf(raw);
-  if (raw is List) {
-    return <Object?>[
-      for (final element in raw)
-        element is ua.DynamicValue ? _plainValueOf(element) : element,
-    ];
-  }
-  if (raw is Map) {
-    return <String, Object?>{
-      for (final entry in raw.entries)
-        '${entry.key}': entry.value is ua.DynamicValue
-            ? _plainValueOf(entry.value as ua.DynamicValue)
-            : entry.value,
-    };
-  }
-  return raw;
 }
 
 /// One configured OPC UA server, behind the gateway's uniform surface.
