@@ -336,11 +336,29 @@ class PipeWorkerEndpoint {
   }
 
   void _onSample(String key, DynamicValue sample) {
-    final value = translateOpcUaSample(
+    var value = translateOpcUaSample(
       sample,
       arrivedAt: _now(),
       onSourceTimeFallback: () => _sourceTimeFallbacks++,
     );
+    // Carry the node's own data type across with the reading.
+    //
+    // `translateOpcUaSample` is shared with `tfc_relay_local` and describes a
+    // READING — quality, payload, source time — so the type id is attached
+    // here, at the pipe's edge, where it is needed rather than in a converter
+    // two packages depend on. It is needed because the value edge runs both
+    // ways: [uaValueFromRelayValue] rebuilds a write payload on this side and
+    // `valueToVariant` refuses a scalar with no type id, so without this the
+    // only source left is the Dart runtime type — which cannot tell an `Int16`
+    // tag from an `Int64` one, and the cost of that guess on a setpoint is a
+    // `Bad_TypeMismatch` refusal. Main fills it onto the write payload from
+    // its cache (`PipeMainEndpoint._withTypeId`); this is where the cache gets
+    // it from. `NodeId.toString()` is exactly the textual form
+    // [nodeIdFromSourceTypeId] parses back.
+    final typeId = sample.typeId;
+    if (typeId != null) {
+      value = value.copyWith(sourceTypeId: typeId.toString());
+    }
     // The key answered. Whatever permanent fault was last reported for it is
     // over, so the NEXT occurrence is a transition again and must speak.
     if (!value.quality.isError) _permanentError.remove(key);
