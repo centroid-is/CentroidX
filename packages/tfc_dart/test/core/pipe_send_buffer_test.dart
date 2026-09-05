@@ -38,6 +38,17 @@ relay.DynamicValue _sample(int i) => relay.DynamicValue(
       sourceTime: _sourceTimeFor(i),
     );
 
+/// A stand-in for whatever the worker endpoint will actually put on the
+/// priority lane (a typed subscription error, a worker-death notice, a
+/// ready/epoch bump). The lane is `Object?` on purpose — these messages are
+/// process-internal, never a wire shape — so the buffer's contract is only
+/// that it hands them back verbatim and in order.
+final class _PipeError {
+  final String key;
+  final String detail;
+  const _PipeError(this.key, this.detail);
+}
+
 void main() {
   group('PipeSendBuffer — conflation (PIPE-11 criterion 1)', () {
     test('a 200-notification burst for one key drains to exactly one value, '
@@ -141,6 +152,83 @@ void main() {
       buffer.putValue('a', _sample(9));
 
       expect(buffer.drain().values['a']!.value, 9);
+    });
+  });
+
+  group('PipeSendBuffer — the priority lane is never conflated '
+      '(PIPE-11 criterion 2)', () {
+    test('value -> error -> value in one tick delivers all three', () {
+      final buffer = PipeSendBuffer();
+      const boom = _PipeError('k', 'Bad_CommunicationError');
+
+      buffer.putValue('k', _sample(1));
+      buffer.putPriority(boom);
+      buffer.putValue('k', _sample(2));
+
+      final frame = buffer.drain();
+
+      // The error is NOT absorbed by the latest-per-key map. If it were, the
+      // operator would see a fresh number with no sign the link had faulted in
+      // between — stale-but-plausible, by a different door.
+      expect(frame.priority, [same(boom)]);
+      // ...and the later value is not swallowed by the error either.
+      expect(frame.values['k']!.value, 2);
+      expect(frame.values['k']!.quality, _qualityFor(2));
+      // Three events put, three events delivered, in one frame.
+      expect(frame.priority.length + frame.values.length, 2,
+          reason: 'two conflated values collapse to one; the error stands '
+              'alone on its own lane');
+    });
+
+    test('priority events keep FIFO order across the drain', () {
+      final buffer = PipeSendBuffer();
+      final events = [
+        const _PipeError('k', 'first'),
+        const _PipeError('k', 'second'),
+        const _PipeError('j', 'third'),
+      ];
+      for (final e in events) {
+        buffer.putPriority(e);
+      }
+      // Telemetry interleaved between them must not reorder the lane.
+      buffer.putValue('k', _sample(5));
+
+      final frame = buffer.drain();
+      expect(frame.priority.map((e) => (e as _PipeError).detail),
+          ['first', 'second', 'third']);
+    });
+
+    test('a repeated error for one key is never collapsed', () {
+      final buffer = PipeSendBuffer();
+      for (var i = 0; i < 5; i++) {
+        buffer.putPriority(_PipeError('k', 'retry $i'));
+      }
+      expect(buffer.drain().priority, hasLength(5),
+          reason: 'the priority lane has no last-wins rule at all');
+    });
+
+    test('a priority event alone makes the frame non-empty and creates no '
+        'phantom value entry', () {
+      final buffer = PipeSendBuffer();
+      buffer.putPriority(const _PipeError('k', 'worker died'));
+
+      final frame = buffer.drain();
+      expect(frame.isEmpty, isFalse);
+      expect(frame.values, isEmpty);
+      expect(buffer.drain().isEmpty, isTrue, reason: 'the lane drained empty');
+    });
+
+    test('remove() cancels pending telemetry but not the retirement notice',
+        () {
+      final buffer = PipeSendBuffer();
+      buffer.putValue('k', _sample(1));
+      buffer.putPriority(const _PipeError('k', 'key retired'));
+      buffer.remove('k');
+
+      final frame = buffer.drain();
+      expect(frame.values, isEmpty);
+      expect(frame.priority, hasLength(1),
+          reason: 'silence about a retired key is not acceptable');
     });
   });
 }
