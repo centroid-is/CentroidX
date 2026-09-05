@@ -557,9 +557,62 @@ DynamicValue uaValueFromRelayValue(relay.DynamicValue value) {
   } else {
     out.value = raw;
   }
-  out.typeId = nodeIdFromSourceTypeId(value.sourceTypeId) ?? _inferUaTypeId(raw);
+  final declared = nodeIdFromSourceTypeId(value.sourceTypeId);
+  // A struct is encoded as an extension object and its type id is the struct's
+  // own encoding id, which is deliberately NOT one of the scalar payload types
+  // — so the filter below must not touch it.
+  out.typeId = raw is Map
+      ? declared
+      : (isEncodableUaTypeId(declared) ? declared : _inferUaTypeId(raw));
   return out;
 }
+
+/// The Namespace-0 types the binding's serializer can actually write.
+///
+/// Exactly the keys of `create_type.dart`'s `_payloadTypes`, which is private,
+/// so this list is the mirror of it. Kept as a named set rather than a
+/// try/catch because the failure it prevents is not catchable in a useful
+/// place: `opcua_serializer.dart:228` does
+/// `nodeIdToPayloadType(value.typeId ?? …)!.set(…)`, and an id that is not in
+/// that map makes the `!` throw a bare "Null check operator used on a null
+/// value" from inside the binding.
+final Set<NodeId> _encodableUaTypeIds = <NodeId>{
+  NodeId.boolean,
+  NodeId.sbyte,
+  NodeId.byte,
+  NodeId.int16,
+  NodeId.uint16,
+  NodeId.int32,
+  NodeId.uint32,
+  NodeId.int64,
+  NodeId.uint64,
+  NodeId.float,
+  NodeId.double,
+  NodeId.datetime,
+  NodeId.uastring,
+};
+
+/// Whether [id] is a type the write path can encode a scalar or array with.
+///
+/// **A type id that cannot be encoded is worse than none**, which is why this
+/// exists. A node whose DataType is abstract — `BaseDataType` (`ns=0;i=24`),
+/// `Number`, `Integer`, all legal on a real server and what an in-process
+/// data-source node reports by default — is observed on the reading, carried
+/// across as `sourceTypeId` and handed back on the next write. Without this
+/// check that write never reaches the wire at all: the serializer's `!` throws
+/// inside the binding, `StateMan` flattens it to
+/// `Failed to write node: "…": Null check operator used on a null value`, and
+/// the classifier — correctly, having no idea what that sentence means —
+/// answers [relay.WriteUnknown]. The operator is told the outcome is unknown
+/// for a write that provably never left the process, on every attempt, forever.
+///
+/// With it, an unencodable id degrades to the Dart runtime type exactly as
+/// [uaValueFromRelayValue]'s second source already promised: the server then
+/// rules on the value, and a genuine mismatch comes back as the NAMED refusal
+/// `Bad_TypeMismatch`, which is [relay.WriteRejected] — an answer.
+@visibleForTesting
+bool isEncodableUaTypeId(NodeId? id) =>
+    id != null && _encodableUaTypeIds.contains(id);
 
 /// Parses OPC UA's textual NodeId form — `ns=2;s=Name`, `ns=0;i=6`, `i=6`,
 /// `ns=1;g=<guid>` — the exact shape `NodeId.toString()` writes.

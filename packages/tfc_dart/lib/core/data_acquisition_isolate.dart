@@ -202,7 +202,31 @@ class DataAcquisitionWorker {
 /// crash it replaces: silent instead of loud, and with no path to recovery.
 @pragma('vm:entry-point')
 Future<void> dataAcquisitionIsolateEntry(
-    DataAcquisitionIsolateConfig config) async {
+        DataAcquisitionIsolateConfig config) =>
+    runAcquisitionIsolate(config);
+
+/// [dataAcquisitionIsolateEntry]'s whole body, with the [Database] as a
+/// parameter.
+///
+/// The production entry point above is this function and nothing else, so a
+/// caller that spawns it gets the real worker: the same handshake before the
+/// database, the same [PipeControlInbox] holding the control port from that
+/// instant, the same `runZonedGuarded` split between a fatal startup and a
+/// survivable steady state, the same [PipeWorkerEndpoint] attached the moment
+/// the stack is up.
+///
+/// It is split out because [buildAcquisitionStack]'s `database` seam (OQ-3)
+/// was reachable only from a private function, and an isolate entry point must
+/// be a top-level one. Without this, an integration test that wants a real
+/// worker against a real PLC but no Postgres has to hand-assemble the entry
+/// body — and a hand-assembled copy of the thing under test proves only that
+/// the copy works. Pass a [Database] and [Database.connectWithRetry] is never
+/// called; pass nothing, which production does, and it connects for real.
+@visibleForTesting
+Future<void> runAcquisitionIsolate(
+  DataAcquisitionIsolateConfig config, {
+  Database? database,
+}) async {
   initLogConfig();
   final logger = Logger();
 
@@ -233,7 +257,8 @@ Future<void> dataAcquisitionIsolateEntry(
   runZonedGuarded(
     () async {
       try {
-        await _runDataAcquisition(config, logger, inbox: inbox);
+        await _runDataAcquisition(config, logger,
+            database: database, inbox: inbox);
       } catch (error, stack) {
         // Setup failed. Let the isolate die so the supervisor can respawn it.
         if (!startupFailed.isCompleted) {

@@ -47,7 +47,6 @@
 library;
 
 import 'dart:async';
-import 'dart:isolate';
 
 import 'package:open62541/open62541.dart' show UA_STATUSCODE_BADNOTWRITABLE;
 import 'package:postgres/postgres.dart' show Endpoint;
@@ -212,6 +211,26 @@ Future<void> _subscribeAndSettle(_Rig rig, String key) async {
   );
 }
 
+/// A [relay.WriteResult] as a failure message reads it.
+///
+/// The sealed type's `toString` is the class name, so a failed arm would say
+/// only "not an instance of WriteRejected" and the reason — the whole content
+/// of the answer — would be lost. Every expectation on an outcome in this file
+/// carries this.
+String _describe(relay.WriteResult result) => switch (result) {
+      relay.WriteApplied(readback: final readback) =>
+        'WriteApplied(readback: $readback)',
+      relay.WriteRejected(reason: final reason) =>
+        'WriteRejected(${reason.kind}, status: ${reason.status}, '
+            '${reason.message})',
+      relay.WriteUnknown(reason: final reason) =>
+        'WriteUnknown(${reason.kind}, status: ${reason.status}, '
+            '${reason.message})',
+      // `writeStatus` only — nothing on this path can mint one, and the switch
+      // is exhaustive so that stays a compile-time fact rather than a comment.
+      relay.WriteNotReceived() => 'WriteNotReceived',
+    };
+
 void main() {
   group('the three states, through a real worker against a real server', () {
     test('a writable node answers APPLIED, and the value really moves',
@@ -228,7 +247,8 @@ void main() {
       expect(result, isA<relay.WriteApplied>(),
           reason: 'a plain writable node accepted the write; anything less '
               'than "applied" here means the composed path cannot report '
-              'success even when there is success to report');
+              'success even when there is success to report. Got '
+              '${_describe(result)}');
 
       // Applied is a claim about the machine, not about the pipe. The readback
       // is the only confirmation this system accepts (CLAUDE.md), and it
@@ -262,7 +282,7 @@ void main() {
       expect(result, isA<relay.WriteRejected>(),
           reason: 'the server named its refusal; reporting that as unknown '
               'would send an operator to inspect a machine that had already '
-              'told them no');
+              'told them no. Got ${_describe(result)}');
       expect((result as relay.WriteRejected).reason.status, 'Bad_NotWritable',
           reason: 'the name survives StateMan flattening the exception into a '
               'StateManException message, which is the only channel it has');
@@ -297,11 +317,13 @@ void main() {
 
       expect(result, isA<relay.WriteUnknown>(),
           reason: 'nobody can say whether the request landed; "unknown" is '
-              'the only honest answer and the pipe has to be able to give it');
+              'the only honest answer and the pipe has to be able to give '
+              'it. Got ${_describe(result)}');
       expect(
         (result as relay.WriteUnknown).reason.kind,
         anyOf('plc_timeout', 'pipe_timeout'),
-        reason: 'plc_timeout is the worker saying the request reached the '
+        reason: 'got ${_describe(result)}. '
+            'plc_timeout is the worker saying the request reached the '
             'link; pipe_timeout is main saying the worker said nothing. Both '
             'are honest here and which one wins is a race between two '
             'deadlines — but a third kind would mean neither fired',
