@@ -37,6 +37,7 @@
 library;
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:isolate';
 
 import 'package:logger/logger.dart';
@@ -45,6 +46,7 @@ import 'package:open62541/open62541.dart';
 import 'package:tfc_dart/core/opcua_value_translation.dart';
 import 'package:tfc_dart/core/pipe_send_buffer.dart';
 import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/write_translation.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
 // ------------------------------------------------------- the control channel
@@ -280,6 +282,15 @@ class PipeWorkerEndpoint {
         _subscribe(key);
       case PipeUnsubscribe(key: final key):
         _unsubscribe(key);
+      case PipeWriteRequest():
+        // Fire-and-forget WITH a handler, same rule as the subscribe path: a
+        // write must not park the next control message, and an escaped error
+        // here would be swallowed by the guarded zone and leave main waiting
+        // out its own deadline for an answer that was never coming.
+        _executeWrite(message).catchError((Object error) {
+          _logger.e('pipe endpoint: the write handler itself failed for '
+              '"${message.key}": $error');
+        });
       default:
         _logger.w('pipe endpoint: unrecognised control message '
             '(${message.runtimeType}) — ignored');
@@ -385,6 +396,45 @@ class PipeWorkerEndpoint {
     _emitPriority(PipeKeyRetired(key));
   }
 
+  /// Executes exactly one write and echoes the outcome.
+  ///
+  /// **At most one call to the upstream per control message, always.** There is
+  /// no loop and no re-send anywhere on this path: a write that expires is
+  /// answered [relay.WriteUnknown], and whether to press the button again is
+  /// the operator's decision, not the pipe's.
+  ///
+  /// The three states come from [translateWriteAnswer], not from anything
+  /// decided here. `StateMan.write` flattens every failure into a
+  /// [StateManException] carrying one string, so the classifier reads the TEXT
+  /// branch (R-2): `UaStatusException.toString()` renders
+  /// `UaStatusException(0x803b0000: Bad_NotWritable)`, which the refusal table
+  /// recognises by name. **Everything it cannot read is unknown, never
+  /// rejected** — "rejected" is the one answer that invites a second movement
+  /// of a machine somebody may be standing next to.
+  Future<void> _executeWrite(PipeWriteRequest request) async {
+    final cmd = request.id.toString();
+    WriteAnswer answer;
+    try {
+      await _stateMan
+          .write(request.key, uaValueFromRelayValue(request.value))
+          .timeout(writeDeadline);
+      answer = const WriteAcknowledged();
+    } on TimeoutException {
+      // The request is on the wire and this side cannot tell whether it landed.
+      answer = const WriteDeadlineExpired();
+    } catch (error) {
+      answer = WriteErrorText(error.toString());
+    }
+    _emitPriority(PipeWriteOutcome(
+      request.id,
+      translateWriteAnswer(
+        protocol: UpstreamProtocol.opcUa,
+        cmd: cmd,
+        answer: answer,
+      ),
+    ));
+  }
+
   /// How much of an upstream error crosses the port.
   ///
   /// Bounded because a key fault becomes a plant-visible string and an
@@ -443,6 +493,103 @@ class PipeWorkerEndpoint {
   }
 }
 
+// ------------------------------------------------- the write payload, inbound
+//
+// The value edge runs both ways. Readings are translated OUT of open62541 by
+// `translateOpcUaSample`; a write payload has to be translated back IN, because
+// only the protocol type crosses the port.
+
+/// Rebuilds an open62541 write payload from the protocol value main sent.
+///
+/// **A type id is not decoration on this path.** `valueToVariant` throws
+/// `Unable to determine type for …` for a scalar with no `typeId`, so a payload
+/// that arrives without one is a write that can never encode — the failure
+/// would be honest (an unparsed error is [relay.WriteUnknown]) but the write
+/// would never work at all. Two sources, in order:
+///
+///  1. [relay.DynamicValue.sourceTypeId] — the opaque round-trip of the
+///     source's own type id, e.g. `ns=2;s=X` or `ns=0;i=6`. This is the one
+///     main should always fill, because it is the only one that can tell an
+///     `Int16` tag from an `Int64` one.
+///  2. Failing that, the Dart runtime type. A guess, and deliberately a
+///     conservative one: if it disagrees with the node the server answers
+///     `Bad_TypeMismatch`, which is a NAMED refusal and therefore
+///     [relay.WriteRejected] — an operator is told the write did not happen,
+///     rather than being left to wonder.
+DynamicValue uaValueFromRelayValue(relay.DynamicValue value) {
+  final raw = value.value;
+  final out = DynamicValue();
+  if (raw is Map) {
+    final members = LinkedHashMap<String, DynamicValue>();
+    for (final entry in raw.entries) {
+      final member = entry.value;
+      members['${entry.key}'] = member is relay.DynamicValue
+          ? uaValueFromRelayValue(member)
+          : DynamicValue(value: member);
+    }
+    out.value = members;
+  } else if (raw is List) {
+    out.value = <DynamicValue>[
+      for (final element in raw)
+        if (element is relay.DynamicValue)
+          uaValueFromRelayValue(element)
+        else
+          DynamicValue(value: element),
+    ];
+  } else {
+    out.value = raw;
+  }
+  out.typeId = nodeIdFromSourceTypeId(value.sourceTypeId) ?? _inferUaTypeId(raw);
+  return out;
+}
+
+/// Parses OPC UA's textual NodeId form — `ns=2;s=Name`, `ns=0;i=6`, `i=6`,
+/// `ns=1;g=<guid>` — the exact shape `NodeId.toString()` writes.
+///
+/// Returns null for anything it cannot read, so an unrecognised id degrades to
+/// the inferred type rather than throwing on the write path.
+NodeId? nodeIdFromSourceTypeId(String? text) {
+  if (text == null || text.isEmpty) return null;
+  var namespace = 0;
+  var body = text;
+  final parts = text.split(';');
+  if (parts.length == 2 && parts[0].startsWith('ns=')) {
+    final parsed = int.tryParse(parts[0].substring(3));
+    if (parsed == null || parsed < 0) return null;
+    namespace = parsed;
+    body = parts[1];
+  } else if (parts.length != 1) {
+    return null;
+  }
+  if (body.startsWith('i=')) {
+    final numeric = int.tryParse(body.substring(2));
+    return numeric == null ? null : NodeId.fromNumeric(namespace, numeric);
+  }
+  if (body.startsWith('s=')) {
+    return NodeId.fromString(namespace, body.substring(2));
+  }
+  if (body.startsWith('g=')) {
+    return NodeId.fromGuid(namespace, body.substring(2));
+  }
+  return null;
+}
+
+/// The Namespace-0 type a Dart payload most plausibly is. See
+/// [uaValueFromRelayValue] for why a guess is acceptable here and what happens
+/// when it is wrong.
+NodeId? _inferUaTypeId(Object? raw) {
+  if (raw is bool) return NodeId.boolean;
+  if (raw is int) return NodeId.int64;
+  if (raw is double) return NodeId.double;
+  // Spelled out rather than `NodeId.string`: that static getter is shadowed by
+  // NodeId's instance getter of the same name and does not resolve.
+  if (raw is String) {
+    return NodeId.fromNumeric(0, Namespace0Id.string.value);
+  }
+  if (raw is DateTime) return NodeId.datetime;
+  return null;
+}
+
 /// The control port's listener, from the instant main holds the port.
 ///
 /// The worker announces itself (and hands main its control port) BEFORE it
@@ -454,10 +601,16 @@ class PipeWorkerEndpoint {
 ///
 /// So subscribe/unsubscribe messages are queued and replayed in order the
 /// moment the endpoint attaches.
+///
+/// **A write is NOT queued.** Replaying one after the stack finally comes up
+/// would execute an operator's command minutes — or, with
+/// `Database.connectWithRetry` riding out a real outage, hours — after main had
+/// already resolved it unknown and moved on. That is a re-send nobody asked
+/// for, and re-sending is the one thing this pipe may never do. A write that
+/// arrives before the link exists is answered [relay.WriteUnknown] on the spot.
 class PipeControlInbox {
   PipeControlInbox({SendPort? toMain}) : _toMain = toMain;
 
-  // ignore: unused_field
   final SendPort? _toMain;
 
   final List<Object?> _queued = <Object?>[];
@@ -476,7 +629,28 @@ class PipeControlInbox {
       endpoint.handleControl(message);
       return;
     }
+    if (message is PipeWriteRequest) {
+      _refuse(message);
+      return;
+    }
     _queued.add(message);
+  }
+
+  /// Answers a write that arrived before there was a link to write to.
+  ///
+  /// `requestSent: false` is the literal truth — the acquisition stack does not
+  /// exist yet — and it still classifies [relay.WriteUnknown], because from
+  /// main's side "the deadline passed before the link answered at all" and "the
+  /// request landed and the answer was lost" are not distinguishable and this
+  /// side must not guess.
+  void _refuse(PipeWriteRequest request) {
+    final result = translateWriteAnswer(
+      protocol: UpstreamProtocol.opcUa,
+      cmd: request.id.toString(),
+      answer: const WriteDeadlineExpired(requestSent: false),
+    );
+    _toMain?.send(
+        PipeFrame(<Object?>[PipeWriteOutcome(request.id, result)], const {}));
   }
 
   /// The acquisition stack is up: hand everything queued to [endpoint], in the

@@ -7,6 +7,7 @@ import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/log_config.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
+import 'package:tfc_dart/core/pipe_worker_endpoint.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 /// Configuration for spawning a DataAcquisition isolate.
@@ -214,11 +215,14 @@ Future<void> dataAcquisitionIsolateEntry(
   // to — would silently blow the supervisor's handshake deadline and get a
   // patiently-waiting worker killed and respawned on the backoff ladder.
   //
-  // Nothing listens on the control port yet; the worker-side pipe endpoint
-  // (12-05) attaches subscribe/unsubscribe and write requests to it. The
-  // listener exists now so the port is live from the instant main holds it.
+  // The inbox is the control port's listener from this instant on, which is
+  // before the acquisition stack exists. Anything main sends into that window
+  // is held (subscribes/unsubscribes) or answered on the spot (writes, which
+  // must never be executed late) — see [PipeControlInbox]. The pipe endpoint
+  // attaches to it as soon as `StateMan` is up.
   final control = ReceivePort();
-  control.listen((_) {});
+  final inbox = PipeControlInbox(toMain: config.toMain);
+  control.listen(inbox.receive);
   config.toMain?.send(control.sendPort);
 
   // Completed only on a startup failure. Steady-state errors are handled by
@@ -229,7 +233,7 @@ Future<void> dataAcquisitionIsolateEntry(
   runZonedGuarded(
     () async {
       try {
-        await _runDataAcquisition(config, logger);
+        await _runDataAcquisition(config, logger, inbox: inbox);
       } catch (error, stack) {
         // Setup failed. Let the isolate die so the supervisor can respawn it.
         if (!startupFailed.isCompleted) {
@@ -261,13 +265,33 @@ Future<void> dataAcquisitionIsolateEntry(
 /// [database] is the seam that lets the worker stand up with no Postgres
 /// behind it: pass one and [Database.connectWithRetry] is never called. Null
 /// — the production case — means connect for real.
+///
+/// [inbox] is the control port's listener, created by the entry point before
+/// the handshake. Passing it here is what lets the pipe endpoint — which needs
+/// the live [StateMan] and therefore cannot exist before this point — take over
+/// a port main has already been holding, without a single control message being
+/// dropped in between.
 Future<void> _runDataAcquisition(
   DataAcquisitionIsolateConfig config,
   Logger logger, {
   Database? database,
+  PipeControlInbox? inbox,
 }) async {
   final stack =
       await buildAcquisitionStack(config, logger, database: database);
+
+  // The worker's end of the pipe. It needs the live StateMan and the SendPort
+  // main handed us at spawn, and nothing else. Without a `toMain` there is
+  // nobody to pipe to (a config built by a caller that never went through the
+  // supervisor), so the endpoint is simply not built.
+  final toMain = config.toMain;
+  if (inbox != null && toMain != null) {
+    inbox.attach(PipeWorkerEndpoint(
+      stateMan: StateManUpstream(stack.stateMan),
+      toMain: toMain,
+      logger: logger,
+    ));
+  }
 
   logger.i('DataAcquisition isolate running for ${stack.name}');
 
