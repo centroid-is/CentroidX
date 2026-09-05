@@ -43,6 +43,38 @@ class _Activation {
 /// samples rather than in dialect-specific SQL: report ranges are shifts and
 /// days, small enough to fetch, and the math being pure Dart is what makes it
 /// unit-testable sample by sample.
+/// Tables a report's SQL section may never read.
+///
+/// The Reports viewer is deliberately **unraised** — reading last night's
+/// shift is operate-level work — while authoring a report needs `configure`.
+/// Without this list those two facts compose into a privilege escalation:
+/// a `configure` holder writes `SELECT username, password_hash, salt FROM
+/// app_user` into a section, and the panel renders it for an anonymous
+/// operator. That crosses the exact boundary the access milestone drew when
+/// it kept `users` separate from `configure`, and it would do it silently.
+///
+/// So the rule is not "no writes" (the single-SELECT check already says
+/// that) but "not these reads": credentials, the role map, the bindings that
+/// say what is gated, the audit trail the `users` gate protects, and
+/// Postgres's own credential catalogs.
+///
+/// **This is a guard, not a sandbox**, exactly like the single-statement
+/// check beside it. Somebody holding `configure` has other reach — the key
+/// repository surfaces stored secrets by design. What this closes is the
+/// cheap, silent path, and the one an LLM-written section could take by
+/// accident.
+const List<String> kSqlSectionForbiddenTables = [
+  'app_user',
+  'app_role',
+  'access_template',
+  'access_key_binding',
+  'audit_entry',
+  // Postgres's own: a superuser connection could otherwise read role hashes.
+  'pg_authid',
+  'pg_shadow',
+  'pg_user',
+];
+
 class ReportEngine {
   ReportEngine(
     this._db, {
@@ -340,6 +372,13 @@ class ReportEngine {
     }
     if (trimmed.contains(';')) {
       return 'Multiple statements are not allowed — remove the ";".';
+    }
+    for (final table in kSqlSectionForbiddenTables) {
+      if (RegExp('\\b$table\\b', caseSensitive: false).hasMatch(trimmed)) {
+        return 'A report may not read "$table". '
+            'That table holds credentials or the access record; a report is '
+            'rendered on a page any operator can open.';
+      }
     }
     return null;
   }

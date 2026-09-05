@@ -9,10 +9,19 @@ import 'sql_dialect.dart';
 /// collected timeseries tables and `alarm_history`), both from tfc_dart, so
 /// the same behaviour runs standalone and in-process.
 ///
-/// Unlike the asset/alarm write tools, the report mutations here are NOT
-/// proposals: a report definition describes how to *read* data, never how to
-/// touch the plant, so it is applied directly (and audited) rather than
-/// routed through the operator's proposal banner.
+/// **Nothing here writes.** The write-shaped members validate and hand back a
+/// checked payload; the tools wrap that in a proposal, and a person applies it
+/// in the report editor through `GuardedReportStore`. That store asks the live
+/// session for `configure` and records the answer.
+///
+/// This class briefly did apply its writes directly, on the argument that a
+/// report definition only describes how to *read* data. Access control
+/// retired that argument twice over: this package has no session, so a direct
+/// write is unauthenticated and unattributed; and a report is rendered on an
+/// **unraised** page, so a definition is a way to publish whatever it selects
+/// to an anonymous panel. What a report may select is bounded by
+/// `kSqlSectionForbiddenTables`; who may author one is bounded here, by having
+/// no write at all.
 class ReportService {
   ReportService(McpDatabase db, {DateTime Function()? clock})
       : _store = ReportStore(db, isPostgres: isPostgresDb(db)),
@@ -202,7 +211,15 @@ class ReportService {
     }
   }
 
-  Future<Map<String, dynamic>> createReport(Map<String, dynamic> json) async {
+  /// Validates a proposed new report and returns the checked definition.
+  ///
+  /// **Writes nothing.** The tool wraps this in a proposal; a person applies
+  /// it in the report editor, and that save goes through `GuardedReportStore`
+  /// — which asks the live session for `configure` and records the answer.
+  /// An agent proposing a report nobody may author gets a proposal nobody can
+  /// approve, and a denial row saying so.
+  Future<Map<String, dynamic>> validateNewReport(
+      Map<String, dynamic> json) async {
     final errors = <String>[];
     final report = _parseReport(json, errors);
     if (report == null) return {'error': errors.join(' ')};
@@ -214,36 +231,36 @@ class ReportService {
             'Use update_report to change it.'
       };
     }
-    config.reports.add(report);
-    await _store.saveReports(config);
-    return {'ok': true, 'report': report.toJson()};
+    return {'report': report.toJson()};
   }
 
-  Future<Map<String, dynamic>> updateReport(
+  /// Validates a proposed replacement for [id]. Writes nothing — see
+  /// [validateNewReport].
+  Future<Map<String, dynamic>> validateReportUpdate(
       String id, Map<String, dynamic> json) async {
     final errors = <String>[];
     final report = _parseReport({...json, 'id': id}, errors);
     if (report == null) return {'error': errors.join(' ')};
 
     final config = await _store.loadReports();
-    final index = config.reports.indexWhere((r) => r.id == id);
-    if (index < 0) {
+    final matches = config.reports.where((r) => r.id == id);
+    final existing = matches.isEmpty ? null : matches.first;
+    if (existing == null) {
       return {'error': 'No report with id "$id" to update.'};
     }
-    config.reports[index] = report;
-    await _store.saveReports(config);
-    return {'ok': true, 'report': report.toJson()};
+    return {'report': report.toJson(), 'before': existing.toJson()};
   }
 
-  Future<Map<String, dynamic>> deleteReport(String id) async {
+  /// Checks that [id] exists and returns it, so a delete proposal can show
+  /// what would go. Writes nothing — see [validateNewReport].
+  Future<Map<String, dynamic>> validateReportDelete(String id) async {
     final config = await _store.loadReports();
-    final before = config.reports.length;
-    config.reports.removeWhere((r) => r.id == id);
-    if (config.reports.length == before) {
+    final matches = config.reports.where((r) => r.id == id);
+    final existing = matches.isEmpty ? null : matches.first;
+    if (existing == null) {
       return {'error': 'No report with id "$id" to delete.'};
     }
-    await _store.saveReports(config);
-    return {'ok': true};
+    return {'report': existing.toJson()};
   }
 
   Future<Map<String, dynamic>> getShifts() async {
@@ -253,10 +270,13 @@ class ReportService {
     };
   }
 
-  /// Replaces the shift calendar. Each entry needs `name`, `start_minutes`
-  /// (0..1439) and `duration_minutes` (> 0); `weekdays` (1=Monday..7=Sunday)
-  /// defaults to every day.
-  Future<Map<String, dynamic>> setShifts(List<dynamic> shifts) async {
+  /// Validates a proposed shift calendar. Writes nothing — see
+  /// [validateNewReport].
+  ///
+  /// Each entry needs `name`, `start_minutes` (0..1439) and
+  /// `duration_minutes` (> 0); `weekdays` (1=Monday..7=Sunday) defaults to
+  /// every day.
+  Future<Map<String, dynamic>> validateShifts(List<dynamic> shifts) async {
     final parsed = <ShiftDef>[];
     for (var i = 0; i < shifts.length; i++) {
       final entry = shifts[i];
@@ -291,9 +311,7 @@ class ReportService {
       }
       parsed.add(def);
     }
-    await _store.saveShifts(ShiftManConfig(shifts: parsed));
     return {
-      'ok': true,
       'shifts': [for (final s in parsed) s.toJson()],
     };
   }

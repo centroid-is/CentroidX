@@ -1,10 +1,14 @@
 import 'dart:convert';
 
+
 import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:tfc_access/tfc_access.dart' show AccessDenied;
 import 'package:tfc_dart/tfc_dart.dart';
 
+import '../core/guarded_report_store.dart';
+import '../providers/proposal_state.dart';
 import '../providers/report.dart';
 import '../providers/state_man.dart';
 import '../widgets/base_scaffold.dart';
@@ -35,7 +39,63 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
         jsonEncode(_reports!.toJson()) != jsonEncode(_savedReports!.toJson());
   }
 
-  Future<void> _load(ReportStore store) async {
+  /// Ids already staged, so a rebuild does not add the same proposal twice.
+  final Set<int> _stagedProposals = {};
+
+  /// Folds any pending report proposals into the buffer.
+  ///
+  /// An agent's proposal is not applied here — it is *staged*, exactly like a
+  /// hand edit, and the operator's Save is what applies it through the guard.
+  /// That is the whole reason the MCP write tools return proposals rather
+  /// than writing: the approving human is who the audit row names, and their
+  /// session is what the `configure` check runs against.
+  ///
+  /// A malformed proposal is skipped rather than taking the batch with it.
+  void _stageProposals() {
+    if (_reports == null || _shifts == null) return;
+    var staged = 0;
+    try {
+      for (final pending in ref.read(proposalStateProvider).proposals) {
+        if (pending.proposalType != 'report' &&
+            pending.proposalType != 'shift_calendar') {
+          continue;
+        }
+        if (!_stagedProposals.add(pending.id)) continue;
+        try {
+          final decoded = jsonDecode(pending.proposalJson);
+          if (decoded is! Map<String, dynamic>) continue;
+          final map = Map<String, dynamic>.from(decoded)
+            ..remove('_proposal_type')
+            ..remove('title');
+          final op = map.remove('_op');
+
+          if (pending.proposalType == 'shift_calendar') {
+            final shifts = (map['shifts'] as List?) ?? const [];
+            _shifts!.shifts
+              ..clear()
+              ..addAll(shifts.map((e) =>
+                  ShiftDef.fromJson((e as Map).cast<String, dynamic>())));
+            staged++;
+            continue;
+          }
+
+          final report = ReportConfig.fromJson(map);
+          _reports!.reports.removeWhere((r) => r.id == report.id);
+          // A delete proposal stages as the removal itself; there is nothing
+          // to add back.
+          if (op != 'delete') _reports!.reports.add(report);
+          staged++;
+        } catch (_) {
+          // Malformed: leave the rest of the batch alone.
+        }
+      }
+    } catch (_) {
+      // Provider unavailable (tests without the chat graph) — nothing to do.
+    }
+    if (staged > 0) setState(() {});
+  }
+
+  Future<void> _load(GuardedReportStore store) async {
     try {
       final shifts = await store.loadShifts();
       final reports = await store.loadReports();
@@ -46,12 +106,22 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
         _reports = reports;
         _savedReports = ReportManConfig.fromJson(reports.toJson());
       });
+      // After the buffer exists, so a proposal has something to fold into.
+      _stageProposals();
     } catch (e) {
       if (mounted) setState(() => _error = 'Failed to load: $e');
     }
   }
 
-  Future<void> _save(ReportStore store) async {
+  /// Saves through the **guarded** store, never the plain one: these two
+  /// preference rows are written by raw SQL, so this guard is the only thing
+  /// standing between them and an anonymous session.
+  ///
+  /// An [AccessDenied] is swallowed rather than shown here — the shared prompt
+  /// is already on screen by then, raised by `reportAccessDenial` before the
+  /// exception was thrown — but the buffer is left dirty on purpose, so the
+  /// operator's unsaved edits survive to be saved by somebody who may.
+  Future<void> _save(GuardedReportStore store) async {
     setState(() => _saving = true);
     try {
       await store.saveShifts(_shifts!);
@@ -65,6 +135,8 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
       });
       ref.invalidate(reportManConfigProvider);
       ref.invalidate(shiftCalendarProvider);
+    } on AccessDenied {
+      if (mounted) setState(() => _saving = false);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -88,9 +160,19 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
 
   @override
   Widget build(BuildContext context) {
-    final store = ref.watch(reportStoreProvider);
+    final store = ref.watch(guardedReportStoreProvider);
     if (store != null && _shifts == null && _error == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _load(store));
+    }
+    // Watched, not read: a proposal can land while the operator is standing
+    // on this page, and the point of the banner is that they see it arrive.
+    ref.watch(proposalStateProvider);
+    // Idempotent — staged ids are remembered, so this only folds in what is
+    // new.
+    if (_shifts != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _stageProposals();
+      });
     }
 
     final theme = Theme.of(context);

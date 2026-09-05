@@ -271,6 +271,10 @@ void main() {
 // providers/theme.dart:52         prefs.setString(_key, scheme.name)               -> 'color_scheme'                exact -> operate    (ColorSchemeNotifier._key, :40)
 // pages/server_config.dart:849    value.remove(StateManConfig.configKey)           -> 'state_man_config'            exact -> administer (const at state_man.dart:457)
 // core/state_man.dart:442,450     prefs.setString(configKey, ...)                  -> 'state_man_config'            exact -> administer
+// core/guarded_report_store.dart      store.saveReports(...)                           -> 'report_config'                exact -> configure  (ReportManConfig.configKey)
+// core/guarded_report_store.dart      store.saveShifts(...)                            -> 'shift_config'                 exact -> configure  (ShiftManConfig.configKey)
+//     Written by raw SQL on flutter_preferences rather than through PreferencesApi, because the MCP server writes the
+//     same two rows and has no Preferences. GuardedReportStore is the seam that gates and audits them instead.
 // panes/color_picker_dialog.dart:66  SharedPreferencesAsync().setStringList(prefsKey, ...)
 //                                                                                  -> 'color_picker_recent_colors' exact -> operate    (RecentColors.prefsKey, :29)
 // page_creator/page.dart:247      prefs.setString(storageKey, jsonString)          -> 'page_editor_data'            exact -> configure  (PageManager.storageKey, :90)
@@ -365,6 +369,8 @@ const Map<String, AccessGroup> kResolvedPrefInventory = <String, AccessGroup>{
   'page_editor_image:a1b2c3d4': AccessGroup.configure,
   'key_mappings': AccessGroup.configure,
   'alarm_man_config': AccessGroup.configure,
+  'report_config': AccessGroup.configure,
+  'shift_config': AccessGroup.configure,
 
   // A Shift Leader must be able to save a recipe.
   'BATCH.recipes': AccessGroup.setpoints,

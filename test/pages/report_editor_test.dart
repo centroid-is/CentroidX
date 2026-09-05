@@ -6,9 +6,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/pages/report_editor.dart';
 import 'package:tfc/providers/alarm.dart';
+import 'package:tfc/providers/access.dart';
+import 'package:tfc/providers/proposal_state.dart';
 import 'package:tfc/providers/report.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/route_registry.dart';
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/tfc_dart.dart' hide KeyMappings, StateMan;
 
@@ -39,6 +42,39 @@ class _FakeStateMan implements StateMan {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+// ---------------------------------------------------------------------------
+// Access
+//
+// The editor's Save goes through GuardedReportStore, which asks for
+// `configure` — so these tests sign in. The refusal path has its own test
+// below; guarded_report_store_test.dart covers the guard itself.
+// ---------------------------------------------------------------------------
+
+class _FixedSession extends AccessSessionController {
+  _FixedSession(this._session);
+
+  final AccessSession _session;
+
+  @override
+  Future<AccessSession> build() async => _session;
+}
+
+AccessSession _anonymous() => AccessSession.anonymous(
+      {...kSeedRoles.firstWhere((r) => r.name == kOperatorRoleName).groups},
+    );
+
+AccessSession _withConfigure() => AccessSession(
+      user: const AuthenticatedUser(username: 'jon', roleName: 'Engineer'),
+      groups: const {AccessGroup.operate, AccessGroup.configure},
+    );
+
+class _CollectingSink implements AuditSink {
+  final List<AuditRecord> rows = [];
+
+  @override
+  Future<void> record(AuditRecord entry) async => rows.add(entry);
+}
+
 void main() {
   late _Db db;
   late ReportStore store;
@@ -59,7 +95,8 @@ void main() {
     await db.close();
   });
 
-  Future<void> pump(WidgetTester tester) async {
+  Future<void> pump(WidgetTester tester,
+      {AccessSession? session}) async {
     // Tall surface: the section rows must be hittable without scrolling.
     tester.view.physicalSize = const Size(1400, 1800);
     tester.view.devicePixelRatio = 1.0;
@@ -78,6 +115,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         reportStoreProvider.overrideWithValue(store),
+        auditSinkProvider.overrideWith((ref) async => _CollectingSink()),
+        accessSessionProvider
+            .overrideWith(() => _FixedSession(session ?? _withConfigure())),
         alarmManProvider.overrideWith((ref) async => _FakeAlarmMan()),
         stateManProvider.overrideWith((ref) async => _FakeStateMan()),
       ],
@@ -159,5 +199,52 @@ void main() {
 
     final reports = await store.loadReports();
     expect(reports.reports.single.sections.first, isA<TextSectionConfig>());
+  });
+
+  testWidgets('an operator without configure is refused, and keeps the edits',
+      (tester) async {
+    await pump(tester, session: _anonymous());
+
+    await tester.tap(find.text('Add shift'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    // Nothing landed…
+    expect((await store.loadShifts()).shifts, isEmpty);
+    // …and the operator's work is still in the buffer for somebody who may
+    // save it, rather than being thrown away with the refusal.
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    expect(find.byKey(const ValueKey('shift-0')), findsOneWidget);
+  });
+
+  testWidgets(
+      'an agent proposal is staged, not applied, until a person saves it',
+      (tester) async {
+    // What the MCP write tools now return instead of writing.
+    const proposalJson = '{"_proposal_type":"report","_op":"create",'
+        '"title":"Report \\"Night audit\\"","id":"night","name":"Night audit",'
+        '"range":"shift","sections":[{"type":"text","text":"hi"}]}';
+
+    await pump(tester);
+
+    final container = ProviderScope.containerOf(
+        tester.element(find.byType(ReportEditorPage)));
+    container.read(proposalStateProvider.notifier).addProposal(
+        PendingProposal.tryParse(proposalJson)!);
+    await tester.pumpAndSettle();
+
+    // Staged into the buffer and offered for review…
+    expect(find.text('Night audit'), findsOneWidget);
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    // …but nothing has been written yet.
+    expect((await store.loadReports()).reports, isEmpty);
+
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    // The person's Save is the approval — and it is their session the guard
+    // checked and the audit row will name.
+    expect((await store.loadReports()).reports.single.id, 'night');
   });
 }

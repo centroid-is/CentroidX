@@ -2,6 +2,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tfc_dart/core/mcp_database.dart';
 import 'package:tfc_dart/tfc_dart.dart';
 
+import '../core/guarded_report_store.dart';
+import 'access.dart'; // stationNameProvider
+import 'access_policy.dart'; // sessionInForce, RefAuditSink, reportAccessDenial
 import 'server_database.dart';
 import 'state_man.dart';
 
@@ -66,4 +69,31 @@ final shiftCalendarProvider = FutureProvider<ShiftCalendar>((ref) async {
   final store = ref.watch(reportStoreProvider);
   if (store == null) return ShiftCalendar(ShiftManConfig());
   return ShiftCalendar(await store.loadShifts());
+});
+
+/// Every write the report subsystem makes, checked and recorded.
+///
+/// The plain [ReportStore] above stays for reads — generating a report is
+/// operate-level work — but nothing in the app may save through it. Its two
+/// writes land on `flutter_preferences` by raw SQL, which `GuardedPreferences`
+/// cannot see, so this is the seam that gates and audits them instead;
+/// `guarded_report_store.dart` says why the group is `configure`.
+///
+/// A provider rather than a field on the editor state, for the reason
+/// `historyViewStoreProvider` gives: `sessionInForce`, [RefAuditSink] and
+/// `reportAccessDenial` all need a provider `Ref`, and a `WidgetRef` is not
+/// one.
+///
+/// Null when the database is not up, exactly like [reportStoreProvider].
+final guardedReportStoreProvider = Provider<GuardedReportStore?>((ref) {
+  final store = ref.watch(reportStoreProvider);
+  if (store == null) return null;
+  return GuardedReportStore(
+    store: store,
+    // Read at write time, never captured: the store outlives any one session.
+    session: () => sessionInForce(ref),
+    audit: RefAuditSink(ref),
+    station: ref.watch(stationNameProvider),
+    onDenied: (denial) => reportAccessDenial(ref, denial),
+  );
 });

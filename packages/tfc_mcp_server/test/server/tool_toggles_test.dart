@@ -269,7 +269,7 @@ void main() {
       }
     });
 
-    test('proposalsEnabled=false registers 28 tools', () async {
+    test('proposalsEnabled=false registers 24 tools', () async {
       final server = createServer(
         toggles: const McpToolToggles(proposalsEnabled: false),
       );
@@ -277,7 +277,13 @@ void main() {
       try {
         final tools = await client.listTools();
         final names = tools.map((t) => t.name).toSet();
-        expect(tools, hasLength(28));
+        // 41 - 13 - the four report writes, which ride this toggle
+        // because they are proposals like every other write here.
+        expect(tools, hasLength(24));
+        expect(names, isNot(contains('create_report')));
+        expect(names, isNot(contains('set_shift_calendar')));
+        // The read half stays: reportsEnabled put it there.
+        expect(names, contains('generate_report'));
         expect(names, isNot(contains('create_access_template')));
         expect(names, isNot(contains('update_access_template')));
         expect(names, isNot(contains('delete_access_template')));

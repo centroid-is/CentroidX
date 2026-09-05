@@ -345,6 +345,50 @@ void main() {
       expect(rows.read<int>('c'), 4);
     });
 
+    test('a report may not read the access tables', () async {
+      // The escalation this closes: the Reports viewer is unraised, so a
+      // section reading app_user would publish credential hashes to any
+      // anonymous panel — authored by somebody holding only `configure`.
+      for (final query in [
+        'SELECT username, password_hash, salt FROM app_user',
+        'SELECT * FROM "app_user"',
+        'SELECT * FROM audit_entry',
+        'SELECT * FROM app_role',
+        'SELECT * FROM access_key_binding',
+        'SELECT rolname, rolpassword FROM pg_catalog.pg_authid',
+        'WITH x AS (SELECT * FROM app_user) SELECT * FROM x',
+      ]) {
+        final config = ReportConfig(id: 'r1', name: 'R', sections: [
+          SqlSectionConfig(query: query),
+        ]);
+        final result = await engine.generate(config,
+            rangeStart: shiftStart, rangeEnd: shiftEnd, now: at(600));
+        final sql = result.sections.single as SqlSectionResult;
+        expect(sql.error, isNotNull, reason: query);
+        expect(sql.rows, isEmpty, reason: query);
+      }
+    });
+
+    test('a legitimate query naming a lookalike column still runs', () async {
+      // The guard matches whole words, so a collected key or column that
+      // merely contains a forbidden name is not caught by it.
+      await db.customStatement(
+          'CREATE TABLE "Line3.app_users_online" ("value" INTEGER, "time" TEXT)');
+      await db.customStatement(
+          'INSERT INTO "Line3.app_users_online" ("time", "value") '
+          'VALUES (?, ?)',
+          [iso(at(30)), 4]);
+      final config = ReportConfig(id: 'r1', name: 'R', sections: [
+        SqlSectionConfig(
+            query: 'SELECT value FROM "Line3.app_users_online"'),
+      ]);
+      final result = await engine.generate(config,
+          rangeStart: shiftStart, rangeEnd: shiftEnd, now: at(600));
+      final sql = result.sections.single as SqlSectionResult;
+      expect(sql.error, isNull);
+      expect(sql.rows.single.single, '4');
+    });
+
     test('a failing query is an error section, not a failed report',
         () async {
       final config = ReportConfig(id: 'r1', name: 'R', sections: [

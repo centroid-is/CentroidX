@@ -2,16 +2,29 @@ import 'dart:convert';
 
 import 'package:mcp_dart/mcp_dart.dart';
 
+import '../safety/risk_gate.dart';
+import '../services/proposal_service.dart';
 import '../services/report_service.dart';
 import 'tool_registry.dart';
 
 /// Registers the static-report MCP tools.
 ///
 /// Read side: list_reports, get_report_definition, generate_report,
-/// resolve_shift, get_shift_calendar. Write side: create_report,
-/// update_report, delete_report, set_shift_calendar — these apply directly
-/// (audited) rather than as proposals: a report definition only describes
-/// how to read data, it can never touch the plant.
+/// resolve_shift, get_shift_calendar.
+///
+/// Write side: create_report, update_report, delete_report and
+/// set_shift_calendar **change nothing**. They validate, then return a
+/// proposal, exactly like every other write-shaped tool in this package —
+/// see `no_identity_gate_test.dart` for why that invariant is what stands in
+/// for an identity gate here. A person applies the proposal in the report
+/// editor, and that save goes through `GuardedReportStore`, which asks the
+/// live session for `configure` and records the answer.
+///
+/// The earlier version of these four applied immediately, on the argument
+/// that a report only reads. Access control retired it: a report is rendered
+/// on an unraised page, so authoring one is a way to publish what it selects
+/// to an anonymous panel, and this package has no session to authorize that
+/// with.
 void registerReportTools(ToolRegistry registry, ReportService service) {
   CallToolResult resultFrom(Map<String, dynamic> result,
       {String Function(Map<String, dynamic>)? render}) {
@@ -145,11 +158,36 @@ void registerReportTools(ToolRegistry registry, ReportService service) {
       return resultFrom(result);
     },
   );
+}
+
+/// The four report writes, on the proposal path.
+///
+/// Registered under `proposalsEnabled` beside the other write tools rather
+/// than under `reportsEnabled`, and the pairing is the point: these produce
+/// proposals, so the toggle that carries proposals is the one that carries
+/// them. `reportsEnabled` puts the read half — which they validate against —
+/// on the registry in the first place.
+void registerReportWriteTools({
+  required ToolRegistry registry,
+  required ReportService service,
+  required RiskGate riskGate,
+  required ProposalService proposalService,
+}) {
+  CallToolResult resultFrom(Map<String, dynamic> result) {
+    final error = result['error'];
+    if (error is String) {
+      return CallToolResult(
+          content: [TextContent(text: error)], isError: true);
+    }
+    return CallToolResult(content: [TextContent(text: jsonEncode(result))]);
+  }
 
   registry.registerTool(
     name: 'set_shift_calendar',
-    description: 'Replace the plant\'s shift calendar. Applies immediately '
-        '(audited). Each shift: name, start_minutes (0..1439 after local '
+    description: 'Propose a replacement for the plant\'s shift calendar. '
+        'Returns a proposal for a person to apply in the report editor; '
+        'changes nothing by itself. Each shift: name, start_minutes '
+        '(0..1439 after local '
         'midnight), duration_minutes (may cross midnight), and optional '
         'weekdays the shift STARTS on (1=Monday..7=Sunday, default all).',
     inputSchema: JsonSchema.object(
@@ -175,15 +213,37 @@ void registerReportTools(ToolRegistry registry, ReportService service) {
       required: ['shifts'],
     ),
     handler: (arguments, extra) async {
-      final result = await service.setShifts(arguments['shifts'] as List);
-      return resultFrom(result);
+      final result = await service.validateShifts(arguments['shifts'] as List);
+      if (result['error'] is String) return resultFrom(result);
+
+      final shifts = (result['shifts'] as List).cast<Map<String, dynamic>>();
+      final diff = proposalService.formatCreateDiff(
+          'Shift calendar', '${shifts.length} shifts', {
+        for (final shift in shifts)
+          shift['name'].toString(): _describeShift(shift),
+        'applied by': 'a person holding "configure", in the report editor',
+      });
+      await riskGate.requestConfirmation(
+        description: 'Replace the shift calendar',
+        level: RiskLevel.medium,
+        details: {'diff': diff},
+      );
+      final wrapped = await proposalService.wrapProposal(
+        'shift_calendar',
+        <String, dynamic>{
+          'title': 'Shift calendar (${shifts.length} shifts)',
+          'shifts': shifts,
+        },
+        op: 'update',
+      );
+      return CallToolResult(content: [TextContent(text: jsonEncode(wrapped))]);
     },
   );
 
   registry.registerTool(
     name: 'create_report',
-    description: 'Create a new report definition. Applies immediately '
-        '(audited), no operator proposal — reports only read data. The '
+    description: 'Propose a new report definition. Returns a proposal for a '
+        'person to apply in the report editor; changes nothing by itself. The '
         'config needs id, name, range (shift/day/week) and sections, each '
         'section typed one of: '
         '${ReportService.validSectionTypes.join(', ')}. '
@@ -197,16 +257,23 @@ void registerReportTools(ToolRegistry registry, ReportService service) {
       required: ['config'],
     ),
     handler: (arguments, extra) async {
-      final result = await service
-          .createReport((arguments['config'] as Map).cast<String, dynamic>());
-      return resultFrom(result);
+      final result = await service.validateNewReport(
+          (arguments['config'] as Map).cast<String, dynamic>());
+      if (result['error'] is String) return resultFrom(result);
+      return _reportProposal(
+        proposalService: proposalService,
+        riskGate: riskGate,
+        report: result['report'] as Map<String, dynamic>,
+        op: 'create',
+      );
     },
   );
 
   registry.registerTool(
     name: 'update_report',
-    description: 'Replace an existing report definition by id. Applies '
-        'immediately (audited). Send the FULL definition, not a patch — '
+    description: 'Propose a replacement for an existing report definition by '
+        'id. Returns a proposal for a person to apply in the report editor; '
+        'changes nothing by itself. Send the FULL definition, not a patch — '
         'read it first with get_report_definition.',
     inputSchema: JsonSchema.object(
       properties: {
@@ -218,18 +285,25 @@ void registerReportTools(ToolRegistry registry, ReportService service) {
       required: ['report_id', 'config'],
     ),
     handler: (arguments, extra) async {
-      final result = await service.updateReport(
+      final result = await service.validateReportUpdate(
         arguments['report_id'] as String,
         (arguments['config'] as Map).cast<String, dynamic>(),
       );
-      return resultFrom(result);
+      if (result['error'] is String) return resultFrom(result);
+      return _reportProposal(
+        proposalService: proposalService,
+        riskGate: riskGate,
+        report: result['report'] as Map<String, dynamic>,
+        op: 'update',
+      );
     },
   );
 
   registry.registerTool(
     name: 'delete_report',
-    description: 'Delete a report definition by id. Applies immediately '
-        '(audited).',
+    description: 'Propose deleting a report definition by id. Returns a '
+        'proposal for a person to apply in the report editor; changes nothing '
+        'by itself.',
     inputSchema: JsonSchema.object(
       properties: {
         'report_id': JsonSchema.string(description: 'Report id to delete'),
@@ -237,9 +311,68 @@ void registerReportTools(ToolRegistry registry, ReportService service) {
       required: ['report_id'],
     ),
     handler: (arguments, extra) async {
-      final result =
-          await service.deleteReport(arguments['report_id'] as String);
-      return resultFrom(result);
+      final result = await service
+          .validateReportDelete(arguments['report_id'] as String);
+      if (result['error'] is String) return resultFrom(result);
+      return _reportProposal(
+        proposalService: proposalService,
+        riskGate: riskGate,
+        report: result['report'] as Map<String, dynamic>,
+        op: 'delete',
+      );
     },
   );
+}
+
+/// One line describing a shift, for a proposal's diff table.
+String _describeShift(Map<String, dynamic> shift) {
+  final start = shift['start_minutes'] as int;
+  final duration = shift['duration_minutes'] as int;
+  String hhmm(int minutes) =>
+      '${(minutes ~/ 60) % 24}'.padLeft(2, '0') +
+      ':${minutes % 60}'.padLeft(3, '0');
+  final weekdays = shift['weekdays'];
+  final days = weekdays is List && weekdays.length < 7
+      ? ', days ${weekdays.join('/')}'
+      : '';
+  return 'starts ${hhmm(start)}, runs ${duration ~/ 60}h$days';
+}
+
+/// Wraps one report definition as a proposal, after the risk gate.
+///
+/// The definition travels whole rather than as a diff of its sections: the
+/// editor stages it into its buffer, and a half-applied report is not a thing
+/// anybody wants to review.
+Future<CallToolResult> _reportProposal({
+  required ProposalService proposalService,
+  required RiskGate riskGate,
+  required Map<String, dynamic> report,
+  required String op,
+}) async {
+  final sections = (report['sections'] as List?) ?? const [];
+  final name = report['name'] ?? report['id'];
+  final diff = proposalService.formatCreateDiff('Report', '$name', {
+    'id': report['id'],
+    'range': report['range'],
+    'sections': sections.isEmpty
+        ? 'none'
+        : sections
+            .map((s) => (s as Map)['type'])
+            .join(', '),
+    'applied by': 'a person holding "configure", in the report editor',
+  });
+  await riskGate.requestConfirmation(
+    description: '${op[0].toUpperCase()}${op.substring(1)} report: $name',
+    level: RiskLevel.medium,
+    details: {'diff': diff},
+  );
+  final wrapped = await proposalService.wrapProposal(
+    'report',
+    <String, dynamic>{
+      'title': 'Report "$name"',
+      ...report,
+    },
+    op: op,
+  );
+  return CallToolResult(content: [TextContent(text: jsonEncode(wrapped))]);
 }

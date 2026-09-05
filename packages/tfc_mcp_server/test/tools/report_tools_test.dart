@@ -1,14 +1,18 @@
+import 'dart:convert';
+
 import 'package:mcp_dart/mcp_dart.dart';
 import 'package:test/test.dart';
 
 import 'package:tfc_mcp_server/src/audit/audit_log_service.dart';
 import 'package:tfc_mcp_server/src/database/server_database.dart';
-import 'package:tfc_mcp_server/src/identity/env_operator_identity.dart';
 import 'package:tfc_mcp_server/src/server.dart';
+import 'package:tfc_mcp_server/src/safety/risk_gate.dart';
+import 'package:tfc_mcp_server/src/services/proposal_service.dart';
 import 'package:tfc_mcp_server/src/services/report_service.dart';
 import 'package:tfc_mcp_server/src/tools/report_tools.dart';
 import 'package:tfc_mcp_server/src/tools/tool_registry.dart';
 import 'package:tfc_mcp_server/src/tools/tool_toggles.dart';
+import 'package:tfc_dart/tfc_dart_core.dart';
 import '../helpers/mock_alarm_reader.dart';
 import '../helpers/mock_mcp_client.dart';
 import '../helpers/mock_state_reader.dart';
@@ -39,9 +43,6 @@ void main() {
 
     TfcMcpServer createServer(McpToolToggles toggles) {
       return TfcMcpServer(
-        identity: EnvOperatorIdentity(
-          environmentProvider: () => {'TFC_USER': 'op1'},
-        ),
         database: db,
         stateReader: MockStateReader(),
         alarmReader: MockAlarmReader(),
@@ -83,6 +84,7 @@ void main() {
   group('end-to-end through a client', () {
     late ServerDatabase db;
     late MockMcpClient client;
+    late List<Map<String, dynamic>> proposals;
 
     // Fixed mid-shift clock: Tuesday 2026-09-01 10:00.
     final now = DateTime(2026, 9, 1, 10);
@@ -90,6 +92,7 @@ void main() {
     setUp(() async {
       db = createTestDatabase();
       await db.customStatement('SELECT 1');
+      proposals = [];
 
       final mcpServer = McpServer(
         const Implementation(name: 'test-server', version: '0.1.0'),
@@ -99,13 +102,16 @@ void main() {
       );
       final registry = ToolRegistry(
         mcpServer: mcpServer,
-        identity: EnvOperatorIdentity(
-          environmentProvider: () => {'TFC_USER': 'op1'},
-        ),
         auditLogService: AuditLogService(db),
       );
-      registerReportTools(
-          registry, ReportService(db, clock: () => now));
+      final service = ReportService(db, clock: () => now);
+      registerReportTools(registry, service);
+      registerReportWriteTools(
+        registry: registry,
+        service: service,
+        riskGate: NoOpRiskGate(),
+        proposalService: ProposalService(onProposal: proposals.add),
+      );
       client = await MockMcpClient.connect(mcpServer);
 
       await db.customStatement(
@@ -126,6 +132,43 @@ void main() {
     String textOf(CallToolResult result) =>
         (result.content.single as TextContent).text;
 
+    /// What the app's editor would do after a person approved a proposal.
+    Future<void> applyAsAperson(Map<String, dynamic> proposal) async {
+      final store = ReportStore(db, isPostgres: false);
+      if (proposal['_proposal_type'] == 'shift_calendar') {
+        final shifts = (proposal['shifts'] as List)
+            .map((s) => ShiftDef.fromJson((s as Map).cast<String, dynamic>()))
+            .toList();
+        await store.saveShifts(ShiftManConfig(shifts: shifts));
+        return;
+      }
+      final map = Map<String, dynamic>.from(proposal)
+        ..remove('_proposal_type')
+        ..remove('_op')
+        ..remove('title');
+      final config = await store.loadReports();
+      config.reports.add(ReportConfig.fromJson(map));
+      await store.saveReports(config);
+    }
+
+    test('the write tools propose and change nothing by themselves', () async {
+      final before = textOf(await client.callTool('list_reports', {}));
+
+      final setShifts = await client.callTool('set_shift_calendar', {
+        'shifts': [
+          {'name': 'Day', 'start_minutes': 420, 'duration_minutes': 480},
+        ],
+      });
+      expect(setShifts.isError, isNot(isTrue));
+      // The result IS the proposal, and the calendar is still empty.
+      final wrapped = jsonDecode(textOf(setShifts)) as Map<String, dynamic>;
+      expect(wrapped['_proposal_type'], 'shift_calendar');
+      expect(proposals, hasLength(1));
+      expect(textOf(await client.callTool('get_shift_calendar', {})),
+          isNot(contains('Day')));
+      expect(textOf(await client.callTool('list_reports', {})), before);
+    });
+
     test('configure shifts, create a report, generate the current shift',
         () async {
       final setShifts = await client.callTool('set_shift_calendar', {
@@ -134,6 +177,9 @@ void main() {
         ],
       });
       expect(setShifts.isError, isNot(isTrue));
+      // A person approves it in the editor; only then does it exist.
+      await applyAsAperson(
+          jsonDecode(textOf(setShifts)) as Map<String, dynamic>);
 
       final create = await client.callTool('create_report', {
         'config': {
@@ -157,6 +203,7 @@ void main() {
         },
       });
       expect(create.isError, isNot(isTrue), reason: textOf(create));
+      await applyAsAperson(jsonDecode(textOf(create)) as Map<String, dynamic>);
 
       final generated =
           await client.callTool('generate_report', {'report_id': 'shift1'});

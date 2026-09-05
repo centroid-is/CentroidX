@@ -20,10 +20,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/pages/report_editor.dart';
+import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/report.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/theme.dart' show muted;
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/tfc_dart.dart' hide KeyMappings, StateMan;
 
@@ -152,6 +154,39 @@ Future<void> _loadFonts() async {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Access
+//
+// The editor's Save goes through GuardedReportStore, which asks for
+// `configure` — so these tests sign in. The refusal path has its own test
+// below; guarded_report_store_test.dart covers the guard itself.
+// ---------------------------------------------------------------------------
+
+class _FixedSession extends AccessSessionController {
+  _FixedSession(this._session);
+
+  final AccessSession _session;
+
+  @override
+  Future<AccessSession> build() async => _session;
+}
+
+AccessSession _anonymous() => AccessSession.anonymous(
+      {...kSeedRoles.firstWhere((r) => r.name == kOperatorRoleName).groups},
+    );
+
+AccessSession _withConfigure() => AccessSession(
+      user: const AuthenticatedUser(username: 'jon', roleName: 'Engineer'),
+      groups: const {AccessGroup.operate, AccessGroup.configure},
+    );
+
+class _CollectingSink implements AuditSink {
+  final List<AuditRecord> rows = [];
+
+  @override
+  Future<void> record(AuditRecord entry) async => rows.add(entry);
+}
+
 void main() {
   useTolerantGoldenComparator(tolerance: 0.002);
 
@@ -194,6 +229,8 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         reportStoreProvider.overrideWithValue(store),
+        auditSinkProvider.overrideWith((ref) async => _CollectingSink()),
+        accessSessionProvider.overrideWith(() => _FixedSession(_withConfigure())),
         stateManProvider.overrideWith((ref) async => _FakeStateMan()),
       ],
       child: BeamerProvider(

@@ -41,46 +41,65 @@ void main() {
         ],
       };
 
-  Future<void> seedShifts() => service.setShifts([
-        {'name': 'Day', 'start_minutes': 420, 'duration_minutes': 480},
-        {'name': 'Night', 'start_minutes': 900, 'duration_minutes': 960},
-      ]);
+  /// Seeds real state through the store: the service no longer writes, so a
+  /// test that needs an existing calendar has to put one there itself.
+  Future<void> seedShifts() =>
+      ReportStore(db, isPostgres: false).saveShifts(ShiftManConfig(shifts: [
+        ShiftDef(name: 'Day', startMinutes: 420, durationMinutes: 480),
+        ShiftDef(name: 'Night', startMinutes: 900, durationMinutes: 960),
+      ]));
 
-  group('definition CRUD', () {
-    test('create, list, get, update, delete round-trip', () async {
+  Future<void> seedReport(Map<String, dynamic> json) async {
+    final store = ReportStore(db, isPostgres: false);
+    final config = await store.loadReports();
+    config.reports.add(ReportConfig.fromJson(json));
+    await store.saveReports(config);
+  }
+
+  group('definition validation', () {
+    test('the service writes nothing — validation only', () async {
+      final checked = await service.validateNewReport(reportJson('r1'));
+      expect(checked['report'], isNotNull);
+      // The whole point: the definition did NOT land. Only a person applying
+      // the proposal in the editor can do that.
       expect(await service.listReports(), isEmpty);
+    });
 
-      final created = await service.createReport(reportJson('r1'));
-      expect(created['ok'], isTrue);
+    test('read side sees what the store holds', () async {
+      await seedReport(reportJson('r1'));
 
       final listed = await service.listReports();
       expect(listed.single['id'], 'r1');
       expect(listed.single['sections'], 1);
       expect(listed.single['range'], 'shift');
+      expect((await service.getReportDefinition('r1'))?['name'],
+          'Shift report');
+    });
 
-      final definition = await service.getReportDefinition('r1');
-      expect(definition?['name'], 'Shift report');
-
-      final updated = await service.updateReport(
-          'r1', {...reportJson('r1'), 'name': 'Renamed'});
-      expect(updated['ok'], isTrue);
-      expect((await service.getReportDefinition('r1'))?['name'], 'Renamed');
-
-      expect((await service.deleteReport('r1'))['ok'], isTrue);
-      expect(await service.listReports(), isEmpty);
+    test('an update carries what it would replace, for the diff', () async {
+      await seedReport(reportJson('r1'));
+      final checked = await service
+          .validateReportUpdate('r1', {...reportJson('r1'), 'name': 'Renamed'});
+      expect((checked['report'] as Map)['name'], 'Renamed');
+      expect((checked['before'] as Map)['name'], 'Shift report');
+      // Still untouched on disk.
+      expect((await service.getReportDefinition('r1'))?['name'],
+          'Shift report');
     });
 
     test('duplicate create, missing update/delete are errors', () async {
-      await service.createReport(reportJson('r1'));
-      final dup = await service.createReport(reportJson('r1'));
+      await seedReport(reportJson('r1'));
+      final dup = await service.validateNewReport(reportJson('r1'));
       expect(dup['error'], contains('already exists'));
-      expect((await service.updateReport('nope', reportJson('nope')))['error'],
+      expect(
+          (await service.validateReportUpdate('nope', reportJson('nope')))['error'],
           contains('nope'));
-      expect((await service.deleteReport('nope'))['error'], contains('nope'));
+      expect((await service.validateReportDelete('nope'))['error'],
+          contains('nope'));
     });
 
     test('an unknown section type names the valid ones', () async {
-      final result = await service.createReport({
+      final result = await service.validateNewReport({
         ...reportJson('r1'),
         'sections': [
           {'type': 'pie_of_lies'}
@@ -103,22 +122,22 @@ void main() {
 
     test('validation rejects nonsense', () async {
       expect(
-          (await service.setShifts([
+          (await service.validateShifts([
             {'name': '', 'start_minutes': 0, 'duration_minutes': 60}
           ]))['error'],
           contains('empty name'));
       expect(
-          (await service.setShifts([
+          (await service.validateShifts([
             {'name': 'X', 'start_minutes': 1440, 'duration_minutes': 60}
           ]))['error'],
           contains('start_minutes'));
       expect(
-          (await service.setShifts([
+          (await service.validateShifts([
             {'name': 'X', 'start_minutes': 0, 'duration_minutes': 0}
           ]))['error'],
           contains('duration_minutes'));
       expect(
-          (await service.setShifts([
+          (await service.validateShifts([
             {
               'name': 'X',
               'start_minutes': 0,
@@ -150,7 +169,7 @@ void main() {
 
   group('generateReport', () {
     setUp(() async {
-      await service.createReport(reportJson('r1'));
+      await seedReport(reportJson('r1'));
       await db.customStatement(
           'CREATE TABLE "line.temperature" ("value" REAL, "time" TEXT)');
       Future<void> insert(DateTime t, num v) => db.customStatement(
@@ -215,7 +234,7 @@ void main() {
     });
 
     test('day-range reports use calendar days', () async {
-      await service.createReport({
+      await seedReport({
         ...reportJson('day1'),
         'id': 'day1',
         'range': 'day',

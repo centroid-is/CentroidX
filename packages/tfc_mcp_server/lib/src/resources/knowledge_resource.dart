@@ -64,10 +64,12 @@ safe counter deltas kept intact. An `sql` section takes one SELECT (or
 WITH … SELECT); the tokens `:from`/`:to` are bound to the range as ISO-8601
 UTC text (write `:from::timestamptz` against timestamptz columns), rows are
 capped by `max_rows`. The AI can READ (list_reports,
-get_report_definition, generate_report, resolve_shift, get_shift_calendar)
-and can WRITE definitions DIRECTLY (create_report, update_report,
-delete_report, set_shift_calendar) — the one tool group whose writes are not
-proposals, because a report definition only reads data. Writes are audited.
+get_report_definition, generate_report, resolve_shift, get_shift_calendar).
+The four write tools (create_report, update_report, delete_report,
+set_shift_calendar) return **proposals**, like every other write in this
+server: a person applies them in the report editor, where the save is gated
+on `configure` and audited. An `sql` section may not name the access tables —
+a report is rendered on a page any operator can open.
 
 ## Proposals: the only way anything changes
 

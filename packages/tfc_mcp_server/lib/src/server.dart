@@ -252,6 +252,16 @@ class TfcMcpServer {
           proposalService: proposalService,
         );
       }
+      if (toggles.reportsEnabled) {
+        // Same pairing the access-template writes use: proposals carries the
+        // write half, reportsEnabled put the read half on the registry.
+        registerReportWriteTools(
+          registry: registry,
+          service: reportService,
+          riskGate: riskGate,
+          proposalService: proposalService,
+        );
+      }
       if (toggles.configEnabled) {
         // Beside the other write tools and under the same pairing
         // registerAlarmWriteTools uses: the proposals toggle carries it, and
