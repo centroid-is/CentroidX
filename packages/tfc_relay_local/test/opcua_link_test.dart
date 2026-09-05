@@ -570,4 +570,101 @@ void main() {
       expect(written, isNot(isA<WriteApplied>()));
     });
   });
+
+/// F7 from the rig sweep (RIG-TEST-FINDINGS.md): a key mapped with an
+/// `array_index` must carry the ELEMENT, exactly as the shipped StateMan does
+/// (`state_man.dart:1871` read, `:2553` subscribe, `:2033-2039` write). The
+/// deployed gateway streamed the whole 10-element array under both
+/// `data.real.1` and `data.real.5` and historised `double precision[]`
+/// columns where the app's tables hold scalars — one key, two schemas,
+/// depending on which process wrote it.
+void arrayElementGroup() {
+  group('a key with an array_index carries the element, not the array', () {
+    const arrayKey = 'plant.rData';
+    late OpcUaServerFixture fixture;
+    late OpcUaUpstreamLink link;
+
+    setUp(() async {
+      fixture = await OpcUaServerFixture.start(
+        valueKeys: [arrayKey],
+        // Born an array of doubles — see the fixture's seedValues doc; a
+        // scalar-seeded node coerces the write below to a scalar.
+        seedValues: {arrayKey: <double>[1.5, 2.5, 3.5]},
+      );
+      addTearDown(fixture.dispose);
+      link = OpcUaUpstreamLink(
+        alias: alias,
+        endpoint: fixture.endpoint,
+        useIsolate: false,
+      );
+      addTearDown(link.dispose);
+      await link.connect(deadline: generous);
+      await awaitConnected(link);
+    });
+
+    test('read slices to the element and keeps the sample\'s envelope',
+        () async {
+      final ref =
+          link.resolve(arrayKey, mappingFor(arrayKey, arrayIndex: 1))!;
+      final seen = await link.read(ref, deadline: generous);
+      expect(seen.value, 2.5,
+          reason: 'the app\'s read does value[idx] '
+              '(state_man.dart:1871); the deployed gateway returned the '
+              'whole array and the panel\'s widget cast blew up');
+      expect(seen.quality, Quality.good);
+      expect(seen.sourceTime, isNotNull,
+          reason: 'slicing must not cost the envelope: the source instant '
+              'belongs to the sample, and the element is the sample here');
+    });
+
+    test('subscribe delivers elements, never the whole array', () async {
+      final ref =
+          link.resolve(arrayKey, mappingFor(arrayKey, arrayIndex: 2))!;
+      final first = link
+          .subscribe(ref)
+          .firstWhere((v) => v.quality == Quality.good)
+          .timeout(generous);
+      fixture.setValue(arrayKey, [9.5, 8.5, 7.5]);
+      final seen = await first;
+      expect(seen.value, anyOf(3.5, 7.5),
+          reason: 'either the initial sample or the update, but always one '
+              'element — a mimic bound to a number cannot render a list');
+      expect(seen.value, isNot(isA<List<Object?>>()));
+    });
+
+    test('an element write is a read-modify-write that spares the '
+        'neighbours', () async {
+      final ref =
+          link.resolve(arrayKey, mappingFor(arrayKey, arrayIndex: 1))!;
+      final result = await link.write(ref, DynamicValue.of(42.5),
+          cmd: 'cmd-rmw', deadline: generous, hasExpect: true);
+      expect(result, isA<WriteApplied>(),
+          reason: 'with expect supplied the guard steps aside, and the '
+              'documented read-modify-write must then actually exist: the '
+              'deployed build would have written the scalar over the whole '
+              'array node');
+      final whole =
+          await link.read(link.resolve(arrayKey, mappingFor(arrayKey))!,
+              deadline: generous);
+      expect([whole[0].value, whole[1].value, whole[2].value],
+          [1.5, 42.5, 3.5],
+          reason: 'one element changed, two survived — the whole point of '
+              'read-modify-write');
+    });
+
+    test('an index past the end reads as errorTypeMismatch, not a throw',
+        () async {
+      final ref =
+          link.resolve(arrayKey, mappingFor(arrayKey, arrayIndex: 9))!;
+      final seen = await link.read(ref, deadline: generous);
+      expect(seen.quality, Quality.errorTypeMismatch,
+          reason: 'the mapping and the server disagree about the tag\'s '
+              'shape; 771 is the code that says exactly that, and null under '
+              'it is what stops the miss looking like an absent reading');
+      expect(seen.value, isNull);
+    });
+  });
+}
+
+  arrayElementGroup();
 }

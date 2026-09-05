@@ -560,12 +560,13 @@ final class OpcUaUpstreamLink implements UpstreamLink {
           arrivedAt: DateTime.now().toUtc(),
           onSourceTimeFallback: () => _sourceTimeFallbacks++,
         );
-        _cache[monitored.key] = translated;
-        if (translated.quality == Quality.good) {
-          _lastGoodValues[monitored.key] = translated.value;
+        final shaped = _sliceArrayElement(monitored.key, translated);
+        _cache[monitored.key] = shaped;
+        if (shaped.quality == Quality.good) {
+          _lastGoodValues[monitored.key] = shaped.value;
         }
         if (!monitored.controller.isClosed) {
-          monitored.controller.add(translated);
+          monitored.controller.add(shaped);
         }
       },
       onError: (Object error) {
@@ -609,8 +610,9 @@ final class OpcUaUpstreamLink implements UpstreamLink {
         // [sourceTimeFallbacks]. Every read contributes here by construction.
         onSourceTimeFallback: () => _readSourceTimeFallbacks++,
       );
-      _cache[ref.key] = translated;
-      return translated;
+      final shaped = _sliceArrayElement(ref.key, translated);
+      _cache[ref.key] = shaped;
+      return shaped;
     } on TimeoutException {
       return DynamicValue(
           value: null,
@@ -677,7 +679,24 @@ final class OpcUaUpstreamLink implements UpstreamLink {
     // readback is the only confirmation.
     WriteAnswer answer;
     try {
-      await client.write(_nodes[ref.key]!, _toBindingValue(value)).timeout(deadline);
+      final index = _arrayIndices[ref.key];
+      if (index != null) {
+        // The read-modify-write the shipped StateMan does
+        // (`state_man.dart:2033-2039`), and the reason the guard above only
+        // steps aside with `expect`: this reads the whole array, replaces one
+        // element and writes it back, so a concurrent change to a *different*
+        // element between the two crossings is silently overwritten unless
+        // the caller pinned the value it is racing. Both crossings share the
+        // one deadline.
+        final whole =
+            await client.read(_nodes[ref.key]!).timeout(deadline);
+        whole[index] = value.value;
+        await client.write(_nodes[ref.key]!, whole).timeout(deadline);
+      } else {
+        await client
+            .write(_nodes[ref.key]!, _toBindingValue(value))
+            .timeout(deadline);
+      }
       answer = WriteAcknowledged(at: DateTime.now().millisecondsSinceEpoch);
     } on TimeoutException {
       answer = const WriteDeadlineExpired();
@@ -708,6 +727,41 @@ final class OpcUaUpstreamLink implements UpstreamLink {
         value: value.value,
         typeId: value.value is int ? ua.NodeId.int32 : null,
       );
+
+  /// Slices a whole-array sample down to the one element a key mapped with an
+  /// `array_index` is about, keeping the sample's quality and source time.
+  ///
+  /// **The gateway's F7** (RIG-TEST-FINDINGS.md): the shipped StateMan does
+  /// `value[idx]` on read (`state_man.dart:1871`), `.map((v) => v[idx])` on
+  /// subscribe (`:2553`) and a read-modify-write on write (`:2033-2039`); the
+  /// deployed gateway did none of it and streamed the whole array under every
+  /// element key, storing `double precision[]` where the app stores scalars.
+  ///
+  /// A key with no `array_index` passes through untouched. An index that the
+  /// value cannot satisfy — the tag is not an array, or the array is shorter
+  /// than the mapping claims — is [Quality.errorTypeMismatch] with a null
+  /// value: the mapping and the server disagree about the tag's shape, which
+  /// is exactly what 771 says, and null under it is what stops the miss
+  /// reading as a plausible zero. A bad-quality sample already carries null
+  /// and is returned as-is; there is nothing to slice.
+  DynamicValue _sliceArrayElement(String key, DynamicValue translated) {
+    final index = _arrayIndices[key];
+    if (index == null) return translated;
+    final value = translated.value;
+    if (value == null) return translated;
+    if (value is! List || index < 0 || index >= value.length) {
+      return DynamicValue(
+        value: null,
+        quality: Quality.errorTypeMismatch,
+        sourceTime: translated.sourceTime,
+      );
+    }
+    return DynamicValue(
+      value: value[index],
+      quality: translated.quality,
+      sourceTime: translated.sourceTime,
+    );
+  }
 
   /// Opens the session, **bounded by [deadline] over the whole method**.
   ///

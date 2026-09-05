@@ -52,11 +52,20 @@ NodeId fixtureNodeId(String key) => NodeId.fromString(fixtureNamespace, key);
 /// disagrees with every later write. `subscription_inactivity_test.dart:43-44`
 /// passes `typeId: NodeId.int32` for the same reason; this is that, in one
 /// place, so no lever can forget it.
-DynamicValue fixtureValue(Object? value, {String? name}) => DynamicValue(
-      value: value,
-      name: name,
-      typeId: value is int ? NodeId.int32 : null,
-    );
+DynamicValue fixtureValue(Object? value, {String? name}) {
+  // An array node: the binding models arrays as List<DynamicValue>
+  // (`dynamic_value.dart:117`), so a bare Dart list must go through
+  // `fromList` with an element type — the F7 group's node is a list of
+  // doubles.
+  if (value is List<double>) {
+    return DynamicValue.fromList(value, typeId: NodeId.double, name: name);
+  }
+  return DynamicValue(
+    value: value,
+    name: name,
+    typeId: value is int ? NodeId.int32 : null,
+  );
+}
 
 /// An in-process OPC UA server with the levers this phase's plans need.
 ///
@@ -192,6 +201,12 @@ final class OpcUaServerFixture {
         const <String, Map<String, Object>>{},
     Iterable<String> treePaths = const <String>[],
     Iterable<String> methodPaths = const <String>[],
+    // Initial values for plain value nodes, applied **before** the node is
+    // created so its OPC UA data type is minted from the seed. A node
+    // created scalar (the default seed is `0`) coerces a later array write to
+    // a scalar — an array node must be born one. Keys here must also appear
+    // in [valueKeys].
+    Map<String, Object?> seedValues = const <String, Object?>{},
     bool viaFaultProxy = false,
     LogLevel logLevel = LogLevel.UA_LOGLEVEL_ERROR,
   }) async {
@@ -221,6 +236,11 @@ final class OpcUaServerFixture {
           serverIteratePeriod, (_) => _crank(() => built.server)),
       proxy: viaFaultProxy ? FaultProxy(targetPort: built.port) : null,
     );
+    // Before `_addNodes`, so the seed is the value the node is created with
+    // and therefore what mints its data type.
+    for (final entry in seedValues.entries) {
+      fixture._plainValues[entry.key] = fixtureValue(entry.value, name: entry.key);
+    }
     fixture._addNodes();
     await fixture.proxy?.start();
     return fixture;
