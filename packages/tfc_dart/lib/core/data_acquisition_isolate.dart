@@ -63,6 +63,17 @@ class DataAcquisitionIsolateConfig {
       );
 }
 
+/// How long a freshly spawned worker has to hand back its control port.
+///
+/// It bounds the spawn, so it must be short enough that a wedged worker does
+/// not park main forever and long enough that a cold isolate on a loaded
+/// machine is not mistaken for one. It deliberately does NOT cover standing
+/// the acquisition stack up: the worker announces itself before it dials
+/// Postgres or the PLC, so a database outage — which
+/// [Database.connectWithRetry] rides out by design — cannot be mistaken for a
+/// wedge and turned into a kill/respawn loop.
+const kWorkerHandshakeDeadline = Duration(seconds: 30);
+
 /// A supervised acquisition worker, from main's side of the port.
 ///
 /// The handle outlives every respawn; the [Isolate] inside it is replaced.
@@ -84,10 +95,15 @@ class DataAcquisitionWorker {
 
   final Completer<void> _firstReady = Completer<void>();
 
+  /// The current attempt's handshake, installed before the spawn so a worker
+  /// that answers instantly cannot beat the listener to it.
+  Completer<SendPort?>? _handshake;
+
   Isolate? _isolate;
   SendPort? _controlPort;
   bool _shuttingDown = false;
   int _generation = 0;
+  int _handshakeTimeouts = 0;
 
   /// Everything the worker sent, plus `null` each time one dies.
   ///
@@ -110,6 +126,10 @@ class DataAcquisitionWorker {
   /// How many workers have completed the handshake. 1 after a clean start;
   /// bumped by every respawn that gets far enough to talk.
   int get generation => _generation;
+
+  /// How many spawns were abandoned because the worker never handed back its
+  /// control port inside the deadline.
+  int get handshakeTimeouts => _handshakeTimeouts;
 
   /// True once [kill] has been called — the supervisor stops respawning.
   bool get isShuttingDown => _shuttingDown;
@@ -134,11 +154,19 @@ class DataAcquisitionWorker {
     _controlPort = control;
     _generation++;
     if (!_firstReady.isCompleted) _firstReady.complete();
+    final handshake = _handshake;
+    if (handshake != null && !handshake.isCompleted) {
+      handshake.complete(control);
+    }
   }
 
   void _onExit() {
     _isolate = null;
     _controlPort = null;
+    // A worker that died before it answered has answered: with nothing. The
+    // spawn must not sit out the rest of the deadline for a corpse.
+    final handshake = _handshake;
+    if (handshake != null && !handshake.isCompleted) handshake.complete(null);
   }
 
   void _forward(Object? message) {
@@ -177,6 +205,22 @@ Future<void> dataAcquisitionIsolateEntry(
   initLogConfig();
   final logger = Logger();
 
+  // The handshake, and the FIRST thing this isolate does.
+  //
+  // It says "this worker exists and can be talked to", NOT "acquisition is
+  // running". Sent here rather than after the stack is up because the two
+  // failures look identical from main otherwise: a database that is down —
+  // which Database.connectWithRetry rides out by design, for hours if it has
+  // to — would silently blow the supervisor's handshake deadline and get a
+  // patiently-waiting worker killed and respawned on the backoff ladder.
+  //
+  // Nothing listens on the control port yet; the worker-side pipe endpoint
+  // (12-05) attaches subscribe/unsubscribe and write requests to it. The
+  // listener exists now so the port is live from the instant main holds it.
+  final control = ReceivePort();
+  control.listen((_) {});
+  config.toMain?.send(control.sendPort);
+
   // Completed only on a startup failure. Steady-state errors are handled by
   // the zone and must NOT complete it, or the isolate would exit on the first
   // recoverable hiccup.
@@ -213,8 +257,56 @@ Future<void> dataAcquisitionIsolateEntry(
 /// startup failure (fatal, respawn) from a steady-state stray error (log and
 /// carry on). Everything it constructs — [StateMan], [Collector], [Database]
 /// and every timer and stream they own — inherits the guarded zone.
+///
+/// [database] is the seam that lets the worker stand up with no Postgres
+/// behind it: pass one and [Database.connectWithRetry] is never called. Null
+/// — the production case — means connect for real.
 Future<void> _runDataAcquisition(
-    DataAcquisitionIsolateConfig config, Logger logger) async {
+  DataAcquisitionIsolateConfig config,
+  Logger logger, {
+  Database? database,
+}) async {
+  final stack =
+      await buildAcquisitionStack(config, logger, database: database);
+
+  logger.i('DataAcquisition isolate running for ${stack.name}');
+
+  // Keep isolate alive indefinitely
+  await Completer<void>().future;
+}
+
+/// Everything the worker assembles before it parks.
+///
+/// Named so a test can hold it: the acquisition stack used to exist only as
+/// locals inside a function that never returns, which is why nothing could
+/// assert anything about it without a database and a PLC.
+class AcquisitionStack {
+  const AcquisitionStack({
+    required this.name,
+    required this.database,
+    required this.stateMan,
+    required this.collector,
+  });
+
+  /// What this worker calls itself in the logs: the OPC UA server's alias, or
+  /// `jbtm`/`modbus` for the grouped workers.
+  final String name;
+  final Database database;
+  final StateMan stateMan;
+  final Collector collector;
+}
+
+/// Builds the acquisition stack — everything [_runDataAcquisition] does except
+/// park.
+///
+/// Public (and [visibleForTesting]) only because the park makes the caller
+/// unobservable; production goes through [_runDataAcquisition].
+@visibleForTesting
+Future<AcquisitionStack> buildAcquisitionStack(
+  DataAcquisitionIsolateConfig config,
+  Logger logger, {
+  Database? database,
+}) async {
   final dbConfig = DatabaseConfig.fromJson(config.dbConfigJson);
   final keyMappings = KeyMappings.fromJson(config.keyMappingsJson);
 
@@ -242,7 +334,10 @@ Future<void> _runDataAcquisition(
   logger.i('Starting DataAcquisition isolate "$isolateName" '
       '(opcua: ${opcuaServers.length}, m2400: ${jbtmConfigs.length}, modbus: ${modbusConfigs.length})');
 
-  final db = await Database.connectWithRetry(dbConfig, useIsolate: false);
+  // An injected Database is already open — connecting again is the one thing
+  // this seam exists to avoid.
+  final db =
+      database ?? await Database.connectWithRetry(dbConfig, useIsolate: false);
   final smConfig = StateManConfig(
       opcua: opcuaServers, jbtm: jbtmConfigs, modbus: modbusConfigs);
 
@@ -263,17 +358,18 @@ Future<void> _runDataAcquisition(
     deviceClients: deviceClients,
   );
 
-  // ignore: unused_local_variable
   final collector = Collector(
     config: CollectorConfig(collect: true),
     stateMan: stateMan,
     database: db,
   );
 
-  logger.i('DataAcquisition isolate running for $isolateName');
-
-  // Keep isolate alive indefinitely
-  await Completer<void>().future;
+  return AcquisitionStack(
+    name: isolateName,
+    database: db,
+    stateMan: stateMan,
+    collector: collector,
+  );
 }
 
 /// Spawn a DataAcquisition isolate for a single OPC UA server.
@@ -344,14 +440,17 @@ Future<DataAcquisitionWorker> spawnWorkerForTest(
   DataAcquisitionIsolateConfig config,
   String name, {
   required void Function(DataAcquisitionIsolateConfig) entryPoint,
+  Duration readyDeadline = kWorkerHandshakeDeadline,
 }) =>
-    _spawnWithRespawn(config, name, entryPoint: entryPoint);
+    _spawnWithRespawn(config, name,
+        entryPoint: entryPoint, readyDeadline: readyDeadline);
 
 Future<DataAcquisitionWorker> _spawnWithRespawn(
   DataAcquisitionIsolateConfig config,
   String name, {
   void Function(DataAcquisitionIsolateConfig) entryPoint =
       dataAcquisitionIsolateEntry,
+  Duration readyDeadline = kWorkerHandshakeDeadline,
 }) async {
   final logger = Logger();
   var restartDelay = const Duration(seconds: 2);
@@ -432,6 +531,13 @@ Future<DataAcquisitionWorker> _spawnWithRespawn(
       scheduleRespawn('uncaught error');
     });
 
+    // Installed BEFORE the spawn: a worker that answers on its first turn
+    // would otherwise reach the port listener while there is nothing to
+    // complete, and the handshake would time out on a perfectly healthy
+    // worker.
+    final handshake = Completer<SendPort?>();
+    handle._handshake = handshake;
+
     try {
       final isolate = await Isolate.spawn(
         entryPoint,
@@ -455,6 +561,22 @@ Future<DataAcquisitionWorker> _spawnWithRespawn(
       healthyTimer = Timer(healthyAfter, () {
         restartDelay = const Duration(seconds: 2);
       });
+
+      // The handshake. Bounded, because a worker can be alive and useless:
+      // spawned, never wedged enough to die, never far enough along to talk.
+      // Waiting on that forever parks main at startup with no diagnosis. On
+      // expiry the wedged worker is killed — leaving it running beside its
+      // replacement is two live sessions on one server — and the failure
+      // rides the EXISTING backoff ladder rather than a second one of its own.
+      final control =
+          await handshake.future.timeout(readyDeadline, onTimeout: () => null);
+      if (control == null && !handle._shuttingDown && !respawnScheduled) {
+        handle._handshakeTimeouts++;
+        logger.e('Isolate for $name never sent its control port within '
+            '${readyDeadline.inSeconds}s; killing it');
+        isolate.kill(priority: Isolate.immediate);
+        scheduleRespawn('handshake timeout');
+      }
     } catch (e) {
       logger.e('Failed to spawn isolate for $name: $e');
       scheduleRespawn('spawn failure');
