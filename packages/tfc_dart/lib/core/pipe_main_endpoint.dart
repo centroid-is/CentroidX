@@ -377,12 +377,67 @@ class PipeMainEndpoint {
     });
   }
 
+  /// A generation announced itself: replay main's whole intent to it.
+  ///
+  /// **A snapshot, never a delta.** A fresh worker is piping nothing at all, so
+  /// there is no state on that side to diff against — a delta would be
+  /// describing changes to a set the new isolate never had. Everything with a
+  /// watcher right now is re-sent; a key released while the worker was dead is
+  /// simply absent, and no [PipeUnsubscribe] is minted for it because there is
+  /// nothing to retract.
+  ///
+  /// The first generation replays an empty set, which costs nothing: main has
+  /// not had a chance to want anything yet.
+  ///
+  /// **No write is replayed, on any generation.** In-flight writes died with
+  /// the isolate and were answered unknown by [_onWorkerDied]; re-sending one
+  /// now would execute an operator's command after they had already been told
+  /// its fate was unknown.
   void _onWorkerReady(int index, SendPort control) {
-    // Task 3 replays the subscription snapshot here.
+    final snapshot = _subscribedByWorker[index];
+    if (snapshot == null || snapshot.isEmpty) return;
+    _logger.i('pipe: ${_workers[index].name} is ready; replaying '
+        '${snapshot.length} subscription(s)');
+    for (final key in List<String>.of(snapshot)) {
+      control.send(PipeSubscribe(key));
+    }
   }
 
+  /// The worker died. This is news, and it is delivered as news.
+  ///
+  /// Everything that worker was piping goes bad on this turn — `badCommFault`,
+  /// the band that says something went wrong on the link and waiting might fix
+  /// it, which is exactly true of an isolate the supervisor is about to
+  /// respawn. Only the keys it was actually piping: a key it owned but nobody
+  /// ever subscribed to has never been known, and `notYetKnown` remains the
+  /// honest answer for it.
+  ///
+  /// Every write still waiting on that worker resolves [relay.WriteUnknown]
+  /// **now** rather than at its own deadline. The deadline would eventually
+  /// say the same thing, but seconds later, and there is nothing uncertain
+  /// left to wait for: the isolate that held the request is gone.
+  ///
+  /// The subscription set is deliberately NOT cleared. The worker is gone;
+  /// main's intent is not, and that set is what the respawn replays.
   void _onWorkerDied(int index) {
-    // Task 3 owns death-as-event.
+    final name = _workers[index].name;
+    final piped = _subscribedByWorker[index] ?? const <String>{};
+    _logger.e('pipe: $name died — marking ${piped.length} key(s) bad and '
+        'resolving ${pendingWriteCount(index)} pending write(s) unknown');
+    _markBad(piped, relay.Quality.badCommFault);
+
+    final pendingTable = _pending[index];
+    if (pendingTable == null || pendingTable.isEmpty) return;
+    final dying = List<_PendingWrite>.of(pendingTable.values);
+    pendingTable.clear();
+    for (final pending in dying) {
+      pending.resolve(relay.WriteUnknown(
+        pending.cmd,
+        relay.WriteReason('worker_died',
+            message: '$name exited while the write to "${pending.key}" was in '
+                'flight'),
+      ));
+    }
   }
 
   // --------------------------------------------------------------- the write
