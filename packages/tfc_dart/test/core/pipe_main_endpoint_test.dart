@@ -304,6 +304,111 @@ void main() {
     });
   });
 
+  group('the subscribe surface (refcounted, control on the 0 <-> 1 transition)',
+      () {
+    /// Every subscribe/unsubscribe control message a worker was sent, in order.
+    List<Object?> control(_FakeLink link) => link.received
+        .where((m) => m is PipeSubscribe || m is PipeUnsubscribe)
+        .toList();
+
+    test('the first subscribe sends exactly one control message, to the owner',
+        () async {
+      endpoint.subscribe('a.one');
+      await _settle();
+
+      expect(control(alpha), hasLength(1));
+      expect((control(alpha).single as PipeSubscribe).key, 'a.one');
+      expect(control(beta), isEmpty);
+    });
+
+    test('a second subscriber for the same key mints no control message',
+        () async {
+      endpoint.subscribe('a.one');
+      endpoint.subscribe('a.one');
+      endpoint.subscribe('a.one');
+      await _settle();
+
+      expect(control(alpha), hasLength(1));
+      expect(endpoint.refcountOf('a.one'), 3);
+    });
+
+    test('the unsubscribe crosses only when the LAST watcher goes', () async {
+      endpoint.subscribe('a.one');
+      endpoint.subscribe('a.one');
+      await _settle();
+
+      endpoint.unsubscribe('a.one');
+      await _settle();
+      expect(control(alpha).whereType<PipeUnsubscribe>(), isEmpty,
+          reason: 'one watcher is still holding the key');
+
+      endpoint.unsubscribe('a.one');
+      await _settle();
+      expect(control(alpha).whereType<PipeUnsubscribe>(), hasLength(1));
+      expect(endpoint.refcountOf('a.one'), 0);
+    });
+
+    test('the per-worker subscribed set is exactly the keys with a refcount',
+        () async {
+      endpoint.subscribe('a.one');
+      endpoint.subscribe('a.two');
+      endpoint.subscribe('a.two');
+      endpoint.subscribe('b.one');
+      await _settle();
+
+      expect(endpoint.subscribedKeys(0), {'a.one', 'a.two'});
+      expect(endpoint.subscribedKeys(1), {'b.one'});
+
+      endpoint.unsubscribe('a.one');
+      endpoint.unsubscribe('a.two');
+      await _settle();
+
+      expect(endpoint.subscribedKeys(0), {'a.two'},
+          reason: 'a.two still has one watcher; a.one has none');
+    });
+
+    test('a key no worker owns is a no-op refusal — no message, no refcount',
+        () async {
+      endpoint.subscribe('nobody.owns.me');
+      endpoint.unsubscribe('nobody.owns.me');
+      await _settle();
+
+      expect(alpha.received, isEmpty);
+      expect(beta.received, isEmpty);
+      expect(endpoint.refcountOf('nobody.owns.me'), 0);
+    });
+
+    test('unsubscribing a key nobody subscribed to touches no worker',
+        () async {
+      endpoint.unsubscribe('a.one');
+      await _settle();
+
+      expect(alpha.received, isEmpty);
+      expect(endpoint.refcountOf('a.one'), 0);
+    });
+
+    test('a re-subscribe after the release crosses again', () async {
+      endpoint.subscribe('a.one');
+      endpoint.unsubscribe('a.one');
+      endpoint.subscribe('a.one');
+      await _settle();
+
+      expect(control(alpha).whereType<PipeSubscribe>(), hasLength(2));
+      expect(control(alpha).whereType<PipeUnsubscribe>(), hasLength(1));
+      expect(endpoint.subscribedKeys(0), {'a.one'});
+    });
+
+    test('the release is at zero, not on a timer', () async {
+      endpoint.subscribe('a.one');
+      await _settle();
+      endpoint.unsubscribe('a.one');
+
+      // No pump, no delay: the control message is on its way already.
+      expect(endpoint.subscribedKeys(0), isEmpty);
+      expect(endpoint.refcountOf('a.one'), 0);
+    });
+  });
+
   group('the deadline constant', () {
     test('kPipeWriteDeadline matches LocalStateMan.writeDeadline', () {
       expect(kPipeWriteDeadline, const Duration(seconds: 5));
