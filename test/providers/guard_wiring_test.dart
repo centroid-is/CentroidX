@@ -75,20 +75,25 @@ void main() {
       expect(policy.groupForRoute('/alarms'), AccessGroup.operate);
     });
 
-    test('carries all nine raised routes, not an empty map', () {
+    test('carries all ten raised routes, not an empty map', () {
       final container = ProviderContainer();
       addTearDown(container.dispose);
       final policy = container.read(accessPolicyProvider);
 
       // Seven since plan 03-14 raised '/advanced/knowledge-base', eight since
       // 05-07 raised '/advanced/audit-trail', nine since 06-10 raised
-      // '/advanced/access'; the length is asserted so an empty or truncated
-      // map fails here rather than showing up as a route that quietly opens.
-      expect(kRaisedRoutes, hasLength(9));
+      // '/advanced/access', ten since the report editor joined them; the
+      // length is asserted so an empty or truncated map fails here rather
+      // than showing up as a route that quietly opens.
+      expect(kRaisedRoutes, hasLength(10));
       expect(
           policy.groupForRoute('/advanced/page-editor'), AccessGroup.configure);
       expect(policy.groupForRoute('/advanced/knowledge-base'),
           AccessGroup.configure);
+      expect(policy.groupForRoute('/advanced/report-editor'),
+          AccessGroup.configure);
+      // The viewer is not raised, and that is the point of the pair.
+      expect(policy.groupForRoute('/reports'), AccessGroup.operate);
       expect(policy.groupForRoute(kServerConfigRoute), AccessGroup.administer);
       expect(policy.groupForRoute(kAuditTrailRoute), AccessGroup.users);
       expect(policy.groupForRoute(kAccessAdminRoute), AccessGroup.users);
