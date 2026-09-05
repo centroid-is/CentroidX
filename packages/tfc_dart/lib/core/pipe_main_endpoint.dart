@@ -153,6 +153,23 @@ class PipeMainEndpoint {
   final Map<int, Map<int, _PendingWrite>> _pending =
       <int, Map<int, _PendingWrite>>{};
 
+  /// How many callers on main want each key. The subscribe/unsubscribe control
+  /// message crosses the port only when this leaves or returns to zero.
+  ///
+  /// A named count in a map, exactly as `fanin.dart` holds one — and for the
+  /// reason its comment gives at length: the release point is then a line of
+  /// code with a name rather than an emergent side effect, and it happens when
+  /// the last watcher goes rather than ten minutes later while the PLC keeps
+  /// paying for a monitored item nobody is reading.
+  final Map<String, int> _refcount = <String, int>{};
+
+  /// What each worker is currently piping — the keys whose refcount is >= 1,
+  /// per worker, maintained in lockstep with [_refcount].
+  ///
+  /// This is the snapshot a respawn replays. It survives a death on purpose:
+  /// the worker is gone, main's intent is not.
+  final Map<int, Set<String>> _subscribedByWorker = <int, Set<String>>{};
+
   bool _disposed = false;
 
   /// Registers [worker] as the owner of [keys] and starts reading it.
@@ -171,6 +188,7 @@ class PipeMainEndpoint {
     _workers.add(worker);
     _pending[index] = <int, _PendingWrite>{};
     _nextWriteId[index] = 1;
+    _subscribedByWorker[index] = <String>{};
     for (final key in keys) {
       final owner = _keyToWorker[key];
       if (owner != null) {
@@ -200,6 +218,82 @@ class PipeMainEndpoint {
   /// [key]'s node, to hand a widget. Always the same instance for the same key.
   relay.ValueListenable<relay.DynamicValue> listen(String key) =>
       store.node(key);
+
+  // ----------------------------------------------------------- the subscribe
+
+  /// One more caller on main wants [key] piped.
+  ///
+  /// The worker pipes only what it was asked for, so somebody has to ask — but
+  /// only once, however many panels are watching. On the **0 -> 1 transition**
+  /// a [PipeSubscribe] crosses to the owning worker and [key] joins that
+  /// worker's subscribed set; every later call is a `++` and nothing else.
+  ///
+  /// A key no worker owns is a no-op refusal: no message, no refcount, no
+  /// entry in anybody's set. Nothing is spawned for such a key, so there is
+  /// nothing that could ever answer for it.
+  void subscribe(String key) {
+    if (_disposed) return;
+    final index = _keyToWorker[key];
+    if (index == null) {
+      _logger.w('pipe: refusing to subscribe "$key" — no worker owns it');
+      return;
+    }
+    final count = (_refcount[key] ?? 0) + 1;
+    _refcount[key] = count;
+    if (count > 1) return; // already piping; the worker has been told once
+    _subscribedByWorker[index]!.add(key);
+    _sendControl(index, PipeSubscribe(key));
+  }
+
+  /// One fewer caller on main wants [key].
+  ///
+  /// The [PipeUnsubscribe] crosses on the **1 -> 0 transition** and [key]
+  /// leaves the worker's subscribed set at that same instant — synchronously,
+  /// so "released when the last watcher goes" is literally true rather than
+  /// true one event-loop turn later.
+  ///
+  /// Unsubscribing something that was never subscribed is a no-op, so teardown
+  /// paths need no bookkeeping (`ValueStoreNode.removeListener`'s convention,
+  /// which `fanin.dart` follows for the same reason).
+  void unsubscribe(String key) {
+    if (_disposed) return;
+    final index = _keyToWorker[key];
+    if (index == null) return;
+    final count = _refcount[key] ?? 0;
+    if (count == 0) return;
+    if (count > 1) {
+      _refcount[key] = count - 1;
+      return;
+    }
+    _refcount.remove(key);
+    _subscribedByWorker[index]!.remove(key);
+    _sendControl(index, PipeUnsubscribe(key));
+  }
+
+  /// How many callers on main currently want [key]. Diagnostics and tests.
+  @visibleForTesting
+  int refcountOf(String key) => _refcount[key] ?? 0;
+
+  /// Exactly the keys worker [index] is piping right now — the respawn
+  /// snapshot.
+  @visibleForTesting
+  Set<String> subscribedKeys(int index) =>
+      Set<String>.unmodifiable(_subscribedByWorker[index] ?? const <String>{});
+
+  /// Sends one control message to a worker, if it currently has a port.
+  ///
+  /// A worker between generations is not an error and not a lost intent: the
+  /// refcount and the subscribed set have already been updated, and the
+  /// respawn's ready handshake replays the whole snapshot.
+  void _sendControl(int index, PipeControl message) {
+    final port = _workers[index].controlPort;
+    if (port == null) {
+      _logger.i('pipe: ${_workers[index].name} has no control port for '
+          '$message — the respawn replay will carry it');
+      return;
+    }
+    port.send(message);
+  }
 
   // ------------------------------------------------------------- the inbound
 
