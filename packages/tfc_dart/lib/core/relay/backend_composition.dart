@@ -142,6 +142,10 @@ final class BackendRelayComposition {
 ///
 /// [validator] is required when — and refused unless — [config] says the
 /// composition root supplies the credential check. See the argument below.
+///
+/// [methodKeys] declares which mapped keys are *callables* rather than
+/// variables. Production passes none and the default is none; see the paragraph
+/// beside the `BackendBrowse` construction for why a contract leg passes one.
 BackendRelayComposition composeBackendRelay({
   required RelayConfig config,
   required PipeMainEndpoint pipe,
@@ -152,6 +156,7 @@ BackendRelayComposition composeBackendRelay({
   TokenValidator? validator,
   TimeseriesLimits? limits,
   Duration staleAfter = kBackendStaleAfter,
+  Set<String> methodKeys = const <String>{},
   Logger? log,
 }) {
   final logger = log ?? Logger();
@@ -217,13 +222,25 @@ BackendRelayComposition composeBackendRelay({
     logger: logger,
   );
 
-  // `methodKeys` is left at its empty default, which is the honest production
-  // answer: `KeyMappingEntry` has no callable concept, so SVN's address space
-  // declares no methods (13-04 Finding 1). `readValue` is the SWEEP's read, not
-  // the live half's, so a detail pane shows the same staleness the tag shows.
+  // `methodKeys` defaults to EMPTY, and empty is the honest production answer:
+  // `KeyMappingEntry` has no callable concept, so SVN's address space declares
+  // no methods (13-04 Finding 1) and `bin/main.dart` passes nothing. `readValue`
+  // is the SWEEP's read, not the live half's, so a detail pane shows the same
+  // staleness the tag shows.
+  //
+  // It is a PARAMETER, and only 13-11's WebSocket contract leg passes one.
+  // `checkBrowseNodeTypesDistinguishFoldersFromVariables` asserts that a
+  // callable comes back typed `method` and is not expandable, and a mapping
+  // cannot produce such a node however it is written — so a leg served from
+  // this composition with no seam for the declared set would fail that check
+  // with no bug behind it, and the only alternatives were to serve a
+  // hand-assembled graph (which is what criterion 4 exists to forbid) or to
+  // record the check as a gap (which criterion 1 forbids). The default keeps
+  // production byte-for-byte what it was.
   final browse = BackendBrowse(
     keyMappings: keyMappings,
     readValue: freshness.read,
+    methodKeys: methodKeys,
   );
 
   // ----------------------------------------------------------- data services

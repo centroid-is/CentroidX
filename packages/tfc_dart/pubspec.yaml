@@ -112,3 +112,19 @@ dev_dependencies:
   # the same reason, and each says so in its own pubspec.
   tfc_stateman_contract:
     path: ../tfc_stateman_contract
+  # The WebSocket leg of the contract suite (13-11) serves the backend adapter
+  # over a real socket: `shelf_io.serve` + `webSocketHandler` on the server end,
+  # `IOWebSocketChannel.connect` on the client end, and `StreamChannel<String>`
+  # as the type both `ServedStateMan` and `ChannelStateMan` already speak.
+  #
+  # **Dev-only, and already in the solve.** All four are production dependencies
+  # of `tfc_relay_server` (`tfc_relay_server/pubspec.yaml:20,24,32,37`), which
+  # tfc_dart already depends on, so these add no new registry resolution — they
+  # add the ability to *name* the four in a test file. The constraints are that
+  # package's, character for character: a looser one here could resolve a
+  # different version than the server was judged against, and the whole claim of
+  # this leg is that the transport is the one the plant will run.
+  shelf: ^1.4.2
+  shelf_web_socket: ^3.0.0
+  stream_channel: ^2.1.4
+  web_socket_channel: ^3.0.3
