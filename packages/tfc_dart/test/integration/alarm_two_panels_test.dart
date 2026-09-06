@@ -380,19 +380,62 @@ void main() {
     rig.raise();
     await rig.awaitActive();
 
-    // The one long wait in this file. `kBackendStaleAfter` is a production
-    // constant chosen from a measured window (13-CONTEXT says in as many words
-    // not to paper over that window), so the test waits past it rather than
-    // shaving it.
-    await Future<void>.delayed(kBackendStaleAfter + const Duration(seconds: 2));
+    // The one long wait in this file, and it waits for the SWEEP rather than
+    // for a number of seconds. `kBackendStaleAfter` is a production constant
+    // chosen from a measured window (13-CONTEXT says in as many words not to
+    // paper over that window), so it is not shaved — but a fixed
+    // `staleAfter + 2 s` delay was measured FLAKY here and the arithmetic says
+    // why: the sweep runs every `staleAfter ~/ 4` = 2.5 s, so a key can be up
+    // to 12.5 s old before the pass that badges it, and a 12 s wait loses that
+    // race about one run in four. Waiting for the badge itself is both
+    // deterministic and strictly stronger.
+    //
+    // The alarm's own input, which nothing has refreshed, is what the sweep is
+    // watched through: without this the arm would pass on a sweep that never
+    // fired at all.
+    await _waitUntil(
+      () =>
+          rig.backend.composition.freshness.read(kInputKey)?.quality ==
+          relay.Quality.badStale,
+      budget: kBackendStaleAfter * 3,
+      reason: 'the freshness sweep never badged the alarm\'s input stale, so '
+          'this arm proves nothing about what it skipped. ${rig.evidence()}',
+    );
+    expect(rig.backend.composition.freshness.sweeps, greaterThan(0),
+        reason: 'and the pass is countable. ${rig.evidence()}');
 
-    // The sweep demonstrably RAN: the alarm's own input, which nothing has
-    // refreshed, is badged stale on the backend. Without this the arm would
-    // pass on a sweep that never fired.
-    expect(rig.backend.composition.freshness.read(kInputKey)?.quality,
-        relay.Quality.badStale,
-        reason: 'the freshness sweep did not run, so this arm proves nothing '
-            'about what it skipped. ${rig.evidence()}');
+    // One tick (100 ms) is all a quality-only transition needs to reach a
+    // session. A full second, so "still good" is a measurement rather than a
+    // race the arm happens to win.
+    final beforeSettle = rig.backend.monotonic.elapsedMicroseconds;
+    await Future<void>.delayed(const Duration(seconds: 1));
+
+    // ---------------------------------------------------------------------
+    // THE ANTI-VACUITY CHECK, and it is not decoration.
+    //
+    // MEASURED (sabotage (d), 14-11): with no heartbeat pump these sockets
+    // were reaped six seconds after the handshake, so by this line both panels
+    // had been disconnected for seven seconds and "the banner is still good"
+    // was true because NOBODY WAS THERE TO BE TOLD OTHERWISE. Removing both
+    // freshness exclusions turned nothing red. A negative arm that a collapse
+    // makes vacuously true is worse than no arm, because it reports a green.
+    //
+    // So the arm now requires the panels to be demonstrably still attached and
+    // still being spoken to at the instant it makes its claim.
+    // ---------------------------------------------------------------------
+    for (final panel in [rig.a, rig.b]) {
+      expect(panel.closedByServer, isFalse,
+          reason: '${panel.name} was disconnected before this arm made its '
+              'claim, so "the banner never went grey" would only mean "the '
+              'banner stopped being updated". ${rig.evidence()}');
+      expect(panel.framesSince(beforeSettle), isNotEmpty,
+          reason: '${panel.name} received NOTHING in the last second — no '
+              'tick, no update. A silent socket cannot be evidence that a key '
+              'stayed good on it. ${rig.evidence()}');
+      expect(panel.heartbeats, greaterThan(0),
+          reason: '${panel.name} never beat, so it is alive by luck rather '
+              'than because it did what a panel does');
+    }
 
     for (final panel in [rig.a, rig.b]) {
       expect(panel.quality, relay.Quality.good,
@@ -457,12 +500,32 @@ void main() {
                 'it does not let a panel re-derive activeAtMs');
       }
 
-      // 3. Exactly two requests were ever made on this socket: hello, and
-      //    subscribe. No preferences read, no browse, no readMany.
-      expect(panel.answeredRequestIds, <int>[1, 2],
-          reason: '${panel.name} made more than the two calls this rig issues '
-              '(hello, subscribe). Every additional call is another way the '
-              'panel could have obtained something it is supposed not to have');
+      // 3. Three method names were ever SENT on this socket: the handshake,
+      //    the subscribe, and the heartbeat that keeps the session from being
+      //    reaped. No preferences read, no browse, no read, no readMany.
+      //
+      //    Method names rather than a count of answered ids: the heartbeat
+      //    makes the count non-deterministic, and a count could not tell a
+      //    `preferences.getString` from a `ping` anyway — which is precisely
+      //    the distinction this clause exists to make.
+      //    A set DIFFERENCE, not an equality: the beat is periodic, so
+      //    whether one has fired by the time a short arm reaches this line is
+      //    a race. What must never happen is a FOURTH name.
+      expect(
+          panel.sentMethods.toSet().difference(<String>{
+            relay.Methods.hello,
+            relay.Methods.subscribe,
+            relay.Methods.ping,
+          }),
+          isEmpty,
+          reason: '${panel.name} called something beyond the three a watching '
+              'panel needs. Every additional call is another way it could '
+              'have obtained something it is supposed not to have — '
+              '${panel.sentMethods}');
+      expect(panel.sentMethods,
+          containsAllInOrder(<String>[relay.Methods.hello, relay.Methods.subscribe]),
+          reason: '${panel.name} did not handshake and subscribe, in that '
+              'order, so the rest of this arm is describing a different rig');
 
       // 4. The instant appears on this socket ONLY inside the active-set
       //    payload. It has no other path here.
@@ -785,17 +848,18 @@ final class _Panel {
   List<String> framesMentioning(String needle) =>
       [for (final f in _client.inbound) if (f.contains(needle)) f];
 
-  /// The ids of every request this panel got an answer to, in order.
-  List<int> get answeredRequestIds {
-    final ids = <int>[];
-    for (final frame in _client.inbound) {
-      final decoded = jsonDecode(frame);
-      if (decoded is! Map) continue;
-      final id = decoded['id'];
-      if (id is int) ids.add(id);
-    }
-    return ids;
-  }
+  /// Every method name this panel has sent.
+  List<String> get sentMethods => _client.sentMethods;
+
+  /// How many heartbeats it has sent.
+  int get heartbeats => _client.heartbeats;
+
+  /// Whether the gateway has closed this panel's socket.
+  bool get closedByServer => _client.closedByServer;
+
+  /// Every server notification that landed after [micros] on the rig's clock.
+  List<ServerNotification> framesSince(int micros) =>
+      [for (final n in _subscribed) if (n.atMicros > micros) n];
 
   /// Whether [frame] is this panel's active-set subscribe answer, or an update
   /// for that subscription carrying its handle.
@@ -817,7 +881,8 @@ final class _Panel {
     return update.sub == kSub && update.changes.containsKey(_handle);
   }
 
-  String describe() => 'handle=$_handle, quality=${quality.code}, '
+  String describe() => 'closedByServer=$closedByServer, '
+      'beats=$heartbeats, handle=$_handle, quality=${quality.code}, '
       'entries=${entries.map((e) => '${e.uid}#${e.ruleIndex}@'
           '${e.activeAtMs}').toList()}, '
       'updates=${valueFrames.length}, frames=${_client.inbound.length}';

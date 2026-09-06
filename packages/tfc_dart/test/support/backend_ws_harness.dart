@@ -770,12 +770,27 @@ final class BackendRelayClient {
   final Stopwatch _monotonic;
 
   final List<String> _inbound = <String>[];
+  final List<String> _sent = <String>[];
   final Map<int, Completer<Object?>> _pending = <int, Completer<Object?>>{};
   final StreamController<ServerNotification> _notifications =
       StreamController<ServerNotification>.broadcast();
 
   int _nextId = 1;
   var _closed = false;
+  Timer? _heartbeat;
+
+  /// Every method name this client has SENT, in order.
+  ///
+  /// The counterpart to [inbound], and the thing an arm needs to say "this
+  /// panel never asked for that": counting answered ids cannot distinguish a
+  /// `preferences.getString` from a heartbeat.
+  List<String> get sentMethods => List.unmodifiable(_sent);
+
+  /// How many heartbeats this client has sent since [hello].
+  int get heartbeats => _sent.where((m) => m == relay.Methods.ping).length;
+
+  /// Whether the server has closed this socket.
+  bool get closedByServer => _socket.closeCode != null;
 
   /// Every frame this client has received, in order, as it came off the wire.
   ///
@@ -853,6 +868,7 @@ final class BackendRelayClient {
       Duration budget = const Duration(seconds: 5)}) {
     final described = what ?? 'a $method response over a real socket';
     final id = _nextId++;
+    _sent.add(method);
     final completer = Completer<Object?>();
     _pending[id] = completer;
     _socket.sink.add(jsonEncode(<String, Object?>{
@@ -868,7 +884,33 @@ final class BackendRelayClient {
     });
   }
 
-  /// Says hello and hands back the negotiated result.
+  /// Says hello, starts beating, and hands back the negotiated result.
+  ///
+  /// ## The heartbeat is not optional, and this fixture learned that the hard
+  /// way (14-11)
+  ///
+  /// **Nothing the gateway sends keeps a session alive.** Only inbound
+  /// application frames move `_lastSeen` (`relay_session.dart:1264`), so a
+  /// panel that is merely *watching a page* is reaped one
+  /// `heartbeatDeadline` after its handshake — six seconds, at this
+  /// composition's defaults. Every case in Phase 13 that used this fixture
+  /// finished well inside that window, so the omission cost nothing and was
+  /// invisible.
+  ///
+  /// It stopped being invisible the moment an arm needed a session to survive
+  /// past `kBackendStaleAfter` (ten seconds). Measured: the socket was closed
+  /// at ~6 s, the panel stopped receiving anything at all, and the arm's
+  /// "the banner is still good" assertion passed **because nobody was there
+  /// to be told otherwise** — a negative arm made vacuously true by a
+  /// collapse, which is the exact failure mode this project has a rule about.
+  /// Sabotage (d) is what found it: removing BOTH freshness exclusions turned
+  /// nothing red.
+  ///
+  /// The period is a third of the deadline the gateway **advertised**, never a
+  /// literal: `relay_session.dart:1258-1271` is emphatic that a constant on
+  /// the client that must match a server config nobody diffs fails silently a
+  /// year later. A gateway that advertises nothing usable gets no pump, which
+  /// is the same conclusion `HelloResult.heartbeatDeadlineMs` reaches.
   Future<relay.HelloResult> hello(
       {Duration budget = const Duration(seconds: 5)}) async {
     final raw = await request(
@@ -881,7 +923,25 @@ final class BackendRelayClient {
       what: 'the hello result over a real socket',
       budget: budget,
     );
-    return relay.HelloResult.fromJson((raw as Map).cast<String, Object?>());
+    final result =
+        relay.HelloResult.fromJson((raw as Map).cast<String, Object?>());
+
+    final deadlineMs = result.heartbeatDeadlineMs;
+    if (deadlineMs != null) {
+      _heartbeat?.cancel();
+      _heartbeat =
+          Timer.periodic(Duration(milliseconds: deadlineMs ~/ 3), (_) {
+        if (_closed) return;
+        // Fire-and-forget WITH a handler. A bare future here becomes an
+        // unhandled asynchronous error attributed to whichever case is running
+        // when the socket finally goes, and a beat that fails is not news: the
+        // session is gone, and whatever the case was awaiting will say so.
+        unawaited(request(relay.Methods.ping,
+                what: 'a heartbeat pong', budget: const Duration(seconds: 5))
+            .catchError((Object _) => null));
+      });
+    }
+    return result;
   }
 
   /// Subscribes [keys] under the name [sub] and returns the server's answer.
@@ -899,6 +959,8 @@ final class BackendRelayClient {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    _heartbeat?.cancel();
+    _heartbeat = null;
     _failAllPending(StateError('client "$name" was torn down'));
     await _notifications.close();
     await _socket.sink.close().catchError((Object _) {});
