@@ -67,6 +67,23 @@ const _bindingIndex = 'idx_access_key_binding_template_name';
 const _conveyorRules =
     '{"p_cmd_JogFwd":"operate","p_cfg_ManualFreq":"setpoints"}';
 
+/// Undoes what schema **v7** added to `alarm_history`.
+///
+/// This file's v5 fixture is built by creating the CURRENT schema and removing
+/// what came later, so every version after v6 has to add its own rollback here
+/// or the fixture is not the shape it claims to be. Without these,
+/// `onUpgrade(5, 7)`'s SQLite arm aborts on
+/// `duplicate column name: rule_index` — the fixture, not the migration: a
+/// real v5 SQLite database has none of these columns.
+///
+/// The index goes first. SQLite refuses to drop a column an index refers to.
+const _v7Rollback = [
+  'DROP INDEX IF EXISTS idx_alarm_history_open',
+  'ALTER TABLE alarm_history DROP COLUMN rule_index',
+  'ALTER TABLE alarm_history DROP COLUMN ts_source',
+  'ALTER TABLE alarm_history DROP COLUMN deactivated_reason',
+];
+
 void main() {
   group('fresh install', () {
     test('creates access_template and access_key_binding', () async {
@@ -81,12 +98,13 @@ void main() {
       }
     });
 
-    test('schema version is 6', () async {
+    test('schema version is 7', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
       // Read off an open database rather than grepped out of the source: the
-      // value the migrator actually compares `from` against.
-      expect(db.schemaVersion, 6);
+      // value the migrator actually compares `from` against. 7 is 14-01's
+      // alarm_history change.
+      expect(db.schemaVersion, 7);
     });
 
     test('creates the access_key_binding template_name index', () async {
@@ -236,6 +254,9 @@ void main() {
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
       await db.customStatement('DROP TABLE app_role');
+      for (final stmt in _v7Rollback) {
+        await db.customStatement(stmt);
+      }
       await db.customStatement('PRAGMA user_version = 5');
       await db.close();
     }
@@ -302,13 +323,16 @@ void main() {
     // running the seed against rows that exist; that idempotency is asserted
     // directly in `access_schema_test.dart` through `seedAccessRolesForTest`.
 
-    test('leaves schema version at 6', () async {
+    test('leaves schema version at the current version', () async {
       await makeV5Database();
       final db = await reopen();
       addTearDown(() => db.close());
 
       final row = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 6);
+      // Read off db.schemaVersion, not written as a literal: the literal pin
+      // is 'schema version is 7' above, and this arm is about the upgrade
+      // arriving THERE rather than about which number there is.
+      expect(row.read<int>('user_version'), db.schemaVersion);
     });
   });
 }

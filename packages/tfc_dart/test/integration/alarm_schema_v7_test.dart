@@ -278,7 +278,11 @@ Future<int> insertHistory(
       'ack': pg.TypedValue(pg.Type.boolean, false),
       'created': pg.TypedValue(
           pg.Type.text, createdAt ?? '2026-09-06T10:00:00.000Z'),
-      'ruleIndex': pg.TypedValue(pg.Type.integer, ruleIndex),
+      // `bigInteger`, matching what drift's Postgres dialect makes of an
+      // `IntColumn`. Binding an int4 against the int8 column does not fail
+      // with a type error — it fails with SQLSTATE 08P01, "insufficient data
+      // left in message", which reads like a driver bug.
+      'ruleIndex': pg.TypedValue(pg.Type.bigInteger, ruleIndex),
       'deactivated': pg.TypedValue(pg.Type.text, deactivatedAt),
     },
   );
@@ -330,6 +334,12 @@ Future<int> historyCount(pg.Connection c) async {
 ///
 /// Datetimes are TEXT on both backends — this database sets
 /// `DriftDatabaseOptions(storeDateTimeAsText: true)`.
+///
+/// `BIGSERIAL`, not `SERIAL`: drift's Postgres dialect maps every `IntColumn`
+/// to `bigint`, so a v6 database drift actually created has `id bigint`. A
+/// seed that used `SERIAL` would be a v6 shape no station has ever run, and
+/// the column-parity arm would then report a difference this migration did not
+/// cause.
 const List<String> v6Ddl = <String>[
   '''
   CREATE TABLE alarm (
@@ -342,7 +352,7 @@ const List<String> v6Ddl = <String>[
   ''',
   '''
   CREATE TABLE alarm_history (
-    id SERIAL PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
     alarm_uid TEXT NOT NULL REFERENCES alarm(uid),
     alarm_title TEXT NOT NULL,
     alarm_description TEXT NOT NULL,
@@ -500,7 +510,7 @@ void main() {
                 'UPDATE alarm_history SET deactivated_at = @ts WHERE id = @id'),
             parameters: <String, Object?>{
               'ts': pg.TypedValue(pg.Type.text, '2026-09-06T11:00:00.000Z'),
-              'id': pg.TypedValue(pg.Type.integer, firstId),
+              'id': pg.TypedValue(pg.Type.bigInteger, firstId),
             },
           );
 
@@ -621,7 +631,11 @@ void main() {
                 'carry it).');
 
         final columns = await columnsOf(c);
-        expect(columns['rule_index'], 'integer',
+        // `bigint`, because that is what drift's Postgres dialect makes of an
+        // `IntColumn` and therefore what `onCreate` produces. See the
+        // column-parity arm below for why the two paths agreeing is the claim
+        // and this line is only half of it.
+        expect(columns['rule_index'], 'bigint',
             reason: 'rule_index missing or wrongly typed. It is what gives an '
                 'open row its identity (D-4); without it the table cannot '
                 "tell one alarm's rules apart. Columns present: "
@@ -672,6 +686,27 @@ void main() {
                 'onCreate, so a freshly created database has no index and '
                 "arm 4 passes only on databases that were upgraded — which is "
                 'every database except the ones a new station creates.');
+      });
+
+      test(
+          'arm 3c: created and upgraded produce the SAME alarm_history — '
+          'column for column, type for type', () async {
+        final created = await columnsOf(conns[createdSubject]!);
+        final upgraded = await columnsOf(conns[upgradedSubject]!);
+
+        expect(upgraded, created,
+            reason: 'one release produced two shapes for one table. A station '
+                'that CREATES the schema and a station that UPGRADES to it '
+                'share the same plant database and must not disagree about '
+                'it.\n'
+                '  created:  $created\n'
+                '  upgraded: $upgraded\n'
+                'This arm exists because the first draft of the v7 Postgres '
+                "branch wrote `rule_index INTEGER` while drift's own dialect "
+                'maps every IntColumn to bigint. The symptom on the upgraded '
+                'shape was not a type error but SQLSTATE 08P01, "insufficient '
+                'data left in message" — which reads like a driver bug and '
+                'would have been diagnosed as one.');
       });
     });
   });

@@ -28,6 +28,23 @@ Future<List<String>> _userColumns(AppDatabase db) async {
   return rows.map((r) => r.read<String>('name')).toList();
 }
 
+/// Undoes what schema **v7** added to `alarm_history`.
+///
+/// This file's v5 fixture is built by creating the CURRENT schema and removing
+/// what came later, so every version after v6 has to add its own rollback here
+/// or the fixture is not the shape it claims to be. Without these,
+/// `onUpgrade(5, 7)`'s SQLite arm aborts on
+/// `duplicate column name: rule_index` — the fixture, not the migration: a
+/// real v5 SQLite database has none of these columns.
+///
+/// The index goes first. SQLite refuses to drop a column an index refers to.
+const _v7Rollback = [
+  'DROP INDEX IF EXISTS idx_alarm_history_open',
+  'ALTER TABLE alarm_history DROP COLUMN rule_index',
+  'ALTER TABLE alarm_history DROP COLUMN ts_source',
+  'ALTER TABLE alarm_history DROP COLUMN deactivated_reason',
+];
+
 void main() {
   test('a fresh install carries station_account, defaulting false', () async {
     final db = AppDatabase.inMemoryForTest();
@@ -49,10 +66,12 @@ void main() {
             'otherwise — the default must not mint immortal sessions');
   });
 
-  test('schema version is 6', () async {
+  test('schema version is 7', () async {
     final db = AppDatabase.inMemoryForTest();
     addTearDown(() => db.close());
-    expect(db.schemaVersion, 6);
+    // v7 is 14-01's alarm_history change; station_account still arrives in the
+    // v6 arm, which is what the rest of this file is about.
+    expect(db.schemaVersion, 7);
   });
 
   group('upgrading a v5 database — the only upgrade path there is', () {
@@ -84,6 +103,9 @@ void main() {
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
       await db.customStatement('DROP TABLE app_role');
+      for (final stmt in _v7Rollback) {
+        await db.customStatement(stmt);
+      }
       await db.customStatement('PRAGMA user_version = 5');
       await db.close();
     }
