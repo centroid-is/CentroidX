@@ -21,11 +21,17 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
+import 'dart:mirrors';
 
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/database.dart' as db;
+import 'package:tfc_dart/core/database_drift.dart' as drift;
 import 'package:tfc_dart/core/relay/backend_data_services.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' show StateManApi;
+import 'package:tfc_stateman_contract/tfc_stateman_contract.dart'
+    show StateManDataHarness, runDataServicesContract;
 
 // ---------------------------------------------------------------- the fixture
 
@@ -182,6 +188,344 @@ BackendTimeseries _timeseries(_FakeTimeseries? source,
       resolver: const _FixtureResolver(),
       limits: limits ?? TimeseriesLimits(),
     );
+
+// ------------------------------------------------------------- history views
+
+/// Two plotted keys, in the plant's tag convention.
+const _keyA = 'ST101.CN01.MOT01.setpoint';
+const _keyB = 'ST301.CN21.SEN01.temp';
+
+/// A `HistoryViewSource` over four in-memory tables.
+///
+/// Answers the generated row classes and the untyped bags the drift layer
+/// answers with, verbatim — mapping those onto the protocol's plain records is
+/// what [BackendHistoryViews] is for and what these arms judge.
+final class _FakeHistoryViews implements HistoryViewSource {
+  final Map<int, drift.HistoryViewData> _views = {};
+  final Map<int, Map<String, Map<String, dynamic>>> _keys = {};
+  final Map<int, Map<int, Map<String, dynamic>>> _graphs = {};
+  final Map<int, drift.HistoryViewPeriodData> _periods = {};
+  int _nextId = 0;
+
+  /// When set, every instant is handed back the way an unnormalised driver
+  /// hands one back.
+  bool handBackLocalTimes = false;
+
+  DateTime _out(DateTime t) => handBackLocalTimes ? t.toLocal() : t;
+
+  static final _created = DateTime.utc(2026, 8, 1, 9);
+
+  @override
+  Future<int> createHistoryView(String name, List<String> keys,
+      [Map<String, Map<String, dynamic>>? keyConfigs,
+      Map<String, Map<String, dynamic>>? graphConfigs]) async {
+    final id = ++_nextId;
+    _views[id] = drift.HistoryViewData(id: id, name: name, createdAt: _created);
+    _writeKeys(id, keys, keyConfigs);
+    _writeGraphs(id, graphConfigs);
+    return id;
+  }
+
+  @override
+  Future<void> updateHistoryView(int id, String name, List<String> keys,
+      [Map<String, Map<String, dynamic>>? keyConfigs,
+      Map<String, Map<String, dynamic>>? graphConfigs]) async {
+    final was = _views[id];
+    if (was == null) return;
+    _views[id] = drift.HistoryViewData(
+        id: id,
+        name: name,
+        createdAt: was.createdAt,
+        updatedAt: DateTime.utc(2026, 8, 2, 9));
+    _keys.remove(id);
+    _graphs.remove(id);
+    _writeKeys(id, keys, keyConfigs);
+    _writeGraphs(id, graphConfigs);
+  }
+
+  void _writeKeys(int id, List<String> keys,
+      Map<String, Map<String, dynamic>>? keyConfigs) {
+    if (keys.isEmpty) return;
+    _keys[id] = {
+      for (final key in keys)
+        key: {
+          'key': key,
+          'alias': keyConfigs?[key]?['alias'] ?? key,
+          'useSecondYAxis': keyConfigs?[key]?['useSecondYAxis'] ?? false,
+          'graphIndex': keyConfigs?[key]?['graphIndex'] ?? 0,
+        },
+    };
+  }
+
+  void _writeGraphs(int id, Map<String, Map<String, dynamic>>? graphConfigs) {
+    if (graphConfigs == null) return;
+    _graphs[id] = {
+      for (final entry in graphConfigs.entries)
+        if (int.tryParse(entry.key) != null)
+          int.parse(entry.key): {
+            'name': entry.value['name'] ?? '',
+            'yAxisUnit': entry.value['yAxisUnit'] ?? '',
+            'yAxis2Unit': entry.value['yAxis2Unit'] ?? '',
+          },
+    };
+  }
+
+  @override
+  Future<void> deleteHistoryView(int id) async {
+    _views.remove(id);
+    _keys.remove(id);
+    _graphs.remove(id);
+    _periods.removeWhere((_, period) => period.viewId == id);
+  }
+
+  @override
+  Future<List<drift.HistoryViewData>> selectHistoryViews() async => [
+        for (final view in _views.values)
+          drift.HistoryViewData(
+              id: view.id,
+              name: view.name,
+              createdAt: _out(view.createdAt),
+              updatedAt:
+                  view.updatedAt == null ? null : _out(view.updatedAt!)),
+      ];
+
+  @override
+  Future<Map<String, Map<String, dynamic>>> getHistoryViewKeys(
+          int viewId) async =>
+      _keys[viewId] ?? const {};
+
+  @override
+  Future<Map<int, Map<String, dynamic>>> getHistoryViewGraphs(
+          int viewId) async =>
+      _graphs[viewId] ?? const {};
+
+  @override
+  Future<List<String>> getHistoryViewKeyNames(int viewId) async =>
+      (_keys[viewId] ?? const <String, Map<String, dynamic>>{}).keys.toList();
+
+  @override
+  Future<int> addHistoryViewPeriod(
+      int viewId, String name, DateTime start, DateTime end) async {
+    final id = ++_nextId;
+    _periods[id] = drift.HistoryViewPeriodData(
+        id: id,
+        viewId: viewId,
+        name: name,
+        startAt: start,
+        endAt: end,
+        createdAt: _created);
+    return id;
+  }
+
+  @override
+  Future<void> deleteHistoryViewPeriod(int id) async => _periods.remove(id);
+
+  @override
+  Future<List<drift.HistoryViewPeriodData>> listHistoryViewPeriods(
+          int viewId) async =>
+      [
+        for (final period in _periods.values)
+          if (period.viewId == viewId)
+            drift.HistoryViewPeriodData(
+                id: period.id,
+                viewId: period.viewId,
+                name: period.name,
+                startAt: _out(period.startAt),
+                endAt: _out(period.endAt),
+                createdAt: _out(period.createdAt)),
+      ];
+
+  @override
+  Future<DateTime?> getGlobalRetentionHorizon() async =>
+      _out(DateTime.utc(2025, 9, 6));
+}
+
+// --------------------------------------------------------------- preferences
+
+const _prefKey = 'svn.ui.darkMode';
+const _clearedKey = 'svn.chart.maxPoints';
+
+/// A `PreferenceSource` over one map and one broadcast controller.
+///
+/// [feedListeners] is the number the listener-gating arm reads: a real
+/// `Preferences` hides its controller behind a getter, and an arm that cannot
+/// count subscriptions cannot tell an armed feed from a dormant one.
+final class _FakePreferences implements PreferenceSource {
+  final Map<String, Object?> _store = {};
+  final List<Set<String>> deleted = <Set<String>>[];
+  int feedListeners = 0;
+
+  late final StreamController<String> _changes =
+      StreamController<String>.broadcast(
+    onListen: () => feedListeners++,
+    onCancel: () => feedListeners--,
+  );
+
+  @override
+  Stream<String> get onPreferencesChanged => _changes.stream;
+
+  @override
+  Future<Set<String>> getKeys({Set<String>? allowList}) async => allowList ==
+          null
+      ? _store.keys.toSet()
+      : _store.keys.where(allowList.contains).toSet();
+
+  @override
+  Future<Map<String, Object?>> getAll({Set<String>? allowList}) async =>
+      allowList == null
+          ? Map.of(_store)
+          : {
+              for (final entry in _store.entries)
+                if (allowList.contains(entry.key)) entry.key: entry.value,
+            };
+
+  @override
+  Future<bool?> getBool(String key) async => _store[key] as bool?;
+  @override
+  Future<int?> getInt(String key) async => _store[key] as int?;
+  @override
+  Future<double?> getDouble(String key) async => _store[key] as double?;
+  @override
+  Future<String?> getString(String key) async => _store[key] as String?;
+  @override
+  Future<List<String>?> getStringList(String key) async =>
+      _store[key] as List<String>?;
+  @override
+  Future<bool> containsKey(String key) async => _store.containsKey(key);
+
+  void _set(String key, Object? value) {
+    _store[key] = value;
+    _changes.add(key);
+  }
+
+  @override
+  Future<void> setBool(String key, bool value) async => _set(key, value);
+  @override
+  Future<void> setInt(String key, int value) async => _set(key, value);
+  @override
+  Future<void> setDouble(String key, double value) async => _set(key, value);
+  @override
+  Future<void> setString(String key, String value) async => _set(key, value);
+  @override
+  Future<void> setStringList(String key, List<String> value) async =>
+      _set(key, value);
+
+  @override
+  Future<void> remove(String key) async {
+    _store.remove(key);
+    deleted.add({key});
+    _changes.add(key);
+  }
+
+  @override
+  Future<void> clearFromMemory({Set<String>? allowList}) async {
+    if (allowList == null) {
+      _store.clear();
+    } else {
+      _store.removeWhere((key, _) => allowList.contains(key));
+    }
+  }
+
+  @override
+  Future<void> deletePreferenceRows(Set<String> keys) async =>
+      deleted.add(keys);
+}
+
+// -------------------------------------------------------- the contract's api
+
+/// A `StateManApi` whose only real collaborators are this plan's three.
+final class _DataOnlyApi implements StateManApi, StateManDataHarness {
+  _DataOnlyApi()
+      : _ts = _FakeTimeseries(),
+        _hv = _FakeHistoryViews(),
+        _prefs = _FakePreferences();
+
+  final _FakeTimeseries _ts;
+  final _FakeHistoryViews _hv;
+  final _FakePreferences _prefs;
+
+  @override
+  void seedTimeseries(String tableName, List<relay.TimeseriesData> points) =>
+      _ts.seed(tableName, [
+        for (final point in points)
+          db.TimeseriesData<dynamic>(point.value, point.time),
+      ]);
+
+  @override
+  late final relay.TimeseriesApi timeseries = BackendTimeseries(
+      source: _ts, resolver: const _FixtureResolver(), limits: TimeseriesLimits());
+
+  @override
+  late final relay.HistoryViewApi historyViews =
+      BackendHistoryViews(source: _hv);
+
+  @override
+  late final relay.PreferencesApi preferences =
+      BackendPreferences(source: _prefs);
+
+  Never _notPartOfThisFixture(String member) => throw UnsupportedError(
+      'the data-services fixture composed no $member; a case reached outside '
+      'the three historical sub-interfaces, which this fixture cannot answer '
+      'honestly');
+
+  /// The historical half has no link to bring up: it is serving from the
+  /// instant the constructor returns.
+  @override
+  relay.DynamicValue? read(String key) => key == relay.PipeKeys.connected
+      ? relay.DynamicValue(value: true)
+      : _notPartOfThisFixture('value source');
+
+  @override
+  relay.ValueListenable<relay.DynamicValue> listen(String key) =>
+      _notPartOfThisFixture('value source');
+  @override
+  Stream<relay.DynamicValue> subscribe(String key) =>
+      _notPartOfThisFixture('value source');
+  @override
+  Future<relay.DynamicValue> readFresh(String key) async =>
+      _notPartOfThisFixture('value source');
+  @override
+  Future<Map<String, relay.DynamicValue>> readMany(List<String> keys) async =>
+      _notPartOfThisFixture('value source');
+  @override
+  List<String> get keys => _notPartOfThisFixture('value source');
+  @override
+  Future<relay.WriteResult> write(String key, Object? value,
+          {Object? expect, String? cmd}) async =>
+      _notPartOfThisFixture('write source');
+  @override
+  Future<List<relay.WriteResult>> writeStatus(List<String> cmds) async =>
+      _notPartOfThisFixture('write source');
+  @override
+  Future<relay.HoldHandle> holdToRun(String key) async =>
+      _notPartOfThisFixture('write source');
+  @override
+  relay.BrowseApi get browse => _notPartOfThisFixture('BrowseApi');
+  @override
+  Future<void> dispose() async {}
+}
+
+/// The instance members [type] declares, excluding accessors it inherits from
+/// `Object` — 13-01's roster idiom, kept local.
+Set<String> _membersOf(Type type) {
+  final mirror = reflectClass(type);
+  return {
+    for (final declaration in mirror.declarations.values)
+      if (declaration is MethodMirror &&
+          !declaration.isConstructor &&
+          !declaration.isStatic)
+        MirrorSystem.getName(declaration.simpleName),
+  };
+}
+
+/// [source] with Dart line comments removed.
+String _stripDartComments(String source) => source
+    .split('\n')
+    .map((line) {
+      final slashes = line.indexOf('//');
+      return slashes < 0 ? line : line.substring(0, slashes);
+    })
+    .join('\n');
 
 void main() {
   group('BackendTimeseries', () {
@@ -533,5 +877,349 @@ void main() {
               'as "the historian is empty"');
       expect(() => TimeseriesLimits(maxRows: -1), throwsArgumentError);
     });
+  });
+
+  group('BackendHistoryViews', () {
+    test('a view survives create, list, read back and delete', () async {
+      final fake = _FakeHistoryViews();
+      final views = BackendHistoryViews(source: fake);
+
+      final id = await views.createHistoryView(
+        'Frystir — vakt 1',
+        [_keyA, _keyB],
+        {
+          _keyA: const relay.HistoryViewKeyRecord(
+              key: _keyA,
+              alias: 'Færiband 1',
+              useSecondYAxis: true,
+              graphIndex: 1),
+        },
+        {
+          1: const relay.HistoryViewGraphRecord(
+              graphIndex: 1, name: 'Frystir', yAxisUnit: '°C'),
+        },
+      );
+      expect(id, greaterThan(0));
+
+      final saved = await views.selectHistoryViews();
+      expect(saved.single.id, id);
+      expect(saved.single.name, 'Frystir — vakt 1');
+
+      final keys = await views.getHistoryViewKeys(id);
+      expect(keys.keys, containsAll([_keyA, _keyB]));
+      expect(keys[_keyA]!.alias, 'Færiband 1');
+      expect(keys[_keyA]!.useSecondYAxis, isTrue);
+      expect(keys[_keyA]!.graphIndex, 1);
+      expect(keys[_keyB]!.alias, _keyB,
+          reason: 'a key saved with no alias still needs something to render '
+              'in the legend, and its own name is it');
+
+      final graphs = await views.getHistoryViewGraphs(id);
+      expect(graphs[1]!.graphIndex, 1,
+          reason: 'the drift layer keys the map by graph index and leaves the '
+              'index out of the bag; the record carries it as a field');
+      expect(graphs[1]!.yAxisUnit, '°C');
+      expect(graphs[1]!.name, 'Frystir');
+
+      expect(await views.getHistoryViewKeyNames(id), containsAll([_keyA, _keyB]));
+
+      await views.deleteHistoryView(id);
+      expect((await views.selectHistoryViews()).map((v) => v.id),
+          isNot(contains(id)));
+      expect(await views.getHistoryViewKeys(id), isEmpty,
+          reason: 'rows that outlive their view are how a deleted view comes '
+              'back as a partial one after the next restart');
+    });
+
+    test('a saved window survives add, list and delete, instants intact',
+        () async {
+      final views = BackendHistoryViews(source: _FakeHistoryViews());
+      final viewId = await views.createHistoryView('Vaktir', [_keyA]);
+      final start = DateTime.utc(2026, 8, 12, 6);
+      final end = DateTime.utc(2026, 8, 12, 14);
+      final periodId =
+          await views.addHistoryViewPeriod(viewId, 'Vakt 1', start, end);
+
+      final periods = await views.listHistoryViewPeriods(viewId);
+      expect(periods, hasLength(1));
+      expect(periods.single.id, periodId);
+      expect(periods.single.viewId, viewId);
+      expect(periods.single.name, 'Vakt 1');
+      expect(periods.single.startAt, start);
+      expect(periods.single.endAt, end);
+
+      await views.deleteHistoryViewPeriod(periodId);
+      expect(await views.listHistoryViewPeriods(viewId), isEmpty);
+    });
+
+    test('every instant crosses as an absolute UTC instant', () async {
+      final fake = _FakeHistoryViews();
+      final views = BackendHistoryViews(source: fake);
+      final viewId = await views.createHistoryView('Vaktir', [_keyA]);
+      // The driver hands timestamps back in local time unless something
+      // normalises them; the adapter is the something.
+      fake.handBackLocalTimes = true;
+      await views.addHistoryViewPeriod(viewId, 'Vakt 1',
+          DateTime.utc(2026, 8, 12, 6), DateTime.utc(2026, 8, 12, 14));
+
+      final period = (await views.listHistoryViewPeriods(viewId)).single;
+      expect(period.startAt.isUtc, isTrue,
+          reason: 'a window that comes back an hour off lands on the wrong '
+              'shift, twice a year, and every conclusion drawn from the chart '
+              'is about the wrong hours');
+      expect(period.startAt, DateTime.utc(2026, 8, 12, 6));
+      expect(period.endAt, DateTime.utc(2026, 8, 12, 14));
+      expect(period.createdAt.isUtc, isTrue);
+
+      final view = (await views.selectHistoryViews()).single;
+      expect(view.createdAt.isUtc, isTrue);
+
+      expect((await views.getGlobalRetentionHorizon())!.isUtc, isTrue,
+          reason: 'a chart that scrolls past the horizon is showing absence '
+              'of data, not absence of events, and the horizon has to be the '
+              'same instant on every station');
+    });
+
+    test('an update replaces the keys and the graphs it was given', () async {
+      final views = BackendHistoryViews(source: _FakeHistoryViews());
+      final id = await views.createHistoryView('Vaktir', [_keyA]);
+      await views.updateHistoryView(id, 'Vaktir 2', [_keyB], {
+        _keyB: const relay.HistoryViewKeyRecord(key: _keyB, alias: 'Hiti'),
+      });
+      expect((await views.selectHistoryViews()).single.name, 'Vaktir 2');
+      expect(await views.getHistoryViewKeyNames(id), [_keyB]);
+      expect((await views.getHistoryViewKeys(id))[_keyB]!.alias, 'Hiti');
+    });
+
+    test('a picker wider than the row ceiling is refused, not truncated',
+        () async {
+      final fake = _FakeHistoryViews();
+      for (var i = 0; i < 12; i++) {
+        await fake.createHistoryView('view $i', const []);
+      }
+      final views = BackendHistoryViews(source: fake, maxRows: 10);
+      await expectLater(() => views.selectHistoryViews(),
+          throwsA(isA<ArgumentError>().having((e) => '${e.message}', 'message',
+              allOf(contains('10'), contains('12')))),
+          reason: 'these rows are caller-grown: an operate station in a loop '
+              'is the whole amplification (read_limits.dart:171-178)');
+    });
+
+    group('composed with no database', () {
+      test('all eleven members refuse by name rather than answering empty',
+          () async {
+        final none = BackendHistoryViews(source: null);
+        final calls = <String, Future<Object?> Function()>{
+          'createHistoryView': () => none.createHistoryView('x', const []),
+          'updateHistoryView': () => none.updateHistoryView(1, 'x', const []),
+          'deleteHistoryView': () => none.deleteHistoryView(1),
+          'selectHistoryViews': () => none.selectHistoryViews(),
+          'getHistoryViewKeys': () => none.getHistoryViewKeys(1),
+          'getHistoryViewGraphs': () => none.getHistoryViewGraphs(1),
+          'getHistoryViewKeyNames': () => none.getHistoryViewKeyNames(1),
+          'addHistoryViewPeriod': () =>
+              none.addHistoryViewPeriod(1, 'x', DateTime.utc(2026), DateTime.utc(2026)),
+          'deleteHistoryViewPeriod': () => none.deleteHistoryViewPeriod(1),
+          'listHistoryViewPeriods': () => none.listHistoryViewPeriods(1),
+          'getGlobalRetentionHorizon': () => none.getGlobalRetentionHorizon(),
+        };
+        expect(calls, hasLength(11),
+            reason: 'HistoryViewApi declares eleven members; this roster is '
+                'counted against the interface rather than eyeballed');
+        for (final entry in calls.entries) {
+          await expectLater(
+              entry.value,
+              throwsA(isA<StateError>()
+                  .having((e) => e.message, 'message', contains(entry.key))),
+              reason: '${entry.key} answered instead of refusing. A view '
+                  'picker that says "you have saved nothing" to a plant that '
+                  'has saved plenty is an operator saving their view a second '
+                  'time, and then a third');
+        }
+      });
+
+      test('the roster is exhaustive over HistoryViewApi', () {
+        final declared = _membersOf(relay.HistoryViewApi);
+        expect(declared, hasLength(11),
+            reason: 'if the interface grew a twelfth member, this file has an '
+                'unjudged one');
+      });
+    });
+  });
+
+  group('BackendPreferences', () {
+    test('every typed preference round-trips and containsKey agrees',
+        () async {
+      final prefs = BackendPreferences(source: _FakePreferences());
+      await prefs.setBool(_prefKey, true);
+      expect(await prefs.getBool(_prefKey), isTrue);
+      await prefs.setInt('svn.chart.maxPoints', 800);
+      expect(await prefs.getInt('svn.chart.maxPoints'), 800);
+      await prefs.setDouble('svn.weigher.tolerance', 0.25);
+      expect(await prefs.getDouble('svn.weigher.tolerance'), 0.25);
+      await prefs.setString('svn.site.name', 'Sæból');
+      expect(await prefs.getString('svn.site.name'), 'Sæból');
+      await prefs.setStringList('svn.page.recent', ['frystir', 'pökkun']);
+      expect(await prefs.getStringList('svn.page.recent'),
+          ['frystir', 'pökkun']);
+
+      expect(await prefs.containsKey(_prefKey), isTrue);
+      expect(await prefs.containsKey('svn.never.set'), isFalse);
+      expect(await prefs.getKeys(), contains('svn.site.name'));
+      expect((await prefs.getAll())['svn.site.name'], 'Sæból');
+
+      await prefs.remove('svn.site.name');
+      expect(await prefs.containsKey('svn.site.name'), isFalse);
+      expect(await prefs.getString('svn.site.name'), isNull);
+    });
+
+    test('a change reaches a second listener', () async {
+      final prefs = BackendPreferences(source: _FakePreferences());
+      final first = prefs.onPreferencesChanged.first;
+      final second = prefs.onPreferencesChanged.first;
+      await prefs.setBool(_prefKey, true);
+      expect(await first.timeout(const Duration(seconds: 1)), _prefKey);
+      expect(await second.timeout(const Duration(seconds: 1)), _prefKey,
+          reason: 'a settings page and a chart legend both listen to this, '
+              'and a single-subscription stream gives the second an exception '
+              'instead of the news');
+    });
+
+    test('clear removes the keys its allow list names and no others',
+        () async {
+      final fake = _FakePreferences();
+      final prefs = BackendPreferences(source: fake);
+      await prefs.setBool(_prefKey, true);
+      await prefs.setInt(_clearedKey, 800);
+
+      await prefs.clear(allowList: <String>{_clearedKey});
+
+      expect(await prefs.containsKey(_clearedKey), isFalse);
+      expect(await prefs.getBool(_prefKey), isTrue,
+          reason: 'with no allow list clear removes every preference this '
+              'backend holds, key_mappings — 518 KiB of routing configuration '
+              'the whole plant is served through — included');
+    });
+
+    test('clear takes the durable rows with it, in one statement', () async {
+      final fake = _FakePreferences();
+      final prefs = BackendPreferences(source: fake);
+      await prefs.setInt(_clearedKey, 800);
+      await prefs.clear(allowList: <String>{_clearedKey});
+
+      expect(fake.deleted, [
+        {_clearedKey}
+      ], reason: 'Preferences.clear empties the memory cache and never '
+          'touches Postgres (preferences.dart:439-442), so a delegation would '
+          'be a clear that undoes itself on the next rebuild — and the rows '
+          'go in ONE statement, because a remove per key is one wire frame '
+          'per key (preference_store.dart:462-470)');
+    });
+
+    test('clear announces every key it removed, with no await between',
+        () async {
+      final fake = _FakePreferences();
+      final prefs = BackendPreferences(source: fake);
+      await prefs.setBool(_prefKey, true);
+      await prefs.setInt(_clearedKey, 800);
+      final heard = <String>[];
+      final sub = prefs.onPreferencesChanged.listen(heard.add);
+      addTearDown(sub.cancel);
+
+      await prefs.clear(allowList: <String>{_prefKey, _clearedKey});
+      await Future<void>.delayed(Duration.zero);
+
+      expect(heard.toSet(), {_prefKey, _clearedKey},
+          reason: 'a clear that fires no change event is a settings page on '
+              'another station still showing what was just deleted');
+    });
+
+    group('the change feed', () {
+      test('nothing is armed until something listens', () async {
+        final fake = _FakePreferences();
+        final prefs = BackendPreferences(source: fake);
+        expect(fake.feedListeners, 0,
+            reason: 'an always-on subscription in tfc_dart plumbing fails '
+                'unrelated widget tests, which is how this rule was learned');
+
+        final sub = prefs.onPreferencesChanged.listen((_) {});
+        expect(fake.feedListeners, 1);
+
+        final second = prefs.onPreferencesChanged.listen((_) {});
+        expect(fake.feedListeners, 1,
+            reason: 'a broadcast feed costs the source one subscription, '
+                'however many panels are watching');
+
+        await sub.cancel();
+        await second.cancel();
+        expect(fake.feedListeners, 0,
+            reason: 'started in onListen, stopped in onCancel');
+      });
+
+      test('no Timer.periodic anywhere in the implementation', () {
+        final source = _stripDartComments(
+            File('lib/core/relay/backend_data_services.dart')
+                .readAsStringSync());
+        expect(source, isNot(contains('Timer.periodic')),
+            reason: 'an always-on Timer.periodic in tfc_dart plumbing fails '
+                'unrelated widget tests');
+        expect(source, isNot(contains('Timer(')));
+      });
+    });
+
+    test('no member of this file requests secret material', () {
+      final source = File('lib/core/relay/backend_data_services.dart')
+          .readAsStringSync();
+      expect(source, isNot(contains('secret:')),
+          reason: 'the concrete Preferences carries a {bool secret = false} on '
+              'twelve members that routes the call to the OS keychain. One '
+              'client-supplied boolean spelled here would be remote retrieval '
+              'of the secure store (SEC-01, T-13-05-c)');
+    });
+
+    group('composed with no preference store', () {
+      test('every member refuses by name rather than answering empty',
+          () async {
+        final none = BackendPreferences(source: null);
+        final calls = <String, Future<Object?> Function()>{
+          'getKeys': () => none.getKeys(),
+          'getAll': () => none.getAll(),
+          'getBool': () => none.getBool('k'),
+          'getInt': () => none.getInt('k'),
+          'getDouble': () => none.getDouble('k'),
+          'getString': () => none.getString('k'),
+          'getStringList': () => none.getStringList('k'),
+          'containsKey': () => none.containsKey('k'),
+          'setBool': () => none.setBool('k', true),
+          'setInt': () => none.setInt('k', 1),
+          'setDouble': () => none.setDouble('k', 1.0),
+          'setString': () => none.setString('k', 'v'),
+          'setStringList': () => none.setStringList('k', const ['v']),
+          'remove': () => none.remove('k'),
+          'clear': () => none.clear(),
+        };
+        for (final entry in calls.entries) {
+          await expectLater(
+              entry.value,
+              throwsA(isA<UnsupportedError>().having(
+                  (e) => e.message, 'message', contains(entry.key))),
+              reason: '${entry.key} answered instead of refusing');
+        }
+      });
+
+      test('onPreferencesChanged throws an UnsupportedError, which is what '
+          'every session survives', () {
+        expect(() => BackendPreferences(source: null).onPreferencesChanged,
+            throwsA(isA<UnsupportedError>()),
+            reason: 'RelaySession calls watchPreferences() on EVERY session '
+                'and data_handlers.dart:216 catches exactly UnsupportedError. '
+                'A StateError here would fail every connect on a backend with '
+                'no database — the default deployment');
+      });
+    });
+  });
+
+  group('the data-services contract', () {
+    runDataServicesContract(_DataOnlyApi.new);
   });
 }
