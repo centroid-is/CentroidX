@@ -179,14 +179,14 @@ final class ServedStateMan {
   // ------------------------------------------------------------- value path
 
   Future<Object?> _readFresh(rpc.Parameters params) async =>
-      (await api.readFresh(params['key'].asString)).toJson();
+      _answering((await api.readFresh(params['key'].asString)).toJson());
 
   Future<Object?> _readMany(rpc.Parameters params) async {
     final keys = [for (final key in params['keys'].asList) '$key'];
     final values = await api.readMany(keys);
-    return {
+    return _answering({
       for (final entry in values.entries) entry.key: entry.value.toJson(),
-    };
+    });
   }
 
   Future<Object?> _write(rpc.Parameters params) async {
@@ -244,7 +244,7 @@ final class ServedStateMan {
     }
 
     final result = await api.write(key, value, expect: expected);
-    return result.toJson();
+    return _answering(result.toJson());
   }
 
   /// Re-asks the source what became of a list of commands.
@@ -256,7 +256,8 @@ final class ServedStateMan {
   Future<Object?> _writeStatus(rpc.Parameters params) async {
     final cmds = [for (final cmd in params['cmds'].asList) '$cmd'];
     final results = await api.writeStatus(cmds);
-    return {'results': [for (final result in results) result.toJson()]};
+    return _answering(
+        {'results': [for (final result in results) result.toJson()]});
   }
 
   /// One feed of a hold-to-run deadman, applied to the plant.
@@ -821,6 +822,36 @@ final class ServedStateMan {
     _pending.clear();
     if (changes.isEmpty) return;
     peer.sendNotification(HarnessMethods.update, {'changes': changes});
+  }
+
+  /// Puts every change made so far on the wire, then hands back [answer].
+  ///
+  /// **An answer must never overtake the state change it caused.** A request
+  /// handler that alters a value and then returns leaves two facts travelling
+  /// on one channel — "the write applied" and "the value is now 1500" — and the
+  /// client's `await` resumes on the first of them. If the second is still
+  /// sitting in a microtask, every caller that reads the value the instant its
+  /// write resolves sees the number from before its own write, badged pending,
+  /// and `checkWritePendingIsVisibleWhileInFlight` says exactly what that looks
+  /// like on a panel: a permanent amber box the operator learns to ignore.
+  ///
+  /// Ordering here was previously left to the microtask queue, and it happened
+  /// to come out right for `FakeStateMan` — which settles a write one `await`
+  /// later than it applies it — and wrong for an implementation that settles in
+  /// fewer hops. **13-11 measured both**: served over the same WebSocket, the
+  /// reference implementation put the update on the sink before the response
+  /// and `BackendStateMan` put it after, by ~100 µs. A property that depends on
+  /// how many microtasks an implementation happens to use is not a property;
+  /// this makes it one.
+  ///
+  /// Cheap and safe: it can only move a notification EARLIER, never later,
+  /// never duplicate one (`_flush` clears `_pending` and a scheduled flush that
+  /// finds it empty returns), and never split a lever's batch — a lever applies
+  /// its whole batch synchronously and its flush microtask drains before the
+  /// next inbound frame is read.
+  T _answering<T>(T answer) {
+    if (_pending.isNotEmpty) _flush();
+    return answer;
   }
 
   /// Detaches every listener and closes the peer. Idempotent.

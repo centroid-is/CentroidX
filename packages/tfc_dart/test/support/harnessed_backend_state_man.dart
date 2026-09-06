@@ -63,7 +63,11 @@ import 'package:tfc_dart/core/state_man.dart'
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' show StateManApi;
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart'
-    show StateManDataHarness, StateManHarness, StateManWriteHarness;
+    show
+        StateManDataHarness,
+        StateManHarness,
+        StateManHoldHarness,
+        StateManWriteHarness;
 
 // ---------------------------------------------------------------- the keys
 //
@@ -468,7 +472,8 @@ final class HarnessedBackendStateMan
         StateManApi,
         StateManHarness,
         StateManWriteHarness,
-        StateManDataHarness {
+        StateManDataHarness,
+        StateManHoldHarness {
   HarnessedBackendStateMan(
     this._api, {
     required this.pipe,
@@ -604,6 +609,31 @@ final class HarnessedBackendStateMan
 
   @override
   List<String> get mintedCmds => writes.mintedCmds;
+
+  // -------------------------------------------------- the hold harness lever
+
+  /// The deadman counter arriving on the tag, the way the plant would see it.
+  ///
+  /// **Found by the WebSocket leg (13-11), and invisible to the in-memory one.**
+  /// In process, a case feeds a deadman by calling `tick()` on the handle
+  /// `BackendHoldRegistry` returned, and that handle writes the counter down
+  /// the pipe itself — this seam is never consulted, which is why five hold
+  /// checks were green for two plans against a harness that did not implement
+  /// it. Across a channel the tick cannot travel as a handle: `ChannelStateMan`
+  /// mints the counter on the client and posts a `holdTick` notification, and
+  /// `ServedStateMan._holdTick` applies it through **this** method. Without it,
+  /// `holdHarnessOf` fails inside a notification handler, the failure goes to
+  /// `onUnhandledError` and is swallowed by design, and every tick is silently
+  /// dropped — the tag sits at 1 while the client's handle counts up, which is
+  /// precisely the "silence, not success" shape the milestone exists to refuse.
+  ///
+  /// A plant frame and **never** the write path, as `hold_harness.dart:23-30`
+  /// requires: ten ticks a second through `write` would mint ten command ids a
+  /// second and inflate the upstream-attempt count that "a write is never
+  /// auto-retried" is measured with.
+  @override
+  void applyHoldTick(String key, int counter) =>
+      plant.deliver(key, _good(counter));
 
   // ------------------------------------------------- the data harness lever
 

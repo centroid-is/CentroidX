@@ -314,7 +314,39 @@ BackendWsServed serveBackendOverWs() {
     closeServed: () => wiring.teardown(ready),
   );
 
+  _serverSideOf[api] = backend;
   return BackendWsServed._(backend, api, wiring, ready);
+}
+
+/// Which composition is on the far side of which client.
+///
+/// An `Expando` rather than a `Map`, so a client the runner has finished with
+/// takes its composition with it instead of pinning a pipe, a fake worker and
+/// an unstarted server alive for the rest of the file.
+final _serverSideOf = Expando<ComposedBackendUnderTest>('backend behind a WS client');
+
+/// The lever surface on the SERVER side of [api]'s socket.
+///
+/// Three contract hooks need it — the upstream write-attempt count, the write
+/// stall, and the link drop with a write in flight — and all three are
+/// properties of the plant, which on this leg is across a wire. The kit's
+/// default is to read them off the api itself, which is right for an in-memory
+/// leg and wrong here: `ChannelStateMan` has no plant, and a hook that found
+/// one on the client would be measuring the client.
+///
+/// Fails by name rather than by cast. A `ClassCastError` from inside a hook is
+/// reported against whichever check invoked it, and the check's own message —
+/// the thing that says which property was lost — never prints.
+HarnessedBackendStateMan backendServerHarness(relay.StateManApi api) {
+  final backend = _serverSideOf[api];
+  if (backend == null) {
+    throw StateError('no served backend is registered for this '
+        '${api.runtimeType}. The contract hooks reach the plant across the '
+        'socket, so the api handed to them must be one `backendWsServed()` '
+        'returned — a differently-built client has no pipe behind it and the '
+        'write cases would be measuring nothing');
+  }
+  return backend.harness;
 }
 
 /// The driver-facing factory: one WS-served backend adapter, per case.
@@ -596,3 +628,4 @@ final class _BackendRelayWiring {
     backend.harness.shutdownFixture();
   }
 }
+
