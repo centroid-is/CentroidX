@@ -643,11 +643,13 @@ class FakeStateMan
   /// minted its own id would make "how many times did this operator action
   /// reach the device" a question nothing on either side could answer.
   ///
-  /// It never throws to report an outcome. The [StateError] below is a
-  /// programmer error — calling this after [dispose] — and is the only throw
-  /// on the write path. A throw that meant "the write failed" would collapse
-  /// "the PLC may have applied this" into "this definitely did not happen",
-  /// which is the anti-pattern [WriteResult] exists to make unrepresentable.
+  /// It never throws to report an outcome. The three throws below are all
+  /// programmer errors established *before* anything is attempted — writing
+  /// through a disposed source, re-using a command id, and handing this a
+  /// number the write path cannot carry — and a throw that meant "the write
+  /// failed" would collapse "the PLC may have applied this" into "this
+  /// definitely did not happen", which is the anti-pattern [WriteResult] exists
+  /// to make unrepresentable.
   @override
   Future<WriteResult> write(String key, Object? value,
       {Object? expect, String? cmd}) async {
@@ -655,6 +657,35 @@ class FakeStateMan
       throw StateError('write($key) on a disposed source: the store and the '
           'upstream link are both gone, so no outcome reported here could be '
           'true. This is a lifecycle bug in the caller, not a write outcome.');
+    }
+    // Before the id is minted, because an id that exists is an action that may
+    // have been attempted: a `writeStatus` asking after it could no longer
+    // answer `not_received`, which is the one verdict that makes a re-send
+    // safe.
+    //
+    // The reference implementation refuses because the contract does
+    // (`write_contract.dart`, `a non-finite write is refused before the plant`)
+    // and the contract does because every layer beneath it already did:
+    // `WriteParams`, `value_handlers.write`, `ServedStateMan.write`. Sanitizing
+    // is right for telemetry — one bad reading must not fail a frame shared
+    // with every client — and wrong here, where the sanitized value is a write
+    // of `null` to a live tag: the device is actuated with something nobody
+    // chose while the operator is told the write applied.
+    if (sanitize(value).hadNonFinite) {
+      throw ArgumentError.value(
+          value,
+          'value',
+          'a write cannot carry a non-finite number: it encodes to null, and '
+              'a write of null actuates the device with a value nobody chose '
+              'while the operator is told the write applied');
+    }
+    if (sanitize(expect).hadNonFinite) {
+      throw ArgumentError.value(
+          expect,
+          'expect',
+          'a write cannot carry a non-finite compare-and-set guard: nulling '
+              'it is this path\'s encoding of "no guard at all", so a guarded '
+              'write would silently become an unconditional one');
     }
     final id = cmd ?? newUlid();
     if (!_mintedCmds.add(id)) {
@@ -885,10 +916,11 @@ class FakeStateMan
   ///
   /// The readback, not the written value, and they differ whenever the device
   /// has an opinion — a PLC clamping a setpoint to its configured maximum is
-  /// the ordinary case. Construction sanitizes, so an infinity typed into a
-  /// setpoint box becomes a null carrying [Quality.badNonFinite] here instead
-  /// of an exception in whichever frame it would have travelled in, which
-  /// `jsonEncode` would have failed for every other client on the pipe.
+  /// the ordinary case. Construction still sanitizes, but nothing non-finite
+  /// reaches here through [write] any more: it is refused at the top of that
+  /// method, before an id is minted. What the sanitizing covers now is a
+  /// readback staged by [clampNextWrite] — a lever, not an operator action —
+  /// which must not be allowed to detonate the frame it would travel in.
   ///
   /// The readback is applied through [applyChanges], so it counts as an
   /// arrival and resets the freshness clock: the number on screen after a
