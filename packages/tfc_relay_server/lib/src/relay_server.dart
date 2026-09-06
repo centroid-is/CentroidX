@@ -837,11 +837,17 @@ final class RelayServer {
   /// flushed. `sink.close` hands it to a controller the socket consumer drains
   /// on a later turn of the event loop, so a caller that exits in the same turn
   /// delivers nothing at all — measured, and pinned by the `sync` arm of
-  /// `drain_close_test.dart`. A caller that yields one turn before exiting
-  /// delivers it, measured against twenty-five simultaneous clients. That is
-  /// the whole contract: **announce, yield once, exit.** It is best effort by
-  /// construction — a client whose TCP window is full gets 1006 anyway — and
-  /// that is the honest ceiling for a shutdown that is forbidden to wait.
+  /// `drain_close_test.dart`.
+  ///
+  /// **One turn is not enough over TLS, and the plant is entirely TLS.** That
+  /// was the second thing the rig proved (probe P9, run 2): the same image
+  /// delivered 4002 with TLS off and 1006 with it on, because a `SecureSocket`
+  /// needs several rounds of the event loop to encrypt and write what a plain
+  /// one takes in the round it is handed. So the contract is **announce, then
+  /// [settleDrain], then exit** — see [drainTurns] for the measurements behind
+  /// the budget. It remains best effort by construction — a client whose TCP
+  /// window is full gets 1006 anyway — and that is the honest ceiling for a
+  /// shutdown that is forbidden to wait.
   ///
   /// Straight to the transport rather than through `RelaySession.close`, and
   /// deliberately: that path awaits the preference watch and the peer before it
@@ -862,6 +868,56 @@ final class RelayServer {
       // error for this to handle (`unawaited` attaches no handler).
       unawaited(
           connection.closeSocket(CloseCodes.serverDraining, 'server draining'));
+    }
+  }
+
+  /// How many turns of the event loop [settleDrain] yields.
+  ///
+  /// **Measured, on a `wss://` socket, because that is the only kind the plant
+  /// has** (13-14; the numbers are in `13-14-TLS-DRAIN-SUMMARY.md`). A close
+  /// frame queued by [announceDraining] has to cross the WebSocket sink, the
+  /// `SecureSocket`'s encryption buffer and the raw socket's write-ready
+  /// event, and each of those hops is a separate round of the event loop. The
+  /// floor is four turns: one, two and three turns delivered 1006 every time,
+  /// four delivered 4002 six times out of six, five was flaky at one failure
+  /// in six. Sixteen delivered ten out of ten, and sixty-four delivered ten out
+  /// of ten to one client and twenty-five out of twenty-five to twenty-five
+  /// simultaneous ones.
+  ///
+  /// Sixty-four is sixteen times the measured floor and it is nearly free: on
+  /// an idle loop the whole pump costs about a millisecond more than the single
+  /// turn it replaces (~15 µs a turn), and the client learns of the close
+  /// *sooner* end to end — 7 ms against the 20 ms it takes to notice a socket
+  /// that simply vanished.
+  ///
+  /// **This is a turn budget, not a duration, and the difference is the whole
+  /// design.** A one-millisecond `Timer` failed six times out of six while four
+  /// turns — which elapse in far less than a millisecond — succeeded six times
+  /// out of six. What the flush needs is rounds of the event loop, and a
+  /// wall-clock wait buys those only by accident. A turn budget also scales
+  /// itself: on a slower machine each turn takes longer because the work in it
+  /// takes longer, which is precisely the adaptation a hardcoded 50 ms cannot
+  /// make.
+  static const int drainTurns = 64;
+
+  /// Yields [drainTurns] turns of the event loop, so the frames
+  /// [announceDraining] queued can reach the wire.
+  ///
+  /// **Nothing here waits on a peer, and nothing here waits on a clock.** Every
+  /// yield is `Duration.zero`; the loop's only bound is a compile-time count. A
+  /// panel that has gone away, a socket whose window is full, a far end that
+  /// never answers — none of them can make this take one turn longer than the
+  /// budget, which is what keeps it inside Phase 12's law. The honest ceiling is
+  /// unchanged: this is best effort, and a socket that cannot take the bytes in
+  /// sixty-four turns leaves its panel with 1006, exactly as it would have
+  /// without it.
+  ///
+  /// Static, and takes no server: it is a property of the Dart event loop and
+  /// the TLS stack, not of any one gateway, and a caller with no server left to
+  /// hold — a process in the middle of exiting — must still be able to reach it.
+  static Future<void> settleDrain() async {
+    for (var turn = 0; turn < drainTurns; turn++) {
+      await Future<void>.delayed(Duration.zero);
     }
   }
 

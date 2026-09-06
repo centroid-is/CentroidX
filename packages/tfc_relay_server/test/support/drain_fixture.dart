@@ -19,8 +19,14 @@
 ///    should work. It must ALSO produce 1006: `sink.close` hands the frame to
 ///    a `StreamController` the socket consumer drains on a later turn, so a
 ///    process that exits first never puts a byte of it on the wire.
-///  * `announce` — `announceDraining()` and then `exit(0)` on the next turn.
-///    The shipped shape, and the only one of the three that delivers 4002.
+///  * `oneturn` — `announceDraining()` and then `exit(0)` on the *next* turn.
+///    What 13-13 shipped. It delivers 4002 over plaintext and 1006 over TLS,
+///    which is exactly the rig's second run: the fix ran, the log said so, and
+///    every panel still saw a broken network.
+///  * `announce` — `announceDraining()` and then `RelayServer.settleDrain()`
+///    before `exit(0)`: a bounded count of event-loop turns, no clock. The
+///    shipped shape, and the only one of the four that delivers 4002 over the
+///    scheme the plant actually dials.
 ///
 /// Every mode kills first and announces second, mirroring `bin/main.dart`:
 /// Phase 12's law is that the acquisition workers die synchronously on the
@@ -44,11 +50,12 @@ import 'permissive_resolver.dart';
 /// question the rig asked. With it the gateway binds `wss://` and the close
 /// frame has to travel through `SecureSocket`, which is the only configuration
 /// the defect reproduces in: a plaintext loopback socket accepts the frame in
-/// the round it is written, and a TLS one does not.
+/// the same round it is written, and a TLS one does not.
 Future<void> main(List<String> args) async {
   final mode = args.first;
-  final tls =
-      args.length > 1 ? TlsConfig(chainPath: args[1], keyPath: args[2]) : null;
+  final tls = args.length > 1
+      ? TlsConfig(chainPath: args[1], keyPath: args[2])
+      : null;
 
   final served = FakeStateMan();
   final server = RelayServer(
@@ -65,10 +72,16 @@ Future<void> main(List<String> args) async {
       case 'sync':
         server.announceDraining();
         exit(0);
+      case 'oneturn':
+        server.announceDraining();
+        // The shape that shipped from 13-13 and lost on the rig. Kept as a
+        // mode so the defect stays measurable: over plaintext it delivers,
+        // over TLS it does not.
+        Timer(Duration.zero, () => exit(0));
       case 'announce':
         server.announceDraining();
-        // One turn, and one turn only. See `drain_close_test.dart`.
-        Timer(Duration.zero, () => exit(0));
+        // The turn budget, not a clock. See `RelayServer.drainTurns`.
+        unawaited(RelayServer.settleDrain().then((_) => exit(0)));
     }
   });
 

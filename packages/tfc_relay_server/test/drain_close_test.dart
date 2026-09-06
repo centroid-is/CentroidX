@@ -26,6 +26,7 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
+import 'package:tfc_relay_server/src/relay_server.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -55,7 +56,7 @@ final class _DrainRun {
 /// CI. Set it and the child binds a real `SecurityContext` from minted PEMs and
 /// the client dials through a pinned `HttpClient`, so the close frame has to
 /// survive `SecureSocket`'s write path — which is the discriminator the rig
-/// isolated (TLS off -> 4002, TLS on -> 1006, same image, same fix).
+/// isolated (TLS off → 4002, TLS on → 1006, same image, same fix).
 Future<_DrainRun> _run(String mode, {bool tls = false}) async {
   final certArgs = <String>[];
   String? rootPem;
@@ -197,6 +198,89 @@ void main() {
               'gateway sending anything');
       expect(run.closeReason, isEmpty);
     }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('exactly one turn — what 13-13 shipped — still delivers 1006 here',
+        () async {
+      final run = await _run('oneturn', tls: true);
+
+      expect(run.closeCode, 1006,
+          reason: 'THE regression arm, and the whole reason this group exists. '
+              'A single yielded turn is enough for a plaintext socket (the '
+              '`announce` arm passed on it for a week) and is not enough for a '
+              'SecureSocket, which needs several rounds of the event loop to '
+              'encrypt and write. Measured floor: one, two and three turns '
+              'deliver 1006 every time; four deliver 4002. If this arm ever '
+              'goes green with 4002, the turn budget in RelayServer.drainTurns '
+              'has stopped being load-bearing and should be re-measured rather '
+              'than trusted');
+      expect(run.closeReason, isEmpty);
+    }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('one turn is still enough over plaintext: TLS is the discriminator',
+        () async {
+      // The rig isolated the variable by removing TLS from the probe config
+      // and watching 4002 come back. This is that isolation, in CI: same
+      // fixture, same mode, one thing different.
+      final run = await _run('oneturn');
+
+      expect(run.closeCode, CloseCodes.serverDraining,
+          reason: 'without this the arm above could be passing because the '
+              '`oneturn` mode is broken rather than because TLS needs more '
+              'turns, and the next person would go looking in the wrong place');
+    }, timeout: const Timeout(Duration(minutes: 3)));
+  });
+
+  group('settleDrain is a turn budget, not a wait', () {
+    /// Every duration [body] asked the event loop to time, in order.
+    ///
+    /// A zone that intercepts `createTimer` is how "no wall-clock deferral"
+    /// stops being a claim in a doc comment and becomes an assertion: a
+    /// `Duration(milliseconds: 50)` anywhere under this call shows up here as a
+    /// value, and no amount of indirection hides it.
+    Future<List<Duration>> timersUnder(Future<void> Function() body) async {
+      final requested = <Duration>[];
+      await runZoned(body,
+          zoneSpecification: ZoneSpecification(
+            createTimer: (self, parent, zone, duration, f) {
+              requested.add(duration);
+              return parent.createTimer(zone, duration, f);
+            },
+          ));
+      return requested;
+    }
+
+    test('every turn it yields is Duration.zero', () async {
+      final requested = await timersUnder(RelayServer.settleDrain);
+
+      expect(requested, isNotEmpty,
+          reason: 'a pump that scheduled nothing would return in the same turn '
+              'and deliver nothing, which is the `sync` arm');
+      expect(requested.toSet(), {Duration.zero},
+          reason: 'THE law, as an assertion. The throwaway image that first '
+              'made 4002 arrive over TLS used Duration(milliseconds: 50), and '
+              'a number on this path is a shutdown budget — which is how the '
+              '5.76 s stall gets back in wearing a value nobody can argue '
+              'with. What the flush needs is turns: a 1 ms timer failed six '
+              'times out of six while four zero-duration turns, which elapse '
+              'in far less than a millisecond, succeeded six out of six');
+    });
+
+    test('the number of turns is bounded by a compile-time constant', () async {
+      final requested = await timersUnder(RelayServer.settleDrain);
+
+      expect(requested, hasLength(RelayServer.drainTurns),
+          reason: 'the pump must not be able to run longer because a socket, a '
+              'peer or a config said so — the only thing that decides how long '
+              'this takes is a const in the source');
+      expect(RelayServer.drainTurns, greaterThanOrEqualTo(16),
+          reason: 'measured floor is four turns and five was flaky at one '
+              'failure in six; sixteen delivered ten out of ten. A budget '
+              'trimmed towards the floor to look tidy would put the rig defect '
+              'back for the cost of one loaded machine');
+      expect(RelayServer.drainTurns, lessThanOrEqualTo(256),
+          reason: 'and it is not free — 256 turns cost about 3 ms more than 64 '
+              'on an idle loop, with nothing measurable bought after 64');
+    });
   });
 
   group('announceDraining, in process', () {
