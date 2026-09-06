@@ -4,12 +4,31 @@ import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'package:tfc_dart/core/alarm.dart';
+import '../core/relay_alarm_source.dart';
+import 'gateway.dart';
 import 'preferences.dart';
 import 'state_man.dart';
 part 'alarm.g.dart';
 
+/// Where this panel's alarms come from, which depends on the transport.
+///
+/// The type is [AlarmSource], not [AlarmMan], and the branch is the same one
+/// `state_man.dart:126` makes. In direct mode this station is wired to the
+/// PLCs and evaluates its own rules, so it builds an [AlarmMan] and nothing
+/// about that changes. In gateway mode the backend's alarm engine has already
+/// evaluated them and published the answer under `ALARM.active`, so the panel
+/// is TOLD its active set and builds a [RelayAlarmSource], which evaluates
+/// nothing and subscribes to no rule variable at all.
+///
+/// There is deliberately **no fallback**. If gateway mode resolves a
+/// `StateMan` with no relay client behind it, this refuses by name rather than
+/// quietly building an [AlarmMan]: a silent fallback is precisely how
+/// panel-side evaluation comes back (T-14-39), and the plant symptom of it
+/// coming back is measured — the rig's rule on `__agg_default_connected`,
+/// which nothing in this repository produces, stands permanently on a healthy
+/// plant when a gateway-mode panel evaluates it.
 @Riverpod(keepAlive: true)
-Future<AlarmMan> alarmMan(Ref ref) async {
+Future<AlarmSource> alarmMan(Ref ref) async {
   // Use ref.read to avoid cascade invalidation from DB reconnects.
   // AlarmMan reads config once at creation; it doesn't need live DB updates.
   final prefs = await ref.read(preferencesProvider.future);
@@ -27,6 +46,23 @@ Future<AlarmMan> alarmMan(Ref ref) async {
     final systemPrefs = await ref.read(systemPreferencesProvider.future);
     await systemPrefs.setString(
         'alarm_man_config', jsonEncode(AlarmManConfig(alarms: [])));
+  }
+
+  final gateway = await ref.read(gatewayConfigProvider.future);
+  if (gateway.isGateway) {
+    // The client is built by `stateManProvider`, which was awaited above; it
+    // publishes the port into the slot because `GuardedStateMan` cannot be
+    // unwrapped. See [GatewayAlarmSlot].
+    final transport = ref.read(gatewayAlarmSlotProvider).transport;
+    if (transport == null) {
+      throw UnsupportedError('alarmManProvider is not available in gateway '
+          'mode: this station resolved a StateMan that is not a '
+          'GatewayStateMan, so there is no relay client to read ALARM.active '
+          'through. Fix the gateway branch of lib/providers/state_man.dart — '
+          'do not fall back to evaluating the rules here.');
+    }
+    return await RelayAlarmSource.create(
+        transport: transport, preferences: prefs);
   }
 
   // `clock: DateTime.now` is required, and this provider is the composition

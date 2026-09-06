@@ -126,7 +126,7 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
   /// stream on every scaffold rebuild -- every navigation, every pane inset
   /// change -- and the banner blinked back to the clock for a frame each
   /// time while the new StreamBuilder waited for its first value.
-  late final Stream<(AlarmMan, List<AlarmActive>)> _alarmStream =
+  late final Stream<(AlarmSource, List<AlarmActive>)> _alarmStream =
       Stream.fromFuture(ref.read(alarmManProvider.future)).asyncExpand(
           (alarmMan) => alarmMan
               .activeAlarms()
@@ -218,7 +218,7 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
   }
 
   Widget _buildAlarmBanner(BuildContext context, WidgetRef ref) {
-    return StreamBuilder<(AlarmMan, List<AlarmActive>)>(
+    return StreamBuilder<(AlarmSource, List<AlarmActive>)>(
         stream: _alarmStream,
         builder: (context, snapshot) {
           if (!snapshot.hasError &&
