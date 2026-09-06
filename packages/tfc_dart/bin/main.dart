@@ -10,6 +10,8 @@ import 'package:tfc_dart/core/alarm.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/log_config.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
+import 'package:tfc_dart/core/relay/backend_composition.dart';
+import 'package:tfc_dart/core/relay/relay_config.dart';
 import 'data_acquisition_isolate.dart';
 
 /// The one way this process stops (PIPE-13).
@@ -174,6 +176,69 @@ void main() async {
 
   logger.i('All isolates spawned (${pipe.workerCount} in the pipe), '
       'main thread waiting...');
+
+  // ------------------------------------------------------------- the relay
+  //
+  // MOUNT-02. This process is the one that serves the relay WebSocket, because
+  // it is the one that owns the plant: the M2200 weighers accept exactly one
+  // TCP client each, so two processes talking to the line is not a deployment
+  // choice somebody gets to make.
+  //
+  // Configured from the `relay` section of the file CENTROID_STATEMAN_FILE_PATH
+  // already names, read once more here rather than threaded through the
+  // generated StateManConfig. There is no gateway.json and no second config
+  // world; `test/core/relay/no_gateway_json_test.dart` scans every file
+  // reachable from this entrypoint and fails if the string appears.
+  //
+  // **Off by default.** No `relay` section means no WebSocket, one line in the
+  // log saying so, and a backend that boots exactly as it does today — which is
+  // what lets every plant backend at SVN take this binary before anybody turns
+  // the socket on. A section with a typo in it is the opposite and throws here,
+  // deliberately: a typo that read as "off" is a plant running unserved for a
+  // week behind a green log (13-06).
+  final relayBoot = await RelayBoot.fromStatemanFile(
+    statemanConfigFilePath,
+    env: Platform.environment,
+  );
+  // Unconditionally, on both branches. Whether the WebSocket is on is a fact
+  // about this deployment that an operator must be able to read off a boot log
+  // without knowing what to grep for.
+  logger.i(relayBoot.bootLogLine);
+
+  final relayConfig = relayBoot.config;
+  if (relayConfig != null) {
+    // Allocation only, and outside the try: a composition that refuses is a
+    // configuration mistake — two credential sources, a validator nobody
+    // supplied — and those are loud at boot, like a bad `relay` section.
+    final relay = composeBackendRelay(
+      config: relayConfig,
+      pipe: pipe,
+      keyMappings: keyMappings,
+      database: db,
+      prefs: prefs,
+      log: logger,
+    );
+    try {
+      await relay.server.start();
+      logger.i('relay WebSocket bound on port ${relay.server.port}');
+    } catch (error, stack) {
+      // **Not fatal, and this is the decision.** The plant is the job; the
+      // WebSocket is a service on top of it. A backend that refuses to acquire
+      // because a certificate expired or because something else already holds
+      // the port is a worse outcome than a backend nobody can connect to: the
+      // first stops the weighers being read and the line being controlled, the
+      // second costs the panels their view of a line that is still running.
+      // Warning level, named cause, and the process carries on.
+      logger.w(
+          'relay WebSocket failed to start; the backend keeps running the '
+          'plant without it',
+          error: error,
+          stackTrace: stack);
+    }
+    // Nothing registers this server with the shutdown path, on purpose. See
+    // _shutdown above: it kills the acquisition workers and calls exit(0)
+    // without awaiting anything, and the sockets go with the process.
+  }
 
   // Key mappings and alarm definitions were loaded above and then baked into
   // the spawned isolates; an HMI station editing them would otherwise need a

@@ -29,6 +29,7 @@
 /// substituted anywhere fails with a type name in the message.
 library;
 
+import 'dart:convert' show jsonEncode;
 import 'dart:io';
 import 'dart:mirrors';
 
@@ -83,6 +84,8 @@ Map<String, dynamic> _relaySection({
         },
       },
     };
+
+String _encode(Map<String, dynamic> json) => jsonEncode(json);
 
 void main() {
   late Directory tmp;
@@ -458,4 +461,229 @@ void main() {
               'usable as a weapon');
     });
   });
+
+  group('off by default, and it is the upgrade-safety property', () {
+    // Both directions, through the same call bin/main.dart makes, on a real
+    // file. The structural arms below prove where the guard is; these two prove
+    // what it is guarding on.
+
+    Future<RelayBoot> bootFrom(Map<String, dynamic> stateman) {
+      final file = File('${tmp.path}/stateman.json')
+        ..writeAsStringSync(_encode(stateman));
+      return RelayBoot.fromStatemanFile(file.path);
+    }
+
+    test('a stateman file with no relay section: OFF, one line, no throw',
+        () async {
+      final boot = await bootFrom(<String, dynamic>{
+        'opcua': <dynamic>[],
+        'modbus': <dynamic>[],
+      });
+
+      expect(boot.isOn, isFalse);
+      expect(boot.config, isNull,
+          reason: 'a null config is what makes the relay block in '
+              'bin/main.dart unreachable. Every plant backend at SVN gets this '
+              'binary before anybody turns the WebSocket on, and it must boot '
+              'exactly as it does today');
+      expect(boot.bootLogLine, contains('OFF'));
+      expect(boot.bootLogLine.split('\n'), hasLength(1),
+          reason: 'one line an operator can read off a boot log');
+    });
+
+    test('the same file with a relay section: ON, and it composes', () async {
+      final boot = await bootFrom(<String, dynamic>{
+        'opcua': <dynamic>[],
+        ..._relaySection(port: 0),
+      });
+
+      expect(boot.isOn, isTrue);
+      expect(boot.bootLogLine, contains('ON'));
+      final composed = composeBackendRelay(
+        config: boot.config!,
+        pipe: PipeMainEndpoint(),
+        keyMappings: _mappings(),
+        database: database,
+        prefs: prefs,
+        log: Logger(level: Level.off),
+      );
+      addTearDown(composed.dispose);
+      expect(composed.server, isA<RelayServer>(),
+          reason: 'without this half the OFF arm above would pass against a '
+              'backend that can never turn the relay on at all');
+    });
+  });
+
+  // ------------------------------------------------- the binary's own block
+
+  group('bin/main.dart is the caller, and only the caller', () {
+    late String main;
+
+    setUpAll(() {
+      main = _stripComments(File('bin/main.dart').readAsStringSync());
+    });
+
+    test('the scan actually reads the file it claims to', () {
+      // An absence assertion that never matched anything passes for ever.
+      // 13-06's Task 2 was written around exactly this hole.
+      expect(main, contains('void main()'));
+      expect(main, contains('pipe.addWorker('));
+    });
+
+    test('there is exactly ONE composition site', () {
+      expect('composeBackendRelay('.allMatches(main).length, 1,
+          reason: 'this is what makes the whole file above evidence about the '
+              'BINARY rather than about a function the binary might call. Two '
+              'composition sites is two object graphs, and the test would be '
+              'assembling one of them while the plant ran the other.');
+    });
+
+    test('the boot line is printed on BOTH branches, outside the guard', () {
+      expect(main, contains('bootLogLine'),
+          reason: 'T-13-06-d: one clear line saying whether the WebSocket is '
+              'on, every boot, configured or not');
+
+      final guarded = _bodyOf(main, 'if (relayConfig != null)');
+      expect(guarded, isNotEmpty,
+          reason: 'the relay block must be guarded by a null check on the '
+              'config, or a backend with no relay section does not boot');
+      expect(guarded, isNot(contains('bootLogLine')),
+          reason: 'a boot line inside the guard is a boot line the OFF case '
+              'never prints, which is the silent-off failure 13-06 exists to '
+              'prevent');
+    });
+
+    test('nothing starts a relay outside that guard', () {
+      final guarded = _bodyOf(main, 'if (relayConfig != null)');
+      expect(guarded, contains('composeBackendRelay('));
+      expect(guarded, contains('.start()'),
+          reason: 'compose allocates; start() binds. Both belong inside the '
+              'guard — off means no socket, not a socket nobody uses');
+    });
+
+    test('the config-watch key set gained nothing', () {
+      // The relay config lives in the stateman file, not in a preference row,
+      // so a relay-config change is applied by restarting the process exactly
+      // like a stateman change is today. No file watcher, no new key.
+      final watcher = _statementAt(main, 'PreferencesWatcher.forDatabase');
+      expect(watcher, contains("'key_mappings'"));
+      expect(watcher, contains("'alarm_man_config'"));
+      expect(watcher, isNot(contains('relay')),
+          reason: 'restart-to-apply goes through the existing shutdown; a '
+              'relay key here would be a second restart trigger for a value '
+              'that is not in the database at all');
+    });
+
+    test('the shutdown path did not grow', () {
+      // pipe_shutdown_structure_test.dart owns this property and has been shown
+      // to bite four times (12-06 sabotages A-D). It is restated here because
+      // this plan is the one that adds a closeable object to the process, and
+      // the arm should fail in the file whose change caused it.
+      final body = _bodyOf(main, 'Never _shutdown(');
+      expect(body, isNotEmpty);
+      expect(body, isNot(contains('await')),
+          reason: 'RelayServer.close() on this path is the 5.76 s stall '
+              'coming back on the most common restart in the plant. The '
+              'process is about to exit(0); the sockets go with it');
+      expect(body, isNot(contains('close(')));
+      expect(main, isNot(contains('.close(')),
+          reason: 'the whole file, not just the function: an async helper '
+              'awaited from _shutdown would pass the arm above');
+    });
+
+    test('the alarmman block is untouched — it is Phase 14\'s', () {
+      for (final landmark in const <String>[
+        'StateMan.create(',
+        'AlarmMan.create(',
+        'activeAlarms().listen(',
+      ]) {
+        expect(main, contains(landmark),
+            reason: 'the second StateMan and its activeAlarms() subscription '
+                'are Phase 14\'s scope and stay byte-for-byte. A relay block '
+                'that "tidied" one of them away would take alarm history with '
+                'it, and nothing would say so');
+      }
+    });
+  });
+}
+
+// ------------------------------------------------------------- source scanning
+//
+// Copied from `test/core/pipe_shutdown_structure_test.dart` rather than
+// imported: its helpers are library-private, and the alternative — making them
+// public so a second file can share them — would make the pin that has bitten
+// four times editable from somewhere other than the pin. Three small functions
+// are the cheaper duplication.
+
+/// [source] with `//` line comments and `/* */` block comments removed.
+String _stripComments(String source) {
+  final out = StringBuffer();
+  var inBlock = false;
+  for (final rawLine in source.split('\n')) {
+    var line = rawLine;
+    if (inBlock) {
+      final end = line.indexOf('*/');
+      if (end < 0) {
+        out.writeln();
+        continue;
+      }
+      line = line.substring(end + 2);
+      inBlock = false;
+    }
+    final blockStart = line.indexOf('/*');
+    if (blockStart >= 0) {
+      inBlock = true;
+      line = line.substring(0, blockStart);
+    }
+    final trimmed = line.trimLeft();
+    if (trimmed.startsWith('//')) {
+      out.writeln();
+      continue;
+    }
+    final comment = _lineCommentAt(line);
+    if (comment >= 0) line = line.substring(0, comment);
+    out.writeln(line);
+  }
+  return out.toString();
+}
+
+/// Where a real `//` comment starts on [line], or -1.
+int _lineCommentAt(String line) {
+  var singles = 0;
+  var doubles = 0;
+  for (var i = 0; i < line.length - 1; i++) {
+    final c = line[i];
+    if (c == "'") singles++;
+    if (c == '"') doubles++;
+    if (c == '/' && line[i + 1] == '/' && singles.isEven && doubles.isEven) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/// The brace-matched body of the construct whose declaration contains
+/// [signature]. Empty when there is no such construct.
+String _bodyOf(String source, String signature) {
+  final start = source.indexOf(signature);
+  if (start < 0) return '';
+  final open = source.indexOf('{', start);
+  if (open < 0) return '';
+  var depth = 0;
+  for (var i = open; i < source.length; i++) {
+    if (source[i] == '{') depth++;
+    if (source[i] == '}') {
+      depth--;
+      if (depth == 0) return source.substring(open, i + 1);
+    }
+  }
+  return '';
+}
+
+/// The whole statement beginning at [anchor], up to its terminating `;`.
+String _statementAt(String source, String anchor) {
+  final start = source.indexOf(anchor);
+  if (start < 0) return '';
+  final end = source.indexOf(';', start);
+  return end < 0 ? source.substring(start) : source.substring(start, end + 1);
 }
