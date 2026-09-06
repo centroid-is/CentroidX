@@ -559,6 +559,13 @@ void main() {
           reason: 'and the value the key actually holds — a compare-and-set '
               'refusal with neither number in it tells the page nothing it '
               'can put in front of an operator');
+      // The barrier is the assertion. Port delivery is a separate event-loop
+      // task, not a microtask, so a request that HAD crossed would still be in
+      // flight at the end of the awaited call and an immediate read of the
+      // plant's log would report the absence it was looking for. Sabotage (d)
+      // is what found this: the mutation that sends before comparing left this
+      // arm green until the queue was pumped.
+      await _settle();
       expect(f.plant.writes, isEmpty,
           reason: 'a guarded write whose guard failed still crossed the pipe. '
               'Compare-and-set exists so that a concurrent change is NOT '
