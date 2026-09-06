@@ -501,22 +501,35 @@ void main() {
       expect(client.debugWritesSent, 1);
     });
 
-    test('a non-finite value is sanitized and marked after the outcome',
+    test('a non-finite value is refused before anything reaches the wire',
         () async {
       final gateway = await _gateway();
       final client = _client(gateway.uri);
-      await _until('a snapshot', () => client.read(_writableKey) != null);
+      await _until('the link', () => client.isReady);
 
-      final result = await client.write(_writableKey, double.nan);
+      for (final offender in [
+        double.nan,
+        double.infinity,
+        double.negativeInfinity,
+      ]) {
+        await expectLater(
+          () => client.write(_writableKey, offender),
+          throwsA(isA<ArgumentError>()),
+          reason: 'a widget that divides by zero must not actuate a PLC tag',
+        );
+      }
 
-      // The write happened, with null on the wire: `jsonEncode` throws on NaN,
-      // so an unsanitized value does not fail one write — it fails the frame
-      // every other client on the pipe shares.
-      expect(result, isA<WriteApplied>());
-      // And the operator sees a fault rather than a healthy empty box. After
-      // the outcome and never before: on an ordered channel the readback
-      // arrives first, so marking early marks something the readback overwrote.
-      expect(client.read(_writableKey)?.quality, Quality.badNonFinite);
+      // Sanitizing a value is right for telemetry, where the alternative is a
+      // frame that fails for every client on the pipe. It is wrong here: this
+      // is the client's own request channel, nothing has been sent yet, and
+      // nulling the value would put a write of `null` on a plant tag — the
+      // device actuated with something nobody chose — and then report
+      // `WriteApplied` for it. `WriteParams`' own factory already refuses
+      // exactly this; refusing here costs nothing and owes the caller the
+      // reason.
+      expect(client.debugWritesSent, 0,
+          reason: 'nothing may reach the wire for a value the operator '
+              'cannot have chosen');
     });
 
     test('a non-finite expect is refused before anything reaches the wire',
