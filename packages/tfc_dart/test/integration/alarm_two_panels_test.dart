@@ -97,6 +97,18 @@ const String kAlarmTitle = 'Conveyor overspeed';
 const String kAlarmDescription = 'CN01 is running above its commissioned limit';
 const List<String> kAlarmGroup = <String>['Line 3', 'Pre-freezer'];
 
+/// A second, unrelated alarm on a second line — arm 3's, and only arm 3's.
+///
+/// One standing alarm cannot tell a snapshot from a delta: the two payloads are
+/// identical. Two can. See arm 3 and sabotage (b).
+const String kSecondInputKey = 'ST201.CN04.MOT01.speed';
+const String kSecondAlarmUid = 'packer-overspeed';
+
+/// The second alarm's onset: two seconds after the first, so the pair has a
+/// deterministic oldest-first order the arm can name.
+final DateTime kSecondPlantInstant =
+    kPlantInstant.add(const Duration(seconds: 2));
+
 /// What the panels call their subscription. One name, two sessions.
 const String kSub = 'panel';
 
@@ -194,31 +206,53 @@ void main() {
   });
 
   // ------------------------------------------------------------------- arm 3
-  test('arm 3 — a panel that joins AFTER the alarm is standing is handed the '
-      'current set as a snapshot, not a replay it missed', () async {
-    // B is deliberately absent while the plant goes wrong.
-    final rig = await _TwoPanels.standUp(connectB: false);
+  test('arm 3 — a panel that joins AFTER TWO alarms are standing is handed the '
+      'WHOLE current set as a snapshot, not the last thing that changed',
+      () async {
+    // TWO alarms, and the second is the whole arm. **Measured, sabotage (b):**
+    // with one standing alarm a delta publication and a snapshot publication
+    // are byte-identical, so a backend that had quietly become delta-based
+    // would pass a one-alarm version of this arm — and a late-joining panel
+    // would then be told only about whatever changed last. Two alarms rising
+    // one after the other is the smallest case in which "the whole set" and
+    // "what changed" are different payloads.
+    //
+    // B is deliberately absent while the plant goes wrong. Twice.
+    final rig = await _TwoPanels.standUp(connectB: false, twoAlarms: true);
     rig.raise();
-    await rig.awaitActive(onlyA: true);
+    await rig.awaitCount(1, onlyA: true);
+    rig.raiseSecond();
+    // The barrier is "A has been TOLD about the second activation", not "A
+    // holds two" — so a backend that told it the wrong thing fails the
+    // assertion below by name instead of timing out on a wait.
+    await rig.awaitValueFrames(2);
+    expect(rig.backendEntries, hasLength(2), reason: rig.evidence());
 
-    final beforeB = rig.a.entries.single;
+    final beforeB = rig.a.entries;
+    expect(beforeB.map((e) => e.uid).toList(), [kAlarmUid, kSecondAlarmUid],
+        reason: 'panel A, which was connected throughout, must hold BOTH — '
+            'oldest onset first, which is also the order the cap keeps. A '
+            'panel holding only the alarm that moved last is a backend '
+            'publishing what CHANGED rather than what IS. ${rig.evidence()}');
 
     // Now the operator opens a second screen.
     await rig.joinB();
 
-    expect(rig.b.entries, hasLength(1),
+    expect(rig.b.entries, hasLength(2),
         reason: 'PROJECT.md: resync = snapshot, never delta replay. A late '
-            'joiner that is only told about CHANGES is a screen that shows a '
-            'healthy plant while a line is down (T-14-46). ${rig.evidence()}');
-    expect(rig.b.entries.single, beforeB,
-        reason: 'and it is the same entry, with the same instant — not a '
+            'joiner told only about CHANGES sees whichever alarm happened to '
+            'move last and is blind to every alarm that was already standing — '
+            'a screen showing one fault on a line that has two (T-14-46). '
+            '${rig.evidence()}');
+    expect(rig.b.entries, beforeB,
+        reason: 'and they are the same entries, with the same instants — not a '
             're-derivation. ${rig.evidence()}');
 
     // It came in the subscribe answer, which is what "snapshot" means here:
     // B has been sent no update frame at all for this key.
-    expect(rig.b.snapshotEntries, hasLength(1),
-        reason: 'the set must be in the subscribe ANSWER. Arriving later, as '
-            'an update, would mean the panel had an interval of showing '
+    expect(rig.b.snapshotEntries, hasLength(2),
+        reason: 'the whole set must be in the subscribe ANSWER. Arriving later, '
+            'as updates, would mean the panel had an interval of showing '
             'nothing wrong on a plant that was already stopped');
     expect(rig.b.valueFrames, isEmpty,
         reason: 'no `u` frame was needed to make B correct, which is the whole '
@@ -480,7 +514,8 @@ String _diagnose(int actualMs) {
 
 // -------------------------------------------------------------------- fixture
 
-AlarmManConfig _config() => AlarmManConfig(alarms: <AlarmConfig>[
+AlarmManConfig _config({bool twoAlarms = false}) =>
+    AlarmManConfig(alarms: <AlarmConfig>[
       AlarmConfig(
         uid: kAlarmUid,
         title: kAlarmTitle,
@@ -495,6 +530,21 @@ AlarmManConfig _config() => AlarmManConfig(alarms: <AlarmConfig>[
           ),
         ],
       ),
+      if (twoAlarms)
+        AlarmConfig(
+          uid: kSecondAlarmUid,
+          title: 'Packer overspeed',
+          description: 'CN04 is running above its commissioned limit',
+          group: const <String>['Line 4'],
+          rules: <AlarmRule>[
+            AlarmRule(
+              level: AlarmLevel.warning,
+              expression: ExpressionConfig(
+                  value: Expression(formula: '$kSecondInputKey > 10')),
+              acknowledgeRequired: false,
+            ),
+          ],
+        ),
     ]);
 
 /// One backend, two panels, and everything the arms read off them.
@@ -514,9 +564,10 @@ final class _TwoPanels {
   _Panel get b =>
       _b ?? (throw StateError('panel B has not joined yet — call joinB()'));
 
-  static Future<_TwoPanels> standUp({bool connectB = true}) async {
+  static Future<_TwoPanels> standUp(
+      {bool connectB = true, bool twoAlarms = false}) async {
     final fixture = backendRelayFixture(
-      alarms: _config(),
+      alarms: _config(twoAlarms: twoAlarms),
       // Injected, fixed and two years in the past, so "the plant's time" and
       // "the backend's time" can never accidentally be equal — the only
       // condition under which arm 2 can fail.
@@ -539,6 +590,10 @@ final class _TwoPanels {
   /// a publication can be matched to the frame that carried it.
   void raiseAt(DateTime sourceTime) =>
       backend.harness.setValue(kInputKey, 42.0, sourceTime: sourceTime);
+
+  /// Raises the second alarm (arm 3 only), two seconds after the first.
+  void raiseSecond() => backend.harness
+      .setValue(kSecondInputKey, 42.0, sourceTime: kSecondPlantInstant);
 
   /// Puts it back under, stamped a second later — still the plant's clock.
   void clear() => backend.harness.setValue(kInputKey, 1.0,
@@ -579,10 +634,25 @@ final class _TwoPanels {
             'reached both panels. ${evidence()}',
       );
 
-  Future<void> awaitActive({bool onlyA = false}) => _waitUntil(
+  Future<void> awaitActive({bool onlyA = false}) =>
+      awaitCount(1, onlyA: onlyA);
+
+  /// Waits until panel A has received [n] value frames for the active set.
+  ///
+  /// A barrier on ARRIVAL rather than on content: whether the content is right
+  /// is what the arm asserts, and a barrier that waited for the right content
+  /// would turn a wrong answer into a timeout with no property named.
+  Future<void> awaitValueFrames(int n) => _waitUntil(
+        () => a.valueFrames.length >= n,
+        reason: 'panel A was never told about activation $n. ${evidence()}',
+      );
+
+  Future<void> awaitCount(int count, {bool onlyA = false}) => _waitUntil(
         () =>
-            a.entries.length == 1 && (onlyA || (_b?.entries.length ?? 0) == 1),
-        reason: 'the alarm never reached both panels. ${evidence()}',
+            a.entries.length == count &&
+            (onlyA || (_b?.entries.length ?? 0) == count),
+        reason: '$count active alarm(s) never reached '
+            '${onlyA ? 'panel A' : 'both panels'}. ${evidence()}',
       );
 
   Future<void> awaitEmpty() => _waitUntil(
@@ -595,8 +665,12 @@ final class _TwoPanels {
       'publications=${backend.engine!.publications}, '
       'suspended=${backend.engine!.suspendedRuleCount}, '
       'refusals=${backend.engine!.refusals}, '
-      'input=${backend.composition.freshness.read(kInputKey)?.value}@'
-      '${backend.composition.freshness.read(kInputKey)?.quality.code}; '
+      'rules=${backend.engine!.config?.alarms.length}, '
+      'inputs=${[
+        for (final k in const [kInputKey, kSecondInputKey])
+          '$k=${backend.composition.freshness.read(k)?.value}'
+              '@${backend.composition.freshness.read(k)?.quality.code}'
+      ]}; '
       'A: ${a.describe()}; B: ${_b?.describe() ?? 'not connected'}';
 }
 
