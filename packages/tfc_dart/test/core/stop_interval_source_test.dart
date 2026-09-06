@@ -15,11 +15,17 @@ AlarmRule rule(AlarmLevel level) => AlarmRule(
 
 /// An activation of [uid], started at [from] and cleared at [to] (null = still
 /// standing), shaped the way AlarmMan hands it over.
+///
+/// Every call builds **fresh** objects. That matters from 14-06 onwards: the
+/// history half is decoded out of `alarm_history` and the live half arrives
+/// off the pipe, so the same activation is two different instances and an
+/// identity-keyed dedupe cannot see that they are one thing.
 AlarmActive activation(
   String uid, {
   required int from,
   int? to,
   AlarmLevel level = AlarmLevel.error,
+  int? ruleIndex = 0,
 }) {
   final config = AlarmConfig(
     uid: uid,
@@ -35,6 +41,7 @@ AlarmActive activation(
       expression: null,
       rule: rule(level),
       timestamp: at(from),
+      ruleIndex: ruleIndex,
     ),
     deactivated: to == null ? null : at(to),
   );
@@ -116,6 +123,95 @@ void main() {
           StopIntervalSource.fromAlarms(history: const [], active: const []);
       expect(source.all, isEmpty);
       expect(source.hasOpen, isFalse);
+    });
+  });
+
+  group('the dedupe is keyed by value, not by identity (D-12)', () {
+    test('the same activation from both sources is counted once', () {
+      // 14-06 writes a row the moment an alarm goes off, so a standing alarm
+      // is now in `alarm_history` (open, no deactivation time) AND in the
+      // live active set — as two different objects, decoded from two
+      // different places. Under the old identity dedupe every live alarm in
+      // the plant would be drawn twice (P-8).
+      final fromDb = activation('CN04.MOT01', from: 0);
+      final fromPipe = activation('CN04.MOT01', from: 0);
+      expect(identical(fromDb, fromPipe), isFalse,
+          reason: 'the premise of the arm: two instances, one activation');
+
+      final source = StopIntervalSource.fromAlarms(
+        history: [fromDb],
+        active: [fromPipe],
+      );
+
+      expect(source.all, hasLength(1));
+      expect(source.closed, hasLength(1),
+          reason: 'the history record wins, as it always did');
+      expect(source.open, isEmpty);
+    });
+
+    test('two genuinely different activations of one alarm are both kept', () {
+      // The dedupe must not become a swallow: the same motor tripping twice
+      // in a shift is two stops, and a Pareto that counted it once would
+      // under-report the thing it exists to find.
+      final source = StopIntervalSource.fromAlarms(
+        history: [activation('CN04.MOT01', from: 0, to: 10)],
+        active: [activation('CN04.MOT01', from: 30)],
+      );
+      expect(source.all, hasLength(2));
+      expect(source.all.map((e) => e.start), [at(0), at(30)]);
+    });
+
+    test('two rules of one alarm active at once are both kept', () {
+      // Same uid, same instant, different rule. `ruleIndex` is the third
+      // element of the key for exactly this case — 14-01's partial unique
+      // index is on `(alarm_uid, rule_index)` for the same reason.
+      final source = StopIntervalSource.fromAlarms(
+        history: [activation('CN04.MOT01', from: 0, ruleIndex: 0)],
+        active: [activation('CN04.MOT01', from: 0, ruleIndex: 1)],
+      );
+      expect(source.all, hasLength(2));
+      expect(source.closed, hasLength(1));
+      expect(source.open, hasLength(1));
+    });
+
+    test('null ruleIndex on both sides still dedupes on (uid, start)', () {
+      // A pre-v7 row states no rule index, and neither does a fixture. Legacy
+      // rows must not multiply just because they are old.
+      final source = StopIntervalSource.fromAlarms(
+        history: [activation('CN04.MOT01', from: 0, ruleIndex: null)],
+        active: [activation('CN04.MOT01', from: 0, ruleIndex: null)],
+      );
+      expect(source.all, hasLength(1));
+    });
+  });
+
+  group('filterAlarms is a shared function, not a method', () {
+    // 14-09's RelayAlarmSource answers "which alarms does the operator see"
+    // for a gateway-mode panel. Two implementations of that question are two
+    // lists that can disagree on the same screen, so the collapse, the sort
+    // and the fuzzy filter live in one top-level function with no instance
+    // in sight.
+    final film0 = activation('film', from: 0, level: AlarmLevel.warning);
+    final film1 =
+        activation('film', from: 5, level: AlarmLevel.error, ruleIndex: 1);
+    final seal = activation('seal', from: 10, level: AlarmLevel.info);
+
+    test('it collapses to the highest-priority rule per uid', () {
+      final out = filterAlarms([film0, film1, seal], '');
+      expect(out.map((e) => e.alarm.config.uid), ['film', 'seal']);
+      expect(out.first.notification.rule.level, AlarmLevel.error);
+    });
+
+    test('it sorts by level, then by most recent timestamp', () {
+      final later = activation('pump', from: 99, level: AlarmLevel.error);
+      final out = filterAlarms([film1, seal, later], '');
+      expect(out.map((e) => e.alarm.config.uid), ['pump', 'film', 'seal'],
+          reason: 'two errors, newest first, then the info');
+    });
+
+    test('it fuzzy-filters on title and description', () {
+      final out = filterAlarms([film0, film1, seal], 'seal');
+      expect(out.map((e) => e.alarm.config.uid), ['seal']);
     });
   });
 
