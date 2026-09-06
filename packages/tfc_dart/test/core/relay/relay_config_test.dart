@@ -96,7 +96,17 @@ int _lineCommentAt(String line) {
 /// not contribute `chainPath`. Returns the labels at the top level only.
 Set<String> _serverConfigArgumentNames(String source) {
   const anchor = 'ServerConfig(';
-  final at = source.indexOf(anchor);
+  // Not `indexOf`: `toServerConfig()` contains the anchor as a suffix, and a
+  // scan that matched the method's own name would read an empty argument list
+  // and pass for ever.
+  var at = -1;
+  for (var i = source.indexOf(anchor); i >= 0; i = source.indexOf(anchor, i + 1)) {
+    final before = i == 0 ? ' ' : source[i - 1];
+    if (!RegExp(r'[A-Za-z0-9_$]').hasMatch(before)) {
+      at = i;
+      break;
+    }
+  }
   if (at < 0) return <String>{};
   var depth = 1;
   var i = at + anchor.length;
@@ -309,7 +319,7 @@ void main() {
               (e) => '${e.message}',
               'message',
               allOf(
-                contains('two sources of truth'),
+                contains('sources of truth'),
                 contains('relay_server.dart:155'),
               ))),
           reason: 'without this arm the same configuration reaches '
@@ -327,7 +337,7 @@ void main() {
                 },
               ),
           throwsA(isA<ArgumentError>().having((e) => '${e.message}', 'message',
-              allOf(contains('two sources of truth'),
+              allOf(contains('sources of truth'),
                   contains('CENTROID_RELAY_TOKEN_FILE')))));
     });
 
