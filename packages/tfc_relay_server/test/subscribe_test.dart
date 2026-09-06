@@ -457,7 +457,7 @@ void main() {
     expect(link.session.subscriptions.count, 0);
   });
 
-  test('the wire surface is exactly the forty-three methods declared today, '
+  test('the wire surface is exactly the forty-four methods declared today, '
       'plus the one name a client announces', () async {
     final link = _link();
     addTearDown(link.dispose);
@@ -469,6 +469,10 @@ void main() {
       Methods.unsubscribe,
       Methods.write,
       Methods.writeStatus,
+      // Phase 14 plan 12, the acknowledge. Same rule as the families below:
+      // constants here because this file pins the *ledger*, bare strings in
+      // `surface_test.dart` because that one pins the wire spelling.
+      Methods.ackAlarm,
       Methods.read,
       Methods.readFresh,
       Methods.readMany,
@@ -527,7 +531,8 @@ void main() {
         'nobody counted. 03-08 freezes this set, 04-02 added the five value '
         'methods to it, 10-02 the four browse ones, 10-03 the four timeseries '
         'ones, 10-04 the eleven history-view ones and 10-05 the preferences '
-        'fifteen that close it. This is the third file '
+        'fifteen that closed it, and 14-12 the acknowledge that reopened it '
+        'for exactly one name. This is the third file '
         'spelling the table out — '
         '`surface_test.dart` holds the canonical literal, and the fact that '
         'three copies had to be edited in lockstep is itself worth the note');

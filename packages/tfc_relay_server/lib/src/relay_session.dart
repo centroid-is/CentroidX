@@ -33,6 +33,8 @@ import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:stream_channel/stream_channel.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
+import 'alarm_ack_sink.dart';
+import 'alarm_handlers.dart';
 import 'auth/identity.dart';
 import 'data_handlers.dart';
 import 'error_codes.dart';
@@ -114,6 +116,7 @@ final class RelaySession {
     this.buffer,
     this.validator,
     this.policy,
+    this.alarmAcks,
     this.resolver,
     this._gate,
     this._lastSeen,
@@ -165,6 +168,7 @@ final class RelaySession {
     required ConflatingSendBuffer buffer,
     TokenValidator validator = const PermissiveTokenValidator(),
     KeyPolicy policy = const AllVisibleOperatorWrites(),
+    AlarmAckSink? alarmAcks,
     required SeriesResolver resolver,
     List<String> serverSupported = const [protocolVersion],
     WriteOutcomeLog? writeOutcomes,
@@ -204,6 +208,7 @@ final class RelaySession {
       buffer,
       validator,
       policy,
+      alarmAcks,
       resolver,
       HelloGate(serverSupported: serverSupported),
       lastSeen,
@@ -405,6 +410,17 @@ final class RelaySession {
   /// `PolicyStateMan` built in [_start]; nothing else in this class asks it a
   /// question directly.
   final KeyPolicy policy;
+
+  /// Where an accepted acknowledge goes, or null on a gateway serving no alarm
+  /// engine.
+  ///
+  /// Held here for [policy]'s reason — the session deliberately does not know
+  /// what a server is. **Null is a supported deployment, not a
+  /// misconfiguration**: `Methods.ackAlarm` is registered either way, and the
+  /// handler answers a named refusal rather than being absent from the wire.
+  /// What consults it is the [AlarmHandlers] built in [_start]; nothing else in
+  /// this class asks it anything.
+  final AlarmAckSink? alarmAcks;
 
   /// How a node id and a table name become a plant key.
   ///
@@ -778,7 +794,7 @@ final class RelaySession {
     _lastSeen.gateOn(() => _sessionId != null);
     // Every one of these goes through `_on`, and there is no second path.
     //
-    // The table is forty-three names. Phase 3 registered four; 04-02 added
+    // The table is forty-four names. Phase 3 registered four; 04-02 added
     // `write`, `writeStatus`, `read`, `readFresh` and `readMany`, pulled
     // forward from Phase 5 because 04-RESEARCH Finding 4 ran the method sweep
     // against a live gateway and found all five answering `-32601`, which put
@@ -790,7 +806,9 @@ final class RelaySession {
     // the contract legs had been proving unreachable; 10-03's timeseries four,
     // which retired three more; 10-04's history-view eleven, which retired
     // two; and 10-05's preferences fifteen, which retired the last two and
-    // closed the table at forty-three callable names. 03-08's rule stands —
+    // closed the table at forty-three callable names; 14-12 reopened it for
+    // exactly one, `ackAlarm`, the first operator action on this wire that is
+    // not a write. 03-08's rule stands —
     // the set is frozen against a hand-written literal in `surface_test.dart`
     // so each addition is a deliberate edit to a test that explains its cost.
     final handlers = SessionHandlers(
@@ -831,6 +849,21 @@ final class RelaySession {
       // that leaks the existence the hiding rule conceals.
       canWriteKey: api.canWrite,
     );
+    // The alarm methods, built beside the value ones and given the **same
+    // expression** for their gate rather than a copy of the role comparison.
+    // That is the whole of T-14-49's mitigation: the ack and the write ask one
+    // object the same question, so a policy change moves both at once and
+    // neither can drift about what an operator is.
+    //
+    // `sink` may be null, and that is a deployment rather than a mistake —
+    // `tfc_relay_local`'s harness and every fixture in this package build a
+    // gateway with no alarm engine. The name is registered either way; see the
+    // handler's null branch for why a named refusal beats `-32601` here.
+    final alarms = AlarmHandlers(
+      api: api,
+      sink: alarmAcks,
+      canWriteKey: api.canWrite,
+    );
     // Kept, unlike `handlers`, because this object owns state with a lifetime:
     // the hold-to-run map. `_teardown` has to be able to release it, and the
     // fact that it hangs off a *per-session* object is what makes that release
@@ -842,6 +875,11 @@ final class RelaySession {
     _on(Methods.unsubscribe, handlers.unsubscribe);
     _on(Methods.write, values.write);
     _on(Methods.writeStatus, values.writeStatus);
+    // 14-12, placed here so the table reads as the operator-action group it
+    // belongs to. **The forty-fourth name, and the first operator action on
+    // this wire that is not a write** — which is exactly why it is gated by
+    // the same `canWrite` answer a write is, one line above.
+    _on(Methods.ackAlarm, alarms.acknowledge);
     _on(Methods.read, values.read);
     _on(Methods.readFresh, values.readFresh);
     _on(Methods.readMany, values.readMany);

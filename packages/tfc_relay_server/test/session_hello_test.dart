@@ -350,7 +350,7 @@ void main() {
             'a deadline and the pump would be pure cost');
   });
 
-  test('the handler table is exactly the forty-three names a client may call, '
+  test('the handler table is exactly the forty-four names a client may call, '
       'plus the one it announces', () async {
     final link = _link();
     addTearDown(link.dispose);
@@ -364,6 +364,10 @@ void main() {
           Methods.unsubscribe,
           Methods.write,
           Methods.writeStatus,
+          // 14-12: the acknowledge. Constants here, a bare string in
+          // `surface_test.dart` — that file pins the wire spelling, this one
+          // pins the ledger.
+          Methods.ackAlarm,
           Methods.read,
           Methods.readFresh,
           Methods.readMany,
@@ -419,14 +423,15 @@ void main() {
           // `surface_test.dart`, which keeps the two in separate literals.
           Methods.holdTick,
         },
-        reason: 'the wire surface is a closed set of forty-four '
+        reason: 'the wire surface is a closed set of forty-five '
             'registrations: 03-05 added subscribe and unsubscribe, 03-08 '
             'froze it, 04-02 added the five value methods the contract leg '
             'cannot run without, 10-02 the four browse ones that retired six '
             'of the thirteen proven-unreachable checks, 10-03 the four '
             'timeseries ones that retired three more, 10-04 the eleven '
             'history-view ones that retired two more, and 10-05 the '
-            'preferences fifteen that retired the last two. A handler nobody '
-            'counted is surface nobody reviewed');
+            'preferences fifteen that retired the last two, and 14-12 the '
+            'acknowledge — the first operator action here that is not a '
+            'write. A handler nobody counted is surface nobody reviewed');
   });
 }
