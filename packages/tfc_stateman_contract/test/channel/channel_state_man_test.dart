@@ -240,13 +240,16 @@ void main() {
     }
   });
 
-  test('a non-finite value is nulled before it can reach the frame, and the '
-      'key says so afterwards', () async {
-    // `jsonEncode` throws on Infinity rather than emitting null, so an
-    // unsanitized write does not fail one write — it fails the frame, which on
-    // a real pipe is shared with every other client on it. The client is the
-    // only side that ever sees the poison, so attaching badNonFinite is its
-    // job and not the source's.
+  test('a non-finite value is refused, never nulled onto a live tag', () async {
+    // `jsonEncode` throws on Infinity rather than emitting null, so the number
+    // cannot cross this channel at all — and this side is the only side that
+    // ever sees it. Sanitizing is the right answer for telemetry, where the
+    // alternative is a frame that fails for every client on a real pipe. It is
+    // the wrong one here: a nulled *value* is a write of null to a live tag,
+    // which actuates the device with something nobody chose while the operator
+    // is told the write applied, and the badge that used to follow it was
+    // local to this one panel. Refused before the send, like the `expect`
+    // below and like `WriteParams` one layer down.
     final api = channelServedFake();
     addTearDown(api.dispose);
     final plant = harnessOf(api);
@@ -254,23 +257,26 @@ void main() {
     plant.setValue(_setpointKey, 1200);
     await arrived(api, _setpointKey);
 
-    final result = await within(api.write(_setpointKey, double.infinity),
-        'a non-finite write resolving rather than detonating the frame');
+    for (final poison in const <double>[
+      double.nan,
+      double.infinity,
+      double.negativeInfinity,
+    ]) {
+      await expectLater(
+          api.write(_setpointKey, poison), throwsArgumentError,
+          reason: 'a write of $poison resolved instead of being refused. It '
+              'cannot travel on this channel, so resolving means it was '
+              'changed into a null that can — and the tag an operator is '
+              'watching took it');
+    }
 
-    expect(result, isA<WriteApplied>(),
-        reason: 'the poison is defused at the boundary, so what reaches the '
-            'source is an ordinary write of a null');
-    expect((result as WriteApplied).readback, isNull,
-        reason: 'a readback still holding ±Infinity is a value that throws on '
-            'the next encode instead of this one');
-    expect(api.read(_setpointKey)?.quality, Quality.badNonFinite,
-        reason: 'the key reads as ${api.read(_setpointKey)?.quality.code} '
-            'after a non-finite write; the operator must see a fault, not a '
-            'blank box that looks like an unbound tag — and the client is the '
-            'only side that ever saw the number, because the wire cannot '
-            'carry it');
-    expect(api.read(_setpointKey)?.value, isNull,
-        reason: 'a non-finite value survived into the client store');
+    expect(api.read(_setpointKey)?.asInt, 1200,
+        reason: 'the reading moved to ${api.read(_setpointKey)?.value} on a '
+            'write that was refused; a refused write leaves the tag exactly '
+            'as it was');
+    expect(api.read(_setpointKey)?.quality, isNot(Quality.badNonFinite),
+        reason: 'the key was badged a fault by a write that never happened. '
+            'The plant has no fault here — one widget divided by zero');
   });
 
   test('a non-finite expect is refused, never nulled into an unguarded write',
