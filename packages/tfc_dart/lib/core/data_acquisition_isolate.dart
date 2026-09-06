@@ -100,11 +100,22 @@ class DataAcquisitionWorker {
   /// that answers instantly cannot beat the listener to it.
   Completer<SendPort?>? _handshake;
 
+  /// The CURRENT generation's `onError` port, held here so [_dispose] can close
+  /// it.
+  ///
+  /// It is created per spawn attempt inside the supervisor and every respawn
+  /// path closes it on the way past; a deliberate [kill] takes a different
+  /// branch and used to close nothing, leaking one native port per call. A
+  /// `ReceivePort` registered as a live isolate's error target is not collected
+  /// on its own.
+  ReceivePort? _errorPort;
+
   Isolate? _isolate;
   SendPort? _controlPort;
   bool _shuttingDown = false;
   int _generation = 0;
   int _handshakeTimeouts = 0;
+  int _isolateErrors = 0;
 
   /// Everything the worker sent, plus `null` each time one dies.
   ///
@@ -131,6 +142,18 @@ class DataAcquisitionWorker {
   /// How many spawns were abandoned because the worker never handed back its
   /// control port inside the deadline.
   int get handshakeTimeouts => _handshakeTimeouts;
+
+  /// How many uncaught errors this worker's generations have reported on their
+  /// error port.
+  ///
+  /// Diagnostics — and the only way to observe that a killed generation's error
+  /// port really was closed, since `ReceivePort` has no `isClosed` and a closed
+  /// one silently drops what is sent to it.
+  int get isolateErrors => _isolateErrors;
+
+  /// The live generation's error port, for the arm that pins [kill] closing it.
+  @visibleForTesting
+  SendPort? get errorSendPort => _errorPort?.sendPort;
 
   /// True once [kill] has been called — the supervisor stops respawning.
   bool get isShuttingDown => _shuttingDown;
@@ -176,6 +199,22 @@ class DataAcquisitionWorker {
 
   void _dispose() {
     _fromWorker.close();
+    // The last generation's error port goes with it. This is the ONLY place a
+    // deliberate kill can close it: the exit listener's shutdown branch
+    // returns before `scheduleRespawn`, which is where every crash path closes
+    // it, so without this line each kill() left one open ReceivePort behind —
+    // still registered as the (now dead) isolate's onError target, and so not
+    // reclaimed. Masked in production by the `exit(0)` right behind
+    // `pipe.shutdown()`, but not for anything that kills a worker and keeps
+    // running, which the pipe's own suites do repeatedly.
+    //
+    // Deliberately NOT closed on the crash path's way through this listener:
+    // the error message and the exit notice travel on two different ports, so
+    // closing the error port on the exit could discard an error still in
+    // flight and lose the only log line that says what killed the worker.
+    // `scheduleRespawn` closes it there instead, once the error has landed.
+    _errorPort?.close();
+    _errorPort = null;
     if (!_out.isClosed) _out.close();
   }
 }
@@ -548,6 +587,10 @@ Future<DataAcquisitionWorker> _spawnWithRespawn(
 
   Future<void> spawn() async {
     final errorPort = ReceivePort();
+    // Held on the handle so the shutdown branch of the exit listener — which
+    // never reaches `scheduleRespawn` — can still close it. See
+    // [DataAcquisitionWorker._errorPort].
+    handle._errorPort = errorPort;
 
     // One attempt schedules at most one respawn. Both the error path and the
     // exit path can fire for the same dying worker (and a handshake timeout
@@ -574,6 +617,7 @@ Future<DataAcquisitionWorker> _spawnWithRespawn(
     respawnCurrentAttempt = scheduleRespawn;
 
     errorPort.listen((message) {
+      handle._isolateErrors++;
       final error = message[0];
       final stackTrace = message[1];
       logger.e('Isolate error for $name:\n$error\n$stackTrace');

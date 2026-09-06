@@ -185,6 +185,40 @@ void main() {
               'shut down, so the process never exits');
       expect(worker.isolate, isNull);
     });
+
+    test('a deliberate kill closes the dead generation\'s error port',
+        () async {
+      final worker = await spawnWorkerForTest(_config(), 'killed-error-port',
+          entryPoint: parkingEntry);
+      await worker.ready.timeout(const Duration(seconds: 10));
+
+      // Captured while the generation is alive: the seam is nulled with the
+      // port, and a closed ReceivePort cannot be interrogated — the only way
+      // to see whether it is still open is to send to it and look for the
+      // listener's mark.
+      final errorSink = worker.errorSendPort;
+      expect(errorSink, isNotNull,
+          reason: 'a live generation has an onError target');
+      expect(worker.isolateErrors, 0);
+
+      final seen = <Object?>[];
+      worker.messages.listen(seen.add);
+      worker.kill();
+      await waitUntil(() => seen.contains(null), const Duration(seconds: 5),
+          reason: 'the kill has to land before the port can be closed by it');
+      await pumpEventQueue(times: 20);
+
+      errorSink!.send(<Object?>['a synthetic error', 'no stack']);
+      await pumpEventQueue(times: 20);
+
+      expect(worker.isolateErrors, 0,
+          reason: 'the error port of a deliberately killed generation must be '
+              'closed. Every respawn path closes it inside scheduleRespawn, '
+              'which the shutdown branch returns before ever reaching, so '
+              'kill() leaked one native ReceivePort per call — and an open '
+              'port still registered as an isolate error target is not '
+              'garbage-collected');
+    });
   });
 
   group('handshake deadline', () {
