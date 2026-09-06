@@ -37,6 +37,7 @@ import 'package:stream_channel/stream_channel.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'alarm_ack_sink.dart';
 import 'auth/file_token_validator.dart';
 import 'error_reporter.dart';
 import 'handle_table.dart';
@@ -144,6 +145,7 @@ final class RelayServer {
     HandleTable? handles,
     TokenValidator validator = permissiveDefault,
     this.policy = const AllVisibleOperatorWrites(),
+    this.alarmAcks,
     required this.resolver,
     this.serverSupported = const [protocolVersion],
     this.onError = reportToStderr,
@@ -269,6 +271,23 @@ final class RelayServer {
   /// per *identity* — [api] is one instance shared by every panel on this
   /// gateway, which is the whole reason the policy cannot live inside it.
   final KeyPolicy policy;
+
+  /// The alarm engine an accepted `ackAlarm` is handed to, if this deployment
+  /// has one.
+  ///
+  /// A construction argument in [policy]'s style — a deployment supplies its
+  /// own, and this package cannot name an alarm engine because the engine lives
+  /// in `tfc_dart`, which depends on this package. See [AlarmAckSink].
+  ///
+  /// **Optional, and the optionality is the compatibility property.** 14-12
+  /// added a name to the wire, not a version: `protocolVersion` and `hello` are
+  /// untouched, and every existing embedder — `tfc_relay_local`'s harness,
+  /// `ws_harness.dart`, every fixture in this package — constructs a
+  /// `RelayServer` without this argument and keeps compiling with no edit. A
+  /// gateway built that way still *registers* `ackAlarm` and refuses it by
+  /// name, which is what keeps "this gateway serves no alarm engine"
+  /// distinguishable from "this gateway is too old to know the word".
+  final AlarmAckSink? alarmAcks;
 
   /// How a browse node id and a database table name become a plant key.
   ///
@@ -705,6 +724,10 @@ final class RelayServer {
         // built against something else would be a panel this server's
         // configuration does not describe.
         policy: policy,
+        // Forwarded exactly as `policy` is, and null here is a deployment
+        // rather than an omission: the session registers `ackAlarm` either way
+        // and refuses it by name when there is no engine behind it.
+        alarmAcks: alarmAcks,
         // Forwarded the same way, and required at both ends: a session built
         // without a mapping is a session whose browse filter has nothing to
         // ask, and 10-03's timeseries handlers would have no table to resolve.

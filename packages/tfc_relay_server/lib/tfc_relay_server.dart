@@ -17,6 +17,13 @@
 /// chokepoint for every plan in the phase.
 library;
 
+// On the barrel for `key_policy.dart`'s reason exactly: an embedder supplies
+// an alarm engine at construction, so `RelayServer(alarmAcks:)`'s type has to
+// be nameable by the code that builds the server. The handler bodies behind
+// `ackAlarm` are deliberately *not* here — they are an internal seam, like
+// `relay_session.dart`, and an embedder supplies an engine rather than
+// dispatching a method by hand.
+export 'src/alarm_ack_sink.dart';
 // On the barrel because an embedder configures the path (`ServerConfig.auth`'s
 // type has to be nameable), reads the role off a session's identity, and — if
 // it prefers to build the validator itself rather than name a file — passes a
