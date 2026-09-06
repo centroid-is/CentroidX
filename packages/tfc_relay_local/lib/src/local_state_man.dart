@@ -707,6 +707,17 @@ final class LocalStateMan implements StateManApi {
   ///  * an `expect` that does not match the last known value;
   ///  * a value the wire cannot represent (a cycle, or a depth past 64).
   ///
+  /// A **non-finite** value or `expect` is refused before all of those, and
+  /// with an `ArgumentError` rather than a `WriteRejected`, because it is the
+  /// same class of caller defect as the re-used id: `jsonEncode` cannot carry
+  /// NaN or ±Infinity at all, so the only way to "apply" one is to null it —
+  /// which actuates the device with a value nobody chose, or turns a guarded
+  /// write into an unconditional one, under a message saying the write applied.
+  /// A session never gets this far with one (`value_handlers.write` refuses at
+  /// the wire), and the guard is here anyway: this source is a `StateManApi`
+  /// that in-process callers and the contract suite both reach directly, and
+  /// "refuse everywhere" is one policy or it is none (ruled 2026-09-06).
+  ///
   /// The **idempotency window** — same cmd plus same key/value answered from
   /// the log, Stripe's semantic — is deliberately not here. It attaches at one
   /// named line in `value_handlers.write`, one layer up, because it is a
@@ -720,6 +731,26 @@ final class LocalStateMan implements StateManApi {
       throw StateError('write($key) on a disposed source: the store and the '
           'upstream links are both gone, so no outcome reported here could be '
           'true. This is a lifecycle bug in the caller, not a write outcome.');
+    }
+    // Before an id exists: an id that exists is an action a `writeStatus` can
+    // no longer answer `not_received` about, and `not_received` is the one
+    // verdict that makes a re-send safe. Both walks run before either refusal
+    // so a non-finite buried in a nested structure is caught too.
+    if (_carriesNonFinite(value)) {
+      throw ArgumentError.value(
+          value,
+          'value',
+          'a write cannot carry a non-finite number: it encodes to null, and '
+              'a write of null actuates the device with a value nobody chose '
+              'while the operator is told the write applied');
+    }
+    if (_carriesNonFinite(expect)) {
+      throw ArgumentError.value(
+          expect,
+          'expect',
+          'a write cannot carry a non-finite compare-and-set guard: nulling '
+              'it is this path\'s encoding of "no guard at all", so a guarded '
+              'write would silently become an unconditional one');
     }
     final nowMs = _now().millisecondsSinceEpoch;
     final id = cmd ?? newUlid(nowMs: nowMs);
@@ -749,6 +780,22 @@ final class LocalStateMan implements StateManApi {
     // the number that was typed, labelled confirmed.
     _recordOutcome(outcome);
     return outcome;
+  }
+
+  /// Whether [value] carries a NaN or an ±Infinity anywhere inside it.
+  ///
+  /// **A value `sanitize` cannot walk answers `false`**, deliberately. A cycle
+  /// or a depth past 64 makes it throw, and that value has its own refusal one
+  /// layer down — a `WriteRejected('unrepresentable_value')`, which is the
+  /// honest answer for it: nothing was sent, and an `ArgumentError` escaping
+  /// from here would read to the operator as "the write failed for a reason
+  /// nobody knows". Deferring to that handler is the point, not an oversight.
+  bool _carriesNonFinite(Object? value) {
+    try {
+      return sanitize(value).hadNonFinite;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Everything one write does between the id and the answer.
@@ -1097,10 +1144,13 @@ final class LocalStateMan implements StateManApi {
   /// is not, and told it *by the confirmation*, which is the one message they
   /// had no reason to doubt.
   ///
-  /// The quality comes from what was **sent**, not from a fresh `good`: a
-  /// non-finite write is sanitized to null under [Quality.badNonFinite] at the
-  /// boundary, and re-labelling its readback good would put a blank box on the
-  /// page that reads as an unbound tag rather than as a fault.
+  /// The quality comes from what was **sent**, not from a fresh `good`, so a
+  /// payload that left here already degraded cannot be re-labelled good by its
+  /// own readback. Nothing produces such a payload today — [write] refuses a
+  /// non-finite value outright since 2026-09-06, and that was the only way one
+  /// was ever minted — but the rule is about the *direction* of the labelling
+  /// and stays: a confirmation may lower what a value claims about itself and
+  /// may never raise it.
   /// ## An acknowledgement with no readback in it (08-REVIEW CR-01)
   ///
   /// **Neither real adapter can supply a readback**, and that is a fact about
@@ -1137,18 +1187,18 @@ final class LocalStateMan implements StateManApi {
       return;
     }
     if (outcome.readback == null) {
-      if (!sent.quality.isGood) {
-        // **A bad SENT quality is evidence this side already has**, and it is
-        // not the missing-readback case at all. A non-finite write is
-        // sanitized to null under `badNonFinite` at the boundary before
-        // anything crossed, so the null on the tag is the fault the operator
-        // must see — not a blank standing in for a reading nobody took. Going
-        // off to read the device here would replace a known fault with
-        // whatever the device happens to hold, which is the confirmation
-        // laundering a refusal.
-        _adoptReadback(key, sent: sent, readback: null);
-        return;
-      }
+      // A `if (!sent.quality.isGood)` arm stood here, adopting a null rather
+      // than reading the device back: a non-finite write was sanitized to a
+      // null under `badNonFinite` before it crossed, and going off to read the
+      // device would have replaced a known fault with whatever it happened to
+      // hold. [write] now refuses that value instead of sanitizing it
+      // (2026-09-06), and it was the only producer of a degraded `sent` — the
+      // two crossings into the plant build their payload from a finite value
+      // (`:843`) and from a hold counter (`:1361`), both good. The arm is gone
+      // rather than left unreachable, because a branch nothing can enter reads
+      // as live policy to the next person deciding what a bad sent quality
+      // means. `_adoptReadback` still carries the sent quality forward, which
+      // is where the direction rule actually lives.
       final adopted =
           confirmByReading ? await _readBack(link, ref) : null;
       if (adopted == null) {
@@ -1206,10 +1256,11 @@ final class LocalStateMan implements StateManApi {
   /// uses.
   void _adoptReadback(String key,
       {required DynamicValue sent, required Object? readback}) {
-    // A quality that was already bad when it was sent survives — a non-finite
-    // write is sanitized to null under `badNonFinite` at the boundary, and
-    // re-labelling its readback good would put a blank box on the page that
-    // reads as an unbound tag rather than as a fault.
+    // A quality that was already bad when it was sent survives. Nothing mints
+    // such a payload today — [write] refuses the non-finite value that was the
+    // only source of one — and the rule is kept for its direction: a
+    // confirmation may lower what a value claims about itself and may never
+    // raise it, so a readback cannot relabel a degraded write `good`.
     final quality = sent.quality.isGood ? Quality.good : sent.quality;
     final cached = _store.peek(key);
     // The same band guard the badge uses. An applied write must not make a
