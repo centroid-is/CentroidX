@@ -494,6 +494,13 @@ proofs, not a store.
       blob out.
 - [x] `page_codec.dart` + 13 tests: pages and top-level assets ⇄ items,
       paint order preserved, derived asset ids.
+- [x] Both suites re-run against the **real** plant blobs
+      (`svn-page-editor.json`, `svn-key-mappings.json`) through the
+      `CENTROIDX_PAGE_EDITOR_BLOB` / `CENTROIDX_KEY_MAPPINGS_BLOB` hooks —
+      26 tests, all green: 9 pages, 196 assets and 430 mappings survive the
+      split and come back holding the same configuration. Re-run them
+      against the current dump when you have one (Q8); that is the first
+      thing to do with it.
 - [ ] Drift table definitions + schema v7 migration, both backends.
 - [ ] Local SQLite store, `SqlitePreferences`, one-shot import (§4b).
 - [ ] `ConfigStore` repository with the read/write/invalidate policy of §4.
