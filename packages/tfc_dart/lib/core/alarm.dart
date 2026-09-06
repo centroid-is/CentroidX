@@ -487,7 +487,16 @@ class AlarmMan {
       Variable.withBool(alarm.notification.active),
       Variable.withBool(alarm.pendingAck),
       Variable.withString(alarm.notification.timestamp.toIso8601String()),
-      Variable.withString(alarm.deactivated?.toIso8601String() ?? ''),
+      // A real SQL NULL, never `''`. 14-01's arm 6 measured both shapes
+      // against a real server: a bound null passes `$9::timestamp`, and an
+      // empty string raises SQLSTATE 22007, `invalid input syntax for type
+      // timestamp`. It has never fired here only because
+      // `_removeActiveAlarm` always sets `deactivated` before calling this —
+      // but `bin/main.dart:157` passes `historyToDb: true`, so the day an
+      // alarm is configured and this method is reached with no deactivation,
+      // the insert raises. 14-07 deletes this whole method with the rest of
+      // the panel-side write path; until then it must not be a live defect.
+      Variable<String>(alarm.deactivated?.toIso8601String()),
     ]);
   }
 
