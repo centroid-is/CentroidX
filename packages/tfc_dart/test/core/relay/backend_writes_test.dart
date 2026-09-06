@@ -813,30 +813,48 @@ void main() {
   });
 
   group('poison values', () {
-    test('a non-finite write is sanitised here, not thrown', () async {
+    test('a non-finite write is refused before the pipe, never nulled into it',
+        () async {
       final f = _Fixture();
       addTearDown(f.tearDown);
       await f.seed(_setpointKey, 1200);
       await f.seed(_otherKey, 3);
 
-      final result = await f.writes.write(_setpointKey, double.infinity);
+      for (final poison in const <double>[
+        double.nan,
+        double.infinity,
+        double.negativeInfinity,
+      ]) {
+        expect(() => f.writes.write(_setpointKey, poison), throwsArgumentError,
+            reason: 'a write of $poison was not refused. Sanitising it puts a '
+                'write of null on a live tag: the device is actuated with a '
+                'value nobody chose and the operator is told it applied');
+      }
 
-      expect(result, isA<relay.WriteApplied>());
-      expect((result as relay.WriteApplied).readback, isNull,
-          reason: 'JSON cannot carry an infinity at all, so a readback still '
-              'holding one throws on the next encode instead of this one');
-      expect(f.values.read(_setpointKey)?.quality, relay.Quality.badNonFinite,
-          reason: 'the operator must see a fault, not a blank box that looks '
-              'like an unbound tag');
-      expect(f.values.read(_setpointKey)?.value, isNull);
-      expect(f.plant.writes.single.value.value, isNull,
-          reason: 'a non-finite value reached the pipe; jsonEncode throws on '
-              'it, and the frame it would have travelled in is shared with '
-              'every other client');
+      expect(f.plant.writes, isEmpty,
+          reason: 'a refused write reached the pipe. The refusal is a shape '
+              'refusal and it is only worth anything raised BEFORE the plant '
+              'is touched');
+      expect(f.writes.mintedCmds, isEmpty,
+          reason: 'the router minted a cmd for a write it refused; an id that '
+              'exists is an action a writeStatus can no longer answer '
+              'not_received about, which is the one verdict that makes a '
+              're-send safe');
+      expect(f.values.read(_setpointKey)?.asInt, 1200,
+          reason: 'the reading moved on a write that never happened');
+      expect(f.values.read(_setpointKey)?.quality,
+          isNot(relay.Quality.badNonFinite),
+          reason: 'the tag was badged for a fault the plant does not have — '
+              'one caller divided by zero');
+      expect(f.values.read(_setpointKey)?.quality,
+          isNot(relay.Quality.goodWritePending),
+          reason: 'a pending badge outlived a write that was never sent; a '
+              'value stuck pending is a permanent amber box the operator '
+              'learns to ignore');
 
       final after = await f.writes.write(_otherKey, 5);
       expect(after, isA<relay.WriteApplied>(),
-          reason: 'one open-circuit 4-20 mA input took the whole write path '
+          reason: 'one divide-by-zero in a widget took the whole write path '
               'down');
     });
   });
