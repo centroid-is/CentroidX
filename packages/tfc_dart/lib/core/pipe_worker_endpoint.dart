@@ -438,6 +438,23 @@ class PipeWorkerEndpoint {
     _emitPriority(PipeKeyError(key, quality, _describe(error)));
   }
 
+  /// The key's upstream stream ended: the node is gone and the entry is
+  /// retired.
+  ///
+  /// **[PipeKeyRetired] obligates main to unsubscribe (Phase 13 consumer).**
+  /// The key is deliberately left in [_subscribed] — that set is main's intent
+  /// and main is the only thing that retracts it — but [_disarmTickIfIdle] only
+  /// runs on [_unsubscribe], so a worker whose last subscribed key was retired
+  /// keeps its 50 ms drain timer running forever, ticking an empty buffer. That
+  /// is the one path where this library's own listener-gating law ("an idle
+  /// worker runs no timer") is not actually true: nothing is arriving for the
+  /// key any more, yet `_subscribed.isNotEmpty` still calls the worker busy.
+  ///
+  /// Whoever wires the main-side consumer of this event must therefore either
+  /// call `pipe.unsubscribe(key)` on receipt of it, or change the idle test
+  /// here to "every subscribed key has no live stream and nothing buffered".
+  /// A consumer that merely blanks the reading and moves on leaves a timer
+  /// armed for the life of the process.
   void _onDone(String key) {
     _streams.remove(key);
     // Cancel the pending telemetry FIRST: a reading for a key that no longer
