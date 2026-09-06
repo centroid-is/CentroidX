@@ -306,6 +306,12 @@ void main() {
       expect(source, isNot(contains('table: address.series')),
           reason: 'the table must come from a collect entry, never from the '
               'string the client sent — that is the whole of T-13-04-b');
+      expect(source, contains('if (table == null) return null;'),
+          reason: 'the refusal branch is pinned positively: sabotage (a) '
+              'reached the identity fallback by writing `?? address.series` '
+              'onto the lookup, which no negative substring arm can enumerate '
+              'in advance. An early return that is gone is a fallback that '
+              'has arrived');
     });
   });
 }
