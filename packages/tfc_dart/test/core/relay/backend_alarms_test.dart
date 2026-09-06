@@ -444,6 +444,45 @@ void main() {
       await untouched.dispose();
       await watched.dispose();
     });
+
+    // -------------------------------------------------------------- arm 15
+    //
+    // Added during the sabotage pass, and the SUMMARY says so. Mutation (c1) --
+    // dropping the engine's own `if (changed || firstVerdict)` guard and
+    // publishing on every transition -- left all fourteen arms above GREEN,
+    // because arm 8's ten updates produce no transition at all: the watcher's
+    // boolean dedup absorbs them one layer down. So the *engine's* half of "on
+    // change only" was being asserted by nothing, and a future edit that made
+    // the engine fan out per transition would have cost one publication to
+    // every connected panel per rule per evaluation with no test noticing.
+    //
+    // The case that separates the two layers is a transition that genuinely
+    // arrives and genuinely changes nothing: a second rule's first verdict,
+    // coming out false, after another rule has already made the set knowable.
+    test('a transition that changes nothing publishes nothing', () async {
+      final h = await _Harness.create([
+        _alarm('seal', ['a > 10', 'b > 10']),
+      ]);
+      await h.engine.start();
+
+      h.values.push('a', good(20.0, at: t0));
+      await settle();
+      expect(h.engine.publications, 1, reason: 'rule 0 activated');
+      final afterFirst = h.publisher.records.length;
+
+      // Rule 1 reaches its first verdict, and it is false. A real transition
+      // (isFirstEvaluation), a real evaluation -- and no change to the set.
+      h.values.push('b', good(1.0, at: t0.add(const Duration(seconds: 1))));
+      await settle();
+
+      expect(h.engine.evaluations, 2, reason: 'both rules HAVE evaluated');
+      expect(h.engine.publications, 1,
+          reason: 'the set is what it was; the wire must not move');
+      expect(h.publisher.records, hasLength(afterFirst));
+      expect(h.engine.active, hasLength(1));
+
+      await h.dispose();
+    });
   });
 
   group('AlarmActiveEntry agrees with AlarmTsSource across the package '
