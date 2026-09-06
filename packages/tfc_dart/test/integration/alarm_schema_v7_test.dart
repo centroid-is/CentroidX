@@ -94,6 +94,17 @@ final Map<String, AppDatabase> drifts = <String, AppDatabase>{};
 /// The admin connection to `testdb`, used only to CREATE/DROP the subjects.
 late pg.Connection admin;
 
+/// What each subject's migration threw, or null if it did not throw.
+///
+/// **Recorded rather than rethrown.** A migration that aborts inside
+/// `setUpAll` takes the whole file down with one stack trace and no arm names,
+/// which is the worst diagnostic this file could produce: the reader sees a
+/// dead fixture and has to guess whether the migration, the seed or Docker is
+/// at fault. Recording it lets the fixture arm below say *which* subject's
+/// migration threw and *what* it threw, and lets the behavioural arms fail on
+/// the shape they are actually about.
+final Map<String, Object?> migrationFailures = <String, Object?>{};
+
 /// Whether `setUpAll` got as far as live connections.
 ///
 /// Without this the teardown's `LateInitializationError` lands on top of the
@@ -389,13 +400,19 @@ void main() {
       // drift builds the whole schema from the current table definitions.
       final createdName = databaseNames[createdSubject]!;
       final created = await AppDatabase.create(configFor(createdName));
-      await created.open();
+      migrationFailures[createdSubject] = await errorOf(created.open);
       drifts[createdSubject] = created;
       conns[createdSubject] = await connectTo(createdName);
 
       // Read drift's marker off a database drift itself wrote, so the stamp
       // below uses the name drift reads rather than one recalled from memory.
-      markerAsDriftWroteIt = await readDriftMarker(conns[createdSubject]!);
+      // Left null when the marker is not there — a fixture whose creation
+      // threw has no marker to read, and arm 3 says so rather than dying here.
+      try {
+        markerAsDriftWroteIt = await readDriftMarker(conns[createdSubject]!);
+      } catch (_) {
+        markerAsDriftWroteIt = null;
+      }
 
       // ---- the upgraded subject ------------------------------------------
       final upgradedName = databaseNames[upgradedSubject]!;
@@ -413,7 +430,7 @@ void main() {
 
       // Opening the REAL AppDatabase is what runs onUpgrade(6, 7).
       final upgraded = await AppDatabase.create(configFor(upgradedName));
-      await upgraded.open();
+      migrationFailures[upgradedSubject] = await errorOf(upgraded.open);
       drifts[upgradedSubject] = upgraded;
       conns[upgradedSubject] = await connectTo(upgradedName);
 
@@ -446,6 +463,18 @@ void main() {
     setUp(() async {
       for (final c in conns.values) {
         await c.execute('TRUNCATE TABLE alarm_history, alarm CASCADE');
+      }
+    });
+
+    test('the fixture: neither subject\'s migration threw', () {
+      for (final subject in subjects) {
+        expect(migrationFailures[subject], isNull,
+            reason: 'the migration for the "$subject" subject THREW: '
+                '${describe(migrationFailures[subject])}. Every arm below is '
+                'about the shape v7 produces, and none of them can mean '
+                'anything until it produces one. On a real station this is '
+                'not a failed test — it is a backend that will not open its '
+                'database.');
       }
     });
 
