@@ -382,22 +382,45 @@ void main() {
       });
       final client = _client(gateway.port);
 
-      await expectLater(client.ackAlarm(_uid, _ruleIndex).timeout(_recovery),
-          throwsA(isA<LinkDown>()));
+      // **The link comes back while the call is still in the air, not after
+      // it has settled.** The first version of this arm opened the gateway on
+      // the line *below* the await, and a retry measured it: one bounded
+      // re-attempt inside `ackAlarm` — send, catch LinkDown, wait a second,
+      // send again — passed the whole file, because both attempts met the same
+      // shut barrier and the second one threw the same LinkDown the arm was
+      // asserting. The arm was pinning the *answer* and calling it the
+      // property.
+      //
+      // The dangerous retry is the one that outlives the outage, so the outage
+      // has to end underneath it. [_reopen] is comfortably past
+      // `controlDeadline`, which is what keeps this from being a race in the
+      // other direction: the first attempt's barrier has provably expired
+      // before the gateway answers anything, so a passing run can never be a
+      // run where the ack simply succeeded.
+      const reopen = Duration(milliseconds: 700);
+      final pending = client.ackAlarm(_uid, _ruleIndex).timeout(_recovery);
+      final opening = Timer(reopen, () => admit.open = true);
+      addTearDown(opening.cancel);
 
-      // The link comes back — the client's own reconnect loop, on its own
-      // backoff, exactly as it does when a plant switch finishes rebooting.
-      admit.open = true;
-      await _until('the link to come up after the refusal',
+      await expectLater(pending, throwsA(isA<LinkDown>()),
+          reason: 'the honest answer is owed at the time of the gesture, and '
+              'it is owed even though the link is about to come back — an '
+              'operator watching a spinner that resolves when the switch '
+              'finishes rebooting has been told the plant answered');
+
+      await _until('the link to come up under the refused ack',
           () => client.isReady);
       await Future<void>.delayed(_settle);
 
       expect(_acks(gateway), isEmpty,
           reason: 'an acknowledge that arrives at shift change is the queue '
-              'CLAUDE.md names as the negation of the write-safety property. '
-              'The operator pressed a button against a panel with no link; the '
-              'honest answer was given at the time, and there is nothing left '
-              'to deliver. Everything the gateway was sent: ${gateway.frames}');
+              'CLAUDE.md names as the negation of the write-safety property, '
+              'and a retry is how it gets written by accident. For an ack the '
+              'operator symptom is mild — an alarm silenced later than it '
+              'looked — but the principle is not: the moment a retry is '
+              'acceptable here, the argument for one on `write` gets made by '
+              'analogy, and there it is a second stroke of a ram. Everything '
+              'the gateway was sent: ${gateway.frames}');
     });
   });
 
