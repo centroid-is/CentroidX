@@ -677,17 +677,21 @@ void main() {
       await _settle();
       await _settle();
 
-      expect(f.sweep.statusNotifications - before, 1,
-          reason: 'the recovery announcement is as single as the loss');
-      expect(f.sweep.read(relay.PipeKeys.connected)!.asBool, isTrue);
-      expect(node.value.quality.isGood, isTrue,
-          reason: 'the keys came back from the outage still degraded');
+      // The snapshot-vs-delta assertion goes FIRST, deliberately. A recovery
+      // built on a remembered delta typically also gets the announcement
+      // count wrong, and if the count were asserted first, the one failure
+      // that names *this* property would never be the one printed.
       expect(node.value.asInt, 1600,
           reason: 'the value main remembered was replayed instead of the one '
               'the plant actually holds. A remembered number put back on '
               'recovery is a number nobody measured, presented as a '
               'measurement, at the exact moment an operator is looking to see '
               'what changed while they were blind');
+      expect(node.value.quality.isGood, isTrue,
+          reason: 'the keys came back from the outage still degraded');
+      expect(f.sweep.statusNotifications - before, 1,
+          reason: 'the recovery announcement is as single as the loss');
+      expect(f.sweep.read(relay.PipeKeys.connected)!.asBool, isTrue);
 
       // And a second generation announcement adds nothing: there is no outage
       // left to recover from.
