@@ -54,13 +54,39 @@ const _sensorKey = 'ST301.CN07.SEN01.temp';
 /// A key no worker owns, so the pipe's own `unrouted` refusal is reachable.
 const _unroutedKey = 'ST404.CN01.MOT01.setpoint';
 
-List<String> _routedKeys() => <String>[_setpointKey, _otherKey, _sensorKey];
+/// One element of a PLC array, mapped with an `array_index`.
+///
+/// The shape the rig probe measured P4a on (`data.real.1` → `MAIN.rData`
+/// element 0). Writing it is a read-modify-write: the whole array is read, one
+/// element is replaced and the whole array is written back
+/// (`state_man.dart:2033-2039`), and the two crossings are not atomic.
+const _elementKey = 'ST101.CN01.MOT01.trim.1';
+
+/// One bit of a command word, mapped with a `bit_mask`.
+///
+/// The second shape of the same hazard, and it is in this backend too:
+/// `modbus_device_client.dart:1241-1264` reads the current register, merges the
+/// masked bits and writes the whole word back.
+const _maskedKey = 'ST201.CN04.MOT01.cmdword.4';
+
+List<String> _routedKeys() =>
+    <String>[_setpointKey, _otherKey, _sensorKey, _elementKey, _maskedKey];
 
 KeyMappings _mappings() => KeyMappings(nodes: <String, KeyMappingEntry>{
       for (final key in <String>[..._routedKeys(), _unroutedKey])
         key: KeyMappingEntry(
           opcuaNode: OpcUANodeConfig(namespace: 2, identifier: key),
         ),
+      // Spelled after the loop so these two override the plain entries above.
+      _elementKey: KeyMappingEntry(
+        opcuaNode: OpcUANodeConfig(namespace: 2, identifier: 'MAIN.rData')
+          ..arrayIndex = 0,
+      ),
+      _maskedKey: KeyMappingEntry(
+        opcuaNode: OpcUANodeConfig(namespace: 2, identifier: 'MAIN.wCmd'),
+        bitMask: 0x10,
+        bitShift: 4,
+      ),
     });
 
 Logger _quiet() => Logger(level: Level.off);
@@ -582,6 +608,118 @@ void main() {
 
       expect(result, isA<relay.WriteApplied>());
       expect(f.plant.writes, hasLength(1));
+    });
+  });
+
+  // ------------------------------------------------ the read-modify-write guard
+  //
+  // P4a, measured on the rig against this very process
+  // (13-RIG-PROBE-EVIDENCE.md): a blind array-element write came back
+  // `applied` here where the standalone gateway refused it. It was proven NOT
+  // to be F7's whole-node clobber — a sentinel stayed element-scoped and the
+  // other nine elements kept their own ramp — so nothing was being destroyed.
+  // What was gone is the GUARD: an element write with no `expect` is a
+  // read-modify-write racing every other writer on that array, and the
+  // gateway's OPC UA adapter refused it on purpose
+  // (`opcua_upstream_link.dart:506-513`).
+
+  group('the read-modify-write guard', () {
+    test('a blind array-element write is refused by name, and NOTHING is sent',
+        () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+      await f.seed(_elementKey, 8218.5);
+
+      final result = await f.writes.write(_elementKey, 1234.5);
+
+      expect(result, isA<relay.WriteRejected>(),
+          reason: 'this is P4a exactly: the rig answered '
+              '{"outcome":"applied"} to a blind element write. A refusal is a '
+              'page-editor bug report; a silent read-modify-write is another '
+              'operator\'s setpoint gone');
+      final reason = (result as relay.WriteRejected).reason;
+      expect(reason.kind, 'array_element_requires_expect',
+          reason: 'the same kind the gateway refuses with, so a panel that '
+              'already handles the gateway\'s refusal handles this one');
+      expect(reason.message, contains('expect'),
+          reason: 'the refusal must name the escape, or the operator is told '
+              'no with no way forward');
+      // The barrier is the assertion — port delivery is an event-loop task,
+      // not a microtask, so an immediate read of the plant's log would report
+      // an absence it had not waited for (sabotage (d), 13-08).
+      await _settle();
+      expect(f.plant.writes, isEmpty,
+          reason: 'the guarded shape crossed the pipe anyway; a write that is '
+              'sent and then judged has already overwritten whatever it raced');
+    });
+
+    test('the documented escape: the same write WITH a matching expect is sent',
+        () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+      await f.seed(_elementKey, 8218.5);
+
+      final result = await f.writes.write(_elementKey, 1234.5, expect: 8218.5);
+
+      expect(result, isA<relay.WriteApplied>(),
+          reason: 'a guard that cannot be satisfied is an element nobody can '
+              'ever write, which is a different defect from the one being '
+              'fixed. Under a comparison the read-modify-write may run');
+      await _settle();
+      expect(f.plant.writes, hasLength(1));
+    });
+
+    test('a bit-masked write is the same hazard and gets the same refusal',
+        () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+      await f.seed(_maskedKey, 1);
+
+      final result = await f.writes.write(_maskedKey, 0);
+
+      expect(result, isA<relay.WriteRejected>(),
+          reason: 'two operators toggling two bits of one status word lose '
+              'one of the two edits, silently, and the loser is whoever read '
+              'first (`modbus_upstream_link.dart:766-788`)');
+      expect((result as relay.WriteRejected).reason.kind,
+          'array_element_requires_expect');
+      await _settle();
+      expect(f.plant.writes, isEmpty);
+    });
+
+    test('a whole-node key is untouched by the guard', () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+      await f.seed(_setpointKey, 1200);
+
+      final result = await f.writes.write(_setpointKey, 1450);
+
+      expect(result, isA<relay.WriteApplied>(),
+          reason: 'the ordinary blind write is most of the plant. A guard '
+              'that refused those would be a gateway nobody can actuate '
+              'through, which is a worse defect than the one it fixes');
+      expect(f.plant.writes, hasLength(1));
+    });
+
+    test('the refusal is recorded, so writeStatus answers rejected rather '
+        'than not_received', () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+      await f.seed(_elementKey, 8218.5);
+      const cmd = '01M1TVWC8V88KR8NDNX6XRZXMN';
+
+      final refused = await f.writes.write(_elementKey, 1234.5, cmd: cmd);
+      final requeried = await f.writes.writeStatus(<String>[cmd]);
+
+      expect(refused, isA<relay.WriteRejected>());
+      expect(requeried.single, isA<relay.WriteRejected>(),
+          reason: 'a refusal this source issued and then forgot would come '
+              'back not_received, which is the one verdict that licenses a '
+              'second press');
+      expect((requeried.single as relay.WriteRejected).at,
+          (refused as relay.WriteRejected).at,
+          reason: 'the re-query must answer with the outcome that was issued, '
+              'instant included — P5\'s property on the rig');
     });
   });
 
