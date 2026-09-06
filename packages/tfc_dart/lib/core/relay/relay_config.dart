@@ -111,6 +111,15 @@ import 'package:tfc_relay_server/tfc_relay_server.dart';
 /// one — because an env variable cannot supply a port, a credential source or
 /// a certificate.
 abstract final class RelayEnv {
+  /// Where the backend's one config file is named.
+  ///
+  /// **Not a relay knob** — it is `bin/main.dart:56-57`'s existing variable,
+  /// declared here so the composition root and this parser share one spelling
+  /// and so `no_gateway_json_test.dart`'s positive arm can see, in code rather
+  /// than in prose, which file the `relay` section comes out of. There is no
+  /// second config file: see the library doc.
+  static const String statemanFilePath = 'CENTROID_STATEMAN_FILE_PATH';
+
   /// `0`/`false`/`no`/`off` forces the relay off even with a section present.
   static const String enabled = 'CENTROID_RELAY_ENABLED';
   static const String port = 'CENTROID_RELAY_PORT';
