@@ -75,6 +75,7 @@ import 'dart:async';
 import 'package:logger/logger.dart';
 import 'package:meta/meta.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
+import 'package:tfc_dart/core/relay/backend_hold.dart';
 import 'package:tfc_dart/core/relay/backend_seams.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
@@ -213,7 +214,9 @@ final class BackendWrites implements BackendWriteSource {
         _now = now ?? _wallClock,
         _logger = logger ?? Logger(),
         _log = BackendWriteOutcomeLog(
-            ttl: outcomeTtl, now: now ?? _wallClock);
+            ttl: outcomeTtl, now: now ?? _wallClock) {
+    _holds = BackendHoldRegistry(feed: _feedDeadman, logger: _logger);
+  }
 
   static int _wallClock() => DateTime.now().millisecondsSinceEpoch;
 
@@ -222,6 +225,9 @@ final class BackendWrites implements BackendWriteSource {
   final int Function() _now;
   final Logger _logger;
   final BackendWriteOutcomeLog _log;
+
+  /// The live holds this source is keeping. See `backend_hold.dart`.
+  late final BackendHoldRegistry _holds;
 
   /// How many times each command has been handed to the pipe.
   ///
@@ -551,22 +557,42 @@ final class BackendWrites implements BackendWriteSource {
 
   /// Engages the hold-to-run deadman on [key].
   ///
-  /// **Not yet composed.** The deadman is 13-08 task 2's file
-  /// (`backend_hold.dart`), and until it lands this member refuses by name
-  /// rather than handing back a handle that looks engaged and moves nothing —
-  /// which is the "silently unsupported" 13-CONTEXT rules out in as many words.
+  /// The engage is a real write on this same path — same three states, same
+  /// no-repeat rule, same outcome log — because 13-CONTEXT says in as many
+  /// words that `holdToRun` is write-shaped and must not be silently
+  /// unsupported. See `backend_hold.dart`.
   @override
-  Future<relay.HoldHandle> holdToRun(String key) => throw UnsupportedError(
-      'BackendWrites.holdToRun is not available yet: the hold-to-run deadman '
-      'is 13-08 task 2 (lib/core/relay/backend_hold.dart). A handle that '
-      'looked engaged and fed nothing would tell an operator they have '
-      'control of a machine they do not.');
+  Future<relay.HoldHandle> holdToRun(String key) => _holds.engage(key);
+
+  /// The registry, so an arm can engage a hold at a chosen counter.
+  @visibleForTesting
+  BackendHoldRegistry get holds => _holds;
+
+  /// The one write a deadman counter travels on.
+  ///
+  /// A plain [write] with no `cmd` and no guard: every engage, tick and release
+  /// is its own action with its own id, so the outcome log can be asked about
+  /// the engage and the release independently. A guard would be wrong here for
+  /// a reason worth stating — a compare-and-set on a counter the caller is
+  /// itself advancing would refuse the tick after any dropped one, which is a
+  /// deadman that stops feeding the moment the link hiccups.
+  Future<relay.WriteResult> _feedDeadman(String key, int counter) =>
+      write(key, counter);
 
   // ---------------------------------------------------------------- teardown
 
-  /// Stops taking commands.
+  /// Releases every live hold and stops taking commands.
+  ///
+  /// The release writes are **not** awaited: the machine stops when the counter
+  /// stops, which happens synchronously inside `HoldHandle.release`, and a
+  /// teardown that waited for a release to be confirmed would hang on exactly
+  /// the dead link that caused it.
   @override
   Future<void> dispose() async {
+    if (_disposed) return;
+    // Before the flag, because a release IS a write and a disposed router
+    // refuses those.
+    _holds.releaseAll();
     _disposed = true;
   }
 }
