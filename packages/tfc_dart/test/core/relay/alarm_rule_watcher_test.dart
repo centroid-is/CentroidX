@@ -306,6 +306,49 @@ void main() {
 
       await h.dispose();
     });
+
+    // -------------------------------------------------------------- arm 11
+    //
+    // Added during the sabotage pass, and the SUMMARY says so. Mutation (b) --
+    // gating on `quality == Quality.good` (the exact code) instead of
+    // `quality.isGood` (the good BAND) -- left all ten arms above green,
+    // which means the band half of the gate was being asserted by nothing.
+    // This is the same trap `Quality.worst`'s doc records from the other
+    // side: seeding with `good` used to discard `goodWritePending`.
+    test('a good-BAND quality does not suspend -- goodWritePending is good',
+        () async {
+      final h = _Harness('a > 10');
+      await h.watcher.start();
+
+      h.values.push('a', good(5.0, at: t0));
+      await settle();
+      expect(h.transitions, hasLength(1));
+      expect(h.transitions.single.active, isFalse);
+
+      // An operator's write is in flight on this tag. That is a badge the
+      // operator watches, not a reason for the backend to stop judging whether
+      // the plant is on fire.
+      final tPending = t0.add(const Duration(minutes: 1));
+      h.values.push(
+        'a',
+        relay.DynamicValue(
+          value: 20.0,
+          quality: relay.Quality.goodWritePending,
+          sourceTime: tPending,
+        ),
+      );
+      await settle();
+
+      expect(h.watcher.suspended, isFalse,
+          reason: 'goodWritePending (2) is in the good band, 0..255');
+      expect(h.watcher.suspensions, 0);
+      expect(h.transitions, hasLength(2),
+          reason: 'the rule must still have been evaluated and have fired');
+      expect(h.transitions.last.active, isTrue);
+      expect(h.transitions.last.stamp.at, tPending);
+
+      await h.dispose();
+    });
   });
 }
 
