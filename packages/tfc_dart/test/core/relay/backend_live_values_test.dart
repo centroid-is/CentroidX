@@ -24,18 +24,13 @@ import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/pipe_send_buffer.dart';
 import 'package:tfc_dart/core/pipe_worker_endpoint.dart';
 import 'package:tfc_dart/core/relay/backend_live_values.dart';
-import 'package:tfc_dart/core/relay/backend_state_man.dart';
 import 'package:tfc_dart/core/state_man.dart'
     show KeyMappings, KeyMappingEntry, OpcUANodeConfig;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
-import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
-    show StateManApi;
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart'
-    show
-        StateManHarness,
-        runReadContract,
-        runStoreContract,
-        runSubscribeContract;
+    show runReadContract, runStoreContract, runSubscribeContract;
+
+import '../../support/harnessed_backend_state_man.dart';
 
 // ---------------------------------------------------------------- the fixture
 
@@ -749,183 +744,18 @@ void main() {
   // construction, so the barrier is a synchronous read with nothing attached
   // and nothing awaited. If one of these cases ever hangs on the link coming
   // up, the health seeding is the bug — not the barrier.
-  runSubscribeContract(_contractSubject);
-  runStoreContract(_contractSubject);
-  runReadContract(_contractSubject);
+  runSubscribeContract(makeHarnessedBackendStateMan);
+  runStoreContract(makeHarnessedBackendStateMan);
+  runReadContract(makeHarnessedBackendStateMan);
 }
 
 // ------------------------------------------------------------ the harness leg
-
-/// The one worker the contract leg runs over.
-///
-/// **One link, not two**, mirroring 08-CONTEXT ruling 8 and for the identical
-/// reason: `StateManHarness.disconnectUpstream()` takes no alias, and two links
-/// would make "a mass degradation is announced once" and "a mass degradation
-/// degrades every affected key" contradict each other. The multi-worker fan-out
-/// is not thereby unjudged — the arms above carry it, with a real second worker
-/// and a real second round trip.
-///
-/// It is also what makes `readMany`'s "fifty keys cost one round trip" a
-/// statement about batching rather than about routing.
-List<String> _contractKeys() => <String>[
-      _speedKey,
-      _otherKey,
-      _deletedKey,
-      ..._diagnosticsKeys(),
-      ..._batchKeys(),
-    ];
-
-/// A fresh subject for one contract case.
-///
-/// The fixture's teardown is registered here rather than folded into
-/// [_HarnessedLiveValues.dispose], because `checkDisposeStopsNotifications`
-/// disposes the API **inside** the case and then pulls a plant lever: if
-/// disposing the adapter also tore the fake worker down, that lever would be a
-/// no-op and the case would pass for the wrong reason.
-StateManApi _contractSubject() {
-  final subject = _HarnessedLiveValues();
-  addTearDown(subject.shutdownFixture);
-  return subject;
-}
-
-/// `BackendStateMan` over this plan's `BackendLiveValues`, plus the levers.
-///
-/// Every member of `StateManApi` is forwarded by hand rather than through a
-/// `noSuchMethod`, the same explicit-delegation rule `harnessed_local_state_man`
-/// follows: a member added to the interface in a later phase becomes a compile
-/// error here instead of silently arriving unpoliced.
-///
-/// The unwired members (`write`, `browse`, `timeseries`, …) forward to
-/// `BackendStateMan` and therefore **refuse by name**. That is correct and it
-/// is what 13-09 inherits: none of the three sub-suites run here calls one.
-final class _HarnessedLiveValues implements StateManApi, StateManHarness {
-  _HarnessedLiveValues() {
-    _plant = _FakePlantLink('contract');
-    _pipe = PipeMainEndpoint(
-      writeDeadline: const Duration(milliseconds: 150),
-      logger: _quiet(),
-    );
-    _pipe.addWorker(_plant, _contractKeys());
-    _values = BackendLiveValues(
-      pipe: _pipe,
-      keyMappings: _mappings(),
-      logger: _quiet(),
-    );
-    _api = BackendStateMan(values: _values);
-  }
-
-  late final _FakePlantLink _plant;
-  late final PipeMainEndpoint _pipe;
-  late final BackendLiveValues _values;
-  late final BackendStateMan _api;
-
-  /// Tears the *fixture* down — never called by a case, only by `addTearDown`.
-  void shutdownFixture() {
-    _pipe.dispose();
-    _plant.dispose();
-  }
-
-  // ------------------------------------------------------------- the levers
-
-  @override
-  void setValue(String key, Object? value,
-      {relay.Quality quality = relay.Quality.good, DateTime? sourceTime}) {
-    // sourceTime stays null unless the case asked for one: stamping every
-    // arrival would make two identical readings unequal and would silently
-    // defeat the store's unchanged-value guard.
-    _plant.deliver(
-        key,
-        relay.DynamicValue(
-            value: value, quality: quality, sourceTime: sourceTime));
-  }
-
-  @override
-  void setValues(Map<String, Object?> values) {
-    // ONE frame, because the batch is the unit the notification-count promise
-    // is made about.
-    _plant.deliverAll(<String, relay.DynamicValue>{
-      for (final entry in values.entries)
-        entry.key: relay.DynamicValue(value: entry.value),
-    });
-  }
-
-  @override
-  void setQuality(String key, relay.Quality quality) {
-    final cached = _pipe.store.peek(key);
-    _plant.deliver(
-        key,
-        relay.DynamicValue(
-          value: cached?.value,
-          quality: quality,
-          sourceTime: cached?.sourceTime,
-        ));
-  }
-
-  @override
-  void dropKey(String key) => _plant.retire(key);
-
-  @override
-  void disconnectUpstream() => _values.announceLinkLoss('the contract harness '
-      'pulled the upstream link');
-
-  @override
-  void reconnectUpstream() => _values.announceLinkUp();
-
-  @override
-  Duration get staleAfter => _values.staleAfter;
-
-  @override
-  int get roundTrips => _values.roundTrips;
-
-  @override
-  int get statusNotifications => _values.statusNotifications;
-
-  // -------------------------------------------------------- the wire surface
-
-  @override
-  relay.ValueListenable<relay.DynamicValue> listen(String key) =>
-      _api.listen(key);
-
-  @override
-  Stream<relay.DynamicValue> subscribe(String key) => _api.subscribe(key);
-
-  @override
-  relay.DynamicValue? read(String key) => _api.read(key);
-
-  @override
-  Future<relay.DynamicValue> readFresh(String key) => _api.readFresh(key);
-
-  @override
-  Future<Map<String, relay.DynamicValue>> readMany(List<String> keys) =>
-      _api.readMany(keys);
-
-  @override
-  List<String> get keys => _api.keys;
-
-  @override
-  Future<relay.WriteResult> write(String key, Object? value,
-          {Object? expect, String? cmd}) =>
-      _api.write(key, value, expect: expect, cmd: cmd);
-
-  @override
-  Future<List<relay.WriteResult>> writeStatus(List<String> cmds) =>
-      _api.writeStatus(cmds);
-
-  @override
-  Future<relay.HoldHandle> holdToRun(String key) => _api.holdToRun(key);
-
-  @override
-  relay.BrowseApi get browse => _api.browse;
-
-  @override
-  relay.TimeseriesApi get timeseries => _api.timeseries;
-
-  @override
-  relay.HistoryViewApi get historyViews => _api.historyViews;
-
-  @override
-  relay.PreferencesApi get preferences => _api.preferences;
-
-  @override
-  Future<void> dispose() => _api.dispose();
-}
+//
+// **13-09 consolidated it.** The four wave-2/3 copies of this class
+// (`_HarnessedLiveValues` here, `_HarnessedFreshBackend`,
+// `_HarnessedWriteBackend`, `_HarnessedHoldBackend`) are now one file,
+// `test/support/harnessed_backend_state_man.dart`, and the three sub-suites
+// above run against it. The shared subject composes MORE than this plan built
+// — the sweep, the write router and the mapping-backed browse — which is
+// strictly stronger for these thirteen checks: a value-path property that only
+// holds when nothing else is wired is not a property.

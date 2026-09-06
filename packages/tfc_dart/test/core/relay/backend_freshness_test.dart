@@ -25,13 +25,13 @@ import 'package:tfc_dart/core/pipe_send_buffer.dart';
 import 'package:tfc_dart/core/pipe_worker_endpoint.dart';
 import 'package:tfc_dart/core/relay/backend_freshness.dart';
 import 'package:tfc_dart/core/relay/backend_live_values.dart';
-import 'package:tfc_dart/core/relay/backend_state_man.dart';
 import 'package:tfc_dart/core/state_man.dart'
     show KeyMappings, KeyMappingEntry, OpcUANodeConfig;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
-import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' show StateManApi;
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart'
-    show StateManHarness, runFreshnessContract;
+    show runFreshnessContract;
+
+import '../../support/harnessed_backend_state_man.dart';
 
 // ---------------------------------------------------------------- the fixture
 
@@ -770,182 +770,15 @@ void main() {
   // named failure naming the promise. Two minutes moves that boundary out of
   // the way without loosening a single assertion.
   group('the freshness contract, at the production deadline', () {
-    runFreshnessContract(_contractSubject);
+    runFreshnessContract(makeHarnessedBackendStateMan);
   }, timeout: const Timeout(Duration(minutes: 2)));
 }
 
 // ------------------------------------------------------------ the harness leg
-
-/// The keys the contract leg's one worker owns.
-///
-/// **One link, not two**, mirroring 13-03's harness for the identical reason:
-/// `StateManHarness.disconnectUpstream()` takes no alias, and two links would
-/// make "a mass degradation is announced once" and "a mass degradation degrades
-/// every affected key" contradict each other.
-List<String> _contractKeys() =>
-    <String>[_speedKey, _otherKey, ..._stationKeys()];
-
-/// A fresh subject for one contract case.
-StateManApi _contractSubject() {
-  final subject = _HarnessedFreshBackend();
-  addTearDown(subject.shutdownFixture);
-  return subject;
-}
-
-/// `BackendStateMan` over 13-03's `BackendLiveValues` **wrapped in this plan's
-/// sweep**, plus the levers.
-///
-/// **This is a copy of 13-03's `_HarnessedLiveValues`, and the duplication is
-/// deliberately visible.** 13-09 consolidates both into
-/// `test/support/harnessed_backend_state_man.dart`; until it does, a shared
-/// helper edited by two plans in the same wave is a merge conflict in the one
-/// file every contract leg depends on.
-///
-/// Every member of `StateManApi` is forwarded by hand rather than through a
-/// `noSuchMethod`: a member added to the interface in a later phase becomes a
-/// compile error here instead of silently arriving unpoliced.
-final class _HarnessedFreshBackend implements StateManApi, StateManHarness {
-  _HarnessedFreshBackend() {
-    _plant = _FakePlantLink('contract');
-    _pipe = PipeMainEndpoint(
-      writeDeadline: const Duration(milliseconds: 150),
-      logger: _quiet(),
-    );
-    _pipe.addWorker(_plant, _contractKeys());
-    _values = BackendLiveValues(
-      pipe: _pipe,
-      keyMappings: _mappings(),
-      logger: _quiet(),
-    );
-    _sweep = BackendFreshnessSweep(
-      values: _values,
-      staleAfter: _values.staleAfter,
-      pipe: _pipe,
-      logger: _quiet(),
-    );
-    _api = BackendStateMan(values: _sweep);
-  }
-
-  late final _FakePlantLink _plant;
-  late final PipeMainEndpoint _pipe;
-  late final BackendLiveValues _values;
-  late final BackendFreshnessSweep _sweep;
-  late final BackendStateMan _api;
-
-  /// Tears the *fixture* down — never called by a case, only by `addTearDown`.
-  void shutdownFixture() {
-    _pipe.dispose();
-    _plant.dispose();
-  }
-
-  // --------------------------------------------------------------- the levers
-
-  @override
-  void setValue(String key, Object? value,
-      {relay.Quality quality = relay.Quality.good, DateTime? sourceTime}) {
-    _plant.deliver(
-        key,
-        relay.DynamicValue(
-            value: value, quality: quality, sourceTime: sourceTime));
-  }
-
-  @override
-  void setValues(Map<String, Object?> values) {
-    _plant.deliverAll(<String, relay.DynamicValue>{
-      for (final entry in values.entries)
-        entry.key: relay.DynamicValue(value: entry.value),
-    });
-  }
-
-  @override
-  void setQuality(String key, relay.Quality quality) {
-    final cached = _pipe.store.peek(key);
-    _plant.deliver(
-        key,
-        relay.DynamicValue(
-          value: cached?.value,
-          quality: quality,
-          sourceTime: cached?.sourceTime,
-        ));
-  }
-
-  @override
-  void dropKey(String key) => _plant.emit(PipeFrame(
-      <Object?>[PipeKeyRetired(key)], const <String, relay.DynamicValue>{}));
-
-  /// **The announcement, not an isolate death**, and the difference is a
-  /// recorded finding rather than a convenience.
-  ///
-  /// The pipe's own death path (`_onWorkerDied` → `_markBad`) writes
-  /// `badCommFault` with a **null payload** — 12-08 asserts that explicitly,
-  /// mutation C. `checkUpstreamLossDegradesAffectedKeys` requires the opposite:
-  /// "the last known reading must survive the link loss, so the operator can
-  /// see what the plant was doing when contact was lost". The two promises
-  /// genuinely disagree and neither is this plan's to overrule, so the lever
-  /// drives the announcement surface the seam declares for it. The
-  /// isolate-death path has its own arms in this file.
-  @override
-  void disconnectUpstream() => _sweep
-      .announceLinkLoss('the contract harness pulled the upstream link');
-
-  @override
-  void reconnectUpstream() => _sweep.announceLinkUp();
-
-  @override
-  Duration get staleAfter => _sweep.staleAfter;
-
-  @override
-  int get roundTrips => _sweep.roundTrips;
-
-  @override
-  int get statusNotifications => _sweep.statusNotifications;
-
-  // ---------------------------------------------------------- the wire surface
-
-  @override
-  relay.ValueListenable<relay.DynamicValue> listen(String key) =>
-      _api.listen(key);
-
-  @override
-  Stream<relay.DynamicValue> subscribe(String key) => _api.subscribe(key);
-
-  @override
-  relay.DynamicValue? read(String key) => _api.read(key);
-
-  @override
-  Future<relay.DynamicValue> readFresh(String key) => _api.readFresh(key);
-
-  @override
-  Future<Map<String, relay.DynamicValue>> readMany(List<String> keys) =>
-      _api.readMany(keys);
-
-  @override
-  List<String> get keys => _api.keys;
-
-  @override
-  Future<relay.WriteResult> write(String key, Object? value,
-          {Object? expect, String? cmd}) =>
-      _api.write(key, value, expect: expect, cmd: cmd);
-
-  @override
-  Future<List<relay.WriteResult>> writeStatus(List<String> cmds) =>
-      _api.writeStatus(cmds);
-
-  @override
-  Future<relay.HoldHandle> holdToRun(String key) => _api.holdToRun(key);
-
-  @override
-  relay.BrowseApi get browse => _api.browse;
-
-  @override
-  relay.TimeseriesApi get timeseries => _api.timeseries;
-
-  @override
-  relay.HistoryViewApi get historyViews => _api.historyViews;
-
-  @override
-  relay.PreferencesApi get preferences => _api.preferences;
-
-  @override
-  Future<void> dispose() => _api.dispose();
-}
+//
+// **13-09 consolidated it.** `_HarnessedFreshBackend` and its three siblings
+// are now one file, `test/support/harnessed_backend_state_man.dart`. Its
+// `disconnectUpstream` still drives `announceLinkLoss` rather than killing the
+// worker, for Finding 1's reason — the pipe's death path drops the payload and
+// `checkUpstreamLossDegradesAffectedKeys` requires the last reading to survive
+// — and the isolate-death path keeps its own arms above, where it belongs.

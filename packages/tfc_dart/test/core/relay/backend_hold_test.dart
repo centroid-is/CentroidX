@@ -30,14 +30,14 @@ import 'package:tfc_dart/core/pipe_send_buffer.dart';
 import 'package:tfc_dart/core/pipe_worker_endpoint.dart';
 import 'package:tfc_dart/core/relay/backend_hold.dart';
 import 'package:tfc_dart/core/relay/backend_live_values.dart';
-import 'package:tfc_dart/core/relay/backend_state_man.dart';
 import 'package:tfc_dart/core/relay/backend_writes.dart';
 import 'package:tfc_dart/core/state_man.dart'
     show KeyMappings, KeyMappingEntry, OpcUANodeConfig;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
-import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' show StateManApi;
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart'
-    show StateManHarness, StateManWriteHarness, runHoldContract;
+    show runHoldContract;
+
+import '../../support/harnessed_backend_state_man.dart';
 
 // ---------------------------------------------------------------- the fixture
 //
@@ -682,179 +682,12 @@ void main() {
     // freshness deadline — the production ten seconds — so three of its five
     // cases spend that long proving the absence of a tick. Two minutes moves
     // the runner's boundary without loosening one assertion.
-    runHoldContract(_contractSubject, supportsHoldToRun: true);
+    runHoldContract(makeHarnessedBackendStateMan, supportsHoldToRun: true);
   }, timeout: const Timeout(Duration(minutes: 2)));
 }
 
 // ------------------------------------------------------------ the harness leg
-
-/// A fresh subject for one contract case.
-StateManApi _contractSubject() {
-  final subject = _HarnessedHoldBackend();
-  addTearDown(subject.shutdownFixture);
-  return subject;
-}
-
-/// `BackendStateMan` over `BackendLiveValues` and `BackendWrites`, plus the
-/// levers.
-///
-/// **A copy of `backend_writes_test.dart`'s, for that file's stated reason.**
-/// 13-09 consolidates them.
-final class _HarnessedHoldBackend
-    implements StateManApi, StateManHarness, StateManWriteHarness {
-  _HarnessedHoldBackend() {
-    plant = _FakePlantLink('contract');
-    _pipe = PipeMainEndpoint(
-      writeDeadline: const Duration(milliseconds: 400),
-      logger: _quiet(),
-    );
-    _pipe.addWorker(plant, _routedKeys());
-    _values = BackendLiveValues(
-      pipe: _pipe,
-      keyMappings: _mappings(),
-      logger: _quiet(),
-    );
-    writes = BackendWrites(pipe: _pipe, values: _values, logger: _quiet());
-    _api = BackendStateMan(values: _values, writes: writes);
-  }
-
-  late final _FakePlantLink plant;
-  late final PipeMainEndpoint _pipe;
-  late final BackendLiveValues _values;
-  late final BackendWrites writes;
-  late final BackendStateMan _api;
-
-  void shutdownFixture() {
-    _pipe.dispose();
-    plant.dispose();
-  }
-
-  // --------------------------------------------------------------- the levers
-
-  @override
-  void setValue(String key, Object? value,
-      {relay.Quality quality = relay.Quality.good, DateTime? sourceTime}) {
-    plant.deliver(
-        key,
-        relay.DynamicValue(
-            value: value, quality: quality, sourceTime: sourceTime));
-  }
-
-  @override
-  void setValues(Map<String, Object?> values) {
-    plant.deliverAll(<String, relay.DynamicValue>{
-      for (final entry in values.entries)
-        entry.key: relay.DynamicValue(value: entry.value),
-    });
-  }
-
-  @override
-  void setQuality(String key, relay.Quality quality) {
-    final cached = _pipe.store.peek(key);
-    plant.deliver(
-        key,
-        relay.DynamicValue(
-          value: cached?.value,
-          quality: quality,
-          sourceTime: cached?.sourceTime,
-        ));
-  }
-
-  @override
-  void dropKey(String key) => plant.emit(PipeFrame(
-      <Object?>[PipeKeyRetired(key)], const <String, relay.DynamicValue>{}));
-
-  @override
-  void disconnectUpstream() => plant.die();
-
-  @override
-  void reconnectUpstream() => plant.respawn();
-
-  @override
-  Duration get staleAfter => _values.staleAfter;
-
-  @override
-  int get roundTrips => _values.roundTrips;
-
-  @override
-  int get statusNotifications => _values.statusNotifications;
-
-  // --------------------------------------------------------- the write levers
-
-  @override
-  void failNextWrite(relay.WriteReason reason, {bool unknown = false}) =>
-      plant.failNext(reason, unknown: unknown);
-
-  @override
-  void clampNextWrite(Object? readback) => plant.clampNext(readback);
-
-  @override
-  void stallWrites() => plant.stall();
-
-  @override
-  void releaseWrites({bool applied = true}) => plant.release(applied: applied);
-
-  @override
-  void setReadOnly(String key, bool readOnly) {
-    if (readOnly) {
-      plant.readOnly.add(key);
-    } else {
-      plant.readOnly.remove(key);
-    }
-  }
-
-  @override
-  int upstreamWriteAttempts(String cmd) => writes.upstreamAttempts(cmd);
-
-  @override
-  List<String> get mintedCmds => writes.mintedCmds;
-
-  // ---------------------------------------------------------- the wire surface
-
-  @override
-  relay.ValueListenable<relay.DynamicValue> listen(String key) =>
-      _api.listen(key);
-
-  @override
-  Stream<relay.DynamicValue> subscribe(String key) => _api.subscribe(key);
-
-  @override
-  relay.DynamicValue? read(String key) => _api.read(key);
-
-  @override
-  Future<relay.DynamicValue> readFresh(String key) => _api.readFresh(key);
-
-  @override
-  Future<Map<String, relay.DynamicValue>> readMany(List<String> keys) =>
-      _api.readMany(keys);
-
-  @override
-  List<String> get keys => _api.keys;
-
-  @override
-  Future<relay.WriteResult> write(String key, Object? value,
-          {Object? expect, String? cmd}) =>
-      _api.write(key, value, expect: expect, cmd: cmd);
-
-  @override
-  Future<List<relay.WriteResult>> writeStatus(List<String> cmds) =>
-      _api.writeStatus(cmds);
-
-  @override
-  Future<relay.HoldHandle> holdToRun(String key) => _api.holdToRun(key);
-
-  @override
-  relay.BrowseApi get browse => _api.browse;
-
-  @override
-  relay.TimeseriesApi get timeseries => _api.timeseries;
-
-  @override
-  relay.HistoryViewApi get historyViews => _api.historyViews;
-
-  @override
-  relay.PreferencesApi get preferences => _api.preferences;
-
-  @override
-  Future<void> dispose() => _api.dispose();
-}
+//
+// **13-09 consolidated it.** `_HarnessedHoldBackend` and its three siblings
+// are now one file, `test/support/harnessed_backend_state_man.dart`, and the
+// five deadman checks above run against it.
