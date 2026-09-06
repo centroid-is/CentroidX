@@ -746,7 +746,10 @@ void main() {
 
       final first = await f.writes.write(_setpointKey, 1450);
       final second = await f.writes.write(_setpointKey, 1460);
-      final never = relay.newUlid();
+      // Dated on the fixture's injected clock: this source's log started at
+      // that instant, and an id from a millisecond it has not reached yet is
+      // one it cannot vouch for.
+      final never = relay.newUlid(nowMs: f.clock);
 
       final answers = await f.writes
           .writeStatus(<String>[second.cmd, never, first.cmd]);
@@ -810,7 +813,7 @@ void main() {
       final f = _Fixture();
       addTearDown(f.tearDown);
 
-      final never = relay.newUlid(nowMs: f.clock + 1);
+      final never = relay.newUlid(nowMs: f.clock);
       final answers = await f.writes.writeStatus(<String>[never]);
 
       expect(answers.single, isA<relay.WriteNotReceived>());
@@ -872,7 +875,7 @@ void main() {
       final f = _Fixture(outcomeTtl: const Duration(seconds: 30));
       addTearDown(f.tearDown);
 
-      final old = relay.newUlid(nowMs: f.clock + 1);
+      final old = relay.newUlid(nowMs: f.clock);
       f.clock += const Duration(seconds: 31).inMilliseconds;
       final answers = await f.writes.writeStatus(<String>[old]);
 
