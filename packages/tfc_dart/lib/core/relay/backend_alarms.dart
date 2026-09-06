@@ -4,10 +4,37 @@
 /// keeps the active set, and publishes it to every connected panel as
 /// [relay.AlarmKeys.active].
 ///
-/// **Deliberately not everything.** This file does not persist — 14-06 adds
-/// `alarm_history` — and it does not touch `bin/main.dart` — 14-08 wires it.
-/// Keeping those apart is what makes the regression window at deletion time
-/// zero: the engine can be complete and tested before anything is removed.
+/// **Deliberately not everything.** This file does not touch `bin/main.dart` —
+/// 14-08 wires it. Keeping that apart is what makes the regression window at
+/// deletion time zero: the engine can be complete and tested before anything is
+/// removed.
+///
+/// ## 0. It persists, and there is no flag saying whether (D-4, D-6)
+///
+/// One `alarm_history` row per activation, opened when a rule goes true and
+/// closed when it clears — see `backend_alarm_history.dart`. The engine takes
+/// an optional [AlarmHistoryWriter]; when it is absent nothing is written and
+/// the fact is **logged once at start**, which is the only honest degradation.
+/// There is no `historyToDb` boolean and there will not be one: a flag that
+/// decides whether an object writes to a database is a flag somebody sets
+/// wrong, and the duplicate-write hazard is removed by construction instead —
+/// no other object in this codebase has a write path left after 14-07.
+///
+/// **A restart mid-alarm is adopted or closed, never erased and never guessed
+/// at silently.** [start] loads every open row before the watchers begin.
+/// A row whose `(uid, ruleIndex)` is not in the current configuration is closed
+/// immediately as `inferred_config_change` — no evaluation is ever coming for
+/// it. The rest wait: at each owning rule's **first** post-restart evaluation
+/// the row is adopted when the rule still holds (keeping its original
+/// `created_at`, which is the plant's own start instant and the whole point) or
+/// closed as `inferred_restart` when it does not. A rule whose inputs never
+/// reach the good band produces no first evaluation, so its row is left open
+/// and counted by [pendingAdoptionCount] — "we do not know" is the honest
+/// state, and it is reported rather than resolved by invention.
+///
+/// **A persistence failure never stops evaluation** (T-14-24). Every write is
+/// caught, logged with the row identity, and evaluation carries on. A gap in
+/// the history is a better outcome than a plant with no alarms.
 ///
 /// ## 1. Evaluation is not gated on a consumer (D-6, D-7)
 ///
@@ -88,6 +115,7 @@ import 'package:tfc_dart/core/alarm_stamp.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/relay/alarm_rule_watcher.dart';
+import 'package:tfc_dart/core/relay/backend_alarm_history.dart';
 import 'package:tfc_dart/core/relay/backend_seams.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
@@ -156,6 +184,7 @@ final class _ActiveAlarm {
     required this.ruleIndex,
     required this.stamp,
     required this.expressionText,
+    this.historyId,
   });
 
   final AlarmConfig alarm;
@@ -164,6 +193,19 @@ final class _ActiveAlarm {
   final AlarmStamp stamp;
   final String? expressionText;
   bool pendingAck = false;
+
+  /// The `alarm_history` row this activation was opened as.
+  ///
+  /// Null until the INSERT comes back, and null forever when the engine was
+  /// composed with no writer. Mutable for the same reason [pendingAck] is: the
+  /// id arrives after the entry does, and a database round trip must not hold
+  /// up the banner (see [AlarmEngine._onTransition]).
+  ///
+  /// It is also the handle the *close* uses. Holding it on the entry, rather
+  /// than in a second map keyed by identity, is what makes a clear that arrives
+  /// before its own INSERT resolved still find the right row: the closure that
+  /// closes captures this object.
+  int? historyId;
 
   relay.AlarmActiveEntry toEntry() => relay.AlarmActiveEntry(
         uid: alarm.uid,
@@ -176,10 +218,11 @@ final class _ActiveAlarm {
         activeAtMs: stamp.at.toUtc().millisecondsSinceEpoch,
         tsSource: stamp.source.wireName,
         pendingAck: pendingAck,
-        // 14-06 fills this. Null here is not a stub: this plan writes no row,
-        // so there is no id to carry and inventing one would be a lie a panel
-        // could follow to a query that returns nothing.
-        historyId: null,
+        // The `alarm_history` row id, as a string because that is the wire
+        // type. Null only while the INSERT is in flight, or forever on an
+        // engine composed with no writer — never invented, because a panel
+        // would follow an invented id to a query that returns nothing.
+        historyId: historyId == null ? null : '$historyId',
       );
 }
 
@@ -215,6 +258,7 @@ final class AlarmEngine {
     required PreferencesApi preferences,
     required AlarmStatePublisher publisher,
     required DateTime Function() clock,
+    AlarmHistoryWriter? history,
     Duration skewWarnAfter = kAlarmSkewWarnAfter,
     this.maxPublishedEntries = kMaxPublishedAlarmEntries,
     String Function(String variable)? resolveKey,
@@ -223,6 +267,7 @@ final class AlarmEngine {
         _preferences = preferences,
         _publisher = publisher,
         _clock = clock,
+        _history = history,
         _skewWarnAfter = skewWarnAfter,
         _resolveKey = resolveKey,
         _logger = logger ?? Logger() {
@@ -239,6 +284,7 @@ final class AlarmEngine {
   final PreferencesApi _preferences;
   final AlarmStatePublisher _publisher;
   final DateTime Function() _clock;
+  final AlarmHistoryWriter? _history;
   final Duration _skewWarnAfter;
   final String Function(String variable)? _resolveKey;
   final Logger _logger;
@@ -249,6 +295,22 @@ final class AlarmEngine {
 
   final Map<(String, int), _ActiveAlarm> _active = {};
   final List<_RuleBinding> _rules = [];
+
+  /// Open `alarm_history` rows waiting for their rule's first post-restart
+  /// evaluation, keyed by D-4's identity.
+  ///
+  /// Emptied one key at a time as the verdicts arrive. Whatever is still in it
+  /// belongs to rules whose inputs never reached the good band, and those rows
+  /// stay open on purpose — see [pendingAdoptionCount].
+  final Map<(String, int), OpenAlarmRow> _pendingAdoption = {};
+
+  /// Every database write, in the order the transitions produced them.
+  ///
+  /// Serialised rather than fired in parallel: a clear can arrive before its
+  /// own activation's INSERT has come back, and the UPDATE needs the id that
+  /// INSERT returns. Chaining is also what keeps one slow query from
+  /// interleaving two edges of the same row.
+  Future<void> _writes = Future<void>.value();
 
   /// A plain [BehaviorSubject] with **no `onListen` body**. See the library
   /// doc; `alarm.dart:305` must not have an analogue here.
@@ -297,6 +359,45 @@ final class AlarmEngine {
   int get suspendedRuleCount =>
       _rules.where((binding) => binding.watcher.suspended).length;
 
+  /// How many `alarm_history` rows are still waiting to be adopted or closed.
+  ///
+  /// Non-zero after [start] means rows a previous process left open whose rules
+  /// have not yet produced a verdict — usually because an input has not reached
+  /// the good band. Those rows are deliberately left alone: D-4's fourth row
+  /// says "we do not know" is the honest state, and closing them would invent a
+  /// clear while deleting them would erase a stop that may still be running.
+  /// The count falls to zero as the verdicts arrive, and a count that never
+  /// falls is a rule whose inputs never came back.
+  int get pendingAdoptionCount => _pendingAdoption.length;
+
+  /// Whether this engine is writing to `alarm_history` at all.
+  ///
+  /// An observation, not a switch: there is no `historyToDb` (D-6). False means
+  /// the composition root handed this engine no writer, which [start] also logs
+  /// once.
+  bool get persists => _history != null;
+
+  /// Completes when every database write enqueued so far has finished.
+  ///
+  /// Exists for tests and for an orderly shutdown. Production code does not
+  /// await it — the whole design is that the wire does not wait for the
+  /// database — but an arm that asserted on a row before its INSERT returned
+  /// would be a flake, and a process that exited mid-INSERT would leave one.
+  ///
+  /// Loops because a write can enqueue another: the activation's INSERT
+  /// republishes, and a clear arriving in between adds its own UPDATE.
+  Future<void> persistenceIdle() async {
+    for (var pass = 0; pass < 16; pass++) {
+      final chain = _writes;
+      await chain;
+      if (identical(chain, _writes)) return;
+    }
+    _logger.w('AlarmEngine.persistenceIdle gave up after 16 passes: the write '
+        'chain is still growing. Either the plant is producing transitions '
+        'faster than the database can take them, or something is enqueuing '
+        'work from inside a write.');
+  }
+
   /// How many evaluations every rule has completed between them.
   int get evaluations =>
       _rules.fold(0, (sum, binding) => sum + binding.watcher.evaluations);
@@ -334,6 +435,11 @@ final class AlarmEngine {
     _refuseForeignAlarmKeys();
     await _loadConfig();
     _buildWatchers();
+    // Before the watchers, never after: a transition that arrived while the
+    // open rows were still being read would open a SECOND row for an activation
+    // that is already recorded, and the partial unique index would refuse it —
+    // correctly, and with a 23505 nobody could explain.
+    await _reconcileOpenRows();
     for (final binding in _rules) {
       await binding.watcher.start();
     }
@@ -349,6 +455,95 @@ final class AlarmEngine {
       _publishActive();
     }
   }
+
+  /// Loads every open `alarm_history` row and decides what can be decided now.
+  ///
+  /// Two answers are available at boot and no more:
+  ///
+  ///  * the row's `(uid, ruleIndex)` is **not in the current configuration** —
+  ///    no evaluation will ever come for it, so it is closed straight away as
+  ///    `inferred_config_change`, stamped by the injected clock and labelled
+  ///    `backend_receipt` because there is no rule left to get a plant instant
+  ///    from. A row with a NULL `rule_index` (written before schema v7) lands
+  ///    here too: it cannot be matched to a rule, and assuming it means rule 0
+  ///    would be a guess dressed as a fact.
+  ///  * anything else waits in [_pendingAdoption] for its rule's first verdict.
+  ///
+  /// **Not `getRecentAlarms`** — see [AlarmHistoryWriter.loadOpenRows] for the
+  /// reason (P-9), which is that the method drops precisely the rows the first
+  /// branch above exists to close.
+  Future<void> _reconcileOpenRows() async {
+    final history = _history;
+    if (history == null) {
+      // Once, at start, and never again. This is the whole of D-6's honest
+      // degradation: there is no flag to consult, so the only thing that can be
+      // said is that this composition has no writer.
+      _logger.w('AlarmEngine is running with NO alarm history writer: rules '
+          'are being evaluated and published, and nothing is being written to '
+          'alarm_history. There is no historyToDb flag to check (D-6) — hand '
+          'the engine an AlarmHistoryWriter at the composition root if this '
+          'backend is meant to persist.');
+      return;
+    }
+
+    final List<OpenAlarmRow> open;
+    try {
+      open = await history.loadOpenRows();
+    } catch (error, stack) {
+      _logger.e(
+          'AlarmEngine.start could not read the open alarm_history rows '
+          '($error). Any row a previous process left open stays open, and '
+          'this engine will open its own rows as alarms fire — which the '
+          'partial unique index will refuse for as long as the old ones are '
+          'there. Evaluation continues either way.',
+          error: error,
+          stackTrace: stack);
+      return;
+    }
+
+    final known = <(String, int)>{
+      for (final binding in _rules) (binding.alarm.uid, binding.ruleIndex),
+    };
+
+    for (final row in open) {
+      final ruleIndex = row.ruleIndex;
+      final identity = ruleIndex == null ? null : (row.alarmUid, ruleIndex);
+      if (identity != null && known.contains(identity)) {
+        _pendingAdoption[identity] = row;
+        continue;
+      }
+      _logger.i('alarm_history row #${row.id} ("${row.alarmUid}" rule '
+          '${ruleIndex ?? 'none'}) is open but no rule of the current '
+          'configuration owns it, so nothing will ever evaluate it. Closing it '
+          'as ${AlarmHistoryWriter.reasonInferredConfigChange}.');
+      _enqueueWrite(
+        'close #${row.id} (${AlarmHistoryWriter.reasonInferredConfigChange})',
+        () => history.closeActivation(
+          id: row.id,
+          stamp: _receiptStamp(),
+          reason: AlarmHistoryWriter.reasonInferredConfigChange,
+        ),
+      );
+    }
+
+    if (_pendingAdoption.isNotEmpty) {
+      _logger.w('${_pendingAdoption.length} alarm_history row(s) were left '
+          'open by a previous process: '
+          '${_pendingAdoption.values.join(', ')}. Each is adopted or closed at '
+          'its rule\'s first post-restart evaluation (D-4). Until that '
+          'evaluation arrives the row stays open, because "we do not know" is '
+          'the honest state and inventing a clear would shorten a stop that '
+          'may still be running.');
+    }
+  }
+
+  /// The backend's own receipt instant, labelled as such.
+  ///
+  /// Used where there is no evaluation to take a plant instant from: the
+  /// config-change close, and nothing else. `DateTime.now(` does not appear in
+  /// this file (D-2).
+  AlarmStamp _receiptStamp() =>
+      AlarmStamp(at: _clock(), source: AlarmTsSource.backendReceipt);
 
   /// T-14-08. The backend's only reserved-prefix check.
   ///
@@ -472,19 +667,38 @@ final class AlarmEngine {
   }
 
   /// One rule changed its mind. Update the set, and publish if anything moved.
+  ///
+  /// The in-memory set moves **first and synchronously**, and the database
+  /// follows on [_writes]. A banner that waited for a round trip to Postgres
+  /// would be a banner a database outage can freeze, and the whole point of
+  /// T-14-24 is that the history is the thing allowed to have gaps.
   void _onTransition(
       AlarmConfig alarm, AlarmRule rule, AlarmRuleTransition transition) {
     final identity = (alarm.uid, transition.ruleIndex);
     var changed = false;
 
+    // The restart reconciliation resolves here, and only on a FIRST verdict:
+    // that is the one evaluation that can say whether the condition a previous
+    // process recorded is still true. `AlarmRuleWatcher` always emits its first
+    // completed evaluation, false branch included, which is what makes an open
+    // row closable at all.
+    if (transition.isFirstEvaluation) {
+      final pending = _pendingAdoption.remove(identity);
+      if (pending != null) {
+        return _resolveAdoption(alarm, rule, transition, pending);
+      }
+    }
+
     if (transition.active) {
-      _active[identity] = _ActiveAlarm(
+      final entry = _ActiveAlarm(
         alarm: alarm,
         rule: rule,
         ruleIndex: transition.ruleIndex,
         stamp: transition.stamp,
         expressionText: transition.expressionText,
       );
+      _active[identity] = entry;
+      _openRow(entry, transition);
       changed = true;
     } else {
       final existing = _active[identity];
@@ -499,6 +713,10 @@ final class AlarmEngine {
           }
         } else {
           _active.remove(identity);
+          // The measured clear. `cleared` and not `inferred_restart`: this
+          // engine watched the condition go false and knows when.
+          _closeRow(
+              existing, transition.stamp, AlarmHistoryWriter.reasonCleared);
           changed = true;
         }
       }
@@ -510,6 +728,156 @@ final class AlarmEngine {
     final firstVerdict = !_hasEvaluated;
     _hasEvaluated = true;
     if (changed || firstVerdict) _publishActive();
+  }
+
+  /// Adopts or closes the open row [pending], on its rule's first verdict.
+  ///
+  /// **Adopt when the rule still holds.** The entry is registered with the
+  /// row's ORIGINAL `createdAt` and its id, and **nothing is inserted**. Keeping
+  /// the plant's own start instant across a restart is the whole point of D-4's
+  /// adopt branch: re-stamping it with the restart would shorten every stop
+  /// that spans one, in the direction nobody audits.
+  ///
+  /// **Close as `inferred_restart` when it does not.** The stamp is the
+  /// evaluation's — the best-known bound on when it really cleared — and the
+  /// reason says it is a reconstruction, so a stop analysis can tell it from
+  /// something this engine actually watched happen.
+  void _resolveAdoption(AlarmConfig alarm, AlarmRule rule,
+      AlarmRuleTransition transition, OpenAlarmRow pending) {
+    final identity = (alarm.uid, transition.ruleIndex);
+
+    if (transition.active) {
+      final adopted = _ActiveAlarm(
+        alarm: alarm,
+        rule: rule,
+        ruleIndex: transition.ruleIndex,
+        // The row's instant and the row's provenance, not this evaluation's.
+        // Re-deriving the provenance as `plant` would relabel a previous
+        // process's guess as the plant's word.
+        stamp: AlarmStamp(
+          at: pending.createdAt,
+          source: _tsSourceOf(pending),
+        ),
+        expressionText: transition.expressionText,
+        historyId: pending.id,
+      );
+      adopted.pendingAck = pending.pendingAck;
+      _active[identity] = adopted;
+      _logger.i('adopted alarm_history row #${pending.id} for '
+          '"${alarm.uid}" rule ${transition.ruleIndex}: the condition is still '
+          'true, so the activation the previous process recorded is the same '
+          'activation, and it keeps its onset of '
+          '${pending.createdAt.toIso8601String()}.');
+    } else {
+      _logger.i('closing alarm_history row #${pending.id} for "${alarm.uid}" '
+          'rule ${transition.ruleIndex} as '
+          '${AlarmHistoryWriter.reasonInferredRestart}: its condition was no '
+          'longer true at the first evaluation after this backend came up.');
+      final history = _history;
+      if (history != null) {
+        _enqueueWrite(
+          'close #${pending.id} '
+          '(${AlarmHistoryWriter.reasonInferredRestart})',
+          () => history.closeActivation(
+            id: pending.id,
+            stamp: transition.stamp,
+            reason: AlarmHistoryWriter.reasonInferredRestart,
+          ),
+        );
+      }
+    }
+
+    // A resolved adoption is a real change to the set either way — one entry
+    // appeared, or one open row stopped being open — and it is also this
+    // rule's first verdict, so the publication is owed on both counts.
+    _hasEvaluated = true;
+    _publishActive();
+  }
+
+  /// The provenance stored on [row], or the honest fallback.
+  ///
+  /// A row written before schema v7 has no `ts_source`. `backend_receipt` is
+  /// what that is: nobody recorded that the plant supplied the instant, and
+  /// claiming it did would be inventing the audit trail rather than the number.
+  AlarmTsSource _tsSourceOf(OpenAlarmRow row) =>
+      row.tsSource == AlarmTsSource.plant.wireName
+          ? AlarmTsSource.plant
+          : AlarmTsSource.backendReceipt;
+
+  /// Opens a row for [entry], and republishes once its id is known.
+  ///
+  /// Two publications for one activation, and that is the deliberate trade: the
+  /// banner goes out at once with a null `historyId`, and the id follows when
+  /// the database answers. Waiting for the round trip would put a Postgres
+  /// outage in front of the alarm banner; never republishing would leave every
+  /// panel unable to correlate a live alarm with its row without a second
+  /// query, which is what `historyId` exists to avoid (D-9).
+  void _openRow(_ActiveAlarm entry, AlarmRuleTransition transition) {
+    final history = _history;
+    if (history == null) return;
+    _enqueueWrite(
+      'open ${entry.alarm.uid} rule ${entry.ruleIndex}',
+      () async {
+        final id = await history.openActivation(
+          alarm: entry.alarm,
+          ruleIndex: entry.ruleIndex,
+          rule: entry.rule,
+          expression: transition.expressionText,
+          stamp: transition.stamp,
+        );
+        entry.historyId = id;
+        // Only if this entry is still the live one: an alarm that cleared while
+        // the INSERT was in flight has already been published as gone, and
+        // republishing here would put it back on every panel.
+        if (identical(_active[(entry.alarm.uid, entry.ruleIndex)], entry)) {
+          _publishActive();
+        }
+      },
+    );
+  }
+
+  /// Closes the row [entry] was opened as, if it was opened at all.
+  void _closeRow(_ActiveAlarm entry, AlarmStamp stamp, String reason) {
+    final history = _history;
+    if (history == null) return;
+    _enqueueWrite(
+      'close ${entry.alarm.uid} rule ${entry.ruleIndex} ($reason)',
+      () async {
+        final id = entry.historyId;
+        if (id == null) {
+          // The activation's INSERT failed, so there is no row to close. Said
+          // out loud: an alarm whose clear was written against nothing is a
+          // stop with no end and no record of why.
+          _logger.w('alarm "${entry.alarm.uid}" rule ${entry.ruleIndex} '
+              'cleared, but no alarm_history row was ever opened for it, so '
+              'there is nothing to close as "$reason". The activation insert '
+              'failed earlier and was logged then.');
+          return;
+        }
+        await history.closeActivation(id: id, stamp: stamp, reason: reason);
+      },
+    );
+  }
+
+  /// Puts one database operation on the serialised write chain.
+  ///
+  /// **Nothing here may take the engine down** (T-14-24). A failure is logged
+  /// with the row identity and whatever the server said, and the chain carries
+  /// on: an engine that stopped evaluating because a database went away is a
+  /// worse outcome for a plant than a gap in its history.
+  void _enqueueWrite(String what, Future<void> Function() operation) {
+    _writes = _writes.then((_) async {
+      try {
+        await operation();
+      } catch (error, stack) {
+        _logger.e(
+            'alarm_history write failed ($what): $error. The engine keeps '
+            'evaluating — a gap in the history is a better outcome than a '
+            'plant with no alarms.',
+            error: error,
+            stackTrace: stack);
+      }
+    });
   }
 
   /// Acknowledges one `(uid, ruleIndex)` pair, clearing a [pendingAck] entry.

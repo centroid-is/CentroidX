@@ -212,6 +212,19 @@ Future<int> openRowCount() async {
 /// the restart arms are about what this process does with a row it did not
 /// write, and seeding through the subject would make them assertions about the
 /// writer agreeing with itself.
+///
+/// `created_at` is bound as the **zoneless** text a real row carries, and not
+/// through a `::timestamp` cast. The cast is what the writer does and is what
+/// produces that shape, but a *bound* parameter inside one makes the server
+/// infer the parameter's type as `timestamp` while the driver has already
+/// declared it `text`, and the answer is
+/// `22P03: incorrect binary data format in bind parameter 7`. Rendering the
+/// stored form directly reaches the same row by a route the driver can encode.
+///
+/// The shape matters and is not cosmetic: a value written through
+/// `::timestamp` comes back out as `2026-09-06 12:00:00` with no zone at all,
+/// so a seed that used an ISO string ending in `Z` would let a UTC-handling bug
+/// in the reader pass unnoticed.
 Future<int> seedOpenRow({
   required String uid,
   required int ruleIndex,
@@ -228,7 +241,7 @@ Future<int> seedOpenRow({
         rule_index, ts_source
       ) VALUES (
         @uid, @title, @description, @level,
-        @expression, TRUE, @ack, @created::timestamp, NULL,
+        @expression, TRUE, @ack, @created, NULL,
         @ruleIndex, @tsSource
       ) RETURNING id
     '''),
@@ -239,7 +252,7 @@ Future<int> seedOpenRow({
       'level': pg.TypedValue(pg.Type.text, level),
       'expression': pg.TypedValue(pg.Type.text, 'a > 10'),
       'ack': pg.TypedValue(pg.Type.boolean, pendingAck),
-      'created': pg.TypedValue(pg.Type.text, createdAt.toIso8601String()),
+      'created': pg.TypedValue(pg.Type.text, zonelessInstant(createdAt)),
       // bigInteger: drift's Postgres dialect makes `rule_index` a bigint, and
       // binding an int4 against it fails with SQLSTATE 08P01 rather than with
       // anything that names a type (14-01).
@@ -248,6 +261,13 @@ Future<int> seedOpenRow({
     },
   );
   return rows.first.first! as int;
+}
+
+/// An instant as `alarm_history` really holds one after a `::timestamp` cast:
+/// UTC, space-separated, and carrying no zone.
+String zonelessInstant(DateTime at) {
+  final iso = at.toUtc().toIso8601String();
+  return iso.substring(0, iso.length - 1).replaceFirst('T', ' ');
 }
 
 /// A stored instant, read the way drift reads one.
