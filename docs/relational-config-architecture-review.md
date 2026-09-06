@@ -399,3 +399,104 @@ Add — load-bearing questions §5 missed:
   (mint ids) and the wire format; cheap now, expensive after Phase 2
   ships. Recommendation is stable ids; flag it because it touches the
   owner's mental model of "the page's id is its path".
+
+---
+
+## 5. Addendum — review of the committed codec slices (2026-09-06, later)
+
+Covers `1126fc39` and `5f4208b8`: `config_item.dart`, `config_change.dart`,
+`config_diff.dart`, `key_mapping_codec.dart`, `lib/core/config/page_codec.dart`
+and their tests. Two questions were put to this review directly.
+
+### 5.1 Derived asset ids: keep the hash, but it is not the concurrency mechanism
+
+`derivedAssetId(pagePath, index, payload)` (`page_codec.dart`) is sold as
+what makes the migration idempotent across stations that boot together. It
+does less than that, and it should stay anyway. Precisely:
+
+**What the hash actually guarantees** is that identical inputs produce
+identical ids. Stations converge only when every migrating station derives
+from *the same bytes*. The dangerous race is not two stations migrating the
+fresh Postgres row — that converges — it is one station migrating from a
+stale copy (its in-memory model, or the local cache that
+`syncToLocalCache` keeps): divergent payloads hash to divergent ids, and
+the table ends up holding the same physical asset twice with **no primary
+key violation to say so**, because the ids differ. Random ids fail worse
+under the identical race (they *always* diverge), so the hash is strictly
+the better mint — but neither closes the race. What closes it is the §2
+requirement restated: the migration reads the blob from Postgres and
+writes rows **in one transaction under an advisory lock**, never from a
+local copy. With that lock held, hash-versus-random is a correctness wash;
+the hash then earns its keep twice over — a re-run during the dual-write
+window writes nothing without needing an "already migrated" flag, and
+deterministic ids are what let `page_codec_test.dart` assert stability at
+all. So: derived ids **and** the lock, and the doc comment should stop
+implying the hash alone makes concurrent migration safe.
+
+Two conditions on the surrounding machinery:
+
+- **The `??=` guard is the real convergence mechanism for late migrators**
+  (`asset.id ??= derivedAssetId(…)`), and it only works if the id-bearing
+  blob is written back in the same locked transaction — dual-write with
+  ids embedded — so that every later reader derives nothing. `Asset.id`
+  already round-trips through deployed stations' `toJson`, so an
+  unupgraded editor saving the blob preserves the minted ids rather than
+  stripping them. That property is load-bearing; assert it in the
+  round-trip test.
+- **Restrict `derivedAssetId` to the migration.** As committed,
+  `pageItems` mints derived ids on *every* save for any id-less asset, and
+  post-cutover new assets are born id-less. Two editors concurrently
+  adding an identical asset at the same index of the same page derive the
+  same id, and two people's assets silently collapse into one row — the
+  precise failure per-entity rows exist to end. The fix is free:
+  `Asset.ensureId()` (`common.dart:361`, random `newAssetId()`) at asset
+  creation in the editor, so `pageItems` never meets an id-less asset
+  outside the migration. 96-bit truncation collisions are not a concern at
+  any plausible asset count.
+
+### 5.2 The normalising round trip: right contract, one real bug, and what it does to Q4
+
+That `blob → items → blob` is normalising rather than byte-identical is
+the correct contract, not a concession — byte identity was never
+attainable (legacy blobs carry incidental key order and explicit nulls)
+and nothing needs it. Structural identity, which the tests assert, is the
+bar. But the finding surfaced one genuine defect and two consequences:
+
+**The bug: `canonicalJson` is not canonical for page payloads.**
+`AssetPage.toJson()` returns a live `MenuItem` object
+(`@JsonSerializable()` without `explicitToJson`, `page.dart:15`), and
+`canonicalise` (`config_item.dart`) sorts only what is already a `Map` —
+the live object passes through opaque and its keys serialise in whatever
+order `MenuItem.toJson()` emits at encode time. Encoding still *works*
+(`jsonEncode` calls `toJson` on the way down), and diffs still work
+(`samePayload` compares decoded structure), but the stated contract —
+"the same configuration is always the same bytes" — is silently false for
+`kind='page'`, and byte-determinism is exactly what §1.7's watermark
+notify and any digest-based comparison lean on. Fix it at the codec
+boundary, not per class: deep-encode (`jsonDecode(jsonEncode(…))`) before
+canonicalising, which also inoculates against the next config class that
+forgets the flag. `Asset` has `explicitToJson: true` (`common.dart:287`);
+`AssetPage` merely proves the flag is forgettable.
+
+**Consequence for the Q4 compatibility view: unaffected in substance,
+with one determinism requirement.** Every external reader — the MCP
+server's raw SQL, `page_geometry`, the python tools — *parses* the blob;
+none compares its bytes. The one byte-comparer is `PreferencesWatcher`'s
+server-side `md5(value)`: during the dual-write window the reassembled
+blob must therefore be **deterministic** (canonical encoding gives this),
+or every save produces textually-new bytes and every station reloads on
+every save. Expect exactly one spurious, harmless reload when the blob's
+shape first changes at cutover. The view's contract should be written as
+"structurally equivalent, canonically encoded" — never "identical to what
+the app used to write".
+
+**Consequence for the change log: serialization drift reads as edits.**
+`samePayload` correctly treats `{"k": null}` and an absent `"k"` as
+different, so the first save after any future `toJson` shape change logs
+change rows whose diff is pure serialization shape, attributed to whoever
+happened to save. Do not normalise nulls away to hide this —
+`fromJson` defaults can make null and absent semantically distinct —
+accept it and document it, and let the display-diff layer label
+"field present→absent, value unchanged" honestly rather than as an edit.
+It is a once-per-upgrade blip, and the `action_id` grouping already keeps
+it to one visible action.

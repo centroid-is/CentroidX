@@ -268,6 +268,53 @@ class ConfigItem {
   /// The decoded payload.
   Map<String, dynamic> decode() => jsonDecode(payload) as Map<String, dynamic>;
 
+  /// The **complete entity**, position included — what a change row stores and
+  /// what a restore writes back.
+  ///
+  /// [payload] alone is not the entity. Moving an asset to another page or
+  /// changing its paint order alters [parentId] or [sortIndex] and nothing
+  /// else, so a history that recorded payloads only would write a row whose
+  /// two sides are *identical* and whose restore puts the asset back on the
+  /// wrong page in the wrong order. That defeats the argument the whole
+  /// history design rests on — "a restore is writing `old_value`, with nothing
+  /// to reconstruct".
+  ///
+  /// Position is folded in **here** rather than into [payload] because
+  /// [payload] has to stay exactly what the entity's own `toJson()` produces:
+  /// it is what the codecs round-trip and what the compatibility view hands
+  /// back to `tfc_mcp_server` and the `tools/svn_*.py` scripts. Synthetic
+  /// fields inside it would leak into all of that.
+  ///
+  /// [kind], [id] and [scope] are the primary key and are columns on the
+  /// change row already, so they are not repeated.
+  Map<String, dynamic> toEntityJson() => {
+        'parent_id': parentId,
+        'sort_index': sortIndex,
+        'payload': jsonDecode(payload),
+      };
+
+  /// The entity, canonically encoded. This is the string a change row holds.
+  String encodeEntity() => canonicalJson(toEntityJson());
+
+  /// The item [entity] describes, under the given primary key.
+  ///
+  /// The inverse of [toEntityJson], and the one way a restore turns a stored
+  /// change row back into something writable.
+  static ConfigItem fromEntityJson(
+    Map<String, dynamic> entity, {
+    required ConfigKind kind,
+    required String id,
+    required ConfigScope scope,
+  }) =>
+      ConfigItem(
+        kind: kind,
+        id: id,
+        scope: scope,
+        parentId: entity['parent_id'] as String?,
+        sortIndex: entity['sort_index'] as int?,
+        payload: canonicalJson(entity['payload']),
+      );
+
   /// A copy with the storage-managed fields replaced. Used when a read hands
   /// back what the database recorded for an item built in memory.
   ConfigItem stored({

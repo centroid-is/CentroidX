@@ -5,6 +5,8 @@
 /// append-only log rather than validity ranges on the rows themselves.
 library;
 
+import 'dart:convert';
+
 import 'package:collection/collection.dart';
 import 'package:meta/meta.dart';
 
@@ -31,10 +33,19 @@ enum ConfigChangeOp {
 ///
 /// ## Why the whole entity, and not a field-level diff
 ///
-/// [oldValue] and [newValue] carry the entity's complete payload on each side.
-/// An asset is a few hundred to a couple of thousand bytes, so storing both is
-/// nearly free, and it makes a restore exact: putting the entity back is
-/// writing [oldValue], with nothing to reconstruct and nothing to get wrong.
+/// [oldValue] and [newValue] carry the entity's complete state on each side —
+/// `ConfigItem.encodeEntity()`, which is the payload **plus its position**.
+/// Position is in there and not omitted for a reason worth stating: moving an
+/// asset to another page or changing its paint order alters nothing else, so a
+/// row recording payloads alone would have two identical sides and a restore
+/// from it would put the asset back in the wrong place. Use [ConfigChange.of]
+/// rather than encoding the sides by hand — it is the one place that rule is
+/// applied.
+///
+/// An asset is a few hundred to a couple of thousand bytes, so storing both
+/// sides is nearly free, and it makes a restore exact: putting the entity back
+/// is writing [oldItem], with nothing to reconstruct and nothing to get
+/// wrong.
 ///
 /// Reducing that to "which fields moved" is a *display* concern, computed on
 /// read the way `access/dynamic_value_diff.dart` reduces a whole-struct tag
@@ -162,6 +173,54 @@ class ConfigChange {
         reason: reason,
       );
 
+  /// The row for a change from [before] to [after], with the operation and
+  /// both sides derived rather than passed.
+  ///
+  /// One of the two may be null — an insert has no before, a delete has no
+  /// after — but not both, because a change between two absences is not one.
+  /// This is the constructor production code should use: it is what guarantees
+  /// each side is `ConfigItem.encodeEntity()` and therefore carries position,
+  /// which is the difference between a restorable history and a decorative
+  /// one. The three named constructors above stay for the cases that genuinely
+  /// only have strings, such as reading a row back out of the database.
+  factory ConfigChange.of({
+    required DateTime at,
+    required String actionId,
+    required String who,
+    required String station,
+    required String roleName,
+    ConfigItem? before,
+    ConfigItem? after,
+    String? reason,
+  }) {
+    final subject = after ?? before;
+    if (subject == null) {
+      throw ArgumentError('a change needs a before, an after, or both');
+    }
+    if (before != null && after != null && !before.sameEntityAs(after)) {
+      throw ArgumentError('before and after describe different entities: '
+          '$before vs $after');
+    }
+    return ConfigChange(
+      at: at,
+      actionId: actionId,
+      who: who,
+      station: station,
+      roleName: roleName,
+      kind: subject.kind,
+      entityId: subject.id,
+      scope: subject.scope,
+      op: before == null
+          ? ConfigChangeOp.insert
+          : after == null
+              ? ConfigChangeOp.delete
+              : ConfigChangeOp.update,
+      oldValue: before?.encodeEntity(),
+      newValue: after?.encodeEntity(),
+      reason: reason,
+    );
+  }
+
   /// When it happened.
   final DateTime at;
 
@@ -191,15 +250,38 @@ class ConfigChange {
   /// Whether the entity appeared, changed or went away.
   final ConfigChangeOp op;
 
-  /// The entity's complete payload before the change. Null only on an insert.
+  /// The entity's complete state before the change — `encodeEntity()`, payload
+  /// and position. Null only on an insert.
   final String? oldValue;
 
-  /// The entity's complete payload after the change. Null only on a delete.
+  /// The entity's complete state after the change. Null only on a delete.
   final String? newValue;
 
   /// Free text captured on the action, mirroring `AuditRecord.reason`. Reason
   /// is what turns a log into an audit trail.
   final String? reason;
+
+  /// The item this row's [newValue] describes, or null on a delete.
+  ConfigItem? get newItem => newValue == null
+      ? null
+      : ConfigItem.fromEntityJson(
+          jsonDecode(newValue!) as Map<String, dynamic>,
+          kind: kind,
+          id: entityId,
+          scope: scope);
+
+  /// The item this row's [oldValue] describes, or null on an insert.
+  ///
+  /// This is what a restore writes: undoing an update or a delete is writing
+  /// this back, with its position, and undoing an insert is deleting the
+  /// entity.
+  ConfigItem? get oldItem => oldValue == null
+      ? null
+      : ConfigItem.fromEntityJson(
+          jsonDecode(oldValue!) as Map<String, dynamic>,
+          kind: kind,
+          id: entityId,
+          scope: scope);
 
   /// The payload that undoing this change would write, or null when undoing it
   /// means deleting the entity.
