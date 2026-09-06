@@ -116,6 +116,8 @@ void main() {
     TokenValidator? validator,
     PipeMainEndpoint? pipe,
     KeyMappings? keyMappings,
+    BackendLiveValues? values,
+    BackendFreshnessSweep? freshness,
   }) {
     final config = RelayConfig.fromJson(
       stateman ?? _relaySection(),
@@ -129,6 +131,8 @@ void main() {
       prefs: prefs,
       policy: policy,
       validator: validator,
+      values: values,
+      freshness: freshness,
       log: Logger(level: Level.off),
     );
     addTearDown(composed.dispose);
@@ -548,6 +552,129 @@ void main() {
     });
   });
 
+  // ------------------------------------------------ the hoisted value source
+
+  group('the value source may be supplied, because alarms outlive the relay',
+      () {
+    // 14-08. The relay is off by default and SVN runs that way today, so a
+    // value source built HERE exists only when a WebSocket is configured — and
+    // the alarm engine feeding from it would go dark exactly where this phase
+    // is aimed (P-5). `bin/main.dart` therefore builds the pair itself, before
+    // the relay guard, and hands it in.
+
+    test('a supplied pair is the pair the graph uses, and no second one is '
+        'built', () {
+      final pipe = PipeMainEndpoint();
+      final keyMappings = _mappings();
+      final values = BackendLiveValues(
+        pipe: pipe,
+        keyMappings: keyMappings,
+        logger: Logger(level: Level.off),
+      );
+      final freshness = BackendFreshnessSweep(
+        values: values,
+        staleAfter: values.staleAfter,
+        pipe: pipe,
+        logger: Logger(level: Level.off),
+      );
+      // The obligations both objects wired in their own constructors. If the
+      // composer builds a second pair, these fields point at the second one
+      // afterwards and the first pair goes deaf — silently, which is the whole
+      // hazard.
+      final retired = pipe.onKeyRetired;
+      final died = pipe.onWorkerDied;
+      final ready = pipe.onWorkerReady;
+
+      final composed = compose(
+        pipe: pipe,
+        keyMappings: keyMappings,
+        values: values,
+        freshness: freshness,
+      );
+
+      expect(identical(composed.liveValues, values), isTrue,
+          reason: 'the composition must surface the live half it was given, '
+              'not one it made. Criterion 4\'s arm walks these fields, and a '
+              'field holding a different object of the right TYPE would pass '
+              'the type arm while the plant ran two value sources');
+      expect(identical(composed.freshness, freshness), isTrue,
+          reason: 'and the sweep with it');
+      expect(identical(composed.api.values, freshness), isTrue,
+          reason: 'the adapter must READ through the supplied sweep. Surfacing '
+              'it on the record while serving from another is the same defect '
+              'wearing the test\'s clothes');
+
+      expect(identical(pipe.onKeyRetired, retired), isTrue,
+          reason: 'BackendLiveValues registers onKeyRetired in its '
+              'constructor — "an obligation wired at a call site is an '
+              'obligation that can be forgotten at a call site". A second '
+              'BackendLiveValues against this pipe would have overwritten it, '
+              'and IN-02\'s retraction would then be delivered to an object '
+              'nothing reads');
+      expect(identical(pipe.onWorkerDied, died), isTrue,
+          reason: 'and BackendFreshnessSweep registers onWorkerDied. A second '
+              'sweep silently wins the callback, so a worker\'s death degrades '
+              'the keys of a value source nobody is serving from');
+      expect(identical(pipe.onWorkerReady, ready), isTrue,
+          reason: 'the resnapshot half of the same registration');
+    });
+
+    test('half a pair is refused by name, and the message says why', () {
+      final pipe = PipeMainEndpoint();
+      final keyMappings = _mappings();
+      final values = BackendLiveValues(
+        pipe: pipe,
+        keyMappings: keyMappings,
+        logger: Logger(level: Level.off),
+      );
+
+      // values without freshness: the composer would wrap a SECOND sweep round
+      // the supplied live half, and that second sweep takes the pipe's
+      // onWorkerDied off whichever sweep the caller is actually using.
+      expect(
+          () => compose(pipe: pipe, keyMappings: keyMappings, values: values),
+          throwsA(isA<ArgumentError>()
+              .having((e) => e.message.toString(), 'message', contains('values'))
+              .having((e) => e.message.toString(), 'message',
+                  contains('freshness'))),
+          reason: 'both parameter names must appear, so the message says what '
+              'to pass rather than that something is wrong');
+
+      // freshness without values: the record's `liveValues` would then be a
+      // live half nothing wraps, sitting under a sweep built around a
+      // different one. Two value sources for one plant.
+      final orphanSweep = BackendFreshnessSweep(
+        values: values,
+        staleAfter: values.staleAfter,
+        logger: Logger(level: Level.off),
+      );
+      expect(
+          () => compose(
+              pipe: pipe, keyMappings: keyMappings, freshness: orphanSweep),
+          throwsA(isA<ArgumentError>()
+              .having((e) => e.message.toString(), 'message', contains('values'))
+              .having((e) => e.message.toString(), 'message',
+                  contains('freshness'))),
+          reason: 'the other direction, and it is not symmetric decoration: a '
+              'sweep wrapped around a live half the composition does not '
+              'surface is the harder one to notice by reading');
+    });
+
+    test('supplying neither leaves the composition exactly as it was', () {
+      // Every Phase 13 arm above runs through this path. The new parameters
+      // must be additive, or this plan silently re-composes the backend.
+      final composed = compose();
+
+      expect(composed.liveValues, isA<BackendLiveValues>());
+      expect(composed.freshness, isA<BackendFreshnessSweep>());
+      expect(identical(composed.api.values, composed.freshness), isTrue,
+          reason: 'the adapter reads through the sweep, never the live half');
+      expect(composed.freshness.staleAfter, kBackendStaleAfter,
+          reason: 'the default deadline is unchanged; the pair the composer '
+              'builds for itself is the pair it always built');
+    });
+  });
+
   // ------------------------------------------------- the binary's own block
 
   group('bin/main.dart is the caller, and only the caller', () {
@@ -642,18 +769,34 @@ void main() {
               'measured');
     });
 
-    test('the alarmman block is untouched — it is Phase 14\'s', () {
-      for (final landmark in const <String>[
-        'StateMan.create(',
-        'AlarmMan.create(',
-        'activeAlarms().listen(',
-      ]) {
-        expect(main, contains(landmark),
-            reason: 'the second StateMan and its activeAlarms() subscription '
-                'are Phase 14\'s scope and stay byte-for-byte. A relay block '
-                'that "tidied" one of them away would take alarm history with '
-                'it, and nothing would say so');
-      }
+    // REPLACED BY 14-08, deliberately. What used to stand here required
+    // `StateMan.create(`, `AlarmMan.create(` and `activeAlarms().listen(` to
+    // still be PRESENT in bin/main.dart — a Phase 13 arm whose only job was to
+    // stop the relay work "tidying away" a block that was not its to touch. It
+    // was doing that job right up to this plan, which is the plan that deletes
+    // the block on purpose (ALRM-01).
+    //
+    // The property is not dropped, it is INVERTED and moved to its owner:
+    // `test/core/alarm_structure_test.dart` arms 1-3 require those same three
+    // landmarks to be ABSENT, with the reason each one may not come back. So
+    // the three strings are still pinned in exactly one place, and a reader
+    // arriving at either file is pointed at the other.
+
+    test('the hoisted value source is passed in, not built in here', () {
+      // 14-08's half of P-5, measured at the call site rather than only inside
+      // composeBackendRelay. The composer accepting a pair is worth nothing if
+      // the binary never hands one over: it would build its own, and the pair
+      // main built for the alarm engine would be a SECOND value source whose
+      // registrations the composer's pair silently overwrote.
+      final call = _statementAt(main, 'composeBackendRelay(');
+      expect(call, isNotEmpty);
+      expect(call, contains('values:'),
+          reason: 'the live half main built before the relay guard must be the '
+              'live half the relay serves from, or the process holds two');
+      expect(call, contains('freshness:'),
+          reason: 'and the sweep with it — half a pair is refused by the '
+              'composer, which is what makes this arm a spelling check rather '
+              'than a safety property on its own');
     });
   });
 }
