@@ -94,9 +94,26 @@ final class _SpyPolicy implements KeyPolicy {
   @override
   bool canSee(String key, Identity identity) => !hidden.contains(key);
 
+  /// The shipped rule, **and** a refusal for anything hidden.
+  ///
+  /// The second half is what makes the ordering arm bite, and it was found by
+  /// sabotage (c) rather than by reasoning: with a policy that hides a key and
+  /// happily authorizes a write to it, swapping the existence and authorization
+  /// checks changes no answer at all — the gate says yes either way and the
+  /// existence check refuses second instead of first. The arm passed against a
+  /// mutation it exists to catch.
+  ///
+  /// `policy_test.dart:_HidesTags` has the same shape and, on the write path,
+  /// the same blind spot; it is survivable there because the *contrast* arm
+  /// (hidden versus nonexistent) is what that file is really pinning. Here the
+  /// subject **is** the ordering, so the policy has to be one where the two
+  /// orders differ. Refusing a write to a key the station may not see is also
+  /// the only honest answer: a station that may not know a tag exists cannot
+  /// meaningfully be permitted to actuate it.
   @override
   bool canWrite(String key, Identity identity) {
     asked.add(key);
+    if (hidden.contains(key)) return false;
     return identity.role == Role.operate;
   }
 }
