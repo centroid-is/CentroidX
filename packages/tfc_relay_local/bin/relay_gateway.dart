@@ -29,11 +29,50 @@ import 'package:tfc_relay_local/src/data/preference_store.dart';
 import 'package:tfc_relay_local/src/data/timescale_reader.dart';
 import 'package:tfc_relay_local/tfc_relay_local.dart';
 
+/// What this process says about itself when nobody has acknowledged what it
+/// is.
+///
+/// Phase 13 made `centroidx-backend` the plant's one deployable and deleted
+/// this binary's Dockerfile and compose fragment. The deletion is pinned by
+/// `test/harness_only_test.dart`; this string is the other half, for the copy
+/// of the source somebody already has on a rig.
+///
+/// The wording is asserted on by that test through a literal substring, so it
+/// can be extended freely but the first line is load-bearing.
+const String _harnessBanner = '''
+=============================================================================
+relay_gateway is a TEST HARNESS. It is not the plant's deployable.
+
+The plant runs exactly one process: centroidx-backend
+(packages/tfc_dart/bin/main.dart), which serves the relay WebSocket itself.
+The eight M2200 weighers accept one TCP client each, so two processes owning
+the plant is not a deployment choice — whichever loses the race loses the
+weighers.
+
+Pass --harness, or set CENTROIDX_RELAY_HARNESS=1, to silence this notice.
+=============================================================================''';
+
 Future<void> main(List<String> args) async {
   if (args.contains('--help') || args.contains('-h')) {
     stdout.write(gatewayUsage);
     return;
   }
+  // A `--help` run is not a start, which is why this sits below the branch
+  // above and above everything that binds a port: the notice is about what
+  // this process *is*, and the answer only matters to somebody starting it.
+  //
+  // Loud, but still running. A refusal to start would break the harness
+  // fixtures that shell out to this file, and a harness that has to be
+  // special-cased is a harness people stop using.
+  if (!args.contains('--harness') &&
+      Platform.environment['CENTROIDX_RELAY_HARNESS'] != '1') {
+    stderr.writeln(_harnessBanner);
+  }
+  // `--harness` needs no parser entry: `_configPath` looks only for `--config`
+  // and ignores every other token, so an extra flag cannot reach the EX_USAGE
+  // branch by being unrecognised. Checked, not assumed — the alternative was
+  // stripping it from `args` here, which would be a second place that knows
+  // the flag's spelling.
   final path = _configPath(args);
   if (path == null) {
     stderr.write(gatewayUsage);
