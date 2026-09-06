@@ -899,9 +899,13 @@ Future<void> _waitUntil(
   required String reason,
   Duration budget = const Duration(seconds: 20),
 }) async {
-  final deadline = DateTime.now().add(budget);
+  // A `Stopwatch`, not two readings of `DateTime.now()`. Nothing in this file
+  // is anchored on a wall clock — that is the whole subject of arm 2 — and a
+  // backwards NTP step across a poll would turn a passing barrier into a
+  // failure nobody could reproduce.
+  final elapsed = Stopwatch()..start();
   while (!condition()) {
-    if (DateTime.now().isAfter(deadline)) fail(reason);
+    if (elapsed.elapsed > budget) fail(reason);
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
 }
