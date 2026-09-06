@@ -80,6 +80,18 @@ Future<void> _settle() => pumpEventQueue(times: 10);
 /// window is derived from the source's declared freshness deadline instead.
 const _quiet2 = Duration(milliseconds: 60);
 
+/// Awaits [future], or fails saying which promise went silent.
+///
+/// The contract kit does this for its own cases (`check.dart`'s `within`) and
+/// this file needs it for the same reason: a hold whose `onReleased` never
+/// completes is a real defect, and without a budget it is reported as a runner
+/// timeout naming the file instead of as the property an operator lost.
+Future<T> _within<T>(Future<T> future, String what,
+        {Duration budget = const Duration(seconds: 2)}) =>
+    future.timeout(budget,
+        onTimeout: () => fail('$what did not happen within '
+            '${budget.inMilliseconds} ms'));
+
 /// One write the fake plant has taken but not yet answered.
 typedef _Parked = ({int id, String key, relay.DynamicValue value});
 
@@ -336,7 +348,11 @@ void main() {
       expect(hold.isHeld, isFalse,
           reason: 'the operator is looking at a lit button for a machine that '
               'was never given permission to move');
-      expect(await hold.onReleased, relay.HoldEnded.refused,
+      expect(
+          await _within(hold.onReleased,
+              'a refused hold reporting, without being asked, that it already '
+              'ended'),
+          relay.HoldEnded.refused,
           reason: 'a caller awaits onReleased to know when to put the button '
               'back up; a refused hold whose future never completes leaves it '
               'lit for ever');
@@ -368,7 +384,10 @@ void main() {
               'you cannot be sure was taken is one you must not feed: the '
               'operator would be holding a button that may be doing nothing, '
               'told that it is doing something');
-      expect(await hold.onReleased, relay.HoldEnded.refused);
+      expect(
+          await _within(
+              hold.onReleased, 'an unknown engage reporting that it ended'),
+          relay.HoldEnded.refused);
     });
 
     test('an engage that throws on the way out is an outcome, not an exception',
@@ -483,7 +502,9 @@ void main() {
               'operator is most likely to ask about afterwards — "did the '
               'stop land?" — cannot be looked up');
       expect(hold.isHeld, isFalse);
-      expect(await hold.onReleased, relay.HoldEnded.operatorLetGo);
+      expect(
+          await _within(hold.onReleased, 'the hold reporting why it ended'),
+          relay.HoldEnded.operatorLetGo);
       await _settle();
       expect(f.tag(_holdKey), 0);
 
@@ -536,11 +557,17 @@ void main() {
       await f.writes.dispose();
       await _settle();
 
-      expect(await first.onReleased, relay.HoldEnded.disposed,
+      expect(
+          await _within(first.onReleased,
+              'the first hold reporting that the teardown ended it'),
+          relay.HoldEnded.disposed,
           reason: 'a source that tears itself down and leaves the counter '
               'advancing has left a machine moving with the window that was '
               'watching it already closed');
-      expect(await second.onReleased, relay.HoldEnded.disposed,
+      expect(
+          await _within(second.onReleased,
+              'the second hold reporting that the teardown ended it'),
+          relay.HoldEnded.disposed,
           reason: 'one of two live holds was released and the other was '
               'forgotten; the registry has to release what it is holding, not '
               'the last thing it heard about');
@@ -565,7 +592,10 @@ void main() {
               'confirmed, on exactly the dead link that caused the teardown'));
 
       expect(hold.isHeld, isFalse);
-      expect(await hold.onReleased, relay.HoldEnded.disposed);
+      expect(
+          await _within(hold.onReleased,
+              'the hold reporting that the teardown ended it'),
+          relay.HoldEnded.disposed);
     });
 
     test('a tick whose write is lost leaves no unhandled error on the zone',
