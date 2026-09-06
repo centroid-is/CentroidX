@@ -76,6 +76,35 @@
 /// each creating a temp directory and a database is a minute of wall clock
 /// bought for nothing: this leg declares `supportsDataServices: false`, so
 /// nothing any case does reaches the store at all.
+///
+/// ## The alarm engine is OFF unless a case asks for one (14-11)
+///
+/// [composeBackendUnderTest] takes an optional `alarms:` configuration and an
+/// injected `clock:`, and builds an `AlarmEngine` over the composition's own
+/// value source when — and only when — both are supplied. **The default is no
+/// engine, and that default is load-bearing rather than tidy.**
+///
+/// This file carries the shared contract suite. Forty-three checks are judged
+/// against whatever `composeBackendUnderTest` returns, and a leg that grew an
+/// alarm engine it did not ask for would be a change in *what the contract is
+/// being run against*: another object holding subscriptions on the pipe,
+/// another writer into the same `ValueStore`, another declared key on the
+/// browse surface, and a second reader of the freshness sweep whose own arms
+/// live elsewhere. The parity sweep (`backend_ws_parity_test.dart`) compares
+/// this leg against the in-memory one on the assumption that they serve the
+/// same graph; an engine here and none there would make that comparison a
+/// comparison of two different backends. So `alarms: null` composes byte-for
+/// byte what Phase 13 composed, `values:`/`freshness:` are not passed at all,
+/// and [ComposedBackendUnderTest.engine] is null.
+///
+/// When alarms ARE asked for, the pair is built **before**
+/// [composeBackendRelay] and passed in whole. That function refuses a half
+/// pair by name (`backend_composition.dart`, "supply both or neither"), for
+/// the reason it states: each of the two registers a pipe callback in its own
+/// constructor, and a second one built inside the composition takes
+/// `onKeyRetired` / `onWorkerDied` off the caller's object without saying so.
+/// The engine reads through the same sweep the adapter serves from, which is
+/// `bin/main.dart`'s arrangement after 14-08.
 library;
 
 import 'dart:async';
@@ -87,12 +116,17 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:stream_channel/stream_channel.dart';
 import 'package:test/test.dart';
+import 'package:tfc_dart/core/alarm.dart' show AlarmManConfig;
+import 'package:tfc_dart/core/alarm_stamp.dart' show kAlarmSkewWarnAfter;
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_dart/core/relay/backend_alarms.dart';
 import 'package:tfc_dart/core/relay/backend_composition.dart';
-import 'package:tfc_dart/core/relay/backend_live_values.dart' show kBackendStaleAfter;
+import 'package:tfc_dart/core/relay/backend_freshness.dart';
+import 'package:tfc_dart/core/relay/backend_live_values.dart'
+    show BackendLiveValues, kBackendStaleAfter;
 import 'package:tfc_dart/core/relay/backend_writes.dart';
 import 'package:tfc_dart/core/relay/relay_config.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
@@ -193,7 +227,15 @@ Map<String, dynamic> _relaySection({int port = 0}) => <String, dynamic>{
 /// Everything on the server side of the socket, in one object, so a teardown
 /// can release it in one place.
 final class ComposedBackendUnderTest {
-  ComposedBackendUnderTest._(this.composition, this.harness, this.pipe);
+  ComposedBackendUnderTest._(
+    this.composition,
+    this.harness,
+    this.pipe, {
+    required this.engine,
+    required AlarmManConfig? alarmConfig,
+    required this.monotonic,
+    required this.alarmPublications,
+  }) : _alarmConfig = alarmConfig;
 
   /// What [composeBackendRelay] built — the shipping graph, unstarted.
   final BackendRelayComposition composition;
@@ -203,6 +245,95 @@ final class ComposedBackendUnderTest {
 
   /// The real pipe every lever's frame crosses.
   final PipeMainEndpoint pipe;
+
+  /// The alarm engine, or **null** when the caller asked for none.
+  ///
+  /// Null is the default and the Phase 13 shape; see the library doc for why
+  /// the contract legs must keep composing without one.
+  final AlarmEngine? engine;
+
+  final AlarmManConfig? _alarmConfig;
+
+  /// One monotonic clock for the whole fixture, started at composition.
+  ///
+  /// Every publication and every client receipt is stamped off **this one
+  /// stopwatch**, so the publish→receipt gap Research Open Question 2 asks for
+  /// is a difference of two readings of one monotonic counter rather than of
+  /// two wall-clock samples. Both ends are in this isolate, so there is no
+  /// second clock to reconcile — and a wall clock read twice can go backwards
+  /// across an NTP step, which would turn the measurement into a negative
+  /// number nobody could explain.
+  final Stopwatch monotonic;
+
+  /// Every `ALARM.*` publication the engine made, in order, stamped.
+  ///
+  /// Recorded by a decorator **around** [PipeStoreAlarmPublisher], never
+  /// instead of it: the production seam is what actually writes into
+  /// `PipeMainEndpoint.store`, and a recorder that replaced it would measure a
+  /// fixture rather than the path a panel is served from.
+  final List<AlarmPublication> alarmPublications;
+
+  /// Seeds `alarm_man_config` and starts the engine, or does nothing.
+  ///
+  /// Two steps rather than one because the seed is asynchronous and
+  /// [composeBackendUnderTest] is not: the whole graph is allocated
+  /// synchronously (the composition root's own rule), and the two awaits live
+  /// here.
+  ///
+  /// **After every `pipe.addWorker`, never before** — `AlarmEngine.start`'s
+  /// own ordering obligation (D-7 / P-4). The fixture registers its one worker
+  /// during composition, so calling this from `ready` satisfies it.
+  ///
+  /// The configuration goes into the shared, real [Preferences] rather than an
+  /// in-memory stand-in, because that is the class `bin/main.dart` hands the
+  /// engine. The store is shared per FILE, so a second case with a different
+  /// configuration overwrites the first — which is correct, since each case
+  /// seeds before its own `start()` and nothing reads the row afterwards.
+  Future<void> startAlarms() async {
+    final engine = this.engine;
+    if (engine == null) return;
+    await backendWsPreferences
+        .setString(kAlarmManConfigKey, jsonEncode(_alarmConfig!.toJson()));
+    await engine.start();
+  }
+
+  /// Releases the engine's input subscriptions, if there is an engine.
+  ///
+  /// Before `composition.dispose()`, which disposes the sweep the engine is
+  /// reading through: a watcher cancelling a subscription on a disposed source
+  /// is an error raised out of a teardown, which `package:test` attributes to
+  /// whichever case is running next.
+  Future<void> disposeAlarms() async => engine?.dispose();
+}
+
+/// One `ALARM.*` publication, and when it happened on the fixture's clock.
+typedef AlarmPublication = ({
+  String key,
+  relay.DynamicValue value,
+  int atMicros,
+});
+
+/// [AlarmStatePublisher] that times every publication and forwards it.
+///
+/// The delegate is the production [PipeStoreAlarmPublisher]. This class adds a
+/// list append and a stopwatch read and changes nothing else, so the value a
+/// client receives crossed exactly the path 14-05 built.
+final class _TimingAlarmPublisher implements AlarmStatePublisher {
+  _TimingAlarmPublisher(this._inner, this._monotonic, this._records);
+
+  final AlarmStatePublisher _inner;
+  final Stopwatch _monotonic;
+  final List<AlarmPublication> _records;
+
+  @override
+  void publish(String key, relay.DynamicValue value) {
+    // Stamped BEFORE the delegate runs. The gap being measured is
+    // "the backend decided" to "the client heard", and putting the reading
+    // after `applyBatch` would silently exclude whatever the store's own
+    // notification arithmetic costs — which is part of the answer.
+    _records.add((key: key, value: value, atMicros: _monotonic.elapsedMicroseconds));
+    _inner.publish(key, value);
+  }
 }
 
 /// Composes the shipping graph over a fake worker and the shared store.
@@ -213,7 +344,29 @@ final class ComposedBackendUnderTest {
 /// and the socket — the pipe, the live values, the sweep, the write router,
 /// the browse tree, the resolver, the policy, the server — is what
 /// `bin/main.dart` constructs.
-ComposedBackendUnderTest composeBackendUnderTest({int port = 0}) {
+/// [alarms] and [clock] are **both or neither**, refused below by name.
+///
+/// The shape is `composeBackendRelay`'s own, for its own reason: a mistake in
+/// a composition must be loud where the composition is written. An engine with
+/// no clock is not constructible at all (`AlarmEngine.clock` is required and
+/// has no default, D-2), and a clock with no configuration would be an
+/// argument that does nothing — the quietest kind of wrong.
+ComposedBackendUnderTest composeBackendUnderTest({
+  int port = 0,
+  AlarmManConfig? alarms,
+  DateTime Function()? clock,
+  Duration alarmSkewWarnAfter = kAlarmSkewWarnAfter,
+  Logger? alarmLogger,
+}) {
+  if ((alarms == null) != (clock == null)) {
+    throw ArgumentError('composeBackendUnderTest: `alarms` and `clock` must '
+        'be supplied together or not at all — '
+        '${alarms == null ? '`clock` was passed without `alarms`' : '`alarms` was passed without `clock`'}. '
+        'An AlarmEngine has no default clock (D-2: `DateTime.now` is the '
+        'composition root\'s, and this fixture is a composition root), and a '
+        'clock with no configuration would be an argument that does nothing');
+  }
+
   final plant = FakePlantLink('contract-ws');
   final pipe = PipeMainEndpoint(
     // The same short write deadline the in-memory leg runs at
@@ -224,6 +377,52 @@ ComposedBackendUnderTest composeBackendUnderTest({int port = 0}) {
   );
   pipe.addWorker(plant, contractPlantKeys());
 
+  // ------------------------------------------------------------- the alarms
+  //
+  // Built BEFORE the composition and passed in whole, which is `bin/main.dart`'s
+  // arrangement after 14-08 and the only one `composeBackendRelay` accepts:
+  // half a pair is refused there by name, because each object registers a pipe
+  // callback in its constructor and a second one built inside the composition
+  // would silently take those callbacks off the caller's.
+  //
+  // Null when no case asked for an engine, and then `values:`/`freshness:` are
+  // not passed at all — so the Phase 13 legs compose the graph they always did.
+  BackendLiveValues? liveValues;
+  BackendFreshnessSweep? sweep;
+  AlarmEngine? engine;
+  final alarmPublications = <AlarmPublication>[];
+  final monotonic = Stopwatch()..start();
+
+  if (alarms != null) {
+    final logger = alarmLogger ?? Logger(level: Level.off);
+    liveValues = BackendLiveValues(
+      pipe: pipe,
+      keyMappings: contractKeyMappings(),
+      // Imported, never re-spelled — this library's doc, and the same constant
+      // the composition would have used had it built the pair itself.
+      staleAfter: kBackendStaleAfter,
+      logger: logger,
+    );
+    sweep = BackendFreshnessSweep(
+      values: liveValues,
+      staleAfter: kBackendStaleAfter,
+      pipe: pipe,
+      logger: logger,
+    );
+    engine = AlarmEngine(
+      // The SAME object the adapter serves every session from — see below,
+      // where `composition.freshness` is handed to the lever wrapper. One
+      // value source for one plant is the whole of 14-08's argument.
+      values: sweep,
+      preferences: backendWsPreferences,
+      publisher: _TimingAlarmPublisher(
+          PipeStoreAlarmPublisher(pipe), monotonic, alarmPublications),
+      clock: clock!,
+      skewWarnAfter: alarmSkewWarnAfter,
+      logger: logger,
+    );
+  }
+
   final composition = composeBackendRelay(
     config: RelayConfig.fromJson(_relaySection(port: port),
         source: 'backend_ws_harness')!,
@@ -231,6 +430,10 @@ ComposedBackendUnderTest composeBackendUnderTest({int port = 0}) {
     keyMappings: contractKeyMappings(),
     database: backendWsDatabase,
     prefs: backendWsPreferences,
+    // Both or neither. Null/null on every Phase 13 leg, which is the same call
+    // those legs have always made.
+    values: liveValues,
+    freshness: sweep,
     // 13-04 Finding 1, and the identical asymmetry the in-memory leg declares.
     // Production passes NONE — a true statement about SVN's address space,
     // because `KeyMappingEntry` has no callable concept — and both contract
@@ -267,7 +470,15 @@ ComposedBackendUnderTest composeBackendUnderTest({int port = 0}) {
   // where one comes from. Same snapshot as the in-memory leg's.
   plant.deliverAll(contractInitialSnapshot());
 
-  return ComposedBackendUnderTest._(composition, harness, pipe);
+  return ComposedBackendUnderTest._(
+    composition,
+    harness,
+    pipe,
+    engine: engine,
+    alarmConfig: alarms,
+    monotonic: monotonic,
+    alarmPublications: alarmPublications,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -460,6 +671,13 @@ final class _BackendWsWiring {
 /// session gate, `hello`, the policy layer and the resolver all in front of the
 /// same adapter — and so the phase that finally runs those probes does not have
 /// to invent a fixture under time pressure on a plant test rig.
+/// **Two panels are two of these, not one used twice** (14-11). The fixture
+/// opens one client itself and [BackendRelayFixture.connectClient] opens more,
+/// each with its own socket, its own request ids, its own subscriptions and its
+/// own inbound frame log. Sharing one socket and calling `subscribe` twice
+/// would put both "panels" in one session, where agreement is arithmetic rather
+/// than evidence: criterion 5 is about two *sessions* being told the same
+/// thing, and a fan-out that happens once cannot disagree with itself.
 final class BackendRelayFixture {
   BackendRelayFixture._(this.backend, this._wiring, this.ready);
 
@@ -468,50 +686,67 @@ final class BackendRelayFixture {
 
   final _BackendRelayWiring _wiring;
 
-  /// Completes when the server is bound and the client socket is open.
+  /// Completes when the server is bound, the alarm engine (if any) has
+  /// started, and the first client socket is open.
   final Future<void> ready;
 
   /// The bound port. Available once [ready] has completed.
   int get port => backend.composition.server.port;
 
-  /// Every frame the client has received, in order.
-  List<String> get inbound => List.unmodifiable(_wiring.inbound);
+  /// The first client — the one the fixture opened for itself.
+  BackendRelayClient get client => _wiring.requireClient();
+
+  /// Every frame the first client has received, in order.
+  List<String> get inbound => client.inbound;
 
   /// The close code the CLIENT observed — the only one worth asserting on for
   /// a close the server initiated (`web_socket_channel` #1698).
-  int? get observedCloseCode => _wiring.client.closeCode;
+  int? get observedCloseCode => client.observedCloseCode;
 
-  /// Sends [method] and returns its result inside a named budget.
+  /// Sends [method] on the first client and returns its result.
   Future<Object?> request(String method,
           {Object? params,
           String? what,
           Duration budget = const Duration(seconds: 5)}) =>
-      _wiring.request(method,
-          params: params,
-          what: what ?? 'a $method response over a real socket',
-          budget: budget);
+      client.request(method, params: params, what: what, budget: budget);
 
-  /// Says hello and hands back the negotiated result.
-  Future<relay.HelloResult> hello({Duration budget = const Duration(seconds: 5)}) async {
-    final raw = await request(
-      relay.Methods.hello,
-      params: relay.HelloParams(
-        protocol: relay.protocolVersion,
-        supported: const [relay.protocolVersion],
-        client: const relay.PeerInfo('backend-ws-harness', '0.1.0'),
-      ).toJson(),
-      what: 'the hello result over a real socket',
-      budget: budget,
-    );
-    return relay.HelloResult.fromJson((raw as Map).cast<String, Object?>());
-  }
+  /// Says hello on the first client and hands back the negotiated result.
+  Future<relay.HelloResult> hello(
+          {Duration budget = const Duration(seconds: 5)}) =>
+      client.hello(budget: budget);
+
+  /// Opens **another** independent client against the same bound server.
+  ///
+  /// A second panel, in every sense that matters here: a second TCP connection,
+  /// a second `RelaySession` on the server, a second handle table and a second
+  /// subscription. Nothing about it is shared with the first except the backend
+  /// it is asking.
+  Future<BackendRelayClient> connectClient(String name) =>
+      _wiring.addClient(name);
 
   Future<void> teardown() => _wiring.teardown(ready);
 }
 
 /// Stands the shipping composition up on a real port, with a client in front.
-BackendRelayFixture backendRelayFixture() {
-  final backend = composeBackendUnderTest();
+///
+/// [alarms] / [clock] are forwarded to [composeBackendUnderTest] and, when
+/// supplied, the engine is started as part of [BackendRelayFixture.ready] —
+/// **after** the composition registered its worker, which is
+/// `AlarmEngine.start`'s ordering obligation (D-7 / P-4), and **before** the
+/// first client connects, which is what makes a case able to say "the alarm was
+/// already standing when this panel arrived".
+BackendRelayFixture backendRelayFixture({
+  AlarmManConfig? alarms,
+  DateTime Function()? clock,
+  Duration alarmSkewWarnAfter = kAlarmSkewWarnAfter,
+  Logger? alarmLogger,
+}) {
+  final backend = composeBackendUnderTest(
+    alarms: alarms,
+    clock: clock,
+    alarmSkewWarnAfter: alarmSkewWarnAfter,
+    alarmLogger: alarmLogger,
+  );
   final wiring = _BackendRelayWiring(backend);
   final ready = wiring.connect();
   final fixture = BackendRelayFixture._(backend, wiring, ready);
@@ -519,75 +754,85 @@ BackendRelayFixture backendRelayFixture() {
   return fixture;
 }
 
-/// The descriptors one production fixture owns.
+/// One client socket in front of the bound server: a panel, for these purposes.
 ///
-/// The JSON-RPC client here is hand-rolled over `dart:convert` rather than
-/// `json_rpc_2`. Two reasons, and the second is the one that matters: this
-/// plan adds four dev dependencies and a fifth for a fixture the contract suite
-/// does not use would be a dependency nobody could point at a test for — and a
+/// The JSON-RPC envelope is spelled out over `dart:convert` rather than taken
+/// from `json_rpc_2` — `_BackendRelayWiring`'s original argument, unchanged: a
 /// probe fixture whose *client* is the same library the server uses proves less
-/// about the wire than one that spells the envelope out.
-final class _BackendRelayWiring {
-  _BackendRelayWiring(this.backend);
+/// about the wire than one that writes the frames itself.
+final class BackendRelayClient {
+  BackendRelayClient._(this.name, this._socket, this._monotonic);
 
-  final ComposedBackendUnderTest backend;
+  /// What this panel is called in a failure message.
+  final String name;
 
-  final inbound = <String>[];
-  final _pending = <int, Completer<Object?>>{};
-  var _nextId = 1;
+  final WebSocketChannel _socket;
+  final Stopwatch _monotonic;
 
-  WebSocketChannel? _clientOrNull;
-  var _torn = false;
+  final List<String> _inbound = <String>[];
+  final Map<int, Completer<Object?>> _pending = <int, Completer<Object?>>{};
+  final StreamController<ServerNotification> _notifications =
+      StreamController<ServerNotification>.broadcast();
 
-  WebSocketChannel get client {
-    final client = _clientOrNull;
-    if (client == null) {
-      throw StateError('the fixture has no client until `ready` has '
-          'completed; await it before reaching for the socket');
-    }
-    return client;
-  }
+  int _nextId = 1;
+  var _closed = false;
 
-  /// Binds and connects. The error is handled here as well as delivered, so a
-  /// fixture nobody awaited cannot surface as an unhandled async error in an
-  /// unrelated case.
-  Future<void> connect() {
-    final ready = _connect();
-    unawaited(ready.catchError((Object _) {}));
-    return ready;
-  }
+  /// Every frame this client has received, in order, as it came off the wire.
+  ///
+  /// Raw strings on purpose. An arm that wants to say "this number never
+  /// crossed this socket except inside that payload" has to look at the bytes,
+  /// not at a decoded convenience view that already threw away the frames it
+  /// did not understand.
+  List<String> get inbound => List.unmodifiable(_inbound);
 
-  Future<void> _connect() async {
-    await backend.composition.server.start();
-    final ws = IOWebSocketChannel.connect(
-        Uri.parse('ws://127.0.0.1:${backend.composition.server.port}'));
-    _clientOrNull = ws;
-    await ws.ready;
-    ws.stream.listen(
+  /// The close code this client observed (`web_socket_channel` #1698).
+  int? get observedCloseCode => _socket.closeCode;
+
+  /// Every server→client notification, stamped on the fixture's clock.
+  Stream<ServerNotification> get notifications => _notifications.stream;
+
+  void _listen() {
+    _socket.stream.listen(
       _onFrame,
       // Delivered to whoever is awaiting, never rethrown into the ambient
       // isolate: an error raised from a listener callback is attributed to
       // whichever case is running when it arrives.
       onError: _failAllPending,
-      onDone: () => _failAllPending(
-          StateError('the socket closed with ${_pending.length} request(s) '
-              'still outstanding')),
+      onDone: () => _failAllPending(StateError(
+          'client "$name"\'s socket closed with ${_pending.length} '
+          'request(s) still outstanding')),
       cancelOnError: false,
     );
   }
 
   void _onFrame(Object? frame) {
     if (frame is! String) return;
-    inbound.add(frame);
+    // Stamped first, before any decoding this fixture does: the number Open
+    // Question 2 wants is when the frame ARRIVED, not when the harness got
+    // round to parsing it.
+    final atMicros = _monotonic.elapsedMicroseconds;
+    _inbound.add(frame);
     final decoded = jsonDecode(frame);
     if (decoded is! Map) return;
     final id = decoded['id'];
-    if (id is! int) return; // a notification, not an answer
+    if (id is! int) {
+      final method = decoded['method'];
+      if (method is String && !_notifications.isClosed) {
+        _notifications.add((
+          method: method,
+          params: (decoded['params'] as Map?)?.cast<String, Object?>() ??
+              const <String, Object?>{},
+          atMicros: atMicros,
+        ));
+      }
+      return;
+    }
     final completer = _pending.remove(id);
     if (completer == null || completer.isCompleted) return;
     final error = decoded['error'];
     if (error != null) {
-      completer.completeError(StateError('the server refused: $error'));
+      completer.completeError(
+          StateError('the server refused client "$name": $error'));
     } else {
       completer.complete(decoded['result']);
     }
@@ -601,12 +846,16 @@ final class _BackendRelayWiring {
     }
   }
 
+  /// Sends [method] and returns its result inside a named budget.
   Future<Object?> request(String method,
-      {Object? params, required String what, required Duration budget}) {
+      {Object? params,
+      String? what,
+      Duration budget = const Duration(seconds: 5)}) {
+    final described = what ?? 'a $method response over a real socket';
     final id = _nextId++;
     final completer = Completer<Object?>();
     _pending[id] = completer;
-    client.sink.add(jsonEncode(<String, Object?>{
+    _socket.sink.add(jsonEncode(<String, Object?>{
       'jsonrpc': '2.0',
       'id': id,
       'method': method,
@@ -614,17 +863,119 @@ final class _BackendRelayWiring {
     }));
     return completer.future.timeout(budget, onTimeout: () {
       _pending.remove(id);
-      throw TimeoutException('$what did not arrive within $budget', budget);
+      throw TimeoutException(
+          '$described did not arrive at client "$name" within $budget', budget);
     });
+  }
+
+  /// Says hello and hands back the negotiated result.
+  Future<relay.HelloResult> hello(
+      {Duration budget = const Duration(seconds: 5)}) async {
+    final raw = await request(
+      relay.Methods.hello,
+      params: relay.HelloParams(
+        protocol: relay.protocolVersion,
+        supported: const [relay.protocolVersion],
+        client: relay.PeerInfo('backend-ws-harness/$name', '0.1.0'),
+      ).toJson(),
+      what: 'the hello result over a real socket',
+      budget: budget,
+    );
+    return relay.HelloResult.fromJson((raw as Map).cast<String, Object?>());
+  }
+
+  /// Subscribes [keys] under the name [sub] and returns the server's answer.
+  Future<relay.SubscribeResult> subscribe(String sub, List<String> keys,
+      {Duration budget = const Duration(seconds: 5)}) async {
+    final raw = await request(
+      relay.Methods.subscribe,
+      params: relay.SubscribeParams(sub: sub, keys: keys).toJson(),
+      what: 'the subscribe answer for ${keys.join(', ')}',
+      budget: budget,
+    );
+    return relay.SubscribeResult.fromJson((raw as Map).cast<String, Object?>());
+  }
+
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    _failAllPending(StateError('client "$name" was torn down'));
+    await _notifications.close();
+    await _socket.sink.close().catchError((Object _) {});
+  }
+}
+
+/// One server→client frame that carried no id, and when it landed.
+typedef ServerNotification = ({
+  String method,
+  Map<String, Object?> params,
+  int atMicros,
+});
+
+/// The descriptors one production fixture owns: the bound server, and every
+/// client socket in front of it.
+final class _BackendRelayWiring {
+  _BackendRelayWiring(this.backend);
+
+  final ComposedBackendUnderTest backend;
+
+  final List<BackendRelayClient> clients = <BackendRelayClient>[];
+  var _torn = false;
+
+  BackendRelayClient requireClient() {
+    if (clients.isEmpty) {
+      throw StateError('the fixture has no client until `ready` has '
+          'completed; await it before reaching for the socket');
+    }
+    return clients.first;
+  }
+
+  /// Binds, starts the alarm engine and connects. The error is handled here as
+  /// well as delivered, so a fixture nobody awaited cannot surface as an
+  /// unhandled async error in an unrelated case.
+  Future<void> connect() {
+    final ready = _connect();
+    unawaited(ready.catchError((Object _) {}));
+    return ready;
+  }
+
+  Future<void> _connect() async {
+    await backend.composition.server.start();
+    // After the worker registration the composition performed, and before any
+    // client exists. Both halves are deliberate — see [backendRelayFixture].
+    await backend.startAlarms();
+    await addClient('A');
+  }
+
+  Future<BackendRelayClient> addClient(String name) async {
+    if (_torn) {
+      throw StateError('the fixture has been torn down; client "$name" cannot '
+          'be opened against a server that is closing');
+    }
+    final ws = IOWebSocketChannel.connect(
+        Uri.parse('ws://127.0.0.1:${backend.composition.server.port}'));
+    final client = BackendRelayClient._(name, ws, backend.monotonic);
+    clients.add(client);
+    // Listening BEFORE `ready` is awaited: the channel buffers until the first
+    // listener, and a frame that arrived while nobody was listening would be a
+    // notification this fixture never saw.
+    client._listen();
+    await ws.ready;
+    return client;
   }
 
   Future<void> teardown(Future<void> ready) async {
     if (_torn) return;
     _torn = true;
     await ready.catchError((Object _) {});
-    _failAllPending(StateError('the fixture was torn down'));
+    // The engine first: its watchers hold subscriptions on the sweep that
+    // `composition.dispose()` is about to release.
+    await backend.disposeAlarms();
     await backend.composition.dispose();
-    await _clientOrNull?.sink.close().catchError((Object _) {});
+    for (final client in clients) {
+      await client.close();
+    }
+    clients.clear();
     backend.harness.shutdownFixture();
   }
 }
