@@ -5,12 +5,15 @@ import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/preferences_watch.dart';
 import 'package:tfc_dart/core/state_man.dart';
-import 'package:tfc_dart/core/alarm.dart';
 
 import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/log_config.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
+import 'package:tfc_dart/core/relay/backend_alarm_history.dart';
+import 'package:tfc_dart/core/relay/backend_alarms.dart';
 import 'package:tfc_dart/core/relay/backend_composition.dart';
+import 'package:tfc_dart/core/relay/backend_freshness.dart';
+import 'package:tfc_dart/core/relay/backend_live_values.dart';
 import 'package:tfc_dart/core/relay/relay_config.dart';
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 import 'data_acquisition_isolate.dart';
@@ -132,46 +135,20 @@ void main() async {
 
   final keyMappings = await KeyMappings.fromPrefs(prefs, createDefault: false);
 
-  // Disable SSL for alarm StateMan to test if the issue is specific to
-  // encrypted secure channel renewal
-  final alarmSmConfig = smConfig.copy();
-  // for (final opcuaConfig in alarmSmConfig.opcua) {
-  //   opcuaConfig.sslCert = null;
-  //   opcuaConfig.sslKey = null;
-  //   opcuaConfig.password = null;
-  //   opcuaConfig.username = null;
-  // }
-
-  // Create StateMan for alarm monitoring (with separate certificate)
-  final stateMan = await StateMan.create(
-    config: alarmSmConfig,
-    keyMappings: keyMappings,
-    useIsolate: false,
-    alias: 'alarmman',
-  );
-
-  // Alarm monitoring. This whole block — the duplicate `alarmman` StateMan
-  // above it included — is replaced by `AlarmEngine` in 14-08; the minimum was
-  // done here to keep the tree compiling after 14-07 deleted the panel-side
-  // write path.
+  // Alarm evaluation used to start HERE, and it is deliberately gone from this
+  // point in the file (ALRM-01). What stood between these two lines was a
+  // second `StateMan` — `alias: 'alarmman'`, `useIsolate: false`, built from a
+  // copy of the same config — existing only so that an `AlarmMan`, the PANEL
+  // class, could evaluate alarm rules on the backend. That is one extra OPC UA
+  // session per configured server, against controllers that count sessions, on
+  // the main isolate, to read values this process was already reading. It also
+  // needed `alarmHandler.activeAlarms().listen((_) {})` — a subscription to
+  // nothing, because `AlarmMan` wires its evaluators up only when somebody
+  // listens.
   //
-  // `historyToDb: true` used to be passed here and no longer exists (D-6):
-  // persistence belongs to the backend's `AlarmHistoryWriter`, which always
-  // writes. Nothing in this process writes alarm history until 14-08 wires
-  // that engine up.
-  //
-  // `clock: DateTime.now` is the composition root supplying the reading —
-  // `core/alarm.dart` spells the literal nowhere, which is what keeps an
-  // alarm instant from silently becoming this machine's opinion (D-2).
-  final alarmHandler = await AlarmMan.create(
-    prefs,
-    stateMan,
-    clock: DateTime.now,
-  );
-  // AlarmMan only wires its evaluators up when someone listens to the active
-  // stream. Nothing else in this process does, so without this subscription
-  // no alarm was ever evaluated at all.
-  alarmHandler.activeAlarms().listen((_) {});
+  // The replacement is `AlarmEngine`, built after the spawn loop below over the
+  // pipe's own value source. `test/core/alarm_structure_test.dart` arms 1-3
+  // fail if any of the three landmarks comes back.
 
   // Disabled servers are skipped entirely — no isolate, no connect loop.
   final opcuaServersToSpawn = smConfig.enabledOpcua;
@@ -257,6 +234,118 @@ void main() async {
   logger.i('All isolates spawned (${pipe.workerCount} in the pipe), '
       'main thread waiting...');
 
+  // ------------------------------------------------------- the value source
+  //
+  // **Built here, unconditionally, and NOT inside the relay block below.**
+  //
+  // `composeBackendRelay` used to build this pair for itself, and it still does
+  // when nobody hands it one. But the relay is OFF BY DEFAULT and SVN runs that
+  // way today, so a value source that only exists when a `relay` section exists
+  // is a value source that usually does not exist — and the alarm engine below
+  // reads through it. Leaving it there would mean that turning the WebSocket
+  // off turns alarm evaluation off, which is a regression against the very
+  // thing this file just deleted: the duplicate `alarmman` StateMan evaluated
+  // unconditionally. A deployment choice about a socket must not decide whether
+  // the plant is monitored (D-8 / P-5).
+  //
+  // There is exactly ONE pair, and that matters more than it reads.
+  // `BackendLiveValues` claims `pipe.onKeyRetired` in its constructor and
+  // `BackendFreshnessSweep` claims `onWorkerDied` and `onWorkerReady` in its
+  // own — plain fields, last writer wins, no complaint. A second pair built
+  // inside the composition would take those callbacks off this one, and this
+  // one would go on serving the engine while hearing nothing about retired keys
+  // or dead workers. So the pair is passed INTO `composeBackendRelay`, and that
+  // function refuses half of one by name.
+  //
+  // The engine reads through the sweep and never through the live half: a rule
+  // evaluated against a reading that stopped arriving ten seconds ago is a rule
+  // asserting something about a plant it has lost touch with. 14-05's watcher
+  // suspends on a non-good quality (CD-6) — which only works if something is
+  // degrading the quality, and the sweep is that something.
+  final liveValues = BackendLiveValues(
+    pipe: pipe,
+    keyMappings: keyMappings,
+    staleAfter: kBackendStaleAfter,
+    logger: logger,
+  );
+  final freshness = BackendFreshnessSweep(
+    values: liveValues,
+    staleAfter: kBackendStaleAfter,
+    pipe: pipe,
+    logger: logger,
+  );
+
+  // ------------------------------------------------------------- the alarms
+  //
+  // One engine, in one process, over one value source (ALRM-01, ALRM-02).
+  //
+  // **Two orderings are load-bearing here, and both are pinned by
+  // `test/core/alarm_structure_test.dart` rather than left to the next reader's
+  // judgement.**
+  //
+  // 1. `start()` comes after every `pipe.addWorker(...)`, which is why this
+  //    block is below the spawn loops and not beside the config load. A
+  //    subscribe for a key no worker owns costs no message and is silently
+  //    dropped: an engine started first would start, log, publish an empty
+  //    active set and never fire an alarm. Nothing throws, nothing is late, and
+  //    the plant is simply unmonitored (D-7 / P-4).
+  // 2. The value source is built above rather than inside the relay block, for
+  //    the reason written out there.
+  //
+  // `clock: DateTime.now` is **the only place this literal appears on the whole
+  // backend alarm path**, and that is a mechanism rather than a preference. An
+  // alarm instant is a fact about the PLANT: `resolveAlarmStamp` prefers the
+  // reading's own `sourceTimestamp` and labels what it used, so a `DateTime.now`
+  // anywhere in `alarm.dart`, `alarm_stamp.dart`, `backend_alarms.dart`,
+  // `backend_alarm_history.dart` or `alarm_rule_watcher.dart` is this machine's
+  // wristwatch quietly replacing the plant's word (D-2). Arm 6 of the structural
+  // test permits exactly one occurrence, here, and zero in those five files —
+  // so please do not "tidy" this into a default on `AlarmEngine`.
+  //
+  // History is unconditional. There is no `historyToDb` and there will not be
+  // one (D-6): a boolean deciding whether an object writes to a shared database
+  // is a boolean somebody eventually sets wrong, and the cost is two processes
+  // writing one plant's history into one table with no way to tell the copies
+  // apart. This process is the one that owns the plant, so it is the one that
+  // records it.
+  final alarmHistory = AlarmHistoryWriter(db, logger: logger);
+
+  final alarmEngine = AlarmEngine(
+    values: freshness,
+    // The backend's own `Preferences`, which IS a `PreferencesApi` — not the
+    // relay's `BackendPreferences` adapter. The engine reads one row
+    // (`alarm_man_config`) off the same store every other consumer reads, so
+    // there is one configuration and one place it comes from.
+    preferences: prefs,
+    publisher: PipeStoreAlarmPublisher(pipe),
+    clock: DateTime.now,
+    history: alarmHistory,
+    logger: logger,
+  );
+  // **Not wrapped in a try, and that is the opposite decision from the relay
+  // block below — deliberately.** `start()` throws exactly one thing
+  // (`UnsupportedError`, when a key mapping names a plant tag into the reserved
+  // `ALARM.` namespace, T-14-18) and reports everything else an operator can get
+  // wrong through `refusals` while carrying on. The relay's bind failure is not
+  // fatal because a certificate or a busy port costs the panels their view of a
+  // line that is still running; this one is fatal because a plant tag shadowing
+  // `ALARM.active` would put a plant reading behind the alarm banner, and a
+  // banner showing something other than the alarms is worse than no banner. It
+  // is also a mistake that cannot happen by accident and is fixed in one line
+  // of the key mappings.
+  await alarmEngine.start();
+  // What the engine is refusing to do, by name, at the level an operator's log
+  // scraper already watches. Normally empty; a bad rule among two hundred costs
+  // that rule and says so here rather than taking the other 199 with it.
+  for (final refusal in alarmEngine.refusals) {
+    logger.w('alarm engine: $refusal');
+  }
+  logger.i('Alarm engine started: ${alarmEngine.config?.alarms.length ?? 0} '
+      'alarm(s) configured, ${alarmEngine.pendingAdoptionCount} history row(s) '
+      'left open by a previous run awaiting their first verdict, history '
+      '${alarmHistory.hasDatabase ? 'recorded to the database' : 'NOT recorded '
+          '— no database'}');
+
   // ------------------------------------------------------------- the relay
   //
   // MOUNT-02. This process is the one that serves the relay WebSocket, because
@@ -296,6 +385,12 @@ void main() async {
       keyMappings: keyMappings,
       database: db,
       prefs: prefs,
+      // The pair built above, not a second one. See the value-source block:
+      // both objects register pipe callbacks in their constructors, so a
+      // composition that built its own would take them off the pair the alarm
+      // engine is reading through — silently. Half a pair is refused by name.
+      values: liveValues,
+      freshness: freshness,
       log: logger,
     );
     // Visible to the shutdown path from here on. Assigned before `start()`

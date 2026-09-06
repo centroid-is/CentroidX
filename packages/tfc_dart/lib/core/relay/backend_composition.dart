@@ -146,6 +146,21 @@ final class BackendRelayComposition {
 /// of them is created here: a composition root that opened its own database
 /// connection would give the plant a second pool nobody counted.
 ///
+/// **[values] and [freshness] are now in that same category, and for a sharper
+/// reason: alarms must run when this function is not called at all.** The relay
+/// is off by default and SVN runs that way today (13-06), so a value source
+/// that only exists inside this composition is a value source that only exists
+/// when somebody has configured a WebSocket — and 14-05's alarm engine feeding
+/// from it would go dark exactly where Phase 14 is aimed (D-8 / P-5). Whether
+/// the plant is monitored must not be decided by a deployment choice about a
+/// socket. So `bin/main.dart` builds the pair before the relay guard, hands it
+/// to the engine, and passes it in here.
+///
+/// Supply **both or neither**; exactly one is refused below. When both are
+/// given, [staleAfter] is not consulted — the pair already carries its own
+/// deadline — and a disagreement between the two is logged rather than
+/// silently resolved.
+///
 /// [validator] is required when — and refused unless — [config] says the
 /// composition root supplies the credential check. See the argument below.
 ///
@@ -161,6 +176,8 @@ BackendRelayComposition composeBackendRelay({
   KeyPolicy? policy,
   TokenValidator? validator,
   TimeseriesLimits? limits,
+  BackendLiveValues? values,
+  BackendFreshnessSweep? freshness,
   Duration staleAfter = kBackendStaleAfter,
   Set<String> methodKeys = const <String>{},
   Logger? log,
@@ -195,28 +212,82 @@ BackendRelayComposition composeBackendRelay({
         'server constructor. Remove whichever is not the deployment');
   }
 
+  // ----------------------------------------------------- one value source
+  //
+  // Both or neither. Refused here rather than half-honoured, for the same
+  // reason the two refusals above are: the mistake is a composition mistake,
+  // and it must be loud at boot rather than a fault an operator meets at 03:00.
+  //
+  // What half a pair actually does is worse than it reads. `BackendLiveValues`
+  // registers `pipe.onKeyRetired` in its constructor and
+  // `BackendFreshnessSweep` registers `pipe.onWorkerDied` and
+  // `onWorkerReady` — deliberately, because *"an obligation wired at a call
+  // site is an obligation that can be forgotten at a call site"* (13-03). They
+  // are plain fields, so the LAST object built wins and the earlier one goes
+  // deaf without saying so. Supplying only `values` makes this function wrap a
+  // second sweep around the caller's live half, and that second sweep takes
+  // `onWorkerDied` off the sweep the caller is reading through. Supplying only
+  // `freshness` is the mirror: a sweep wrapped around a live half this
+  // composition does not surface, sitting beside one it built — two value
+  // sources for one plant, disagreeing about which keys are stale.
+  if ((values == null) != (freshness == null)) {
+    throw ArgumentError('composeBackendRelay: `values` and `freshness` must be '
+        'supplied together or not at all — '
+        '${values == null ? '`freshness` was passed without `values`' : '`values` was passed without `freshness`'}. '
+        'Each of these objects registers a pipe callback in its constructor '
+        '(onKeyRetired on the live half, onWorkerDied and onWorkerReady on the '
+        'sweep), and those are plain fields: a second one built here silently '
+        'overwrites the caller\'s and the caller\'s object stops hearing about '
+        'retired keys and dead workers. A sweep wrapped around a different '
+        'live-values object is two value sources for one plant. Pass both — '
+        'the pair `bin/main.dart` built for the alarm engine — or pass neither '
+        'and let this function build them');
+  }
+
   // ------------------------------------------------------------- live values
   //
   // The real pipe. Reads are the cache and are synchronous by construction —
   // never a reach across the isolate port that could park a session, which is
   // the whole point of Phase 12.
-  final liveValues = BackendLiveValues(
-    pipe: pipe,
-    keyMappings: keyMappings,
-    staleAfter: staleAfter,
-    logger: logger,
-  );
+  //
+  // Built here ONLY when the caller supplied none. `bin/main.dart` supplies a
+  // pair, because the alarm engine needs one whether or not this function is
+  // ever called — see the doc above.
+  // Named `sweep` rather than `freshness` only because the parameter above owns
+  // that name now. Everything downstream reads through this one.
+  final BackendLiveValues liveValues;
+  final BackendFreshnessSweep sweep;
+  if (values != null) {
+    liveValues = values;
+    sweep = freshness!;
+    if (liveValues.staleAfter != staleAfter) {
+      logger.w('composeBackendRelay: the supplied value source carries a '
+          '${liveValues.staleAfter.inSeconds}s staleness deadline and this '
+          'call passed ${staleAfter.inSeconds}s. The SUPPLIED one wins — it is '
+          'the pair the alarm engine is already reading through, and two '
+          'deadlines for one plant is two answers to "is this value still '
+          'true". Remove whichever is not the deployment');
+    }
+  } else {
+    liveValues = BackendLiveValues(
+      pipe: pipe,
+      keyMappings: keyMappings,
+      staleAfter: staleAfter,
+      logger: logger,
+    );
 
-  // The watchdog goes AROUND the live half, and the adapter reads through it.
-  // The other order serves a value that has gone quiet to a panel still badged
-  // good. The pipe is handed in as the link-transition observer, so a worker's
-  // death and its respawn are each one announcement rather than a slow decay.
-  final freshness = BackendFreshnessSweep(
-    values: liveValues,
-    staleAfter: staleAfter,
-    pipe: pipe,
-    logger: logger,
-  );
+    // The watchdog goes AROUND the live half, and the adapter reads through it.
+    // The other order serves a value that has gone quiet to a panel still
+    // badged good. The pipe is handed in as the link-transition observer, so a
+    // worker's death and its respawn are each one announcement rather than a
+    // slow decay.
+    sweep = BackendFreshnessSweep(
+      values: liveValues,
+      staleAfter: staleAfter,
+      pipe: pipe,
+      logger: logger,
+    );
+  }
 
   // --------------------------------------------------------------- discovery
   //
@@ -245,7 +316,7 @@ BackendRelayComposition composeBackendRelay({
   // production byte-for-byte what it was.
   final browse = BackendBrowse(
     keyMappings: keyMappings,
-    readValue: freshness.read,
+    readValue: sweep.read,
     methodKeys: methodKeys,
   );
 
@@ -279,13 +350,13 @@ BackendRelayComposition composeBackendRelay({
   // `applied` on a real PLC array.
   final writes = BackendWrites(
     pipe: pipe,
-    values: freshness,
+    values: sweep,
     readModifyWriteKeys: readModifyWriteKeysOf(keyMappings),
     logger: logger,
   );
 
   final api = BackendStateMan(
-    values: freshness,
+    values: sweep,
     writes: writes,
     browse: browse,
     timeseries: timeseries,
@@ -332,7 +403,7 @@ BackendRelayComposition composeBackendRelay({
   return BackendRelayComposition(
     api: api,
     liveValues: liveValues,
-    freshness: freshness,
+    freshness: sweep,
     resolver: resolver,
     policy: chosenPolicy,
     server: server,
