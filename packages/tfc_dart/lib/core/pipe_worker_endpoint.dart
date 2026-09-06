@@ -81,6 +81,35 @@ final class PipeUnsubscribe extends PipeControl {
   String toString() => 'PipeUnsubscribe($key)';
 }
 
+/// Re-deliver the current reading of every named key, in ONE frame.
+///
+/// **Batched because the alternative is fifty round trips.** `readMany` is on
+/// the wire surface for exactly one promise — "fifty keys cost one round trip,
+/// not fifty" (`read_contract.dart`) — and that promise cannot be kept with a
+/// per-key control message however cheap the message is. One [PipeResnapshot]
+/// carrying fifty names produces one drain frame carrying fifty readings.
+///
+/// **A resnapshot is NOT a subscribe.** A key the worker is not already
+/// subscribed to is ignored in silence: inventing a subscription from a read
+/// would give a key nobody watches a monitored item on the PLC, which is the
+/// cost the whole refcount exists to avoid. It also reaches nowhere upstream —
+/// the answer comes from the worker's own last reading — because a read that
+/// reached through the link would reintroduce the synchronous stall Phase 12
+/// exists to remove.
+///
+/// **It arms no timer.** A key that is subscribed already armed the drain tick
+/// when it was subscribed; a key that is not subscribed buffers nothing. So an
+/// idle worker that is asked for a resnapshot stays idle, and the
+/// listener-gating law holds.
+final class PipeResnapshot extends PipeControl {
+  const PipeResnapshot(this.keys);
+
+  final List<String> keys;
+
+  @override
+  String toString() => 'PipeResnapshot(${keys.length} key(s))';
+}
+
 /// Write [value] to [key], and tell main what happened under [id].
 ///
 /// [id] is the per-worker monotonic int minted on MAIN and echoed back beside
@@ -251,6 +280,16 @@ class PipeWorkerEndpoint {
   /// the NEXT transition still speaks.
   final Map<String, relay.Quality> _permanentError = <String, relay.Quality>{};
 
+  /// The last reading translated for each subscribed key — the only thing a
+  /// [PipeResnapshot] is allowed to answer from.
+  ///
+  /// A cache and not a reach: [PipeUpstream] has no read method and adding one
+  /// would put a synchronous call to a possibly-blackholed server on the read
+  /// path, which is the stall this whole phase removed. It is bounded by
+  /// [_subscribed] — dropped on unsubscribe, on retirement and on dispose — so
+  /// it cannot outgrow the set of keys main is actually watching.
+  final Map<String, relay.DynamicValue> _last = <String, relay.DynamicValue>{};
+
   Timer? _tick;
   bool _disposed = false;
 
@@ -282,6 +321,8 @@ class PipeWorkerEndpoint {
         _subscribe(key);
       case PipeUnsubscribe(key: final key):
         _unsubscribe(key);
+      case PipeResnapshot(keys: final keys):
+        _resnapshot(keys);
       case PipeWriteRequest():
         // Fire-and-forget WITH a handler, same rule as the subscribe path: a
         // write must not park the next control message, and an escaped error
@@ -360,8 +401,26 @@ class PipeWorkerEndpoint {
     });
   }
 
+  /// Answers one [PipeResnapshot]: every named key this worker is subscribed to
+  /// and has a reading for, put back on the value lane in one go.
+  ///
+  /// Nothing here flushes and nothing here arms a tick. A subscribed key means
+  /// the tick is already armed (see [_subscribe]), so the readings ride the
+  /// next drain — one frame, whatever the key count. A worker with nothing
+  /// subscribed buffers nothing and stays silent, which is what keeps "an idle
+  /// worker runs no timer" literally true across this new message.
+  void _resnapshot(List<String> keys) {
+    for (final key in keys) {
+      if (!_subscribed.contains(key)) continue;
+      final reading = _last[key];
+      if (reading == null) continue;
+      _buffer.putValue(key, reading);
+    }
+  }
+
   void _unsubscribe(String key) {
     _subscribed.remove(key);
+    _last.remove(key);
     // Cancel the stream we own for this key. Synchronous dispatch: this can
     // never queue behind another key's hung subscribe.
     final stream = _streams.remove(key);
@@ -398,6 +457,10 @@ class PipeWorkerEndpoint {
     // The key answered. Whatever permanent fault was last reported for it is
     // over, so the NEXT occurrence is a transition again and must speak.
     if (!value.quality.isError) _permanentError.remove(key);
+    // Remembered before it is buffered: the buffer conflates and is drained
+    // empty every tick, so it cannot answer "what does this key read right
+    // now" a moment later. See [_last].
+    _last[key] = value;
     _buffer.putValue(key, value);
   }
 
@@ -463,6 +526,10 @@ class PipeWorkerEndpoint {
     // below cannot be lost to it.
     _buffer.remove(key);
     _permanentError.remove(key);
+    // The tag is gone, so the last reading is no longer an answer to anything:
+    // a resnapshot must not resurrect it between the retirement and main's
+    // retraction.
+    _last.remove(key);
     _logger.w('pipe endpoint: "$key" was retired by the upstream');
     _emitPriority(PipeKeyRetired(key));
   }
@@ -561,6 +628,7 @@ class PipeWorkerEndpoint {
     }
     _streams.clear();
     _subscribed.clear();
+    _last.clear();
   }
 }
 

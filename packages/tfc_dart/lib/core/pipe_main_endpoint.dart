@@ -170,7 +170,40 @@ class PipeMainEndpoint {
   /// the worker is gone, main's intent is not.
   final Map<int, Set<String>> _subscribedByWorker = <int, Set<String>>{};
 
+  /// Callers waiting for the next frame from each worker, by worker index.
+  ///
+  /// Only [resnapshot] uses this, and only to answer the question "has the
+  /// worker had a turn since I asked". A completer list rather than a
+  /// `StreamController`: a controller would need a `close()` on this class's
+  /// teardown, and `test/core/pipe_shutdown_structure_test.dart` scans
+  /// `lib/core/pipe*.dart` for exactly that call — the whole point of PIPE-13
+  /// being that nothing on a shutdown path awaits anything.
+  final Map<int, List<Completer<void>>> _frameWaiters =
+      <int, List<Completer<void>>>{};
+
+  int _resnapshots = 0;
+
   bool _disposed = false;
+
+  /// Called with a key the upstream has affirmatively retired.
+  ///
+  /// **Phase 12's IN-02, and the reason this hook exists at all.** The worker's
+  /// `_onDone` announces [PipeKeyRetired] but deliberately leaves the key in
+  /// its own `_subscribed` set — "main is the only thing that retracts it" —
+  /// and `_disarmTickIfIdle` only runs on an unsubscribe. So a worker whose
+  /// last subscribed key was retired keeps its 50 ms drain timer running for
+  /// the life of the process, ticking an empty buffer. **A consumer of this
+  /// hook that merely blanks the reading has not discharged the obligation:**
+  /// it must call [unsubscribe] for the key, which is what makes the
+  /// [PipeUnsubscribe] cross and the timer disarm.
+  ///
+  /// Fired AFTER the `errorConfig` value has been applied to the store, so a
+  /// consumer that reads the key inside the callback sees the retirement
+  /// rather than the reading it replaced.
+  ///
+  /// A plain callback and not a `StreamController` — see [_frameWaiters] for
+  /// why this file has none.
+  void Function(String key)? onKeyRetired;
 
   /// Registers [worker] as the owner of [keys] and starts reading it.
   ///
@@ -274,6 +307,75 @@ class PipeMainEndpoint {
   @visibleForTesting
   int refcountOf(String key) => _refcount[key] ?? 0;
 
+  // -------------------------------------------------------- the resnapshot
+
+  /// Asks every worker that owns one of [keys] to re-deliver what it has.
+  ///
+  /// **One message per WORKER, not per key** — which is the entire reason
+  /// [PipeResnapshot] carries a list. Fifty keys on one worker are one message
+  /// and one round trip; a key set spanning three workers is three messages and
+  /// three round trips, and [resnapshots] says three. That fan-out is worth
+  /// stating out loud because the contract cases seed every key on one source
+  /// and would otherwise hide it: a diagnostics page reading across ST101,
+  /// ST201 and the Baader PLC really does pay three.
+  ///
+  /// **It always resolves.** A worker that never answers is waited out for
+  /// [writeDeadline] and then given up on; the caller reads the cache and gets
+  /// whatever is in it, which is honest. Hanging instead would put a read on
+  /// the same footing as a blackholed link — the exact stall this phase exists
+  /// to remove, arriving through the method that was supposed to be cheap.
+  ///
+  /// A key no worker owns costs nothing at all: no message, no round trip. So
+  /// does a worker with no live control port — a message that was never sent is
+  /// not a round trip, and counting it would let `readFresh` claim a freshness
+  /// it never went and got.
+  Future<void> resnapshot(Iterable<String> keys) async {
+    if (_disposed) return;
+    final byWorker = <int, List<String>>{};
+    for (final key in keys) {
+      final index = _keyToWorker[key];
+      if (index == null) continue;
+      (byWorker[index] ??= <String>[]).add(key);
+    }
+    if (byWorker.isEmpty) return;
+
+    final waits = <Future<void>>[];
+    byWorker.forEach((index, group) {
+      if (!_sendControl(index, PipeResnapshot(group))) return;
+      _resnapshots++;
+      waits.add(_nextFrameFrom(index));
+    });
+    if (waits.isEmpty) return;
+    await Future.wait(waits);
+  }
+
+  /// How many [PipeResnapshot] messages this endpoint has actually sent.
+  ///
+  /// The round-trip counter the read contract's arithmetic is made of: `read`
+  /// must not move it, `readFresh` must move it by exactly one, and fifty keys
+  /// must move it by one rather than by fifty.
+  int get resnapshots => _resnapshots;
+
+  /// Completes when worker [index] next hands over a frame, or at the deadline.
+  Future<void> _nextFrameFrom(int index) {
+    final completer = Completer<void>();
+    (_frameWaiters[index] ??= <Completer<void>>[]).add(completer);
+    final timer = Timer(writeDeadline, () {
+      _frameWaiters[index]?.remove(completer);
+      if (!completer.isCompleted) completer.complete();
+    });
+    return completer.future.whenComplete(timer.cancel);
+  }
+
+  /// Releases everyone waiting on a frame from worker [index].
+  void _settleFrameWaiters(int index) {
+    final waiting = _frameWaiters.remove(index);
+    if (waiting == null) return;
+    for (final completer in waiting) {
+      if (!completer.isCompleted) completer.complete();
+    }
+  }
+
   /// Exactly the keys worker [index] is piping right now — the respawn
   /// snapshot.
   @visibleForTesting
@@ -285,14 +387,19 @@ class PipeMainEndpoint {
   /// A worker between generations is not an error and not a lost intent: the
   /// refcount and the subscribed set have already been updated, and the
   /// respawn's ready handshake replays the whole snapshot.
-  void _sendControl(int index, PipeControl message) {
+  ///
+  /// Returns whether the message actually crossed. [resnapshot] is the one
+  /// caller that cares: it must not count a round trip it did not make, and it
+  /// must not then wait for an answer to a question nobody was asked.
+  bool _sendControl(int index, PipeControl message) {
     final port = _workers[index].controlPort;
     if (port == null) {
       _logger.i('pipe: ${_workers[index].name} has no control port for '
           '$message — the respawn replay will carry it');
-      return;
+      return false;
     }
     port.send(message);
+    return true;
   }
 
   // ------------------------------------------------------------- the inbound
@@ -334,6 +441,10 @@ class PipeMainEndpoint {
     for (final event in frame.priority) {
       _applyEvent(index, event);
     }
+    // The worker has had its turn: anything waiting on a resnapshot from it can
+    // stop waiting. Last, so a caller that resumes here reads a cache with this
+    // whole frame already in it.
+    _settleFrameWaiters(index);
   }
 
   void _applyEvent(int index, Object? event) {
@@ -347,6 +458,11 @@ class PipeMainEndpoint {
         // Affirmatively gone, which is a different fact from "not yet known"
         // and from "the link is sick": errorConfig says waiting will not help.
         _markBad(<String>[key], relay.Quality.errorConfig);
+        // THEN the hook (IN-02). Order matters: a consumer that unsubscribes
+        // before the value lands would race the reading it is supposed to see
+        // last, and would decide what to do while the key still carried its
+        // old, good-looking number.
+        _announceRetired(key);
       case PipeWriteOutcome(id: final id, result: final result):
         final pending = _pending[index]?.remove(id);
         if (pending == null) {
@@ -361,6 +477,24 @@ class PipeMainEndpoint {
       default:
         _logger.w('pipe: unrecognised priority event '
             '(${event.runtimeType}) from ${_workers[index].name} — ignored');
+    }
+  }
+
+  /// Tells [onKeyRetired], if anybody registered, that [key] is gone.
+  ///
+  /// Guarded because the consumer is somebody else's code on the pipe's own
+  /// message pump: an escaping error here would take down the worker's message
+  /// subscription, and every later reading from that worker with it — a total,
+  /// silent loss of one PLC because one adapter threw once.
+  void _announceRetired(String key) {
+    final hook = onKeyRetired;
+    if (hook == null) return;
+    try {
+      hook(key);
+    } catch (error) {
+      _logger.e('pipe: the onKeyRetired consumer failed for "$key": $error — '
+          'the key stays subscribed, so that worker\'s drain timer is now '
+          'armed with nothing to drain (IN-02)');
     }
   }
 
@@ -425,6 +559,10 @@ class PipeMainEndpoint {
     _logger.e('pipe: $name died — marking ${piped.length} key(s) bad and '
         'resolving ${pendingWriteCount(index)} pending write(s) unknown');
     _markBad(piped, relay.Quality.badCommFault);
+    // Death is an event here too: a resnapshot waiting on this worker resolves
+    // NOW rather than at its own deadline. There is nothing uncertain left to
+    // wait for, and the caller reads a cache that has just been badged bad.
+    _settleFrameWaiters(index);
 
     final pendingTable = _pending[index];
     if (pendingTable == null || pendingTable.isEmpty) return;
@@ -553,6 +691,12 @@ class PipeMainEndpoint {
       listen.cancel();
     }
     _listens.clear();
+    // Same promise as a pending write: a caller waiting on a resnapshot must
+    // not be left holding a future whose only remaining source has just been
+    // torn down.
+    for (final index in _frameWaiters.keys.toList(growable: false)) {
+      _settleFrameWaiters(index);
+    }
     for (final table in _pending.values) {
       for (final pending in List<_PendingWrite>.of(table.values)) {
         pending.resolve(relay.WriteUnknown(
