@@ -42,6 +42,9 @@ const _speedKey = 'ST101.CN01.MOT01.speed';
 /// distinguishable.
 const _otherKey = 'ST201.CN04.MOT01.speed';
 
+/// A key on the *second* worker, so one worker's blast radius is observable.
+const _farKey = 'ST301.CN02.VLV01.stat';
+
 /// The fifty tags one station's mimic is covered in — the contract's own
 /// `_stationKeys`, respelled here because that constant is private to the kit.
 List<String> _stationKeys() => <String>[
@@ -49,8 +52,16 @@ List<String> _stationKeys() => <String>[
         'ST301.CN${i.toString().padLeft(2, '0')}.MOT01.speed',
     ];
 
+/// The fifteen keys the link-loss arm kills in one go.
+List<String> _fifteenKeys() => _stationKeys().take(15).toList();
+
 KeyMappings _mappings() => KeyMappings(nodes: <String, KeyMappingEntry>{
-      for (final key in <String>[_speedKey, _otherKey, ..._stationKeys()])
+      for (final key in <String>[
+        _speedKey,
+        _otherKey,
+        _farKey,
+        ..._stationKeys()
+      ])
         key: KeyMappingEntry(
           opcuaNode: OpcUANodeConfig(namespace: 2, identifier: key),
         ),
@@ -108,6 +119,27 @@ class _FakePlantLink implements PipeWorkerLink {
   void deliver(String key, relay.DynamicValue value) =>
       deliverAll(<String, relay.DynamicValue>{key: value});
 
+  /// The plant moved while nobody could hear it.
+  ///
+  /// Updates what this worker would answer a resnapshot with, and delivers
+  /// nothing. It is the only lever that can tell a snapshot recovery from a
+  /// delta replay: after this, the plant's number and the last number anybody
+  /// on main saw are different, and exactly one of them is the truth.
+  void moveWhileDark(String key, relay.DynamicValue value) => last[key] = value;
+
+  /// The isolate is gone: `null` on the data port, and no control port. This
+  /// is literally what the VM and the supervisor do.
+  void die() {
+    down = true;
+    emit(null);
+  }
+
+  /// A new generation announced itself with its control port.
+  void respawn() {
+    down = false;
+    emit(_port.sendPort);
+  }
+
   void _onControl(Object? message) {
     received.add(message);
     if (message is! PipeResnapshot) return;
@@ -123,7 +155,6 @@ class _FakePlantLink implements PipeWorkerLink {
   }
 }
 
-/// One assembled subject: one worker, one pipe, one adapter, one sweep.
 /// The deadline the unit arms declare.
 ///
 /// Short so the file stays quick, and real: these arms run the shipping
@@ -131,14 +162,19 @@ class _FakePlantLink implements PipeWorkerLink {
 /// the arm waits. The contract leg below runs at the production ten seconds.
 const _unitStaleAfter = Duration(milliseconds: 200);
 
+/// One assembled subject: one or two workers, one pipe, one adapter, one sweep.
 class _Fixture {
-  _Fixture() {
+  _Fixture({this.twoWorkers = false}) {
     alpha = _FakePlantLink('alpha');
     pipe = PipeMainEndpoint(
       writeDeadline: const Duration(milliseconds: 150),
       logger: _quiet(),
     );
     pipe.addWorker(alpha, <String>[_speedKey, _otherKey, ..._stationKeys()]);
+    if (twoWorkers) {
+      beta = _FakePlantLink('beta');
+      pipe.addWorker(beta!, <String>[_farKey]);
+    }
     values = BackendLiveValues(
       pipe: pipe,
       keyMappings: _mappings(),
@@ -148,13 +184,16 @@ class _Fixture {
     sweep = BackendFreshnessSweep(
       values: values,
       staleAfter: staleAfter,
+      pipe: pipe,
       logger: _quiet(),
     );
   }
 
+  final bool twoWorkers;
   final Duration staleAfter = _unitStaleAfter;
 
   late final _FakePlantLink alpha;
+  _FakePlantLink? beta;
   late final PipeMainEndpoint pipe;
   late final BackendLiveValues values;
   late final BackendFreshnessSweep sweep;
@@ -187,6 +226,7 @@ class _Fixture {
     await sweep.dispose();
     pipe.dispose();
     alpha.dispose();
+    beta?.dispose();
   }
 }
 
@@ -501,6 +541,216 @@ void main() {
     });
   });
 
+  // --------------------------------------------- the link, lost and regained
+
+  group('link loss', () {
+    test('a worker death degrades every key it served and costs exactly ONE '
+        'announcement', () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+
+      final keys = _fifteenKeys();
+      final nodes = <String, relay.ValueListenable<relay.DynamicValue>>{
+        for (final key in keys) key: f.watch(key),
+      };
+      f.alpha.deliverAll(<String, relay.DynamicValue>{
+        for (var i = 0; i < keys.length; i++) keys[i]: _good(1000 + i),
+      });
+      await _settle();
+      expect(nodes[keys.first]!.value.quality, relay.Quality.good,
+          reason: 'the arm needs fifteen live keys to lose');
+
+      final before = f.sweep.statusNotifications;
+      f.alpha.die();
+      await _settle();
+
+      for (final key in keys) {
+        expect(nodes[key]!.value.quality, relay.Quality.badCommFault,
+            reason: '$key survived its own worker\'s death; a mimic with half '
+                'its boxes greyed reads as a plant fault and sends someone to '
+                'the wrong end of the building');
+      }
+      expect(f.sweep.statusNotifications - before, 1,
+          reason: 'losing one link cost '
+              '${f.sweep.statusNotifications - before} announcements for '
+              '${keys.length} keys; the same shape at 1500 keys is 1500 '
+              'events for one event, delivered in the instant the client is '
+              'trying to redraw the page they are all about');
+      expect(f.sweep.read(relay.PipeKeys.connected)!.asBool, isFalse,
+          reason: 'the indicator an operator checks before trusting the rest '
+              'of the screen would be the last thing on it to be wrong');
+    });
+
+    test('the pipe\'s death path drops the payload — recorded here, not '
+        'endorsed', () async {
+      // A finding rather than a promise. `_onWorkerDied` → `_markBad` writes
+      // badCommFault with a NULL value, and 12-08 asserts that explicitly
+      // (mutation C, "no payload under a bad badge").
+      // `checkUpstreamLossDegradesAffectedKeys` requires the opposite: "the
+      // last known reading must survive the link loss, so the operator can
+      // see what the plant was doing when contact was lost". The two genuinely
+      // disagree, neither is 13-07's to overrule, and an arm that pins today's
+      // behaviour is how the disagreement stops being invisible: whoever
+      // resolves it (Phase 16) will see this go red and read this comment.
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+
+      final node = f.watch(_speedKey);
+      f.alpha.deliver(_speedKey, _good(1450));
+      await _settle();
+      f.alpha.die();
+      await _settle();
+
+      expect(node.value.quality, relay.Quality.badCommFault);
+      expect(node.value.value, isNull,
+          reason: 'if this is now 1450, the pipe has been taught to keep the '
+              'last reading under a bad badge and the contract and the pipe '
+              'finally agree — delete this arm and say so');
+    });
+
+    test('a second death with no intervening recovery does not double-announce',
+        () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+
+      f.watch(_speedKey);
+      f.alpha.deliver(_speedKey, _good(1450));
+      await _settle();
+
+      final before = f.sweep.statusNotifications;
+      f.alpha.die();
+      await _settle();
+      expect(f.sweep.statusNotifications - before, 1,
+          reason: 'the first death must announce, or this arm proves nothing');
+
+      f.alpha.die();
+      await _settle();
+      expect(f.sweep.statusNotifications - before, 1,
+          reason: 'the link was already down; a second death is not a second '
+              'transition');
+    });
+
+    test('the announcement is not re-emitted on every sweep tick while the '
+        'link is down', () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+
+      f.watch(_speedKey);
+      f.alpha.deliver(_speedKey, _good(1450));
+      await _settle();
+
+      final before = f.sweep.statusNotifications;
+      f.alpha.die();
+      await _settle();
+      final ticksBefore = f.sweep.sweeps;
+
+      await f.pastDeadline();
+
+      expect(f.sweep.sweeps, greaterThan(ticksBefore),
+          reason: 'the clock stopped, so this arm establishes nothing about '
+              'what a running clock would have announced');
+      expect(f.sweep.statusNotifications - before, 1,
+          reason: 'the outage is one event; re-announcing it four times a '
+              'deadline for as long as the PLC is down is the same denial of '
+              'service as a per-key fan-out, arrived at slowly');
+    });
+
+    test('recovery is announced once and restores from the respawn SNAPSHOT, '
+        'never a remembered delta', () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+
+      final node = f.watch(_speedKey);
+      f.alpha.deliver(_speedKey, _good(1450));
+      await _settle();
+      f.alpha.die();
+      await _settle();
+      expect(node.value.quality, relay.Quality.badCommFault,
+          reason: 'this arm needs a real outage to recover from');
+
+      // The plant moved while nobody on main could hear it. 1450 is what main
+      // last saw; 1600 is what is true.
+      f.alpha.moveWhileDark(_speedKey, _good(1600));
+
+      final before = f.sweep.statusNotifications;
+      f.alpha.respawn();
+      await _settle();
+      await _settle();
+
+      expect(f.sweep.statusNotifications - before, 1,
+          reason: 'the recovery announcement is as single as the loss');
+      expect(f.sweep.read(relay.PipeKeys.connected)!.asBool, isTrue);
+      expect(node.value.quality.isGood, isTrue,
+          reason: 'the keys came back from the outage still degraded');
+      expect(node.value.asInt, 1600,
+          reason: 'the value main remembered was replayed instead of the one '
+              'the plant actually holds. A remembered number put back on '
+              'recovery is a number nobody measured, presented as a '
+              'measurement, at the exact moment an operator is looking to see '
+              'what changed while they were blind');
+
+      // And a second generation announcement adds nothing: there is no outage
+      // left to recover from.
+      f.alpha.respawn();
+      await _settle();
+      expect(f.sweep.statusNotifications - before, 1);
+    });
+
+    test('one worker of two dying degrades only its own keys and announces '
+        'nothing; the second death announces once', () async {
+      final f = _Fixture(twoWorkers: true);
+      addTearDown(f.tearDown);
+
+      final near = f.watch(_speedKey);
+      final far = f.watch(_farKey);
+      f.alpha.deliver(_speedKey, _good(1450));
+      f.beta!.deliver(_farKey, _good(7));
+      await _settle();
+
+      final before = f.sweep.statusNotifications;
+      f.alpha.die();
+      await _settle();
+
+      expect(near.value.quality, relay.Quality.badCommFault);
+      expect(far.value.quality, relay.Quality.good,
+          reason: 'one dark PLC starves only its own isolate — 12-08 measured '
+              'that blast radius, and announcing a whole-of-upstream loss '
+              'because one of two workers exited would grey out a plant that '
+              'is running perfectly well');
+      expect(f.sweep.statusNotifications, before,
+          reason: 'announceLinkLoss is a statement about the upstream, not '
+              'about one isolate: it degrades every key the source has heard '
+              'about and drops PIPE.connected');
+      expect(f.sweep.read(relay.PipeKeys.connected)!.asBool, isTrue,
+          reason: 'the pipe is still serving one of its two PLCs');
+
+      f.beta!.die();
+      await _settle();
+
+      expect(far.value.quality, relay.Quality.badCommFault);
+      expect(f.sweep.statusNotifications - before, 1,
+          reason: 'the upstream as a whole is now gone: one transition, one '
+              'announcement');
+      expect(f.sweep.read(relay.PipeKeys.connected)!.asBool, isFalse);
+    });
+
+    test('dispose gives the pipe\'s link hooks back', () async {
+      final f = _Fixture();
+      expect(f.pipe.onWorkerDied, isNotNull);
+      expect(f.pipe.onWorkerReady, isNotNull);
+
+      await f.sweep.dispose();
+
+      expect(f.pipe.onWorkerDied, isNull,
+          reason: 'a disposed sweep left wired to the pipe announces an '
+              'outage through a source that is already torn down');
+      expect(f.pipe.onWorkerReady, isNull);
+
+      f.pipe.dispose();
+      f.alpha.dispose();
+    });
+  });
+
   // ------------------------------------------------------ the contract, early
   //
   // The eight freshness checks, against a `BackendStateMan` whose value source
@@ -566,6 +816,7 @@ final class _HarnessedFreshBackend implements StateManApi, StateManHarness {
     _sweep = BackendFreshnessSweep(
       values: _values,
       staleAfter: _values.staleAfter,
+      pipe: _pipe,
       logger: _quiet(),
     );
     _api = BackendStateMan(values: _sweep);
