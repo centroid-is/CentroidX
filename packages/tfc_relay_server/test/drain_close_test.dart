@@ -26,8 +26,10 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
+import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'support/certs.dart';
 import 'support/ws_harness.dart';
 
 /// How the client's socket ended, after a gateway in its own process was
@@ -46,10 +48,30 @@ final class _DrainRun {
 
 /// Spawns `support/drain_fixture.dart` in [mode], connects one client, SIGTERMs
 /// it, and reports what the client's socket observed.
-Future<_DrainRun> _run(String mode) async {
+///
+/// [tls] is the whole of rig probe P9's second run. The plant dials `wss://`
+/// and nothing else does; a fixture that only ever measured `ws://` on loopback
+/// is what let a fix that delivers 1006 in every real deployment go green in
+/// CI. Set it and the child binds a real `SecurityContext` from minted PEMs and
+/// the client dials through a pinned `HttpClient`, so the close frame has to
+/// survive `SecureSocket`'s write path — which is the discriminator the rig
+/// isolated (TLS off -> 4002, TLS on -> 1006, same image, same fix).
+Future<_DrainRun> _run(String mode, {bool tls = false}) async {
+  final certArgs = <String>[];
+  String? rootPem;
+  if (tls) {
+    final ca = mintCa();
+    final mounted = writeCertFixture(
+      chainPem: mintLeaf(ca: ca),
+      keyPem: leafKeyPem(),
+      rootPem: ca.certPem,
+    );
+    certArgs.addAll(<String>[mounted.chainPath, mounted.keyPath]);
+    rootPem = ca.certPem;
+  }
   final child = await Process.start(
     Platform.resolvedExecutable,
-    <String>['run', 'test/support/drain_fixture.dart', mode],
+    <String>['run', 'test/support/drain_fixture.dart', mode, ...certArgs],
   );
   addTearDown(() => child.kill(ProcessSignal.sigkill));
 
@@ -71,7 +93,20 @@ Future<_DrainRun> _run(String mode) async {
         '$errors'),
   );
 
-  final ws = WebSocketChannel.connect(Uri.parse('ws://127.0.0.1:$port/'));
+  final WebSocketChannel ws;
+  if (rootPem != null) {
+    // The panel's posture: the private root and nothing else. `localhost`
+    // rather than the literal because the minted leaf carries both SANs and a
+    // named dial is what the plant's panels do.
+    final context = SecurityContext(withTrustedRoots: false)
+      ..setTrustedCertificatesBytes(rootPem.codeUnits);
+    final client = HttpClient(context: context);
+    addTearDown(() => client.close(force: true));
+    ws = IOWebSocketChannel.connect(Uri.parse('wss://localhost:$port/'),
+        customClient: client, connectTimeout: const Duration(seconds: 10));
+  } else {
+    ws = WebSocketChannel.connect(Uri.parse('ws://127.0.0.1:$port/'));
+  }
   await ws.ready;
   final done = Completer<void>();
   ws.stream.listen((_) {}, onError: (Object _) {}, onDone: () {
@@ -131,6 +166,36 @@ void main() {
               'would be indistinguishable from doing nothing at all. '
               'If this arm ever goes red with 4002, dart:io started flushing '
               'and the Timer in `bin/main.dart`\'s shutdown can be deleted');
+    }, timeout: const Timeout(Duration(minutes: 3)));
+  });
+
+  group('over wss, which is the only scheme the plant dials', () {
+    test('the panel is told 4002 "server draining" over TLS too', () async {
+      final run = await _run('announce', tls: true);
+
+      expect(run.closeCode, CloseCodes.serverDraining,
+          reason: 'rig probe P9, second run. The `announce` arm above passes '
+              'over plaintext loopback and the SAME image delivered 1006 over '
+              'wss on the rig — the container even logged that it had told the '
+              'panels 4002. TLS is the discriminator: the frame has to get '
+              'through SecureSocket\'s write path, and a deferral that is '
+              'enough for a plain socket is not enough for that. Every panel '
+              'in the plant is on wss, so a green suite without this arm is a '
+              'suite that cannot see the defect at all');
+      expect(run.closeReason, 'server draining');
+      expect(run.exitCode, 0);
+    }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('the control: exiting on the signal is 1006 over TLS as well',
+        () async {
+      final run = await _run('bare', tls: true);
+
+      expect(run.closeCode, 1006,
+          reason: 'anti-vacuity for the arm above. If a TLS teardown produced '
+              '4002 on its own — a close_notify the client reported as a '
+              'protocol close, say — then the arm above would pass without the '
+              'gateway sending anything');
+      expect(run.closeReason, isEmpty);
     }, timeout: const Timeout(Duration(minutes: 3)));
   });
 

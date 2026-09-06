@@ -32,19 +32,29 @@ import 'dart:io';
 
 import 'package:tfc_relay_server/src/relay_server.dart';
 import 'package:tfc_relay_server/src/server_config.dart';
+import 'package:tfc_relay_server/src/tls/tls_config.dart';
 import 'package:tfc_stateman_contract/testing/fake_state_man.dart';
 
 import 'permissive_resolver.dart';
 
-/// args: `<mode>` — one of `bare`, `sync`, `announce`.
+/// args: `<mode> [chainPath keyPath]` — mode is one of `bare`, `sync`,
+/// `announce`.
+///
+/// The optional certificate pair is what makes this fixture able to answer the
+/// question the rig asked. With it the gateway binds `wss://` and the close
+/// frame has to travel through `SecureSocket`, which is the only configuration
+/// the defect reproduces in: a plaintext loopback socket accepts the frame in
+/// the round it is written, and a TLS one does not.
 Future<void> main(List<String> args) async {
-  final mode = args.single;
+  final mode = args.first;
+  final tls =
+      args.length > 1 ? TlsConfig(chainPath: args[1], keyPath: args[2]) : null;
 
   final served = FakeStateMan();
   final server = RelayServer(
     api: served,
     resolver: const PermissiveSeriesResolver(),
-    config: ServerConfig(tick: ServerConfig.minTick, port: 0),
+    config: ServerConfig(tick: ServerConfig.minTick, port: 0, tls: tls),
     onError: (_, __, ___) {},
   );
 
