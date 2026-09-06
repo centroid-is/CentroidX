@@ -20,7 +20,7 @@
 /// Two properties are enforced here:
 ///
 ///  * **Closure, in both directions.** The session registers exactly these
-///    forty-three names. One direction alone is half a check: a declared name
+///    forty-four names. One direction alone is half a check: a declared name
 ///    with no
 ///    handler answers METHOD_NOT_FOUND from a table claiming to carry it, and
 ///    a handler under a name nobody wrote down is surface nobody counted. The
@@ -103,6 +103,14 @@ const Set<String> expectedHandlerTable = {
   'unsubscribe',
   'write',
   'writeStatus',
+  // Phase 14 plan 12. The first operator action on this wire that is not a
+  // write, and it is gated by the same `KeyPolicy.canWrite` answer a write is
+  // — so a `view` station cannot clear an alarm it may not have looked at.
+  // Registered on every session whether or not the deployment supplied an
+  // alarm engine, deliberately: a gateway with no engine answers a *named*
+  // refusal rather than `-32601`, which is what keeps "serves no engine"
+  // distinguishable from "too old to know the word".
+  'ackAlarm',
   'read',
   'readFresh',
   'readMany',
@@ -267,9 +275,9 @@ void main() {
               'registration.');
     });
 
-    test('the table is exactly the forty-three names a client may call today',
+    test('the table is exactly the forty-four names a client may call today',
         () {
-      // The sentence is unchanged in shape and still true: forty-three names
+      // The sentence is unchanged in shape and still true: forty-four names
       // a client may *call*. `h` is not one of them — it is announced, never
       // called — so it is taken out of the ledger by name here rather than
       // being added to the literal, which would say a client may ask the
@@ -281,7 +289,7 @@ void main() {
               'failure prints the whole table rather than a difference');
     });
 
-    test('the registered table is the forty-three callable names plus the '
+    test('the registered table is the forty-four callable names plus the '
         'client notifications', () {
       expect(_session().registeredMethods, everyRegisterableName,
           reason: 'the ledger is the union, because json_rpc_2 dispatches a '
