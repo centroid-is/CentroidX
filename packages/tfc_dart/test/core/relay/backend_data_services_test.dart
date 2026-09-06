@@ -14,7 +14,7 @@
 ///    in Dart after a full read;
 ///  * a source that answers **more rows than it was asked for**, which is what
 ///    `Database.queryTimeseriesDataDownsampled`'s silent fallback to a raw
-///    query looks like from here (`database.dart:947`);
+///    query looks like from here (`database.dart:991`);
 ///  * a change feed whose listener count an arm can read, which is how
 ///    "nothing is armed until something listens" is asserted rather than
 ///    hoped.
@@ -629,7 +629,7 @@ void main() {
               allOf(contains('maxPoints'), contains('3')))),
           reason: 'below three, `(maxPoints / 3).floor()` is zero and '
               'queryTimeseriesDataDownsampled answers a full raw read under '
-              'the bounded method\'s name (database.dart:1522-1525)');
+              'the bounded method\'s name (database.dart:1570-1573)');
       expect(fake.asks, isEmpty);
     });
 
@@ -644,7 +644,7 @@ void main() {
               allOf(contains('howMany'), contains('1000'), contains('50000')))));
       expect(fake.asks, isEmpty,
           reason: 'howMany IS the number of UNION ALL subqueries in one '
-              'statement (database.dart:1686-1695)');
+              'statement (database.dart:1734-1743)');
     });
 
     test('a bucket wider than the configured interval ceiling is refused by '
@@ -693,7 +693,7 @@ void main() {
               allOf(contains('50'), contains('500')))),
           reason: 'queryTimeseriesDataDownsampled falls back to a raw query '
               'for a column type it cannot bucket, silently '
-              '(database.dart:947). Passing that on is a million rows into a '
+              '(database.dart:991). Passing that on is a million rows into a '
               'socket under the bounded method\'s name');
     });
 
@@ -703,7 +703,7 @@ void main() {
       // the budget live in different files. 51 for a budget of 50 is three
       // rows — one bucket — and a raw read of this window would have been
       // 500. Naming the fallback here would send the next reader to
-      // `database.dart:947` and a struct-table story that does not apply,
+      // `database.dart:991` and a struct-table story that does not apply,
       // when the defect is in the bucket sizing a thousand lines below it.
       final fake = _FakeTimeseries()
         ..downsampleAnswers = 51
@@ -720,7 +720,7 @@ void main() {
                 contains('50'),
                 contains('51'),
                 contains('time_bucket'),
-                isNot(contains('database.dart:947')),
+                isNot(contains('database.dart:991')),
               ))),
           reason: 'a three-row overshoot diagnosed as the silent raw fallback '
               'sends the next reader to the wrong file');
@@ -765,7 +765,7 @@ void main() {
       expect(fake.asks, isEmpty,
           reason: 'T-13-05-b: countTimeseriesDataMultiple interpolates its '
               'table name into SQL with no escaping at all '
-              '(database.dart:1691), so a name the resolver never approved '
+              '(database.dart:1739), so a name the resolver never approved '
               'must not reach the source');
     });
 

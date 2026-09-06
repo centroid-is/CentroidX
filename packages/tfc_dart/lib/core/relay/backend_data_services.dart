@@ -107,14 +107,14 @@ final class TimeseriesLimits {
   /// Three, and not a knob, because it is a property of the code being called
   /// rather than of this deployment: `queryTimeseriesDataDownsampled` computes
   /// `(maxPoints / 3).floor()` buckets and answers a full raw read when that
-  /// is zero (`database.dart:1522-1525`).
+  /// is zero (`database.dart:1570-1573`).
   static const int minPoints = 3;
 
   /// Ceiling on `maxPoints` in one downsampled read.
   final int maxPoints;
 
   /// Ceiling on `howMany` buckets in one count — which *is* the number of
-  /// `UNION ALL` subqueries in one statement (`database.dart:1686-1695`).
+  /// `UNION ALL` subqueries in one statement (`database.dart:1734-1743`).
   final int maxBuckets;
 
   /// Ceiling on the bucket width, in milliseconds, of one count.
@@ -139,7 +139,7 @@ final class TimeseriesLimits {
 
 /// The four `Database` methods [BackendTimeseries] needs, and nothing else.
 ///
-/// Signatures verbatim from `database.dart:1352`, `:1384`, `:1509` and `:1666`,
+/// Signatures verbatim from `database.dart:1396`, `:1428`, `:1557` and `:1714`,
 /// including the parameter names and the defaults, so
 /// [DatabaseTimeseriesSource] is a forwarding call and nothing is re-decided on
 /// the way through.
@@ -203,7 +203,7 @@ final class DatabaseTimeseriesSource implements TimeseriesSource {
 /// ordering all arrive from a connected client, and three of them reach a SQL
 /// string unescaped in the layer below: `countTimeseriesDataMultiple`
 /// interpolates `FROM "$tableName"` with no quote doubling at all
-/// (`database.dart:1691`), `tableQuery` interpolates `orderBy` into an
+/// (`database.dart:1739`), `tableQuery` interpolates `orderBy` into an
 /// `ORDER BY` clause where a subquery is legal grammar, and
 /// `queryTimeseriesDataDownsampled` interpolates its own quoted table.
 ///
@@ -292,7 +292,7 @@ final class BackendTimeseries implements relay.TimeseriesApi {
   /// **Keyed by the wire name and not by the table**, and every requested name
   /// gets an entry even when nothing was recorded. `Database` answers a map
   /// with no key at all for a table it has nothing for
-  /// (`database.dart:1366-1379` only ever adds a key it found a row for), and a
+  /// (`database.dart:1410-1423` only ever adds a key it found a row for), and a
   /// chart iterating the names it asked for finds null, which null-handling in
   /// a legend turns into a series silently dropped. "This tag is flat" and
   /// "nothing was recorded" are different facts.
@@ -331,7 +331,7 @@ final class BackendTimeseries implements relay.TimeseriesApi {
   /// this method's name and with no error, whenever it cannot bucket the
   /// column: a non-numeric type, a table with no `value` column at all — which
   /// is every struct table — a zero-width window, or a bucket count that
-  /// floors to zero (`database.dart:1517-1561`, and the doc at `:947`). Two of
+  /// floors to zero (`database.dart:1565-1609`, and the doc at `:991`). Two of
   /// those are refused up front, from the arguments. The rest can only be seen
   /// afterwards, and the shape they take is an answer larger than the budget,
   /// so an answer larger than the budget is refused rather than forwarded. A
@@ -365,7 +365,7 @@ final class BackendTimeseries implements relay.TimeseriesApi {
           'floor is ${TimeseriesLimits.minPoints} and it is not a knob. Below '
           'it `(maxPoints / 3).floor()` is zero and the database answers a '
           'full raw read under this method\'s name, silently '
-          '(database.dart:1522-1525)');
+          '(database.dart:1570-1573)');
     }
     if (from.isAfter(to)) {
       throw ArgumentError('$member was given a window whose from ($from) is '
@@ -404,7 +404,7 @@ final class BackendTimeseries implements relay.TimeseriesApi {
               '`buildDownsampleSql` (database.dart): a window that does not '
               'begin on a bucket boundary, or one whose span divides the '
               'width exactly, spans one more bucket than it was sized for.' : 'The answer bears no relation to the budget, which is the shape '
-              'of the silent fallback to a raw query (database.dart:947) — '
+              'of the silent fallback to a raw query (database.dart:991) — '
               'usually a struct table, which has no `value` column to bucket, '
               'or a non-numeric column type. Ask for a narrower window '
               'through queryTimeseriesData, or plot one member.'}');
@@ -424,7 +424,7 @@ final class BackendTimeseries implements relay.TimeseriesApi {
       throw ArgumentError('$member refused a howMany of $howMany: this '
           'backend\'s bucket ceiling is ${limits.maxBuckets}. howMany IS the '
           'number of UNION ALL subqueries in one statement '
-          '(database.dart:1686-1695), so this is a length bound on generated '
+          '(database.dart:1734-1743), so this is a length bound on generated '
           'SQL and not a convenience limit');
     }
     if (howMany <= 0) {
@@ -448,7 +448,7 @@ final class BackendTimeseries implements relay.TimeseriesApi {
         series.table, interval, howMany,
         since: since);
     // The bucket starts are built from `since ?? DateTime.now()`
-    // (`database.dart:1673`), which is local unless the caller made it UTC.
+    // (`database.dart:1721`), which is local unless the caller made it UTC.
     // Every instant on this wire is absolute.
     return {
       for (final entry in counts.entries) entry.key.toUtc(): entry.value,
@@ -480,7 +480,7 @@ final class BackendTimeseries implements relay.TimeseriesApi {
     throw ArgumentError('$member refused the series "$wireName": this backend '
         'records no such series. A name is resolved, never trusted — it '
         'reaches a table name that is interpolated into SQL unescaped '
-        '(database.dart:1691), so a name nothing in the key mappings claims '
+        '(database.dart:1739), so a name nothing in the key mappings claims '
         'does not reach the database at all');
   }
 
