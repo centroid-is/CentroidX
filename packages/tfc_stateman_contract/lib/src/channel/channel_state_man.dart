@@ -208,23 +208,33 @@ final class ChannelStateMan
   /// The non-finite handling is the one place this method does more than
   /// forward, and it is the client's job for a reason nothing on the far side
   /// can help with: `jsonEncode` throws on NaN and ±Infinity rather than
-  /// emitting null, so an unsanitized value does not fail one write — it fails
-  /// the frame, which a real pipe shares with every other client on it. This
-  /// side is therefore the only side that ever sees the number, and the two
-  /// halves of it are not symmetric:
+  /// emitting null, so the number cannot cross this channel at all and this
+  /// side is the only side that ever sees it. **Both halves are refused**, with
+  /// an `ArgumentError`, before anything is sent:
   ///
-  ///  * a non-finite **value** is sanitized *knowingly*: null goes on the
-  ///    wire, and [Quality.badNonFinite] is attached to the local key once the
-  ///    outcome is back, so the operator sees a fault rather than a blank box.
-  ///  * a non-finite **expect** is refused outright. Null is this path's
-  ///    encoding of "no compare-and-set guard", so sanitizing one would turn
-  ///    the operator's "only if it still reads 1200" into "whatever it reads".
-  ///    Nothing upstream of a write box can legitimately produce a NaN, so it
-  ///    is programmer error, and `WriteParams` (`messages.dart:384-401`) makes
-  ///    exactly the same refusal for exactly this reason.
+  ///  * a non-finite **value** would go on the wire as `null`, which is a write
+  ///    of null to a live tag: the device is actuated with something nobody
+  ///    chose and the operator is told the write applied. This method used to
+  ///    do exactly that and stamp [Quality.badNonFinite] on the local key
+  ///    afterwards — a badge visible on the one panel that issued the write,
+  ///    while the plant kept the null and every other screen read it as an
+  ///    ordinary value.
+  ///  * a non-finite **expect** would go on the wire as `null`, which is this
+  ///    path's encoding of "no compare-and-set guard": the operator's "only if
+  ///    it still reads 1200" becomes "whatever it reads".
   ///
-  /// That split is the shape Phase 4 inherits, recorded in STATE.md's Phase 1
-  /// handoff before either end of it existed.
+  /// Nothing upstream of a write box can legitimately produce a NaN, so either
+  /// one is programmer error — a divide-by-zero in a rate calculation is the
+  /// ordinary source — and an error is the one thing the write path is allowed
+  /// to do about it. `WriteParams` (`messages.dart:569-599`),
+  /// `ServedStateMan.write`, `value_handlers.write` and `RemoteStateMan._write`
+  /// all make the same refusal.
+  ///
+  /// Phase 1 handed Phase 4 an asymmetric split here — sanitize the value,
+  /// refuse the expect — recorded in STATE.md before either end of it existed.
+  /// Jón ruled it out on 2026-09-06 ("refuse everywhere") once it was clear the
+  /// two layers held opposite policies on one safety question and the dangerous
+  /// one won in production.
   @override
   Future<WriteResult> write(String key, Object? value,
       {Object? expect, String? cmd}) async {
@@ -241,8 +251,18 @@ final class ChannelStateMan
           'would come back under an id nothing could reconcile against. This '
           'implementation originates writes; it does not forward them');
     }
+    // Both walks run before either refusal so that a non-finite buried in a
+    // nested structure is caught too, not just a bare double.
     final sanitizedValue = sanitize(value);
     final sanitizedExpect = sanitize(expect);
+    if (sanitizedValue.hadNonFinite) {
+      throw ArgumentError.value(
+          value,
+          'value',
+          'a write cannot carry a non-finite number: it encodes to null, and '
+              'a write of null actuates the device with a value nobody chose '
+              'while the operator is told the write applied');
+    }
     if (sanitizedExpect.hadNonFinite) {
       throw ArgumentError.value(
           expect,
@@ -257,10 +277,7 @@ final class ChannelStateMan
       'value': sanitizedValue.value,
       if (expect != null) 'expect': sanitizedExpect.value,
     });
-    final result = WriteResult.fromJson(_asJson(raw));
-
-    if (sanitizedValue.hadNonFinite) _markNonFinite(key);
-    return result;
+    return WriteResult.fromJson(_asJson(raw));
   }
 
   @override
@@ -338,31 +355,19 @@ final class ChannelStateMan
     _liveHolds.clear();
   }
 
-  /// Records, locally, that the value written to [key] was not a number.
-  ///
-  /// After the outcome rather than before it, and the ordering is load-bearing
-  /// rather than incidental. The served source pushes the readback as an
-  /// [Methods.update] whose flush is scheduled while the write request is
-  /// still being handled, so on a single ordered channel that update is
-  /// delivered *before* the response this method runs after. Marking first
-  /// would therefore be marking something the readback then overwrote — with
-  /// a good-quality null, which renders as a healthy empty box.
-  ///
-  /// The two stores now disagree: the served side holds a good null, because
-  /// a good null is genuinely what it was asked to write. That divergence is
-  /// the boundary being honest about itself — the poison never crossed it —
-  /// and it is the same divergence Phase 4 will have, for the same reason.
-  void _markNonFinite(String key) {
-    if (_disposed) return;
-    final held = _store.peek(key);
-    _store.applyBatch({
-      key: DynamicValue(
-        value: null,
-        quality: Quality.badNonFinite,
-        sourceTime: held?.sourceTime,
-      ),
-    });
-  }
+  // `_markNonFinite` lived here: it stamped [Quality.badNonFinite] on the local
+  // key after a non-finite write's outcome came back, so the operator saw a
+  // fault rather than the blank box the nulled value left. [write] now refuses
+  // that value outright and nothing is sent, so there is no outcome to mark
+  // after and no divergence between the two stores to explain. A non-finite
+  // arriving *from* the wire is a different path and still marks: it is
+  // sanitized by `DynamicValue`'s own constructor on decode
+  // (`dynamic_value.dart:647`), which is where a `1e999` — the one non-finite
+  // this side cannot refuse, because it enters as a legal JSON literal — picks
+  // up its quality.
+  //
+  // Deleted rather than kept for a future caller: a private method nothing
+  // calls is a decoy that reads as live policy.
 
   // ------------------------------------------------------- levers, one-way
 
