@@ -222,11 +222,19 @@ void main() {
     // watching. An announcement first would also be an announcement that could
     // throw before the kill ran.
     final body = _bodyOf(code['bin/main.dart']!, 'void _shutdown(');
-    final kill = body.indexOf('pipe.shutdown()');
-    final announce = body.indexOf('announceDraining()');
-    expect(kill, greaterThanOrEqualTo(0),
+    final kills = 'pipe.shutdown()'.allMatches(body).map((m) => m.start);
+    final announces =
+        'announceDraining()'.allMatches(body).map((m) => m.start);
+    expect(kills, isNotEmpty,
         reason: 'the acquisition workers must still be killed here');
-    expect(announce, greaterThan(kill),
+    expect(announces, isNotEmpty,
+        reason: 'and the panels must still be told this was deliberate');
+    // EVERY kill before EVERY announce, not "the first of each". An earlier
+    // `pipe.shutdown()` on some other branch would otherwise satisfy a
+    // first-occurrence comparison while the real path announced first — a
+    // mutation that swapped the two was written and did exactly that.
+    expect(kills.reduce((a, b) => a > b ? a : b),
+        lessThan(announces.reduce((a, b) => a < b ? a : b)),
         reason: 'the drain announcement must come after the kill: killing the '
             'workers is the part that cannot be skipped, and everything after '
             'it is a courtesy to the panels');
