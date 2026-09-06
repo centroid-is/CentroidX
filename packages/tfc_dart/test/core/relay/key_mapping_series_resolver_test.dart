@@ -86,10 +86,18 @@ Logger _logger(_Captured sink) => Logger(
       output: sink,
     );
 
+/// A resolver whose collision warning goes nowhere.
+///
+/// The fixture collides on purpose, so every arm that is not about the warning
+/// would otherwise print it. One arm owns the warning and builds its own.
+KeyMappingSeriesResolver _quietResolver([KeyMappings? mappings]) =>
+    KeyMappingSeriesResolver(
+        keyMappings: mappings ?? _mappings(), logger: Logger(level: Level.off));
+
 void main() {
   group('resolve', () {
     test('a collected scalar resolves to its table, its key and no member', () {
-      final resolver = KeyMappingSeriesResolver(keyMappings: _mappings());
+      final resolver = _quietResolver();
       final series = resolver.resolve('ST101.CN01.MOT01.setpoint');
 
       expect(series, isNotNull);
@@ -103,14 +111,14 @@ void main() {
 
     test('a named collect entry resolves to the name, which is the table',
         () {
-      final resolver = KeyMappingSeriesResolver(keyMappings: _mappings());
+      final resolver = _quietResolver();
 
       expect(resolver.resolve('ST101.CN01.SENS01')!.table,
           'st101_sensor_block');
     });
 
     test('a struct member rides the same table and round-trips', () {
-      final resolver = KeyMappingSeriesResolver(keyMappings: _mappings());
+      final resolver = _quietResolver();
       final whole = resolver.resolve('ST101.CN01.SENS01')!;
       final member =
           resolver.resolve('ST101.CN01.SENS01:p_stat_tBlockedFor')!;
@@ -128,7 +136,7 @@ void main() {
     });
 
     test('a mapped key with no collect entry refuses, and guesses nothing', () {
-      final resolver = KeyMappingSeriesResolver(keyMappings: _mappings());
+      final resolver = _quietResolver();
 
       expect(resolver.resolve('ST101.CN01.MOT01.running'), isNull,
           reason: 'T-13-04-a: an identity fallback would answer with a table '
@@ -139,7 +147,7 @@ void main() {
     });
 
     test('a key nothing maps refuses', () {
-      final resolver = KeyMappingSeriesResolver(keyMappings: _mappings());
+      final resolver = _quietResolver();
 
       expect(resolver.resolve('ST999.CN99.MOT99.setpoint'), isNull);
       expect(resolver.resolve('gw_ST101.CN01.MOT01.setpoint'), isNull,
@@ -148,7 +156,7 @@ void main() {
     });
 
     test('a malformed name throws rather than resolving to null', () {
-      final resolver = KeyMappingSeriesResolver(keyMappings: _mappings());
+      final resolver = _quietResolver();
 
       expect(() => resolver.resolve('a:b:c'), throwsFormatException,
           reason: '"you spelled it wrong" and "there is no such series" are '
@@ -162,7 +170,7 @@ void main() {
   group('the two reverse directions', () {
     test('keyForTable answers the key a table records, and refuses an unknown '
         'table', () {
-      final resolver = KeyMappingSeriesResolver(keyMappings: _mappings());
+      final resolver = _quietResolver();
 
       expect(resolver.keyForTable('st101_sensor_block'), 'ST101.CN01.SENS01');
       expect(resolver.keyForTable('ST101.CN01.MOT01.setpoint'),
@@ -174,7 +182,7 @@ void main() {
 
     test('keyForNode answers a mapped browse id with itself, and a folder with '
         'nothing', () {
-      final resolver = KeyMappingSeriesResolver(keyMappings: _mappings());
+      final resolver = _quietResolver();
 
       expect(resolver.keyForNode('ST101.CN01.MOT01.running'),
           'ST101.CN01.MOT01.running',
@@ -210,7 +218,7 @@ void main() {
 
     test('keyForTable refuses a table two keys claim, rather than picking one',
         () {
-      final resolver = KeyMappingSeriesResolver(keyMappings: _mappings());
+      final resolver = _quietResolver();
 
       expect(resolver.keyForTable('SB1.CheckWeigher.Accepted'), isNull,
           reason: 'T-13-04-d: last-write-wins would serve one head\'s history '
@@ -219,7 +227,7 @@ void main() {
     });
 
     test('each colliding key still resolves under its own name', () {
-      final resolver = KeyMappingSeriesResolver(keyMappings: _mappings());
+      final resolver = _quietResolver();
       final first = resolver.resolve('SB1.CheckWeigher.Accepted.1')!;
       final second = resolver.resolve('SB1.CheckWeigher.Accepted.2')!;
 
@@ -237,7 +245,7 @@ void main() {
     test('the resolver\'s table for a key is collectTableName, the same '
         'function the collector inserts through', () {
       final mappings = _mappings();
-      final resolver = KeyMappingSeriesResolver(keyMappings: mappings);
+      final resolver = _quietResolver(mappings);
 
       var checked = 0;
       for (final entry in mappings.nodes.entries) {
@@ -266,9 +274,16 @@ void main() {
           })
           .join('\n');
 
-      expect(source, isNot(contains('name ?? entry.key')),
-          reason: 'the open-coded derivation is what the shared function '
-              'replaced; a re-spelling here is the drift this arm exists for');
+      expect('entry.name ?? entry.key'.allMatches(source), hasLength(1),
+          reason: 'exactly one occurrence, and it is the body of '
+              'collectTableName itself. Every other place the collector used '
+              'to open-code the derivation is a place it can drift from the '
+              'resolver, which is the drift this arm exists for');
+      expect(
+          source,
+          contains(
+              'String collectTableName(CollectEntry entry) => entry.name ?? '
+              'entry.key;'));
       expect('collectTableName('.allMatches(source).length, greaterThan(3),
           reason: 'the declaration plus the three call sites the collector '
               'had');

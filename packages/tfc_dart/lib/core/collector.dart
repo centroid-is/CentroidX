@@ -54,6 +54,16 @@ class CollectEntry {
       _$CollectEntryFromJson(json);
 }
 
+/// The physical table [entry]'s samples are inserted into.
+///
+/// One function because there are two sides to it. The collector writes rows
+/// here; `KeyMappingSeriesResolver` (`relay/key_mapping_series_resolver.dart`)
+/// tells a connected client which table to read for a series. A second
+/// spelling of the rule compiles, keeps every suite green, and serves a year of
+/// history out of a table nothing writes — so both sides call this, and
+/// `key_mapping_series_resolver_test.dart` pins that they do.
+String collectTableName(CollectEntry entry) => entry.name ?? entry.key;
+
 /// Resolves [path] (dotted member segments) inside a structured [value].
 ///
 /// Returns `null` when any segment is missing or the current level is not a
@@ -212,7 +222,7 @@ class Collector {
       CollectEntry entry, Stream<DynamicValue> subscription,
       {bool skipFirstSample = true}) async {
     _collectEntries[entry.key] = entry; // todo: duplicated for testing
-    final name = entry.name ?? entry.key;
+    final name = collectTableName(entry);
     await database.registerRetentionPolicy(name, entry.retention);
 
     // Member extraction happens BEFORE the broadcast split so the insert
@@ -373,7 +383,7 @@ class Collector {
 
     final subscriptionEntry =
         AutoDisposingStream<List<TimeseriesData<dynamic>>>(
-      entry.name ?? entry.key,
+      collectTableName(entry),
       (name) {
         _collectStreams.remove(entry);
         logger.d('Removed collect stream entry for $name');
@@ -451,7 +461,7 @@ class Collector {
 
       try {
         final rows = await database.queryTimeseriesData(
-            entry.name ?? entry.key, sinceTime);
+            collectTableName(entry), sinceTime);
         if (cancelled) return;
         final history = Queue<TimeseriesData<dynamic>>.from(rows)
           ..addAll(buffer.toList());

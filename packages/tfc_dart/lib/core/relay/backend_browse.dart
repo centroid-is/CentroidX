@@ -58,6 +58,7 @@ library;
 
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
+import '../collector.dart' show collectTableName;
 import '../state_man.dart' show KeyMappingEntry, KeyMappings;
 
 /// The metadata key a node's owning server alias is stored under.
@@ -219,7 +220,10 @@ final class BackendBrowse implements relay.BrowseApi {
     if (entry.modbusNode != null) parts.add('Modbus register');
     if (entry.io == true) parts.add('I/O unit');
     final collect = entry.collect;
-    if (collect != null) parts.add('collected as ${collect.name ?? collect.key}');
+    // The same derivation the collector inserts through and the series
+    // resolver reads back, so the detail pane cannot name a table nothing
+    // writes.
+    if (collect != null) parts.add('collected as ${collectTableName(collect)}');
     final server = entry.server;
     if (server != null) parts.add('on $server');
     if (parts.isEmpty) return node.id;
