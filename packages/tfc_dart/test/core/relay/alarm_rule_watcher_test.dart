@@ -26,26 +26,18 @@
 ///     appears in this file.
 library;
 
-import 'dart:async';
-
 import 'package:logger/logger.dart';
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/alarm_stamp.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
 import 'package:tfc_dart/core/relay/alarm_rule_watcher.dart';
-import 'package:tfc_dart/core/relay/backend_seams.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
-/// A fixed instant to hang the arms off, so nothing here reads a real clock.
-final DateTime t0 = DateTime.utc(2026, 9, 6, 12, 0, 0);
-
-relay.DynamicValue good(Object? value, {DateTime? at}) =>
-    relay.DynamicValue(value: value, sourceTime: at);
-
-relay.DynamicValue bad(relay.Quality quality, {DateTime? at}) =>
-    relay.DynamicValue(value: null, quality: quality, sourceTime: at);
-
-Future<void> settle() => pumpEventQueue(times: 5);
+// The fake source, the counting clock, `t0`, `good`, `bad` and `settle` were
+// library-private here until 14-05 needed the same seam for the engine. They
+// now live in one place; see that file's doc for why a second copy would not
+// have failed a test.
+import 'fake_backend_value_source.dart';
 
 void main() {
   group('AlarmRuleWatcher', () {
@@ -357,8 +349,8 @@ void main() {
 /// A watcher, its fake source, its fake clock and the transitions it produced.
 final class _Harness {
   _Harness(String formula, {bool collect = true})
-      : values = _FakeValues(),
-        clock = _CountingClock(t0) {
+      : values = FakeBackendValueSource(),
+        clock = CountingClock(t0) {
     watcher = AlarmRuleWatcher(
       values: values,
       expression: ExpressionConfig(value: Expression(formula: formula)),
@@ -369,8 +361,8 @@ final class _Harness {
     );
   }
 
-  final _FakeValues values;
-  final _CountingClock clock;
+  final FakeBackendValueSource values;
+  final CountingClock clock;
   final List<AlarmRuleTransition> transitions = [];
   late final AlarmRuleWatcher watcher;
 
@@ -378,123 +370,4 @@ final class _Harness {
     await watcher.dispose();
     await values.dispose();
   }
-}
-
-/// A clock that never advances by itself and counts every read.
-///
-/// `DateTime.now()` does not appear in this file. The composition root supplies
-/// the real one in 14-08 and nowhere else (D-2).
-final class _CountingClock {
-  _CountingClock(this.at);
-
-  DateTime at;
-  int reads = 0;
-
-  DateTime call() {
-    reads++;
-    return at;
-  }
-}
-
-/// A `BackendValueSource` with a plant-shaped hole where the plant would be.
-///
-/// Records `subscribe` per key and how many of those subscriptions are still
-/// live, which is what arm 2 reads. Everything the watcher does not call
-/// refuses rather than pretending: a permissive stub is how a test starts
-/// passing for the wrong reason.
-final class _FakeValues implements BackendValueSource {
-  final Map<String, List<StreamController<relay.DynamicValue>>> _controllers =
-      {};
-  final Map<String, relay.DynamicValue> _last = {};
-
-  /// How many times `subscribe` was called for each key.
-  final Map<String, int> subscribeCalls = {};
-
-  /// How many of those subscriptions are still listening.
-  final Map<String, int> liveListeners = {};
-
-  @override
-  Stream<relay.DynamicValue> subscribe(String key) {
-    subscribeCalls[key] = (subscribeCalls[key] ?? 0) + 1;
-    late final StreamController<relay.DynamicValue> controller;
-    controller = StreamController<relay.DynamicValue>(
-      onListen: () {
-        liveListeners[key] = (liveListeners[key] ?? 0) + 1;
-        final seed = _last[key];
-        if (seed != null) controller.add(seed);
-      },
-      onCancel: () {
-        liveListeners[key] = (liveListeners[key] ?? 1) - 1;
-        _controllers[key]?.remove(controller);
-      },
-    );
-    (_controllers[key] ??= []).add(controller);
-    return controller.stream;
-  }
-
-  /// Delivers [value] on [key] to every live subscription.
-  void push(String key, relay.DynamicValue value) {
-    _last[key] = value;
-    for (final controller in [...?_controllers[key]]) {
-      if (!controller.isClosed) controller.add(value);
-    }
-  }
-
-  @override
-  relay.DynamicValue? read(String key) => _last[key];
-
-  @override
-  List<String> get keys => _last.keys.toList();
-
-  @override
-  Duration get staleAfter => const Duration(seconds: 10);
-
-  @override
-  Future<void> dispose() async {
-    for (final list in _controllers.values) {
-      for (final controller in [...list]) {
-        await controller.close();
-      }
-    }
-    _controllers.clear();
-  }
-
-  Never _unused(String member) =>
-      throw UnimplementedError('_FakeValues.$member is not on the watcher path');
-
-  @override
-  void applyReadback(String key, relay.DynamicValue value) =>
-      _unused('applyReadback');
-
-  @override
-  void announceLinkLoss(String reason) => _unused('announceLinkLoss');
-
-  @override
-  void announceLinkUp() => _unused('announceLinkUp');
-
-  @override
-  void clearPending(String key) => _unused('clearPending');
-
-  @override
-  relay.ValueListenable<relay.DynamicValue> listen(String key) =>
-      _unused('listen');
-
-  @override
-  void markPending(String key) => _unused('markPending');
-
-  @override
-  void markStale(Iterable<String> keys) => _unused('markStale');
-
-  @override
-  Future<relay.DynamicValue> readFresh(String key) => _unused('readFresh');
-
-  @override
-  Future<Map<String, relay.DynamicValue>> readMany(List<String> keys) =>
-      _unused('readMany');
-
-  @override
-  int get roundTrips => _unused('roundTrips');
-
-  @override
-  int get statusNotifications => _unused('statusNotifications');
 }
