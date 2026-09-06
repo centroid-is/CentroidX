@@ -302,6 +302,31 @@ void main() {
       expect(alpha.writes.single.value.sourceTypeId, 'ns=0;i=4');
     });
 
+    test('dispose settles the writes still in flight instead of dropping them',
+        () async {
+      final pending = endpoint.write('a.one', _good(1));
+      await _settle();
+      expect(alpha.writes, hasLength(1));
+
+      // `write` promises the future ALWAYS settles. Cancelling the deadline
+      // timer and clearing the table takes the completer with it, so the
+      // caller waits forever on a promise this class makes in its own doc —
+      // and a graceful-reload path or a test awaiting across a dispose is all
+      // it takes to reach it.
+      endpoint.dispose();
+
+      final result = await pending.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => fail('dispose dropped a pending write instead of '
+            'resolving it — the future never settled'),
+      );
+      expect(result, isA<relay.WriteUnknown>(),
+          reason: 'this side cannot tell whether the worker applied it, and '
+              'unknown is the one honest answer');
+      expect((result as relay.WriteUnknown).reason.kind, 'endpoint_disposed');
+      expect(endpoint.pendingWriteCount(endpoint.workerOf('a.one')!), 0);
+    });
+
     test('a caller that supplies its own type id keeps it', () async {
       alpha.emit(PipeFrame(
         const [],

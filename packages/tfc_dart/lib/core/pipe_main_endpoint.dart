@@ -539,6 +539,14 @@ class PipeMainEndpoint {
   }
 
   /// Stops reading the workers. Does not kill them — see [shutdown].
+  ///
+  /// Every write still in flight settles [relay.WriteUnknown] on the way out,
+  /// mirroring [_onWorkerDied]. [write] promises the future ALWAYS settles, and
+  /// cancelling the deadline timer without resolving the completer is exactly
+  /// how that promise gets broken: the caller waits forever on an answer the
+  /// only remaining source of has just been torn down. Unknown is the honest
+  /// verdict — the request is on the wire and this side can no longer hear the
+  /// reply — and, as everywhere else on this path, nothing re-sends.
   void dispose() {
     _disposed = true;
     for (final listen in _listens) {
@@ -546,8 +554,13 @@ class PipeMainEndpoint {
     }
     _listens.clear();
     for (final table in _pending.values) {
-      for (final pending in table.values) {
-        pending.timer.cancel();
+      for (final pending in List<_PendingWrite>.of(table.values)) {
+        pending.resolve(relay.WriteUnknown(
+          pending.cmd,
+          relay.WriteReason('endpoint_disposed',
+              message: 'the pipe endpoint was disposed while the write to '
+                  '"${pending.key}" was in flight'),
+        ));
       }
     }
     _pending.clear();
