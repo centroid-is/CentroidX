@@ -675,13 +675,21 @@ void main() {
 
   group('the acknowledge control (Q-1 as ruled: enabled in both modes)', () {
     Future<void> pump(WidgetTester tester, ProviderContainer container,
-            AlarmActive alarm) async =>
-        tester.pumpWidget(UncontrolledProviderScope(
-          container: container,
-          child: MaterialApp(
-            home: Scaffold(body: ViewActiveAlarm(alarm: alarm)),
-          ),
-        ));
+        AlarmActive alarm) async {
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          home: Scaffold(body: ViewActiveAlarm(alarm: alarm)),
+        ),
+      ));
+      // Settled before the button is read, so an implementation that decided
+      // the control's state from an ASYNC provider — which is what the
+      // superseded "disabled in gateway mode" interim would have had to do —
+      // has had its answer arrive. Without this the arm would read the frame
+      // where every FutureProvider is still `null` and call a disabled button
+      // enabled.
+      await tester.pumpAndSettle();
+    }
 
     // ----------------------------------------------------------------- 11
     testWidgets('the button is drawn and enabled in gateway mode',
