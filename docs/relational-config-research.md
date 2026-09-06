@@ -5,8 +5,15 @@ JSON blobs and into rows, with Postgres as the owner and a local SQLite
 mirror as the cache — and, on the way, collapsing the several config
 storage strategies now in the tree into **one**.
 
-Status: **research complete, questions open, implementation started.**
-Branch `relational-config`, worktree `../tfc-hmi-worktrees/relational-config`.
+Status: **research complete, reviewed, questions open, implementation
+started.** Branch `relational-config`, worktree
+`../tfc-hmi-worktrees/relational-config`.
+
+Fable reviewed this design and its verdicts are in
+[relational-config-architecture-review.md](relational-config-architecture-review.md).
+It found four things wrong, two of which corrupt history if built as
+drafted. §7 below records what changed as a result, and its cuts to the
+question list are folded into §5.
 
 ---
 
@@ -99,9 +106,9 @@ This is the thing worth fixing, more than any single blob:
 | strategy | holds | owner |
 | --- | --- | --- |
 | `flutter_preferences` JSON blobs | pages, key mappings, alarm config, mcp config | Postgres |
-| `shared_preferences` file | startup URL, session, per-station `DatabaseConfig` | device |
+| `shared_preferences` file | startup URL, session, `mcp.config` | device |
 | bespoke relational tables | `access_template`, `access_key_binding`, `history_view*`, `app_role`, `app_user` | Postgres |
-| OS keychain | secrets (`state_man_config`, credentials) | device |
+| OS keychain | `StateManConfig` (OPC UA passwords), LLM API keys, **`DatabaseConfig` incl. the Postgres password** (`database.dart:196`), the D-Bus station credential | device |
 | in-flight (`ReportStore`, PR #447) | report definitions | Postgres |
 
 Five stores, five migration stories, five backup stories, five answers to
@@ -381,9 +388,19 @@ keychain.
 Two things to get right: **boot ordering** (the session is persisted
 through the local store and must be readable before anything else), and
 **migration** — existing stations hold the per-station startup URL, the
-session and the device-local `DatabaseConfig` here, and that last one holds
-a different Postgres IP per machine and must not be lost. One-shot import
-on first run, `shared_preferences` left readable for one release. See Q10.
+session and `mcp.config` here, and losing any of them is a station that
+comes up on the wrong page with nobody signed in. One-shot import on first
+run, `shared_preferences` left readable for one release.
+
+`DatabaseConfig` is **not** here, contrary to what an earlier draft of this
+document said: it lives in the OS keychain with its password
+(`database.dart:196`). That moves the per-station-Postgres-endpoint problem
+out of Phase 0 and into Q11.
+
+Third: `tech_docs/tech_doc_library_section.dart:1317` constructs its own
+device-local store. Several independent handles onto one SQLite file need
+WAL mode or a shared connection behind the factory — an implementation
+note, not a design problem.
 
 ---
 
@@ -543,3 +560,153 @@ is not, because it commits to §3's schema. **Q1, Q2 and Q10 are the
 blocking three**; the rest can proceed under the recommendations as stated.
 Fable is reviewing the architecture in parallel and its verdicts land in
 `docs/relational-config-architecture-review.md`.
+
+---
+
+## 7. What the review changed
+
+Fable reviewed §1–§6 and the committed code. Full argument in
+[relational-config-architecture-review.md](relational-config-architecture-review.md);
+this is what it changed and what it settled.
+
+### Fixed already
+
+**Change rows carry position.** The one drafted defect that corrupts
+history rather than merely costing something. `ConfigChange` stored
+payloads only while `parentId`/`sortIndex` sat beside the payload, so
+moving an asset to another page or changing its paint order wrote a row
+with two *identical* sides — and a restore from it would put the asset back
+in the wrong place, silently. Both sides are now the complete entity, and
+`ConfigChange.of(before:, after:)` applies that rule in one place. Guarded
+by `config_change_test.dart`. Committed at 81a49e37.
+
+**Two factual corrections to §1.4.** `DatabaseConfig` — the per-station
+Postgres endpoint *and its password* — is in the OS keychain
+(`database.dart:196`), not in `shared_preferences`. So the row that says
+how to reach Postgres is also the row that holds the password, which moves
+it out of Phase 0 and into Q11. And `tech_doc_library_section.dart:1317`
+news up its own device-local store, so Phase 0 needs WAL mode or a shared
+connection behind the factory.
+
+### Accepted, to build
+
+- **`CHECK (scope = 'shared')` on the Postgres tables.** The
+  "station rows never leave the machine" invariant currently lives only in
+  repository code. One line of DDL makes it structural, and turns a subtle
+  sync bug into a loud constraint violation. The row it protects is the
+  one holding another station's database endpoint.
+- **CAS in SQL, not read-check-write.**
+  `UPDATE … SET rev = rev + 1 WHERE … AND rev = ?`, rows-affected tells you
+  whether you lost. An app-level compare against a previously read `rev` is
+  a race with the very station it is meant to detect.
+- **`config_change.id` is a sync watermark.** The mirror pulls "changes
+  since N" instead of diffing full row sets, NOTIFY fires once per
+  transaction carrying nothing, and a missed notification is caught by a
+  watermark poll. Strictly more robust than the `md5(value)` machinery it
+  retires, and I had left it on the table.
+- **Ordering keys, decided now because they are a wire format.** Dense
+  integer `sort_index` means dragging one asset renumbers its siblings —
+  dozens of change rows for one gesture, which is the "290 kB of noise"
+  problem at smaller scale. Either gapped/fractional keys (single-row
+  write) or a display layer that collapses order-only changes under one
+  `action_id`. *Recommendation: gapped keys; the log stays honest at write
+  time rather than being made readable afterwards.*
+- **Say out loud that write granularity is the top-level asset.** Editing
+  one subdevice of a `BeckhoffCX5010Config` rewrites and logs the whole
+  parent. Fine at current sizes; surprising if undocumented.
+- **A consistency check in CI**, since the generic table forfeits real
+  foreign keys and per-kind CHECKs: every `parent_id` resolves, and
+  `config_item.payload` equals the latest `config_change.new_value`. That
+  last one is the invariant SCD-2 would have got for free, made a test
+  failure instead of a slow corruption.
+
+### Settled, no longer questions
+
+- **Q1 order** — confirmed, with two amendments below.
+- **Q2 history model** — current rows plus append-only log confirmed.
+  Fable argued the SCD-2 side properly first: its real advantage is
+  integrity by construction, not point-in-time queries. It dies on the
+  mirror, which would have to carry all history or run a filtered sync
+  that is itself a temporal predicate on every sync.
+- **Q7 conflicts** — per-entity CAS; the editor turns a failed save into
+  "reload". A page-level `rev` does not exist as a row once assets are
+  rows, and two stations editing different assets of one page both
+  succeeding *is* the designed improvement. Do not build page-level
+  pessimism until someone asks.
+- **Q9 retention** — forever.
+- **Q4 other readers** — read-only compatibility views; port
+  `tfc_mcp_server`'s raw SQL in Phase 1–2; your `tools/svn_*.py` move at
+  your leisure against the views. A *writable* view is real work and is not
+  promised.
+
+### Amendments to the plan
+
+- **Phase 0 writes into `config_item` in the local database**
+  (`kind='preference'`, station scope) rather than a throwaway key-value
+  table. A bespoke Phase 0 schema means migrating the local store twice.
+- **Phase 1 includes dual-write from its first PR**, not as a later option:
+  the moment one station writes rows, unupgraded stations must still see a
+  coherent blob, so the row write and the legacy blob write share a
+  transaction for one release. The blob→row data migration also needs a
+  Postgres advisory lock — drift's schema versioning gates the DDL but not
+  the data copy, and two stations upgrading the same morning must not race.
+- **Phase 3 is cut.** Do not fold `access_template`, `app_user` or
+  `history_view*` into `config_item`. They are already relational, already
+  audited, and the access tables are the substrate that *gates* config
+  writes — folding the gate into the thing it gates is circular. This is a
+  deliberate scope cut against your "one strategy" steer, and the honest
+  framing is: one strategy means one ownership/audit/mirror semantics and
+  one write discipline, not one physical table. Genuinely relational data
+  staying relational is the strategy working. `flutter_preferences` still
+  dies (Q10) — scalars become `kind='preference'` rows at near-zero cost.
+
+### New questions it raised
+
+**Q12 — station-scoped audit.** §3.3's write path is Postgres-first and
+therefore cannot be the write path for station rows, which must be writable
+with Postgres absent — that is their reason to exist. So there are two
+write paths, and "same audit" as §3.1 wrote it promises something the
+design cannot deliver. Does a station-scoped change get a local-only
+`config_change` (recommended: yes, same schema, in the mirror), and does it
+ever reach the central `audit_entry`? *Recommendation: local log always;
+central audit for station rows is a later feature with a queue attached, or
+accepted as absent. Say which in the spec.*
+
+**Q13 — page identity: the path is not an id.** Pages are keyed by path and
+paths are edited — `page_editor.dart:5697`'s `_updatePathInChildren` exists
+precisely because renames happen. Under a `(kind, id, scope)` key a rename
+is a delete-plus-insert of the page and a rewrite of every child asset: the
+page's history is cut in two, "restore page X to Tuesday" needs to know
+what X was called on Tuesday, and every `parent_id` written before the
+rename goes stale. Assets already solved this — `Asset.id` is stable and
+the path is data. *Recommendation: mint a stable page id at migration, keep
+the path in the payload.* Flagged rather than done because it touches your
+mental model of "a page's id is its path", and it is cheap now and
+expensive after Phase 2 ships.
+
+**Q11 — secret storage, answered.** Fable's verdict is "mostly yes, with
+one key left behind", and the reasoning is worth reading in full. The short
+version: on the plant hardware the keychain buys **file permissions plus
+indirection and nothing more** — `docker/frontend/Dockerfile:80` installs
+only `libsecret-1-0`, the *client*, so whatever Secret Service the
+container reaches is auto-unlocked with a blank or well-known password, or
+absent. Encryption keyed by a secret sitting beside the data is
+obfuscation. Windows DPAPI is the one platform where the OS facility earns
+its keep; macOS is dev-only and is where it actively costs you the rebuild
+prompts. Recommended shape: keep the `secret: true` routing, store secrets
+as station-scoped rows wrapped in the existing `SecureEnvelope`, and let
+the platform hold exactly **one** random per-station data key — DPAPI on
+Windows, Keychain on macOS (read once per boot, which also retires the
+`_secretCache` complexity), a root-owned 0600 file on eLinux. Secrets never
+become shared rows and never enter the change log with values. Separable
+work: decide the direction now because it settles what station scope
+carries; build it after Phase 1.
+
+### Still blocking
+
+**Q5** (mixed-version cutover) — it dictates the shape of the first Phase 1
+PR that ships. **Q8** (fresh production dump) — blocking for cutover, not
+for building; the round-trip test is only evidence if it runs against
+current data.
+
+Everything else can proceed under the recommendations as stated.
