@@ -330,6 +330,38 @@ String _blockAfter(String source, String anchor) {
   return '';
 }
 
+/// One cleared-but-unacknowledged alarm, exactly as [RelayAlarmSource] builds
+/// it out of an `ALARM.active` entry with `pendingAck: true`.
+///
+/// Spelled by hand in the widget arms rather than driven through the source's
+/// stream, because `testWidgets` runs under `FakeAsync`: a bare
+/// `Future.delayed(Duration.zero)` inside one never completes without a pump,
+/// and the arms below are about the CONTROL, not about the decode (arms 5-8
+/// cover that against the real object).
+AlarmActive _pendingAckAlarm() => AlarmActive(
+      alarm: Alarm(config: knownAlarm()),
+      notification: AlarmNotification(
+        uid: 'CN04.MOT01',
+        active: false,
+        expression: 'b{3} > 2',
+        rule: knownAlarm().rules[1],
+        timestamp: backendOnset,
+        ruleIndex: 1,
+      ),
+      pendingAck: true,
+    );
+
+/// The whole statement beginning at [anchor], up to its terminating `;`.
+///
+/// Empty when [anchor] is absent, which reads as "the thing is not there" in
+/// every arm that uses it.
+String _statementAt(String source, String anchor) {
+  final start = source.indexOf(anchor);
+  if (start < 0) return '';
+  final end = source.indexOf(';', start);
+  return end < 0 ? source.substring(start) : source.substring(start, end + 1);
+}
+
 /// The active set as the widgets would see it, after [pumps] microtask turns.
 Future<Set<AlarmActive>> _settle(AlarmSource source, {int pumps = 8}) async {
   Set<AlarmActive> latest = const {};
@@ -661,12 +693,7 @@ void main() {
         preferences: await _prefs(alarms: [knownAlarm()]),
         transport: transport,
       );
-      final source = await container.read(alarmManProvider.future);
-      await Future<void>.delayed(Duration.zero);
-      transport.push([entry(ruleIndex: 1, pendingAck: true)]);
-      final active = await _settle(source);
-
-      await pump(tester, container, active.single);
+      await pump(tester, container, _pendingAckAlarm());
 
       final button = tester.widget<ElevatedButton>(
           find.widgetWithText(ElevatedButton, 'Acknowledge'));
@@ -687,20 +714,7 @@ void main() {
         gateway: false,
         preferences: await _prefs(alarms: [knownAlarm()]),
       );
-      final alarm = AlarmActive(
-        alarm: Alarm(config: knownAlarm()),
-        notification: AlarmNotification(
-          uid: 'CN04.MOT01',
-          active: false,
-          expression: 'b{3} > 2',
-          rule: knownAlarm().rules[1],
-          timestamp: backendOnset,
-          ruleIndex: 1,
-        ),
-        pendingAck: true,
-      );
-
-      await pump(tester, container, alarm);
+      await pump(tester, container, _pendingAckAlarm());
 
       final button = tester.widget<ElevatedButton>(
           find.widgetWithText(ElevatedButton, 'Acknowledge'));
@@ -723,18 +737,13 @@ void main() {
         preferences: await _prefs(alarms: [knownAlarm()]),
         transport: transport,
       );
-      final source = await container.read(alarmManProvider.future);
-      await Future<void>.delayed(Duration.zero);
-      transport.push([entry(ruleIndex: 1, pendingAck: true)]);
-      final active = await _settle(source);
-
       var closed = false;
       await tester.pumpWidget(UncontrolledProviderScope(
         container: container,
         child: MaterialApp(
           home: Scaffold(
             body: ViewActiveAlarm(
-                alarm: active.single, onClose: () => closed = true),
+                alarm: _pendingAckAlarm(), onClose: () => closed = true),
           ),
         ),
       ));
@@ -859,9 +868,12 @@ void main() {
     test('create passes that set, rather than computing its own', () {
       final source = _stripComments(
           File('lib/core/gateway_state_man.dart').readAsStringSync());
-      final create = _blockAfter(source, 'static Future<GatewayStateMan> create');
-      expect(create, isNotEmpty);
-      expect(create, contains('subscriptionKeys(keyMappings)'),
+      // The construction statement, not the enclosing function: `create`'s
+      // own brace-matched block is its *parameter list*, and an arm that
+      // scanned that would have found nothing and said nothing.
+      final construction = _statementAt(source, 'RemoteStateMan(');
+      expect(construction, isNotEmpty);
+      expect(construction, contains('subscriptionKeys(keyMappings)'),
           reason: 'the behavioural arm above is only worth something if the '
               'production path goes through the function it tests');
     });

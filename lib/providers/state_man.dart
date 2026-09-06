@@ -12,6 +12,7 @@ import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import '../core/gateway_state_man.dart';
+import '../core/relay_alarm_source.dart';
 import 'access.dart';
 import 'gateway.dart';
 import 'access_policy.dart';
@@ -42,6 +43,35 @@ Future<KeyMappings> fetchKeyMappings(PreferencesApi prefs,
   }
   return KeyMappings.fromJson(jsonDecode(keyMappingsJson));
 }
+
+/// Where [stateManProvider] publishes the relay client's alarm port, and the
+/// only way anything else can reach it.
+///
+/// **Why a slot rather than a type test.** `GatewayStateMan` documents
+/// "read it by type-testing the provider's value" — and that is not possible
+/// from outside this file, because [stateManProvider] always returns a
+/// `GuardedStateMan`, which deliberately exposes no way back to the object it
+/// wraps. Widening the guard is the wrong fix: it lives in
+/// `packages/tfc_dart`, it has one job, and a public `inner` on it is a hole
+/// in the access policy for every caller, not just this one.
+///
+/// So the single construction site records what it built here, and clears it
+/// when that object is closed. Direct mode leaves it null, which is what
+/// `alarmManProvider` reads as "this station evaluates its own alarms".
+///
+/// Held as a mutable field on a plain object rather than as provider state on
+/// purpose: [stateManProvider] rebuilds itself on a `key_mappings` reload, and
+/// a cached provider would then hand out a client that had already been
+/// disposed.
+class GatewayAlarmSlot {
+  /// The live relay client's alarm port, or null in direct mode.
+  AlarmTransport? transport;
+}
+
+/// The one [GatewayAlarmSlot] for this container.
+final gatewayAlarmSlotProvider = Provider<GatewayAlarmSlot>(
+  (ref) => GatewayAlarmSlot(),
+);
 
 /// How the inner, unguarded [StateMan] is built.
 typedef StateManFactory = Future<StateMan> Function({
@@ -75,6 +105,13 @@ Future<StateMan> stateMan(Ref ref) async {
   final config = await StateManConfig.fromPrefs(systemPrefs);
 
   final keyMappings = await fetchKeyMappings(prefs, systemWrites: systemPrefs);
+
+  // Read here, not in `onDispose`. When the whole container goes down the
+  // container refuses reads before it runs the dispose callbacks
+  // ("Tried to read a provider from a ProviderContainer that was already
+  // disposed"), and a throw in there takes the `stateMan.close()` below it
+  // with it — so a teardown bug would present as a leaked OPC UA session.
+  final alarmSlot = ref.read(gatewayAlarmSlotProvider);
 
   // Watch for changes in specific preferences.
   //
@@ -132,12 +169,18 @@ Future<StateMan> stateMan(Ref ref) async {
         throw StateError('Gateway mode is selected but the configuration '
             'cannot be dialled: $refusal');
       }
-      stateMan = await GatewayStateMan.create(
+      final gatewayStateMan = await GatewayStateMan.create(
         uri: gateway.uri,
         clientConfig: await gateway.toClientConfig(),
         config: config,
         keyMappings: keyMappings,
       );
+      // The alarm source reads `ALARM.active` and sends acknowledges through
+      // the SAME client — a second one would be a second socket, a second
+      // subscription and a second session for the gateway to police. See
+      // [GatewayAlarmSlot] for why it cannot simply type-test this provider.
+      alarmSlot.transport = RemoteAlarmTransport(gatewayStateMan.remote);
+      stateMan = gatewayStateMan;
     } else {
       final m2400Clients = createM2400DeviceClients(config.jbtm);
       final modbusClients =
@@ -157,6 +200,9 @@ Future<StateMan> stateMan(Ref ref) async {
     // it wrong.
     ref.onDispose(() async {
       listener.cancel();
+      // Cleared before the close, so nothing can pick a disposed client out of
+      // the slot while the socket is going down.
+      alarmSlot.transport = null;
       await stateMan.close();
     });
 

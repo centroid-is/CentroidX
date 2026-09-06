@@ -1,0 +1,453 @@
+/// The alarm surface of a gateway-mode panel: told, never computed.
+///
+/// ## What is deliberately absent
+///
+/// There is no `Evaluator` in this file, and no subscription to any rule
+/// variable. A gateway-mode station is *told* its active set by the backend's
+/// alarm engine under `ALARM.active`, including the instant each rule became
+/// active and where that instant came from. The panel's job is to render it.
+///
+/// That is not tidiness. Measured on the SVN rig, 2026-09-06: the station's
+/// `alarm_man_config` contains a rule on `__agg_default_connected == false`,
+/// and nothing in this repository produces `__agg_default_connected`. In
+/// gateway mode `GatewayStateMan.connMetaAliases` is `const []` and
+/// `subscribeConnMeta` throws by name, so the variable is unbound, coerces to
+/// `false`, and the alarm stands permanently on a healthy plant. A second
+/// opinion computed from values the panel cannot see is not a safety net; it
+/// is a fault report about the panel, printed in the operator's alarm banner.
+///
+/// ## The payload is self-sufficient, and is never joined against local config
+///
+/// Every entry carries its own `level`, `title`, `description` and `group`
+/// (`AlarmActiveEntry`, 14-05). They are read straight off the payload and
+/// **never** looked up in this station's `alarm_man_config`, because the two
+/// copies are not the same age: preferences are re-read on a restart, so a
+/// panel that has been up since before the last configuration change would
+/// otherwise draw a live alarm it cannot name. An alarm nobody can name is an
+/// alarm nobody acts on.
+///
+/// The same applies, with teeth, to `(uid, ruleIndex)`: they are the identity
+/// an acknowledge is sent under. A panel one restart behind that recomputed
+/// the index from its own rule list would acknowledge the wrong rule of the
+/// right alarm — a silent mis-actuation of the operator's intent, with no
+/// error anywhere.
+///
+/// ## What still comes from this station
+///
+/// Alarm **history** and alarm **configuration** (D-11). The panel holds its
+/// own Postgres connection in gateway mode — `preferencesProvider` builds it
+/// unconditionally — so `getRecentAlarms` reads `alarm_history` exactly as
+/// direct mode does, and the alarm editor still writes `alarm_man_config`
+/// through preferences. A gateway station whose alarm editor was silently
+/// read-only would be a worse bug than the one this class fixes.
+///
+/// ## Why the collaborator is a port and not `RemoteStateMan`
+///
+/// `RemoteStateMan` is a `final class`: nothing outside its own library may
+/// implement it, so no test in this repository can hand this class a double of
+/// it. [AlarmTransport] is therefore the two things a gateway-mode alarm
+/// source actually needs — the active-set stream and the acknowledge — and
+/// [RemoteAlarmTransport] is the one-line production implementation over the
+/// live client.
+///
+/// The stream is taken from the client **directly** rather than through
+/// `GatewayStateMan.subscribe`, which runs `toUaValue` and rebuilds the
+/// payload into an `open62541` object graph member by member. That shape has
+/// nowhere to put a per-entry instant, which is exactly why D-9 put
+/// `activeAtMs` in the payload as data (P-7); decoding `AlarmActiveEntry` back
+/// out of it would be lossy on the one field a stop analysis is judged on.
+library;
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io' show stderr;
+
+import 'package:collection/collection.dart';
+import 'package:drift/drift.dart' show OrderingMode, OrderingTerm;
+import 'package:rxdart/rxdart.dart';
+import 'package:tfc_dart/core/alarm.dart';
+// A prefixed second import of the same library, for one reason: the
+// `filterAlarms` member below shadows the top-level `filterAlarms` it has to
+// delegate to. The same trick `AlarmMan` uses, for the same reason.
+import 'package:tfc_dart/core/alarm.dart' as shared;
+import 'package:tfc_dart/core/alarm_stamp.dart';
+import 'package:tfc_dart/core/boolean_expression.dart';
+import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_relay_client/tfc_relay_client.dart';
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as rp;
+
+/// The two things a gateway-mode alarm source needs from the relay client.
+///
+/// Narrow on purpose. Taking the whole client would make this class untestable
+/// (`RemoteStateMan` is `final`) and would also let a later edit reach for
+/// `write` or `readFresh` from inside an alarm source, which is how a second
+/// evaluation path grows back.
+abstract interface class AlarmTransport {
+  /// The backend's active set, as it arrives under `ALARM.active`.
+  Stream<rp.DynamicValue> activeValues();
+
+  /// Acknowledges one rule of one alarm, by the identity D-4 persists.
+  Future<void> ackAlarm(String alarmUid, int ruleIndex);
+}
+
+/// [AlarmTransport] over the live relay client.
+class RemoteAlarmTransport implements AlarmTransport {
+  const RemoteAlarmTransport(this._remote);
+
+  final RemoteStateMan _remote;
+
+  @override
+  Stream<rp.DynamicValue> activeValues() =>
+      _remote.subscribe(rp.AlarmKeys.active);
+
+  @override
+  Future<void> ackAlarm(String alarmUid, int ruleIndex) =>
+      _remote.ackAlarm(alarmUid, ruleIndex);
+}
+
+/// The gateway-mode [AlarmSource].
+class RelayAlarmSource implements AlarmSource {
+  RelayAlarmSource._({
+    required AlarmTransport transport,
+    required this.preferences,
+    required this.config,
+  })  : _transport = transport,
+        alarms = config.alarms.map((e) => Alarm(config: e)).toSet(),
+        _activeAlarms = BehaviorSubject<Set<AlarmActive>>.seeded(const {}),
+        _historyController = BehaviorSubject<List<AlarmActive?>>.seeded([]);
+
+  /// Loads the local configuration, subscribes to `ALARM.active` and primes
+  /// history.
+  ///
+  /// The subscription is opened here and **not** in an `onListen` body. The
+  /// panel-side gate is being retired, not relocated: a source that only
+  /// starts listening when a widget appears is a source whose first payload
+  /// depends on which page happened to be open.
+  static Future<RelayAlarmSource> create({
+    required AlarmTransport transport,
+    required Preferences preferences,
+  }) async {
+    final configJson = await preferences.getString('alarm_man_config');
+    final config = configJson == null
+        ? AlarmManConfig(alarms: [])
+        : AlarmManConfig.fromJson(jsonDecode(configJson));
+
+    final source = RelayAlarmSource._(
+      transport: transport,
+      preferences: preferences,
+      config: config,
+    );
+    source._listen();
+    await source._reloadHistory();
+    return source;
+  }
+
+  final AlarmTransport _transport;
+  final Preferences preferences;
+
+  @override
+  final AlarmManConfig config;
+
+  @override
+  final Set<Alarm> alarms;
+
+  final BehaviorSubject<Set<AlarmActive>> _activeAlarms;
+  final BehaviorSubject<List<AlarmActive?>> _historyController;
+  StreamSubscription<rp.DynamicValue>? _subscription;
+
+  /// Whether the backend said it had to cut the list it sent.
+  ///
+  /// Surfaced rather than swallowed: a list that was capped is not the same
+  /// fact as a plant with fewer alarms, and presenting a short list as
+  /// complete is how an operator stops looking for the alarm that matters.
+  bool get activeTruncated => _truncated;
+  bool _truncated = false;
+
+  /// How many entries the backend's cap dropped.
+  int get activeOmitted => _omitted;
+  int _omitted = 0;
+
+  bool _reportedTruncation = false;
+
+  void _listen() {
+    _subscription = _transport.activeValues().listen(
+      _onValue,
+      onError: (Object error, StackTrace stack) {
+        // The previous set stands. A decode or transport error must not clear
+        // the banner: "we cannot read the alarm list" and "there are no
+        // alarms" are opposite facts and look identical on a blank screen.
+        stderr.writeln('ALARM.active could not be read: $error');
+      },
+    );
+  }
+
+  void _onValue(rp.DynamicValue value) {
+    final rp.AlarmActiveList decoded;
+    try {
+      decoded = rp.AlarmActiveEntry.decodeList(value.toJson(slim: true));
+    } catch (error) {
+      // `AlarmActiveEntry.fromJson` refuses an unknown `tsSource` by name
+      // (T-14-36). Refused, logged, and the previous set left standing.
+      stderr.writeln('ALARM.active payload refused: $error');
+      return;
+    }
+
+    _truncated = decoded.truncated;
+    _omitted = decoded.omitted;
+    if (_truncated && !_reportedTruncation) {
+      _reportedTruncation = true;
+      stderr.writeln('ALARM.active was truncated by the backend: '
+          '$_omitted further active alarms are not in this list.');
+    }
+
+    if (!_activeAlarms.isClosed) {
+      _activeAlarms.add({for (final e in decoded.entries) _activeOf(e)});
+    }
+    // CD-2: re-query history on every active-set change, rather than keeping a
+    // ring buffer that appends on an observed deactivation. The database is
+    // the same one direct mode reads, and one source of truth cannot diverge
+    // from itself.
+    unawaited(_reloadHistory().catchError((Object error) {
+      stderr.writeln('Error reloading alarm history: $error');
+    }));
+  }
+
+  /// One payload entry, as the object the widgets already know.
+  ///
+  /// Everything here comes from [entry]. Nothing is looked up in [config].
+  AlarmActive _activeOf(rp.AlarmActiveEntry entry) {
+    final rule = AlarmRule(
+      level: _levelOf(entry.level),
+      expression:
+          ExpressionConfig(value: Expression(formula: entry.expression ?? '')),
+      // The payload does not carry the flag, and `pendingAck` is the only
+      // evidence in it: the backend keeps a cleared rule in the active set
+      // precisely because it requires an acknowledgement. Deriving it from
+      // the local config would reintroduce the join this class exists to
+      // avoid, and inventing `true` would tell every operator that every
+      // alarm needs a click.
+      acknowledgeRequired: entry.pendingAck,
+    );
+
+    return AlarmActive(
+      alarm: Alarm(
+        config: AlarmConfig(
+          uid: entry.uid,
+          title: entry.title,
+          description: entry.description,
+          group: List<String>.of(entry.group),
+          rules: [rule],
+        ),
+      ),
+      notification: AlarmNotification(
+        uid: entry.uid,
+        // A cleared rule that is still in the set is one waiting on an
+        // acknowledgement; anything else in the set is standing.
+        active: !entry.pendingAck,
+        expression: entry.expression,
+        rule: rule,
+        // Data, in UTC, to the millisecond the backend stated. Never
+        // reconstructed through the local time zone: that is the bug which
+        // makes two panels disagree about when the line stopped.
+        timestamp: DateTime.fromMillisecondsSinceEpoch(entry.activeAtMs,
+            isUtc: true),
+        ruleIndex: entry.ruleIndex,
+        tsSource: _tsSourceOf(entry.tsSource),
+      ),
+      pendingAck: entry.pendingAck,
+    );
+  }
+
+  /// The payload's level, or the loudest one when it names something this
+  /// build has never heard of.
+  ///
+  /// A newer backend with a fourth level must not make an alarm invisible;
+  /// showing it too loudly is the failure an operator can act on.
+  static AlarmLevel _levelOf(String wire) =>
+      AlarmLevel.values.firstWhereOrNull((l) => l.name == wire) ??
+      AlarmLevel.error;
+
+  static AlarmTsSource? _tsSourceOf(String wire) =>
+      wire == rp.AlarmActiveEntry.tsSourcePlant
+          ? AlarmTsSource.plant
+          : AlarmTsSource.backendReceipt;
+
+  @override
+  Stream<Set<AlarmActive>> activeAlarms() => _activeAlarms.stream;
+
+  @override
+  Stream<List<AlarmActive?>> history() => _historyController.stream;
+
+  /// Acknowledges [alarm] by sending it to the backend, and does nothing else.
+  ///
+  /// **Q-1, ruled by Jón on 2026-09-06:** *"The acknowledge is not used
+  /// anywhere yet. So let's relay it."* Any earlier document saying this member
+  /// refuses by name, or that the control is disabled in gateway mode, is
+  /// superseded.
+  ///
+  /// It does not touch the active set. The backend owns that set, so a local
+  /// removal would be undone by the next `ALARM.active` and the operator would
+  /// watch the alarm vanish and come back — and an operator who has seen that
+  /// once stops believing the screen. The confirmation is therefore the
+  /// readback, which is PROJECT.md's rule applied without an exception for the
+  /// case where the exception would feel nicer.
+  ///
+  /// It does not catch, either. A refusal the operator cannot see is the
+  /// silent loss this project exists to prevent, so the throw is the caller's
+  /// to show. And it is sent **once**: no retry, no `unawaited`, no
+  /// `.catchError` — an acknowledge that reached the backend and lost its
+  /// answer must not be sent twice.
+  @override
+  Future<void> ackAlarm(AlarmActive alarm) async {
+    final ruleIndex = alarm.notification.ruleIndex;
+    if (ruleIndex == null) {
+      // Only reachable with an AlarmActive that did not come from
+      // `ALARM.active` — a pre-v7 history row, say. Guessing 0 would
+      // acknowledge whichever rule happens to be first.
+      throw ArgumentError.value(alarm, 'alarm',
+          'cannot be acknowledged: it states no rule index, so there is no '
+          'identity to send. Only alarms from the backend\'s active set carry '
+          'one.');
+    }
+    await _transport.ackAlarm(alarm.notification.uid, ruleIndex);
+  }
+
+  @override
+  void addAlarm(AlarmConfig alarm) {
+    config.alarms.add(alarm);
+    _saveConfig();
+    alarms.add(Alarm(config: alarm));
+  }
+
+  @override
+  void removeAlarm(AlarmConfig alarm) {
+    config.alarms.removeWhere((e) => e.uid == alarm.uid);
+    _saveConfig();
+    alarms.removeWhere((e) => e.config.uid == alarm.uid);
+  }
+
+  @override
+  void updateAlarm(AlarmConfig alarm) {
+    config.alarms.removeWhere((e) => e.uid == alarm.uid);
+    config.alarms.add(alarm);
+    _saveConfig();
+    alarms.removeWhere((e) => e.config.uid == alarm.uid);
+    alarms.add(Alarm(config: alarm));
+  }
+
+  void _saveConfig() async {
+    await preferences.setString(
+        'alarm_man_config', jsonEncode(config.toJson()));
+  }
+
+  /// See the top-level [filterAlarms] — the behaviour lives there so a
+  /// gateway-mode panel cannot answer the same question differently from a
+  /// direct-mode one on the same screen.
+  @override
+  List<AlarmActive> filterAlarms(
+          List<AlarmActive> alarms, String searchQuery) =>
+      shared.filterAlarms(alarms, searchQuery);
+
+  /// Re-reads the history rows and republishes them.
+  ///
+  /// A plain list rather than `AlarmMan`'s `RingBuffer.buffer`: that buffer
+  /// exists because the direct-mode panel accumulates deactivations as it
+  /// observes them, and it has no `clear`, so re-querying into one would leave
+  /// the previous answer's rows behind it. This side re-reads the whole window
+  /// each time, so the query result *is* the history. Consumers already handle
+  /// nulls in this list, because `RingBuffer.buffer` is padded with them.
+  Future<void> _reloadHistory() async {
+    final rows = await getRecentAlarms();
+    if (!_historyController.isClosed) {
+      _historyController.add(List<AlarmActive?>.of(rows));
+    }
+  }
+
+  /// Closed and open activations from `alarm_history`, newest first.
+  ///
+  /// D-11: this is the panel's own database in both transports, so the shape
+  /// matches `AlarmMan.getRecentAlarms` deliberately — the same overlap
+  /// window, the same rule resolution off `rule_index`, the same refusal to
+  /// guess when the row states nothing. It is spelled again here rather than
+  /// shared because the only place to share it from is `AlarmMan`, and
+  /// constructing one of those in gateway mode is the thing this class exists
+  /// to make impossible.
+  @override
+  Future<List<AlarmActive>> getRecentAlarms({
+    int limit = 1000,
+    DateTime? from,
+    DateTime? to,
+  }) async {
+    if (preferences.database == null) return [];
+
+    final db = preferences.database!.db;
+
+    final query = db.select(db.alarmHistory);
+    if (from != null || to != null) {
+      query.where((t) => alarmHistoryOverlaps(t, from: from, to: to));
+    }
+    final result = await (query
+          ..orderBy([
+            (t) =>
+                OrderingTerm(expression: t.createdAt, mode: OrderingMode.desc)
+          ])
+          ..limit(limit))
+        .get();
+
+    return result
+        .map((row) {
+          final alarmConfig = alarms.firstWhereOrNull(
+            (a) => a.config.uid == row.alarmUid,
+          );
+          if (alarmConfig == null) return null;
+
+          final ruleIndex = row.ruleIndex;
+          final configuredRule = ruleIndex != null &&
+                  ruleIndex >= 0 &&
+                  ruleIndex < alarmConfig.config.rules.length
+              ? alarmConfig.config.rules[ruleIndex]
+              : null;
+
+          final rule = AlarmRule(
+            level: AlarmLevel.values.firstWhere(
+              (l) => l.name == row.alarmLevel,
+              orElse: () => AlarmLevel.error,
+            ),
+            expression: ExpressionConfig(
+              value: Expression(formula: row.expression ?? ''),
+            ),
+            // A pre-v7 row states no rule index, and a row whose index no
+            // longer exists names a rule that has been deleted. Neither can be
+            // resolved, and matching such a row to rule 0 would be a guess
+            // dressed as a fact.
+            acknowledgeRequired: configuredRule?.acknowledgeRequired ?? false,
+          );
+
+          return AlarmActive(
+            alarm: alarmConfig,
+            notification: AlarmNotification(
+              uid: row.alarmUid,
+              active: row.active,
+              expression: row.expression,
+              rule: rule,
+              timestamp: row.createdAt,
+              ruleIndex: ruleIndex,
+              tsSource: row.tsSource == null
+                  ? null
+                  : _tsSourceOf(row.tsSource!),
+            ),
+            pendingAck: row.pendingAck,
+            deactivated: row.deactivatedAt,
+          );
+        })
+        .whereType<AlarmActive>()
+        .toList();
+  }
+
+  /// Drops the subscription and the two observation surfaces.
+  Future<void> close() async {
+    await _subscription?.cancel();
+    await _activeAlarms.close();
+    await _historyController.close();
+  }
+}

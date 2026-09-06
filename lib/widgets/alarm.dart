@@ -815,10 +815,10 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
   /// The list's stream, made once per mode (active / history). Built inline
   /// it was a new object on every rebuild -- every search keystroke -- and
   /// StreamBuilder answered each with its spinner.
-  Stream<(AlarmMan, List<(AlarmActive, DateTime?)>)>? _stream;
+  Stream<(AlarmSource, List<(AlarmActive, DateTime?)>)>? _stream;
   bool? _streamShowsHistory;
 
-  Stream<(AlarmMan, List<(AlarmActive, DateTime?)>)> _streamFor(
+  Stream<(AlarmSource, List<(AlarmActive, DateTime?)>)> _streamFor(
       bool showHistory) {
     final cached = _stream;
     if (cached != null && _streamShowsHistory == showHistory) return cached;
@@ -830,7 +830,7 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
       // too -- see [alarmHistoryEntries].
       (alarmMan) => showHistory
           ? Rx.combineLatest2<List<AlarmActive?>, Set<AlarmActive>,
-              (AlarmMan, List<(AlarmActive, DateTime?)>)>(
+              (AlarmSource, List<(AlarmActive, DateTime?)>)>(
               alarmMan.history(),
               alarmMan.activeAlarms(),
               (history, active) =>
@@ -843,7 +843,7 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<(AlarmMan, List<(AlarmActive, DateTime?)>)>(
+    return StreamBuilder<(AlarmSource, List<(AlarmActive, DateTime?)>)>(
       stream: _streamFor(_showHistory),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
@@ -1182,9 +1182,29 @@ class ViewActiveAlarm extends ConsumerWidget {
             if (canAck) ...[
               const SizedBox(height: 16),
               ElevatedButton.icon(
+                // Drawn and enabled in both transports. `canAck` above is the
+                // only thing that decides whether an operator sees this
+                // control; how the acknowledge travels is not a reason to hide
+                // an action they are allowed to take (Q-1, ruled 2026-09-06).
                 onPressed: () async {
                   final alarmMan = await ref.read(alarmManProvider.future);
-                  alarmMan.ackAlarm(alarm);
+                  try {
+                    // Awaited, because in gateway mode this crosses the pipe.
+                    // Direct mode completes immediately -- there the local
+                    // removal is the whole effect.
+                    await alarmMan.ackAlarm(alarm);
+                  } catch (error) {
+                    // Shown, never swallowed: a refusal the operator cannot
+                    // see is the silent loss this project exists to prevent.
+                    // And the card stays open -- one that closed here would
+                    // have told them it worked.
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Acknowledge failed: $error')),
+                      );
+                    }
+                    return;
+                  }
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Alarm acknowledged')),

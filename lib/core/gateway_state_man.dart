@@ -43,6 +43,13 @@
 ///    is the whole plant that is a large subscription, and it is the honest
 ///    reading of the API as it stands — the alternative is a page whose values
 ///    never arrive, silently.
+///
+///    `ALARM.active` is added to that set here, in [subscriptionKeys], for
+///    exactly the same reason: it is never in `key_mappings` — the key-mapping
+///    ingest *reserves* the `ALARM.` prefix rather than allowing it — and a key
+///    added after construction is a key never served. Dropped, the runtime
+///    symptom is an alarm banner that simply never updates, with no error
+///    anywhere.
 ///  * **`clients` and `deviceClients` are empty.** They hand out live OPC UA
 ///    and Modbus client objects, and in gateway mode this process holds
 ///    neither. The eleven call sites are all browse/diagnostic UI —
@@ -92,9 +99,7 @@ class GatewayStateMan implements StateMan {
     final remote = RemoteStateMan(
       uri: uri,
       config: clientConfig,
-      // Every mapped key, because the client's key set is immutable after
-      // construction — see the library doc.
-      keys: keyMappings.keys.toSet(),
+      keys: subscriptionKeys(keyMappings),
     );
     return GatewayStateMan(
       remote: remote,
@@ -103,6 +108,17 @@ class GatewayStateMan implements StateMan {
       alias: alias,
     );
   }
+
+  /// Everything this station's client subscribes: every mapped key, plus the
+  /// alarm engine's active set.
+  ///
+  /// A named function rather than an expression inside [create] because
+  /// `RemoteStateMan` takes its key set as a constructor argument and exposes
+  /// no getter for it — so the only way to assert that `ALARM.active` is in
+  /// there is to be able to call the thing that computes it. See the library
+  /// doc for why a key added later is a key never served.
+  static Set<String> subscriptionKeys(KeyMappings keyMappings) =>
+      <String>{...keyMappings.keys, rp.AlarmKeys.active};
 
   final RemoteStateMan _remote;
 
