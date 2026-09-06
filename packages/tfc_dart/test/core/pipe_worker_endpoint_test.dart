@@ -33,6 +33,25 @@ class _FakeUpstream implements PipeUpstream {
   /// Keys whose `subscribe` future throws.
   final Map<String, Object> subscribeFailures = {};
 
+  /// Keys whose `subscribe` future is held open until [resolveSubscribe].
+  ///
+  /// The controllable version of [hangingKeys]: it lets an arm stand inside the
+  /// subscribe→ready window — the one `_monitorLoop` can hold open across
+  /// `awaitConnect`, `doTheWork` and a 10 s `subscriptionCreate` — and decide
+  /// what happens in it.
+  final Set<String> deferredKeys = {};
+  final Map<String, Completer<Stream<DynamicValue>>> _deferred = {};
+
+  /// How many times each key's stream was listened to and cancelled.
+  ///
+  /// This is the observable that stands in for `AutoDisposingStream`: it tears
+  /// its raw OPC UA monitored items down in `_handleCancel`, which cannot fire
+  /// until `_handleListen` has fired at least once. A stream that is never
+  /// touched leaks the items on the PLC, and these counters are how an arm sees
+  /// the difference between "declined" and "released".
+  final Map<String, int> listenCounts = {};
+  final Map<String, int> cancelCounts = {};
+
   final List<({String key, DynamicValue value})> writes = [];
 
   /// Thrown by `write` when non-null.
@@ -42,7 +61,13 @@ class _FakeUpstream implements PipeUpstream {
   Duration writeDelay = Duration.zero;
 
   StreamController<DynamicValue> controllerFor(String key) =>
-      controllers.putIfAbsent(key, () => StreamController<DynamicValue>());
+      controllers.putIfAbsent(
+        key,
+        () => StreamController<DynamicValue>(
+          onListen: () => listenCounts[key] = (listenCounts[key] ?? 0) + 1,
+          onCancel: () => cancelCounts[key] = (cancelCounts[key] ?? 0) + 1,
+        ),
+      );
 
   @override
   Future<Stream<DynamicValue>> subscribe(String key) {
@@ -50,8 +75,15 @@ class _FakeUpstream implements PipeUpstream {
     if (hangingKeys.contains(key)) return Completer<Stream<DynamicValue>>().future;
     final failure = subscribeFailures[key];
     if (failure != null) return Future<Stream<DynamicValue>>.error(failure);
+    if (deferredKeys.contains(key)) {
+      return (_deferred[key] = Completer<Stream<DynamicValue>>()).future;
+    }
     return Future.value(controllerFor(key).stream);
   }
+
+  /// Hands over the stream a [deferredKeys] subscribe has been holding back.
+  void resolveSubscribe(String key) =>
+      _deferred.remove(key)!.complete(controllerFor(key).stream);
 
   @override
   Future<void> write(String key, DynamicValue value) async {
@@ -250,6 +282,46 @@ void main() {
       expect(values.where((e) => e.key == 'k'), isEmpty,
           reason: 'a retired key must not deliver a reading behind its own '
               'unsubscribe');
+    });
+
+    test(
+        'a key unsubscribed while its subscribe is in flight still releases '
+        'the stream it is handed', () async {
+      // The race: main subscribes, the operator navigates away (AssetStack
+      // tears every asset down on a fresh page), the unsubscribe lands — and
+      // only THEN does `_monitorLoop` finish and hand a stream over.
+      //
+      // Declining to wire it up is correct but not sufficient. StateMan's
+      // `_monitor` created the four monitored items on the PLC before that
+      // future resolved, independent of whether anybody ever listens, and
+      // `AutoDisposingStream` only reaps them on a listen→cancel transition.
+      // A stream this endpoint never touches is a monitored item that stays
+      // live on a real PLC for the rest of the worker's life — with no code
+      // path left to reap it, because the next successful subscribe reuses
+      // the same cached stream and hides the leak.
+      upstream.deferredKeys.add('k');
+      endpoint.handleControl(const PipeSubscribe('k'));
+      await ticks(1);
+      endpoint.handleControl(const PipeUnsubscribe('k'));
+      upstream.resolveSubscribe('k');
+      await ticks(1);
+
+      expect(upstream.listenCounts['k'], 1,
+          reason: 'the unwanted stream must be listened to once, or '
+              'AutoDisposingStream._handleListen never fires and its teardown '
+              'can never be reached');
+      expect(upstream.cancelCounts['k'], 1,
+          reason: 'and cancelled straight back, so the 1→0 listener '
+              'transition arms the idle teardown that reaps the monitored '
+              'item');
+      expect(endpoint.subscribedKeys, isEmpty);
+
+      received.clear();
+      upstream.controllerFor('k').add(_sample(9));
+      await ticks(3);
+      expect(received, isEmpty,
+          reason: 'releasing it is not attaching it — a key nobody asked for '
+              'must still pipe nothing');
     });
 
     test('a hung subscribe parks neither a later subscribe nor an unsubscribe',

@@ -311,10 +311,14 @@ class PipeWorkerEndpoint {
   }
 
   void _attach(String key, Stream<DynamicValue> stream) {
-    if (_disposed) return;
-    // The unsubscribe may have landed while the upstream call was in flight.
-    // Attaching now would leave a stream nobody will ever cancel.
-    if (!_subscribed.contains(key)) return;
+    // The unsubscribe (or the endpoint's own teardown) may have landed while
+    // the upstream call was in flight. Attaching now would leave a stream
+    // nobody will ever cancel — but simply dropping it leaks the monitored
+    // items instead, so it is released rather than ignored. See [_release].
+    if (_disposed || !_subscribed.contains(key)) {
+      _release(key, stream);
+      return;
+    }
     _streams[key]?.cancel();
     _streams[key] = stream.listen(
       (sample) => _onSample(key, sample),
@@ -322,6 +326,38 @@ class PipeWorkerEndpoint {
       onDone: () => _onDone(key),
       cancelOnError: false,
     );
+  }
+
+  /// Lets go of an upstream stream that arrived after nobody wanted it — by
+  /// listening to it once and cancelling straight back.
+  ///
+  /// **Doing nothing here leaks one OPC UA monitored item per race hit, for
+  /// the life of the worker.** `StateMan._monitor` creates the raw monitored
+  /// items inside `_monitorLoop`, BEFORE the stream it returns is handed over
+  /// and regardless of whether anyone ever listens; `AutoDisposingStream` only
+  /// tears them down in `_handleCancel`, which cannot fire until
+  /// `_handleListen` has fired at least once. An untouched stream therefore
+  /// never arms the idle teardown, and the entry sits in
+  /// `StateMan._subscriptions` with a live item on the PLC — invisibly, since
+  /// a later subscribe of the same key reuses the cached (not spent) stream
+  /// and does attach a listener that time. The trigger is ordinary navigation
+  /// churn, not a fault: the subscribe→ready window spans `awaitConnect`,
+  /// `doTheWork` and a 10 s `subscriptionCreate`, and a page teardown lands
+  /// inside it easily.
+  ///
+  /// The listener is deaf on purpose — this touch is a release, not an
+  /// attachment — but it takes [onError] anyway, because the stream is a
+  /// `ReplaySubject` that may hand over a buffered error the instant it is
+  /// listened to, and an unhandled one here would be swallowed by the guarded
+  /// zone with nothing said to main.
+  void _release(String key, Stream<DynamicValue> stream) {
+    stream
+        .listen((_) {}, onError: (Object _) {}, cancelOnError: false)
+        .cancel()
+        .catchError((Object error) {
+      _logger.w('pipe endpoint: releasing the unwanted stream for "$key" '
+          'failed: $error');
+    });
   }
 
   void _unsubscribe(String key) {
