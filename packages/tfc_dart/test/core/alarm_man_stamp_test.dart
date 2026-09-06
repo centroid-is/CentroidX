@@ -275,7 +275,12 @@ void main() {
       await _waitFor(() => active.any((s) => s.isNotEmpty));
 
       fake.emit(_nodeA, DynamicValue(value: 1.0)..sourceTimestamp = plantClear);
-      await _waitFor(() => history.any((h) => h.isNotEmpty));
+      // Wait for a CLOSED entry, not merely a non-empty history event: the
+      // history stream carries `RingBuffer.buffer`, a fixed 1000-slot list of
+      // nulls, so `isNotEmpty` is true from the first event onwards.
+      await _waitFor(() => history.last
+          .whereType<AlarmActive>()
+          .any((e) => e.deactivated != null));
 
       expect(active.last, isEmpty, reason: 'the alarm cleared');
       final closed = history.last.whereType<AlarmActive>().single;
@@ -390,9 +395,26 @@ void main() {
       expect(source, isNot(contains('customInsert')),
           reason: 'AlarmMan contains no insert statement at all');
       expect(source, isNot(contains('INSERT INTO')));
-      expect(source, isNot(contains("?? ''")),
-          reason: 'the two remaining empty-string binds on the expression '
-              'column left with the method (14-06 fixed the timestamp one)');
+      expect(source, isNot(contains('Variable.withString(')),
+          reason: 'the write-side binds went with _addToDb — including the '
+              "expression column's `?? ''`, which 14-06 left for this plan");
+    });
+
+    test("the one surviving `?? ''` is a read, not a bind", () {
+      // 14-06 recorded two remaining empty-string defaults, at :486 and :549,
+      // and expected both to leave with `_addToDb`. Only :486 did. :549 is
+      // `Expression(formula: row.expression ?? '')` in `getRecentAlarms` — a
+      // READ, giving a non-nullable constructor a neutral value for a row
+      // whose expression column is null. It is not a SQL bind, it cannot
+      // reach a database, and it does not live in the deleted method. This
+      // arm pins that reading so the discrepancy is not rediscovered as a
+      // defect.
+      final lines = _alarmSourceWithoutComments()
+          .split('\n')
+          .where((l) => l.contains("?? ''"))
+          .toList();
+      expect(lines, hasLength(1));
+      expect(lines.single, contains('Expression(formula:'));
     });
 
     test('the clock is injected, not read', () {

@@ -150,15 +150,27 @@ void main() async {
     alias: 'alarmman',
   );
 
-  // Setup alarm monitoring with database persistence
+  // Alarm monitoring. This whole block — the duplicate `alarmman` StateMan
+  // above it included — is replaced by `AlarmEngine` in 14-08; the minimum was
+  // done here to keep the tree compiling after 14-07 deleted the panel-side
+  // write path.
+  //
+  // `historyToDb: true` used to be passed here and no longer exists (D-6):
+  // persistence belongs to the backend's `AlarmHistoryWriter`, which always
+  // writes. Nothing in this process writes alarm history until 14-08 wires
+  // that engine up.
+  //
+  // `clock: DateTime.now` is the composition root supplying the reading —
+  // `core/alarm.dart` spells the literal nowhere, which is what keeps an
+  // alarm instant from silently becoming this machine's opinion (D-2).
   final alarmHandler = await AlarmMan.create(
     prefs,
     stateMan,
-    historyToDb: true,
+    clock: DateTime.now,
   );
   // AlarmMan only wires its evaluators up when someone listens to the active
   // stream. Nothing else in this process does, so without this subscription
-  // no alarm was ever evaluated and historyToDb never wrote a row.
+  // no alarm was ever evaluated at all.
   alarmHandler.activeAlarms().listen((_) {});
 
   // Disabled servers are skipped entirely — no isolate, no connect loop.

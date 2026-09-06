@@ -25,15 +25,17 @@ class StopActivation {
 /// Turns alarm activations into the intervals the timeline draws.
 ///
 /// The reason this exists at all is that the two halves of the record live in
-/// different places. [AlarmMan] writes a row to `alarm_history` from
-/// `_removeActiveAlarm`, i.e. **when an alarm clears** — so the table holds
-/// closed intervals only, and an alarm that is standing right now is missing
-/// from it entirely. The live set from `activeAlarms()` holds exactly the
-/// ones the table lacks.
+/// different places. `alarm_history` is what the plant database knows; the
+/// live set from `activeAlarms()` is what this panel is watching right now.
+/// Neither is complete on its own — a panel that has only just started reads
+/// its standing alarms out of the table, and a station whose database is
+/// unreachable still has a live set — so both are read and unioned, the same
+/// way `alarmHistoryEntries` already does for the alarm history list.
 ///
-/// Read one and you get a chart that omits the single stop the operator came
-/// to look at. So both are read and unioned, the same way
-/// `alarmHistoryEntries` already does for the alarm history list.
+/// Before 14-06 the table held **closed** intervals only, because a row was
+/// written when an alarm cleared. It now holds a row for as long as the alarm
+/// stands, which is why an open history entry is an ordinary case here and not
+/// an anomaly.
 class StopIntervalSource {
   /// Closed activations, from `alarm_history`.
   final List<StopActivation> closed;
@@ -46,24 +48,43 @@ class StopIntervalSource {
 
   static const empty = StopIntervalSource(closed: [], open: []);
 
-  /// Builds the union from the two sources [AlarmMan] exposes.
+  /// Builds the union from the two sources an [AlarmSource] exposes.
   ///
   /// [history] is what `getRecentAlarms()` returned; [active] is the latest
-  /// `activeAlarms()` event. An alarm appearing in both — which happens for a
-  /// frame as `AlarmMan` moves an instance from the active set into the
-  /// history buffer — is counted once, as closed, because the closed record is
-  /// the more complete one.
+  /// `activeAlarms()` event. An alarm appearing in both is counted once, as
+  /// closed, because the history record is the more complete one.
   factory StopIntervalSource.fromAlarms({
     required Iterable<AlarmActive> history,
     required Iterable<AlarmActive> active,
   }) {
     final closed = <StopActivation>[];
-    // By identity, not value: AlarmActive has no value equality, and it is the
-    // same instance AlarmMan moves between the two collections.
-    final seen = Set<AlarmActive>.identity();
+    // Keyed by VALUE, on (uid, ruleIndex, start).
+    //
+    // This used to be a `Set<AlarmActive>.identity()`, whose stated
+    // precondition was that it is the same instance `AlarmMan` moves between
+    // the two collections. That precondition is false as of 14-06: the history
+    // half is decoded out of `alarm_history` and the live half arrives off the
+    // pipe (or out of the local active set), so one standing alarm is two
+    // different objects and an identity set sees two activations. Every live
+    // alarm in the plant would be drawn twice, and every stop it belongs to
+    // double-counted (P-8, D-12).
+    //
+    // `AlarmActive` has no value equality — and giving it one would change
+    // what a dozen widgets mean by `==` — so the key is built here instead.
+    // `ruleIndex` is in it because two rules of one alarm can stand at the
+    // same instant and are two activations; it is nullable because a pre-v7
+    // row states none, and two such rows for one alarm at one instant are
+    // still one activation.
+    final seen = <(String, int?, DateTime)>{};
+
+    (String, int?, DateTime) keyOf(AlarmActive entry) => (
+          entry.alarm.config.uid,
+          entry.notification.ruleIndex,
+          entry.notification.timestamp,
+        );
 
     for (final entry in history) {
-      if (!seen.add(entry)) continue;
+      if (!seen.add(keyOf(entry))) continue;
       final deactivated = entry.deactivated;
       // A history entry with no deactivation time has not actually closed;
       // treat it as open rather than inventing an end for it.
@@ -79,7 +100,7 @@ class StopIntervalSource {
 
     final open = <StopActivation>[];
     for (final entry in active) {
-      if (!seen.add(entry)) continue;
+      if (!seen.add(keyOf(entry))) continue;
       open.add(StopActivation(
         alarmUid: entry.alarm.config.uid,
         interval: AlarmInterval(

@@ -29,7 +29,11 @@ Future<AlarmMan> alarmMan(Ref ref) async {
         'alarm_man_config', jsonEncode(AlarmManConfig(alarms: [])));
   }
 
-  return await AlarmMan.create(prefs, stateMan);
+  // `clock: DateTime.now` is required, and this provider is the composition
+  // root that supplies it for a panel: `packages/tfc_dart/lib/core/alarm.dart`
+  // spells the literal nowhere, so an alarm instant can only ever be the
+  // plant's word or a reading someone handed in on purpose (14-07, D-2).
+  return await AlarmMan.create(prefs, stateMan, clock: DateTime.now);
 }
 
 /// The alarm list of whichever [AlarmMan] is current, or `null` when there is
