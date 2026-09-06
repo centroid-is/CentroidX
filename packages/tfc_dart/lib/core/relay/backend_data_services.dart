@@ -338,6 +338,14 @@ final class BackendTimeseries implements relay.TimeseriesApi {
   /// month of one-second samples is millions of points and a chart has
   /// hundreds of pixels; forwarding them under the bounded method's name is
   /// the denial of service the bounded method exists to prevent.
+  ///
+  /// An over-budget answer is not *only* the fallback, though, and the
+  /// refusal distinguishes the two. The bucketed path can also overrun by a
+  /// bucket — three rows — when the bucket width and `time_bucket`'s
+  /// alignment disagree about how many buckets a window spans (13-12: 50
+  /// points asked for, 51 answered). That is a defect in the sizing, in
+  /// `database.dart`, and sending its reader to the fallback's doc comment
+  /// sends them to the wrong file.
   @override
   Future<List<relay.TimeseriesData>> queryTimeseriesDataDownsampled(
       String tableName, DateTime from, DateTime to,
@@ -370,13 +378,36 @@ final class BackendTimeseries implements relay.TimeseriesApi {
         series.table, from, to,
         maxPoints: maxPoints);
     if (rows.length > maxPoints) {
+      // Two different defects arrive here and they live in different files,
+      // so the refusal says which one it is looking at rather than guessing.
+      //
+      // The bucketed path emits exactly three rows per bucket (min, max,
+      // last), so its answer is always a multiple of three and never more
+      // than a bucket or two past the budget when the bucket arithmetic slips
+      // — that is a boundary bug in the *sizing*, in database.dart. The
+      // fallback path returns every row in the window, which is a number with
+      // no relation to maxPoints at all. A month of one-second samples is
+      // millions of rows; three extra points is not.
+      final overshootMultiple = rows.length % 3 == 0;
+      final overBy = rows.length - maxPoints;
+      final looksLikeBoundaryOvershoot = overshootMultiple && overBy <= 3;
       throw ArgumentError('$member asked for at most $maxPoints points and the '
-          'database answered ${rows.length}, which is its silent fallback to a '
-          'raw query (database.dart:947) — usually a struct table, which has '
-          'no `value` column to bucket. It is refused rather than forwarded: '
-          'the whole reason this method exists separately is that the raw '
-          'result does not fit on the link. Ask for a narrower window through '
-          'queryTimeseriesData, or plot one member');
+          'database answered ${rows.length}. It is refused rather than '
+          'forwarded: the whole reason this method exists separately is that '
+          'an unbounded result does not fit on the link. '
+          '${looksLikeBoundaryOvershoot ? 'The answer is $overBy over the '
+              'budget and a multiple of three, so this is the bucketed path '
+              'returning one bucket too many, not the raw fallback — a raw '
+              'read of this window would be orders of magnitude larger. Look '
+              'at the bucket sizing and the time_bucket origin in '
+              '`Database.queryTimeseriesDataDownsampled` / '
+              '`buildDownsampleSql` (database.dart): a window that does not '
+              'begin on a bucket boundary, or one whose span divides the '
+              'width exactly, spans one more bucket than it was sized for.' : 'The answer bears no relation to the budget, which is the shape '
+              'of the silent fallback to a raw query (database.dart:947) — '
+              'usually a struct table, which has no `value` column to bucket, '
+              'or a non-numeric column type. Ask for a narrower window '
+              'through queryTimeseriesData, or plot one member.'}');
     }
     return _project(member, tableName, series.member, rows);
   }

@@ -430,12 +430,56 @@ class ValueColumnType {
   const ValueColumnType(this.dataType, this.udtName);
 }
 
+/// The bucket width, in milliseconds, that fits a [rangeMs] window into at
+/// most [numBuckets] buckets.
+///
+/// `floor + 1`, not `ceil`, and the difference is one whole bucket — three
+/// rows — in the one case the obvious spelling gets wrong. The upper bound of
+/// the query's window is **inclusive** (`time <= $3`), so a window whose span
+/// divides exactly by the width has a sample sitting on the far boundary, and
+/// that sample opens a bucket of its own: `ceil(500000 / 10) = 50000` puts the
+/// 500-second window's last sample in an eleventh bucket, 33 rows for a
+/// `maxPoints` of 30. Adding one millisecond makes the width strictly greater
+/// than `rangeMs / numBuckets`, so `rangeMs / bucketMs < numBuckets` and the
+/// inclusive endpoint lands in the last bucket rather than after it.
+///
+/// The guarantee is `floor(rangeMs / bucketMs) + 1 <= numBuckets`, i.e. the
+/// window touches at most [numBuckets] boundaries — given that the buckets are
+/// aligned to the window start, which is what the origin argument in
+/// [buildDownsampleSql] is for. The two are one property split across two
+/// languages; neither is sufficient alone.
+@visibleForTesting
+int downsampleBucketMs(int rangeMs, int numBuckets) =>
+    (rangeMs / numBuckets).floor() + 1;
+
 /// Builds the min/max/last downsampling SQL used by
 /// [Database.queryTimeseriesDataDownsampled].
 ///
 /// [quotedTable] must already have its embedded double quotes doubled; it is
 /// interpolated inside `"..."`. The statement takes three positional
 /// parameters: `$1` the bucket interval, `$2`/`$3` the inclusive time bounds.
+///
+/// `$2` is passed to `time_bucket` a second time, as its **origin**. Without
+/// it, `time_bucket(width, time)` aligns buckets to a fixed origin of its own
+/// — the epoch, for sub-day widths — and a window that is exactly N intervals
+/// wide but does not *begin* on one of those boundaries spans N+1 buckets.
+/// Since each bucket contributes three rows, the caller's `maxPoints` was
+/// exceeded by three whenever the window happened to be misaligned, which is
+/// almost always. Measured on TimescaleDB 2.x / pg17, one-second samples over
+/// `06:00:00Z .. 06:08:19Z` at a width of 31188 ms: 17 distinct buckets
+/// epoch-aligned, the first of them labelled `05:59:59.976` — before the
+/// window opens — against 16 buckets when the window start is the origin.
+///
+/// The `LEAST(..., $3)` on the two derived labels is the other half of
+/// staying inside the window. The three rows of a bucket are labelled at its
+/// start, its midpoint and its end so that they spread across the bucket
+/// rather than piling up on one instant, but the end of the bucket that
+/// straddles the window's upper bound lies *past* that bound: same numbers as
+/// above, the last bucket is labelled `06:08:19.008` for a window ending at
+/// `06:08:19`. Clamping only ever moves a label that would otherwise fall
+/// outside the range the caller asked for, and it is what makes the newest
+/// point land on the window end, where a chart's axis ends and where an
+/// operator reads the current value.
 ///
 /// The per-bucket "last" value is TimescaleDB's `last(value, time)`, **not**
 /// `(array_agg(value ORDER BY time DESC))[1]`. The two are equivalent — both
@@ -469,7 +513,7 @@ String buildDownsampleSql(
         ),
         agg AS (
           SELECT
-            time_bucket($1::interval, time) AS bucket,
+            time_bucket($1::interval, time, $2::timestamptz) AS bucket,
             idx,
             min(val)                                   AS min_val,
             max(val)                                   AS max_val,
@@ -479,16 +523,16 @@ String buildDownsampleSql(
         )
         SELECT bucket AS time, array_agg(min_val ORDER BY idx) AS value FROM agg GROUP BY bucket
         UNION ALL
-        SELECT bucket + $1::interval * 0.5, array_agg(max_val ORDER BY idx) FROM agg GROUP BY bucket
+        SELECT LEAST(bucket + $1::interval * 0.5, $3::timestamptz), array_agg(max_val ORDER BY idx) FROM agg GROUP BY bucket
         UNION ALL
-        SELECT bucket + $1::interval, array_agg(last_val ORDER BY idx) FROM agg GROUP BY bucket
+        SELECT LEAST(bucket + $1::interval, $3::timestamptz), array_agg(last_val ORDER BY idx) FROM agg GROUP BY bucket
         ORDER BY 1
       ''';
   }
   return r'''
         WITH agg AS (
           SELECT
-            time_bucket($1::interval, time) AS bucket,
+            time_bucket($1::interval, time, $2::timestamptz) AS bucket,
             min(value)                                   AS min_val,
             max(value)                                   AS max_val,
             last(value, time)                            AS last_val
@@ -500,9 +544,9 @@ String buildDownsampleSql(
         )
         SELECT bucket              AS time, min_val  AS value FROM agg
         UNION ALL
-        SELECT bucket + $1::interval * 0.5,  max_val  AS value FROM agg
+        SELECT LEAST(bucket + $1::interval * 0.5, $3::timestamptz),  max_val  AS value FROM agg
         UNION ALL
-        SELECT bucket + $1::interval,         last_val AS value FROM agg
+        SELECT LEAST(bucket + $1::interval, $3::timestamptz),         last_val AS value FROM agg
         ORDER BY 1
       ''';
 }
@@ -1500,8 +1544,12 @@ class Database {
   /// For each bucket, returns 3 points: min value, max value, and last value,
   /// preserving spikes and step changes while reducing density.
   ///
-  /// The bucket interval is auto-calculated from the time range and [maxPoints]:
-  ///   bucketInterval = (to - from) / (maxPoints / 3)
+  /// The bucket interval is auto-calculated from the time range and
+  /// [maxPoints] by [downsampleBucketMs], and the result is guaranteed to hold
+  /// at most [maxPoints] rows. That bound is the reason this method exists
+  /// apart from [queryTimeseriesData], and it is joint work between the width
+  /// computed here and the origin passed to `time_bucket` in
+  /// [buildDownsampleSql] — see both for the two ways it used to be exceeded.
   ///
   /// Supports scalar numeric columns (DOUBLE PRECISION, INTEGER) and
   /// numeric array columns (DOUBLE PRECISION[]). For unsupported column types
@@ -1524,7 +1572,7 @@ class Database {
       return queryTimeseriesData(tableName, endTime, from: startTime);
     }
 
-    final bucketMs = (rangeMs / numBuckets).ceil();
+    final bucketMs = downsampleBucketMs(rangeMs, numBuckets);
     final intervalStr = '$bucketMs milliseconds';
     final quotedTable = tableName.replaceAll('"', '""');
 

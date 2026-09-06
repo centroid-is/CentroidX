@@ -103,6 +103,14 @@ final class _FakeTimeseries implements TimeseriesSource {
   /// query does for a column type it cannot bucket.
   bool downsampleFallsBack = false;
 
+  /// When set, `queryTimeseriesDataDownsampled` answers exactly this many
+  /// rows — the other way the budget gets exceeded. The bucketed path emits
+  /// three rows per bucket, so when the bucket sizing and `time_bucket`'s
+  /// alignment disagree about how many buckets a window spans it overruns by
+  /// a whole bucket and no more (13-12: 51 for a budget of 50). That is a
+  /// different defect, in a different file, from the fallback above.
+  int? downsampleAnswers;
+
   void seed(String table, List<db.TimeseriesData<dynamic>> points) =>
       rows[table] = points;
 
@@ -148,6 +156,7 @@ final class _FakeTimeseries implements TimeseriesSource {
     asks.add(_Ask('queryTimeseriesDataDownsampled', tableName,
         maxPoints: maxPoints, from: from, to: to));
     final window = _window(tableName, from, to);
+    if (downsampleAnswers != null) return window.take(downsampleAnswers!).toList();
     if (downsampleFallsBack || window.length <= maxPoints) return window;
     final step = (window.length - 1) / (maxPoints - 1);
     return [
@@ -686,6 +695,35 @@ void main() {
               'for a column type it cannot bucket, silently '
               '(database.dart:947). Passing that on is a million rows into a '
               'socket under the bounded method\'s name');
+    });
+
+    test('a one-bucket overshoot is refused as a sizing bug, not as the raw '
+        'fallback', () async {
+      // The refusal is read by whoever has to fix it, and the two ways past
+      // the budget live in different files. 51 for a budget of 50 is three
+      // rows — one bucket — and a raw read of this window would have been
+      // 500. Naming the fallback here would send the next reader to
+      // `database.dart:947` and a struct-table story that does not apply,
+      // when the defect is in the bucket sizing a thousand lines below it.
+      final fake = _FakeTimeseries()
+        ..downsampleAnswers = 51
+        ..seed(_table, [
+          for (var i = 0; i < 500; i++)
+            db.TimeseriesData<dynamic>(i, _base.add(Duration(seconds: i))),
+        ]);
+      await expectLater(
+          () => _timeseries(fake).queryTimeseriesDataDownsampled(
+              _table, _base, _base.add(const Duration(seconds: 499)),
+              maxPoints: 50),
+          throwsA(isA<ArgumentError>().having((e) => '${e.message}', 'message',
+              allOf(
+                contains('50'),
+                contains('51'),
+                contains('time_bucket'),
+                isNot(contains('database.dart:947')),
+              ))),
+          reason: 'a three-row overshoot diagnosed as the silent raw fallback '
+              'sends the next reader to the wrong file');
     });
 
     test('a read wider than the row budget is refused, naming the bounded '
