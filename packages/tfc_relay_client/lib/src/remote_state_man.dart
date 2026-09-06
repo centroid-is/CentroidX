@@ -659,16 +659,17 @@ final class RemoteStateMan implements StateManApi {
   /// request leaves — a socket that dies between the two would otherwise lose
   /// the one identifier the outcome can ever be reconciled against.
   ///
-  /// The non-finite halves are not symmetric, and the asymmetry is copied
-  /// verbatim from `channel_state_man.dart:207-227`:
+  /// A non-finite **value** and a non-finite **expect** are both refused
+  /// outright, with an `ArgumentError` and before anything reaches the wire.
+  /// See the two [ArgumentError]s in [_write] for what each one would cost.
   ///
-  ///  * a non-finite **value** is sanitized *knowingly*: null goes on the wire,
-  ///    because `jsonEncode` throws on NaN and ±Infinity rather than emitting
-  ///    null, so an unsanitized value does not fail one write — it fails the
-  ///    frame, which a real pipe shares with every other client on it.
-  ///    [Quality.badNonFinite] is attached locally once the outcome is back, so
-  ///    the operator sees a fault rather than a blank box.
-  ///  * a non-finite **expect** is refused outright. See the [ArgumentError].
+  /// This path used to sanitize the value to `null` and send it, the way
+  /// telemetry does (`channel_state_man.dart:207-227`) — but that is a
+  /// server *fan-out* argument (one non-finite value fails the whole frame a
+  /// real pipe shares with every other client) applied to this client's own
+  /// request channel, where nothing has been sent yet and refusing costs
+  /// nothing at all. `WriteParams` has always refused it one layer down; the
+  /// two layers now hold one policy instead of two opposite ones.
   @override
   Future<WriteResult> write(String key, Object? value,
           {Object? expect, String? cmd}) =>
@@ -685,8 +686,18 @@ final class RemoteStateMan implements StateManApi {
   /// exactly one place [Methods.write] is named.
   Future<WriteResult> _write(String key, Object? value,
       {Object? expect, String? cmd, bool hold = false}) async {
+    // Both walks run before either refusal so that a non-finite buried in a
+    // nested structure is caught too, not just a bare double.
     final sanitizedValue = sanitize(value);
     final sanitizedExpect = sanitize(expect);
+    if (sanitizedValue.hadNonFinite) {
+      throw ArgumentError.value(
+          value,
+          'value',
+          'a write cannot carry a non-finite number: it encodes to null, and '
+              'a write of null actuates the device with a value nobody chose '
+              'while the operator is told the write applied');
+    }
     if (sanitizedExpect.hadNonFinite) {
       throw ArgumentError.value(
           expect,
@@ -745,11 +756,11 @@ final class RemoteStateMan implements StateManApi {
         // protocol package exists to prevent — and it left the DTO's `hold`
         // serialization with no production caller at all.
         //
-        // The values handed over are the sanitized ones, so the factory's
-        // non-finite refusal cannot fire here: a non-finite `expect` was
-        // already refused above with the message this path owes the caller,
-        // and a non-finite `value` is deliberately sent as null and marked
-        // bad-quality locally (`_markNonFinite`).
+        // The factory's own non-finite refusal cannot fire here: both halves
+        // were refused above, with the messages this path owes the caller.
+        // The sanitized values are handed over rather than the raw ones only
+        // because they are provably the same objects once the refusals have
+        // passed — nothing survives sanitization to be changed by it.
         WriteParams(
           cmd: id,
           key: key,
@@ -781,7 +792,6 @@ final class RemoteStateMan implements StateManApi {
     }
 
     _adoptReadback(key, result);
-    if (sanitizedValue.hadNonFinite) _markNonFinite(key);
     return result;
   }
 
@@ -852,26 +862,14 @@ final class RemoteStateMan implements StateManApi {
     });
   }
 
-  /// Records, locally, that the value written to [key] was not a number.
-  ///
-  /// After the outcome rather than before it, and the ordering is load-bearing
-  /// (`channel_state_man.dart:252-265`). The gateway pushes the readback as an
-  /// update whose flush is scheduled while the write is still being handled, so
-  /// on an ordered channel that update is delivered *before* the response this
-  /// runs after. Marking first would be marking something the readback then
-  /// overwrote — with a good-quality null, which renders as a healthy empty box.
-  void _markNonFinite(String key) {
-    if (_disposed) return;
-    final store = _storeOf(key);
-    final held = store.peek(key);
-    store.applyBatch({
-      key: DynamicValue(
-        value: null,
-        quality: Quality.badNonFinite,
-        sourceTime: held?.sourceTime,
-      ),
-    });
-  }
+  // `_markNonFinite` lived here: it stamped [Quality.badNonFinite] on a key
+  // after a write whose value had been sanitized to null, so the operator saw
+  // a fault rather than a healthy empty box. Deleted rather than left as a
+  // decoy — no such write can happen now that [_write] refuses a non-finite
+  // value outright, and the local mark was only ever consolation for having
+  // actuated the plant with null in the first place. A non-finite arriving
+  // *from* the wire is a different path and still marks
+  // (`subscription_state.dart`, `DynamicValue.fromWire`).
 
   // -------------------------------------------------------- hold-to-run
 
