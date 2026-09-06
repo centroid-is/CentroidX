@@ -1,0 +1,70 @@
+/// A gateway in its own process, so a SIGTERM and an `exit(0)` are real.
+///
+/// `drain_close_test.dart` spawns this. It exists because the property under
+/// test is **what reaches the wire before the process is gone**, and no
+/// in-process fixture can measure that: a test cannot call `exit(0)`, and a
+/// server that is merely closed politely delivers its close frame every time.
+/// The rig measured the opposite (13-RIG-PROBE-EVIDENCE.md, probe P9): a
+/// `docker stop` on `centroidx-backend` disconnected every panel with **1006
+/// and an empty reason**, so a panel could not tell a deliberate restart from a
+/// broken network.
+///
+/// The three modes are the three candidate shutdowns, and each one is a
+/// measurement rather than a fixture detail:
+///
+///  * `bare` — `exit(0)` on the signal. What `bin/main.dart` did when the rig
+///    was probed. The control: it must produce 1006.
+///  * `sync` — close every socket with 4002 and `exit(0)` in the same turn of
+///    the event loop. The "best-effort synchronous close" that looks like it
+///    should work. It must ALSO produce 1006: `sink.close` hands the frame to
+///    a `StreamController` the socket consumer drains on a later turn, so a
+///    process that exits first never puts a byte of it on the wire.
+///  * `announce` — `announceDraining()` and then `exit(0)` on the next turn.
+///    The shipped shape, and the only one of the three that delivers 4002.
+///
+/// Every mode kills first and announces second, mirroring `bin/main.dart`:
+/// Phase 12's law is that the acquisition workers die synchronously on the
+/// signal and nothing awaits a graceful teardown.
+library;
+
+import 'dart:async';
+import 'dart:io';
+
+import 'package:tfc_relay_server/src/relay_server.dart';
+import 'package:tfc_relay_server/src/server_config.dart';
+import 'package:tfc_stateman_contract/testing/fake_state_man.dart';
+
+import 'permissive_resolver.dart';
+
+/// args: `<mode>` — one of `bare`, `sync`, `announce`.
+Future<void> main(List<String> args) async {
+  final mode = args.single;
+
+  final served = FakeStateMan();
+  final server = RelayServer(
+    api: served,
+    resolver: const PermissiveSeriesResolver(),
+    config: ServerConfig(tick: ServerConfig.minTick, port: 0),
+    onError: (_, __, ___) {},
+  );
+
+  ProcessSignal.sigterm.watch().listen((_) {
+    switch (mode) {
+      case 'bare':
+        exit(0);
+      case 'sync':
+        server.announceDraining();
+        exit(0);
+      case 'announce':
+        server.announceDraining();
+        // One turn, and one turn only. See `drain_close_test.dart`.
+        Timer(Duration.zero, () => exit(0));
+    }
+  });
+
+  await server.start();
+  // The handshake the parent waits on. Flushed by the newline; nothing else is
+  // ever written to stdout, so a parent matching on this line cannot match a
+  // log message instead.
+  stdout.writeln('listening ${server.port}');
+}
