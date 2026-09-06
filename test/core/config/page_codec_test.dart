@@ -228,12 +228,65 @@ void main() {
       );
     });
 
+    test('a save mints random ids, so two editors do not collide', () {
+      // The failure Fable's review caught in the first draft, where
+      // `pageItems` derived ids on every save. Two people each adding a lamp
+      // at the same index of the same page derive the *same* id from the same
+      // content — and their two assets collapse into one row, which is the
+      // exact failure rows exist to end. Derivation is a migration-only tool.
+      final a = PageManager.pagesFromJson(_fixtureBlob);
+      final b = PageManager.pagesFromJson(_fixtureBlob);
+
+      final idsA =
+          pageItems(a).where((i) => i.kind == ConfigKind.asset).map((i) => i.id);
+      final idsB =
+          pageItems(b).where((i) => i.kind == ConfigKind.asset).map((i) => i.id);
+
+      expect(idsA.toSet().intersection(idsB.toSet()), isEmpty,
+          reason: 'two independent saves of id-less assets must never agree '
+              'on an id');
+    });
+
+    test('the migration derives, so two stations do agree', () {
+      // The other side of the same coin, and why the flag exists at all.
+      expect(
+        pageItemsFromBlob(_fixtureBlob).map((i) => i.id).toList(),
+        pageItemsFromBlob(_fixtureBlob).map((i) => i.id).toList(),
+      );
+    });
+
+    test('an id survives a round trip through an old station', () {
+      // Late migrators only converge if the id-bearing blob is dual-written
+      // back — which requires deployed editors to preserve ids they do not
+      // know about. `BaseAsset.id` is `@JsonKey(includeIfNull: false)`, so it
+      // round-trips when set and is absent when not. If that ever changes,
+      // every migrated id is lost on the next save by an old station.
+      final migrated = pageItemsFromBlob(_fixtureBlob);
+      final ids = migrated
+          .where((i) => i.kind == ConfigKind.asset)
+          .map((i) => i.id)
+          .toList();
+
+      final reparsed = PageManager.pagesFromJson(pageBlobOf(migrated));
+      final survived = [
+        for (final page in reparsed.values)
+          for (final asset in page.assets) asset.id,
+      ];
+
+      expect(survived.whereType<String>().toSet(), ids.toSet());
+    });
+
     test('ids look like minted ones', () {
       // Nothing downstream should be able to tell a migrated id from one
       // `newAssetId()` produced: 24 lowercase hex characters.
-      for (final item in pageItemsFromBlob(_fixtureBlob)) {
-        if (item.kind != ConfigKind.asset) continue;
-        expect(item.id, matches(RegExp(r'^[0-9a-f]{24}$')));
+      for (final items in [
+        pageItemsFromBlob(_fixtureBlob),
+        pageItems(PageManager.pagesFromJson(_fixtureBlob)),
+      ]) {
+        for (final item in items) {
+          if (item.kind != ConfigKind.asset) continue;
+          expect(item.id, matches(RegExp(r'^[0-9a-f]{24}$')));
+        }
       }
     });
   });

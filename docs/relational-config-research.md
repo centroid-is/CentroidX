@@ -710,3 +710,41 @@ for building; the round-trip test is only evidence if it runs against
 current data.
 
 Everything else can proceed under the recommendations as stated.
+
+### Addendum: what reading the committed code changed
+
+Fable read both slices after writing §7 and found one more defect, in the
+code rather than the design.
+
+**`derivedAssetId` was being used on every save, not only the migration.**
+`pageItems` minted a derived id for any asset lacking one, so two editors
+each adding — say — a lamp at the same index of the same page would derive
+the *same* id from the same content, and their two assets would collapse
+into one row. That is the exact failure rows exist to end, reintroduced by
+the mechanism meant to make the migration safe. Derivation is now a
+migration-only flag (`deriveIds`, true exactly once, from
+`pageItemsFromBlob`); a save mints a random id through `Asset.ensureId()`.
+Pinned by three tests, including one asserting two independent saves never
+agree on an id.
+
+**And the hash is not the concurrency mechanism.** It converges only for
+identical inputs; two stations migrating from *divergent* copies — one from
+Postgres, one from a stale local cache — hash to different ids and produce
+silent duplicates that no primary key will flag. What actually closes that
+race is reading the blob and writing the rows in one transaction under a
+Postgres advisory lock. The hash earns re-run idempotency (no "already
+migrated" flag) and a testable migration; it does not earn safety. The doc
+comment now says so, so nobody later mistakes it for a guarantee.
+
+Two consequences worth carrying forward:
+
+- Late-migrating stations only converge if the id-bearing blob is
+  dual-written back in the same locked transaction. That works because
+  `BaseAsset.id` is `@JsonKey(includeIfNull: false)`, so a deployed editor
+  that has never heard of ids still preserves them. There is now a test
+  asserting exactly that — if it ever stops being true, every migrated id
+  is lost the next time an old station saves.
+- The Q4 compatibility view's contract must be written as **"structurally
+  equivalent, canonically encoded"**, never "identical bytes". No external
+  reader byte-compares; the one thing that does is `PreferencesWatcher`'s
+  `md5(value)`, so expect one harmless spurious reload at cutover.
