@@ -1,0 +1,460 @@
+/// The clock that notices silence on main — and only runs while somebody is
+/// watching.
+///
+/// ## Why a clock at all
+///
+/// Phase 12 gave main honest qualities *from the worker*: a link that faults
+/// says so, a tag that is retired says so, an isolate that dies says so. What
+/// none of those cover is a value that simply **stops arriving**. A frozen OPC
+/// UA session, a PLC that stopped scanning, a weigher that answered its last
+/// frame an hour ago — every one of them looks, to an event-driven pipeline,
+/// exactly like a tag that has not changed. The page renders the same numbers,
+/// in the same colour, at the same refresh rate, as a page watching a running
+/// plant, and nobody can see the difference by looking. That is the single
+/// failure CLAUDE.md names as the reason this whole project exists, and a
+/// declared `staleAfter` with nothing sweeping for it is that failure waiting
+/// to happen.
+///
+/// So this file is the sweep, and it is deliberately a **decorator** over
+/// [BackendValueSource] rather than an edit to the one 13-03 wrote. Everything
+/// it needs is on the seam `backend_seams.dart` declared for it —
+/// [BackendValueSource.markStale], [BackendValueSource.announceLinkLoss],
+/// [BackendValueSource.announceLinkUp] — and wrapping is what lets it see the
+/// two things the seam cannot express: *which keys somebody is actually
+/// watching*, and *when a value last arrived for one of them*.
+///
+/// ## Freshness ages on a monotonic anchor, never on the RTC
+///
+/// The doctrine that has caught four defects across v1.0, and the reason
+/// [_monotonic] is a process-wide [Stopwatch] rather than a pair of
+/// `DateTime` readings. *How long since this value arrived* is an elapsed-time
+/// question, and the wall clock **steps**: NTP corrects it, an operator sets
+/// it, a suspended VM resumes with a different one, DST moves it twice a year.
+/// A backwards correction larger than [staleAfter] made the old subtraction
+/// negative for every key in the store at once, so the sweep degraded nothing
+/// and the whole plant read fresh from PLCs nobody had heard from (08-REVIEW
+/// CR-02, fixed client-side in `6a499d65`); a forward step did the mirror
+/// image and greyed every panel at once.
+///
+/// There is deliberately **no clock seam to hand in**. A seam that accepts a
+/// steppable clock is a seam somebody steps, and an injected clock is
+/// precisely the machinery that stops testing a watchdog: a source that never
+/// runs its sweep passes every fake-clock case and shows a frozen-fresh page
+/// in the plant (`harness.dart:80-96`).
+///
+/// ## Five rules, and each one is a decision
+///
+///  1. **The sweep may only ever degrade.** If it could raise a quality, an
+///     operator would watch a fault clear itself while the fault was still
+///     happening — the same lie as a stale value, arrived at from the other
+///     direction and harder to catch because it looks like recovery. A key
+///     already carrying news at or worse than [relay.Quality.badStale]'s band
+///     stages nothing at all, which also means the four-times-per-deadline
+///     cadence costs a listening page **zero** rebuilds until something moves.
+///  2. **Health keys are skipped by [relay.PipeKeys.isPipeKey]** — a prefix
+///     test, never a roster lookup. `PIPE.connected` changes only when the
+///     link changes, so on a healthy pipe it is *always* older than any
+///     deadline; staling it greys out the one indicator an operator uses to
+///     decide whether to believe the rest of the screen, and greys it out
+///     exactly when nothing is wrong (HLTH-02). The prefix is what makes a
+///     health key invented in a later phase correct on the day it is invented.
+///  3. **Only watched keys are aged.** A key nobody watches has no monitored
+///     item upstream (13-03's refcount) and no box on any screen, so it cannot
+///     be fresh and there is nobody to tell. Ageing the whole key mapping
+///     would grey out every unbound tag on a perfectly healthy plant. The
+///     anchor for a key is set when the first watcher attaches, because that
+///     is the earliest instant this source could have begun noticing silence
+///     about it.
+///  4. **The timer is listener-gated.** It arms on the first watched key and
+///     disarms when the last one goes. An always-on `Timer.periodic` in
+///     `tfc_dart` plumbing fails unrelated widget tests ("A Timer is still
+///     pending…") and burns CPU on an idle backend; the pipe's own endpoints
+///     already follow this rule.
+///
+/// ## What this file does NOT do
+///
+/// **It does not close D-12-08-a and does not widen it.** There is a measured
+/// ~9 s window in which a blackholed key still shows its last number badged
+/// `good` before `badCommFault` arrives (12-08). [kBackendStaleAfter] is 10 s,
+/// chosen from *above* that window, so the sweep never beats the link's own
+/// announcement to the screen — and by the time the sweep could act, the key
+/// is already `badCommFault`, which rule 1 leaves alone. Phase 16's HARD-01
+/// (freshness anchored per link, so a link's own publish cycle proves a
+/// constant tag alive) is where that window closes. Lowering [staleAfter] to
+/// hide it would make a healthy constant tag decay, which is F3 — the very
+/// defect Phase 16 is reproducing.
+///
+/// Protocol types are imported `as relay`, the house rule inside `tfc_dart`.
+library;
+
+import 'dart:async';
+
+import 'package:logger/logger.dart';
+import 'package:tfc_dart/core/relay/backend_seams.dart';
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
+
+/// The process-wide monotonic anchor every age in this file is measured on.
+///
+/// A [Stopwatch] and not a clock: it counts elapsed time from an arbitrary
+/// origin and cannot be stepped by NTP, by an operator, by DST or by a VM
+/// resume. One instance for the process, because two sweeps comparing ages
+/// against two different origins would disagree about the same key.
+final Stopwatch _monotonic = Stopwatch()..start();
+
+/// `BackendValueSource` with a watchdog and a link-transition policy on top.
+///
+/// See the library doc. Composed at the root as
+/// `BackendStateMan(values: BackendFreshnessSweep(values: liveValues, …))`.
+final class BackendFreshnessSweep implements BackendValueSource {
+  /// Wraps [values] with a watchdog on a [staleAfter] deadline.
+  ///
+  /// [interval] defaults to [intervalFor] of the deadline. It is not a
+  /// constant because it is derived from a number the caller supplies.
+  BackendFreshnessSweep({
+    required BackendValueSource values,
+    required this.staleAfter,
+    Duration? interval,
+    Logger? logger,
+  })  : _values = values,
+        interval = interval ?? intervalFor(staleAfter),
+        _logger = logger ?? Logger();
+
+  final BackendValueSource _values;
+  final Logger _logger;
+
+  /// How long a value may go unheard-of before it stops being trustworthy.
+  @override
+  final Duration staleAfter;
+
+  /// This sweep's cadence. See [intervalFor] for how it was chosen.
+  final Duration interval;
+
+  /// The floor under [intervalFor].
+  ///
+  /// An implausibly short deadline out of a configuration file must not turn
+  /// the sweep into a busy loop on the one isolate serving every client.
+  static const Duration minimumInterval = Duration(milliseconds: 5);
+
+  /// A quarter of the deadline, floored at [minimumInterval].
+  ///
+  /// **The interval is chosen deliberately and the reasoning is this**, because
+  /// it is two costs pulling against each other. It bounds how late a stale
+  /// badge can be: a value is reported stale within 125 % of its deadline
+  /// rather than within 200 %, and that margin is what keeps a freshness case
+  /// green on a loaded machine instead of racing its own budget. And it is CPU
+  /// the backend spends whether or not anything is wrong — at the production
+  /// [kBackendStaleAfter] this is one pass over the *watched* key set every
+  /// 2.5 s, which on a page of 1500 keys is 1500 map lookups and a band
+  /// comparison, and stages nothing at all unless something has actually gone
+  /// quiet (rule 1). A quarter is the same arithmetic the gateway's
+  /// `FreshnessSweep.intervalFor` settled on; the two sides of the pipe having
+  /// one answer is worth more here than a second opinion.
+  static Duration intervalFor(Duration staleAfter) {
+    final quarter = staleAfter ~/ 4;
+    return quarter < minimumInterval ? minimumInterval : quarter;
+  }
+
+  /// The clock. A named field, so `freeze_test.dart`-style timer scans can see
+  /// exactly one of them in this file.
+  Timer? _timer;
+
+  /// Whether the clock is running right now.
+  bool get running => _timer != null;
+
+  /// How many passes have been made. A diagnostic, and the observable that
+  /// tells a case the gate actually opened.
+  int get sweeps => _sweeps;
+  int _sweeps = 0;
+
+  /// Every key this sweep has asked the source to degrade.
+  ///
+  /// A diagnostic, and the observable that lets an arm prove the sweep did not
+  /// even *ask* about a health key. Asserting on the health key's quality
+  /// alone cannot: [BackendValueSource.markStale] carries its own prefix guard,
+  /// so a sweep that asked would still be refused, and the arm would pass
+  /// against a sweep whose own exclusion had been deleted. Bounded by the keys
+  /// that have ever been watched, which is bounded by the key mappings.
+  Set<String> get degraded => Set<String>.unmodifiable(_degraded);
+  final Set<String> _degraded = <String>{};
+
+  /// One handle per key, so two callers watching one tag share one registration
+  /// with the sweep and one refcount underneath.
+  final Map<String, _SweptKey> _watched = <String, _SweptKey>{};
+
+  /// When each **watched** key was last heard from, on [_monotonic].
+  ///
+  /// Milliseconds and not a `DateTime`: see the library doc. A key leaves this
+  /// map when its last watcher goes, because an unwatched key has no monitored
+  /// item to be fresh from and nobody to tell.
+  final Map<String, int> _lastHeard = <String, int>{};
+
+  /// The broadcast controllers [subscribe] handed out, closed on [dispose].
+  final List<StreamController<relay.DynamicValue>> _streams =
+      <StreamController<relay.DynamicValue>>[];
+
+  /// True while this object is applying its own mutation to the source.
+  ///
+  /// A degradation notifies, and a notification is how [_heard] learns a value
+  /// arrived — so without this the sweep would record its own staling as a
+  /// fresh reading, reset the anchor, and never stale the key again.
+  bool _applying = false;
+
+  bool _disposed = false;
+
+  // ------------------------------------------------------------- the handles
+
+  /// A handle for [key] that also tells the sweep somebody is watching.
+  ///
+  /// The wrapper exists for the transition, not for the value: a listener
+  /// attached straight to the inner handle would notify perfectly and the
+  /// sweep would never learn the key was on a screen.
+  @override
+  relay.ValueListenable<relay.DynamicValue> listen(String key) => _watch(key);
+
+  /// The same store as a stream, over the same wrapped handle.
+  ///
+  /// Broadcast, because two widgets watching one key is the normal case and
+  /// the second must not be refused. The registration is driven by the
+  /// stream's own listeners, so a `subscribe` nobody listens to costs nothing
+  /// — neither a monitored item nor a place in the sweep.
+  @override
+  Stream<relay.DynamicValue> subscribe(String key) {
+    final watched = _watch(key);
+    late final StreamController<relay.DynamicValue> controller;
+    void forward() {
+      if (!controller.isClosed) controller.add(watched.value);
+    }
+
+    controller = StreamController<relay.DynamicValue>.broadcast(
+      onListen: () => watched.addListener(forward),
+      onCancel: () => watched.removeListener(forward),
+    );
+    _streams.add(controller);
+    return controller.stream;
+  }
+
+  _SweptKey _watch(String key) => _watched.putIfAbsent(
+      key, () => _SweptKey(this, key, _values.listen(key)));
+
+  // ---------------------------------------------------------- the passthrough
+
+  @override
+  relay.DynamicValue? read(String key) => _values.read(key);
+
+  @override
+  Future<relay.DynamicValue> readFresh(String key) => _values.readFresh(key);
+
+  @override
+  Future<Map<String, relay.DynamicValue>> readMany(List<String> keys) =>
+      _values.readMany(keys);
+
+  @override
+  List<String> get keys => _values.keys;
+
+  @override
+  int get roundTrips => _values.roundTrips;
+
+  @override
+  int get statusNotifications => _values.statusNotifications;
+
+  @override
+  void markStale(Iterable<String> keys) => _values.markStale(keys);
+
+  @override
+  void markPending(String key) => _values.markPending(key);
+
+  @override
+  void clearPending(String key) => _values.clearPending(key);
+
+  @override
+  void applyReadback(String key, relay.DynamicValue value) =>
+      _values.applyReadback(key, value);
+
+  @override
+  void announceLinkLoss(String reason) => _values.announceLinkLoss(reason);
+
+  @override
+  void announceLinkUp() => _values.announceLinkUp();
+
+  // --------------------------------------------------------------- the sweep
+
+  /// One pass over the watched set.
+  ///
+  /// Three rules, and each one is a decision — see the library doc:
+  /// health keys are skipped by prefix; a key with no recorded arrival is
+  /// skipped (nothing has ever come for it, so it is `notYetKnown` and not
+  /// stale, which are different statements); and a key already carrying news
+  /// at or worse than `badStale`'s band stages nothing, so a quiet plant costs
+  /// no rebuilds and no quality is ever improved.
+  ///
+  /// The whole pass is **one** [markStale] call. Fifty keys going quiet
+  /// together is one batch, not fifty.
+  void sweep() {
+    _sweeps++;
+    final now = _monotonic.elapsedMilliseconds;
+    final stale = <String>[];
+    for (final entry in _watched.entries) {
+      final key = entry.key;
+      if (relay.PipeKeys.isPipeKey(key)) continue;
+      final heard = _lastHeard[key];
+      if (heard == null) continue;
+      // Two readings of one monotonic counter. The subtraction that used to be
+      // here elsewhere took two wall-clock readings, and a backwards NTP step
+      // made it negative for every key at once.
+      if (now - heard < staleAfter.inMilliseconds) continue;
+      if (relay.Quality.badStale.band <= entry.value.value.quality.band) {
+        continue;
+      }
+      stale.add(key);
+    }
+    if (stale.isEmpty) return;
+    _degraded.addAll(stale);
+    // One line per transition, never per tick: the band guard above means a
+    // key that is already stale stages nothing, so a plant that has gone quiet
+    // logs once and then says nothing more about it.
+    _logger.w('backend freshness: ${stale.length} key(s) went quiet for longer '
+        'than ${staleAfter.inMilliseconds} ms and are now badged stale');
+    _apply(() => _values.markStale(stale));
+  }
+
+  /// Runs [mutation] with [_applying] raised, so the notifications it causes
+  /// are not mistaken for readings from the plant.
+  void _apply(void Function() mutation) {
+    _applying = true;
+    try {
+      mutation();
+    } finally {
+      _applying = false;
+    }
+  }
+
+  // --------------------------------------------------------------- the gating
+
+  /// The first watcher on [key] arrived.
+  ///
+  /// The anchor starts **now** rather than at whenever the cached value
+  /// happened to land. Nothing before this instant was observable: the key had
+  /// no monitored item, so no arrival could have been heard, and claiming an
+  /// age this object never measured would badge a key stale for a silence that
+  /// may never have happened.
+  void _register(String key) {
+    if (_disposed) return;
+    _lastHeard[key] = _monotonic.elapsedMilliseconds;
+    _arm();
+  }
+
+  /// The last watcher on [key] left.
+  void _deregister(String key) {
+    _lastHeard.remove(key);
+    if (_lastHeard.isEmpty) _disarm();
+  }
+
+  /// A value arrived for [key] — unless this object is the one that moved it.
+  void _heard(String key) {
+    if (_applying) return;
+    if (!_lastHeard.containsKey(key)) return;
+    _lastHeard[key] = _monotonic.elapsedMilliseconds;
+  }
+
+  void _arm() {
+    if (_timer != null) return;
+    // No immediate pass: every key in [_lastHeard] was anchored at the instant
+    // its watcher attached, so a pass right now can only find keys that were
+    // already being watched and were already swept on the previous tick.
+    _timer = Timer.periodic(interval, (_) => sweep());
+  }
+
+  void _disarm() {
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  // ------------------------------------------------------------ the teardown
+
+  /// Cancels the clock and disposes the source beneath.
+  ///
+  /// **Nothing on the timer path is awaited.** `Timer.cancel` is synchronous
+  /// and there is no in-flight pass to join: a sweep is a loop over a map and a
+  /// single `markStale`. The one `await` is the wrapped source's own
+  /// [BackendValueSource.dispose], which the composition root would otherwise
+  /// have no way to reach through this decorator.
+  ///
+  /// Idempotent: the contract cases register `dispose` with `addTearDown` and
+  /// also call it inside the case.
+  @override
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    _disarm();
+
+    for (final watched in _watched.values) {
+      watched._teardown();
+    }
+    _watched.clear();
+    _lastHeard.clear();
+
+    await Future.wait(<Future<void>>[
+      for (final controller in _streams)
+        if (!controller.isClosed) controller.close(),
+    ]);
+    _streams.clear();
+
+    await _values.dispose();
+  }
+}
+
+/// One key's handle: the source's own handle, plus the registration that makes
+/// the sweep aware of it.
+final class _SweptKey implements relay.ValueListenable<relay.DynamicValue> {
+  _SweptKey(this._owner, this._key, this._inner);
+
+  final BackendFreshnessSweep _owner;
+  final String _key;
+  final relay.ValueListenable<relay.DynamicValue> _inner;
+  final List<relay.VoidCallback> _listeners = <relay.VoidCallback>[];
+
+  bool _attached = false;
+
+  /// The source's value, always. There is no second copy to go stale against
+  /// the one the sweep is judging.
+  @override
+  relay.DynamicValue get value => _inner.value;
+
+  @override
+  void addListener(relay.VoidCallback listener) {
+    _listeners.add(listener);
+    if (_listeners.length != 1) return; // 0 -> 1 only
+    _attached = true;
+    _inner.addListener(_onChanged);
+    _owner._register(_key);
+  }
+
+  @override
+  void removeListener(relay.VoidCallback listener) {
+    if (!_listeners.remove(listener)) return;
+    if (_listeners.isNotEmpty) return; // 1 -> 0 only
+    if (!_attached) return;
+    _attached = false;
+    _inner.removeListener(_onChanged);
+    _owner._deregister(_key);
+  }
+
+  /// Iterates a copy: a listener may remove itself while being notified.
+  void _onChanged() {
+    _owner._heard(_key);
+    for (final listener in List<relay.VoidCallback>.of(_listeners)) {
+      listener();
+    }
+  }
+
+  /// Detaches from the source and forgets every listener. After this the
+  /// handle still reads — a widget mid-dispose may still build — but notifies
+  /// nobody.
+  void _teardown() {
+    if (_attached) {
+      _attached = false;
+      _inner.removeListener(_onChanged);
+    }
+    _listeners.clear();
+  }
+}

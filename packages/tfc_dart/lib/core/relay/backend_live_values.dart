@@ -351,13 +351,33 @@ final class BackendLiveValues implements BackendValueSource {
 
   /// Badges [keys] as no longer fresh, keeping the number underneath.
   ///
-  /// `uncertainLastKnown` says exactly the right thing: this is the last
-  /// reading and it is old. Dropping the payload would be a different and
-  /// wrong claim — that there is no reading at all.
+  /// **`badStale`, not `uncertainLastKnown`, and the difference is the whole
+  /// member.** `quality.dart` names these two as the pair that must stay
+  /// distinct: `uncertainLastKnown` is "current value unavailable, this is the
+  /// last known one — the pipe may be fine", and `badStale` is "out of date
+  /// past the requested freshness deadline — do not trust the number". This
+  /// method is only ever called by the freshness sweep, which means the
+  /// deadline has demonstrably passed, so it is the second sentence and not the
+  /// first. The freshness contract judges it as such
+  /// (`freshness_contract.dart`: `expect(node.value.quality,
+  /// Quality.badStale)`), and it is the band the gateway's own
+  /// `FreshnessSweep` has always used.
   ///
-  /// Health keys are skipped by prefix (HLTH-02): they change on events, so
-  /// they are always older than any freshness deadline, and sweeping them would
-  /// make an indicator read stale precisely while nothing is wrong.
+  /// The payload survives. Dropping it would be a different and wrong claim —
+  /// that there is no reading at all — where "it was 1450 and we have lost
+  /// touch" is actionable and "———" is not.
+  ///
+  /// Two keys are left alone:
+  ///
+  ///  * **health keys**, by prefix (HLTH-02): they change on events, so they
+  ///    are always older than any freshness deadline, and sweeping them would
+  ///    make an indicator read stale precisely while nothing is wrong;
+  ///  * **anything already carrying news at or worse than `badStale`'s band.**
+  ///    A `badCommFault` key rewritten to `badStale` would swap "the link is
+  ///    sick, waiting may fix it" for a weaker and less actionable claim, and
+  ///    an `errorConfig` key would have a permanent fault downgraded to a
+  ///    transient one. The comparison is on the band rather than on one code,
+  ///    so a code invented later is handled on the day it is invented.
   @override
   void markStale(Iterable<String> keys) {
     final batch = <String, relay.DynamicValue>{};
@@ -365,8 +385,8 @@ final class BackendLiveValues implements BackendValueSource {
       if (relay.PipeKeys.isPipeKey(key)) continue;
       final cached = _pipe.store.peek(key);
       if (cached == null) continue;
-      if (cached.quality == relay.Quality.uncertainLastKnown) continue;
-      batch[key] = cached.copyWith(quality: relay.Quality.uncertainLastKnown);
+      if (relay.Quality.badStale.band <= cached.quality.band) continue;
+      batch[key] = cached.copyWith(quality: relay.Quality.badStale);
     }
     if (batch.isEmpty) return;
     _pipe.store.applyBatch(batch);

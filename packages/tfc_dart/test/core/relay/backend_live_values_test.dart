@@ -618,11 +618,31 @@ void main() {
 
       f.values.markStale(<String>[_speedKey, _missingKey]);
 
-      expect(f.values.read(_speedKey)!.quality, relay.Quality.uncertainLastKnown);
+      // badStale, not uncertainLastKnown: the two are named in `quality.dart`
+      // as the pair that must stay distinct, and markStale is only ever called
+      // once the freshness deadline has demonstrably passed. 13-07 corrected
+      // this against the freshness contract, which asserts the code by name.
+      expect(f.values.read(_speedKey)!.quality, relay.Quality.badStale);
       expect(f.values.read(_speedKey)!.asInt, 1450,
           reason: 'stale means "this number is old", not "there is no number"');
       expect(f.values.read(_missingKey), isNull,
           reason: 'a key nothing arrived for cannot go stale');
+    });
+
+    test('markStale never improves a key that already carries worse news',
+        () async {
+      f.alpha.deliver(
+          _speedKey,
+          relay.DynamicValue(
+              value: 1450, quality: relay.Quality.badCommFault));
+      await _settle();
+
+      f.values.markStale(<String>[_speedKey]);
+
+      expect(f.values.read(_speedKey)!.quality, relay.Quality.badCommFault,
+          reason: 'rewriting badCommFault to badStale swaps "the link is '
+              'sick, waiting may fix it" for a weaker and less actionable '
+              'claim, and quality never improves on its own');
     });
 
     test('markStale never touches a health key', () async {
