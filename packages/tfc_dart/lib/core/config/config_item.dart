@@ -64,10 +64,25 @@ import 'package:meta/meta.dart';
 /// Keys are sorted at every level. Lists keep their order: an asset list is
 /// paint order and a cable's waypoint list is the shape of the run, so sorting
 /// one would change what it means.
-String canonicalJson(Object? value) => jsonEncode(canonicalise(value));
+///
+/// **[value] is encoded and decoded once before being sorted**, and that step
+/// is not a nicety. A `toJson()` in this codebase does not necessarily hand
+/// back plain maps: `@JsonSerializable()` without `explicitToJson: true`
+/// generates `'menu_item': instance.menuItem`, so `AssetPage.toJson()` returns
+/// a live `MenuItem` and `jsonEncode` converts it at the very end — *after*
+/// any sort, in whatever order that object's own `toJson()` emits. Sorting the
+/// tree first and encoding second therefore leaves such a sub-object
+/// unsorted, and the payload it lands in is stable only by luck. Normalising
+/// through JSON first flattens every one of them to a map before the sort can
+/// miss it.
+String canonicalJson(Object? value) =>
+    jsonEncode(canonicalise(jsonDecode(jsonEncode(value))));
 
-/// [value] with every map key sorted, recursively. Exposed for callers that
-/// need to compare structures rather than encode them.
+/// [value] with every map key sorted, recursively.
+///
+/// Expects plain decoded JSON — see [canonicalJson] for why that matters.
+/// Exposed for callers that need to compare structures rather than encode
+/// them, which is the shape a test comparing two payloads wants.
 Object? canonicalise(Object? value) {
   if (value is Map) {
     final keys = value.keys.map((k) => k as String).toList()..sort();
