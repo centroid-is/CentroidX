@@ -311,7 +311,14 @@ const int declaredRetainedTimers = 2;
 /// good-quality blank on the tag the operator had just written. It is a
 /// **read**: freeze 4's write-site count is unmoved, which is the number that
 /// would catch a retry.
-const int declaredUpstreamAwaitSites = 9;
+///
+/// **Ten since F7 (the array_index fix, b86fb5d2).** `OpcUaUpstreamLink.write`
+/// now read-modify-writes when the ref addresses one array element: it reads
+/// the whole array (`opcua_upstream_link.dart:692`, `.timeout(deadline)`),
+/// substitutes the element, and writes it back. That read-back is the tenth
+/// bounded await, added while reading this rule. It is a **read**; the
+/// write-side of the RMW is counted by freeze 4 below.
+const int declaredUpstreamAwaitSites = 10;
 
 /// Lines under `lib/` that cross into the plant **without** the word `await`.
 ///
@@ -340,13 +347,20 @@ const int declaredUpstreamAwaitSites = 9;
 ///    `effectiveStatusStream`, and the deadline this method takes belongs to
 ///    the caller's wait on that stream.
 ///
+/// **Four since F7 (the array_index fix, b86fb5d2).** The fourth is the same
+/// shape as the `performWrite` seam above: `OpcUaUpstreamLink.write`'s scalar
+/// branch is `await client\n.write(...).timeout(deadline)` split across lines,
+/// so the `.write(` needle matches a physical line without `await` on it while
+/// the bound sits one line up. Bounded, and not a fire-and-forget — a decision,
+/// read here, not a drift.
+///
 /// **What this sweep still does not see, and it is named rather than fixed:**
 /// `browse` is not in the needle, so `OpcUaAddressSpace.childrenOf`'s
 /// `client.browse(...).timeout(deadline)` is invisible to both sweeps. Adding
 /// it would re-count every browse site in the package under a rule 08-11 did
 /// not agree to, on the way past a closing task. It is bounded today; the
 /// obligation moves to whichever plan next edits `local_browse.dart`.
-const int declaredUnawaitedUpstreamSites = 3;
+const int declaredUnawaitedUpstreamSites = 4;
 
 /// Lines under `lib/` that call `.write(` on an upstream.
 ///
@@ -367,14 +381,26 @@ const int declaredUnawaitedUpstreamSites = 3;
 /// The rule the number enforces is unchanged and is not "three": it is **one
 /// call site per layer per transport**, and no site may become "one per
 /// protocol with a wrapper around them" — the wrapper is where a retry goes.
-/// Anyone adding a fourth site trips this pin rather than a code review, which
+/// Anyone adding a site trips this pin rather than a code review, which
 /// is the whole reason the number is written down (T-08-22). The
 /// **behavioural** half of the same property is `opcua_fault_test.dart`'s
 /// write-during-reconnect arm: this pin counts call sites, that arm counts what
 /// reached the wire while `ClientWrapper` was re-establishing a session
 /// underneath it — and `modbus_link_test.dart`'s `writes` list is the same
 /// count on the other transport.
-const int declaredUpstreamWriteSites = 3;
+///
+/// **Four since F7 (the array_index fix, b86fb5d2), and it is still one layer,
+/// one transport.** `OpcUaUpstreamLink.write` now has two mutually-exclusive
+/// branches: an array element does read-modify-write (`opcua_upstream_link
+/// .dart:694`), a scalar writes directly (`:697`). Two call sites in one
+/// method, never both for one operation, neither wrapping the other — which is
+/// the shape the rule forbids (a wrapper is where a retry hides), and this is
+/// not it. The retry-shape sweep (`retryShapedWrites`, freeze 4's first case)
+/// is the property that would catch an actual re-send and it stays empty. If a
+/// future edit can fold the two branches back into one crossing without
+/// materialising the whole array on a scalar write, it should — and drop this
+/// back to three.
+const int declaredUpstreamWriteSites = 4;
 
 /// The dev-dependency test kit that must never be reachable from `lib/`.
 const String contractKitPackage = 'tfc_stateman_contract';

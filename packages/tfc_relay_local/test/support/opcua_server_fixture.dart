@@ -297,7 +297,7 @@ final class OpcUaServerFixture {
           }
           return _sourceValues[key]!;
         },
-        onWrite: (value) {
+        onWrite: (value) async {
           _writeCounts[key] = (_writeCounts[key] ?? 0) + 1;
           _writeLog[key]!.add(value);
           _sourceValues[key] = value;
@@ -369,7 +369,7 @@ final class OpcUaServerFixture {
         // The gateway never calls it. What matters is that the node exists,
         // that it is reachable by a hierarchical reference, and that it comes
         // back as UA_NODECLASS_METHOD — the one kind that must not expand.
-        callback: (_) => const <DynamicValue>[],
+        callback: (_, __) async => const <DynamicValue>[],
         parentNodeId: fixtureNodeId(path.substring(0, cut)),
       );
     }

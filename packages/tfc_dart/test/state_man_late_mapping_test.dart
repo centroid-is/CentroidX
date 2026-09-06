@@ -63,6 +63,7 @@ class RecordingClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) {
     monitored.add(nodeId);
     late StreamController<DynamicValue> controller;

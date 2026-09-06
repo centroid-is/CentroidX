@@ -44,6 +44,7 @@ class NodeScriptedClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) {
     final id = nodeId.toString();
     final c = StreamController<DynamicValue>();
@@ -62,6 +63,7 @@ class NodeScriptedClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) =>
       const Stream.empty();
 

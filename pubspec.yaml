@@ -142,8 +142,19 @@ flutter:
 
 
 dependency_overrides:
-#   open62541:
-#     path: ../open62541_bindings
+  open62541:
+    git:
+      url: https://github.com/centroid-is/open62541_dart.git
+      # `monitor-quality-sourcetime`: 1.5.7+3 (main) plus the relay-quality
+      # work rebased onto it — DynamicValue.statusCode / .sourceTimestamp and
+      # the opt-in `deliverBadStatus` on monitor()/monitoredItems(), which
+      # PIPE-11 needs for real source timestamps. Pinned to a SHA, not the
+      # branch: pubspec.lock is gitignored here. Every open62541 override in
+      # this repo carries THIS SHA (root, centroid-hmi, packages/tfc_dart,
+      # packages/jbtm, packages/tfc_relay_local) — two packages in one
+      # process resolving two different open62541 builds is not a state this
+      # repository should ever be in.
+      ref: 0251aa099d1779c2ab0c4f408123d63c8b6c0e12
   postgres:
     git:
       url: https://github.com/centroid-is/postgresql-dart.git

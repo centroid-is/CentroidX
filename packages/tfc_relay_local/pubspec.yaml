@@ -37,7 +37,7 @@ dependencies:
   # The OPC UA client, and the in-process Server the test legs stand up. Version
   # constraint kept identical to tfc_dart's; the override below is what actually
   # decides which code is built.
-  open62541: ^1.5.7+2
+  open62541: ^1.5.7+3
   # The M2400 weigher framing, and M2400StubServer — which lives in lib/, so the
   # fixture needs no dev-only dance to be reachable from a test.
   jbtm: {path: ../jbtm}
@@ -87,26 +87,27 @@ dependencies:
   drift: ^2.28.0
 
 dependency_overrides:
-  # open62541 `relay-quality`: the head of `dev` (session-recreate freeze fix
-  # open62541_dart#91 + orphaned-monitored-item fix #92 + worker-isolate
-  # stderr-crash fix #97) PLUS the StatusCode/sourceTimestamp work this phase
-  # needs — DynamicValue.statusCode, DynamicValue.sourceTimestamp, and the
-  # opt-in `deliverBadStatus` on monitor()/monitoredItems(). Without it a
-  # monitored sample the PLC marked Bad is dropped and its code survives only as
-  # English inside a String, and sourceTimestamp is never read at all.
+  # open62541 `monitor-quality-sourcetime`: 1.5.7+3 (main) plus the
+  # relay-quality work rebased onto it — DynamicValue.statusCode,
+  # DynamicValue.sourceTimestamp, and the opt-in `deliverBadStatus` on
+  # monitor()/monitoredItems(). Without it a monitored sample the PLC marked
+  # Bad is dropped and its code survives only as English inside a String, and
+  # sourceTimestamp is never read at all. Supersedes the old `relay-quality`
+  # SHA (7798cfab…), whose non-quality commits had all landed on main anyway.
   #
   # Pinned to a SHA and not to the branch name: pubspec.lock is gitignored in
   # this repository, so a branch ref lets a tagged build pick up untested native
   # code. Same reasoning as the postgres pin below and at
   # packages/tfc_dart/pubspec.yaml:25-28.
   #
-  # If packages/tfc_dart ever needs these fields too, ITS override moves to this
-  # same SHA in the same commit — two packages in one process resolving two
+  # tfc_dart now needs these fields too (Phase 12, the pipe), so every
+  # open62541 override in this repo carries THIS SHA (root, centroid-hmi,
+  # tfc_dart, jbtm, and here) — two packages in one process resolving two
   # different open62541 builds is not a state this repository should ever be in.
   open62541:
     git:
       url: https://github.com/centroid-is/open62541_dart.git
-      ref: 7798cfabfea33579bfc7721596b4207d4951f144
+      ref: 0251aa099d1779c2ab0c4f408123d63c8b6c0e12
   # Copied verbatim from packages/tfc_dart/pubspec.yaml, comment included: a
   # dependency_overrides block only applies from the ROOT of a solve, so
   # tfc_dart's own overrides do nothing when tfc_dart is a path dependency here.

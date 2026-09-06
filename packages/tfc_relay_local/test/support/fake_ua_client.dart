@@ -110,6 +110,14 @@ final class FakeUaClient implements ua.ClientApi {
   }
 
   @override
+  Future<ua.DataValue> readValue(ua.NodeId nodeId) async {
+    // Same answers table as [read]; nothing in this package's tests consults
+    // the DataValue envelope beyond the value itself.
+    final value = await read(nodeId);
+    return ua.DataValue(value: value, statusCode: 0);
+  }
+
+  @override
   Future<void> write(ua.NodeId nodeId, ua.DynamicValue value) async {
     writes.add((node: nodeId, value: value));
   }

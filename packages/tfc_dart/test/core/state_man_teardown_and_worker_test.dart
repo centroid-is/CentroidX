@@ -72,6 +72,7 @@ class ScriptedClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) {
     monitorCalls++;
     final c = StreamController<DynamicValue>();
@@ -94,6 +95,7 @@ class ScriptedClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) =>
       const Stream.empty();
 
