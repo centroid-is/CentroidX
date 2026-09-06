@@ -478,20 +478,61 @@ enlarge it.**
 
 ## 6. Implementation status
 
-Started, on the parts no answer above can invalidate:
+Two slices committed on `relational-config`, on the parts no answer above
+can invalidate. Nothing is wired into the app yet — these are shapes and
+proofs, not a store.
 
 - [x] Worktree, toolchain pinned to Flutter 3.44.9, benchmarks in §1.2.
+- [x] `ConfigItem` — the generic row of §3.1, with `ConfigScope`
+      (`shared` / `station:<hostname>`), canonical JSON encoding and
+      structural payload comparison.
 - [x] `ConfigChange` — the append-only history record, generic over kind,
-      joined to the trail by `action_id`; canonical JSON encoding and
-      structural payload comparison
-      (`packages/tfc_dart/lib/core/config/config_entity.dart`).
-- [ ] `ConfigItem` — the generic row, with `scope` (§3.1); rework of the
-      key-mapping-specific row I wrote before the "one strategy" steer.
-- [ ] Codecs: `KeyMappings` ⇄ items, pages/assets ⇄ items, with a
-      round-trip property test against the real plant snapshots —
-      `blob → items → blob` must be structurally identical. This is the
-      safety net that makes the migration provable, and it is independent
-      of every open question.
+      joined to the trail by `action_id`.
+- [x] `ConfigDiff` / `diffConfigItems` — what one save writes, in the
+      added/changed/removed shape `KeyMappingsUpdateResult` already consumes.
+- [x] `key_mapping_codec.dart` + 13 tests: `KeyMappings` ⇄ items, blob in,
+      blob out.
+- [x] `page_codec.dart` + 13 tests: pages and top-level assets ⇄ items,
+      paint order preserved, derived asset ids.
 - [ ] Drift table definitions + schema v7 migration, both backends.
 - [ ] Local SQLite store, `SqlitePreferences`, one-shot import (§4b).
 - [ ] `ConfigStore` repository with the read/write/invalidate policy of §4.
+
+### Three findings from writing it
+
+**Asset ids had to become derived rather than minted.** `Asset.id` is null
+until something links to the asset (`common.dart:156`), so nearly every
+asset in production reaches the migration with no identity — and several
+stations share one Postgres and boot at once. Minting with `newAssetId()`
+would give one physical asset a different id per station and leave the
+table holding it several times over. `derivedAssetId` hashes the page path,
+the list position and the content, so every station computes the same id
+and a re-run writes nothing. The index is in the hash because a row of
+identical drives is legitimate and would otherwise collide into one row.
+
+**The round trip is normalising, not byte-preserving.** Every config class
+emits an explicit null for each unset optional, so a stored
+`{"io": true, "collect": null}` comes back with six more null fields.
+Nothing is lost — the app has rewritten the whole blob through the same
+`toJson()` on every Save since the beginning, so production already stores
+the normalised form — but it means the Q4 compatibility view would hand the
+Python tooling a textually larger blob than the row holds today. Worth
+knowing before you rely on a byte diff anywhere.
+
+**One latent bug found and fixed on the way.** The first canonical encoder
+sorted the tree and encoded second. `@JsonSerializable()` without
+`explicitToJson: true` generates `'menu_item': instance.menuItem`, so
+`AssetPage.toJson()` hands back a live `MenuItem` that `jsonEncode`
+converts *after* the sort — leaving it in insertion order. A canonical form
+that is stable only by luck means every save rewrites and audits every row,
+which is the exact failure this work exists to prevent. It now normalises
+through JSON before sorting. The page fixture caught it; the key-mapping
+one could not, because `KeyMappings` uses `explicitToJson: true` throughout.
+
+### Where I need you before going further
+
+Everything above is safe. The next step — the drift tables and the store —
+is not, because it commits to §3's schema. **Q1, Q2 and Q10 are the
+blocking three**; the rest can proceed under the recommendations as stated.
+Fable is reviewing the architecture in parallel and its verdicts land in
+`docs/relational-config-architecture-review.md`.
