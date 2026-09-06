@@ -620,7 +620,13 @@ void main() {
       // and the arms below still forbid every shape that can block.
       final body = _bodyOf(main, 'void _shutdown(');
       expect(body, isNotEmpty);
-      expect(body, isNot(contains('await')),
+      // The keyword, not the substring (13-14). `unawaited(…)` contains the
+      // letters and means the exact opposite of awaiting — it is the marker
+      // that says a call is deliberately not waited on. A scan that failed on
+      // it would push the next person towards a bare fire-and-forget call with
+      // no marker at all, which is the shape that is actually hard to review.
+      // `\bawait\b` still catches every real await, `await for` included.
+      expect(RegExp(r'\bawait\b').hasMatch(body), isFalse,
           reason: 'RelayServer.close() on this path is the 5.76 s stall '
               'coming back on the most common restart in the plant. The '
               'process is about to exit(0); the sockets go with it');
