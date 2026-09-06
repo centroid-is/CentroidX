@@ -61,6 +61,7 @@ library;
 import 'dart:async';
 import 'dart:io';
 
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'backoff.dart';
@@ -977,6 +978,82 @@ final class RemoteStateMan implements StateManApi {
           hold.release(reason: reason).then((_) {}, onError: (Object _) {}));
     }
     _holds.clear();
+  }
+
+  // --------------------------------------------------- the acknowledge
+
+  /// Acknowledges one active alarm — the alarm-rule instance
+  /// `(alarmUid, ruleIndex)`, which is D-4's identity of an open
+  /// `alarm_history` row and the whole of what the frame carries.
+  ///
+  /// **Not on `StateManApi`, and that is a decision rather than an oversight.**
+  /// The interface is the 49-member surface `api_surface_test.dart:213-226`
+  /// calls "the access-control policy": it is implemented by `LocalStateMan`,
+  /// exercised by one shared contract suite against both ends, and every member
+  /// on it is a thing every implementation owes an answer for. An acknowledge
+  /// has no `LocalStateMan` meaning at all — on the backend the alarm engine is
+  /// reached directly, not through a state-management call — so widening the
+  /// surface would oblige every implementation to answer for a capability only
+  /// one of them has. This is [_write]'s hold flag (D-P5-C) again, for a
+  /// different reason: there the member was withheld because the interface
+  /// already said the same thing twice, here because the interface has nothing
+  /// to say about it.
+  ///
+  /// **One frame, no queue, no retry.** It goes through [_request] like
+  /// everything else, so it inherits the disposed guards, the barrier wait with
+  /// [config.controlDeadline] on it, the peer captured at call time, and the
+  /// heartbeat's outbound note. A link that is not there produces [LinkDown]
+  /// with nothing written — never a frame parked until the gateway comes back,
+  /// because an acknowledge that arrives at shift change is the same queue
+  /// `CLAUDE.md` forbids for a write, and the moment a re-send is acceptable
+  /// here the argument for one on `write` gets made by analogy.
+  ///
+  /// **It keeps "never retried" and drops "never throws".** [write]'s other
+  /// half is the three-state `WriteResult`, and there is no `AckResult` to
+  /// invent: an acknowledge has no readback, no `ackStatus` to re-query and
+  /// nothing on the plant behind it, so a three-state ladder would be three
+  /// names for one fact. A refusal is thrown, and the panel shows it.
+  ///
+  /// **No `cmd`, no [_unresolved] entry, no [_keyOf] entry.** Those exist so
+  /// `writeStatus` can reconcile a command after a reconnect. There is no
+  /// `ackStatus`, so an id recorded here would be re-queried on every reconnect
+  /// for the rest of the shift and never settled — growing the unresolved set
+  /// until `writeStatus` is refused for being over `maxKeysPerSubscribe`, which
+  /// takes the recovery path for the *genuine* unknowns down with it. That is
+  /// [_write]'s own argument at its `dispatched` flag, and it applies here with
+  /// more force because nothing would ever settle the entry.
+  ///
+  /// **Only `-32601` is translated.** See [AlarmAckUnsupported]: the method
+  /// name is an additive protocol change, so METHOD_NOT_FOUND is the single
+  /// observable difference between a gateway that predates this phase and one
+  /// that does not. Everything else the gateway answers — the `forbidden` of a
+  /// view station, the `handlerFailed` of a gateway composed without an
+  /// `AlarmAckSink` — arrives exactly as it was sent, because the gateway's own
+  /// sentence says which of them it is and where it is fixed.
+  ///
+  /// The answer means the gateway accepted the instruction and handed it to an
+  /// engine. It does not mean the row moved: the operator's confirmation is the
+  /// alarm leaving `AlarmKeys.active`, which is PROJECT.md's "readback is the
+  /// only confirmation" applied here without an exception.
+  Future<void> ackAlarm(String alarmUid, int ruleIndex) async {
+    // Spelled once, read twice. The wire name and the name in the failure this
+    // client raises about that wire name are the same fact, and two literals
+    // are two things a rename has to find — the sweep in `no_retry_test.dart`
+    // counts `Methods.write` for exactly this reason one method up.
+    const method = Methods.ackAlarm;
+    try {
+      await _request(
+        method,
+        // Through the shared DTO rather than a map literal, for 05-REVIEW
+        // IN-02's reason: the gateway decodes with `AckAlarmParams.fromJson`,
+        // and a hand-rolled literal at this end would leave the two halves of
+        // one wire shape kept in step by a test suite alone.
+        AckAlarmParams(alarmUid: alarmUid, ruleIndex: ruleIndex).toJson(),
+      );
+    } on rpc.RpcException catch (error) {
+      if (error.code != AlarmAckUnsupported.methodNotFound) rethrow;
+      throw AlarmAckUnsupported(method, error.message, data: error.data);
+    }
   }
 
   /// Re-asks the gateway what became of [cmds], in the order asked.

@@ -44,13 +44,20 @@
 /// `connection_supervisor.dart` (beyond [LinkState]), `ws_transport.dart`,
 /// `resync_engine.dart`, `freshness_watchdog.dart`, `deadline.dart`,
 /// `backoff.dart`, `readiness_barrier.dart`, `subscription_state.dart`,
-/// `failure_taxonomy.dart`, `clock_offset.dart` and `client_sub_apis.dart`.
-/// Tests inside this package import those directly as
-/// `package:tfc_relay_client/src/<file>.dart`, which is legal within the owning
-/// package.
+/// `failure_taxonomy.dart` (beyond [AlarmAckUnsupported]), `clock_offset.dart`
+/// and `client_sub_apis.dart`. Tests inside this package import those directly
+/// as `package:tfc_relay_client/src/<file>.dart`, which is legal within the
+/// owning package.
 library;
 
 export 'src/client_config.dart';
 export 'src/connection_supervisor.dart' show LinkState;
+// One name off the taxonomy, and only because a consumer must be able to spell
+// it: `RelayAlarmSource` (14-09) catches this to tell "this gateway predates
+// alarm acknowledge" from "acknowledge was refused", and a type an embedder
+// cannot name is a distinction it cannot act on. The rest of the file stays
+// internal — a caller that wants `classifyFailure` is reaching into a
+// connection.
+export 'src/failure_taxonomy.dart' show AlarmAckUnsupported;
 export 'src/hold_to_run_controller.dart';
 export 'src/remote_state_man.dart';

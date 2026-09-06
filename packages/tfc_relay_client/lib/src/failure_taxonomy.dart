@@ -118,6 +118,57 @@ bool isLinkLossMessage(String message) =>
     message.contains('The client closed with pending request') ||
     message.contains('The client is closed');
 
+/// The gateway does not know the word `ackAlarm` at all.
+///
+/// **The one place this phase's additive wire change is observable.** A name
+/// added to the protocol is invisible to an old client — it never calls it —
+/// and visible to a new client against an old gateway only as `json_rpc_2`'s
+/// fallback `-32601`. Every other way a gateway can decline an acknowledge is
+/// an ordinary [RpcException] and stays one, including 14-12's named "this
+/// gateway serves no alarm engine" refusal, which shares [handlerFailed]
+/// (`-32011`) with a *failing* engine because a panel can do nothing different
+/// about either.
+///
+/// **So the distinction is a type and not a code.** Two answers a widget has to
+/// tell apart by switching on an integer are two answers somebody eventually
+/// gets the wrong way round. The sentences they produce ask an operator for
+/// different actions:
+///
+/// | Answer | What it means | Who fixes it |
+/// |---|---|---|
+/// | [AlarmAckUnsupported] | this gateway predates alarm acknowledge | whoever upgrades the gateway |
+/// | `-32011`, no engine | this gateway was composed without an `AlarmAckSink` | whoever wires `RelayServer(alarmAcks:)` |
+/// | `-32005`, forbidden | this station has no operate role | whoever holds the token file |
+///
+/// Reading the first as the third sends a fitter hunting a permission that is
+/// not missing, which is the spoofing threat T-14-55 names.
+///
+/// **Extends [RpcException] rather than replacing it**, carrying the gateway's
+/// own code and words through unaltered. A caller that only knows about
+/// `RpcException` — every generic error surface in the app — keeps working and
+/// shows the gateway's sentence; a caller that has something better to say
+/// catches this type first. Narrowing an answer must never cost a caller the
+/// answer it already handled.
+final class AlarmAckUnsupported extends RpcException {
+  AlarmAckUnsupported(this.method, String message, {Object? data})
+      : super(methodNotFound, message, data: data);
+
+  /// `json_rpc_2`'s `METHOD_NOT_FOUND`, named here so this file does not import
+  /// `error_code.dart` for one integer the wire has already fixed.
+  static const int methodNotFound = -32601;
+
+  /// The method the gateway did not recognise. Carried because a panel logging
+  /// "unsupported" without saying *what* is unsupported has told nobody
+  /// anything.
+  final String method;
+
+  @override
+  String toString() =>
+      'AlarmAckUnsupported: this gateway does not know "$method" — it predates '
+      'alarm acknowledge and has to be upgraded. Nothing was acknowledged, and '
+      'no permission is missing. The gateway said: $message';
+}
+
 /// Sorts a thrown [error] into the two verdicts.
 ///
 /// Rethrows anything that is a defect in this process rather than a condition
