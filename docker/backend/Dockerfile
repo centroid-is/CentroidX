@@ -11,15 +11,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Mirror the packages/ layout so path deps resolve (tfc_dart → ../jbtm,
-# ../tfc_access)
+# ../tfc_access, ../tfc_relay_protocol, ../tfc_relay_server,
+# ../tfc_stateman_contract)
 WORKDIR /app/packages/tfc_dart
 
-# Copy all pubspecs so path dependencies resolve during pub get
+# Copy all pubspecs so path dependencies resolve during pub get.
+#
+# Every path dep of tfc_dart must appear here, INCLUDING dev dependencies:
+# `dart pub get` resolves the dev set too, so a missing dev path dep fails the
+# build as surely as a missing production one. The relay three were added by
+# Phase 13 (13-01) and this file was not updated with them — the rig probe run
+# found it, because no Dart test can: the suites resolve against the real
+# checkout where these directories are simply present.
+#
+# tfc_stateman_contract is a dev dep of tfc_dart, and tfc_relay_server depends
+# on it in turn, so it is required transitively as well.
 COPY packages/tfc_dart/pubspec.yaml ./
 COPY packages/jbtm/pubspec.yaml ../jbtm/
 COPY packages/modbus_client_tcp/pubspec.yaml ../modbus_client_tcp/
 COPY packages/modbus_client/pubspec.yaml ../modbus_client/
 COPY packages/tfc_access/pubspec.yaml ../tfc_access/
+COPY packages/tfc_relay_protocol/pubspec.yaml ../tfc_relay_protocol/
+COPY packages/tfc_relay_server/pubspec.yaml ../tfc_relay_server/
+COPY packages/tfc_stateman_contract/pubspec.yaml ../tfc_stateman_contract/
 
 # Get dependencies fresh
 RUN dart pub get
@@ -30,6 +44,9 @@ COPY packages/jbtm/ ../jbtm/
 COPY packages/modbus_client_tcp/ ../modbus_client_tcp/
 COPY packages/modbus_client/ ../modbus_client/
 COPY packages/tfc_access/ ../tfc_access/
+COPY packages/tfc_relay_protocol/ ../tfc_relay_protocol/
+COPY packages/tfc_relay_server/ ../tfc_relay_server/
+COPY packages/tfc_stateman_contract/ ../tfc_stateman_contract/
 
 # Build executables (dart build cli triggers build hooks for native assets)
 RUN dart build cli -t bin/main.dart -o build/main && \
