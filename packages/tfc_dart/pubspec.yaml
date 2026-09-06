@@ -58,6 +58,21 @@ dependencies:
   tfc_relay_protocol:
     path: ../tfc_relay_protocol
 
+  # The gateway itself: RelayServer, ServerConfig, TokenValidator. One-way
+  # edge, tfc_dart -> tfc_relay_server, and it cannot cycle — tfc_relay_server
+  # depends on tfc_relay_protocol and nothing else in this repo (see its own
+  # pubspec description: no Flutter, no native assets, deliberately). This edge
+  # is what lets bin/main.dart construct a RelayServer over the backend's own
+  # values (MOUNT-02), so it is a production dependency and not a dev one.
+  #
+  # The edge that would be a CYCLE, and is therefore forbidden, is
+  # tfc_dart -> tfc_relay_local: tfc_relay_local depends on tfc_dart
+  # (tfc_relay_local/pubspec.yaml:36). That is exactly why Phase 13 writes its
+  # own StateManApi adapter instead of reusing LocalStateMan, and
+  # test/core/relay/package_edge_test.dart pins all of this.
+  tfc_relay_server:
+    path: ../tfc_relay_server
+
   # Utilities
   collection: ^1.18.0
   path: ^1.9.1
@@ -89,3 +104,11 @@ dev_dependencies:
   json_serializable: ^6.9.4
   drift_dev: ^2.28.0
   test: ^1.25.0
+  # The shared StateManApi contract suite, run against this package's adapter
+  # (MOUNT-03). **Dev-only, and not negotiable**: it carries package:test as a
+  # real dependency, and tfc_dart is imported by the Flutter app — a production
+  # edge would pull the test runner, and its analyzer pin, into the app's
+  # version solve. tfc_relay_server and tfc_relay_local both keep it here for
+  # the same reason, and each says so in its own pubspec.
+  tfc_stateman_contract:
+    path: ../tfc_stateman_contract
