@@ -1168,8 +1168,11 @@ void main() {
     });
 
     test('no member of this file requests secret material', () {
-      final source = File('lib/core/relay/backend_data_services.dart')
-          .readAsStringSync();
+      // Comments stripped: the file's own doc has to be able to NAME the
+      // spelling it forbids, or the rule survives only as long as whoever
+      // reads the source already knows it.
+      final source = _stripDartComments(
+          File('lib/core/relay/backend_data_services.dart').readAsStringSync());
       expect(source, isNot(contains('secret:')),
           reason: 'the concrete Preferences carries a {bool secret = false} on '
               'twelve members that routes the call to the OS keychain. One '

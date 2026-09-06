@@ -60,9 +60,14 @@
 /// Protocol types are imported `as relay`, the house rule inside `tfc_dart`.
 library;
 
+import 'dart:async';
+
+import 'package:drift/drift.dart' show UpdateKind, Variable;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
 import '../database.dart' as db;
+import '../database_drift.dart' as drift;
+import '../preferences.dart' as store;
 
 // =============================================================== the historian
 
@@ -507,4 +512,625 @@ final class BackendTimeseries implements relay.TimeseriesApi {
     }
     return value;
   }
+}
+
+// ============================================================= history views
+
+/// The eleven `AppDatabase` history-view methods, and nothing else.
+///
+/// Signatures verbatim from `database_drift.dart:983-1160`, generated row
+/// classes and untyped bags included. **Mapping those onto the protocol's
+/// plain records is this seam's whole reason to exist**: an ORM row out of a
+/// 10,000-line generated file can neither live in a zero-dependency package
+/// nor cross a socket with its field names intact (`history_view.dart:1-13`),
+/// and the conversion has to happen somewhere that a test can reach without a
+/// Postgres.
+abstract interface class HistoryViewSource {
+  Future<int> createHistoryView(String name, List<String> keys,
+      [Map<String, Map<String, dynamic>>? keyConfigs,
+      Map<String, Map<String, dynamic>>? graphConfigs]);
+
+  Future<void> updateHistoryView(int id, String name, List<String> keys,
+      [Map<String, Map<String, dynamic>>? keyConfigs,
+      Map<String, Map<String, dynamic>>? graphConfigs]);
+
+  Future<void> deleteHistoryView(int id);
+
+  Future<List<drift.HistoryViewData>> selectHistoryViews();
+
+  Future<Map<String, Map<String, dynamic>>> getHistoryViewKeys(int viewId);
+
+  Future<Map<int, Map<String, dynamic>>> getHistoryViewGraphs(int viewId);
+
+  Future<List<String>> getHistoryViewKeyNames(int viewId);
+
+  Future<int> addHistoryViewPeriod(
+      int viewId, String name, DateTime start, DateTime end);
+
+  Future<void> deleteHistoryViewPeriod(int id);
+
+  Future<List<drift.HistoryViewPeriodData>> listHistoryViewPeriods(int viewId);
+
+  Future<DateTime?> getGlobalRetentionHorizon();
+}
+
+/// [HistoryViewSource] over the backend's own `AppDatabase`.
+final class DatabaseHistoryViewSource implements HistoryViewSource {
+  const DatabaseHistoryViewSource(this.database);
+
+  final drift.AppDatabase database;
+
+  @override
+  Future<int> createHistoryView(String name, List<String> keys,
+          [Map<String, Map<String, dynamic>>? keyConfigs,
+          Map<String, Map<String, dynamic>>? graphConfigs]) =>
+      database.createHistoryView(name, keys, keyConfigs, graphConfigs);
+
+  @override
+  Future<void> updateHistoryView(int id, String name, List<String> keys,
+          [Map<String, Map<String, dynamic>>? keyConfigs,
+          Map<String, Map<String, dynamic>>? graphConfigs]) =>
+      database.updateHistoryView(id, name, keys, keyConfigs, graphConfigs);
+
+  @override
+  Future<void> deleteHistoryView(int id) => database.deleteHistoryView(id);
+
+  @override
+  Future<List<drift.HistoryViewData>> selectHistoryViews() =>
+      database.selectHistoryViews();
+
+  @override
+  Future<Map<String, Map<String, dynamic>>> getHistoryViewKeys(int viewId) =>
+      database.getHistoryViewKeys(viewId);
+
+  @override
+  Future<Map<int, Map<String, dynamic>>> getHistoryViewGraphs(int viewId) =>
+      database.getHistoryViewGraphs(viewId);
+
+  @override
+  Future<List<String>> getHistoryViewKeyNames(int viewId) =>
+      database.getHistoryViewKeyNames(viewId);
+
+  @override
+  Future<int> addHistoryViewPeriod(
+          int viewId, String name, DateTime start, DateTime end) =>
+      database.addHistoryViewPeriod(viewId, name, start, end);
+
+  @override
+  Future<void> deleteHistoryViewPeriod(int id) =>
+      database.deleteHistoryViewPeriod(id);
+
+  @override
+  Future<List<drift.HistoryViewPeriodData>> listHistoryViewPeriods(
+          int viewId) =>
+      database.listHistoryViewPeriods(viewId);
+
+  @override
+  Future<DateTime?> getGlobalRetentionHorizon() =>
+      database.getGlobalRetentionHorizon();
+}
+
+/// `HistoryViewApi` over the backend's saved views.
+///
+/// ## Every instant is absolute
+///
+/// Every `DateTime` that leaves this class goes through [_utc]. The driver
+/// hands a `timestamptz` back in whatever zone the session is in, and the
+/// protocol's records carry epoch milliseconds and decode as UTC
+/// (`history_view.dart:15-18`) — so a record built from a local `DateTime` is
+/// not `==` to the one that comes back off the wire, and a saved shift lands
+/// an hour out twice a year. `DateTime` equality in Dart compares `isUtc` as
+/// well as the instant, which is what makes that testable rather than
+/// seasonal.
+///
+/// ## Bounded, because these rows are caller-grown
+///
+/// [maxRows] is 10-07's `ReadLimits.maxHistoryViewRows`, and the reason it
+/// exists is not the same as the timeseries one: a timeseries answer is
+/// bounded by how long the plant has been running, and these four reads are
+/// bounded by how many rows a client has created. `createHistoryView` and
+/// `addHistoryViewPeriod` are row factories reachable from the wire, so an
+/// `operate` station in a loop is the whole amplification
+/// (`read_limits.dart:171-178`). One ceiling covers the picker, a view's keys,
+/// its graphs and its windows: the same hazard from the same door, and four
+/// numbers would be four things to keep in step for a distinction nobody can
+/// act on.
+final class BackendHistoryViews implements relay.HistoryViewApi {
+  BackendHistoryViews({required this.source, this.maxRows = 5000});
+
+  /// The production spelling: over the `AppDatabase` the backend already holds.
+  BackendHistoryViews.overDatabase({
+    required drift.AppDatabase? database,
+    int maxRows = 5000,
+  }) : this(
+          source:
+              database == null ? null : DatabaseHistoryViewSource(database),
+          maxRows: maxRows,
+        );
+
+  final HistoryViewSource? source;
+
+  /// The row ceiling for one history-view read.
+  final int maxRows;
+
+  @override
+  Future<int> createHistoryView(String name, List<String> keys,
+      [Map<String, relay.HistoryViewKeyRecord>? keyConfigs,
+      Map<int, relay.HistoryViewGraphRecord>? graphConfigs]) async {
+    final views = _views('createHistoryView');
+    return views.createHistoryView(
+        name, keys, _keyBags(keyConfigs), _graphBags(graphConfigs));
+  }
+
+  @override
+  Future<void> updateHistoryView(int id, String name, List<String> keys,
+      [Map<String, relay.HistoryViewKeyRecord>? keyConfigs,
+      Map<int, relay.HistoryViewGraphRecord>? graphConfigs]) async {
+    final views = _views('updateHistoryView');
+    return views.updateHistoryView(
+        id, name, keys, _keyBags(keyConfigs), _graphBags(graphConfigs));
+  }
+
+  @override
+  Future<void> deleteHistoryView(int id) =>
+      _views('deleteHistoryView').deleteHistoryView(id);
+
+  @override
+  Future<List<relay.HistoryViewRecord>> selectHistoryViews() async {
+    final rows = await _views('selectHistoryViews').selectHistoryViews();
+    _requireRowBudget('selectHistoryViews', rows.length);
+    return [
+      for (final row in rows)
+        relay.HistoryViewRecord(
+          id: row.id,
+          name: row.name,
+          createdAt: _utc(row.createdAt),
+          updatedAt: row.updatedAt == null ? null : _utc(row.updatedAt!),
+        ),
+    ];
+  }
+
+  @override
+  Future<Map<String, relay.HistoryViewKeyRecord>> getHistoryViewKeys(
+      int viewId) async {
+    final bags = await _views('getHistoryViewKeys').getHistoryViewKeys(viewId);
+    _requireRowBudget('getHistoryViewKeys', bags.length);
+    return {
+      for (final entry in bags.entries)
+        entry.key: relay.HistoryViewKeyRecord(
+          key: '${entry.value['key'] ?? entry.key}',
+          // Null and not `?? key`: the record's own constructor defaults the
+          // alias to the key, and re-spelling the default here would be a
+          // second place for it to drift.
+          alias: entry.value['alias'] as String?,
+          useSecondYAxis: entry.value['useSecondYAxis'] as bool? ?? false,
+          graphIndex: (entry.value['graphIndex'] as num?)?.toInt() ?? 0,
+        ),
+    };
+  }
+
+  @override
+  Future<Map<int, relay.HistoryViewGraphRecord>> getHistoryViewGraphs(
+      int viewId) async {
+    final bags =
+        await _views('getHistoryViewGraphs').getHistoryViewGraphs(viewId);
+    _requireRowBudget('getHistoryViewGraphs', bags.length);
+    return {
+      // The drift layer keys the map by graph index and leaves the index out
+      // of the bag (`database_drift.dart:1109-1116`); the record carries it as
+      // a field, so it comes from the key.
+      for (final entry in bags.entries)
+        entry.key: relay.HistoryViewGraphRecord(
+          graphIndex: entry.key,
+          name: entry.value['name'] as String? ?? '',
+          yAxisUnit: entry.value['yAxisUnit'] as String? ?? '',
+          yAxis2Unit: entry.value['yAxis2Unit'] as String? ?? '',
+        ),
+    };
+  }
+
+  @override
+  Future<List<String>> getHistoryViewKeyNames(int viewId) async {
+    final names =
+        await _views('getHistoryViewKeyNames').getHistoryViewKeyNames(viewId);
+    _requireRowBudget('getHistoryViewKeyNames', names.length);
+    return names;
+  }
+
+  @override
+  Future<int> addHistoryViewPeriod(
+          int viewId, String name, DateTime start, DateTime end) =>
+      _views('addHistoryViewPeriod')
+          .addHistoryViewPeriod(viewId, name, start.toUtc(), end.toUtc());
+
+  @override
+  Future<void> deleteHistoryViewPeriod(int id) =>
+      _views('deleteHistoryViewPeriod').deleteHistoryViewPeriod(id);
+
+  @override
+  Future<List<relay.HistoryViewPeriodRecord>> listHistoryViewPeriods(
+      int viewId) async {
+    final rows =
+        await _views('listHistoryViewPeriods').listHistoryViewPeriods(viewId);
+    _requireRowBudget('listHistoryViewPeriods', rows.length);
+    return [
+      for (final row in rows)
+        relay.HistoryViewPeriodRecord(
+          id: row.id,
+          viewId: row.viewId,
+          name: row.name,
+          startAt: _utc(row.startAt),
+          endAt: _utc(row.endAt),
+          createdAt: _utc(row.createdAt),
+        ),
+    ];
+  }
+
+  @override
+  Future<DateTime?> getGlobalRetentionHorizon() async {
+    final horizon =
+        await _views('getGlobalRetentionHorizon').getGlobalRetentionHorizon();
+    return horizon == null ? null : _utc(horizon);
+  }
+
+  // ---------------------------------------------------------------- internals
+
+  HistoryViewSource _views(String member) =>
+      source ??
+      (throw StateError('BackendHistoryViews.$member is not available: this '
+          'backend was composed without a Database, so it has nowhere to keep '
+          'a saved history view. Give bin/main.dart a database configuration. '
+          'It is a StateError and not an UnsupportedError because the member '
+          'is implemented and what is absent is a database in this deployment '
+          '(local_state_man.dart:1440). Not an empty store either: a view '
+          'picker that answers "you have saved nothing" to a plant that has '
+          'saved plenty is an operator saving their view a second time, and '
+          'then a third'));
+
+  void _requireRowBudget(String member, int rows) {
+    if (rows <= maxRows) return;
+    throw ArgumentError('$member answered $rows rows, over this backend\'s '
+        'ceiling of $maxRows. It is refused and not truncated: a picker '
+        'missing the view an operator saved reads as the view having been '
+        'lost. These rows are caller-grown — createHistoryView and '
+        'addHistoryViewPeriod are row factories reachable from the wire — so '
+        'the fix is deleting views, not raising the number');
+  }
+
+  /// The wire's key records as the untyped bags the drift layer takes.
+  ///
+  /// `alias` is written even when it equals the key: the record defaults it on
+  /// construction, and passing null would let `database_drift.dart`'s own
+  /// `config?['alias'] ?? key` default it a second time, which is one rule in
+  /// two places.
+  static Map<String, Map<String, dynamic>>? _keyBags(
+          Map<String, relay.HistoryViewKeyRecord>? configs) =>
+      configs == null
+          ? null
+          : {
+              for (final entry in configs.entries)
+                entry.key: <String, dynamic>{
+                  'alias': entry.value.alias,
+                  'useSecondYAxis': entry.value.useSecondYAxis,
+                  'graphIndex': entry.value.graphIndex,
+                },
+            };
+
+  /// The wire's graph records as the drift layer's bags.
+  ///
+  /// **Keyed by the decimal spelling of the index.** `createHistoryView` takes
+  /// `Map<String, Map<String, dynamic>>` and calls `int.tryParse(entry.key)`,
+  /// dropping silently what does not parse (`database_drift.dart:1006-1008`) —
+  /// so an int key here would not be a type error, it would be a graph
+  /// configuration that vanishes.
+  static Map<String, Map<String, dynamic>>? _graphBags(
+          Map<int, relay.HistoryViewGraphRecord>? configs) =>
+      configs == null
+          ? null
+          : {
+              for (final entry in configs.entries)
+                '${entry.key}': <String, dynamic>{
+                  'name': entry.value.name,
+                  'yAxisUnit': entry.value.yAxisUnit,
+                  'yAxis2Unit': entry.value.yAxis2Unit,
+                },
+            };
+
+  /// The same instant, stated absolutely.
+  static DateTime _utc(DateTime t) => t.toUtc();
+}
+
+// =============================================================== preferences
+
+/// The `Preferences` surface [BackendPreferences] needs — **without the
+/// `secret:` parameter**.
+///
+/// SEC-01, and the omission is the whole point of the type existing. The
+/// concrete `Preferences` carries a `{bool secret = false}` on twelve members
+/// (`preferences.dart:277,285,...`) which routes the call to the OS keychain
+/// instead of the table. Mirroring it here would turn one client-supplied
+/// boolean into remote retrieval of the secure store; the word does not appear
+/// in this file and an arm greps for it, because the obvious future edit is to
+/// add it back "for symmetry".
+///
+/// Two members are not on `PreferencesApi` and are here because `clear` needs
+/// them:
+///
+///  * [clearFromMemory] is upstream's own `clear`, named for what it actually
+///    does — it empties the memory cache and the local cache and **never
+///    touches Postgres** (`preferences.dart:439-442`).
+///  * [deletePreferenceRows] is the durable half, in one statement.
+abstract interface class PreferenceSource {
+  Future<Set<String>> getKeys({Set<String>? allowList});
+  Future<Map<String, Object?>> getAll({Set<String>? allowList});
+  Future<bool?> getBool(String key);
+  Future<int?> getInt(String key);
+  Future<double?> getDouble(String key);
+  Future<String?> getString(String key);
+  Future<List<String>?> getStringList(String key);
+  Future<bool> containsKey(String key);
+  Future<void> setBool(String key, bool value);
+  Future<void> setInt(String key, int value);
+  Future<void> setDouble(String key, double value);
+  Future<void> setString(String key, String value);
+  Future<void> setStringList(String key, List<String> value);
+  Future<void> remove(String key);
+
+  /// Upstream's `clear`: the memory and local caches, and nothing durable.
+  Future<void> clearFromMemory({Set<String>? allowList});
+
+  /// Deletes the named rows in ONE statement.
+  Future<void> deletePreferenceRows(Set<String> keys);
+
+  /// Every key whose value changed through this store.
+  Stream<String> get onPreferencesChanged;
+}
+
+/// [PreferenceSource] over the backend's own `Preferences`.
+///
+/// Every call below uses the non-secret overload, which is what it means for
+/// the parameter to be absent from the interface above.
+final class PreferencesSource implements PreferenceSource {
+  const PreferencesSource(this.preferences);
+
+  final store.Preferences preferences;
+
+  @override
+  Future<Set<String>> getKeys({Set<String>? allowList}) =>
+      preferences.getKeys(allowList: allowList);
+  @override
+  Future<Map<String, Object?>> getAll({Set<String>? allowList}) =>
+      preferences.getAll(allowList: allowList);
+  @override
+  Future<bool?> getBool(String key) => preferences.getBool(key);
+  @override
+  Future<int?> getInt(String key) => preferences.getInt(key);
+  @override
+  Future<double?> getDouble(String key) => preferences.getDouble(key);
+  @override
+  Future<String?> getString(String key) => preferences.getString(key);
+  @override
+  Future<List<String>?> getStringList(String key) =>
+      preferences.getStringList(key);
+  @override
+  Future<bool> containsKey(String key) => preferences.containsKey(key);
+  @override
+  Future<void> setBool(String key, bool value) =>
+      preferences.setBool(key, value);
+  @override
+  Future<void> setInt(String key, int value) => preferences.setInt(key, value);
+  @override
+  Future<void> setDouble(String key, double value) =>
+      preferences.setDouble(key, value);
+  @override
+  Future<void> setString(String key, String value) =>
+      preferences.setString(key, value);
+  @override
+  Future<void> setStringList(String key, List<String> value) =>
+      preferences.setStringList(key, value);
+  @override
+  Future<void> remove(String key) => preferences.remove(key);
+  @override
+  Future<void> clearFromMemory({Set<String>? allowList}) =>
+      preferences.clear(allowList: allowList);
+
+  @override
+  Stream<String> get onPreferencesChanged => preferences.onPreferencesChanged;
+
+  /// One `DELETE`, with the keys bound as placeholders.
+  ///
+  /// Placeholders rather than an array parameter, following
+  /// `preferences_watch.dart:56-63` — the one shape in this repository known
+  /// to bind a key list through this driver. Every key is a bound variable,
+  /// so nothing a caller supplies is concatenated into the statement.
+  ///
+  /// A store with no database is a memory-only `Preferences`
+  /// (`preferences.dart:216-222` accepts a null one), and there is then
+  /// nothing durable to delete. That is not a refusal: the composition root
+  /// decides whether this backend has a database, and by the time a
+  /// [PreferencesSource] exists the decision has been made.
+  @override
+  Future<void> deletePreferenceRows(Set<String> keys) async {
+    if (keys.isEmpty) return;
+    final database = preferences.database;
+    if (database == null) return;
+    final ordered = keys.toList();
+    final placeholders =
+        List.generate(ordered.length, (i) => '\$${i + 1}').join(', ');
+    await database.db.customUpdate(
+      'DELETE FROM flutter_preferences WHERE key IN ($placeholders)',
+      variables: [for (final key in ordered) Variable.withString(key)],
+      updateKind: UpdateKind.delete,
+    );
+  }
+}
+
+/// `PreferencesApi` over the backend's shared preference store.
+///
+/// ## The change feed is a merge, and it is listener-gated
+///
+/// [onPreferencesChanged] is one broadcast controller carrying two things: the
+/// store's own stream, and the keys [clear] removed — which the store cannot
+/// announce, because its `clear` is memory-only and fires nothing.
+///
+/// The subscription to the store is taken in `onListen` and dropped in
+/// `onCancel`. A feed armed at construction is an always-on subscription in
+/// `tfc_dart` plumbing, which is how unrelated widget tests start failing; and
+/// a backend with no session connected should be holding nothing open on the
+/// store's behalf. One subscription serves every listener, which is what
+/// broadcast means and what a settings page plus a chart legend both need.
+///
+/// ## What this feed does NOT carry
+///
+/// Changes made by **another process** — an HMI station at SVN writes the
+/// preference table directly. `Preferences.onPreferencesChanged` fires only
+/// for writes made through that instance (`preferences.dart:154-155`), and the
+/// cross-process half is `preferences_watch.dart`'s LISTEN/NOTIFY, which the
+/// backend already runs on its own restart-to-apply path. Merging that in here
+/// would be a second consumer of the same channel with its own de-duplication
+/// window, and it is 13-10's composition decision whether the backend's
+/// existing watcher feeds this adapter or a second listen is opened. Recorded
+/// rather than quietly half-built. Note also `pg_notify`'s 8000-byte cap: a
+/// payload over it errors the firing statement, so whatever carries that news
+/// must carry a key and never a value.
+final class BackendPreferences implements relay.PreferencesApi {
+  BackendPreferences({required this.source});
+
+  /// The production spelling: over the `Preferences` the backend already holds.
+  BackendPreferences.overPreferences(store.Preferences? preferences)
+      : this(
+            source:
+                preferences == null ? null : PreferencesSource(preferences));
+
+  final PreferenceSource? source;
+
+  StreamController<String>? _feed;
+  StreamSubscription<String>? _upstream;
+
+  @override
+  Stream<String> get onPreferencesChanged {
+    final store = _store('onPreferencesChanged');
+    return (_feed ??= StreamController<String>.broadcast(
+      onListen: () => _upstream = store.onPreferencesChanged.listen(
+        (key) => _feed?.add(key),
+        // A store that errors is not a reason to tear down a session that is
+        // otherwise serving the plant. The change is lost, which is the honest
+        // outcome — there is nothing here that could re-derive it.
+        onError: (Object _) {},
+      ),
+      onCancel: () async {
+        final upstream = _upstream;
+        _upstream = null;
+        await upstream?.cancel();
+      },
+    ))
+        .stream;
+  }
+
+  @override
+  Future<Set<String>> getKeys({Set<String>? allowList}) =>
+      _store('getKeys').getKeys(allowList: allowList);
+
+  @override
+  Future<Map<String, Object?>> getAll({Set<String>? allowList}) =>
+      _store('getAll').getAll(allowList: allowList);
+
+  @override
+  Future<bool?> getBool(String key) => _store('getBool').getBool(key);
+
+  @override
+  Future<int?> getInt(String key) => _store('getInt').getInt(key);
+
+  @override
+  Future<double?> getDouble(String key) => _store('getDouble').getDouble(key);
+
+  @override
+  Future<String?> getString(String key) => _store('getString').getString(key);
+
+  @override
+  Future<List<String>?> getStringList(String key) =>
+      _store('getStringList').getStringList(key);
+
+  @override
+  Future<bool> containsKey(String key) =>
+      _store('containsKey').containsKey(key);
+
+  @override
+  Future<void> setBool(String key, bool value) =>
+      _store('setBool').setBool(key, value);
+
+  @override
+  Future<void> setInt(String key, int value) =>
+      _store('setInt').setInt(key, value);
+
+  @override
+  Future<void> setDouble(String key, double value) =>
+      _store('setDouble').setDouble(key, value);
+
+  @override
+  Future<void> setString(String key, String value) =>
+      _store('setString').setString(key, value);
+
+  @override
+  Future<void> setStringList(String key, List<String> value) =>
+      _store('setStringList').setStringList(key, value);
+
+  @override
+  Future<void> remove(String key) => _store('remove').remove(key);
+
+  /// Removes every stored preference, or every one [allowList] names.
+  ///
+  /// **Not a delegation, and this is the one member that could not be.**
+  /// Upstream's `clear` empties the memory cache and never touches Postgres
+  /// (`preferences.dart:439-442`), so through this backend a delegation would
+  /// be a clear that undoes itself: the row is still there, the next rebuild
+  /// brings the key back, and nothing anywhere said the call did not do what
+  /// it said.
+  ///
+  /// **One statement and one announcement pass, not a `remove` per key.**
+  /// `remove` awaits a round trip, the event loop turns between them, and
+  /// `data_handlers._scheduleFlush`'s `Timer.run` fires in every gap — eight
+  /// keys measured eight frames, and five hundred keys is a priority-lane
+  /// overflow that every operator reads as the network having dropped
+  /// (`preference_store.dart:462-477`). So the rows go in one `DELETE`, the
+  /// memory cache is emptied by upstream's own `clear` — the one call site
+  /// where a memory-only clear is exactly what is wanted — and the keys are
+  /// announced with no `await` between them, so the whole burst is pending
+  /// before any flush timer can run.
+  ///
+  /// **The blast radius with no allow list is real and is not narrowed here.**
+  /// This deletes `key_mappings` — 518 KiB of routing configuration the whole
+  /// plant is served through — from the shared table, and reconnecting does
+  /// not bring it back. The interface's own doc says an allow list is highly
+  /// recommended. The gate on the call is the relay's `operate` role and
+  /// narrowing it further is a policy decision, which lives in the policy
+  /// layer, not here: a store that silently declined an unrestricted clear
+  /// would be a behaviour nobody could predict from the interface.
+  @override
+  Future<void> clear({Set<String>? allowList}) async {
+    final store = _store('clear');
+    final keys = await store.getKeys(allowList: allowList);
+    if (keys.isEmpty) return;
+    await store.deletePreferenceRows(keys);
+    await store.clearFromMemory(allowList: keys);
+    final feed = _feed;
+    if (feed == null || feed.isClosed) return;
+    // No `await` in this loop. That is the whole point — see the doc above.
+    for (final key in keys) {
+      feed.add(key);
+    }
+  }
+
+  PreferenceSource _store(String member) =>
+      source ??
+      (throw UnsupportedError('BackendPreferences.$member is not available: '
+          'this backend was composed without a Preferences store, so it has '
+          'no shared settings to serve. Give bin/main.dart a database '
+          'configuration. It is an UnsupportedError and NOT the StateError '
+          'the historian answers with: RelaySession calls watchPreferences() '
+          'on every session unconditionally and data_handlers.dart:216 '
+          'catches exactly UnsupportedError, so a StateError here would fail '
+          'every connect on a backend with no database — which is the default '
+          'deployment. Device-local settings are deliberately not on this '
+          'pipe either way'));
 }
