@@ -269,7 +269,15 @@ class _Fixture {
       keyMappings: _mappings(),
       logger: _quiet(),
     );
-    writes = BackendWrites(pipe: pipe, values: values, logger: _quiet());
+    writes = BackendWrites(
+      pipe: pipe,
+      values: values,
+      // Derived, not spelled: none of the hold keys is an array element or a
+      // bit field, and a deadman counter that became one would then be refused
+      // at the engage rather than fed blind (`backend_writes.dart`).
+      readModifyWriteKeys: readModifyWriteKeysOf(_mappings()),
+      logger: _quiet(),
+    );
   }
 
   late final _FakePlantLink plant;

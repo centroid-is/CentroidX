@@ -264,9 +264,17 @@ BackendRelayComposition composeBackendRelay({
   //
   // Down the pipe, three-state, never auto-retried, and badging the value the
   // widget is already watching while it is in flight.
+  //
+  // The read-modify-write set is derived from the SAME mappings the workers
+  // were registered with, for the reason the resolver above is: two derivations
+  // of "which keys are array elements" is how a guard starts covering a
+  // different set of keys from the one the router serves. Rig probe P4a is what
+  // this argument costs when the set is absent — a blind element write answered
+  // `applied` on a real PLC array.
   final writes = BackendWrites(
     pipe: pipe,
     values: freshness,
+    readModifyWriteKeys: readModifyWriteKeysOf(keyMappings),
     logger: logger,
   );
 

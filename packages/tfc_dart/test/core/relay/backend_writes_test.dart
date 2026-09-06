@@ -280,6 +280,9 @@ class _Fixture {
     writes = BackendWrites(
       pipe: pipe,
       values: values,
+      // Derived from the same mappings the fixture registers, exactly as
+      // `composeBackendRelay` derives it from the plant's.
+      readModifyWriteKeys: readModifyWriteKeysOf(_mappings()),
       outcomeTtl: outcomeTtl,
       now: () => clock,
       logger: _quiet(),
@@ -721,6 +724,16 @@ void main() {
           reason: 'the re-query must answer with the outcome that was issued, '
               'instant included — P5\'s property on the rig');
     });
+
+    test('the set is derived from the mappings: array_index and bit_mask, '
+        'and nothing else', () {
+      expect(readModifyWriteKeysOf(_mappings()),
+          <String>{_elementKey, _maskedKey},
+          reason: 'a derivation that missed a shape would leave that shape '
+              'unguarded on the plant, and one that over-matched would refuse '
+              'ordinary writes. Both failures are silent until an operator '
+              'meets them');
+    });
   });
 
   group('the pending badge', () {
@@ -757,6 +770,7 @@ void main() {
       final writes = BackendWrites(
         pipe: f.pipe,
         values: exploding,
+        readModifyWriteKeys: readModifyWriteKeysOf(_mappings()),
         now: () => f.clock,
         logger: _quiet(),
       );

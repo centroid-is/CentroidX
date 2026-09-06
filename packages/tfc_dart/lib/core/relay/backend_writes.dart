@@ -37,6 +37,24 @@
 ///    short of all four is `WriteUnknown`: "I have no record of it" and "it
 ///    never happened" are the same sentence to a lookup table and very
 ///    different sentences to a machine.
+///  6. **A write that is really a read-modify-write is refused without a
+///    compare-and-set.** See [readModifyWriteKeysOf] and the guard in [write].
+///
+/// ## The read-modify-write guard, and why it is here (P4a)
+///
+/// Rule 6 was measured missing on the rig
+/// (`13-RIG-PROBE-EVIDENCE.md`, probe P4a): a blind write to `data.real.1` —
+/// `MAIN.rData` element 0 — came back `{"outcome":"applied"}` from this class
+/// where the standalone gateway refused it. It was **not** a whole-node
+/// clobber; a sentinel write stayed element-scoped and the other nine elements
+/// kept their own values. What was missing was the guard itself, and the reason
+/// it exists is one sentence long: writing one element of an array reads the
+/// whole array, replaces one slot and writes it all back
+/// (`state_man.dart:2033-2039`, with the author's own "not sure I like this"
+/// beside it), so a concurrent change to a *different* element between the two
+/// crossings is silently overwritten. `guardArrayElementWrite`
+/// (`write_translation.dart`) is the refusal both gateways already use, and it
+/// is called here rather than re-worded, so the two cannot drift.
 ///
 /// ## The pipe's `cmd` is not an operator action id
 ///
@@ -77,7 +95,35 @@ import 'package:meta/meta.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/relay/backend_hold.dart';
 import 'package:tfc_dart/core/relay/backend_seams.dart';
+import 'package:tfc_dart/core/state_man.dart' show KeyMappings;
+import 'package:tfc_dart/core/write_translation.dart'
+    show guardArrayElementWrite;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
+
+/// Every key whose write is a **read-modify-write** rather than one crossing.
+///
+/// Two shapes, one hazard, and both of them are in this process:
+///
+///  * an OPC UA key mapped with an `array_index` — `state_man.dart:2033-2039`
+///    reads the whole array, replaces one element and writes it back; and
+///  * a key mapped with a `bit_mask` — `modbus_device_client.dart:1241-1264`
+///    reads the current register, merges the masked bits and writes the whole
+///    word back.
+///
+/// Neither pair of crossings is atomic, so a concurrent change between them is
+/// lost without a word to anybody, and the thing it destroys is another
+/// operator's setpoint. [BackendWrites] refuses both without an `expect`.
+///
+/// A pure function over the mappings rather than a member on anything, so the
+/// composition root and every test derive the set the same way — a second
+/// derivation is how the guard starts disagreeing with the router about which
+/// keys it covers.
+Set<String> readModifyWriteKeysOf(KeyMappings keyMappings) => <String>{
+      for (final entry in keyMappings.nodes.entries)
+        if (entry.value.opcuaNode?.arrayIndex != null ||
+            entry.value.bitMask != null)
+          entry.key,
+    };
 
 /// How long this source remembers what became of a write.
 ///
@@ -203,14 +249,24 @@ final class BackendWrites implements BackendWriteSource {
   /// deliberately the only injected clock: the write *deadline* belongs to the
   /// pipe and stays on the real one, because a source that never runs its own
   /// timeout passes every fake-clock case and hangs in the plant.
+  ///
+  /// [readModifyWriteKeys] is **required and has no default**, for
+  /// `backend_seams.dart`'s rule about permissive defaults: an empty set means
+  /// "no key on this deployment is a read-modify-write", which was the silent
+  /// answer the rig measured, and a default would let a composition root lose
+  /// the guard by forgetting an argument. Production derives it with
+  /// [readModifyWriteKeysOf] from the same mappings the workers were
+  /// registered with.
   BackendWrites({
     required PipeMainEndpoint pipe,
     required BackendValueSource values,
+    required Set<String> readModifyWriteKeys,
     Duration outcomeTtl = kBackendWriteOutcomeTtl,
     int Function()? now,
     Logger? logger,
   })  : _pipe = pipe,
         _values = values,
+        _readModifyWriteKeys = Set<String>.unmodifiable(readModifyWriteKeys),
         _now = now ?? _wallClock,
         _logger = logger ?? Logger(),
         _log = BackendWriteOutcomeLog(
@@ -222,6 +278,9 @@ final class BackendWrites implements BackendWriteSource {
 
   final PipeMainEndpoint _pipe;
   final BackendValueSource _values;
+
+  /// The keys whose write is a read-modify-write. See [readModifyWriteKeysOf].
+  final Set<String> _readModifyWriteKeys;
   final int Function() _now;
   final Logger _logger;
   final BackendWriteOutcomeLog _log;
@@ -316,6 +375,31 @@ final class BackendWrites implements BackendWriteSource {
                 'writeStatus answer for both, so nothing was sent'),
         at: _now(),
       ));
+    }
+
+    // P4a. Before the compare-and-set rather than beside it, because the two
+    // answer different questions: this one asks "may this write happen at all
+    // without a guard", the next asks "does the guard hold". Before the pipe
+    // for the same reason the CAS is — a read-modify-write that is sent and
+    // then judged has already overwritten whatever it raced.
+    //
+    // It is therefore also ahead of ROUTING, which the gateway's copy was not:
+    // there the refusal lived in the OPC UA adapter, so an unroutable element
+    // key answered `unrouted`. Here it answers `array_element_requires_expect`.
+    // That is the same ordering the compare-and-set already has on this path
+    // (rig probe P6's note), and the safer of the two: a key nothing claims is
+    // still a key nobody should be writing blind.
+    if (_readModifyWriteKeys.contains(key)) {
+      final guard = guardArrayElementWrite(cmd: id, hasExpect: expect != null);
+      if (guard is relay.WriteRejected) {
+        // Re-stamped onto this source's clock — `guardArrayElementWrite` dates
+        // its refusal from the wall, and every other outcome this class
+        // records is dated by the injected one. Two clocks in one outcome log
+        // is how a `not_received` window starts lying.
+        final refusal = relay.WriteRejected(id, guard.reason, at: _now());
+        _log.record(id, refusal, fingerprint);
+        return Future<relay.WriteResult>.value(refusal);
+      }
     }
 
     if (expect != null) {
@@ -576,6 +660,12 @@ final class BackendWrites implements BackendWriteSource {
   /// a reason worth stating — a compare-and-set on a counter the caller is
   /// itself advancing would refuse the tick after any dropped one, which is a
   /// deadman that stops feeding the moment the link hiccups.
+  ///
+  /// One consequence of the read-modify-write guard lands here and is meant to:
+  /// a deadman counter mapped onto an array element or a bit field cannot be
+  /// fed, because every tick would be a blind read-modify-write. The *engage*
+  /// is refused first, so the handle comes back inert and the button never
+  /// lights — which is the honest outcome for a hold nobody can be sure of.
   Future<relay.WriteResult> _feedDeadman(String key, int counter) =>
       write(key, counter);
 

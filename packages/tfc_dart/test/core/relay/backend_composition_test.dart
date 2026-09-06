@@ -51,6 +51,7 @@ import 'package:tfc_dart/core/relay/key_mapping_series_resolver.dart';
 import 'package:tfc_dart/core/relay/relay_config.dart';
 import 'package:tfc_dart/core/state_man.dart'
     show KeyMappings, KeyMappingEntry, OpcUANodeConfig;
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' show WriteRejected;
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 
 // --------------------------------------------------------------- the fixture
@@ -250,6 +251,39 @@ void main() {
       expect(identical(composed.api.values, composed.freshness), isTrue,
           reason: 'the adapter must read through the sweep, or a value that '
               'has gone quiet is served to a panel still badged good');
+    });
+
+    // The arm that would have caught rig probe P4a before the rig did. Every
+    // arm above judges the SHAPE of the graph; this one drives a write through
+    // it, because the guard that was missing is invisible to a type map — the
+    // production `BackendWrites` was in the graph, correctly, with an empty
+    // idea of which keys are read-modify-writes.
+    test('a blind array-element write is refused by the graph the binary '
+        'builds', () async {
+      final composed = compose(
+        keyMappings: KeyMappings(nodes: <String, KeyMappingEntry>{
+          'ST101.CN01.MOT01.trim.1': KeyMappingEntry(
+            opcuaNode: OpcUANodeConfig(namespace: 2, identifier: 'MAIN.rData')
+              ..arrayIndex = 0,
+          ),
+        }),
+      );
+
+      final result = await composed.api
+          .write('ST101.CN01.MOT01.trim.1', 1234.5, cmd: 'p4a-composed-1');
+
+      expect(result, isA<WriteRejected>(),
+          reason: 'the guard has to be WIRED, not merely implemented. On the '
+              'rig this exact write answered {"outcome":"applied"} against a '
+              'real PLC array');
+      expect((result as WriteRejected).reason.kind,
+          'array_element_requires_expect');
+      // No worker was ever registered on this pipe, so the router owns nothing
+      // — and the answer is still the guard's rather than `unrouted`. That is
+      // the ordering being pinned: the refusal happens before anything is sent
+      // anywhere, which is the only place a read-modify-write can be refused
+      // without having already run.
+      expect((result).reason.kind, isNot('unrouted'));
     });
   });
 

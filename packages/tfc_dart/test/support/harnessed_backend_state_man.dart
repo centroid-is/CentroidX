@@ -433,7 +433,17 @@ HarnessedBackendStateMan buildHarnessedBackendStateMan({
   // `clearPending` and `applyReadback` have to land on the object the API
   // hands out handles from, or a pending badge would be invisible to the
   // listener that is watching for it.
-  final writes = BackendWrites(pipe: pipe, values: sweep, logger: _quiet());
+  // Derived from the contract's own mappings, exactly as the composition root
+  // derives it from the plant's: none of the contract's keys is an array
+  // element or a bit field, so the set is empty here — and it is DERIVED
+  // rather than spelled `{}`, so a contract mapping that grows one is guarded
+  // without anybody remembering to come back here.
+  final writes = BackendWrites(
+    pipe: pipe,
+    values: sweep,
+    readModifyWriteKeys: readModifyWriteKeysOf(contractKeyMappings()),
+    logger: _quiet(),
+  );
   final browse = BackendBrowse(
     keyMappings: contractKeyMappings(),
     readValue: sweep.read,
