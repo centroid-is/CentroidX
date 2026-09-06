@@ -204,7 +204,13 @@ void main() {
   test('the shutdown function awaits nothing', () {
     final body = _bodyOf(code['bin/main.dart']!, 'void _shutdown(');
     expect(body, isNotEmpty, reason: 'there must be one shutdown function');
-    expect(body, isNot(contains('await')),
+    // The keyword, not the substring. `unawaited(…)` contains the letters and
+    // means the exact opposite — it is the marker that says this call is
+    // deliberately not waited on — and a scan that failed on it would push the
+    // next person towards a bare fire-and-forget call with no marker at all,
+    // which is the thing that is actually hard to review. `\bawait\b` still
+    // catches every real await, including `await for`.
+    expect(RegExp(r'\bawait\b').hasMatch(body), isFalse,
         reason: 'an awaited teardown is the stall; the whole point is that '
             'this function cannot block');
     expect(body, contains('exit(0)'));
@@ -240,22 +246,76 @@ void main() {
             'it is a courtesy to the panels');
   });
 
-  test('the deferred exit is ONE turn of the event loop, not a duration '
-      'somebody picked', () {
-    // The announcement queues its close frames; `sink.close` hands them to a
-    // controller the socket consumer drains on a later turn, so an exit in the
-    // same turn delivers nothing (measured — `drain_close_test.dart`'s `sync`
-    // arm, in tfc_relay_server). One turn is the smallest thing that works and
-    // the largest thing this path may take: a real duration here would be a
-    // shutdown budget, which is how the 5.76 s stall gets back in wearing a
-    // number nobody can argue with.
+  test('the deferred exit is a bounded count of event-loop turns, not a '
+      'duration somebody picked', () {
+    // AMENDED BY 13-14, deliberately, and the ban got wider rather than
+    // narrower. What this pin used to require was the literal
+    // `Timer(Duration.zero, () => exit(0))` — exactly one turn. That shape
+    // shipped, and the rig's second run proved it delivers nothing over
+    // `wss://`: a SecureSocket needs several rounds of the event loop to
+    // encrypt and write what a plain socket takes in the round it is handed,
+    // and the plant dials nothing but wss. The suite could not see it because
+    // `drain_close_test.dart` only measured `ws://` on loopback; it now has a
+    // TLS arm, and a `oneturn` arm that pins the old shape still failing.
+    //
+    // The hazard the pin was written for is UNCHANGED and still banned: a
+    // wall-clock deferral. `Duration(milliseconds: 50)` would work here, would
+    // read as reasonable, and is the exact shape the 5.76 s stall came in — a
+    // shutdown budget with a number nobody can argue with. So the new shape has
+    // to be measurably not that: a hard-capped count of `Duration.zero` yields,
+    // where nothing a peer, a socket or a config does can add one turn. A 1 ms
+    // timer failed six times out of six on the rig-equivalent fixture while
+    // four zero-duration turns — far less than a millisecond of wall clock —
+    // succeeded six out of six. It is turns the flush needs, and a clock buys
+    // them only by accident.
     final body = _bodyOf(code['bin/main.dart']!, 'void _shutdown(');
-    expect(body, contains('Timer(Duration.zero'),
-        reason: 'the exit is scheduled behind exactly one turn of the event '
-            'loop');
-    expect(RegExp(r'Timer\(\s*(?:const\s+)?Duration\(').hasMatch(body), isFalse,
+    expect(body, contains('settleDrain()'),
+        reason: 'the exit is scheduled behind the measured turn budget in '
+            'RelayServer.settleDrain, not behind a hand-rolled deferral here');
+
+    // The ban, widened: any timed thing with a number in it, however it is
+    // spelled. The old regex only caught `Timer(Duration(`, so the very fix
+    // that was tempting after the rig run — `Future.delayed(Duration(
+    // milliseconds: 50))` — would have walked straight past it.
+    final wallClock = RegExp(
+        r'(Timer|Future\.delayed|Future<void>\.delayed)\(\s*(?:const\s+)?'
+        r'Duration\(');
+    expect(wallClock.hasMatch(body), isFalse,
         reason: 'a Duration with a number in it on the shutdown path is a '
             'wait, and this path may not wait for anything');
+    expect(body, isNot(contains('sleep(')),
+        reason: 'and a synchronous sleep is worse than a timer, not better: it '
+            'blocks the isolate, so it denies the flush the very event-loop '
+            'turns it is waiting for. Measured — 50 ms of sleep() delivered '
+            '1006 three times out of three, having spent 56-62 ms doing it');
+  });
+
+  test('the turn budget the shutdown leans on is a const with a hard cap', () {
+    // The other half of the amendment. Banning a Duration in `_shutdown` is
+    // worth nothing if the budget it delegates to can grow a clock or an
+    // unbounded loop, so the pin follows it into the package that owns it.
+    // This is the arm that would still catch a genuine unbounded wait: a
+    // `while (!settled)` there is a wait on something outside this process,
+    // whatever it is spelled with.
+    final relay = _stripComments(File('../tfc_relay_server/lib/src/'
+            'relay_server.dart')
+        .readAsStringSync());
+    expect(relay, contains('static const int drainTurns'),
+        reason: 'the bound must be a compile-time constant; a field, a config '
+            'value or an argument is a bound somebody can move at runtime');
+    final settle = _bodyOf(relay, 'static Future<void> settleDrain()');
+    expect(settle, isNotEmpty);
+    expect(settle, contains('turn < drainTurns'),
+        reason: 'the loop must be counted against that constant');
+    expect(settle, contains('Duration.zero'));
+    expect(RegExp(r'Duration\(').hasMatch(settle), isFalse,
+        reason: 'every yield is Duration.zero — this is a turn budget, and the '
+            'moment one of them carries a number it is a wall-clock wait');
+    expect(settle, isNot(contains('while')),
+        reason: 'a conditional loop here is the unbounded wait this whole '
+            'phase removed, whatever it is waiting on');
+    expect(settle, isNot(contains('await socket')),
+        reason: 'and nothing in the pump may await a peer');
   });
 
   test('the shutdown path reaches Isolate.kill(priority: Isolate.immediate)',

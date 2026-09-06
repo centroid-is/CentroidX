@@ -12,6 +12,7 @@ import 'package:tfc_dart/core/log_config.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/relay/backend_composition.dart';
 import 'package:tfc_dart/core/relay/relay_config.dart';
+import 'package:tfc_relay_server/tfc_relay_server.dart';
 import 'data_acquisition_isolate.dart';
 
 /// Whether a shutdown is already under way.
@@ -42,7 +43,7 @@ bool _shuttingDown = false;
 /// `test/core/pipe_shutdown_structure_test.dart` scans this file and fails if
 /// anything on this path grows an await.
 ///
-/// ## Why the exit is one turn late, and why that is not a teardown wait
+/// ## Why the exit is a few turns late, and why that is not a teardown wait
 ///
 /// The rig measured this shutdown from the other end (probe P9): every panel
 /// was disconnected with **1006 and an empty reason**, which is the wire's way
@@ -55,17 +56,26 @@ bool _shuttingDown = false;
 /// measured rather than assumed (`drain_close_test.dart`, the `sync` arm):
 /// `sink.close(4002, …)` queues the frame with a controller the socket consumer
 /// drains on a *later* turn, so a process that exits in the same turn delivers
-/// exactly as much as one that closed nothing — 1006. One turn of the event
-/// loop is the smallest thing that works, and it delivers to twenty-five
-/// simultaneous clients.
+/// exactly as much as one that closed nothing — 1006.
 ///
-/// That turn is **not** an awaited teardown, and the distinction is the whole
-/// argument. Phase 12's law is about waiting on something that can hang: an
-/// OPC UA `disconnect()` against a blackholed server waits on the network. This
-/// waits on nothing — the workers are already dead by the line above, and a
-/// zero-duration timer is scheduled behind work the event loop is already
-/// committed to. If that loop is somehow wedged, the timer never fires and
-/// Docker's own SIGKILL ends it, which costs nothing this shutdown was
+/// **One turn is not enough either, and that took a second rig run to find.**
+/// It is enough on a plain socket, which is all the test suite measured, and
+/// the plant dials nothing but `wss://`. Probe P9's second run: the fix ran,
+/// the log line below was printed, and every panel still saw 1006 — TLS off in
+/// the same image and 4002 came back. A `SecureSocket` needs several rounds of
+/// the event loop to encrypt and write what a plain one takes in the round it
+/// is handed. `RelayServer.settleDrain()` yields a measured, hard-capped count
+/// of them; `RelayServer.drainTurns` carries the numbers.
+///
+/// Those turns are **not** an awaited teardown, and the distinction is the
+/// whole argument. Phase 12's law is about waiting on something that can hang:
+/// an OPC UA `disconnect()` against a blackholed server waits on the network.
+/// This waits on nothing — the workers are already dead by the line above, no
+/// peer, socket or clock can extend it by a single turn, and every yield is
+/// `Duration.zero`. A wall-clock budget would be the opposite: 50 ms would work
+/// here and be a number nobody can argue with, and it is exactly the shape the
+/// 5.76 s stall came in. If the loop is somehow wedged, the turns never come
+/// and Docker's own SIGKILL ends it, which costs nothing this shutdown was
 /// protecting: the acquisition isolates died synchronously, before anything was
 /// deferred.
 void _shutdown(PipeMainEndpoint pipe, Logger logger, String reason,
@@ -82,8 +92,9 @@ void _shutdown(PipeMainEndpoint pipe, Logger logger, String reason,
   // that every panel gets 1006 every time.
   relay.server.announceDraining();
   logger.w('Shutting down ($reason): told connected panels 4002 server '
-      'draining; exiting on the next turn');
-  Timer(Duration.zero, () => exit(0));
+      'draining; exiting after ${RelayServer.drainTurns} turns of the event '
+      'loop');
+  unawaited(RelayServer.settleDrain().then((_) => exit(0)));
 }
 
 void main() async {
