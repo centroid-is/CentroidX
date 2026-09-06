@@ -5,9 +5,9 @@ const protocolVersion = '2026-08-13';
 /// JSON-RPC method names.
 ///
 /// Requests (carry an id, expect a result): [hello], [subscribe],
-/// [unsubscribe], [write], [writeStatus], [read], [readFresh], [readMany],
-/// [ping], plus the timeseries / history / preferences methods added in later
-/// steps.
+/// [unsubscribe], [write], [writeStatus], [ackAlarm], [read], [readFresh],
+/// [readMany], [ping], plus the timeseries / history / preferences methods
+/// added in later steps.
 ///
 /// Notifications (no id, never acknowledged): [update], [tick], [resync],
 /// [status], [bye] server→client, and [holdTick] client→server — the only
@@ -22,6 +22,40 @@ abstract final class Methods {
   static const unsubscribe = 'unsubscribe';
   static const write = 'write';
   static const writeStatus = 'writeStatus';
+
+  /// An operator acknowledging one active alarm, carrying [AckAlarmParams].
+  ///
+  /// Spelled in full rather than shortened the way [update] and [holdTick]
+  /// are. Those two are hot paths — one frame per value per tick, one frame
+  /// per tick per held button — and an acknowledge is one frame per operator
+  /// gesture, so there is no byte budget to buy and a readable name is worth
+  /// more than four saved characters in a log.
+  ///
+  /// **Why it is an RPC when D-9 made the active set a value key.** They are
+  /// not the same direction. `AlarmKeys.active` is *state*, and the pipe's
+  /// conflation, fan-out and snapshot-on-reconnect are the correct semantics
+  /// for state — that is the whole of D-9's argument and it is unchanged. An
+  /// acknowledge is an *operator action*, and an action needs an addressee, an
+  /// authorization decision and an answer: the three things a conflated value
+  /// key structurally cannot give it. `pipe_keys.dart`'s *"these are keys, not
+  /// an API"* cuts **for** this method, not against it.
+  ///
+  /// **It carries no `cmd`, deliberately.** A write mints a ULID because a
+  /// re-send has to be distinguishable from a second actuation — pressing
+  /// Start twice is two starts. An acknowledge is idempotent by construction:
+  /// acknowledging an already-acknowledged `(alarmUid, ruleIndex)` is a no-op,
+  /// and the second ack of the same alarm is the same intent as the first. So
+  /// there is nothing for an idempotency key to protect, and there is no
+  /// `ackStatus` to reconcile one against. A field nothing consumes is a name
+  /// pretending to be a rule.
+  ///
+  /// **The confirmation is the readback, not the return.** The operator learns
+  /// the ack took effect when the alarm leaves `AlarmKeys.active` — PROJECT.md's
+  /// *"readback is the only confirmation"* applied here without an exception.
+  /// This request's own answer says one thing only: the gateway accepted the
+  /// instruction and handed it to an alarm engine. It does not say the row
+  /// moved.
+  static const ackAlarm = 'ackAlarm';
 
   /// The cached read — no round trip, answered from what the gateway last
   /// heard. `StateManApi.read`'s name, because it is the same concept.

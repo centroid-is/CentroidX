@@ -638,6 +638,92 @@ final class WriteParams {
       };
 }
 
+/// One operator acknowledging one active alarm.
+///
+/// Sent as a request under [Methods.ackAlarm] — see that constant for why an
+/// acknowledge is an RPC when the active set is a value key, why it carries no
+/// `cmd`, and why its answer is not the operator's confirmation.
+///
+/// **The identity is D-4's, and there is deliberately no third field.**
+/// `(alarm_uid, rule_index)` is the key of the partial unique index D-5 adds
+/// to `alarm_history` — `WHERE deactivated_at IS NULL` — so the open row is
+/// unique by construction and the engine resolves it from these two values
+/// alone. A `historyId` beside them would be a *second* identity scheme for
+/// the same row, and two identities for one row can disagree: the frame would
+/// still read as valid and would acknowledge the wrong alarm. One identity, and
+/// the wire cannot express the disagreement.
+final class AckAlarmParams {
+  /// The alarm instance's uid, from D-4's `alarm_history.alarm_uid`.
+  final String alarmUid;
+
+  /// Which rule of that alarm fired, from D-4's `alarm_history.rule_index`.
+  ///
+  /// A position in a list, so a negative one names no rule and is refused at
+  /// both doors below.
+  final int ruleIndex;
+
+  /// Refuses a frame that identifies nothing, in [HoldTickParams]' style and
+  /// for its reason: the alternative is a frame that reads as valid and
+  /// acknowledges whatever row happens to sort first.
+  factory AckAlarmParams({required String alarmUid, required int ruleIndex}) {
+    if (alarmUid.isEmpty) {
+      throw ArgumentError.value(alarmUid, 'alarmUid',
+          'an acknowledge must name the alarm instance it acknowledges');
+    }
+    if (ruleIndex < 0) {
+      throw ArgumentError.value(ruleIndex, 'ruleIndex',
+          'a rule index is a position in a list; a negative one names no rule');
+    }
+    return AckAlarmParams._(alarmUid, ruleIndex);
+  }
+
+  const AckAlarmParams._(this.alarmUid, this.ruleIndex);
+
+  /// Refuses a missing or empty uid, a non-numeric index, a fractional one, a
+  /// non-finite one and a negative one, all as a [FormatException].
+  ///
+  /// The non-finite arm is [HoldTickParams.fromJson]'s and is not theoretical:
+  /// `1e999` decodes to `Infinity` without complaint, and `Infinity.toInt()`
+  /// throws an `UnsupportedError` that nothing at this boundary is catching.
+  ///
+  /// An unknown extra field is **ignored**, not refused — forward
+  /// compatibility runs both ways, and a newer client adding a field must not
+  /// make an older gateway refuse the acknowledge.
+  factory AckAlarmParams.fromJson(Map<String, Object?> json) {
+    final uid = json['alarmUid'];
+    if (uid is! String || uid.isEmpty) {
+      throw FormatException('acknowledge names no alarm: $json');
+    }
+    final index = json['ruleIndex'];
+    if (index is! num) {
+      throw FormatException('acknowledge rule index is not a number: $index');
+    }
+    if (index is double) {
+      if (!index.isFinite) {
+        throw const FormatException(
+            'acknowledge rule index is not finite: 1e999 decodes to Infinity, '
+            'and a rule index that is not a whole number is nonsense');
+      }
+      if (index != index.truncateToDouble()) {
+        throw FormatException(
+            'acknowledge rule index is not a whole number: $index');
+      }
+    }
+    if (index < 0) {
+      throw FormatException(
+          'acknowledge rule index is negative: $index. A rule index is a '
+          'position in a list, so this names no rule and there is nothing for '
+          'an alarm engine to look up');
+    }
+    return AckAlarmParams(alarmUid: uid, ruleIndex: index.toInt());
+  }
+
+  /// Exactly two keys. `ack_alarm_params_test.dart` asserts the key set as an
+  /// equality, so a third one cannot arrive without that arm being edited.
+  Map<String, Object?> toJson() =>
+      {'alarmUid': alarmUid, 'ruleIndex': ruleIndex};
+}
+
 /// One feed of a hold-to-run deadman: the tag, and the counter value on it.
 ///
 /// Sent as a client→server notification under [Methods.holdTick] and never
