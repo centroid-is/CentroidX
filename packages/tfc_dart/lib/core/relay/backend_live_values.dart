@@ -130,6 +130,31 @@ final class BackendLiveValues implements BackendValueSource {
   /// whole file about, and it is enforced by grep rather than by a type.
   static const List<String> healthKeys = <String>[relay.PipeKeys.connected];
 
+  /// The `ALARM.` names this adapter **declares but does not produce**.
+  ///
+  /// **A separate list from [healthKeys], and the separation is the point.**
+  /// [healthKeys] exists because this class IS the producer of
+  /// `PIPE.connected` — it seeds it true at construction, flips it on link
+  /// loss and back on recovery. This class is **not** the producer of
+  /// `ALARM.active`: the alarm engine is, and it publishes into the same
+  /// [PipeMainEndpoint.store] the way [_seedHealth] does. All this list does is
+  /// make the key *declared*, so the relay server answers a subscription for it
+  /// instead of `unknownKey` — the failure the rig measured for
+  /// `PIPE.upstream.*` (FIND-3), where the producer existed, the value existed,
+  /// and every panel that asked was refused.
+  ///
+  /// Two different reasons must not share one list. Folded into [healthKeys],
+  /// the next reader to add a seed beside `PIPE.connected` would seed this too
+  /// — and a seeded empty active set is the claim that no alarm is active,
+  /// made by an object that has never evaluated a rule. Until the engine has
+  /// run, "not heard from yet" is the honest reading, and an unseeded key
+  /// already says exactly that.
+  ///
+  /// Spelled through the constant, never as a quoted prefixed string:
+  /// `alarm_keys.dart` is a whole file about that drift, and the enforcement is
+  /// a grep rather than a type.
+  static const List<String> alarmKeys = <String>[relay.AlarmKeys.active];
+
   /// One handle per key, so two callers watching one tag share one upstream
   /// registration.
   final Map<String, _WatchedKey> _watched = <String, _WatchedKey>{};
@@ -254,14 +279,28 @@ final class BackendLiveValues implements BackendValueSource {
     };
   }
 
-  /// Every key this source can serve: the key mappings plus [healthKeys].
+  /// Every key this source can serve: the key mappings, plus [healthKeys],
+  /// plus [alarmKeys].
   ///
   /// Nothing else. Omitting a served key hides a tag that is visibly on screen;
   /// listing an unserved one sends whoever draws the next page to bind a tag
   /// that will never produce a value.
+  ///
+  /// **A set, so a name appears once however many reasons it has to be here.**
+  /// Nothing stops an operator naming a plant tag `ALARM.active` — the backend
+  /// has no ingest refusal for the reserved prefixes yet (T-14-08; the refusal
+  /// lands with the engine, which is the object that holds both the mapping and
+  /// the namespace). Concatenated, that operator's file would put the same
+  /// string on this list twice, and a duplicate reaches the browse surface as
+  /// two identical entries nobody can tell apart and the subscribe accounting
+  /// as two registrations for one monitored item. A set literal keeps insertion
+  /// order, so the mappings still come first.
   @override
-  List<String> get keys =>
-      <String>[..._keyMappings.keys, ...healthKeys];
+  List<String> get keys => <String>{
+        ..._keyMappings.keys,
+        ...healthKeys,
+        ...alarmKeys,
+      }.toList(growable: false);
 
   /// How many round trips this source has made upstream.
   ///
@@ -367,11 +406,18 @@ final class BackendLiveValues implements BackendValueSource {
   /// that there is no reading at all — where "it was 1450 and we have lost
   /// touch" is actionable and "———" is not.
   ///
-  /// Two keys are left alone:
+  /// Three kinds of key are left alone:
   ///
   ///  * **health keys**, by prefix (HLTH-02): they change on events, so they
   ///    are always older than any freshness deadline, and sweeping them would
   ///    make an indicator read stale precisely while nothing is wrong;
+  ///  * **alarm keys**, by prefix, for a *different* reason: nothing upstream
+  ///    refreshes `ALARM.active` on a cadence, because the alarm engine
+  ///    republishes it only when a rule transitions. On a healthy plant that is
+  ///    the normal condition, so a swept alarm key means the banner greys out
+  ///    whenever the plant is quiet — which teaches operators that a grey
+  ///    banner means nothing, at the moment they most need it to mean
+  ///    something (P-6);
   ///  * **anything already carrying news at or worse than `badStale`'s band.**
   ///    A `badCommFault` key rewritten to `badStale` would swap "the link is
   ///    sick, waiting may fix it" for a weaker and less actionable claim, and
@@ -382,7 +428,11 @@ final class BackendLiveValues implements BackendValueSource {
   void markStale(Iterable<String> keys) {
     final batch = <String, relay.DynamicValue>{};
     for (final key in keys) {
+      // Additive, never a replacement: `PIPE.` stays excluded. Two prefixes,
+      // two reasons, and `alarm_keys.dart` keeps them from overlapping so
+      // deleting the wrong half cannot look harmless.
       if (relay.PipeKeys.isPipeKey(key)) continue;
+      if (relay.AlarmKeys.isAlarmKey(key)) continue;
       final cached = _pipe.store.peek(key);
       if (cached == null) continue;
       if (relay.Quality.badStale.band <= cached.quality.band) continue;

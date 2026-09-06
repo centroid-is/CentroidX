@@ -58,6 +58,19 @@
 ///     decide whether to believe the rest of the screen, and greys it out
 ///     exactly when nothing is wrong (HLTH-02). The prefix is what makes a
 ///     health key invented in a later phase correct on the day it is invented.
+///
+///     **Alarm keys are skipped too, by [relay.AlarmKeys.isAlarmKey], and for
+///     a different reason.** A health key is skipped because it changes on a
+///     *cadence this object cannot see* — the link either moves or it does
+///     not. `ALARM.active` is skipped because alarm state changes on *events*:
+///     the engine republishes the active set when a rule transitions and at no
+///     other time, so on a healthy plant the last publish is arbitrarily old
+///     and that is exactly what "no alarms" looks like. Silence here is news,
+///     not the absence of news, and badging it stale greys out the alarm
+///     banner on a plant where nothing is wrong (D-9, P-6). The two conditions
+///     are separate lines rather than one because the reasons are separate;
+///     `alarm_keys.dart` pins that neither prefix is a prefix of the other, so
+///     they can never quietly collapse into one.
 ///  3. **Only watched keys are aged.** A key nobody watches has no monitored
 ///     item upstream (13-03's refcount) and no box on any screen, so it cannot
 ///     be fresh and there is nobody to tell. Ageing the whole key mapping
@@ -310,7 +323,8 @@ final class BackendFreshnessSweep implements BackendValueSource {
   /// One pass over the watched set.
   ///
   /// Three rules, and each one is a decision — see the library doc:
-  /// health keys are skipped by prefix; a key with no recorded arrival is
+  /// health and alarm keys are skipped by prefix (two prefixes, two reasons);
+  /// a key with no recorded arrival is
   /// skipped (nothing has ever come for it, so it is `notYetKnown` and not
   /// stale, which are different statements); and a key already carrying news
   /// at or worse than `badStale`'s band stages nothing, so a quiet plant costs
@@ -324,7 +338,10 @@ final class BackendFreshnessSweep implements BackendValueSource {
     final stale = <String>[];
     for (final entry in _watched.entries) {
       final key = entry.key;
+      // Additive, never a replacement: `PIPE.` stays excluded. See rule 2 for
+      // why alarm keys are a second reason and not the same one.
       if (relay.PipeKeys.isPipeKey(key)) continue;
+      if (relay.AlarmKeys.isAlarmKey(key)) continue;
       final heard = _lastHeard[key];
       if (heard == null) continue;
       // Two readings of one monotonic counter. The subtraction that used to be
