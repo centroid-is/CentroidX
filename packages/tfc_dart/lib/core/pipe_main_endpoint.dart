@@ -205,6 +205,32 @@ class PipeMainEndpoint {
   /// why this file has none.
   void Function(String key)? onKeyRetired;
 
+  /// Called with the index of a worker whose isolate has just died.
+  ///
+  /// **The signal, not the degrade.** This endpoint has already marked
+  /// everything that worker was piping `badCommFault` by the time the hook
+  /// fires (see [_onWorkerDied]), so a consumer reads a cache with the fact
+  /// already in it. What a consumer adds is *policy* — whether one dead worker
+  /// out of three is a whole-of-upstream event worth announcing to every
+  /// connected client, which is a question this endpoint has no opinion on and
+  /// plan 13-07's `BackendFreshnessSweep` does.
+  ///
+  /// Added in 13-07 because the alternative was to infer a link transition
+  /// from a mass quality change, and a heuristic over qualities cannot tell a
+  /// dead isolate from fifteen tags that happened to fault together.
+  ///
+  /// A plain callback, guarded against a throwing consumer, for the same two
+  /// reasons as [onKeyRetired].
+  void Function(int worker)? onWorkerDied;
+
+  /// Called with the index of a worker whose new generation has announced
+  /// itself, after the subscription snapshot has been replayed to it.
+  ///
+  /// Fires on **every** generation, including the first. A consumer that only
+  /// cares about a respawn is the thing that knows whether it announced a loss
+  /// to recover from; this side just reports the fact.
+  void Function(int worker)? onWorkerReady;
+
   /// Registers [worker] as the owner of [keys] and starts reading it.
   ///
   /// [keys] is a `filterByServer` partition straight out of `bin/main.dart` —
@@ -498,6 +524,25 @@ class PipeMainEndpoint {
     }
   }
 
+  /// Tells [hook], if anybody registered one, that worker [index] changed
+  /// generation.
+  ///
+  /// Guarded for exactly [_announceRetired]'s reason: the consumer is somebody
+  /// else's code on the pipe's own message pump, and an escaping error would
+  /// cancel the worker's message subscription and lose every later reading
+  /// from that PLC — a total, silent loss of one station because one adapter
+  /// threw once.
+  void _announceWorker(void Function(int)? hook, int index, String name) {
+    if (hook == null) return;
+    try {
+      hook(index);
+    } catch (error) {
+      _logger.e('pipe: the $name consumer failed for '
+          '${_workers[index].name}: $error — the link transition was not '
+          'announced to it');
+    }
+  }
+
   /// Writes [quality] with no payload for every key in [keys], immediately.
   ///
   /// A direct [relay.ValueStore.applyBatch]: there is no tick on this side and
@@ -529,12 +574,18 @@ class PipeMainEndpoint {
   /// its fate was unknown.
   void _onWorkerReady(int index, SendPort control) {
     final snapshot = _subscribedByWorker[index];
-    if (snapshot == null || snapshot.isEmpty) return;
-    _logger.i('pipe: ${_workers[index].name} is ready; replaying '
-        '${snapshot.length} subscription(s)');
-    for (final key in List<String>.of(snapshot)) {
-      control.send(PipeSubscribe(key));
+    if (snapshot != null && snapshot.isNotEmpty) {
+      _logger.i('pipe: ${_workers[index].name} is ready; replaying '
+          '${snapshot.length} subscription(s)');
+      for (final key in List<String>.of(snapshot)) {
+        control.send(PipeSubscribe(key));
+      }
     }
+    // AFTER the replay, and unconditionally: a generation with nothing to
+    // replay is still a generation, and a consumer deciding whether to
+    // announce a recovery must not have that decision depend on whether main
+    // happened to want anything at the moment the isolate died.
+    _announceWorker(onWorkerReady, index, 'onWorkerReady');
   }
 
   /// The worker died. This is news, and it is delivered as news.
@@ -563,6 +614,10 @@ class PipeMainEndpoint {
     // NOW rather than at its own deadline. There is nothing uncertain left to
     // wait for, and the caller reads a cache that has just been badged bad.
     _settleFrameWaiters(index);
+    // THEN the hook, for `_announceRetired`'s reason: a consumer that reads
+    // the keys inside the callback must see the degrade already applied rather
+    // than the good-looking numbers it replaced.
+    _announceWorker(onWorkerDied, index, 'onWorkerDied');
 
     final pendingTable = _pending[index];
     if (pendingTable == null || pendingTable.isEmpty) return;

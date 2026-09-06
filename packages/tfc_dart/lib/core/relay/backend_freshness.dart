@@ -70,6 +70,14 @@
 ///     `tfc_dart` plumbing fails unrelated widget tests ("A Timer is still
 ///     pending…") and burns CPU on an idle backend; the pipe's own endpoints
 ///     already follow this rule.
+///  5. **A link transition is ONE announcement.** Never one per key: at 1500
+///     keys on a page a per-key fan-out is 1500 events for one event,
+///     delivered in the instant the client is trying to redraw — a denial of
+///     service against the operator's own screen. Sparkplug sends one NDEATH
+///     for a whole node for this reason. And never one per sweep tick either:
+///     an outage that re-announces itself four times a deadline for as long as
+///     the PLC is down is the same denial of service arrived at slowly. See
+///     [_onWorkerDied] for what "the link" means when there are three workers.
 ///
 /// ## What this file does NOT do
 ///
@@ -90,6 +98,7 @@ library;
 import 'dart:async';
 
 import 'package:logger/logger.dart';
+import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/relay/backend_seams.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
@@ -108,18 +117,35 @@ final Stopwatch _monotonic = Stopwatch()..start();
 final class BackendFreshnessSweep implements BackendValueSource {
   /// Wraps [values] with a watchdog on a [staleAfter] deadline.
   ///
+  /// [pipe] is the *link-transition observer* and nothing else: with it, a
+  /// worker's death and its respawn each become one announcement; without it
+  /// this object is a freshness sweep and no more. Nullable so a composition
+  /// that has no acquisition pipe behind it is a legal object rather than one
+  /// that needs a stub — a permissive default is a production hole with a
+  /// test's name on it (`backend_seams.dart`).
+  ///
   /// [interval] defaults to [intervalFor] of the deadline. It is not a
   /// constant because it is derived from a number the caller supplies.
   BackendFreshnessSweep({
     required BackendValueSource values,
     required this.staleAfter,
+    PipeMainEndpoint? pipe,
     Duration? interval,
     Logger? logger,
   })  : _values = values,
+        _pipe = pipe,
         interval = interval ?? intervalFor(staleAfter),
-        _logger = logger ?? Logger();
+        _logger = logger ?? Logger() {
+    if (pipe == null) return;
+    // Registered in the constructor rather than by the composition root, for
+    // 13-03's reason about `onKeyRetired`: an obligation wired at a call site
+    // is an obligation that can be forgotten at a call site.
+    pipe.onWorkerDied = _onWorkerDied;
+    pipe.onWorkerReady = _onWorkerReady;
+  }
 
   final BackendValueSource _values;
+  final PipeMainEndpoint? _pipe;
   final Logger _logger;
 
   /// How long a value may go unheard-of before it stops being trustworthy.
@@ -191,6 +217,9 @@ final class BackendFreshnessSweep implements BackendValueSource {
   /// The broadcast controllers [subscribe] handed out, closed on [dispose].
   final List<StreamController<relay.DynamicValue>> _streams =
       <StreamController<relay.DynamicValue>>[];
+
+  /// Which workers are currently dead, by index. See [_onWorkerDied].
+  final Set<int> _downWorkers = <int>{};
 
   /// True while this object is applying its own mutation to the source.
   ///
@@ -328,6 +357,69 @@ final class BackendFreshnessSweep implements BackendValueSource {
     }
   }
 
+  // ------------------------------------------------------ the link transition
+
+  /// A worker died: announce it **once**, and only once the upstream as a whole
+  /// is gone.
+  ///
+  /// **"The link" here is the upstream, not one isolate, and that is the
+  /// careful part.** [BackendValueSource.announceLinkLoss] degrades every key
+  /// the source has heard about and drops `PIPE.connected` — a
+  /// whole-of-upstream statement. Firing it because *one* of three acquisition
+  /// workers died would grey out ST201 and ST301 because ST101's isolate
+  /// exited, which is exactly the blast radius 12-08 measured away: one dark
+  /// PLC starves only its own isolate, and a mimic with half its boxes greyed
+  /// for the wrong reason sends someone to the wrong end of the building.
+  /// Nothing is lost by staying quiet, because the dead worker's own keys were
+  /// already degraded on this same turn by the pipe (`_onWorkerDied` →
+  /// `_markBad(piped, badCommFault)`), scoped to exactly what it was piping.
+  ///
+  /// What is *not* covered by staying quiet is a per-link health key —
+  /// `PIPE.upstream.<alias>.connected` is declared in `pipe_keys.dart` and this
+  /// adapter serves none of that group (13-03: every other declared name has a
+  /// producer in another package). Naming which PLC went dark, rather than
+  /// only that all of them did, is that group's job and not this policy's.
+  ///
+  /// So: one announcement on the transition into "every worker is down", and
+  /// none afterwards. A second death adds nothing to [_downWorkers] that was
+  /// not already there, and the sweep tick never announces at all.
+  void _onWorkerDied(int worker) {
+    if (_disposed) return;
+    if (!_downWorkers.add(worker)) return;
+    final total = _pipe?.workerCount ?? 0;
+    if (total == 0 || _downWorkers.length < total) return;
+    _logger.w('backend freshness: every acquisition worker is down '
+        '($total of $total) — announcing the upstream loss once');
+    _apply(() => _values.announceLinkLoss(
+        'every acquisition worker is down ($total of $total)'));
+  }
+
+  /// A generation announced itself: announce the recovery once, if a loss was
+  /// announced.
+  ///
+  /// Symmetric with [_onWorkerDied] and equally single. Fires on the FIRST
+  /// worker to come back, because that is the transition out of "every worker
+  /// is down"; the second and third add nothing.
+  ///
+  /// The recovery itself is a **snapshot and never a delta replay**: the pipe
+  /// re-sends `PipeSubscribe` for the whole subscription set on respawn
+  /// (12-06) and [BackendValueSource.announceLinkUp] resnapshots what is being
+  /// watched, so a key comes back carrying whatever the plant says *now*. This
+  /// file remembers no values and replays none, deliberately — a remembered
+  /// number put back on recovery is a number nobody measured, presented as a
+  /// measurement, at the exact moment an operator is looking to see what
+  /// changed while they were blind.
+  void _onWorkerReady(int worker) {
+    if (_disposed) return;
+    final total = _pipe?.workerCount ?? 0;
+    final wasAllDown = total > 0 && _downWorkers.length == total;
+    if (!_downWorkers.remove(worker)) return;
+    if (!wasAllDown) return;
+    _logger.i('backend freshness: an acquisition worker is back — announcing '
+        'the upstream recovery once');
+    _apply(_values.announceLinkUp);
+  }
+
   // --------------------------------------------------------------- the gating
 
   /// The first watcher on [key] arrived.
@@ -371,7 +463,8 @@ final class BackendFreshnessSweep implements BackendValueSource {
 
   // ------------------------------------------------------------ the teardown
 
-  /// Cancels the clock and disposes the source beneath.
+  /// Cancels the clock, gives the pipe's link hooks back, and disposes the
+  /// source beneath.
   ///
   /// **Nothing on the timer path is awaited.** `Timer.cancel` is synchronous
   /// and there is no in-flight pass to join: a sweep is a loop over a map and a
@@ -386,6 +479,20 @@ final class BackendFreshnessSweep implements BackendValueSource {
     if (_disposed) return;
     _disposed = true;
     _disarm();
+
+    final pipe = _pipe;
+    if (pipe != null) {
+      // Only if they are still ours: the composition root may have re-pointed
+      // them, and stealing another consumer's hook on the way out would leave
+      // whoever owns the pipe next with no link signal at all.
+      //
+      // `==` and not `identical`: two tear-offs of one instance method on one
+      // object are equal but need not be the same object, so `identical` here
+      // silently never matches and the hooks are never dropped (13-03 shipped
+      // exactly that bug against `onKeyRetired` and its own arm caught it).
+      if (pipe.onWorkerDied == _onWorkerDied) pipe.onWorkerDied = null;
+      if (pipe.onWorkerReady == _onWorkerReady) pipe.onWorkerReady = null;
+    }
 
     for (final watched in _watched.values) {
       watched._teardown();
