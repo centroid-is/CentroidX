@@ -34,11 +34,16 @@
 /// ## What this file must never grow
 ///
 /// A teardown on the shutdown path. [BackendRelayComposition.dispose] exists
-/// for tests and for nothing else; `bin/main.dart`'s `_shutdown` is `Never`,
-/// awaits nothing, and must never learn to close this server.
+/// for tests and for nothing else; `bin/main.dart`'s `_shutdown` awaits
+/// nothing and must never learn to close this server.
 /// `test/core/pipe_shutdown_structure_test.dart` bans `.close(` anywhere in
 /// `bin/*.dart` for that reason, and the process is about to `exit(0)` — the
 /// sockets go with it.
+///
+/// The one thing the shutdown path *does* reach this graph for is
+/// `RelayServer.announceDraining()` — a queued 4002 close frame per socket,
+/// releasing nothing and awaiting nothing, so a panel can tell a planned
+/// restart from a broken network (rig probe P9). Announcing is not closing.
 library;
 
 import 'package:logger/logger.dart';
@@ -119,10 +124,11 @@ final class BackendRelayComposition {
   /// Closes the server and releases the adapter.
   ///
   /// **For tests, and for nothing on the process's shutdown path.** The backend
-  /// stops by `_shutdown` (`bin/main.dart:31`), which kills every acquisition
-  /// worker and calls `exit(0)` without awaiting anything — an awaited teardown
-  /// there has been measured at 5.76 s and is a container Docker SIGKILLs in
-  /// the middle of a write. The sockets this closes go with the process anyway.
+  /// stops by `_shutdown` in `bin/main.dart`, which kills every acquisition
+  /// worker, announces the drain and calls `exit(0)` without awaiting
+  /// anything — an awaited teardown there has been measured at 5.76 s and is a
+  /// container Docker SIGKILLs in the middle of a write. The sockets this
+  /// closes go with the process anyway.
   Future<void> dispose() async {
     await server.close();
     await api.dispose();

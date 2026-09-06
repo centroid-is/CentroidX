@@ -608,21 +608,32 @@ void main() {
               'that is not in the database at all');
     });
 
-    test('the shutdown path did not grow', () {
+    test('the shutdown path did not grow a teardown', () {
       // pipe_shutdown_structure_test.dart owns this property and has been shown
       // to bite four times (12-06 sabotages A-D). It is restated here because
       // this plan is the one that adds a closeable object to the process, and
       // the arm should fail in the file whose change caused it.
-      final body = _bodyOf(main, 'Never _shutdown(');
+      //
+      // What the path DID grow, deliberately, is the 4002 announcement (rig
+      // probe P9). That is not a teardown: `announceDraining` queues a close
+      // frame per socket and returns, releasing nothing and awaiting nothing,
+      // and the arms below still forbid every shape that can block.
+      final body = _bodyOf(main, 'void _shutdown(');
       expect(body, isNotEmpty);
       expect(body, isNot(contains('await')),
           reason: 'RelayServer.close() on this path is the 5.76 s stall '
               'coming back on the most common restart in the plant. The '
               'process is about to exit(0); the sockets go with it');
-      expect(body, isNot(contains('close(')));
+      expect(body, isNot(contains('close(')),
+          reason: 'the drain ANNOUNCES; it must not close the server. '
+              'RelayServer.close() awaits every session\'s peer');
       expect(main, isNot(contains('.close(')),
           reason: 'the whole file, not just the function: an async helper '
               'awaited from _shutdown would pass the arm above');
+      expect(body, contains('announceDraining()'),
+          reason: 'without it every planned restart is a 1006 the panel '
+              'cannot tell from a broken network — which is what the rig '
+              'measured');
     });
 
     test('the alarmman block is untouched — it is Phase 14\'s', () {

@@ -14,6 +14,15 @@ import 'package:tfc_dart/core/relay/backend_composition.dart';
 import 'package:tfc_dart/core/relay/relay_config.dart';
 import 'data_acquisition_isolate.dart';
 
+/// Whether a shutdown is already under way.
+///
+/// A second SIGTERM — an operator pressing stop again, or Docker's own follow
+/// up — must not schedule a second exit behind the first. It exits on the spot
+/// instead: by then the workers are already dead and the drain has already been
+/// announced, so there is nothing left that a further turn of the event loop
+/// could deliver.
+bool _shuttingDown = false;
+
 /// The one way this process stops (PIPE-13).
 ///
 /// Both exit paths reach it: the SIGTERM handler below and the config-watch
@@ -22,18 +31,59 @@ import 'data_acquisition_isolate.dart';
 /// in the plant — an operator saving a key mapping — rather than on the rare
 /// one.
 ///
-/// It kills every acquisition worker with `Isolate.immediate` and then exits.
+/// It kills every acquisition worker with `Isolate.immediate`, tells whatever
+/// panels are connected that this is deliberate, and exits.
 /// **It awaits nothing, and it must never learn to.** `StateMan.close()` awaits
 /// an OPC UA `disconnect()` and `delete()`; that await has been measured at
 /// 5.76 s against a server that stopped answering, and a container that takes
 /// 5.76 s to stop is a container Docker SIGKILLs in the middle of whatever it
-/// was doing. `Never` is the signature saying so: there is no future here for a
-/// caller to wait on. `test/core/pipe_shutdown_structure_test.dart` scans this
-/// file and fails if anything on this path grows an await.
-Never _shutdown(PipeMainEndpoint pipe, Logger logger, String reason) {
+/// was doing. There is no future here for a caller to wait on — the return type
+/// is `void` rather than `Future<void>` for that reason — and
+/// `test/core/pipe_shutdown_structure_test.dart` scans this file and fails if
+/// anything on this path grows an await.
+///
+/// ## Why the exit is one turn late, and why that is not a teardown wait
+///
+/// The rig measured this shutdown from the other end (probe P9): every panel
+/// was disconnected with **1006 and an empty reason**, which is the wire's way
+/// of saying "the connection vanished" — indistinguishable from a pulled cable.
+/// A panel cannot tell a planned restart from a plant-link failure, and those
+/// call for opposite behaviour on the screen.
+///
+/// The signature used to be `Never`, and closing the sockets before `exit(0)`
+/// is what changed it. **A synchronous close does not work**, and that was
+/// measured rather than assumed (`drain_close_test.dart`, the `sync` arm):
+/// `sink.close(4002, …)` queues the frame with a controller the socket consumer
+/// drains on a *later* turn, so a process that exits in the same turn delivers
+/// exactly as much as one that closed nothing — 1006. One turn of the event
+/// loop is the smallest thing that works, and it delivers to twenty-five
+/// simultaneous clients.
+///
+/// That turn is **not** an awaited teardown, and the distinction is the whole
+/// argument. Phase 12's law is about waiting on something that can hang: an
+/// OPC UA `disconnect()` against a blackholed server waits on the network. This
+/// waits on nothing — the workers are already dead by the line above, and a
+/// zero-duration timer is scheduled behind work the event loop is already
+/// committed to. If that loop is somehow wedged, the timer never fires and
+/// Docker's own SIGKILL ends it, which costs nothing this shutdown was
+/// protecting: the acquisition isolates died synchronously, before anything was
+/// deferred.
+void _shutdown(PipeMainEndpoint pipe, Logger logger, String reason,
+    BackendRelayComposition? relay) {
   logger.w('Shutting down ($reason): killing acquisition workers');
+  // First, always, and synchronously. Everything below is a courtesy to
+  // whoever is watching; this is the part that stops the plant being driven by
+  // a process that is going away.
   pipe.shutdown();
-  exit(0);
+  if (relay == null || _shuttingDown) exit(0);
+  _shuttingDown = true;
+  // Best effort by construction: the frames are queued, not flushed, and a
+  // panel whose socket is not writable gets 1006 anyway. The alternative is
+  // that every panel gets 1006 every time.
+  relay.server.announceDraining();
+  logger.w('Shutting down ($reason): told connected panels 4002 server '
+      'draining; exiting on the next turn');
+  Timer(Duration.zero, () => exit(0));
 }
 
 void main() async {
@@ -46,10 +96,17 @@ void main() async {
   // kill — the workers register themselves into it as they are spawned.
   final pipe = PipeMainEndpoint();
 
+  // Declared here and assigned much later, so the signal handler on the next
+  // line can reach the relay once it exists without the handler having to be
+  // registered after it. A SIGTERM that arrives before the relay is composed
+  // finds null and exits immediately, which is correct: there is nobody
+  // connected to tell.
+  BackendRelayComposition? relay;
+
   // Exit cleanly on SIGTERM (Docker stop) even if stuck in a retry loop
   ProcessSignal.sigterm
       .watch()
-      .listen((_) => _shutdown(pipe, logger, 'SIGTERM'));
+      .listen((_) => _shutdown(pipe, logger, 'SIGTERM', relay));
 
   final dbConfig = await DatabaseConfig.fromEnv();
   final db = await Database.connectWithRetry(dbConfig);
@@ -210,7 +267,7 @@ void main() async {
     // Allocation only, and outside the try: a composition that refuses is a
     // configuration mistake — two credential sources, a validator nobody
     // supplied — and those are loud at boot, like a bad `relay` section.
-    final relay = composeBackendRelay(
+    final composed = composeBackendRelay(
       config: relayConfig,
       pipe: pipe,
       keyMappings: keyMappings,
@@ -218,9 +275,15 @@ void main() async {
       prefs: prefs,
       log: logger,
     );
+    // Visible to the shutdown path from here on. Assigned before `start()`
+    // rather than after it: a SIGTERM that lands while the bind is in flight
+    // still finds a server whose sockets — none yet — can be announced to,
+    // and a failed bind leaves a composition that has nothing to drain rather
+    // than a null that skips the drain for the rest of the process's life.
+    relay = composed;
     try {
-      await relay.server.start();
-      logger.i('relay WebSocket bound on port ${relay.server.port}');
+      await composed.server.start();
+      logger.i('relay WebSocket bound on port ${composed.server.port}');
     } catch (error, stack) {
       // **Not fatal, and this is the decision.** The plant is the job; the
       // WebSocket is a service on top of it. A backend that refuses to acquire
@@ -235,9 +298,10 @@ void main() async {
           error: error,
           stackTrace: stack);
     }
-    // Nothing registers this server with the shutdown path, on purpose. See
-    // _shutdown above: it kills the acquisition workers and calls exit(0)
-    // without awaiting anything, and the sockets go with the process.
+    // The shutdown path reaches this server for ONE thing: the 4002 close code
+    // (`announceDraining`). It does not close it, does not await it and does
+    // not release it — `_shutdown` kills the acquisition workers and calls
+    // exit(0), and the sockets go with the process. See _shutdown above.
   }
 
   // Key mappings and alarm definitions were loaded above and then baked into
@@ -270,7 +334,7 @@ void main() async {
     // most frequent restart this backend has.
     restartTimer = Timer(
       restartQuiet,
-      () => _shutdown(pipe, logger, 'configuration "$key" changed'),
+      () => _shutdown(pipe, logger, 'configuration "$key" changed', relay),
     );
   });
 

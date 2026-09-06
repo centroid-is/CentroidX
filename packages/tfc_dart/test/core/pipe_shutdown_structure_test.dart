@@ -202,12 +202,52 @@ void main() {
   });
 
   test('the shutdown function awaits nothing', () {
-    final body = _bodyOf(code['bin/main.dart']!, 'Never _shutdown(');
+    final body = _bodyOf(code['bin/main.dart']!, 'void _shutdown(');
     expect(body, isNotEmpty, reason: 'there must be one shutdown function');
     expect(body, isNot(contains('await')),
         reason: 'an awaited teardown is the stall; the whole point is that '
             'this function cannot block');
     expect(body, contains('exit(0)'));
+    // The signature carries half the promise. `Future<void>` would let a
+    // caller `await _shutdown(...)`, which is the stall arriving from the call
+    // site instead of from the body — and it would compile.
+    expect(code['bin/main.dart'], isNot(contains('Future<void> _shutdown(')),
+        reason: 'nothing may be able to wait on this function');
+  });
+
+  test('the kill comes first, and the drain announcement after it', () {
+    // Rig probe P9 added a second statement to this path, and the ORDER is the
+    // safety property: `pipe.shutdown()` is what stops a dying process driving
+    // the plant, and it must not queue behind a courtesy to whoever is
+    // watching. An announcement first would also be an announcement that could
+    // throw before the kill ran.
+    final body = _bodyOf(code['bin/main.dart']!, 'void _shutdown(');
+    final kill = body.indexOf('pipe.shutdown()');
+    final announce = body.indexOf('announceDraining()');
+    expect(kill, greaterThanOrEqualTo(0),
+        reason: 'the acquisition workers must still be killed here');
+    expect(announce, greaterThan(kill),
+        reason: 'the drain announcement must come after the kill: killing the '
+            'workers is the part that cannot be skipped, and everything after '
+            'it is a courtesy to the panels');
+  });
+
+  test('the deferred exit is ONE turn of the event loop, not a duration '
+      'somebody picked', () {
+    // The announcement queues its close frames; `sink.close` hands them to a
+    // controller the socket consumer drains on a later turn, so an exit in the
+    // same turn delivers nothing (measured — `drain_close_test.dart`'s `sync`
+    // arm, in tfc_relay_server). One turn is the smallest thing that works and
+    // the largest thing this path may take: a real duration here would be a
+    // shutdown budget, which is how the 5.76 s stall gets back in wearing a
+    // number nobody can argue with.
+    final body = _bodyOf(code['bin/main.dart']!, 'void _shutdown(');
+    expect(body, contains('Timer(Duration.zero'),
+        reason: 'the exit is scheduled behind exactly one turn of the event '
+            'loop');
+    expect(RegExp(r'Timer\(\s*(?:const\s+)?Duration\(').hasMatch(body), isFalse,
+        reason: 'a Duration with a number in it on the shutdown path is a '
+            'wait, and this path may not wait for anything');
   });
 
   test('the shutdown path reaches Isolate.kill(priority: Isolate.immediate)',

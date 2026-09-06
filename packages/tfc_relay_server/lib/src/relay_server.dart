@@ -307,6 +307,10 @@ final class RelayServer {
   HttpServer? _http;
   var _closed = false;
 
+  /// Whether [announceDraining] has been called. See it for why this is not
+  /// [_closed].
+  var _draining = false;
+
   /// The gateway's own health producer, or null on a plaintext gateway.
   ///
   /// Built by [start] from the very [TlsConfig] the `SecurityContext` is built
@@ -622,7 +626,7 @@ final class RelayServer {
   /// whichever test happened to be running; it is delivered to the connection
   /// that caused it instead.
   void _onConnect(WebSocketChannel ws, String? negotiated) {
-    if (_closed) {
+    if (_closed || _draining) {
       // Accepted while the drain was running. Refused with the same code every
       // drained session gets, because from the panel's side it is the same
       // event: this gateway is going away, reconnect rather than alarm.
@@ -812,6 +816,53 @@ final class RelayServer {
   void _record(ConnectionClose close) {
     _closeLedger.add(close);
     if (_closeLedger.length > _ledgerLimit) _closeLedger.removeAt(0);
+  }
+
+  /// Tells every connected panel that this gateway is going away **on
+  /// purpose** — synchronously, awaiting nothing, for a caller that is about to
+  /// `exit(0)`.
+  ///
+  /// [close] is the graceful teardown and this is not it. An embedder whose
+  /// shutdown may await should call [close]; this exists for the one that must
+  /// not. `centroidx-backend` is that one: `bin/main.dart`'s shutdown kills the
+  /// acquisition workers with `Isolate.immediate` and exits, because an awaited
+  /// OPC UA teardown has been measured at 5.76 s and a container that slow is
+  /// SIGKILLed in the middle of whatever it was doing. So it never reaches
+  /// [close], and the rig measured the consequence (probe P9): every panel was
+  /// disconnected with **1006 and an empty reason** — a deliberate restart
+  /// wearing the exact costume of a broken network.
+  ///
+  /// **What this can and cannot promise.** It closes each socket with
+  /// [CloseCodes.serverDraining] and returns; the frame is *queued*, not
+  /// flushed. `sink.close` hands it to a controller the socket consumer drains
+  /// on a later turn of the event loop, so a caller that exits in the same turn
+  /// delivers nothing at all — measured, and pinned by the `sync` arm of
+  /// `drain_close_test.dart`. A caller that yields one turn before exiting
+  /// delivers it, measured against twenty-five simultaneous clients. That is
+  /// the whole contract: **announce, yield once, exit.** It is best effort by
+  /// construction — a client whose TCP window is full gets 1006 anyway — and
+  /// that is the honest ceiling for a shutdown that is forbidden to wait.
+  ///
+  /// Straight to the transport rather than through `RelaySession.close`, and
+  /// deliberately: that path awaits the preference watch and the peer before it
+  /// reaches the close channel, which is several turns for a process that has
+  /// one. Everything it would have released goes with the process.
+  ///
+  /// **Not** `_closed`: that flag also short-circuits [close], so a drain that
+  /// set it would leave the listener bound and the sessions attached in any
+  /// process that survived — every socket fixture in this package would leak a
+  /// port. A drained server is still a server whose [close] must work.
+  void announceDraining() {
+    if (_draining || _closed) return;
+    _draining = true;
+    for (final connection in _connections.toList()) {
+      // `closeSocket` runs its flush and its `_finished` flag synchronously and
+      // only awaits the sink; unawaited, it is exactly "queue the frame and
+      // come straight back". It swallows a dead far end itself, so there is no
+      // error for this to handle (`unawaited` attaches no handler).
+      unawaited(
+          connection.closeSocket(CloseCodes.serverDraining, 'server draining'));
+    }
   }
 
   /// Stops serving. Idempotent, and ordered.
