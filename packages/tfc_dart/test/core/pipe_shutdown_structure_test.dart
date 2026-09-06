@@ -329,7 +329,13 @@ void main() {
     final endpointShutdown =
         _bodyOf(code['lib/core/pipe_main_endpoint.dart']!, 'void shutdown()');
     expect(endpointShutdown, contains('kill()'));
-    expect(endpointShutdown, isNot(contains('await')));
+    // Word-boundary, not a substring scan: `unawaited(…)` CONTAINS the
+    // letters `await` while meaning the exact opposite, so a plain
+    // `contains('await')` passes a body that fires and forgets and fails a
+    // body that is deliberately synchronous-with-unawaited. Found on
+    // 2026-09-06 while chasing the TLS drain; two sibling pins had the same
+    // defect and every one of them read stronger than it was.
+    expect(endpointShutdown, isNot(matches(RegExp(r'\bawait\b'))));
 
     final handle = _stripComments(
         File('lib/core/data_acquisition_isolate.dart').readAsStringSync());

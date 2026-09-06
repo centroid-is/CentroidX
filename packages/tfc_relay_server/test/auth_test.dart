@@ -894,7 +894,9 @@ void main() {
       expect(body, contains('_set.lookup(token)'),
           reason: 'anti-vacuity: the pin is reading the wrong span and the '
               'assertion below is about nothing');
-      expect(body, isNot(contains('await')),
+      // Word-boundary, not a substring scan — `unawaited(…)` contains the
+      // letters `await` and means the opposite (2026-09-06).
+      expect(body, isNot(matches(RegExp(r'\bawait\b'))),
           reason: 'an `await` here makes the hello path event-asynchronous, '
               'and the revocation sweep in `relay_server.dart` then has a '
               'window a session can be authenticated in and never swept. If '
