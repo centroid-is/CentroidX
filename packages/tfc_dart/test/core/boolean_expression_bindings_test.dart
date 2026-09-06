@@ -222,12 +222,21 @@ void main() {
       fake.emit(_nodeA, _stamped(10.0, tA));
       await _waitFor(() => seen.contains(true));
       fake.emit(_nodeA, _stamped(1.0, tAClear));
-      await _waitFor(() => seen.length >= 3);
+      await _waitFor(() => seen.length >= 4);
 
-      expect(seen, [false, true, false],
-          reason: 'startWith(false), then one emission per TRANSITION -- the '
-              'seeded 0.0 and the clearing 1.0 both read false and distinct '
-              'must still collapse them');
+      // The leading pair is pre-existing and deliberately pinned rather than
+      // "fixed": `startWith(false)` is applied AFTER `distinct()`, so the
+      // prepended false is never compared against the seeded 0.0's false.
+      // Two more unsatisfied emissions (1.0 then 2.0) would still collapse.
+      expect(seen, [false, false, true, false],
+          reason: 'startWith(false) ahead of distinct(false, true, false) -- '
+              'one emission per TRANSITION and no extra ones now that the '
+              'false branch carries a payload');
+
+      // And a second unsatisfied reading is still collapsed away.
+      fake.emit(_nodeA, _stamped(2.0, tAClear));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(seen, [false, false, true, false]);
 
       await sub.cancel();
       evaluator.cancel();
