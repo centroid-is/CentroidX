@@ -334,6 +334,45 @@ final class BackendWrites implements BackendWriteSource {
   @override
   Future<relay.WriteResult> write(String key, Object? value,
       {Object? expect, String? cmd}) {
+    // A shape refusal, raised before anything else happens here — before the
+    // disposal check, before an id exists, and a long way before the pipe. It
+    // is a throw and not a `WriteRejected` because nothing was sent and there
+    // is nothing for an operator to be told about the plant: a non-finite
+    // number cannot be encoded at all, so the value that arrived is a defect in
+    // the caller (a divide-by-zero in a rate calculation is the ordinary
+    // source), the same class as the `ArgumentError` `RemoteStateMan._write`,
+    // `ChannelStateMan.write` and `FakeStateMan.write` raise for it.
+    //
+    // This path used to sanitize the value, send the null, and carry a
+    // `poisoned` flag through to `_applyOutcome` so the tag could be badged
+    // `badNonFinite` afterwards. That badge was consolation for having already
+    // actuated the device with a value nobody chose while answering
+    // `WriteApplied` — and the badge was local, so every other screen read the
+    // null the plant now held as an ordinary number. `value_handlers.write`
+    // states the rule this now follows: "the only refusals here are shape
+    // refusals raised *before* the plant is touched". Ruled 2026-09-06.
+    //
+    // Both walks run before either refusal so that a non-finite buried in a
+    // nested structure is caught too, not just a bare double.
+    final sanitized = relay.sanitize(value);
+    final sanitizedExpect = relay.sanitize(expect);
+    if (sanitized.hadNonFinite) {
+      throw ArgumentError.value(
+          value,
+          'value',
+          'a write cannot carry a non-finite number: it encodes to null, and '
+              'a write of null actuates the device with a value nobody chose '
+              'while the operator is told the write applied');
+    }
+    if (sanitizedExpect.hadNonFinite) {
+      throw ArgumentError.value(
+          expect,
+          'expect',
+          'a write cannot carry a non-finite compare-and-set guard: nulling '
+              'it is this path\'s encoding of "no guard at all", so a guarded '
+              'write would silently become an unconditional one');
+    }
+
     final id = cmd ?? _mint();
 
     if (_disposed) {
@@ -348,15 +387,14 @@ final class BackendWrites implements BackendWriteSource {
       ));
     }
 
-    // The poison is defused at the boundary. Dart's jsonEncode throws on NaN
-    // and ±Infinity rather than emitting null, so one open-circuit 4-20 mA
-    // input would fail the frame for every other client on the pipe — and a
-    // write that throws on the way in is an outcome the operator never learns.
-    final sanitized = relay.sanitize(value);
+    // Both are finite by the refusal above, so `sanitize` here is only walking
+    // the structure for cycles and depth. The fingerprint keeps the sanitized
+    // forms rather than the raw ones so that an idempotent re-send compares
+    // equal to what was recorded the first time.
     final fingerprint = (
       key: key,
       value: sanitized.value,
-      expect: relay.sanitize(expect).value,
+      expect: sanitizedExpect.value,
     );
 
     final held = _log.entryFor(id);
@@ -458,21 +496,26 @@ final class BackendWrites implements BackendWriteSource {
       return Future<relay.WriteResult>.value(lost);
     }
 
-    return _settle(id, key, sanitized.hadNonFinite, fingerprint, upstream);
+    return _settle(id, key, fingerprint, upstream);
   }
 
   /// Waits for the pipe's answer and applies it to the store.
+  ///
+  /// A `poisoned` flag used to be threaded through here from [write] and on
+  /// into [_applyOutcome], so a write whose value had been sanitized to null
+  /// could badge its tag `badNonFinite` once the outcome was back. [write] now
+  /// refuses that value instead of sending it, so nothing can set the flag —
+  /// and a parameter nothing can set is plumbing that reads as live policy.
   Future<relay.WriteResult> _settle(
     String cmd,
     String key,
-    bool poisoned,
     BackendWriteFingerprint fingerprint,
     Future<relay.WriteResult> upstream,
   ) async {
     var badgeHandled = false;
     try {
       final result = _restamp(cmd, await upstream);
-      _applyOutcome(key, result, poisoned);
+      _applyOutcome(key, result);
       badgeHandled = true;
       _log.record(cmd, result, fingerprint);
       return result;
@@ -517,18 +560,9 @@ final class BackendWrites implements BackendWriteSource {
       };
 
   /// What the store is told, given an outcome.
-  void _applyOutcome(String key, relay.WriteResult result, bool poisoned) {
+  void _applyOutcome(String key, relay.WriteResult result) {
     switch (result) {
       case relay.WriteApplied(readback: final readback):
-        if (poisoned) {
-          // A non-finite value went in and a null came back. The operator must
-          // see a fault, not a blank box that looks like an unbound tag.
-          _values.applyReadback(
-              key,
-              relay.DynamicValue(
-                  value: null, quality: relay.Quality.badNonFinite));
-          return;
-        }
         if (readback == null) {
           // Applied, and nobody said what the device now holds. The OPC UA
           // write service answers `Good` with no value, so this is the ordinary
