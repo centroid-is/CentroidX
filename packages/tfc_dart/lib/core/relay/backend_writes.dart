@@ -334,28 +334,34 @@ final class BackendWrites implements BackendWriteSource {
   @override
   Future<relay.WriteResult> write(String key, Object? value,
       {Object? expect, String? cmd}) {
-    // A shape refusal, raised before anything else happens here — before the
-    // disposal check, before an id exists, and a long way before the pipe. It
-    // is a throw and not a `WriteRejected` because nothing was sent and there
-    // is nothing for an operator to be told about the plant: a non-finite
-    // number cannot be encoded at all, so the value that arrived is a defect in
-    // the caller (a divide-by-zero in a rate calculation is the ordinary
-    // source), the same class as the `ArgumentError` `RemoteStateMan._write`,
-    // `ChannelStateMan.write` and `FakeStateMan.write` raise for it.
+    // Both walks run before either refusal, so a non-finite buried in a nested
+    // structure is caught too and not just a bare double.
+    final sanitized = relay.sanitize(value);
+    final sanitizedExpect = relay.sanitize(expect);
+
+    // A shape refusal, and the first thing this method does: before an id is
+    // minted, before the routing guard, before the compare-and-set and a long
+    // way before the pipe. `value_handlers.write`'s rule for this path is that
+    // "the only refusals here are shape refusals raised *before* the plant is
+    // touched", and ahead of the mint is as early as "before" gets — an id that
+    // exists is an action a `writeStatus` can no longer answer `not_received`
+    // about, and `not_received` is the one verdict that makes a re-send safe.
+    //
+    // A throw and not a `WriteRejected`, and the difference matters here more
+    // than anywhere: a `WriteRejected` is a machine's answer, and a machine
+    // never saw this. A non-finite number cannot be encoded at all, so the
+    // value that arrived is a defect in the caller — a divide-by-zero in a
+    // rate calculation is the ordinary source — and it is the same
+    // `ArgumentError` `RemoteStateMan._write`, `ChannelStateMan.write`,
+    // `FakeStateMan.write` and `LocalStateMan.write` raise for it.
     //
     // This path used to sanitize the value, send the null, and carry a
     // `poisoned` flag through to `_applyOutcome` so the tag could be badged
-    // `badNonFinite` afterwards. That badge was consolation for having already
+    // `badNonFinite` afterwards. The badge was consolation for having already
     // actuated the device with a value nobody chose while answering
-    // `WriteApplied` — and the badge was local, so every other screen read the
-    // null the plant now held as an ordinary number. `value_handlers.write`
-    // states the rule this now follows: "the only refusals here are shape
-    // refusals raised *before* the plant is touched". Ruled 2026-09-06.
-    //
-    // Both walks run before either refusal so that a non-finite buried in a
-    // nested structure is caught too, not just a bare double.
-    final sanitized = relay.sanitize(value);
-    final sanitizedExpect = relay.sanitize(expect);
+    // `WriteApplied` — and it was local to this client, so the plant kept the
+    // null and every other screen read it as an ordinary number. Ruled
+    // 2026-09-06.
     if (sanitized.hadNonFinite) {
       throw ArgumentError.value(
           value,
@@ -387,10 +393,9 @@ final class BackendWrites implements BackendWriteSource {
       ));
     }
 
-    // Both are finite by the refusal above, so `sanitize` here is only walking
-    // the structure for cycles and depth. The fingerprint keeps the sanitized
-    // forms rather than the raw ones so that an idempotent re-send compares
-    // equal to what was recorded the first time.
+    // The fingerprint keeps the sanitized forms rather than the raw ones so
+    // that an idempotent re-send compares equal to what was recorded the first
+    // time.
     final fingerprint = (
       key: key,
       value: sanitized.value,
