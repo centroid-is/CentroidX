@@ -33,12 +33,16 @@
 ///    interface in Phase 5 for exactly this reason (05-RESEARCH §C.2): a member
 ///    off the interface is a member no contract check can ask about, and
 ///    `not_received` is the single verdict that makes a second actuation safe.
-///  * **Nothing an operator can type can detonate the pipe.** A read-only key
-///    is rejected rather than thrown (`M2400DeviceClientAdapter.write` throws
+///  * **Nothing an operator can type can detonate the pipe, and nothing a
+///    caller computes wrong can actuate it.** A read-only key is rejected
+///    rather than thrown (`M2400DeviceClientAdapter.write` throws
 ///    `UnsupportedError` today, `state_man.dart:929-931`), and a non-finite
-///    value is sanitized rather than allowed to reach `jsonEncode`, which
-///    throws on ±Infinity and would fail the frame for every other client on
-///    it.
+///    value — which `jsonEncode` cannot carry at all — is refused before
+///    anything is sent rather than nulled and applied. The two are opposite
+///    answers to the same hazard and both are right: sanitizing is for
+///    telemetry, where the alternative is a frame that fails for every client;
+///    refusing is for writes, where the alternative is a device actuated with
+///    a value nobody chose under a message saying the write applied.
 ///
 /// Shape follows `read_contract.dart` and `freshness_contract.dart`: no
 /// implementation is imported, every case is a named top-level function so the
@@ -168,6 +172,35 @@ Future<WriteResult> _outcomeOf(Future<WriteResult> write, String what) async {
         'applied this" into "this failed", and an operator who is told a '
         'write failed re-sends it — which is how a second start command '
         'reaches a machine that already took the first one');
+  }
+}
+
+/// Awaits a write that must **not** resolve, and answers what it threw.
+///
+/// The mirror of [_outcomeOf], and needed for the one class of input the write
+/// path is allowed to throw on: a caller defect established before anything is
+/// sent. Both shapes of that throw are accepted — a synchronous one out of a
+/// non-`async` `write` (the backend router builds its request synchronously on
+/// purpose) and a rejected future out of an `async` one — because which of the
+/// two an implementation produces is an internal detail no caller can see.
+///
+/// A write that *resolves* fails here by name, carrying the outcome it invented,
+/// rather than tripping a type assertion three lines later.
+Future<Object> _refusalOf(
+    Future<WriteResult> Function() write, String what) async {
+  try {
+    final result = await within(write(), what);
+    fail('$what resolved with $result instead of being refused. The value '
+        'cannot travel on this path at all, so resolving means it was changed '
+        'into one that can — and the operator was told the plant took the '
+        'command they typed');
+  } on TestFailure {
+    // `within`'s silence-became-a-failure, and the `fail` above. Both are
+    // already diagnostic; a "refusal" that is really a hang or a resolution
+    // must not be swallowed as one.
+    rethrow;
+  } catch (error) {
+    return error;
   }
 }
 
@@ -497,47 +530,81 @@ Future<void> checkReadOnlyKeyIsRejectedNotThrown(
           'next step');
 }
 
-/// A poison value cannot detonate the frame it travels in.
+/// A poison value is refused before the plant, never nulled into it.
 ///
 /// Dart's `jsonEncode` throws on NaN and ±Infinity rather than emitting null
-/// the way JavaScript does (`sanitize.dart:1-9`). A single non-finite value on
-/// the write path therefore does not fail one write — it fails the frame, and
-/// the frame is shared with every other client on the pipe. The value must be
-/// sanitized to null and marked [Quality.badNonFinite], which renders as a
-/// fault, rather than allowed anywhere near an encoder.
-Future<void> checkNonFiniteWriteIsSanitizedNotThrown(StateManApi api) async {
+/// the way JavaScript does (`sanitize.dart:1-9`), so a non-finite number
+/// genuinely cannot travel on this write path. There are only two ways to
+/// handle that, and for a *telemetry* frame the right one is to sanitize: one
+/// non-finite reading among a thousand must not fail a frame every other client
+/// on the pipe shares.
+///
+/// **A write is not telemetry.** Sanitizing here does not defuse the poison, it
+/// changes the operator's command: `write(setpoint, NaN)` becomes a write of
+/// `null` to a live tag, the device is actuated with a value nobody chose, and
+/// the operator is told the write applied. The fault badge that used to be
+/// stamped afterwards is local to whichever panel issued the write — the plant
+/// keeps the null, and every other screen shows it as an ordinary reading.
+///
+/// So the whole write API holds one policy: **refused, before anything is
+/// actuated**. The refusal is an `ArgumentError` and not a [WriteResult] for
+/// the same reason the duplicate-cmd refusal is one — nothing was sent, nothing
+/// is unknown, and the value that arrived is a defect in the caller rather than
+/// an answer from a machine. Nothing upstream of a write box can legitimately
+/// produce a NaN, and a divide-by-zero in a rate calculation is exactly the
+/// caller bug this makes loud instead of silent. `WriteParams`
+/// (`messages.dart:569-599`) has always refused it one layer down.
+///
+/// Ruled 2026-09-06 after `RemoteStateMan` and `ChannelStateMan` were found
+/// holding the opposite policy to `WriteParams`, `value_handlers.write` and
+/// `ServedStateMan.write`, with the dangerous one winning in production.
+Future<void> checkNonFiniteWriteIsRefusedNotActuated(StateManApi api) async {
   final plant = writeHarnessOf(api);
   plant.setValue(_setpointKey, 1200);
   plant.setValue(_otherKey, 3);
+  final mintedBefore = plant.mintedCmds.length;
 
-  final result = await _outcomeOf(api.write(_setpointKey, double.infinity),
-      'a write of a non-finite value resolving rather than throwing on encode');
+  // All three, because they arrive from different caller bugs — 0/0, x/0 and
+  // -x/0 — and an implementation that guards on `isNaN` alone lets two of them
+  // through.
+  for (final poison in const <double>[
+    double.nan,
+    double.infinity,
+    double.negativeInfinity,
+  ]) {
+    final refusal = await _refusalOf(
+        () => api.write(_setpointKey, poison), 'a write of $poison');
+    expect(refusal, isA<ArgumentError>(),
+        reason: 'a write of $poison was refused with a '
+            '${refusal.runtimeType} rather than an ArgumentError; the write '
+            'path\'s other caller-defect refusals are ArgumentErrors '
+            '(a re-used cmd, a non-finite expect), and a caller that catches '
+            'the shape those use will not catch this one');
+  }
 
-  expect(result, isA<WriteApplied>(),
-      reason: 'a sanitized write came back as ${result.runtimeType}; the '
-          'poison is defused at the boundary, so what reaches the device is an '
-          'ordinary write of a null');
-  expect((result as WriteApplied).readback, isNull,
-      reason: 'the readback of a non-finite write must be null: JSON cannot '
-          'carry ±Infinity at all, and a readback that still holds one is a '
-          'value that will throw on the next encode instead of this one');
+  expect(plant.mintedCmds.length, mintedBefore,
+      reason: 'the source minted '
+          '${plant.mintedCmds.length - mintedBefore} command id(s) for writes '
+          'it refused. An id that exists is an action that may have been '
+          'attempted, and a writeStatus asking after it can no longer answer '
+          'not_received — the one verdict that makes a re-send safe');
 
   final cached = api.read(_setpointKey);
-  expect(cached?.quality, Quality.badNonFinite,
-      reason: 'the key reads as ${cached?.quality.code} after a non-finite '
-          'write; the operator must see a fault, not a blank box that looks '
-          'like an unbound tag');
-  expect(cached?.value, isNull,
-      reason: 'a non-finite value survived into the store, where the next '
-          'encode of any frame carrying it throws for every client on the '
-          'pipe');
+  expect(cached?.quality, isNot(Quality.badNonFinite),
+      reason: 'the key was badged ${cached?.quality.code} by a write that '
+          'never happened. A refused write leaves the reading exactly as it '
+          'was; painting a fault onto a live tag because one panel divided by '
+          'zero is a fault the plant does not have');
+  expect(cached?.value, isNot(isA<double>().having((v) => v.isFinite, 'isFinite', isFalse)),
+      reason: 'a non-finite value reached the store, where the next encode of '
+          'any frame carrying it throws for every client on the pipe');
 
   // The barrier: the poison failed its own write, not the source.
   final after = await _outcomeOf(api.write(_otherKey, 5),
-      'an ordinary write to another key after the poison one');
+      'an ordinary write to another key after the refused ones');
   expect(after, isA<WriteApplied>(),
-      reason: 'a non-finite write to one key left the source unable to write '
-          'another; one open-circuit 4-20 mA input would take the whole write '
+      reason: 'a refused write to one key left the source unable to write '
+          'another; one divide-by-zero in a widget would take the whole write '
           'path down');
 }
 
@@ -657,7 +724,8 @@ const _attemptCase =
 const _cmdCase = 'every write mints its own 26-character cmd';
 const _pendingCase = 'a write in flight is visible as pending on the value';
 const _readOnlyCase = 'a write to a read-only key is rejected, not thrown';
-const _nonFiniteCase = 'a non-finite write is sanitized, not detonated';
+const _nonFiniteCase =
+    'a non-finite write is refused before the plant, never nulled and applied';
 const _readbackCase = 'the store shows the readback, not the value that was typed';
 const _writeStatusCase =
     'writeStatus answers for a cmd this source has seen, and not_received for '
@@ -677,7 +745,7 @@ const writeChecks = <String, Check<StateManApi>>{
   _cmdCase: checkEachWriteMintsADistinctCmd,
   _pendingCase: checkWritePendingIsVisibleWhileInFlight,
   _readOnlyCase: checkReadOnlyKeyIsRejectedNotThrown,
-  _nonFiniteCase: checkNonFiniteWriteIsSanitizedNotThrown,
+  _nonFiniteCase: checkNonFiniteWriteIsRefusedNotActuated,
   _readbackCase: checkStoredValueIsTheReadbackNotTheTypedValue,
   _writeStatusCase: checkWriteStatusAnswersSeenAndUnseenCommands,
 };
