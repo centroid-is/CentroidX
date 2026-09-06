@@ -122,9 +122,11 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 /// The preference row the plant's alarm definitions live in.
 ///
 /// A preference, not the `alarm` table: `alarm.dart:351-360` reads exactly this
-/// key, and nothing anywhere inserts into the `alarm` table (which is also why
-/// `alarm_history.alarm_uid`'s `REFERENCES alarm (uid)` is a latent defect —
-/// 14-06's problem, not this file's).
+/// key, and nothing anywhere inserts into the `alarm` table. That is why
+/// `alarm_history.alarm_uid` carried `REFERENCES alarm (uid)` and made every
+/// history insert on Postgres a guaranteed SQLSTATE 23503 — dropped in schema
+/// v7 (14-01), measured against a real server there, and the reason this engine
+/// can write a row at all.
 const String kAlarmManConfigKey = 'alarm_man_config';
 
 /// How many entries [relay.AlarmKeys.active] carries before it is cut.
