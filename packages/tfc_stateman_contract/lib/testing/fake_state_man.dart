@@ -749,7 +749,7 @@ class FakeStateMan
     final held = _outcomes[cmd];
     if (held != null) return held;
 
-    final mintedAt = _ulidMs(cmd);
+    final mintedAt = referenceUlidMs(cmd);
     if (mintedAt == null) {
       return WriteUnknown(
           cmd,
@@ -775,19 +775,43 @@ class FakeStateMan
 
   /// The millisecond a ULID was minted at, or null when [cmd] is not one.
   ///
-  /// A deliberate copy of `value_handlers.dart:479-488` rather than an import:
-  /// this package must not depend on the server package — `handler_table_test`
-  /// asserts exactly that — and the decode is twelve lines. Copying it keeps
-  /// the reference implementation's evidence rule identical to the gateway's,
-  /// which is the property that matters; sharing the code would cost the
-  /// independence that makes the contract worth running.
-  static int? _ulidMs(String cmd) {
+  /// **This copy is deliberate and it is the only one left.** Phase 18 pulled
+  /// the other three into `tfc_relay_protocol.ulidMs` and deleted them; this
+  /// one stays, because `FakeStateMan` is the contract suite's *reference
+  /// implementation* and a reference that imports the thing it is a reference
+  /// for cannot catch a bug in that thing. The fake already imports
+  /// `tfc_relay_protocol` for `DynamicValue`, `Quality` and `WriteResult`, so
+  /// the independence is not absolute — but those are **vocabulary** and this
+  /// is **logic**, and the whole of the argument is in that distinction. If
+  /// `ulidMs` ever starts dating ids wrong, the gateway and the reference must
+  /// not go wrong together and agree.
+  ///
+  /// **What that argument cost, and why it is now paid for.** This exact
+  /// reasoning is what let a dart2js defect live in three of four copies: the
+  /// encoder in `ulid.dart` was migrated off bitwise arithmetic and the copies
+  /// were not, because nothing checked that they still matched. A stated
+  /// invariant with no test is the failure Phase 18 exists to repay, so the
+  /// independence is now **checked rather than merely asserted** — see
+  /// `test/ulid_reference_agreement_test.dart`, which decodes the same ids
+  /// through this method and through `ulidMs` and requires them to agree.
+  /// That arm is what makes keeping this copy honest instead of merely
+  /// traditional.
+  ///
+  /// The arithmetic is a multiply and an add, matching `ulidMs`: JavaScript
+  /// coerces bitwise operators to 32 bits and the timestamp field is 48, so a
+  /// shift here would fold every real timestamp onto its low 32 bits under
+  /// `dart2js`. Independence means deciding the same answer independently, not
+  /// being free to decide a different one.
+  ///
+  /// Public rather than private only so the agreement arm can reach it. It is
+  /// not part of the [StateManApi] surface and no contract case calls it.
+  static int? referenceUlidMs(String cmd) {
     if (cmd.length != 26) return null;
     var ms = 0;
     for (var i = 0; i < 10; i++) {
       final digit = _ulidAlphabet.indexOf(cmd[i]);
       if (digit < 0) return null;
-      ms = (ms << 5) | digit;
+      ms = ms * 32 + digit;
     }
     return ms;
   }
