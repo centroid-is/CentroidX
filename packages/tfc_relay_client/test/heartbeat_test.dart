@@ -422,6 +422,101 @@ void main() {
     });
   });
 
+  /// The band between two floors and three, where the panel had nothing to say
+  /// about a deadline it cannot honour (S13).
+  ///
+  /// **The boundary is arithmetic, not taste, and the next person to move it
+  /// should have to argue with the numbers.** [HeartbeatPump.period] is
+  /// `advertised ~/ 3` clamped up to [ClientConfig.heartbeatFloor]. The
+  /// skip-on-traffic rule in `noteOutbound` means an outbound frame landing
+  /// just after a beat suppresses the next one, so the worst-case silence the
+  /// gateway sees is **two periods, never one**. The margin this panel has
+  /// against the gateway's patience is therefore `advertised - 2 x period`.
+  ///
+  /// | advertised | period | worst-case silence | margin | complaint |
+  /// |---|---|---|---|---|
+  /// | 2500 | 1000, floored | 2000 | 500 — half a beat | yes |
+  /// | 2999 | 1000, floored | 2000 | 999 — a beat less a millisecond | yes |
+  /// | 3000 | 1000, floored | 2000 | 1000 — exactly one beat | no |
+  /// | 6000 | 2000, derived | 4000 | 2000 — exactly one beat | no |
+  ///
+  /// For every advertised value in `(2f, 3f]` the derived period is at or below
+  /// the floor, so the period is a flat `f`, the silence is a flat `2f`, and
+  /// the margin is `advertised - 2f` — somewhere in `(0, f]`, and at `2f + 1`
+  /// it is one millisecond, which a single Wi-Fi retransmit spends. **Below
+  /// three floors the panel cannot promise a full beat of margin**, which is
+  /// what the complaint's own text has always recommended (raise
+  /// `heartbeatDeadline` above `floorMs * 3`) and what
+  /// `ServerConfig.minHeartbeatDeadline` — 3 s, against this floor of 1 s —
+  /// already enforces from the other end. The two ends' numbers meet at this
+  /// boundary rather than at a rounder one.
+  ///
+  /// The 3000 ms arm is the one that stops the fix from being "complain about
+  /// everything": at exactly three floors the margin is a full beat and there
+  /// is nothing to say. Without it, a gate that complained at every deadline
+  /// would satisfy the two complaining arms vacuously.
+  group('the margin band between two floors and three', () {
+    const floor = Duration(seconds: 1);
+
+    for (final (deadlineMs, complains, periodMs, marginMs) in const [
+      (2500, true, 1000, 500),
+      (2999, true, 1000, 999),
+      (3000, false, 1000, 1000),
+      (6000, false, 2000, 2000),
+    ]) {
+      test(
+          'a $deadlineMs ms deadline against a 1000 ms floor is '
+          '${complains ? 'complained about' : 'left alone'}', () {
+        // Pinned and never stepped. These arms assert configuration
+        // arithmetic rather than cadence, so nothing in them may depend on
+        // ambient time — 07-REVIEW WR-03's discipline applied to a case that
+        // never starts the pump.
+        final clock = _SteppableClock();
+        final rig = _Rig(
+            floor: floor, deadlineMs: deadlineMs, elapsed: clock.read);
+
+        expect(rig.pump.period.inMilliseconds, periodMs,
+            reason: 'the period is a third of $deadlineMs ms clamped up to the '
+                '1000 ms floor, so it is $periodMs ms. The complaint boundary '
+                'below is derived from this number; a change to `period` that '
+                'quietly restores the margin has to come through here first');
+
+        final worstCaseSilenceMs = rig.pump.period.inMilliseconds * 2;
+        expect(deadlineMs - worstCaseSilenceMs, marginMs,
+            reason: 'the skip rule means the gateway can see '
+                '$worstCaseSilenceMs ms of silence between beats, so against '
+                '$deadlineMs ms of patience the margin is $marginMs ms');
+        expect(deadlineMs - worstCaseSilenceMs < rig.pump.period.inMilliseconds,
+            complains,
+            reason: 'the complaint and the arithmetic must agree: the panel '
+                'says something exactly when the margin is short of one full '
+                'beat. If these two ever disagree, one of them has been '
+                'changed without the other');
+
+        if (complains) {
+          expect(rig.complaints, hasLength(1),
+              reason: 'a gateway advertising $deadlineMs ms leaves this panel '
+                  'with $marginMs ms of margin — less than the one beat it '
+                  'would need to lose a frame and survive. One retransmit '
+                  'reaps the session, the panel resyncs its whole page, and '
+                  '`RemoteStateMan.complaints` — the only diagnostic surface '
+                  'this client has — said nothing');
+          expect(rig.complaints.single, contains('$deadlineMs'),
+              reason: 'a complaint that does not name the number it is about '
+                  'sends whoever reads it back to the gateway\'s config file '
+                  'to guess which one');
+        } else {
+          expect(rig.complaints, isEmpty,
+              reason: 'at $deadlineMs ms the margin is a full $marginMs ms '
+                  'beat, which is the safe boundary and the value '
+                  'ServerConfig.minHeartbeatDeadline already enforces. A '
+                  'diagnostic surface that fires on the healthy case is one an '
+                  'operator stops reading');
+        }
+      });
+    }
+  });
+
   group('a busy panel sends no heartbeats at all', () {
     test('other outbound traffic within the period skips the beat', () async {
       final rig = _Rig();
