@@ -25,6 +25,7 @@ import 'database_batch_insert.dart';
 import 'database_connections.dart';
 import 'mcp_tables.dart';
 import 'mcp_database.dart';
+import 'sqlite_loader.dart';
 
 part 'database_drift.g.dart';
 
@@ -1165,6 +1166,59 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
       return AppDatabase._(config, executor);
     }
     throw Exception("Unable to create database");
+  }
+
+  /// Factory: the device-local configuration store, `config.sqlite` in
+  /// [folder].
+  ///
+  /// This is the one construction point for the local store. Four things
+  /// about it are surprising enough to be worth stating here:
+  ///
+  /// **It is a second [AppDatabase], not a smaller purpose-built database.**
+  /// This repo generates drift monolithically, so listing [ConfigItemTable] in
+  /// a second `@DriftDatabase` would emit a second, distinct `ConfigItemRow`
+  /// class — and the Phase 2 mirror, which wants to be a row copy between two
+  /// instances of one schema, would become a field-by-field translation
+  /// between two same-named incompatible types. The cost of the choice is the
+  /// next paragraph.
+  ///
+  /// **A fresh local file runs the full `onCreate`**, so it gets ~30 tables
+  /// the station will never read locally and four rows in a local `app_role`
+  /// from `_seedAccessRoles`. That is harmless — the seed is
+  /// `onConflict: DoNothing()` and nothing reads local `app_role` — but a
+  /// reader finding those rows would reasonably conclude the access system
+  /// keeps a local copy. It does not.
+  ///
+  /// **Never point the collector at this instance.** [tableExists] queries
+  /// `information_schema`, which SQLite does not have, so it is permanently
+  /// false here and the write path would treat the database as down forever.
+  ///
+  /// **Callers hold this [AppDatabase] directly**, not through the [Database]
+  /// wrapper: the wrapper picks `spawn`/`create` on `config.postgres != null`
+  /// and passes no `sqliteFolder`, so it throws for a SQLite config.
+  static AppDatabase createLocal(Directory folder,
+      {bool logStatements = false}) {
+    final executor = NativeDatabase.createInBackground(
+      File(p.join(folder.path, 'config.sqlite')),
+      logStatements: logStatements,
+      // Runs inside the background isolate before the file is opened, which is
+      // the only place a library override can go. On the eLinux stations it is
+      // what makes sqlite3 loadable at all — see [loadSqliteOnLinux].
+      isolateSetup: loadSqliteOnLinux,
+      setup: (db) {
+        // `createInBackground` does nothing about journal mode, and in the
+        // default rollback journal a reader blocks a writer across processes
+        // (`bin/page_geometry.dart` reads this file out-of-process). WAL is
+        // durable in the file header, so setting it every open is a no-op —
+        // except on a database restored from a rollback-mode backup, which it
+        // repairs.
+        db.execute('PRAGMA journal_mode = WAL;');
+        // WAL still serialises writers. Without a timeout a concurrent write
+        // returns SQLITE_BUSY immediately instead of waiting.
+        db.execute('PRAGMA busy_timeout = 5000;');
+      },
+    );
+    return AppDatabase._(DatabaseConfig(), executor);
   }
 
   /// Factory: creates an [AppDatabase], spawning a DriftIsolate.
