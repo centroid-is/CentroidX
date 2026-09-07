@@ -1,5 +1,12 @@
-/// The repository that owns `key_mapping` rows: an in-memory snapshot, filled
-/// from local SQLite at boot, with exactly one write path to Postgres.
+/// The repository that owns the plant's shared configuration rows — key
+/// mappings, pages and their assets ([kSharedConfigKinds]): an in-memory
+/// snapshot, filled from local SQLite at boot, with exactly one write path to
+/// Postgres.
+///
+/// One store and one snapshot across the kinds, rather than one per kind,
+/// because a save is one transaction and one action: a page and the assets on
+/// it move together, and two stores would mean two compare-and-swaps, two
+/// change logs to correlate and no way to roll one back when the other lost.
 ///
 /// ## Who owns what
 ///
@@ -87,6 +94,55 @@ part 'config_sync.dart';
 /// engine; this store only restores it at [ConfigStore.open].
 const String kKeyMappingsWatermarkId = '_sync.key_mappings.watermark';
 
+/// The kinds Postgres owns, every station mirrors, and the sync engine is
+/// allowed to replace.
+///
+/// `preference` is deliberately absent and must stay so. Station rows live at
+/// `station:<hostname>` scope, and the two bookkeeping rows that do not — the
+/// watermark and the migration markers — are this station's account of what it
+/// has read, not configuration anybody wrote. A sweep that adopted them would
+/// let one station's position overwrite another's.
+const Set<ConfigKind> kSharedConfigKinds = {
+  ConfigKind.keyMapping,
+  ConfigKind.page,
+  ConfigKind.asset,
+};
+
+/// The marker the page/asset blob→rows migration writes last.
+///
+/// Same contract as [kKeyMappingsMigratedMarkerId] and the same reason for
+/// existing: it is the only thing that tells a plant with legitimately no
+/// pages from one whose migration has not run yet. Pages and their assets come
+/// out of one blob in one transaction, so they share one marker — a state
+/// where the pages migrated and their assets did not is not reachable.
+const String kPagesMigratedMarkerId = '_migrated.pages';
+
+/// Which marker row answers "has this kind been migrated?".
+///
+/// Per kind, and never one shared answer, because the question is per kind:
+/// on the cutover boot the key mappings are on rows and the pages are still in
+/// the blob, so a single flag would either refuse a sweep that should run or
+/// permit one that empties the mirror. Every kind under sync must have an
+/// entry — a kind with none would have "the remote holds nothing" read as
+/// "everything was deleted", which is the one answer that loses data.
+const Map<ConfigKind, String> kMigrationMarkerIds = {
+  ConfigKind.keyMapping: kKeyMappingsMigratedMarkerId,
+  ConfigKind.page: kPagesMigratedMarkerId,
+  ConfigKind.asset: kPagesMigratedMarkerId,
+};
+
+/// The wire names of [kinds], for an `IN` clause. Bound variables, never
+/// interpolated, exactly as [ConfigStore._identity] is.
+List<String> _wireNamesOf(Iterable<ConfigKind> kinds) =>
+    [for (final kind in kinds) kind.wireName];
+
+/// Canonical item order: kind, then id. The same order `config_diff` sorts
+/// into, so a snapshot read and a diff of it agree.
+int _byKindThenId(ConfigItem a, ConfigItem b) {
+  final byKind = a.kind.index.compareTo(b.kind.index);
+  return byKind != 0 ? byKind : a.id.compareTo(b.id);
+}
+
 /// One item's identity inside an in-memory snapshot: its kind and its id.
 ///
 /// `config_item`'s primary key is `(kind, id, scope)` and the **scope is
@@ -131,7 +187,7 @@ class ConfigWriteResult {
   String toString() => 'ConfigWriteResult($diff, action: $actionId)';
 }
 
-/// The key-mapping repository. See the library doc for ownership.
+/// The shared-configuration repository. See the library doc for ownership.
 class ConfigStore {
   ConfigStore({
     required AppDatabase local,
@@ -165,8 +221,8 @@ class ConfigStore {
   AppDatabase? _remote;
 
   /// The sync engine for the attached remote, or null when there is none. Its
-  /// life is the attachment: see [_KeyMappingSync].
-  _KeyMappingSync? _sync;
+  /// life is the attachment: see [_ConfigSync].
+  _ConfigSync? _sync;
 
   /// How often the attached engine runs its full revision sweep.
   final Duration _sweepInterval;
@@ -199,10 +255,12 @@ class ConfigStore {
 
   Future<void> _open() async {
     await _rehomePhase1Cache();
-    _snapshot = {
-      for (final row in await _sharedMappingRows())
-        configSnapshotKey(ConfigKind.keyMapping, row.id): _itemOf(row),
-    };
+    final snapshot = <String, ConfigItem>{};
+    for (final row in await _sharedRowsOf(kSharedConfigKinds)) {
+      final item = _itemOf(row);
+      if (item != null) snapshot[_snapshotKeyOf(item)] = item;
+    }
+    _snapshot = snapshot;
     _watermark = await _readWatermark();
   }
 
@@ -222,12 +280,25 @@ class ConfigStore {
   /// reports no change from ordering alone.
   ///
   /// [ConfigItem] is immutable, so a copy of the list is the whole defence.
-  List<ConfigItem> get keyMappingItems {
+  List<ConfigItem> get keyMappingItems => itemsOf(const {
+        ConfigKind.keyMapping,
+      });
+
+  /// The stored items in [kinds], as a fresh list every call, in canonical
+  /// (kind, id) order.
+  ///
+  /// The read half of the store going item-shaped. A caller asking for
+  /// `{page, asset}` gets those and nothing else — which is what makes
+  /// [writeItems]' replace-within-kinds contract expressible: the same set
+  /// names what is compared and what may therefore be removed.
+  ///
+  /// [ConfigItem] is immutable, so a copy of the list is the whole defence.
+  List<ConfigItem> itemsOf(Set<ConfigKind> kinds) {
     final items = [
       for (final item in _snapshot.values)
-        if (item.kind == ConfigKind.keyMapping) item,
+        if (kinds.contains(item.kind)) item,
     ];
-    return items..sort((a, b) => a.id.compareTo(b.id));
+    return items..sort(_byKindThenId);
   }
 
   /// Emits once after every snapshot swap.
@@ -302,7 +373,7 @@ class ConfigStore {
     if (identical(_remote, remote) && _sync?.started == startSync) return;
     detachRemote();
     _remote = remote;
-    final sync = _KeyMappingSync(this, remote, _sweepInterval);
+    final sync = _ConfigSync(this, remote, _sweepInterval);
     _sync = sync;
     if (!startSync) return;
     sync.start();
@@ -341,7 +412,7 @@ class ConfigStore {
   bool get sweepTimerActive => _sync?.sweepTimerActive ?? false;
 
   /// Whether a `config_change` LISTEN subscription is open. False against a
-  /// non-Postgres remote — see [_KeyMappingSync._listen].
+  /// non-Postgres remote — see [_ConfigSync._listen].
   @visibleForTesting
   bool get notificationsActive => _sync?.notificationsActive ?? false;
 
@@ -375,8 +446,78 @@ class ConfigStore {
     required String who,
     required String roleName,
     String? reason,
+  }) =>
+      writeItems(
+        kinds: const {ConfigKind.keyMapping},
+        wanted: codec.keyMappingItems(wanted),
+        actionId: actionId,
+        who: who,
+        roleName: roleName,
+        reason: reason,
+      );
+
+  /// The one write path, for every kind: the shared rows on the remote, the
+  /// mirror behind them, the snapshot, and one event.
+  ///
+  /// ## Replace within kinds
+  ///
+  /// [wanted] is the complete configuration **of [kinds]**, and [kinds] is
+  /// what bounds the damage. A stored item of a kind in [kinds] that is absent
+  /// from [wanted] is a removal; a stored item of any other kind is not in the
+  /// comparison at all. That is what lets a pages save be a whole-pages
+  /// replace without it also being a delete of every key mapping on the plant
+  /// (T-03-01). An item in [wanted] whose kind is outside [kinds] is an
+  /// [ArgumentError]: it could only ever be inserted and never removed, which
+  /// is a write path with no matching read and the shape of a leak.
+  ///
+  /// ## Ordering keys
+  ///
+  /// [wanted]'s `sortIndex` values are read as **ordinals** — rank within a
+  /// parent, as the codecs emit them, 0..n-1 — and rewritten to stored keys
+  /// against this store's own snapshot immediately before the diff. An item
+  /// whose relative order did not change keeps the exact key it had and never
+  /// reaches the diff, which is what makes dragging one asset one row rather
+  /// than one row per sibling. See `sort_keys.dart`.
+  ///
+  /// [actionId] is the caller's and is shared with the `audit_entry` row the
+  /// app layer writes for the same action. [who] and [roleName] are likewise
+  /// the caller's: this layer has no session to ask.
+  ///
+  /// ## Order of the checks, and why refusal comes before the diff
+  ///
+  /// The remote and the pool are checked **before** the diff is computed, so a
+  /// save with nowhere to go is refused even when it happens to change
+  /// nothing. That is the fail-loud reading of the offline rule: a caller
+  /// whose write cannot reach Postgres is told so every time, rather than
+  /// being told so only when it would have written something. A caller that
+  /// legitimately saves-if-changed while offline — a boot seed, say — must
+  /// therefore compare against [itemsOf] itself rather than calling this and
+  /// hoping.
+  ///
+  /// Throws [ConfigStoreOfflineException] when there is no remote or the
+  /// connection dies mid-write, [ConfigStoreUnsafePoolException] when the
+  /// pool is wider than one, and [ConfigConflict] when another station moved
+  /// a row first. In every one of those cases nothing is committed anywhere.
+  Future<ConfigWriteResult> writeItems({
+    required Set<ConfigKind> kinds,
+    required List<ConfigItem> wanted,
+    required String actionId,
+    required String who,
+    required String roleName,
+    String? reason,
   }) async {
-    final attempted = _describe(wanted);
+    final attempted = _describeItems(kinds, wanted);
+    for (final item in wanted) {
+      if (!kinds.contains(item.kind)) {
+        throw ArgumentError.value(
+            item.kind,
+            'wanted',
+            'holds a ${item.kind.wireName} item (${item.id}) outside the '
+                'kinds being replaced ($attempted). Such an item could be '
+                'inserted and never removed; name its kind in `kinds` or '
+                'leave it out.');
+      }
+    }
 
     final remote = _remote;
     if (remote == null) {
@@ -388,10 +529,8 @@ class ConfigStore {
           attempted: attempted, poolSize: poolSize);
     }
 
-    final diff = diffConfigItems(
-      stored: keyMappingItems,
-      wanted: codec.keyMappingItems(wanted),
-    );
+    final stored = itemsOf(kinds);
+    final diff = diffConfigItems(stored: stored, wanted: wanted);
     // SC-1's other half. Save pressed twice is not a change, so it is not a
     // row, not a change entry, not an audit entry and not an event — the same
     // rule the local row writer applies at `sqlite_preferences.dart:399`.
@@ -709,17 +848,34 @@ class ConfigStore {
   /// What the operator was trying to save, in their words.
   ///
   /// A refusal is only useful if it names the work that did not land, so this
-  /// carries the count and enough keys to recognise the save by. Three names,
-  /// because the plant has ten thousand and an operator reading a snackbar
-  /// needs to recognise the save, not audit it.
-  static String _describe(KeyMappings wanted) {
-    final keys = wanted.nodes.keys.toList()..sort();
-    final shown = keys.take(3).join(', ');
-    final tail = keys.length > 3 ? ', …' : '';
-    return 'key mappings: ${keys.length} '
-        '${keys.length == 1 ? 'key' : 'keys'}'
-        '${keys.isEmpty ? '' : ' ($shown$tail)'}';
+  /// carries the count and enough ids to recognise the save by. Three names,
+  /// because the plant has ten thousand keys and an operator reading a
+  /// snackbar needs to recognise the save, not audit it.
+  ///
+  /// A single-kind save reads in that kind's own words — "key mappings: 2
+  /// keys (…)", which is what it said before this became generic and what the
+  /// offline tests hold it to. A save spanning kinds (a page and its assets)
+  /// has no such noun and says "configuration".
+  static String _describeItems(Set<ConfigKind> kinds, List<ConfigItem> wanted) {
+    final ids = [for (final item in wanted) item.id]..sort();
+    final shown = ids.take(3).join(', ');
+    final tail = ids.length > 3 ? ', …' : '';
+    final (plural, one, many) =
+        kinds.length == 1 ? _nouns[kinds.single]! : _configurationNoun;
+    return '$plural: ${ids.length} ${ids.length == 1 ? one : many}'
+        '${ids.isEmpty ? '' : ' ($shown$tail)'}';
   }
+
+  /// Per kind: what to call a save of it, and what to call one of its items.
+  static const Map<ConfigKind, (String, String, String)> _nouns = {
+    ConfigKind.keyMapping: ('key mappings', 'key', 'keys'),
+    ConfigKind.page: ('pages', 'page', 'pages'),
+    ConfigKind.asset: ('assets', 'asset', 'assets'),
+    ConfigKind.preference: ('preferences', 'preference', 'preferences'),
+  };
+
+  static const (String, String, String) _configurationNoun =
+      ('configuration', 'item', 'items');
 
   // ---------------------------------------------------------------------
   // The re-home (C-5)
@@ -773,7 +929,7 @@ class ConfigStore {
       // nothing to say about it.
       if (cached == null) return;
 
-      final existing = await _sharedMappingRows();
+      final existing = await _sharedRowsOf(const {ConfigKind.keyMapping});
       var seeded = 0;
       if (existing.isEmpty) {
         final List<ConfigItem> items;
@@ -848,10 +1004,16 @@ class ConfigStore {
   // Local reads
   // ---------------------------------------------------------------------
 
-  Future<List<ConfigItemRow>> _sharedMappingRows() =>
+  /// The shared mirror rows of [kinds].
+  ///
+  /// Takes the kinds rather than assuming them: the boot fill wants every
+  /// shared kind, and the re-home wants key mappings alone — it is asking
+  /// whether *this* blob has already been decomposed, and a page row would be
+  /// no answer to that.
+  Future<List<ConfigItemRow>> _sharedRowsOf(Set<ConfigKind> kinds) =>
       (_local.select(_local.configItemTable)
             ..where((t) =>
-                t.kind.equals(ConfigKind.keyMapping.wireName) &
+                t.kind.isIn(_wireNamesOf(kinds)) &
                 t.scope.equals(ConfigScope.shared.wireName)))
           .get();
 
@@ -886,19 +1048,39 @@ class ConfigStore {
     return 0;
   }
 
-  /// The item a mirror row describes. Carries `rev`, which is what the
-  /// compare-and-swap guards with.
-  ConfigItem _itemOf(ConfigItemRow row) => ConfigItem(
-        kind: ConfigKind.keyMapping,
-        id: row.id,
-        scope: ConfigScope.shared,
-        parentId: row.parentId,
-        sortIndex: row.sortIndex,
-        payload: row.payload,
-        rev: row.rev,
-        updatedAt: row.updatedAt,
-        updatedBy: row.updatedBy,
-      );
+  /// The item a stored row describes, or null when this build does not know
+  /// the row's kind or scope.
+  ///
+  /// Kind and scope are read from the row rather than assumed from whatever
+  /// the query filtered on: one snapshot now holds three kinds, and a
+  /// hardcoded pair would label a page as a key mapping the moment the filter
+  /// widened past the read that set it.
+  ///
+  /// Null rather than a throw, for the reason [ConfigKind.byWireName] is
+  /// nullable: a row written by a newer station against the shared database
+  /// must be skippable by an older one, not fatal to its whole boot.
+  ///
+  /// Carries `rev`, which is what the compare-and-swap guards with.
+  ConfigItem? _itemOf(ConfigItemRow row) {
+    final kind = ConfigKind.byWireName(row.kind);
+    final scope = ConfigScope.byWireName(row.scope);
+    if (kind == null || scope == null) {
+      _logger.w('config row ${row.kind}:${row.id}@${row.scope} is of a kind '
+          'or scope this build does not know; skipped');
+      return null;
+    }
+    return ConfigItem(
+      kind: kind,
+      id: row.id,
+      scope: scope,
+      parentId: row.parentId,
+      sortIndex: row.sortIndex,
+      payload: row.payload,
+      rev: row.rev,
+      updatedAt: row.updatedAt,
+      updatedBy: row.updatedBy,
+    );
+  }
 }
 
 /// The `updated_by` of a mirror row the re-home created.

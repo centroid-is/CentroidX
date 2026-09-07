@@ -211,8 +211,61 @@ class GuardedConfigStore {
   /// `ConfigConflict` — propagates **unwrapped**, because the editor's three
   /// catch arms are those three types.
   Future<ConfigWriteResult> save(List<ConfigItem> wanted,
-      {required ConfigKind kind, String? reason}) async {
-    final itemKey = _keyFor(kind);
+          {required ConfigKind kind, String? reason}) =>
+      write(wanted, kinds: {kind}, checkKind: kind, reason: reason);
+
+  /// Replaces the stored rows of [kinds] with [wanted], checked and recorded
+  /// as [checkKind] — the write path, of which [save] is the one-kind case.
+  ///
+  /// ## Why two kind arguments
+  ///
+  /// A page save is one gesture over two kinds: the page row and its assets
+  /// move together, and both have to be in the replace set or an asset the
+  /// operator deleted would be inserted and never removed. But it is **one**
+  /// thing an operator did, so it is one check and one audit row. [kinds]
+  /// bounds what the store may rewrite; [checkKind] names the row in
+  /// [kConfigWriteKeys] that decides who may do it and what the trail calls
+  /// it. Making them one argument would force either a check per kind — two
+  /// audit rows for one Save — or a check key invented at the call site, and
+  /// [AccessPolicy.groupForWireSurface] answers `administer` for a surface it
+  /// does not know, so an invented key locks the operator out and looks like a
+  /// permissions bug.
+  ///
+  /// Throws [ArgumentError] for a [checkKind] that [kConfigWriteKeys] does not
+  /// name, and for any kind in [kinds] outside [kSharedConfigKinds] — both are
+  /// developer errors and must die in a test rather than fall through to the
+  /// policy's `administer` default, where they would read as a permissions
+  /// problem at an operator's panel. The second is the narrower gate and the
+  /// one worth stating: `preference` rows are this station's own, and a write
+  /// of one through here would put a local setting on every screen in the
+  /// plant.
+  ///
+  /// Throws [AccessDenied] when the session may not, having written the row
+  /// and fired `onDenied` first. Everything the store throws —
+  /// `ConfigStoreOfflineException`, `ConfigStoreUnsafePoolException`,
+  /// `ConfigConflict` — propagates **unwrapped**, because the editor's three
+  /// catch arms are those three types.
+  Future<ConfigWriteResult> write(
+    List<ConfigItem> wanted, {
+    required Set<ConfigKind> kinds,
+    required ConfigKind checkKind,
+    String? reason,
+  }) async {
+    // Before the check, and before any row: a kind that may not be written
+    // here at all is not a denial to record, it is a call that should not
+    // compile and could not be stopped at compile time.
+    for (final kind in kinds) {
+      if (!kSharedConfigKinds.contains(kind)) {
+        throw ArgumentError.value(
+            kind,
+            'kinds',
+            'is not one of the shared configuration kinds this surface may '
+                'replace ($kSharedConfigKinds). A `preference` row belongs to '
+                'one station and writing it here would share it with all of '
+                'them.');
+      }
+    }
+    final itemKey = _keyFor(checkKind);
     final group = _policy.groupForWireSurface(_configSurface, itemKey);
     final session = _session();
     final actionId = newActionId();
@@ -234,7 +287,7 @@ class GuardedConfigStore {
 
     return _writeAndRecord(
       wanted,
-      kind: kind,
+      kinds: kinds,
       itemKey: itemKey,
       group: group,
       session: session,
@@ -281,7 +334,7 @@ class GuardedConfigStore {
     try {
       await _writeAndRecord(
         codec.keyMappingItems(kExampleKeyMappings),
-        kind: ConfigKind.keyMapping,
+        kinds: const {ConfigKind.keyMapping},
         itemKey: itemKey,
         // Resolved and recorded even though it was not enforced, so the trail
         // shows what authority was skipped rather than showing none.
@@ -304,7 +357,7 @@ class GuardedConfigStore {
 
   Future<ConfigWriteResult> _writeAndRecord(
     List<ConfigItem> wanted, {
-    required ConfigKind kind,
+    required Set<ConfigKind> kinds,
     required String itemKey,
     required AccessGroup group,
     required AccessSession session,
@@ -314,7 +367,7 @@ class GuardedConfigStore {
   }) async {
     final result = await _write(
       wanted,
-      kind: kind,
+      kinds: kinds,
       actionId: actionId,
       session: session,
       reason: reason,
@@ -340,38 +393,31 @@ class GuardedConfigStore {
     return result;
   }
 
-  /// The delegation to the store, per kind.
+  /// The delegation to the store — one call for every kind, which is what
+  /// 02-05 said this body would become.
   ///
-  /// Phase 3 replaces this body with one item-shaped `ConfigStore` write for
-  /// every kind. **The guarded surface above does not change then** — which is
-  /// the whole point of [save] taking items and a kind today.
+  /// There is no per-kind arm left and deliberately so: a second write path is
+  /// how a save escapes the check (T-03-03), and the switch that used to be
+  /// here could only grow one. What guards the surface is the pair of tables
+  /// above — [kConfigWriteKeys] decides who may write a kind and what the
+  /// trail calls it, [kSharedConfigKinds] decides which kinds this surface may
+  /// replace at all — and both are refused in [write] before anything is
+  /// written or recorded.
   Future<ConfigWriteResult> _write(
     List<ConfigItem> wanted, {
-    required ConfigKind kind,
+    required Set<ConfigKind> kinds,
     required String actionId,
     required AccessSession session,
     String? reason,
-  }) {
-    switch (kind) {
-      case ConfigKind.keyMapping:
-        return _inner.writeKeyMappings(
-          codec.keyMappingsOf(wanted),
-          actionId: actionId,
-          who: session.user?.username ?? _anonymousWho,
-          roleName: session.roleName,
-          reason: reason,
-        );
-      case ConfigKind.page:
-      case ConfigKind.asset:
-      case ConfigKind.preference:
-        // Unreachable: [_keyFor] has already refused every kind that is not in
-        // [kConfigWriteKeys], and there is one entry. The arm is written out
-        // rather than defaulted so that adding a table entry without adding a
-        // write here is a compile-time hole nobody can walk past.
-        throw ArgumentError.value(kind, 'kind',
-            'is named in kConfigWriteKeys but has no write path here');
-    }
-  }
+  }) =>
+      _inner.writeItems(
+        kinds: kinds,
+        wanted: wanted,
+        actionId: actionId,
+        who: session.user?.username ?? _anonymousWho,
+        roleName: session.roleName,
+        reason: reason,
+      );
 
   /// The check and audit key for [kind].
   String _keyFor(ConfigKind kind) {
