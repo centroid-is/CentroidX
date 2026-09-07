@@ -12,6 +12,7 @@ AssetPage _$AssetPageFromJson(Map<String, dynamic> json) => AssetPage(
       mirroringDisabled: json['mirroring_disabled'] as bool,
       navigationPriority: (json['navigation_priority'] as num?)?.toInt(),
       published: json['published'] as bool? ?? true,
+      id: json['id'] as String?,
     );
 
 Map<String, dynamic> _$AssetPageToJson(AssetPage instance) => <String, dynamic>{
@@ -20,4 +21,5 @@ Map<String, dynamic> _$AssetPageToJson(AssetPage instance) => <String, dynamic>{
       'mirroring_disabled': instance.mirroringDisabled,
       'navigation_priority': instance.navigationPriority,
       'published': instance.published,
+      if (instance.id case final value?) 'id': value,
     };

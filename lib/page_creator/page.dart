@@ -39,12 +39,39 @@ class AssetPage {
   @JsonKey(name: 'published', defaultValue: true)
   bool published;
 
+  /// A stable handle for this page that survives a rename.
+  ///
+  /// The page map is keyed by path and paths are edited
+  /// (`page_editor.dart`'s `_updatePathInChildren` exists because renames
+  /// happen); a path-keyed row loses the page's history at every rename and
+  /// restamps `parent_id` on every asset on it. This id is the row's
+  /// identity; the path stays in [menuItem] as data.
+  ///
+  /// **It has to be a serialized field.** The editor snapshots its undo
+  /// history as encoded page JSON and saves through [PageManager.copyPages],
+  /// which is `jsonEncode` -> [PageManager.pagesFromJson]. Anything held
+  /// beside the object rather than inside it is gone at the first Ctrl+Z.
+  ///
+  /// Null until minted, and `includeIfNull: false` keeps the change additive
+  /// — a page saved before ids existed round-trips without the key at all.
+  /// See [Asset.id], which works exactly this way for the same reasons.
+  @JsonKey(name: 'id', includeIfNull: false)
+  String? id;
+
   AssetPage(
       {required this.menuItem,
       required this.assets,
       required this.mirroringDisabled,
       this.navigationPriority,
-      this.published = true});
+      this.published = true,
+      this.id});
+
+  /// This page's [id], minting one if it has none yet.
+  ///
+  /// Mints through [newAssetId] rather than a UUID package for the reason
+  /// that function's doc gives; a page id and an asset id are deliberately
+  /// indistinguishable in shape.
+  String ensureId() => id ??= newAssetId();
 
   /// A copy with individual fields replaced.
   ///
@@ -57,6 +84,7 @@ class AssetPage {
     bool? mirroringDisabled,
     int? navigationPriority,
     bool? published,
+    String? id,
   }) {
     return AssetPage(
       menuItem: menuItem ?? this.menuItem,
@@ -64,6 +92,7 @@ class AssetPage {
       mirroringDisabled: mirroringDisabled ?? this.mirroringDisabled,
       navigationPriority: navigationPriority ?? this.navigationPriority,
       published: published ?? this.published,
+      id: id ?? this.id,
     );
   }
 
@@ -517,6 +546,14 @@ class PageManager {
 
   /// Rewrites every [AssetPage.navigationPriority] from the tree structure, so
   /// each level is numbered 0..n-1 with no gaps or duplicates after a move.
+  ///
+  /// **Dense on purpose**, unlike the gapped `sort_index` the asset rows use.
+  /// Renumbering rewrites every sibling, so one move dirties several pages —
+  /// but there are nine of them and the worst move touches about five, while
+  /// `navigation_priority` lives *inside* the page payload that
+  /// `tfc_mcp_server` and the `tools/svn_*.py` scripts read. Gapping it would
+  /// change that compatibility blob for a saving no page count here can feel.
+  /// Revisit if pages ever number in the hundreds.
   static Map<String, AssetPage> _renumber(Map<String, AssetPage> pages) {
     final result = Map<String, AssetPage>.from(pages);
 
