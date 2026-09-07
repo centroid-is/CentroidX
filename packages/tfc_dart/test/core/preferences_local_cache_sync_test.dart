@@ -1,84 +1,32 @@
+/// What `Preferences.syncToLocalCache` costs when nothing has changed.
+///
+/// The sync copies the whole in-memory cache — including a 530 kB
+/// `key_mappings` and a 145 kB `page_editor_data` — into the device-local
+/// store on every startup and every database reconnect. It used to guard each
+/// write with a "does this differ from what is on disk" check, because the
+/// local cache was `shared_preferences`, whose Windows setter re-encodes and
+/// rewrites the entire preference file per call (35.5 ms for four keys against
+/// a 754,707-byte file). That guard is gone as of milestone v1.2 plan 01-06.
+///
+/// It is gone because the same guarantee moved into `SqlitePreferences`, and
+/// this file is where that is asserted rather than assumed. So the question
+/// these tests ask is no longer "how many times did the sync call a setter" —
+/// that number is now the key count, by design — but the one that actually
+/// matters: **how many rows did the store write.** A second identical sync
+/// must produce no `config_change` rows and bump no revision. See
+/// `01-RESEARCH.md` C-1.
+library;
+
+import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:test/test.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/secure_storage/interface.dart';
+import 'package:tfc_dart/core/sqlite_preferences.dart';
 
-/// A local cache that records every write.
-///
-/// The real one is `shared_preferences`. On Windows its `_setValue` re-encodes
-/// the whole preference map and rewrites the entire file with
-/// `writeAsStringSync` **per call** — measured at 35.5 ms for four keys
-/// against a 754,707-byte file on a Mac NVMe, on the UI isolate, on every
-/// startup and every database reconnect. Plant hardware is slower. So what
-/// this test cares about is not the resulting values but the number of writes.
-class _RecordingPrefs implements PreferencesApi {
-  final Map<String, Object> _store = {};
-  final List<String> writes = [];
-  int getAllCalls = 0;
-
-  _RecordingPrefs([Map<String, Object>? initial]) {
-    if (initial != null) _store.addAll(initial);
-  }
-
-  @override
-  Future<Set<String>> getKeys({Set<String>? allowList}) async =>
-      _store.keys.toSet();
-
-  @override
-  Future<Map<String, Object?>> getAll({Set<String>? allowList}) async {
-    getAllCalls++;
-    return Map.of(_store);
-  }
-
-  @override
-  Future<bool?> getBool(String key) async => _store[key] as bool?;
-  @override
-  Future<int?> getInt(String key) async => _store[key] as int?;
-  @override
-  Future<double?> getDouble(String key) async => _store[key] as double?;
-  @override
-  Future<String?> getString(String key) async => _store[key] as String?;
-  @override
-  Future<List<String>?> getStringList(String key) async =>
-      _store[key] as List<String>?;
-  @override
-  Future<bool> containsKey(String key) async => _store.containsKey(key);
-
-  /// Puts a value on "disk" without counting as a write.
-  ///
-  /// Stands in for the divergence the sync exists to close: `loadFromPostgres`
-  /// fills the *memory* cache only, so after it the two can differ. Going
-  /// through [setString] and friends would write both sides and leave nothing
-  /// to sync.
-  void seed(String key, Object value) => _store[key] = value;
-
-  void evict(String key) => _store.remove(key);
-
-  void _write(String key, Object value) {
-    writes.add(key);
-    _store[key] = value;
-  }
-
-  @override
-  Future<void> setBool(String key, bool value) async => _write(key, value);
-  @override
-  Future<void> setInt(String key, int value) async => _write(key, value);
-  @override
-  Future<void> setDouble(String key, double value) async => _write(key, value);
-  @override
-  Future<void> setString(String key, String value) async => _write(key, value);
-  @override
-  Future<void> setStringList(String key, List<String> value) async =>
-      _write(key, value);
-
-  @override
-  Future<void> remove(String key) async {
-    writes.add(key);
-    _store.remove(key);
-  }
-
-  @override
-  Future<void> clear({Set<String>? allowList}) async => _store.clear();
-}
+const String kStation = 'test-station';
+final ConfigScope kScope = ConfigScope.forStation(kStation);
 
 class _NoSecrets implements MySecureStorage {
   @override
@@ -96,109 +44,160 @@ Preferences _prefsWith(PreferencesApi localCache) => Preferences(
     );
 
 void main() {
-  setUp(Preferences.clearSecretCache);
+  late AppDatabase db;
+  late SqlitePreferences cache;
+
+  setUp(() {
+    Preferences.clearSecretCache();
+    db = AppDatabase.inMemoryForTest();
+    cache = SqlitePreferences(db, scope: kScope);
+  });
+
+  tearDown(() => db.close());
+
+  /// Every `config_change` row, oldest first.
+  Future<List<ConfigChangeRow>> changes() =>
+      (db.select(db.configChangeTable)..orderBy([(t) => OrderingTerm.asc(t.id)]))
+          .get();
+
+  Future<List<ConfigItemRow>> items() => db.select(db.configItemTable).get();
+
+  /// The revision of every stored preference, keyed by id.
+  Future<Map<String, int>> revisions() async =>
+      {for (final row in await items()) row.id: row.rev};
+
+  /// Fills the caches with one of each type the sync switches on.
+  ///
+  /// `Preferences`' setters write through to the local cache, so after this
+  /// the two sides agree — which is exactly the state a restart finds, and the
+  /// state the reconnect tests below measure from. Where a test needs the two
+  /// sides to *disagree* (the divergence `loadFromPostgres` produces, since it
+  /// fills the memory cache only) it writes to [cache] directly afterwards.
+  Future<Preferences> seededPrefs() async {
+    final prefs = _prefsWith(cache);
+    await prefs.setString('a_string', 'hello');
+    await prefs.setInt('an_int', 7);
+    await prefs.setDouble('a_double', 1.5);
+    await prefs.setBool('a_bool', true);
+    await prefs.setStringList('a_list', ['x', 'y']);
+    return prefs;
+  }
 
   group('syncToLocalCache', () {
-    test('writes nothing when every value already matches', () async {
-      // The normal restart: Postgres hands back exactly what the last session
-      // already wrote to disk. Nothing has changed, so nothing should be
-      // rewritten.
-      final cache = _RecordingPrefs({
-        'a_string': 'hello',
-        'an_int': 7,
-        'a_double': 1.5,
-        'a_bool': true,
-        'a_list': <String>['x', 'y'],
+    test('the first sync writes one row per key', () async {
+      final prefs = await seededPrefs();
+
+      await prefs.syncToLocalCache();
+
+      expect(await items(), hasLength(5));
+      expect(await changes(), hasLength(5));
+      expect(await revisions(), {
+        'a_string': 1,
+        'an_int': 1,
+        'a_double': 1,
+        'a_bool': 1,
+        'a_list': 1,
       });
-      final prefs = _prefsWith(cache);
-      await prefs.setString('a_string', 'hello');
-      await prefs.setInt('an_int', 7);
-      await prefs.setDouble('a_double', 1.5);
-      await prefs.setBool('a_bool', true);
-      await prefs.setStringList('a_list', ['x', 'y']);
-      cache.writes.clear();
-
-      await prefs.syncToLocalCache();
-
-      expect(cache.writes, isEmpty);
     });
 
-    test('writes only the keys whose value actually changed', () async {
-      final cache = _RecordingPrefs();
-      final prefs = _prefsWith(cache);
-      await prefs.setString('unchanged', 'same');
-      await prefs.setString('changed', 'new');
-      await prefs.setStringList('changed_list', ['a', 'b']);
-      // Another station edited these two since this one last synced.
-      cache.seed('changed', 'old');
-      cache.seed('changed_list', <String>['a']);
-      cache.writes.clear();
+    test('a second identical sync writes no rows and bumps no revision',
+        () async {
+      // The normal restart, and the reconnect this test exists for: Postgres
+      // hands back exactly what the store already holds. Without the row
+      // writer's dedupe this would append five change rows — about 1.4 MB of
+      // them on a real station, where two of the values are a 530 kB
+      // key_mappings and a 145 kB page_editor_data.
+      final prefs = await seededPrefs();
+      await prefs.syncToLocalCache();
+      final before = await revisions();
+      final changesBefore = (await changes()).length;
 
       await prefs.syncToLocalCache();
 
-      expect(cache.writes..sort(), ['changed', 'changed_list']);
-      expect(await cache.getString('changed'), 'new');
-      expect(await cache.getStringList('changed_list'), ['a', 'b']);
-      expect(await cache.getString('unchanged'), 'same');
+      expect(await changes(), hasLength(changesBefore),
+          reason: 'an unchanged reconnect must write zero change rows');
+      expect(await revisions(), before,
+          reason: 'and must bump no revision');
     });
 
-    test('writes keys the local cache has never seen', () async {
-      final cache = _RecordingPrefs();
-      final prefs = _prefsWith(cache);
-      await prefs.setString('brand_new', 'v');
-      cache.evict('brand_new');
-      cache.writes.clear();
+    test('ten reconnects in a row still write nothing', () async {
+      final prefs = await seededPrefs();
+      await prefs.syncToLocalCache();
+      final changesBefore = (await changes()).length;
+
+      for (var i = 0; i < 10; i++) {
+        await prefs.syncToLocalCache();
+      }
+
+      expect(await changes(), hasLength(changesBefore));
+    });
+
+    test('a diverged value is the only row the sync writes', () async {
+      final prefs = await seededPrefs();
+      await prefs.syncToLocalCache();
+      // The store now holds something the memory cache does not — what a
+      // reconnect finds when this station's stored copy is stale.
+      await cache.setString('a_string', 'stale');
+      final changesBefore = (await changes()).length;
 
       await prefs.syncToLocalCache();
 
-      expect(cache.writes, ['brand_new']);
-      expect(await cache.getString('brand_new'), 'v');
+      final log = await changes();
+      expect(log, hasLength(changesBefore + 1),
+          reason: 'one diverged key, one row');
+      expect(log.last.entityId, 'a_string');
+      expect(log.last.op, 'update');
+      expect(await cache.getString('a_string'), 'hello');
+      expect((await revisions())['an_int'], 1,
+          reason: 'the keys that did not diverge must not be rewritten');
     });
 
     test('a type change counts as a change', () async {
-      // '7' and 7 are different values even though they stringify the same.
-      final cache = _RecordingPrefs();
+      // '7' and 7 are different preferences even though they stringify the
+      // same, and the payload tag is what keeps them apart in the row —
+      // `DeepCollectionEquality` alone would call them equal.
       final prefs = _prefsWith(cache);
       await prefs.setInt('k', 7);
-      cache.seed('k', '7');
-      cache.writes.clear();
+      await cache.setString('k', '7');
+      final changesBefore = (await changes()).length;
 
       await prefs.syncToLocalCache();
 
-      expect(cache.writes, ['k']);
+      expect(await changes(), hasLength(changesBefore + 1));
       expect(await cache.getInt('k'), 7);
     });
 
-    test('reads the local cache once, not once per key', () async {
-      final cache = _RecordingPrefs({for (var i = 0; i < 20; i++) 'k$i': i});
+    test('writes keys the local store no longer has', () async {
       final prefs = _prefsWith(cache);
-      for (var i = 0; i < 20; i++) {
-        await prefs.setInt('k$i', i);
-      }
-      cache.getAllCalls = 0;
+      await prefs.setString('brand_new', 'v');
+      await cache.remove('brand_new');
+      final changesBefore = (await changes()).length;
 
       await prefs.syncToLocalCache();
 
-      expect(cache.getAllCalls, 1);
+      expect(await cache.getString('brand_new'), 'v');
+      final log = await changes();
+      expect(log, hasLength(changesBefore + 1));
+      expect(log.last.op, 'insert');
+      expect(log.last.entityId, 'brand_new');
     });
 
     test('leaves device-local keys the database does not know about alone',
         () async {
       // localPreferencesProvider stores per-station settings in the *same*
-      // SharedPreferences store. The sync is additive on purpose: pruning
-      // keys that Postgres has never heard of would wipe them.
-      final cache = _RecordingPrefs({
-        'device_only': 'keep me',
-        'shared': 'v',
-      });
+      // store. The sync is additive on purpose: pruning keys that Postgres has
+      // never heard of would wipe them.
       final prefs = _prefsWith(cache);
+      await cache.setString('device_only', 'keep me');
       await prefs.setString('shared', 'v');
-      cache.writes.clear();
+      final changesBefore = (await changes()).length;
 
       await prefs.syncToLocalCache();
 
-      expect(cache.writes, isEmpty);
       expect(await cache.getString('device_only'), 'keep me');
+      expect(await changes(), hasLength(changesBefore),
+          reason: 'nothing diverged and nothing is pruned, so no rows at all');
+      expect(await cache.getString('shared'), 'v');
     });
   });
 }

@@ -1,23 +1,19 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
-import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
-import 'package:tfc/core/preferences.dart';
 import 'package:tfc/core/update_channel.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
 void main() {
-  // The channel helpers take a `PreferencesApi` now rather than the concrete
-  // store type, so that the only expression constructing a device-local store
-  // lives in `lib/providers/preferences.dart` (spec §6, enforced by
-  // `scripts/check-preferences-construction.sh`). The fixture is still the
-  // same in-memory platform underneath — only the type changed.
+  // The channel helpers take a `PreferencesApi` rather than the concrete store
+  // type, so that the only expression constructing a device-local store lives
+  // in `lib/providers/preferences.dart` (spec §6, enforced by
+  // `scripts/check-preferences-construction.sh`). That is what lets this
+  // fixture be an `InMemoryPreferences`: the `shared_preferences` wrapper it
+  // used to be left with milestone v1.2 plan 01-06, and nothing here needs a
+  // platform channel to answer a typed map.
   late PreferencesApi prefs;
 
   setUp(() {
-    SharedPreferencesAsyncPlatform.instance =
-        InMemorySharedPreferencesAsync.empty();
-    prefs = SharedPreferencesWrapper(SharedPreferencesAsync());
+    prefs = InMemoryPreferences();
   });
 
   test('defaults to stable when nothing is stored', () async {

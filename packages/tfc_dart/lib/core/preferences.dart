@@ -498,15 +498,16 @@ class Preferences implements PreferencesApi {
   /// Syncs all in-memory preferences to local cache.
   /// Called after loading from Postgres so local cache stays up to date.
   ///
-  /// Only keys whose value actually differs are written. The local cache is
-  /// `shared_preferences`, and on Windows its `_setValue` re-encodes the whole
-  /// preference map and rewrites the entire file with `writeAsStringSync` per
-  /// call — measured at 35.5 ms for four keys against a 754,707-byte file on a
-  /// Mac NVMe, on the UI isolate, on every startup and every database
-  /// reconnect. There is no batch-write API to fold those into one, so the
-  /// only lever is not writing: on a normal restart Postgres hands back
-  /// exactly what is already on disk and this does nothing at all. One
-  /// `getAll` read replaces the per-key writes.
+  /// **Writes every key, unconditionally.** It used to skip keys whose value
+  /// matched what was already on disk, because the local cache was
+  /// `shared_preferences` and every setter there rewrote the entire
+  /// preference file. The local cache is now `SqlitePreferences`, whose
+  /// setters read the stored payload first and return without touching
+  /// anything when it is unchanged (`sqlite_preferences.dart`, `samePayload`).
+  /// So the dedupe did not go away, it moved into the row writer, where it
+  /// holds for every caller rather than for this one — and a reconnect
+  /// against an unchanged store still writes zero rows and bumps no revision.
+  /// See `01-RESEARCH.md` C-1.
   ///
   /// Additive on purpose. Keys the local cache holds but the database has
   /// never heard of are left alone: `localPreferencesProvider` keeps
@@ -515,11 +516,9 @@ class Preferences implements PreferencesApi {
   Future<void> syncToLocalCache() async {
     final cache = localCache!;
     final all = await _memoryCache.getAll();
-    final onDisk = await cache.getAll();
     for (final entry in all.entries) {
       final value = entry.value;
       if (value == null) continue;
-      if (_sameStoredValue(onDisk[entry.key], value)) continue;
       if (value is bool) {
         await cache.setBool(entry.key, value);
       } else if (value is int) {
@@ -532,23 +531,6 @@ class Preferences implements PreferencesApi {
         await cache.setStringList(entry.key, value);
       }
     }
-  }
-
-  /// Whether the value already on disk is indistinguishable from [wanted].
-  ///
-  /// Types are compared too, not just contents: `'7'` and `7` round-trip
-  /// through shared_preferences as different things.
-  static bool _sameStoredValue(Object? onDisk, Object wanted) {
-    if (onDisk == null) return false;
-    if (wanted is List<String>) {
-      if (onDisk is! List) return false;
-      if (onDisk.length != wanted.length) return false;
-      for (var i = 0; i < wanted.length; i++) {
-        if (onDisk[i] != wanted[i]) return false;
-      }
-      return true;
-    }
-    return onDisk.runtimeType == wanted.runtimeType && onDisk == wanted;
   }
 
   /// Loads all preferences from Postgres into memory cache.
@@ -591,85 +573,3 @@ class Preferences implements PreferencesApi {
     }
   }
 }
-
-/// A wrapper around SharedPreferencesAsync that implements PreferencesApi
-// class SharedPreferencesWrapper implements PreferencesApi {
-//   final SharedPreferencesAsync _prefs;
-
-//   SharedPreferencesWrapper(this._prefs);
-
-//   @override
-//   Future<Set<String>> getKeys({Set<String>? allowList}) {
-//     return _prefs.getKeys(allowList: allowList);
-//   }
-
-//   @override
-//   Future<Map<String, Object?>> getAll({Set<String>? allowList}) {
-//     return _prefs.getAll(allowList: allowList);
-//   }
-
-//   @override
-//   Future<bool?> getBool(String key) {
-//     return _prefs.getBool(key);
-//   }
-
-//   @override
-//   Future<int?> getInt(String key) {
-//     return _prefs.getInt(key);
-//   }
-
-//   @override
-//   Future<double?> getDouble(String key) {
-//     return _prefs.getDouble(key);
-//   }
-
-//   @override
-//   Future<String?> getString(String key) {
-//     return _prefs.getString(key);
-//   }
-
-//   @override
-//   Future<List<String>?> getStringList(String key) {
-//     return _prefs.getStringList(key);
-//   }
-
-//   @override
-//   Future<bool> containsKey(String key) {
-//     return _prefs.containsKey(key);
-//   }
-
-//   @override
-//   Future<void> setBool(String key, bool value) {
-//     return _prefs.setBool(key, value);
-//   }
-
-//   @override
-//   Future<void> setInt(String key, int value) {
-//     return _prefs.setInt(key, value);
-//   }
-
-//   @override
-//   Future<void> setDouble(String key, double value) {
-//     return _prefs.setDouble(key, value);
-//   }
-
-//   @override
-//   Future<void> setString(String key, String value) {
-//     return _prefs.setString(key, value);
-//   }
-
-//   @override
-//   Future<void> setStringList(String key, List<String> value) {
-//     return _prefs.setStringList(key, value);
-//   }
-
-//   @override
-//   Future<void> remove(String key) {
-//     return _prefs.remove(key);
-//   }
-
-//   @override
-//   Future<void> clear({Set<String>? allowList}) {
-//     return _prefs.clear(allowList: allowList);
-//   }
-// }
