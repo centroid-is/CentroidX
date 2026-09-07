@@ -214,5 +214,61 @@ void main() {
           reason: 'hellos is the same observation, pre-filtered, and the two '
               'must not disagree');
     });
+
+    // **This arm exists because a mutation turned nothing red.** Replacing
+    // `ScriptedLink._send`'s `_closing`-and-`readyState` pair with the bare
+    // `readyState` read from the upstream analog left the four arms above
+    // green on 5 of 5 runs — none of them answers a frame on a link the
+    // gateway is closing, so none of them can see the window. Measured here
+    // instead, and it is deterministic on this machine at 5 of 5 both ways:
+    // with the guard the send is dropped, without it `socket.add` throws
+    // `Bad state: StreamSink is closed` while `readyState` still reads `open`.
+    //
+    // It matters because the scaffold is shared. A gateway that throws at
+    // teardown throws in the ambient zone, which fails whichever *case* is
+    // running rather than the one that caused it — a scaffold defect read as a
+    // product defect, in another file.
+    test('a frame answered on a link this gateway is closing is dropped, '
+        'not thrown', () async {
+      final gateway = await ScriptedGateway.start((link, method, id) {});
+
+      final peer = await WebSocket.connect(gateway.uri.toString());
+      addTearDown(() => peer.close().catchError((Object _) => null));
+      await _untilTrue(() => gateway.links.isNotEmpty);
+      final link = gateway.links.single;
+
+      unawaited(link.close());
+
+      // Anti-vacuity, and it is load-bearing: the whole claim is about the
+      // window where `dart:io` has not moved `readyState` yet. If it has
+      // already moved, the guard below is never consulted and this arm passes
+      // while proving nothing.
+      expect(link.socket.readyState, WebSocket.open,
+          reason: 'the guard under test covers the window where readyState '
+              'still reads open over a sink that throws; if that window is '
+              'gone by here, this arm is asserting nothing');
+
+      expect(() => link.result(1, null), returnsNormally,
+          reason: 'the gateway asked for this close itself, so it knows the '
+              'sink is gone even though readyState does not — that is the '
+              'whole of the _closing flag, and dart:io will not tell you');
+    });
   });
+}
+
+/// Polls [ready] until it holds, or the budget runs out.
+///
+/// A poll rather than a stream because the thing being waited for — a socket
+/// accepted on the far end — announces nothing.
+Future<void> _untilTrue(
+  bool Function() ready, {
+  Duration budget = _recovery,
+}) async {
+  final deadline = DateTime.now().add(budget);
+  while (!ready()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw StateError('the condition never held inside $budget');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
 }
