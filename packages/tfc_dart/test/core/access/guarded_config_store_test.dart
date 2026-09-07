@@ -300,6 +300,65 @@ void main() {
     });
   });
 
+  group('the kind-generic write', () {
+    // Phase 3 writes a page and its assets in one save: the two kinds are one
+    // replace set, and `ConfigStore.writeItems` needs both named or the assets
+    // would be inserted and never removed. What the guard adds is that the
+    // *check* stays one key from one table.
+
+    test('a kind outside the shared set is refused before any check', () async {
+      // `preference` is not under sync and must never be reachable through
+      // this surface: a shared-scope preference write would put one station's
+      // own setting on every screen in the plant.
+      attach();
+      final guard = newGuard();
+
+      await expectLater(
+        guard.write(const <ConfigItem>[],
+            kinds: const {ConfigKind.preference},
+            checkKind: ConfigKind.keyMapping),
+        throwsA(isA<ArgumentError>()),
+      );
+
+      expect(sink.rows, isEmpty, reason: 'refused before the check, so there '
+          'is no denial to record either');
+      expect(await remoteChanges(), isEmpty);
+    });
+
+    test('a check kind the table does not name refuses the whole save',
+        () async {
+      // The gate stays `kConfigWriteKeys`. A later plan adding pages must add
+      // the entry — this is what stops it routing around the check instead.
+      attach();
+      final guard = newGuard();
+
+      await expectLater(
+        guard.write(const <ConfigItem>[],
+            kinds: const {ConfigKind.page, ConfigKind.asset},
+            checkKind: ConfigKind.page),
+        throwsA(isA<ArgumentError>()),
+      );
+
+      expect(sink.rows, isEmpty);
+      expect(await remoteChanges(), isEmpty);
+    });
+
+    test('save is write over exactly one kind', () async {
+      attach();
+      final guard = newGuard();
+
+      final result = await guard.write(
+        keyMappingItems(mappingsOf({'A.Key': 'gvl.A'})),
+        kinds: const {ConfigKind.keyMapping},
+        checkKind: ConfigKind.keyMapping,
+      );
+
+      expect(result.diff.added.map((i) => i.id), ['A.Key']);
+      expect(sink.rows, hasLength(1));
+      expect(sink.rows.single.itemKey, kKeyMappingsPrefKey);
+    });
+  });
+
   group('saveKeyMappings', () {
     test('is save(keyMappingItems(wanted), kind: keyMapping) and nothing more',
         () async {
