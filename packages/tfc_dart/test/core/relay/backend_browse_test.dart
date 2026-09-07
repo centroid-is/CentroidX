@@ -107,6 +107,24 @@ final class _BrowseOnlyApi implements StateManApi {
       'the browse fixture composed no $member; a browse contract case reached '
       'outside api.browse, which this fixture cannot answer honestly');
 
+  // The four access families (17-03), on this fixture's own rule: everything
+  // outside `api.browse` fails loudly naming the member rather than quietly
+  // passing on a fabricated answer.
+  @override
+  relay.AccessTemplateApi get accessTemplates =>
+      _notPartOfThisFixture('access template store');
+
+  @override
+  relay.AccessAdminApi get accessAdmin =>
+      _notPartOfThisFixture('access admin store');
+
+  @override
+  relay.AuditApi get audit => _notPartOfThisFixture('audit trail store');
+
+  @override
+  relay.BackendConfigApi get backendConfig =>
+      _notPartOfThisFixture('backend config document');
+
   /// `PipeKeys.connected` is true because a mapping-backed browse has no link
   /// to bring up: the address space is a map in this process's memory and is
   /// serving from the instant the constructor returns.

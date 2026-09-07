@@ -59,10 +59,18 @@ final class BackendStateMan implements relay.StateManApi {
     relay.TimeseriesApi? timeseries,
     relay.HistoryViewApi? historyViews,
     relay.PreferencesApi? preferences,
+    relay.AccessTemplateApi? accessTemplates,
+    relay.AccessAdminApi? accessAdmin,
+    relay.AuditApi? audit,
+    relay.BackendConfigApi? backendConfig,
   })  : _browse = browse,
         _timeseries = timeseries,
         _historyViews = historyViews,
-        _preferences = preferences;
+        _preferences = preferences,
+        _accessTemplates = accessTemplates,
+        _accessAdmin = accessAdmin,
+        _audit = audit,
+        _backendConfig = backendConfig;
 
   /// The live half: the pipe's cache and its refcounted subscriptions.
   final BackendValueSource? values;
@@ -74,6 +82,18 @@ final class BackendStateMan implements relay.StateManApi {
   final relay.TimeseriesApi? _timeseries;
   final relay.HistoryViewApi? _historyViews;
   final relay.PreferencesApi? _preferences;
+
+  /// The four access families (17-03), each one more optional collaborator.
+  ///
+  /// They arrive here the same way the four above did, and for the design
+  /// reason stated at the top of this file: **a later plan adds a file, never
+  /// an edit here.** 17-06 writes `backend_access.dart` and hands these in from
+  /// `bin/main.dart`'s relay block; nothing about that plan needs this class to
+  /// change again.
+  final relay.AccessTemplateApi? _accessTemplates;
+  final relay.AccessAdminApi? _accessAdmin;
+  final relay.AuditApi? _audit;
+  final relay.BackendConfigApi? _backendConfig;
 
   /// The one shape every refusal in this class takes.
   ///
@@ -246,6 +266,66 @@ final class BackendStateMan implements relay.StateManApi {
               'there is no shared preference store to serve; see '
               'bin/main.dart\'s relay block. Device-local settings are '
               'deliberately not on this pipe either way.');
+
+  // ------------------------------------------------------- the access families
+  //
+  // Same rule as the four above: the getter refuses, not the sub-interface's
+  // members. And one rule of their own — **the safe direction is refusal.**
+  // These four are the access surface of a plant HMI, so an adapter composed
+  // without an access store that answered anything at all would be answering a
+  // question about who may do what, having never asked. `AuditApi` is the
+  // sharpest case: it is read-only by construction, so the only wrong answer it
+  // can give is an empty one, and an empty audit trail is indistinguishable
+  // from a clean one.
+
+  @override
+  relay.AccessTemplateApi get accessTemplates =>
+      _accessTemplates ??
+      _missing(
+          'accessTemplates',
+          'AccessTemplateApi',
+          'The backend\'s AccessTemplateStore was not handed to the '
+              'composition root, so there are no templates and no key '
+              'bindings to serve; wire them in bin/main.dart\'s relay block. '
+              'An empty template list would tell a config screen that no key '
+              'is bound to anything, which is the state an operator fixes by '
+              'binding them all a second time.');
+
+  @override
+  relay.AccessAdminApi get accessAdmin =>
+      _accessAdmin ??
+      _missing(
+          'accessAdmin',
+          'AccessAdminApi',
+          'The backend\'s AccessAdminStore was not handed to the composition '
+              'root, so there are no roles and no accounts to serve; wire it '
+              'in bin/main.dart\'s relay block. This is the family that can '
+              'hand somebody force on a running line, so it says nothing at '
+              'all rather than something incomplete.');
+
+  @override
+  relay.AuditApi get audit =>
+      _audit ??
+      _missing(
+          'audit',
+          'AuditApi',
+          'The backend\'s AuditTrailStore was not handed to the composition '
+              'root, so there is no trail to read; wire it in '
+              'bin/main.dart\'s relay block. Answering with no entries would '
+              'show a reviewer an empty trail for a plant that has been '
+              'writing rows all shift — and an empty trail reads as a clean '
+              'one.');
+
+  @override
+  relay.BackendConfigApi get backendConfig =>
+      _backendConfig ??
+      _missing(
+          'backendConfig',
+          'BackendConfigApi',
+          'The backend\'s own configuration document was not handed to the '
+              'composition root, so there is nothing to read and nowhere to '
+              'write; wire it in bin/main.dart\'s relay block. A config screen '
+              'shown an empty document invites somebody to save it.');
 
   // ------------------------------------------------------------------ teardown
 
