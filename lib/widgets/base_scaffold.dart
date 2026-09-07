@@ -19,7 +19,9 @@ import '../models/menu_item.dart';
 import '../providers/preferences.dart';
 import '../route_registry.dart';
 import '../providers/access.dart';
+import '../providers/gateway_link.dart';
 import '../providers/theme.dart';
+import 'gateway_link_chip.dart';
 import '../providers/alarm.dart';
 import '../providers/nav_alarm.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessSession;
@@ -356,7 +358,17 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
         (accessElevated ? kAccessStatusActionMaxWidth : 48.0) +
         (kAccessStatusActionGap * 2) +
         _clockWidth;
-    const appBarRightMargin = 280.0;
+    // Whether the gateway-link chip is showing, read here from the SAME
+    // provider the chip itself watches so the margin and the chip cannot
+    // disagree about whether there is anything in that slot. Null is direct
+    // mode -- the overwhelming majority of stations -- and an unresolved value
+    // is the device-local transport row still being read; both mean no chip
+    // and no reservation, which is what keeps a direct panel's app bar
+    // byte-identical to what it is today.
+    final showGatewayChip =
+        ref.watch(gatewayLinkProvider).valueOrNull != null;
+    final appBarRightMargin =
+        280.0 + (showGatewayChip ? kGatewayChipWidth : 0.0);
 
     return Scaffold(
       appBar: _isFullscreen
@@ -374,6 +386,12 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                     // with aspect ratio ~4.2 => ~210px wide, plus 16px right
                     // padding, plus ~48px theme toggle IconButton = ~274px.
                     // Use 280 for a small safety buffer.
+                    // Plus kGatewayChipWidth, and only while the gateway-link
+                    // chip is actually showing -- see showGatewayChip above.
+                    // A gateway station reserves the chip's budget so the
+                    // alarm banner keeps its clear space; a direct station
+                    // reserves nothing, which is why the four existing
+                    // appbar_clock_*.png goldens are unmoved by this.
                     // Left margin: the back arrow, the access action and the
                     // clock -- see appBarLeftMargin above, which is the one
                     // that changes with the session.
@@ -458,6 +476,17 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          // What the gateway link is doing, on a gateway
+                          // station, on every page. It sits here rather than
+                          // on the left because identity and navigation stay
+                          // grouped over there -- see the access-action
+                          // comment above -- and because globalLeftProvider
+                          // injects into that row and the page editor uses the
+                          // slot. On a direct station it renders SizedBox
+                          // .shrink() and costs exactly nothing, gap included;
+                          // its width budget is counted into
+                          // appBarRightMargin above.
+                          const GatewayLinkChip(),
                           // Only show SVG if not in mobile portrait mode
                           if (!(MediaQuery.of(context).orientation ==
                                   Orientation.portrait &&

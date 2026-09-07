@@ -20,6 +20,7 @@
 library;
 
 import 'dart:async';
+import 'dart:io' show File;
 
 import 'package:beamer/beamer.dart';
 import 'package:flutter/material.dart';
@@ -57,11 +58,26 @@ GatewayLinkReport _report(GatewayLinkKind kind, {bool terminal = false}) =>
       sanHint: _sanHint,
     );
 
+/// Two destinations, not one: `NavigationBar` asserts `destinations.length >= 2`
+/// and a one-item registry brings the whole scaffold down before the app bar is
+/// ever laid out. Same registration as
+/// `base_scaffold_appbar_golden_test.dart:34-50`.
 void _registerMenu() {
   final registry = RouteRegistry();
   registry.menuItems.clear();
   registry
       .addMenuItem(const MenuItem(label: 'Home', path: '/', icon: Icons.home));
+  registry.addMenuItem(const MenuItem(
+    label: 'Advanced',
+    path: '/advanced',
+    icon: Icons.settings,
+    children: [
+      MenuItem(
+          label: 'Server Config',
+          path: '/advanced/server-config',
+          icon: Icons.dns),
+    ],
+  ));
 }
 
 /// The scaffold behind a router, at the window size a plant station runs.
@@ -87,6 +103,12 @@ Widget _shell({
   );
 
   return ProviderScope(
+    // Unique per call, so an arm that pumps a second shell REMOUNTS rather
+    // than updating in place. Without it Beamer's delegate is handed to a
+    // `MaterialApp.router` that already had one and its route builder throws
+    // `Bad state: No element` — an artifact of the harness that would read
+    // like a defect in the chip.
+    key: UniqueKey(),
     overrides: [
       alarmManProvider.overrideWith((ref) async => alarms ?? AlarmFixture()),
       gatewayLinkProvider.overrideWith((ref) => link),
@@ -105,8 +127,12 @@ Widget _shell({
 Future<void> _pump(
   WidgetTester tester, {
   required Stream<GatewayLinkReport?> link,
+  // The app bar's own slice, the height the appbar goldens use — enough for
+  // every geometry arm and nothing more. The dialog arm asks for a whole panel
+  // instead, because a dialog on a 160 px window has nowhere to go.
+  Size size = const Size(1600, 160),
 }) async {
-  tester.view.physicalSize = const Size(1600, 160);
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
   // Never the pump-until-quiet helper: a chip that regressed into rendering an
@@ -257,7 +283,7 @@ void main() {
 
     final context = tester.element(find.byKey(kGatewayLinkChipMarkKey));
     final fault = HmiStateColors.of(context).red;
-    expect((border! as Border).top.color.value, fault.withAlpha(120).value,
+    expect((border! as Border).top.color, fault.withAlpha(120),
         reason: 'the retry loop has stopped, and only a fault may be saturated '
             'in this repo — the same red plan 15-05\'s row spends on the two '
             'terminal kinds, so the two surfaces cannot disagree');
@@ -275,7 +301,9 @@ void main() {
 
   testWidgets('dialog: tapping the chip shows the report in a dialog, not in a '
       'tooltip', (tester) async {
-    await _pump(tester, link: _gateway(GatewayLinkKind.untrustedCertificate));
+    await _pump(tester,
+        link: _gateway(GatewayLinkKind.untrustedCertificate),
+        size: const Size(1600, 900));
 
     // A tooltip on a touch panel is unreachable — there is no hover. CONTEXT
     // § "Claude's Discretion" prefers a dialog for exactly that reason, and
@@ -352,9 +380,14 @@ void main() {
                 of: find.byType(SvgPicture), matching: find.byType(Padding))
             .first)
         .width;
-    final toggleWidth = tester
-        .getSize(find.widgetWithIcon(IconButton, Icons.brightness_6))
-        .width;
+    // The theme toggle only materialises once `themeNotifierProvider` resolves,
+    // which needs a preferences store this harness deliberately does not stand
+    // up — so here it is a zero-width `SizedBox` and the cluster is the logo
+    // alone. Named anyway, and measured when it is there, so the arm keeps
+    // meaning the same thing if a later harness provides one.
+    final toggle = find.widgetWithIcon(IconButton, Icons.brightness_6);
+    final toggleWidth =
+        toggle.evaluate().isEmpty ? 0.0 : tester.getSize(toggle).width;
 
     // The gap belongs INSIDE GatewayLinkChip, never beside it in the caller —
     // access_lock_badge.dart:96-106. A `SizedBox` sibling would survive the
@@ -363,5 +396,67 @@ void main() {
     expect(clusterWidth, closeTo(logoWidth + toggleWidth, 0.01),
         reason: 'an absent chip contributes exactly zero width — no pill, no '
             'gap, no padding, nothing');
+  });
+
+  // The plan's own acceptance criteria are four greps. Run by hand once they
+  // guard nothing, so they live here instead — the same discipline
+  // `test/core/gateway_copy_test.dart` applies to the status row and
+  // `audit_trail_test.dart` applies to the no-timer rule. The pixel half of
+  // the colour rule (whether the themed colour actually reaches the image) is
+  // plan 15-07's dark chip golden; this is the half measurable without one.
+  group('the chip obeys the colour convention', () {
+    const path = 'lib/widgets/gateway_link_chip.dart';
+    String read() => File(path).readAsStringSync();
+
+    test('the file is there and renders a pill', () {
+      // The anti-vacuity case: the three absences below all pass on an empty
+      // file, or on one somebody deleted.
+      expect(read(), contains('class GatewayLinkChip'));
+      expect(read(), contains('kGatewayChipWidth'));
+    });
+
+    test('it names no raw Material colour constant', () {
+      final offenders = RegExp(r'\bColors\.').allMatches(read()).toList();
+      expect(offenders, isEmpty,
+          reason: 'every colour comes from HmiStateColors, which is themed. '
+              'connection_status_chip.dart supplied this pill\'s GEOMETRY and '
+              'none of its colours; that file is a known pre-existing '
+              'violation and is deliberately not in scope to fix');
+    });
+
+    test('and it does not borrow the scheme\'s edge role', () {
+      expect(read(), isNot(contains('colorScheme.outline')),
+          reason: 'neither Solarized scheme sets it, so an edge borrowed from '
+              'it is invisible on the dark theme the night shift runs '
+              '(project memory solarized-outline-is-invisible)');
+    });
+
+    test('and it reaches for HmiStateColors.of instead', () {
+      expect(read(), contains('HmiStateColors.of('));
+    });
+
+    test('and it never renders an indeterminate indicator', () {
+      expect(read(), isNot(contains('CircularProgressIndicator')),
+          reason: 'the app bar rebuilds on every navigation; a spinner in the '
+              'furniture flickers on each one, and criterion 2 of this '
+              'milestone is that the UI stops pretending');
+    });
+
+    test('and it does not import the Transport card\'s row', () {
+      expect(read(), isNot(contains('GatewayLinkStatusRow')),
+          reason: 'the two surfaces share the REPORT, not a widget — a shared '
+              'widget would put the plans that built them in one wave with a '
+              'file dependency between them');
+    });
+  });
+
+  test('base_scaffold.dart counts the chip into its margin arithmetic', () {
+    // The paired source half of the margin arm above. That arm reads a
+    // rendered number and cannot say WHERE it came from; this one says the
+    // term is spelled with the shared constant rather than with a second
+    // literal that would drift the moment the chip is resized.
+    final source = File('lib/widgets/base_scaffold.dart').readAsStringSync();
+    expect(source, contains('kGatewayChipWidth'));
+    expect(source, contains('const GatewayLinkChip()'));
   });
 }
