@@ -49,7 +49,13 @@ final configStoreProvider = FutureProvider<GuardedConfigStore>((ref) async {
   // station-scoped blob. No network: a station with no Postgres serves the
   // plant's wiring from here and comes up.
   await store.open();
-  ref.onDispose(store.close);
+  // `unawaited()` would not do here: it attaches no error handler, so a throw
+  // out of a dispose would become an unhandled asynchronous error in whatever
+  // zone the container happened to be torn down in.
+  ref.onDispose(() {
+    store.close().catchError((Object e) =>
+        _logger.w('the configuration store did not close cleanly: $e'));
+  });
 
   final guarded = GuardedConfigStore(
     inner: store,
