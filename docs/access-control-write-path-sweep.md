@@ -30,7 +30,15 @@ the first run (§4.1 F), and no row was left stale. From that re-run onwards the
 comparison is a test — `test/core/phase_03_coverage_test.dart` runs the script
 and reconciles its hits against this document's table rows in **both**
 directions, by file, so a write path added after today fails a suite rather
-than waiting to be read about. The script's own
+than waiting to be read about. **Only the tables of §2 and §3 count as rows
+for that comparison** (narrowed 2026-09-07): a run record in §4.3 and a key
+reconciliation in §5 are records of measurements, not verdicts, and a full
+path appearing in one must not discharge the obligation to give that file a
+verdict — with every `|` row counted, deleting a file's real §2 row could
+leave the gate green because §4.3a's table still named it, which is this
+document's own decorative-outcome defect pointed at itself. A §4.3 section
+may therefore name files however reads best; nothing it says can satisfy the
+gate. The script's own
 header records its two output conventions: comment-only lines are dropped (a
 comment is not a call, which is why `centroid-hmi/lib/main.dart:449` quoting
 `adb.deleteHistoryView` in a note is not a site), and hits inside generated
@@ -1055,11 +1063,15 @@ which is the argument for it either way.
 ### 4.3c What the 2026-09-07 re-run found
 
 Recorded in the shape of §4.3a and §4.3b, and for the same reason. Five files
-carried hits with no row, fifty hits between them. They are named here by bare
-filename **deliberately**: the coverage test reads claims out of table rows'
-first cells by full path, and this table is a summary, not the claim — the §2
-rows are what the reconciliation stands on, and a second full-path spelling
-here would let one of them be deleted without the gate going red.
+carried hits with no row, fifty hits between them. This run also changed the
+gate itself: sabotaging one of the new rows stayed green because the coverage
+test read claims out of **every** table's first cells, and this section's own
+summary table was discharging the §2 obligation. The extraction is narrowed
+to §2 and §3 now — §1 carries the rule — so a run record like this one can
+name files freely and prove nothing by naming them. The narrowing turned no
+file red: the 2026-08-30 cohort §4.3a lists by full path all have their real
+§2 rows, so the double-claims were redundancy rather than missing verdicts,
+verified by re-running the suite the moment the extraction changed.
 
 | Files | Hits | What they turned out to be |
 |---|---|---|
