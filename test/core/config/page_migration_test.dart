@@ -331,6 +331,7 @@ void main() {
 
       final file = File(_fixturePath);
       if (Platform.environment[_regenEnv] == '1') {
+        file.parent.createSync(recursive: true);
         file.writeAsStringSync('$generated\n');
         return;
       }

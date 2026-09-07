@@ -9,6 +9,8 @@ import 'package:tfc_dart/core/config/key_mapping_migration.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_connections.dart' show kMaxPoolConnectionsEnv;
 
+import '../core/config/page_migration.dart';
+
 import 'access.dart';
 import 'access_policy.dart';
 import 'database.dart';
@@ -103,7 +105,14 @@ Future<void> _attach(
     return;
   }
   try {
-    _logMigration(await migrateKeyMappingsBlobToRows(db));
+    // Both migrations before the store is handed to the sync engine, and in
+    // this order: the key mappings first because Phase 2 shipped them first
+    // and a plant mid-rollout may have them on rows already, the pages second.
+    // They take different advisory locks and share nothing but the
+    // transaction discipline, so a station that loses one may still win the
+    // other — which is why the outcome of each is logged on its own line.
+    _logMigration('key_mappings', await migrateKeyMappingsBlobToRows(db));
+    _logMigration('pages', await migratePageBlobToRows(db));
     store.attachRemote(db);
     await guarded.seedDefaultIfEmpty();
   } catch (error, stackTrace) {
@@ -124,28 +133,28 @@ Future<void> _attach(
 /// says nothing. The return value of that function is not ignorable — a
 /// migration that did not run is a station serving nothing, and the only
 /// place that is visible is this line.
-void _logMigration(MigrationOutcome outcome) {
+void _logMigration(String label, MigrationOutcome outcome) {
   switch (outcome) {
     case MigrationOutcome.migrated:
-      _logger.i('key_mappings migration: the blob was copied into rows; this '
+      _logger.i('$label migration: the blob was copied into rows; this '
           'plant is now on relational configuration');
     case MigrationOutcome.alreadyDone:
-      _logger.i('key_mappings migration: already done, nothing written');
+      _logger.i('$label migration: already done, nothing written');
     case MigrationOutcome.heldByAnother:
       // Not a failure and not even a delay worth naming: the reconcile that
       // the attach below queues brings the rows here seconds later.
-      _logger.i('key_mappings migration: another station holds the lock and '
+      _logger.i('$label migration: another station holds the lock and '
           'is running it; this station picks the rows up at its next '
           'reconcile');
     case MigrationOutcome.noBlob:
-      _logger.w('key_mappings migration: the shared database has no '
-          'key_mappings blob to copy. On a fresh plant that is expected; on '
-          'this plant it means this station is pointed at the wrong database');
+      _logger.w('$label migration: the shared database has no $label '
+          'blob to copy. On a fresh plant that is expected; on this plant it '
+          'means this station is pointed at the wrong database');
     case MigrationOutcome.notPostgres:
       // Unreachable from here — the listener only fires with a real Database,
       // and Database cannot wrap a SQLite config at all. Reaching it means
       // something upstream changed, and a loud line is how that is found.
-      _logger.e('key_mappings migration: the attached shared database does '
+      _logger.e('$label migration: the attached shared database does '
           'not report the postgres dialect. This path only ever runs against '
           'Postgres, so this is a bug in how the database was built, not a '
           'configuration mistake');
@@ -155,11 +164,11 @@ void _logMigration(MigrationOutcome outcome) {
       // a panel on a plant floor has to come up. Deliberately not silent
       // either.
       _logger.e(
-          'key_mappings migration REFUSED: this process pools more than one '
+          '$label migration REFUSED: this process pools more than one '
           'connection ($kMaxPoolConnectionsEnv), and the transaction the '
           'migration needs is atomic only at a pool of one. Three '
           'consequences: (1) this station DID NOT migrate; (2) it will serve '
-          'empty or stale key mappings until a correctly-configured station '
+          'empty or stale $label until a correctly-configured station '
           'runs the migration, after which its reconcile converges it; and '
           '(3) every shared configuration write from this process is refused '
           'by the store\'s own pool guard. Set $kMaxPoolConnectionsEnv to 1 '
