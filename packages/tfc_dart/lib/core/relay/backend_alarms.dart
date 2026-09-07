@@ -230,6 +230,18 @@ final class _ActiveAlarm {
   /// whenever somebody next looked at a screen.
   AlarmStamp? clearedStamp;
 
+  /// Whether [clearedStamp] is a **reconstruction** rather than a measurement.
+  ///
+  /// True only on an entry adopted out of a `pending_ack` row at boot: this
+  /// process never watched that condition go false, and the instant it holds is
+  /// its own first post-restart evaluation — the best-known bound, not the
+  /// thing that happened. The close that eventually uses it therefore says
+  /// `inferred_restart` and not `acknowledged`, because a stop analysis has to
+  /// be able to tell a measured end from a reconstructed one (T-14-23). The
+  /// acknowledgement is still recorded, in `acknowledged_at`, which is the
+  /// column that means "somebody saw this".
+  bool clearedStampInferred = false;
+
   /// The `alarm_history` row this activation was opened as.
   ///
   /// Null until the INSERT comes back, and null forever when the engine was
@@ -746,6 +758,32 @@ final class AlarmEngine implements AlarmAcknowledger {
     }
 
     if (transition.active) {
+      // An entry being HELD for an acknowledgement whose condition has come
+      // back. Its `alarm_history` row is still open, so the INSERT below would
+      // meet the v7 partial unique index — SQLSTATE 23505 — which
+      // `_enqueueWrite` swallows by design (T-14-24). The consequence is
+      // silent and doubly wrong: the new stop gets no row at all, and the held
+      // row stays open forever with nothing left holding its id, growing an
+      // unbounded stop in the table a downtime report reads. So the completed
+      // stop is closed first, at the instant it really ended.
+      //
+      // Reachable with no restart at all — an intermittent acknowledgeRequired
+      // fault is an ordinary thing on a plant — and reachable more often now
+      // that the badge survives one (CR-02).
+      final held = _active[identity];
+      if (held != null && held.pendingAck && !held.acknowledged) {
+        _logger.i('alarm "${alarm.uid}" rule ${transition.ruleIndex} was being '
+            'held for an acknowledgement and its condition has come back. The '
+            'held activation is closed at the instant it cleared and this one '
+            'gets its own row; nobody acknowledged the first, and it is on the '
+            'banner again either way.');
+        _closeRow(
+            held,
+            held.clearedStamp ?? transition.stamp,
+            held.clearedStampInferred
+                ? AlarmHistoryWriter.reasonInferredRestart
+                : AlarmHistoryWriter.reasonCleared);
+      }
       final entry = _ActiveAlarm(
         alarm: alarm,
         rule: rule,
@@ -781,6 +819,14 @@ final class AlarmEngine implements AlarmAcknowledger {
             // closes the row at THIS instant, because this is when the stop
             // actually ended.
             existing.clearedStamp = transition.stamp;
+            // And remembered DURABLY (CR-02). Until this call the badge lived
+            // in this process's memory and nowhere else, so a restart — which
+            // happens on every alarm_man_config or key_mappings save — closed
+            // the row as `inferred_restart` and the fault never reached a
+            // banner. On the write chain like every other database operation,
+            // so a clear that arrives before its own INSERT returned still
+            // finds the id.
+            _markPendingAck(existing);
             changed = true;
           }
         } else {
@@ -833,7 +879,26 @@ final class AlarmEngine implements AlarmAcknowledger {
         expressionText: transition.expressionText,
         historyId: pending.id,
       );
-      adopted.pendingAck = pending.pendingAck;
+      // **`pendingAck` is deliberately NOT carried across here** (CR-02, and
+      // it is the trap the review named). The row may well say `pending_ack`
+      // — an `acknowledgeRequired` rule that cleared before the restart —
+      // but the condition is TRUE at this verdict, so this alarm is happening
+      // and is standing, not waiting to be seen. Adopting the flag would let
+      // `acknowledge()` take its `entry.pendingAck` branch and close the row
+      // at the receipt instant: a stop that is still running reported as
+      // having ended the moment an operator pressed a button, which is
+      // T-14-56 and the one invariant this file's doc says must never break.
+      //
+      // The unacknowledged fault the row records is not lost by this — the
+      // rule going false again badges the entry and writes the column again,
+      // through the ordinary path.
+      if (pending.pendingAck) {
+        _logger.i('alarm_history row #${pending.id} for "${alarm.uid}" rule '
+            '${transition.ruleIndex} was waiting to be acknowledged, but its '
+            'condition is true again at this backend\'s first evaluation. It '
+            'is adopted as STANDING: an alarm that is happening cannot be '
+            'closed by an acknowledgement.');
+      }
       // The acknowledgement survives the restart, because the column now
       // carries it. Without this an operator who silenced a standing alarm
       // before a backend restart would find it back on the banner afterwards,
@@ -852,6 +917,54 @@ final class AlarmEngine implements AlarmAcknowledger {
           'true, so the activation the previous process recorded is the same '
           'activation, and it keeps its onset of '
           '${pending.createdAt.toIso8601String()}.');
+    } else if (pending.pendingAck && pending.acknowledgedAt == null) {
+      // **The unacknowledged fault, adopted rather than erased** (CR-02).
+      //
+      // The row says an `acknowledgeRequired` rule had already gone false and
+      // nobody had seen it. Closing it here as `inferred_restart` — which is
+      // what this branch did for as long as the column was never written — is
+      // exactly the erasure: the fault reaches no banner, and the history says
+      // "reconstructed after a restart" rather than "an unacknowledged fault
+      // occurred". A rule with `acknowledgeRequired` exists for the fault that
+      // fires and clears between two glances at the screen, and this backend
+      // restarts on every `alarm_man_config` or `key_mappings` save.
+      //
+      // So it goes back into the held state, badged, and the row stays open
+      // until somebody acknowledges it.
+      //
+      // `clearedStamp` is THIS evaluation's — the best-known bound on when it
+      // really cleared, and the same instant the close above would have used —
+      // and it is flagged as a reconstruction so the eventual close says
+      // `inferred_restart` rather than claiming this engine measured the end.
+      //
+      // The `acknowledgedAt == null` half matters: a row that is both
+      // `pending_ack` and already acknowledged can only exist because the
+      // close after an acknowledgement did not land. Re-badging that would ask
+      // an operator to acknowledge something they already have, and would
+      // overwrite the instant they first saw it.
+      final held = _ActiveAlarm(
+        alarm: alarm,
+        rule: rule,
+        ruleIndex: transition.ruleIndex,
+        stamp: AlarmStamp(
+          at: pending.createdAt,
+          source: _tsSourceOf(pending),
+        ),
+        expressionText: transition.expressionText,
+        historyId: pending.id,
+      )
+        ..pendingAck = true
+        ..clearedStamp = transition.stamp
+        ..clearedStampInferred = true;
+      _active[identity] = held;
+      _logger.w('alarm_history row #${pending.id} for "${alarm.uid}" rule '
+          '${transition.ruleIndex} was left open by a previous process with an '
+          'acknowledgement outstanding, and its condition is no longer true. '
+          'It is back on the banner, badged, and its row stays open — a fault '
+          'nobody has seen is not a fault that stops having happened because '
+          'the backend restarted. Its end instant is this engine\'s first '
+          'evaluation, which is a bound and not a measurement, and the close '
+          'will say so.');
     } else {
       _logger.i('closing alarm_history row #${pending.id} for "${alarm.uid}" '
           'rule ${transition.ruleIndex} as '
@@ -1028,11 +1141,50 @@ final class AlarmEngine implements AlarmAcknowledger {
       // this. Now it can go, and its row closes at the instant the PLANT
       // cleared it — recorded when that happened, not read from a clock now.
       _active.remove(identity);
-      _closeRow(entry, entry.clearedStamp ?? receipt,
-          AlarmHistoryWriter.reasonAcknowledged);
+      // `acknowledged` says this engine WATCHED the clear and closed the row at
+      // the instant it measured. An entry adopted out of a `pending_ack` row at
+      // boot did not: this process never saw that condition go false, and its
+      // `clearedStamp` is its own first post-restart evaluation. Labelling that
+      // `acknowledged` would make a bound indistinguishable from a measurement
+      // in the one column a stop analysis is audited on (T-14-23) — so it says
+      // `inferred_restart`, and `acknowledged_at` carries the fact that
+      // somebody saw it.
+      _closeRow(
+          entry,
+          entry.clearedStamp ?? receipt,
+          entry.clearedStampInferred
+              ? AlarmHistoryWriter.reasonInferredRestart
+              : AlarmHistoryWriter.reasonAcknowledged);
     }
 
     _publishActive();
+  }
+
+  /// Badges [entry]'s open row as waiting to be acknowledged, leaving it open.
+  ///
+  /// On the write chain and reading `historyId` from *inside* the closure, for
+  /// [_closeRow]'s reason: the activation's INSERT may still be in flight when
+  /// the rule clears, and the chain is what makes the id present by the time
+  /// this runs.
+  void _markPendingAck(_ActiveAlarm entry) {
+    final history = _history;
+    if (history == null) return;
+    _enqueueWrite(
+      'pending_ack ${entry.alarm.uid} rule ${entry.ruleIndex}',
+      () async {
+        final id = entry.historyId;
+        if (id == null) {
+          _logger.w('alarm "${entry.alarm.uid}" rule ${entry.ruleIndex} '
+              'cleared with an acknowledgement outstanding, but no '
+              'alarm_history row was ever opened for it, so there is nothing '
+              'to badge. The activation insert failed earlier and was logged '
+              'then; a restart before somebody acknowledges will lose the '
+              'fault entirely.');
+          return;
+        }
+        await history.markPendingAck(id: id);
+      },
+    );
   }
 
   /// Stamps `acknowledged_at` on [entry]'s open row, leaving it open.

@@ -220,6 +220,29 @@ final class AlarmHistoryWriter {
      WHERE id = $2
   ''';
 
+  /// Records that an `acknowledgeRequired` rule cleared and nobody has seen it
+  /// yet, **without closing the row**.
+  ///
+  /// The mirror of [acknowledgeStatement], and it omits the same two columns
+  /// for a different reason: the condition HAS gone false, but the row is what
+  /// keeps the unacknowledged fault discoverable, and 14-14's design is that it
+  /// closes when the acknowledgement arrives, at the clearing instant.
+  ///
+  /// `pending_ack` was write-once-false until this statement existed
+  /// (14-REVIEW CR-02). The INSERT bound `Variable.withBool(false)` and no
+  /// UPDATE anywhere in this file mentioned the column, so the engine's
+  /// `existing.pendingAck = true` lived in memory and nowhere else — and this
+  /// backend restarts on every `alarm_man_config` or `key_mappings` save. A
+  /// fault that fired and cleared between two glances at the screen was
+  /// therefore closed as `inferred_restart` on the next restart and never
+  /// appeared on any banner: the whole `acknowledgeRequired` feature did not
+  /// survive one.
+  static const String pendingAckStatement = r'''
+    UPDATE alarm_history
+       SET pending_ack = TRUE
+     WHERE id = $1
+  ''';
+
   /// Closes one row by id.
   static const String closeStatement = r'''
     UPDATE alarm_history
@@ -322,6 +345,28 @@ final class AlarmHistoryWriter {
           '#$id was not there to stamp. The acknowledgement still took effect '
           'on the banner — the engine\'s set moved first and deliberately — '
           'but nothing durable records that anybody saw this alarm.');
+    }
+  }
+
+  /// Records on row [id] that its alarm is waiting to be acknowledged.
+  ///
+  /// See [pendingAckStatement]. A row that is not there any more is logged and
+  /// not raised, on [closeActivation]'s argument (T-14-24) — but the sentence
+  /// says what was lost, because what was lost is the durable half of "a fault
+  /// occurred and nobody has seen it".
+  Future<void> markPendingAck({required int id}) async {
+    final db = _require('markPendingAck');
+    final affected = await db.customUpdate(
+      pendingAckStatement,
+      variables: <Variable>[Variable.withInt(id)],
+      updates: {db.alarmHistory},
+    );
+    if (affected == 0) {
+      _logger.w('AlarmHistoryWriter.markPendingAck: alarm_history row #$id was '
+          'not there to badge. The alarm is still held on this process\'s '
+          'banner, but nothing durable records that a fault fired and cleared '
+          'unseen — so a restart before somebody acknowledges it will lose the '
+          'fault entirely.');
     }
   }
 
