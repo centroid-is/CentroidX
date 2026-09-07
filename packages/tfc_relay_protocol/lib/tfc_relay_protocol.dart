@@ -13,6 +13,7 @@ library;
 export 'src/methods.dart';
 export 'src/quality.dart';
 export 'src/sanitize.dart';
+export 'src/redact.dart';
 export 'src/json_equality.dart';
 export 'src/wire_value.dart';
 export 'src/dynamic_value.dart';
