@@ -48,8 +48,25 @@ const int kAuditSummaryLimitBytes = 1024;
 ///
 /// Phase 3 adds `page` and `asset` entries here and nothing else changes: the
 /// guarded surface is already item-shaped and kind-generic.
+///
+/// `asset` landed with milestone v1.2 plan 03-05, which moved the tech-doc
+/// cleanup onto the store; `page` has none yet, so a `checkKind: page` still
+/// throws — the page save (plan 03-06) is what adds it, and until then the
+/// throw is what stops a page write routing around the check.
+///
+/// **Both name `page_editor_data`, and that is deliberate.** An asset is not
+/// separately permissioned from the page it sits on: the policy answers
+/// `configure` for that key (`access_policy.dart`'s exact rule), the same
+/// answer it gave when the layout was one preference, so moving the layout
+/// onto rows changed nothing about who may edit it. It is also the `item_key`
+/// the trail already uses for a layout change, which is what lets a reader
+/// follow the plant's layout across the cutover in one query.
 const Map<ConfigKind, String> kConfigWriteKeys = <ConfigKind, String>{
   ConfigKind.keyMapping: codec.kKeyMappingsPrefKey,
+  // The literal, not a shared constant: the page codec that owns this key
+  // needs Flutter to parse a page and lives app-side, where this package
+  // cannot import from.
+  ConfigKind.asset: 'page_editor_data',
 };
 
 /// The example mapping a fresh plant is seeded with.

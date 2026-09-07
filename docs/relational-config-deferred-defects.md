@@ -140,6 +140,16 @@ anything ships.**
 
 ## D-4 — `deleteAndCleanAssets` has never removed a single `techDocId`
 
+**Fixed 2026-09-07 by milestone v1.2 plan 03-05**, as an explicit behaviour
+change rather than a port: the cleanup now strips `techDocId` from the
+**shared** asset rows through `GuardedConfigStore`, the fixture is built from
+real `AssetPage`/`Asset` objects with an assets-is-List pin, and the
+`PrefsReader` plumbing (with the `GuardedPrefsReader` that wrapped it) is
+deleted. The account below is kept as written — it is what the fix was decided
+against, and the A4 check it implies (`grep -c techDocId` on a fresh production
+dump) is still worth running when one arrives, because a delete now reaches the
+plant-wide layout where before it reached nothing.
+
 **Verified 2026-09-07.** `lib/tech_docs/tech_doc_upload_service.dart:253`:
 
 ```dart

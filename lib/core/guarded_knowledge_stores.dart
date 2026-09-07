@@ -62,7 +62,6 @@ import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_mcp_server/tfc_mcp_server.dart';
 
-import '../tech_docs/tech_doc_upload_service.dart' show PrefsReader;
 
 /// The `who` recorded when nobody is signed in.
 const String _anonymousWho = 'anonymous';
@@ -612,51 +611,30 @@ class GuardedDrawingIndex extends _KnowledgeGuard implements DrawingIndex {
 // The page-layout cleanup a document delete runs
 // ---------------------------------------------------------------------------
 
-/// [PrefsReader] with `setString` gated on [kKnowledgeWriteGroup] and recorded.
-///
-/// `TechDocUploadService.deleteAndCleanAssets` reads `page_editor_data`, strips
-/// `techDocId` from every asset that referenced the document being deleted, and
-/// writes it back. That is a page-editor key written from the document library,
-/// and before this it was written by whoever was standing at the panel.
-///
-/// **The guard sits at the reader, not at the store.** The reader
-/// `tech_doc_library_section.dart` hands in is backed by
-/// `createDeviceLocalPreferences()`, so the key it rewrites is the
-/// **device-local** `page_editor_data` — not the shared config row
-/// `pageManagerProvider` reads, which is the layout the plant actually sees.
-/// Two keys of one name in two stores, one of which nothing reads. That is a
-/// pre-existing oddity recorded in `.planning/phases/03-the-guards/
-/// 03-13-SUMMARY.md` and **deliberately not fixed here**: changing which store
-/// the cleanup writes would propagate a tech-doc delete into the plant-wide
-/// layout on every station, which is a wider blast radius than a guard change
-/// should take on unasked. Wrapping the reader leaves that question exactly
-/// where it was.
-class GuardedPrefsReader extends _KnowledgeGuard implements PrefsReader {
-  /// See [GuardedTechDocIndex] for why [session] is a callback.
-  GuardedPrefsReader({
-    required PrefsReader inner,
-    required super.session,
-    required super.audit,
-    required super.station,
-    super.onDenied,
-    super.logger,
-  }) : _inner = inner;
-
-  final PrefsReader _inner;
-
-  /// Reading the layout is not gated: the cleanup has to look before it can
-  /// know whether there is anything to write.
-  @override
-  Future<String?> getString(String key) => _inner.getString(key);
-
-  /// The `itemKey` is the preference key itself — `page_editor_data` — because
-  /// this row belongs beside the page editor's own rows in the trail, not under
-  /// a `tech_doc.` prefix. The `reason` is what says a document delete is what
-  /// caused it.
-  @override
-  Future<void> setString(String key, String value) => _guard(
-        itemKey: key,
-        reason: 'deleteAndCleanAssets',
-        write: () => _inner.setString(key, value),
-      );
-}
+// **There is no guard in this file for it any more, and that is the change.**
+//
+// `TechDocUploadService.deleteAndCleanAssets` used to read and write
+// `page_editor_data` through a `PrefsReader`, and this file wrapped that
+// reader so the write was checked and recorded. Two things were wrong with
+// that arrangement, and milestone v1.2 plan 03-05 fixed both:
+//
+// 1. The reader it wrapped was backed by `createDeviceLocalPreferences()`, so
+//    the key it rewrote was the **device-local** `page_editor_data` — not the
+//    shared layout the plant actually sees. The guard was real; the store
+//    under it was the wrong one.
+// 2. It never rewrote anything anyway. The cleanup tested
+//    `assets is! Map<String, dynamic>` while `AssetPage` serialises assets as
+//    a **List**, so every page was skipped (`relational-config-deferred-
+//    defects.md` D-4).
+//
+// The cleanup now strips `techDocId` through `GuardedConfigStore` instead:
+// one row and one `config_change` row per top-level asset that referenced the
+// document, one audit row under `page_editor_data` — the same `item_key` and
+// the same `configure` check this wrapper applied — and a CAS'd write that
+// fails rather than half-applies. The blast radius that was deliberately not
+// taken on in plan 03-13 is taken on here, on purpose and with the phase's
+// consent: a tech-doc delete now reaches the plant-wide layout, which is what
+// its name and its confirmation dialog have always claimed.
+//
+// Nothing wraps a `PrefsReader` here now because nothing hands one out: the
+// service takes the guarded store.

@@ -37,7 +37,7 @@ import 'package:tfc/core/config/page_codec.dart' show pageItems;
 import 'package:tfc/core/guarded_knowledge_stores.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/page_creator/assets/beckhoff.dart';
-import 'package:tfc/page_creator/assets/common.dart' show Asset, BaseAsset;
+import 'package:tfc/page_creator/assets/common.dart' show Asset;
 import 'package:tfc/page_creator/assets/led.dart';
 import 'package:tfc/page_creator/page.dart' show AssetPage;
 import 'package:tfc/providers/access.dart';
@@ -48,7 +48,6 @@ import 'package:tfc/providers/drawing.dart';
 import 'package:tfc/providers/plc.dart';
 import 'package:tfc/providers/server_database.dart';
 import 'package:tfc/providers/tech_doc.dart';
-import 'package:tfc/tech_docs/tech_doc_upload_service.dart';
 import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 const String _kStation = 'test-panel';

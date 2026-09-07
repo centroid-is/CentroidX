@@ -19,7 +19,6 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/guarded_knowledge_stores.dart';
-import 'package:tfc/tech_docs/tech_doc_upload_service.dart' show PrefsReader;
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_mcp_server/tfc_mcp_server.dart';
 
@@ -350,23 +349,6 @@ class _RecordingDrawings extends Fake implements DrawingIndex {
   }
 }
 
-/// The device-local preference store `deleteAndCleanAssets` reads and writes.
-class _RecordingPrefs implements PrefsReader {
-  final List<_Call> calls = [];
-  final Map<String, String> values = {};
-
-  @override
-  Future<String?> getString(String key) async {
-    calls.add((method: 'getString', args: [key]));
-    return values[key];
-  }
-
-  @override
-  Future<void> setString(String key, String value) async {
-    calls.add((method: 'setString', args: [key, value]));
-    values[key] = value;
-  }
-}
 
 class _RecordingSink implements AuditSink {
   final List<AuditRecord> rows = [];
@@ -412,7 +394,6 @@ void main() {
   late _RecordingTechDocs techDocs;
   late _RecordingPlcCode plcCode;
   late _RecordingDrawings drawings;
-  late _RecordingPrefs prefs;
   late _RecordingSink audit;
   late List<AccessDenied> denials;
   late AccessSession session;
@@ -441,19 +422,11 @@ void main() {
         onDenied: denials.add,
       );
 
-  GuardedPrefsReader prefsGuard({AuditSink? sink}) => GuardedPrefsReader(
-        inner: prefs,
-        session: () => session,
-        audit: sink ?? audit,
-        station: 'SVN-NES-OT-CL02',
-        onDenied: denials.add,
-      );
 
   setUp(() {
     techDocs = _RecordingTechDocs();
     plcCode = _RecordingPlcCode();
     drawings = _RecordingDrawings();
-    prefs = _RecordingPrefs();
     audit = _RecordingSink();
     denials = [];
     session = _anonymous;
@@ -798,58 +771,15 @@ void main() {
   // -------------------------------------------------------------------------
   // The page-layout cleanup a document delete runs
   // -------------------------------------------------------------------------
-
-  group('GuardedPrefsReader', () {
-    test('refuses setString for an anonymous session and records the refusal',
-        () async {
-      final guard = prefsGuard();
-
-      await expectLater(
-        guard.setString('page_editor_data', '{}'),
-        throwsA(isA<AccessDenied>()
-            .having((d) => d.itemKey, 'itemKey', 'page_editor_data')
-            .having((d) => d.required, 'required', AccessGroup.configure)),
-      );
-
-      expect(prefs.calls, isEmpty,
-          reason: 'the page layout must not be rewritten from the panel');
-      expect(audit.rows.single.allowed, isFalse);
-      expect(denials, hasLength(1));
-    });
-
-    test('permits setString for a configure session and records one row',
-        () async {
-      session = _engineer;
-
-      await prefsGuard().setString('page_editor_data', '{"a":1}');
-
-      expect(prefs.calls.single.method, 'setString');
-      expect(prefs.calls.single.args, ['page_editor_data', '{"a":1}']);
-      expect(prefs.values['page_editor_data'], '{"a":1}');
-      expect(audit.rows.single.allowed, isTrue);
-      expect(audit.rows.single.itemKey, 'page_editor_data');
-    });
-
-    test('getString passes straight through, ungated and unaudited', () async {
-      prefs.values['page_editor_data'] = '{"a":1}';
-
-      final raw = await prefsGuard().getString('page_editor_data');
-
-      expect(raw, '{"a":1}');
-      expect(prefs.calls.single.method, 'getString');
-      expect(audit.rows, isEmpty);
-    });
-
-    test('writes to exactly the reader it wraps — the guard adds no store',
-        () async {
-      session = _engineer;
-
-      await prefsGuard().setString('page_editor_data', '{"a":1}');
-
-      expect(prefs.values, {'page_editor_data': '{"a":1}'},
-          reason: 'the device-local-versus-shared question is untouched here');
-    });
-  });
+  //
+  // Nothing here any more. `GuardedPrefsReader` wrapped the device-local
+  // `page_editor_data` that `deleteAndCleanAssets` rewrote, and milestone v1.2
+  // plan 03-05 moved that cleanup onto the shared configuration store — where
+  // `GuardedConfigStore` is the guard and the check is the same
+  // `page_editor_data` key. The behaviour these tests pinned now lives in
+  // `test/providers/knowledge_guard_wiring_test.dart`, against a layout built
+  // from real `AssetPage` objects rather than the map-shaped fixture that let
+  // D-4 through.
 
   // -------------------------------------------------------------------------
   // Reads
@@ -988,7 +918,6 @@ void main() {
       await techDocGuard().deleteDocument(3);
       await plcGuard().deleteAssetIndex('CN01');
       await drawingGuard().deleteDrawing('Panel-A Main Wiring');
-      await prefsGuard().setString('page_editor_data', '{}');
 
       expect(audit.rows.map((r) => r.surface).toSet(),
           {AccessSurface.pref.wireName});
@@ -1080,16 +1009,6 @@ void main() {
           reason: 'the refused delete never reached the index');
     });
 
-    test('does not stop a refused prefs write from being a refusal', () async {
-      final sink = _ThrowingSink();
-
-      await expectLater(
-        prefsGuard(sink: sink).setString('page_editor_data', '{}'),
-        throwsA(isA<AccessDenied>()),
-      );
-      expect(denials, hasLength(1));
-      expect(prefs.calls, isEmpty);
-    });
   });
 
   // -------------------------------------------------------------------------

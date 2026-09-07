@@ -184,7 +184,6 @@ re-runs the sweep and reconciles them.
 | `lib/providers/preferences.dart` — the factory | `createDeviceLocalPreferences()`, which since milestone v1.2 plan 01-05 **constructs nothing**: it returns the one `SqlitePreferences` that `initDeviceLocalPreferences()` opened before `runApp`, and throws a `StateError` when that has not run | device-local | the two preference providers, and every site below that has no `ref` | `correct as-is` — the one place that is meant to construct the store, and after 03-11 the only one. The file no longer imports `shared_preferences` and no longer produces a hit in *this* section at all; it keeps its row here because this is where the sanctioned site is recorded, and it now appears in the sweep under 2.3, holding the `AppDatabase` |
 | `lib/providers/collector.dart:21` | `final prefs = SharedPreferencesAsync()` | device-local | `collectorProvider`, at boot | `enforced by 03-09` — spec §6 bypass 2; gone from the tree, and the check would refuse its return |
 | `lib/core/update_channel.dart:29, 41` | `prefs ?? createDeviceLocalPreferences()` | device-local | `readUpdateChannel` / `writeUpdateChannel`, called as tear-offs from `centroid-hmi/lib/main.dart:337, 372` and `lib/widgets/preferences.dart:79-80` | `enforced by 03-11` — the parameter is a `PreferencesApi` now, so the tear-off form is unchanged |
-| `lib/tech_docs/tech_doc_library_section.dart:1197` | field on `_SharedPrefsReader`, from the factory | device-local | the Knowledge Base page's delete-document flow | `enforced by 03-11` |
 | `lib/pages/page_view.dart:259` | `late final PreferencesApi prefs = ref.read(localPreferencesProvider)` | device-local | every asset page, on mount | `enforced by 03-11` — a `ref` exists, so it reads the provider rather than the factory |
 | `lib/widgets/preferences.dart:556` | field on `_DatabaseConfigEditorState` | device-local | nothing — `grep -n sharedPreferences lib/widgets/preferences.dart` returned this line and no other | `enforced by 03-11` — **deleted**, not rerouted; confirmed unreferenced first |
 | `lib/widgets/preferences.dart:822` | `ref.read(localPreferencesProvider)` in `_loadData` | device-local | the preferences page, read path (`localPrefs.getAll()`) | `route-gated (Phase 2)` — `/advanced/preferences` is `administer`; the construction is `enforced by 03-11` |
@@ -264,8 +263,7 @@ in §5.
 | `lib/providers/access.dart:694` | `local.setString(kAccessSessionPrefKey, ...)` | device-local preferences | every `poke()`, i.e. every pointer-down | `guarded by 03-06` |
 | `lib/providers/chat.dart:340, 370, 405, 449, 453, 494, 505, 525, 529, 532, 535, 538, 548, 558, 905` | `prefs.setString/remove(chat.*)` | preferences | chat conversation management | `guarded by 03-06` |
 | `lib/providers/theme.dart:23, 52` | `prefs.setString(_key, ...)` | device-local, via `localPreferencesProvider` | theme and colour-scheme controls | `left open: device-local UI state` — see §3.6. Off the legacy API since v1.2 plan 01-06; still unguarded, because that provider is |
-| `lib/tech_docs/tech_doc_upload_service.dart:267` | `prefsReader.setString('page_editor_data', ...)` | preferences | deleting a tech doc on the ungated Knowledge Base page | construction `enforced by 03-11` — the store it writes through comes from the factory at `tech_doc_library_section.dart:1197`; see also §3.1 |
-| `lib/tech_docs/tech_doc_library_section.dart:1206` | `_prefs.setString(key, value)` | device-local | the `PrefsReader` adapter the row above uses | construction `enforced by 03-11` |
+| `lib/tech_docs/tech_doc_upload_service.dart` | **gone from this section** — the cleanup no longer writes a preference at all | — | — | milestone v1.2 plan 03-05 moved it to the shared configuration store; its row is in §2.11, and the `PrefsReader` adapter it wrote through (`tech_doc_library_section.dart`, the `_SharedPrefsReader` field and its `setString`) is deleted along with the `GuardedPrefsReader` that wrapped it |
 | `lib/pages/key_repository.dart:882, 2417` | `store.saveKeyMappings(...)` | **shared configuration store** | `/advanced/key-repository` — Save, and the JSON import | `guarded by 02-06` — `GuardedConfigStore`, and `route-gated (Phase 2)` besides. One `config_change` row per key that moved, one bounded `audit_entry` over the lot, on one `action_id` |
 | `lib/pages/page_view.dart:270` | `prefs.setString('asset_stack_config', ...)` | device-local | every asset page, on the read path when the key is absent | construction `enforced by 03-11` — the store now comes from `localPreferencesProvider`; the write is unchanged and still once per mount |
 | `lib/pages/dbus_login.dart:127-131` | `prefs.setString/setBool(...)` | device-local, via `localPreferencesProvider` | the D-Bus login form | `left open: station credentials, §2's reasoning survives the move` — see §3.7. Off the legacy API since v1.2 plan 01-06 |
@@ -284,7 +282,6 @@ in §5.
 | `lib/providers/alarm.dart:28` | `systemPrefs.setString('alarm_man_config', ...)` | preferences | `alarmManProvider` at boot, writing the empty default | `guarded by 03-06` — routed through `systemWrites`, and one of the seven sites `kSystemWriteCallSites` names. New since the 2026-08-29 run |
 | `packages/tfc_dart/lib/core/access/guarded_preferences.dart:335, 348, 361, 373, 385` | the five checked `set*` members, each delegating to `_inner.set*` | preferences | every caller of `preferencesProvider` | `correct as-is` — this **is** the guard; the check and the row happen above the delegation |
 | `packages/tfc_dart/lib/core/access/guarded_preferences.dart:532, 545, 558, 570, 582` | the same five members on `systemWrites`, with the session check skipped | preferences | the boot defaults of §3.9 | `left open: the deliberately unchecked write path` — §2.10 and §3.9 price it; this row is the file and line it lives at |
-| `lib/core/guarded_knowledge_stores.dart:660` | `GuardedPrefsReader.setString` delegating to `_inner.setString(key, value)` | device-local | the Knowledge Base page's delete-document cleanup | `guarded by 03-13` — `configure` plus one audit row. The store it writes through is unchanged and is the device-local one; see this phase's `deferred-items.md` §4 |
 | `packages/tfc_dart/lib/core/state_man.dart:442` | `prefs.setString(configKey, ..., secret: true, saveToDb: false)` | secure store | `StateManConfig.fromPrefs` at boot when the key is absent | `guarded by 03-06` — routed through `systemWrites` |
 | `packages/tfc_dart/lib/core/state_man.dart:450` | `prefs.setString(configKey, ...)` | secure store | `StateManConfig.toPrefs`, behind a control | `guarded by 03-06` |
 | `packages/tfc_dart/lib/core/state_man.dart:626` | `prefs.setString('key_mappings', ...)` | preferences | key-mapping save | `guarded by 03-06` |
@@ -330,6 +327,7 @@ its `state_man_config` rows.
 | Site | Call | Store | Reached from | Verdict |
 |---|---|---|---|---|
 | the four sites above | `saveKeyMappings`, `writeKeyMappings`, `seedDefaultIfEmpty` | shared configuration store | the key repository, the page editor's key field, and the boot seed | enumerated individually in §2.9's table — this section is the pattern that finds them, not a second set of rows |
+| `lib/tech_docs/tech_doc_upload_service.dart` | `configStore.save(wanted, kind: ConfigKind.asset, …)` | shared configuration store | deleting a technical document on the Knowledge Base page | `guarded by 03-05` — `GuardedConfigStore`, checked and recorded under the `page_editor_data` key exactly as the preference write it replaces was. **A behaviour change, not a move**: the old code tested `assets is! Map` against a list and wrote the device-local copy, so it stripped nothing, ever (D-4). The route is still ungated — see §3.1 — so `configure` at the guard is what stands between an operator and the plant's layout |
 
 ---
 
@@ -359,9 +357,15 @@ methods are called from app code:
 was deliberately **not** in `kRaisedRoutes`, and `lib/access_routes.dart` named
 it among the pages that "read rather than configure". It does not only read: an
 anonymous session at the panel could delete a technical document, delete a PLC
-asset's index, and — through `tech_doc_upload_service.dart:267` — rewrite
+asset's index, and — through `tech_doc_upload_service.dart`'s cleanup — rewrite
 `page_editor_data`. That is the claim plan 03-14 acted on; the route is raised
-now and both spellings of the sentence are gone from the source.
+now and both spellings of the sentence are gone from the source. Milestone v1.2
+plan 03-05 made that third claim *true*: the cleanup used to write the
+device-local copy of `page_editor_data` and, because it tested `assets is! Map`
+against a list, wrote nothing at all. It now rewrites the shared asset rows
+through `GuardedConfigStore` — so the raised route and the `configure` check
+are what stand between an operator and the plant's layout, and both are in
+place before the write can happen.
 
 **Why this is the same defect as the history view.** A destructive control on a
 page that should stay readable. §6's fourth bypass was exactly that, on
@@ -865,7 +869,7 @@ in both directions. Seven files carried hits with no row:
 | `packages/tfc_dart/lib/core/preferences_watch.dart` | 3 | already covered in 2.3, but named by bare filename; now a full path |
 | `packages/tfc_dart/lib/core/secure_storage/interface.dart` | 1 | same — 2.6 named it by bare filename |
 | `lib/providers/alarm.dart` | 1 | plan 03-06's seventh system-write site — new |
-| `lib/core/guarded_knowledge_stores.dart` | 1 | plan 03-13's guard — new |
+| the knowledge guards' page-layout reader | 1 | plan 03-13's guard — new at that run. **Gone since**: milestone v1.2 plan 03-05 moved the delete-document cleanup onto the shared configuration store, so `guarded_knowledge_stores.dart` writes no preference and `GuardedPrefsReader` is deleted. The file's row is retired rather than kept stale — a row the script cannot find fails the reconciliation in the reverse direction |
 
 In the reverse direction **one** row had no hit —
 `packages/tfc_dart/lib/core/database_drift.g.dart`, which the script collapses
@@ -920,8 +924,7 @@ from one behind a Save button.
 | `providers/chat.dart:453, 494, 505, 535, 538` | `kChatHistory` | `chat.history` | prefix `chat.` | `operate` | behind a control, plus a one-time migration |
 | `providers/theme.dart:23` | `_key` (`ThemeModeNotifier`) | `theme_mode` | exact `theme_mode` | `operate` | behind a control — device-local store since v1.2 plan 01-06; **still never reaches the guard**, §3.6 |
 | `providers/theme.dart:52` | `_key` (`ColorSchemeNotifier`) | `color_scheme` | exact `color_scheme` | `operate` | behind a control — same |
-| `tech_doc_upload_service.dart:267` | `'page_editor_data'` | `page_editor_data` | exact `page_editor_data` | `configure` | **delete-path** — rewritten when a tech doc is deleted, from an ungated route (§3.1) |
-| `tech_doc_library_section.dart:1203` | `key` (a `PrefsReader` parameter) | `page_editor_data` — the adapter's only caller is the row above | exact `page_editor_data` | `configure` | same |
+| `tech_doc_upload_service.dart` (the cleanup) | `kConfigWriteKeys[ConfigKind.asset]` | `page_editor_data` | exact `page_editor_data` | `configure` | **delete-path** — the asset rows are rewritten when a tech doc is deleted. Since v1.2 plan 03-05 the key is the guard's `item_key` rather than a preference key: the layout is rows now, and this is the string that keeps one query over the trail spanning the cutover. The `PrefsReader` adapter that used to carry it is deleted |
 | `key_repository.dart:882, 2417` | `kConfigWriteKeys[ConfigKind.keyMapping]` | `key_mappings` | exact `key_mappings` | `configure` | behind a control, on a `configure`-gated route — through the configuration store since 02-06 |
 | `page_view.dart:264` | `'asset_stack_config'` | `asset_stack_config` | exact `asset_stack_config` | `operate` | **read-path** — written when the key is absent, on mount of any asset page |
 | `dbus_login.dart:127-131` | five literals | `connectionType`, `host`, `username`, `autoLogin`, `sshPrivateKeyPath` | five exact rules | `administer` | behind a control — device-local store since v1.2 plan 01-06; **still never reaches the guard**, §3.7 |

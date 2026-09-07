@@ -10,25 +10,20 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessDenied;
-import 'package:tfc_dart/core/preferences.dart' show PreferencesApi;
 import 'package:tfc_dart/core/fuzzy_match.dart';
+import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:tfc_mcp_server/tfc_mcp_server.dart'
     show TechDocIndex, TechDocSummary, PlcAssetSummary;
 
 import '../chat/ai_context_action.dart';
 import '../core/feature_flags.dart';
 import '../core/guarded_knowledge_stores.dart'
-    show GuardedPrefsReader, PlcCodeIndexExtras, kKnowledgeWriteGroup;
+    show PlcCodeIndexExtras, kKnowledgeWriteGroup;
 import '../plc/plc_code_upload_dialog.dart';
 import '../plc/plc_detail_panel.dart';
-import '../providers/access.dart'
-    show accessSessionProvider, stationNameProvider;
-import '../providers/access_policy.dart'
-    show RefAuditSink, reportAccessDenial, sessionInForce;
+import '../providers/access.dart' show accessSessionProvider;
+import '../providers/config_store.dart' show configStoreProvider;
 import '../providers/plc.dart';
-// The adapter below has no `ref`, so it calls the factory. Importing the
-// provider file is what keeps it inside spec §6's one-construction-site rule.
-import '../providers/preferences.dart' show createDeviceLocalPreferences;
 import '../providers/scaffold_messenger_key.dart';
 import '../providers/tech_doc.dart';
 import 'tech_doc_audit.dart';
@@ -827,9 +822,10 @@ class _TechDocLibrarySectionState extends ConsumerState<TechDocLibrarySection> {
       return;
     }
 
-    // The device-local reader, behind the knowledge-base guard: the cleanup
-    // rewrites `page_editor_data`, which asks for `configure`.
-    final prefsReader = ref.read(guardedPageLayoutPrefsProvider);
+    // The guarded configuration store: the cleanup strips `techDocId` from
+    // the shared layout rows, which asks for `configure` on
+    // `page_editor_data` exactly as the preference write it replaced did.
+    final configStore = await ref.read(configStoreProvider.future);
 
     // Evict from local PDF cache.
     ref.read(pdfBytesCacheProvider).remove(doc.id);
@@ -853,7 +849,7 @@ class _TechDocLibrarySectionState extends ConsumerState<TechDocLibrarySection> {
         docName: doc.name,
         operation: () => service.deleteAndCleanAssets(
           docId: doc.id,
-          prefsReader: prefsReader,
+          configStore: configStore,
         ),
         logger: _logger,
       );
@@ -862,12 +858,19 @@ class _TechDocLibrarySectionState extends ConsumerState<TechDocLibrarySection> {
       // it back, or the document stays invisible until the page is rebuilt.
       // The guard has already published the refusal, so `AccessDeniedPrompt`
       // is what says why — a snackbar here would be a second message.
-      if (mounted) {
-        ref.read(pendingDeleteIdsProvider.notifier).state = ref
-            .read(pendingDeleteIdsProvider)
-            .where((id) => id != doc.id)
-            .toList();
-      }
+      _unhide(doc.id);
+      return;
+    } on ConfigStoreOfflineException {
+      _unhide(doc.id);
+      _sayCleanupFailed(context, 'the shared database is unreachable');
+      return;
+    } on ConfigStoreUnsafePoolException {
+      _unhide(doc.id);
+      _sayCleanupFailed(context, 'the shared database pool is wider than one');
+      return;
+    } on ConfigConflict {
+      _unhide(doc.id);
+      _sayCleanupFailed(context, 'another station changed the layout first');
       return;
     }
 
@@ -891,6 +894,30 @@ class _TechDocLibrarySectionState extends ConsumerState<TechDocLibrarySection> {
           .where((id) => id != doc.id)
           .toList();
     }
+  }
+
+  /// Puts an optimistically hidden row back.
+  void _unhide(int docId) {
+    if (!mounted) return;
+    ref.read(pendingDeleteIdsProvider.notifier).state = ref
+        .read(pendingDeleteIdsProvider)
+        .where((id) => id != docId)
+        .toList();
+  }
+
+  /// The three arms the layout write can fail on, said out loud.
+  ///
+  /// Nothing was deleted — the cleanup runs before the document does, so a
+  /// failed layout write leaves both the document and its links intact. That
+  /// has to be visible: a silent failure here reads as a delete that worked.
+  void _sayCleanupFailed(BuildContext context, String because) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Delete cancelled — the linked assets could not be '
+            'unlinked because $because.'),
+      ),
+    );
   }
 
   Future<String?> _showNameDialog(String defaultName) async {
@@ -1283,46 +1310,3 @@ Then provide a summary of what this PLC code controls and how it is structured.'
   }
 }
 
-/// The raw device-local reader `deleteAndCleanAssets` writes through.
-///
-/// A provider rather than a bare constructor call so that tests can substitute
-/// an in-memory store and observe what the guard above it did or did not write.
-/// Nothing else should read this: the page reads
-/// [guardedPageLayoutPrefsProvider].
-final pageLayoutPrefsProvider = Provider<PrefsReader>((ref) =>
-    _SharedPrefsReader());
-
-/// [pageLayoutPrefsProvider] behind the knowledge-base guard.
-///
-/// `deleteAndCleanAssets` rewrites `page_editor_data` when a technical document
-/// is deleted, and before plan 03-13 it did so for whoever was standing at the
-/// panel. `GuardedPrefsReader` checks `configure` on `setString` and records a
-/// row; `getString` passes through.
-///
-/// Declared here rather than assembled on the widget state because
-/// `sessionInForce`, `RefAuditSink` and `reportAccessDenial` all need a
-/// provider `Ref`, and a `ConsumerState`'s `ref` is a `WidgetRef` — the same
-/// reason plan 03-10 put `historyViewStoreProvider` in `history_view.dart`.
-final guardedPageLayoutPrefsProvider = Provider<PrefsReader>((ref) =>
-    GuardedPrefsReader(
-      inner: ref.watch(pageLayoutPrefsProvider),
-      session: () => sessionInForce(ref),
-      audit: RefAuditSink(ref),
-      station: ref.read(stationNameProvider),
-      onDenied: (denial) => reportAccessDenial(ref, denial),
-    ));
-
-/// Adapter from SharedPreferences to [PrefsReader] for deleteAndCleanAssets.
-class _SharedPrefsReader implements PrefsReader {
-  final PreferencesApi _prefs = createDeviceLocalPreferences();
-
-  @override
-  Future<String?> getString(String key) async {
-    return _prefs.getString(key);
-  }
-
-  @override
-  Future<void> setString(String key, String value) async {
-    await _prefs.setString(key, value);
-  }
-}
