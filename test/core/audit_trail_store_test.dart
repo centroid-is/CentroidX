@@ -996,10 +996,25 @@ void main() {
     late String source;
 
     setUpAll(() {
-      final file = File('lib/core/audit_trail_store.dart');
+      // Re-pathed by 17-02: the store moved into `tfc_dart` so the backend
+      // serves the same class the panel calls. Left pointing at
+      // `lib/core/audit_trail_store.dart` these assertions would all still
+      // pass — against fourteen lines of `export`, which contain no `into(`,
+      // no `AuditSink` and no `customSelect` for the same reason an empty file
+      // does not. That is the most vacuous shape a source-text assertion has,
+      // and this move is exactly the change that would have created it.
+      final file =
+          File('packages/tfc_dart/lib/core/access/audit_trail_store.dart');
       expect(file.existsSync(), isTrue,
           reason: 'run this suite from the repository root. Without the file '
               'these source assertions would pass vacuously.');
+      // The anti-vacuity half, and the half the re-path made necessary:
+      // existing is not enough when a fourteen-line stand-in exists at the
+      // path this used to name. The store was 664 lines when it moved.
+      expect(file.readAsLinesSync().length, greaterThan(400),
+          reason: 'this must be the store, not the export file left behind at '
+              'the old path. Every assertion below is an absence, and an '
+              'absence is satisfied by a file with nothing in it.');
       final withoutBlockComments = file
           .readAsStringSync()
           .replaceAll(RegExp(r'/\*.*?\*/', dotAll: true), '');
