@@ -539,6 +539,17 @@ class Preferences implements PreferencesApi {
     final result = await db.select(db.flutterPreferences).get();
     for (final row in result) {
       final key = row.key;
+      // C-5, v1.2 phase 2 plan 06. `key_mappings` lives in `config_item` rows
+      // now, one per key, read through `ConfigStore`. The blob row stays in
+      // `flutter_preferences` as rollback insurance until Phase 4 — but it is
+      // NOT loaded, because loading it would recreate the second copy the
+      // re-home deleted: `syncToLocalCache` would then write that copy back
+      // down into every station's mirror, and the two would drift apart with
+      // nothing to say which one the plant is running on. Skipping only
+      // `syncToLocalCache` is not enough; the blob has to leave the memory
+      // cache so `getString('key_mappings')` answers null and a missed call
+      // site fails loudly instead of quietly serving a stale plant.
+      if (key == 'key_mappings') continue;
       final value = row.value;
       final type = row.type;
       switch (type) {

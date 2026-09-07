@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:tfc_dart/core/config/key_mapping_codec.dart' show keyMappingsOf;
+import 'package:tfc_dart/core/config/key_mapping_codec.dart'
+    show keyMappingItemsFromBlob, keyMappingsOf;
 import 'package:tfc_dart/core/config/key_mapping_rows.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/preferences.dart';
@@ -51,7 +52,18 @@ void main() async {
     logger.w('No config_item key_mapping rows found; falling back to the '
         'flutter_preferences.key_mappings blob. After the cutover this line '
         'means the blob → rows migration has not run.');
-    keyMappings = await KeyMappings.fromPrefs(prefs, createDefault: false);
+    // The row, not `prefs.getString`: plan 02-06 stopped `loadFromPostgres`
+    // loading this key, so the preference cache answers null for it however
+    // full the row is. `KeyMappings.fromPrefs` is deleted for the same reason —
+    // it would have found that null and written its two-key example back.
+    final blob = await readSharedKeyMappingBlob(db.db);
+    if (blob == null) {
+      throw StateError(
+          'No config_item key_mapping rows and no flutter_preferences.'
+          'key_mappings blob: this backend is pointed at a database that holds '
+          'no plant wiring at all.');
+    }
+    keyMappings = keyMappingsOf(keyMappingItemsFromBlob(blob));
   }
 
   // Disable SSL for alarm StateMan to test if the issue is specific to

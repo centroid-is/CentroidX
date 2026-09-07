@@ -60,6 +60,7 @@ List<String> _mainLinesWithoutComments() {
 }
 
 void main() {
+  _blobTests();
   group('readSharedKeyMappingItems', () {
     test('returns the shared key_mapping rows, ordered by id', () async {
       final db = AppDatabase.inMemoryForTest();
@@ -218,8 +219,13 @@ void main() {
 
       final rowsRead =
           lines.indexWhere((l) => l.contains('readSharedKeyMappingItems'));
+      // `readSharedKeyMappingBlob`, not `KeyMappings.fromPrefs`: plan 02-06
+      // deleted that constructor (it would have written its two-key example
+      // back over a live plant) and stopped `loadFromPostgres` loading the
+      // key, so the fallback has to read the row itself. The fallback stays;
+      // only the spelling of it moved.
       final blobRead =
-          lines.indexWhere((l) => l.contains('KeyMappings.fromPrefs'));
+          lines.indexWhere((l) => l.contains('readSharedKeyMappingBlob'));
 
       expect(rowsRead, isNonNegative,
           reason: 'the backend must boot its mappings from config_item rows');
@@ -276,6 +282,52 @@ void main() {
       expect('restartTimer = Timer('.allMatches(source), hasLength(1),
           reason: 'one place arms it — every path calls the same closure, so '
               'a burst arriving through two of them is still one restart');
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The blob, after plan 02-06 stopped loading it
+// ---------------------------------------------------------------------------
+
+/// The blob row, written the way `flutter_preferences` holds it.
+Future<void> _writeBlob(AppDatabase db, String? value) =>
+    db.into(db.flutterPreferences).insert(FlutterPreferencesCompanion.insert(
+          key: 'key_mappings',
+          value: Value(value),
+          type: 'String',
+        ));
+
+void _blobTests() {
+  group('readSharedKeyMappingBlob', () {
+    late AppDatabase db;
+
+    setUp(() {
+      driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+      db = AppDatabase.inMemoryForTest();
+    });
+    tearDown(() => db.close());
+
+    test('answers the row the preference cache no longer holds', () async {
+      final blob = jsonEncode({
+        'nodes': {
+          'CN04.Belt.Speed': {
+            'opcua_node': {'namespace': 2, 'identifier': 'Speed'},
+          },
+        },
+      });
+      await _writeBlob(db, blob);
+
+      expect(await readSharedKeyMappingBlob(db), blob);
+    });
+
+    test('answers null when there is no row', () async {
+      expect(await readSharedKeyMappingBlob(db), null);
+    });
+
+    test('answers null when the row holds null', () async {
+      await _writeBlob(db, null);
+      expect(await readSharedKeyMappingBlob(db), null);
     });
   });
 }

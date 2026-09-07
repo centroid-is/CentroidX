@@ -670,23 +670,12 @@ class KeyMappings {
     return KeyMappings(nodes: filtered);
   }
 
-  static Future<KeyMappings> fromPrefs(PreferencesApi prefs,
-      {bool createDefault = true}) async {
-    var keyMappingsJson = await prefs.getString('key_mappings');
-    if (keyMappingsJson == null) {
-      if (!createDefault) {
-        throw Exception(
-            'key_mappings not found in preferences and createDefault is false');
-      }
-      final defaultKeyMappings = KeyMappings(nodes: {
-        "exampleKey": KeyMappingEntry(
-            opcuaNode: OpcUANodeConfig(namespace: 42, identifier: "identifier"))
-      });
-      keyMappingsJson = jsonEncode(defaultKeyMappings.toJson());
-      await prefs.setString('key_mappings', keyMappingsJson);
-    }
-    return KeyMappings.fromJson(jsonDecode(keyMappingsJson));
-  }
+  // `fromPrefs` was here, and it is deleted rather than deprecated (v1.2 phase
+  // 2, plan 06). Left alive after the cutover it was a loaded gun: the blob it
+  // read is no longer loaded into the preference cache, so it would have found
+  // null, taken its `createDefault` branch, and written the two-key example
+  // mapping back over a fully wired plant. The shared configuration store —
+  // `ConfigStore.keyMappings`, one row per key — is the only read path.
 
   factory KeyMappings.fromJson(Map<String, dynamic> json) =>
       _$KeyMappingsFromJson(json);

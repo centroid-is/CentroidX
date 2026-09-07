@@ -26,8 +26,10 @@ library;
 import 'package:drift/drift.dart';
 import 'package:meta/meta.dart';
 
-import '../database_drift.dart' show $ConfigItemTableTable, ConfigItemRow;
+import '../database_drift.dart'
+    show $ConfigItemTableTable, $FlutterPreferencesTable, ConfigItemRow;
 import 'config_item.dart';
+import 'key_mapping_codec.dart' show kKeyMappingsPrefKey;
 
 /// The shared `key_mapping` rows, ordered by id.
 ///
@@ -127,6 +129,26 @@ class KeyMappingFingerprint {
 /// step with the two backends.
 $ConfigItemTableTable _configItems(GeneratedDatabase db) =>
     $ConfigItemTableTable(db);
+
+/// The legacy `flutter_preferences.key_mappings` blob, read **straight from the
+/// row**.
+///
+/// Not through `PreferencesApi.getString`. As of v1.2 phase 2 plan 06,
+/// `Preferences.loadFromPostgres` deliberately skips this key, so the memory
+/// cache answers null for it however full the row is — that is what stops the
+/// blob from being a second live copy of the plant's wiring. A process that
+/// still needs the blob as a boot fallback therefore has to read the row, and
+/// this is that read.
+///
+/// Null when the row is absent or holds null: the key has never been saved.
+Future<String?> readSharedKeyMappingBlob(GeneratedDatabase db) async {
+  final prefs = $FlutterPreferencesTable(db);
+  final row = await (db.select(prefs)
+        ..where((t) => t.key.equals(kKeyMappingsPrefKey))
+        ..limit(1))
+      .getSingleOrNull();
+  return row?.value;
+}
 
 /// One row as the value type the rest of the code uses.
 ///
