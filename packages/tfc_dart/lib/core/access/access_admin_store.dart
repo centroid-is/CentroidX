@@ -33,13 +33,13 @@ library;
 
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart';
-import 'package:tfc_dart/core/access/access_repository.dart';
+import 'access_repository.dart';
 // `AppUserData` only — the generated row type the users section renders. It is
 // a plain value class; naming it here does not put a Drift query in this file,
 // and the property being protected is that this file issues none. There is no
 // Drift import above and a test asserts there never is, by grepping this file
 // for the package name — which is why this comment does not spell it.
-import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
+import '../database_drift.dart' show AppUserData;
 
 /// The `who` recorded when nobody is signed in.
 const String _anonymousWho = 'anonymous';

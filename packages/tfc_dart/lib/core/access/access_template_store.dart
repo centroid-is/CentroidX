@@ -32,7 +32,7 @@ library;
 import 'package:drift/drift.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart';
-import 'package:tfc_dart/core/database_drift.dart';
+import '../database_drift.dart';
 
 /// The `who` recorded when nobody is signed in.
 const String _anonymousWho = 'anonymous';

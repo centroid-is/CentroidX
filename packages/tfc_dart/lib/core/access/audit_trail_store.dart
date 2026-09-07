@@ -33,7 +33,7 @@ library;
 import 'package:drift/drift.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart';
-import 'package:tfc_dart/core/database_drift.dart';
+import '../database_drift.dart';
 
 /// The permission the audit trail route requires.
 ///
