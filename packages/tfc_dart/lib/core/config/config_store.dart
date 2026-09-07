@@ -82,6 +82,7 @@ import 'key_mapping_codec.dart' as codec;
 // plant with no key mappings from one whose migration has not run. Spelling it
 // out here instead would be a second definition of the same row.
 import 'key_mapping_migration.dart' show kKeyMappingsMigratedMarkerId;
+import 'sort_keys.dart';
 
 part 'config_sync.dart';
 
@@ -530,7 +531,16 @@ class ConfigStore {
     }
 
     final stored = itemsOf(kinds);
-    final diff = diffConfigItems(stored: stored, wanted: wanted);
+    // Ordinals become stored keys here, and here only: after the refusals, so
+    // an offline save is still refused before any work, and immediately before
+    // the diff, so what the diff compares is what will be written. An item
+    // whose relative order did not change comes out of this holding the exact
+    // key the snapshot holds, which is what makes it invisible to the diff.
+    final keyed = assignSortKeys(wanted, {
+      for (final item in stored)
+        if (item.sortIndex != null) _snapshotKeyOf(item): item.sortIndex!,
+    });
+    final diff = diffConfigItems(stored: stored, wanted: keyed);
     // SC-1's other half. Save pressed twice is not a change, so it is not a
     // row, not a change entry, not an audit entry and not an event — the same
     // rule the local row writer applies at `sqlite_preferences.dart:399`.

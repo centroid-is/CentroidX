@@ -253,13 +253,27 @@ void main() {
       await store.open();
       await other.open();
 
-      await save(store, layout('/roe', ['/roe-a1', '/roe-a0', '/roe-a2']),
+      // Both hand over the **whole** map, which is what `PageManager` does and
+      // what replace-within-kinds requires: a save carrying one page would
+      // read as "every other page was deleted". Each station's copy of the
+      // page it is not editing is unchanged, so it produces no rows — which is
+      // exactly why the two saves do not collide.
+      final roe = ['/roe-a0', '/roe-a1', '/roe-a2'];
+      final ev = ['/eviscerator-a0', '/eviscerator-a1', '/eviscerator-a2'];
+      await save(
+          store,
+          [
+            ...layout('/roe', ['/roe-a1', '/roe-a0', '/roe-a2']),
+            ...layout('/eviscerator', ev),
+          ],
           actionId: 'action-a');
       await save(
           other,
-          layout('/eviscerator',
-              ['/eviscerator-a0', '/eviscerator-a1', '/eviscerator-a2'],
-              colours: {'/eviscerator-a1': 'green'}),
+          [
+            ...layout('/roe', roe),
+            ...layout('/eviscerator', ev,
+                colours: {'/eviscerator-a1': 'green'}),
+          ],
           actionId: 'action-b');
 
       expect(await changesOn(remote), hasLength(2),
