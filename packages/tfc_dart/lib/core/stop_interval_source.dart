@@ -75,12 +75,33 @@ class StopIntervalSource {
     // same instant and are two activations; it is nullable because a pre-v7
     // row states none, and two such rows for one alarm at one instant are
     // still one activation.
-    final seen = <(String, int?, DateTime)>{};
+    //
+    // **The instant is normalised to UTC milliseconds, and that is not
+    // cosmetic (CR-03).** A raw `DateTime` key put the double-count straight
+    // back, for two independent reasons:
+    //
+    //  * **Resolution.** The history half is drift-read out of the TEXT column
+    //    at MICROSECOND resolution, and the writer stored the full
+    //    `toIso8601String()`, so microseconds survive the `::timestamp` round
+    //    trip. The live half is
+    //    `DateTime.fromMillisecondsSinceEpoch(entry.activeAtMs)` — and
+    //    `activeAtMs` is `stamp.at.toUtc().millisecondsSinceEpoch`, so the
+    //    wire truncates by construction. An OPC UA `sourceTimestamp` is a
+    //    100 ns tick, so a plant instant of `12:00:00.123456Z` is the ordinary
+    //    case: it keys as `.123456` against `.123000` and one standing alarm
+    //    becomes two activations.
+    //  * **Mode.** `DateTime.==` compares the `isUtc` flag too, so a producer
+    //    that hands over a local-mode instant misses at ANY precision.
+    //
+    // Milliseconds because that is the coarsest representation on the wire;
+    // anything finer cannot match across the two halves, and anything coarser
+    // would start merging genuinely distinct stops.
+    final seen = <(String, int?, int)>{};
 
-    (String, int?, DateTime) keyOf(AlarmActive entry) => (
+    (String, int?, int) keyOf(AlarmActive entry) => (
           entry.alarm.config.uid,
           entry.notification.ruleIndex,
-          entry.notification.timestamp,
+          entry.notification.timestamp.toUtc().millisecondsSinceEpoch,
         );
 
     for (final entry in history) {
