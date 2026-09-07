@@ -238,8 +238,24 @@ final class FreshnessWatchdog {
   /// millisecond of it: the snapshots land one page at a time, each behind its
   /// own subscribe round trip, on precisely the multi-page slow link this
   /// client was designed for. 16-01 widened that window further, deliberately
-  /// and correctly, by giving snapshots a payload-scaled deadline instead of a
-  /// ping's.
+  /// and correctly, by giving snapshots their own deadline instead of a ping's
+  /// — a **flat** `ClientConfig.snapshotDeadline` of 15 s.
+  ///
+  /// Flat, and not the payload-scaled `base + perKey × keys.length` that
+  /// 16-01's own plan and CONTEXT specified. That was overruled at
+  /// implementation and ratified 2026-09-07, for the reason `a192c504` gives:
+  /// this is not the link-death detector and does not need to scale like one.
+  /// A socket that has gone silent is already torn down in three seconds by
+  /// the watchdog below, resyncing state included; 15 s bounds only the
+  /// narrower failure `deadline.dart` exists for — a peer answering everything
+  /// else while one request never settles. The cost is that a three-key page
+  /// waits as long as a fifteen-hundred-key page, which is a slower failure,
+  /// not a wrong one.
+  ///
+  /// This paragraph previously asserted the scaled form as fact and was wrong
+  /// about the shipped code for a day; it is written out in full here because
+  /// a comment that describes a design nobody built is how the next reader
+  /// gets misled.
   ///
   /// **The promise changed, not just the timing.** The badge used to mean "a
   /// frame arrived"; it now means "this view is showing data from the current

@@ -265,6 +265,20 @@ final class _PlantAddressSpace implements StateManApi {
   @override
   PreferencesApi get preferences => _plant.preferences;
 
+  // Delegated: the one thing this double changes is [keys]. Everything else
+  // is the plant's own answer, including the four access refusals.
+  @override
+  AccessTemplateApi get accessTemplates => _plant.accessTemplates;
+
+  @override
+  AccessAdminApi get accessAdmin => _plant.accessAdmin;
+
+  @override
+  AuditApi get audit => _plant.audit;
+
+  @override
+  BackendConfigApi get backendConfig => _plant.backendConfig;
+
   @override
   Future<void> dispose() => _plant.dispose();
 }
@@ -604,6 +618,22 @@ final class RelayServedFake
 
   @override
   PreferencesApi get preferences => _client.preferences;
+
+  // Forwarded to the client under test, like every other wire member on this
+  // class — so a case sees `RemoteStateMan`'s own refusal rather than one the
+  // harness minted, which is what keeps the harness from marking its own
+  // homework when 17-08 gives the client four proxies.
+  @override
+  AccessTemplateApi get accessTemplates => _client.accessTemplates;
+
+  @override
+  AccessAdminApi get accessAdmin => _client.accessAdmin;
+
+  @override
+  AuditApi get audit => _client.audit;
+
+  @override
+  BackendConfigApi get backendConfig => _client.backendConfig;
 
   /// Releases the whole fixture, not merely the client.
   ///

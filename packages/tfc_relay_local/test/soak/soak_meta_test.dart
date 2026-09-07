@@ -33,7 +33,6 @@ import 'dart:io';
 import 'package:test/test.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
-import 'package:tfc_relay_server/src/write_outcome_log.dart';
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 
 import '../support/soak/applied_write_ledger.dart';
@@ -784,17 +783,21 @@ void main() {
         () {
       // The measurement the deviation rests on, taken rather than asserted.
       // WriteOutcomeLog prunes on every record AND every read
-      // (write_outcome_log.dart:210-214, removeWhere against now() - ttl)
-      // against ServerConfig.writeOutcomeTtl, default 60 s
-      // (server_config.dart:337). After thirty-five minutes it holds at most
-      // the last minute, so "compared after the run" is a comparison of the
-      // last sixty seconds wearing the label of the whole soak.
+      // (tfc_relay_protocol/lib/src/write_outcome_log.dart:258-261,
+      // removeWhere against now() - ttl — the class moved there in 18-04 and
+      // this citation moved with it) against ServerConfig.writeOutcomeTtl,
+      // default 60 s (server_config.dart:337). After thirty-five minutes it
+      // holds at most the last minute, so "compared after the run" is a
+      // comparison of the last sixty seconds wearing the label of the whole
+      // soak.
       var wall = 1_700_000_000_000;
       final ttl = ServerConfig().writeOutcomeTtl;
       final gateway = WriteOutcomeLog(ttl: ttl, now: () => wall);
       final ledger = AppliedWriteLedger();
 
-      gateway.record('cmd-a', const WriteApplied('cmd-a', readback: 1500, at: 0));
+      gateway.record('cmd-a', const WriteApplied('cmd-a', readback: 1500, at: 0),
+          fingerprint:
+              (key: 'ST101.CN01.MOT01.setpoint', value: 1500, expect: null));
       ledger.recordApplied(
           key: 'ST101.CN01.MOT01.setpoint', value: 1500, cmd: 'cmd-a');
 

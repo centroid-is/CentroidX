@@ -29,6 +29,29 @@
 /// `dart:mirrors` reflects the real type rather than its source text, and it
 /// is available under `dart test` but not under `flutter test` — which is
 /// another reason the interface package is pure Dart.
+///
+/// ## Phase 17 moved this count on purpose, and here is what it bought
+///
+/// The wire grew four families — [AccessTemplateApi], [AccessAdminApi],
+/// [AuditApi], [BackendConfigApi] — and four `StateManApi` getters to reach
+/// them by. That is **thirty-two new members**, the largest single growth
+/// this surface has had, and every one of them is a thing any connected client
+/// may invoke against a gateway. So they are written out below as literals,
+/// family by family, rather than allowed to arrive as a number that went up:
+/// *a surface that grows silently is an access-control decision nobody made*,
+/// and this file exists precisely to make somebody make it.
+///
+/// The four new interfaces are added to [wireSurface] and not merely tolerated
+/// through the getters. A getter whose type is not walked would put
+/// twenty-eight methods on the wire with nothing here counting them — which is
+/// the same hole WR-07 closed for superinterfaces, arriving by a different
+/// door.
+///
+/// One name has since been cut: `accessTemplates.template`. The access audit
+/// of all twenty-nine names found it had no caller anywhere, including its own
+/// store; remote implementations derive it from `list()`. Its removal is the
+/// other edge of this file's blade — a removed member silently breaks a
+/// deployed client that still calls it, and no deployed client ever did.
 library;
 
 import 'dart:mirrors';
@@ -36,7 +59,7 @@ import 'dart:mirrors';
 import 'package:test/test.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
-/// The fourteen members of the wire's primary interface.
+/// The eighteen members of the wire's primary interface.
 ///
 /// `writeStatus` and `holdToRun` were added in Phase 5 (05-04), which is the
 /// deliberate act this file exists to force: `writeStatus` because the wire
@@ -47,10 +70,18 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 /// class and not part of the walked surface — that is why a whole hold
 /// protocol costs one member here and not seven.
 ///
+/// `accessTemplates`, `accessAdmin`, `audit` and `backendConfig` were added in
+/// Phase 17 (17-03), and they are four getters rather than thirty-three
+/// members for the same reason `holdToRun` is one member rather than seven: a
+/// sub-interface costs one line here and is walked in full below.
+///
 /// Deliberately absent, each for a reason recorded in `state_man_api.dart`:
 /// `isKeyDisabled`, the four substitution members, any health method —
 /// `PIPE.*` keys are subscribed through `listen` like any plant tag — and
 /// `tick`, which would be a write primitive with no engage in front of it.
+/// Also absent, and this one is Phase 17's: **`session`, `signIn`, `whoAmI` or
+/// any other way to become an identity over the pipe.** This phase relays what
+/// an identity may do; it does not relay the act of becoming one.
 const Set<String> expectedStateManApi = {
   'listen',
   'subscribe',
@@ -65,6 +96,10 @@ const Set<String> expectedStateManApi = {
   'timeseries',
   'historyViews',
   'preferences',
+  'accessTemplates',
+  'accessAdmin',
+  'audit',
+  'backendConfig',
   'dispose',
 };
 
@@ -128,6 +163,80 @@ const Set<String> expectedPreferencesApi = {
   'onPreferencesChanged',
 };
 
+/// The nine template members, names mirrored verbatim from
+/// `AccessTemplateStore`. Every one of the six writes changes **who may write a
+/// key**, which is why the whole family is graded `users` at the far end.
+///
+/// `template` (one row by name) was cut by the access audit: no caller
+/// anywhere, including its own store — the store reads rows through its
+/// private `_row()`. Remote implementations derive it from `list()`.
+const Set<String> expectedAccessTemplateApi = {
+  'list',
+  'bindings',
+  'keysBoundTo',
+  'create',
+  'update',
+  'rename',
+  'delete',
+  'bind',
+  'unbind',
+};
+
+/// The eleven role-and-account members, names mirrored verbatim from
+/// `AccessAdminStore`.
+///
+/// `updateRole` is the most consequential name in this file: it is the one
+/// that can hand somebody `force` on a running line, and — when the row is
+/// `Operator` — hand it to every logged-out panel on the floor. It is here as
+/// a deliberate decision, not as a convenience.
+///
+/// `createUser` and `setUserPassword` are the only two members on the whole
+/// wire that carry a credential. Both take a params class that withholds it
+/// from `toString`; the value is hashed server-side, and no digest is computed
+/// on the client because a client-computed digest is the password.
+const Set<String> expectedAccessAdminApi = {
+  'roles',
+  'listUsers',
+  'createRole',
+  'updateRole',
+  'deleteRole',
+  'renameRole',
+  'createUser',
+  'deleteUser',
+  'setUserRole',
+  'setUserStationAccount',
+  'setUserPassword',
+};
+
+/// Three reads of the audit trail, and there is no fourth.
+///
+/// **This set is the reason a client cannot forge an audit row.** There is no
+/// `record`, no `append`, no `write`: the relay records its own rows
+/// server-side through the injected `AuditSink`, where the `who` is an
+/// identity the server verified by constant-time digest compare. A `record`
+/// method added here would be an unexpected name, exactly as `query(sql)`
+/// would be on the timeseries family.
+const Set<String> expectedAuditApi = {
+  'entries',
+  'memberCountsByAction',
+  'distinctWho',
+};
+
+/// The five backend-configuration members (ACCESS-04).
+///
+/// `read` and `write` are also names on [StateManApi], and they are different
+/// operations that happen to share a verb — the wire keeps them apart by the
+/// `backendConfig.` prefix. That is why the union check below counts fewer
+/// names than the per-type tables add up to, and why both numbers are written
+/// down.
+const Set<String> expectedBackendConfigApi = {
+  'read',
+  'validate',
+  'write',
+  'previous',
+  'restorePrevious',
+};
+
 /// Every type that is reachable from the wire, and its agreed table.
 const Map<String, Set<String>> wireSurface = {
   'StateManApi': expectedStateManApi,
@@ -135,6 +244,10 @@ const Map<String, Set<String>> wireSurface = {
   'TimeseriesApi': expectedTimeseriesApi,
   'HistoryViewApi': expectedHistoryViewApi,
   'PreferencesApi': expectedPreferencesApi,
+  'AccessTemplateApi': expectedAccessTemplateApi,
+  'AccessAdminApi': expectedAccessAdminApi,
+  'AuditApi': expectedAuditApi,
+  'BackendConfigApi': expectedBackendConfigApi,
 };
 
 /// The types behind [wireSurface], in the same order.
@@ -144,6 +257,10 @@ const List<Type> wireTypes = [
   TimeseriesApi,
   HistoryViewApi,
   PreferencesApi,
+  AccessTemplateApi,
+  AccessAdminApi,
+  AuditApi,
+  BackendConfigApi,
 ];
 
 /// Every method, getter and setter reachable on [type], including inherited
@@ -210,7 +327,8 @@ void main() {
       });
     }
 
-    test('the whole surface is 49 members and nothing more', () {
+    test('the whole surface is 81 members over nine types, 79 distinct names',
+        () {
       final actual = <String>{
         for (final type in wireTypes) ...declaredMemberNames(type),
       };
@@ -221,10 +339,41 @@ void main() {
           reason: 'the union is checked as well as the parts, so a member '
               'moved from one sub-interface to another still has to be a '
               'deliberate edit here');
-      expect(actual, hasLength(49),
-          reason: 'the count is written down so a same-size swap — one '
-              'member removed, another added — cannot slip through as a '
-              'coincidence');
+
+      // 49 until Phase 17, then +4 StateManApi getters and +29 access
+      // methods; 81 since the access audit cut accessTemplates.template —
+      // no caller anywhere, including its own store; remote implementations
+      // derive it from list().
+      final total = wireTypes
+          .map((type) => declaredMemberNames(type).length)
+          .fold<int>(0, (sum, length) => sum + length);
+      expect(total, 81,
+          reason: 'the count is written down so a same-size swap — one member '
+              'removed, another added — cannot slip through as a coincidence. '
+              '81 = 49 before Phase 17, plus four StateManApi getters, plus '
+              'the twenty-eight access methods behind them after the audit '
+              'cut accessTemplates.template');
+
+      // The union is SHORTER than the sum, and the gap is named rather than
+      // left as an arithmetic surprise: BackendConfigApi.read and .write share
+      // their names with StateManApi's. They are different operations that
+      // happen to share a verb, kept apart on the wire by the
+      // `backendConfig.` family segment. Asserting both numbers is what stops
+      // a future collision from being absorbed silently by the set.
+      expect(actual, hasLength(79),
+          reason: 'exactly two names appear on two types — read and write, on '
+              'StateManApi and BackendConfigApi. A third collision would drop '
+              'this to 78 while the per-type tables above still passed, so it '
+              'is counted here on purpose');
+      expect(
+          expectedStateManApi
+              .intersection(expectedBackendConfigApi)
+              .toList()
+            ..sort(),
+          ['read', 'write'],
+          reason: 'and the two are named, not merely counted — a different '
+              'pair of colliding names would keep the length at 79 and mean '
+              'something entirely different');
     });
   });
 
@@ -243,6 +392,25 @@ void main() {
                 'remote retrieval of the secure store.');
       });
     }
+
+    test('no credential is a bare parameter on any wire member', () {
+      final bare = <String>[
+        for (final type in wireTypes)
+          for (final parameter in declaredParameterNames(type))
+            if (parameter.toLowerCase().contains('password') ||
+                parameter.toLowerCase().contains('passphrase') ||
+                parameter.toLowerCase().contains('token'))
+              parameter,
+      ];
+      expect(bare, isEmpty,
+          reason: 'AccessAdminApi.createUser and .setUserPassword do carry a '
+              'credential, and both carry it inside a params class whose '
+              'toString withholds it. A bare `String password` argument would '
+              'be the same value with nowhere to hang that discipline: the '
+              'first log line that prints the argument list is a credential in '
+              'a file that outlives the database. Enforced here rather than by '
+              'convention, because the type system will not object.');
+    });
 
     test('the walk itself sees members arriving via a superinterface', () {
       // WR-07. The reflection used to read `declarations` alone, which

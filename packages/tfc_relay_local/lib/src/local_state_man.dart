@@ -933,14 +933,32 @@ final class LocalStateMan implements StateManApi {
   /// runs for months: [writeOutcomeTtl] expiry and cap eviction. Both answer
   /// **unknown**, never `not_received`.
   ///
-  /// ### This log answers about the PLANT, and the server's answers about the WIRE
+  /// ### This log answers about the PLANT, and the shared one about the WIRE
   ///
-  /// `tfc_relay_server`'s `WriteOutcomeLog` is one per `RelayServer` and
-  /// survives session churn; it knows whether a *frame* arrived. This one
-  /// knows whether a *plant* was asked. They are deliberately not merged: a
-  /// gateway restart resets this one and not that one, and pretending
-  /// otherwise would let a `writeStatus` claim knowledge of a write that never
-  /// reached a PLC.
+  /// `WriteOutcomeLog` — since 18-04 in `tfc_relay_protocol`
+  /// (`lib/src/write_outcome_log.dart`), and until then duplicated between
+  /// `tfc_relay_server` and `tfc_dart` — is one per server or per backend and
+  /// survives session churn; it knows whether a *frame* arrived. This one knows
+  /// whether a *plant* was asked. They are deliberately not merged: a gateway
+  /// restart resets this one and not that one, and pretending otherwise would
+  /// let a `writeStatus` claim knowledge of a write that never reached a PLC.
+  ///
+  /// **This log is a third design, and 18-04 ruled that it stays one.** It is
+  /// not a stale copy of the shared class, and the differences are the reason:
+  ///
+  ///  * **five answers, not four.** It adds `outcome_forgotten`, driven by the
+  ///    [_forgottenBeforeMs] watermark that both cap eviction and TTL prune
+  ///    move, so a command from an evicted era is never told `not_received`.
+  ///    The shared log needs no such answer because it never evicts;
+  ///  * **it is capped** at [maxWriteOutcomes] (4096) with LRU eviction, where
+  ///    the shared log is unbounded in count and bounded only in time;
+  ///  * **its TTL is 10 minutes**, against the shared log's 60 seconds, because
+  ///    a plant-side log answers about a machine an operator may come back to,
+  ///    not about a frame.
+  ///
+  /// Merging them would therefore be a behaviour change in both directions, not
+  /// a de-duplication. The mirror of this paragraph is in the shared file's
+  /// library doc.
   @override
   Future<List<WriteResult>> writeStatus(List<String> cmds) async {
     _pruneWriteOutcomes();
@@ -1309,25 +1327,64 @@ final class LocalStateMan implements StateManApi {
   /// reason): the liveness an operator's finger is supposed to provide must not
   /// be something a peer can assert.
   @override
-  Future<HoldHandle> holdToRun(String key) async {
-    final engagement = await write(key, 1);
-    final hold = HoldHandle(
-      key: key,
-      engagement: engagement,
-      onTick: (counter) => _feedDeadman(key, counter),
-      onRelease: (counter) => write(key, counter),
-    );
-    if (hold.isHeld) {
-      _liveHolds.add(hold);
-      // The handle completes `onReleased` exactly once, however the hold ends,
-      // so this is the one place the set is pruned.
-      unawaited(hold.onReleased.then((_) => _liveHolds.remove(hold)));
+  Future<HoldHandle> holdToRun(String key) {
+    // **Ahead of the registry's engage guard, and it is a finding rather than
+    // caution.** [write] throws a `StateError` on a disposed source *on
+    // purpose* — "a lifecycle bug in the caller, not a write outcome" (`:730`,
+    // pinned by `write_test.dart:541`). 18-05 adopted `tfc_dart`'s
+    // throw-into-outcome guard for the engage, on the argument that a throw
+    // there is a bug rather than news about a plant; that argument is right
+    // about a link blowing up and wrong about this line, which is the one
+    // throw on this path that is a deliberate, documented answer. Without this
+    // check the guard would quietly turn it into
+    // `WriteUnknown(write_path_failed)` and hand back an inert handle — a loud
+    // lifecycle bug converted into a jog button that silently does nothing.
+    //
+    // `tfc_dart` needs no equivalent: its own write REFUSES after teardown
+    // rather than throwing (`backend_writes_test.dart`, "is disposed loudly"),
+    // so its guard never had this case to swallow.
+    if (_disposed) {
+      throw StateError('holdToRun($key) on a disposed source: the store and '
+          'the upstream links are both gone, so no hold taken here could be '
+          'fed and no outcome reported here could be true. This is a '
+          'lifecycle bug in the caller, not a write outcome.');
     }
-    return hold;
+    return _holds.engage(key);
   }
 
   /// Every hold this source is currently feeding, so [dispose] can end them.
-  final Set<HoldHandle> _liveHolds = <HoldHandle>{};
+  ///
+  /// Shared with `tfc_dart` since 18-05 (`hold_registry.dart`): the live set,
+  /// the engage guard and release-all were the same forty lines in both
+  /// packages. Three things about this construction are load-bearing:
+  ///
+  ///  * **[feed] is [write] and [onTick] is [_feedDeadman], and they are two
+  ///    different functions.** That is difference 4 of the four the extraction
+  ///    found, left exactly where it was: an engage and a release are ordinary
+  ///    commands somebody may ask `writeStatus` about, and a tick is liveness
+  ///    that deliberately never reaches the outcome log. A registry that
+  ///    derived the tick from the feed would have moved 1 200 entries per
+  ///    two-minute hold into a bounded log.
+  ///  * **`awaitReleases: true` is this side's answer** to the one question the
+  ///    two call sites answer differently. Awaited, and safely: every upstream
+  ///    write is bounded by its *required* deadline (`upstream_link.dart`), so
+  ///    there is nothing here that can hang — and a dispose that gave up half
+  ///    way would leave the thing it was disposing in a state nobody owns.
+  ///    `tfc_dart` passes `false` and says a teardown that waited would hang on
+  ///    the dead link that caused it; that argument does not survive a required
+  ///    deadline, which is why 18-05 records changing *that* side as the
+  ///    deferred decision rather than this one.
+  ///  * **No `onLostWrite`.** This package has no logger by design — the
+  ///    constructor spawns nothing and errors become values rather than log
+  ///    lines (see the header) — and the release loop this replaces swallowed
+  ///    its errors silently too. Preserved rather than improved; the one thing
+  ///    it now hides that it did not before is a *throw* out of the engage,
+  ///    which `write` promises never to do.
+  late final HoldRegistry _holds = HoldRegistry(
+    feed: (key, counter) => write(key, counter),
+    onTick: _feedDeadman,
+    awaitReleases: true,
+  );
 
   /// One tick: the gateway's counter, onto the plant, with nobody waiting.
   ///
@@ -1380,18 +1437,13 @@ final class LocalStateMan implements StateManApi {
   /// Awaited, and safely: every upstream write is bounded by its required
   /// deadline (`upstream_link.dart`), so there is nothing here that can hang
   /// and therefore no `.timeout(` on this path — a dispose that gave up half
-  /// way would leave the thing it was disposing in a state nobody owns.
-  Future<void> _releaseHolds(HoldEnded reason) async {
-    if (_liveHolds.isEmpty) return;
-    final holds = List<HoldHandle>.of(_liveHolds);
-    _liveHolds.clear();
-    for (final hold in holds) {
-      // `release` is idempotent, so a disconnect racing an operator's finger
-      // cannot put two zeros on the wire. The outcome is informational: the
-      // machine stopped when the counter stopped.
-      await hold.release(reason: reason).then((_) {}, onError: (Object _) {});
-    }
-  }
+  /// way would leave the thing it was disposing in a state nobody owns. That
+  /// argument is now `awaitReleases: true` on [_holds]; `release` is still
+  /// idempotent, so a disconnect racing an operator's finger cannot put two
+  /// zeros on the wire, and one throwing release still does not abandon the
+  /// rest.
+  Future<void> _releaseHolds(HoldEnded reason) =>
+      _holds.releaseAll(reason: reason);
 
   // ---------------------------------------------------- the live address space
 
@@ -1518,6 +1570,55 @@ final class LocalStateMan implements StateManApi {
   }
 
   final PreferenceStore? _preferences;
+
+  // ------------------------------------------------------- the access families
+  //
+  // The four getters plan 17-03 added to `StateManApi`. **No Phase 17 plan owns
+  // this file** (17-03's Finding F-C), so the decision is recorded here.
+
+  /// The one shape every access refusal on this class takes.
+  ///
+  /// **Unconditional, and that is what makes it different from the three
+  /// refusals above.** [timeseries], [historyViews] and [preferences] refuse
+  /// only when the gateway was composed without a database, and
+  /// `fanin_test.dart` proves each is composable as well — which is what makes
+  /// their absence a *deployment fact*. These four are not like that: this
+  /// package has no access store to compose, no constructor argument that could
+  /// carry one, and nothing in Phase 17 that adds one.
+  ///
+  /// The access stores live in `tfc_dart` (`lib/core/access/`, D-02) and are
+  /// served by `BackendStateMan`, which is the composition the backend actually
+  /// runs. `LocalStateMan` is the **plant leg** — DeviceClients and a
+  /// historian — and administering roles is not on it. So the answer here *is*
+  /// the refusal; nobody owes this file an implementation.
+  ///
+  /// An [UnsupportedError] and **never** an `UnimplementedError`.
+  /// `freeze_test.dart`'s `declaredUnimplementedMembers` is 0 and counts
+  /// members somebody still owes code for; putting these four in it would claim
+  /// a debt that does not exist. And since `UnimplementedError implements
+  /// UnsupportedError` (`dart:core errors.dart:595`), the wrong choice would be
+  /// invisible to every catch clause and visible only to that ledger — which is
+  /// why `access_refusal_test.dart` pins the distinction directly.
+  Never _noAccessStore(String member) =>
+      throw UnsupportedError('LocalStateMan.$member is not available: this '
+          'gateway serves the plant, not the access-control database. The '
+          'access stores live in tfc_dart (lib/core/access/) and are served by '
+          'BackendStateMan; a panel in gateway mode reaches them through the '
+          'backend composition, never through this leg. Nothing is missing '
+          'from this deployment — the answer is that this source does not '
+          'carry the $member family at all.');
+
+  @override
+  AccessTemplateApi get accessTemplates => _noAccessStore('accessTemplates');
+
+  @override
+  AccessAdminApi get accessAdmin => _noAccessStore('accessAdmin');
+
+  @override
+  AuditApi get audit => _noAccessStore('audit');
+
+  @override
+  BackendConfigApi get backendConfig => _noAccessStore('backendConfig');
 
   // ---------------------------------------------------------------- internals
 

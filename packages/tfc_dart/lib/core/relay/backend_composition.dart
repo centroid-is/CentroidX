@@ -53,6 +53,7 @@ import '../database.dart';
 import '../pipe_main_endpoint.dart';
 import '../preferences.dart';
 import '../state_man.dart' show KeyMappings;
+import 'backend_access.dart';
 import 'backend_alarm_ack.dart';
 import 'backend_alarms.dart' show AlarmAcknowledger;
 import 'backend_browse.dart';
@@ -347,6 +348,26 @@ BackendRelayComposition composeBackendRelay({
   final historyViews = BackendHistoryViews.overDatabase(database: database.db);
   final preferences = BackendPreferences.overPreferences(prefs);
 
+  // --------------------------------------------------------- access families
+  //
+  // Only the AUDIT family is wired here, and the asymmetry is deliberate
+  // (17-06). `BackendAudit` reads `audit_entry` and holds no session: one
+  // instance is correct for every connection, exactly like the three data
+  // services above. `BackendAccessTemplates` and `BackendAccessAdmin` exist
+  // and are judged in `backend_access_test.dart`, but each one attributes its
+  // audit rows to a session and a station — and at composition time there is
+  // no identity to attribute to. Constructing them here with an invented
+  // session would write rows naming somebody the server never verified, which
+  // is the false attribution D-11 forbids. They are constructed where the
+  // relay identity is minted (17-09), one per verified station, and until
+  // then `BackendStateMan` keeps refusing those two families by name.
+  //
+  // This does NOT put the trail on the wire ahead of its gate: every handler
+  // reads through the per-session `PolicyStateMan`, which refuses `audit.*`
+  // until 17-07 grades it. What this line changes is the source BEHIND that
+  // gate, so 17-07 has something real to grade.
+  final audit = BackendAudit(database: database.db);
+
   // ------------------------------------------------------------------ writes
   //
   // Down the pipe, three-state, never auto-retried, and badging the value the
@@ -372,6 +393,7 @@ BackendRelayComposition composeBackendRelay({
     timeseries: timeseries,
     historyViews: historyViews,
     preferences: preferences,
+    audit: audit,
   );
 
   final chosenPolicy = policy ?? backendRelayPolicy;

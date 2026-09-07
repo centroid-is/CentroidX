@@ -234,6 +234,11 @@ final class BackendFreshnessSweep implements BackendValueSource {
   final List<StreamController<relay.DynamicValue>> _streams =
       <StreamController<relay.DynamicValue>>[];
 
+  /// The same, for [subscribeStamped]. A separate list because the element
+  /// types differ; closed alongside [_streams] on [dispose].
+  final List<StreamController<StampedValue>> _stampedStreams =
+      <StreamController<StampedValue>>[];
+
   /// Which workers are currently dead, by index. See [_onWorkerDied].
   final Set<int> _downWorkers = <int>{};
 
@@ -283,17 +288,48 @@ final class BackendFreshnessSweep implements BackendValueSource {
 
   // ---------------------------------------------------------- the passthrough
 
-  /// Straight through to the wrapped source.
+  /// The wrapped source's stamped stream — with the sweep told somebody is
+  /// watching.
   ///
-  /// **Not decorated, and that is deliberate.** This sweep badges a value's
-  /// *quality* stale; it has nothing to say about where the instant on it came
-  /// from, and re-emitting through its own listenable would mean re-deriving
-  /// the provenance at a point that does not know it. Where the stamp came from
-  /// is a fact about the reading, decided at the pipe, and it belongs to the
-  /// object that recorded it.
+  /// **The emissions pass straight through, and that is deliberate.** This
+  /// sweep badges a value's *quality* stale; it has nothing to say about where
+  /// the instant on it came from, and re-emitting through its own listenable
+  /// would mean re-deriving the provenance at a point that does not know it.
+  /// Where the stamp came from is a fact about the reading, decided at the
+  /// pipe, and it belongs to the object that recorded it.
+  ///
+  /// **The registration does NOT pass through, and that was the bug.** A bare
+  /// forward here left the alarm engine — the only stamped consumer, and since
+  /// ALRM-03 the only road it takes — invisible to the sweep: rule 3 ages only
+  /// watched keys, nothing else watched an alarm input, so a quiet plant never
+  /// staled one and D-3's quality gate never suspended the rule
+  /// (`alarm_two_panels_test.dart` arm 7). So this holds a listener on the
+  /// swept handle for exactly as long as the stamped stream has listeners —
+  /// the same 0→1/1→0 gate [subscribe] rides — purely for the side effects
+  /// [_SweptKey] exists for: registration, and the arrival anchor.
   @override
-  Stream<StampedValue> subscribeStamped(String key) =>
-      _values.subscribeStamped(key);
+  Stream<StampedValue> subscribeStamped(String key) {
+    final watched = _watch(key);
+    final inner = _values.subscribeStamped(key);
+    // The values come from [inner]; this listener carries no values at all.
+    void registration() {}
+    late final StreamController<StampedValue> controller;
+    StreamSubscription<StampedValue>? forwarding;
+    controller = StreamController<StampedValue>.broadcast(
+      onListen: () {
+        watched.addListener(registration);
+        forwarding = inner.listen(controller.add,
+            onError: controller.addError, onDone: controller.close);
+      },
+      onCancel: () {
+        watched.removeListener(registration);
+        forwarding?.cancel();
+        forwarding = null;
+      },
+    );
+    _stampedStreams.add(controller);
+    return controller.stream;
+  }
 
   @override
   relay.DynamicValue? read(String key) => _values.read(key);
@@ -543,8 +579,11 @@ final class BackendFreshnessSweep implements BackendValueSource {
     await Future.wait(<Future<void>>[
       for (final controller in _streams)
         if (!controller.isClosed) controller.close(),
+      for (final controller in _stampedStreams)
+        if (!controller.isClosed) controller.close(),
     ]);
     _streams.clear();
+    _stampedStreams.clear();
 
     await _values.dispose();
   }

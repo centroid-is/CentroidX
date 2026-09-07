@@ -45,6 +45,16 @@
 ///    flattened into ~43 members on one class. The surface test walks all five
 ///    types, so closure is asserted over the union — grouping costs nothing in
 ///    enforcement and makes the read path legible.
+///  * **The four access families are grouped the same way** ([AccessTemplateApi],
+///    [AccessAdminApi], [AuditApi], [BackendConfigApi], declared in
+///    `access_api.dart`). Phase 17 adds twenty-eight methods and four getters
+///    (twenty-nine were declared; `accessTemplates.template` was cut on the
+///    2026-09-07 surface audit — no caller anywhere, including its own store),
+///    which is the largest single growth this interface has had, and it is why
+///    they are declared in one file a reviewer can read end to end rather than
+///    discovered a handler at a time. **No member of any of them takes a
+///    caller-supplied identity** — the client has no field to name somebody
+///    else in, which is the structural half of ACCESS-06.
 ///  * **There is no health method.** `PIPE.*` keys are subscribable like any
 ///    plant tag (design §4.7, HLTH-01/02/03): `listen('PIPE.connected')` is
 ///    the health API, and it goes through the same store, the same quality
@@ -52,6 +62,7 @@
 ///    decision, not an omission.
 library;
 
+import 'access_api.dart';
 import 'browse.dart';
 import 'dynamic_value.dart';
 import 'history_view.dart';
@@ -215,6 +226,33 @@ abstract interface class StateManApi {
   /// Mirrors the preferences *interface* only — see [PreferencesApi] for why
   /// no method here can request secret material.
   PreferencesApi get preferences;
+
+  /// Access templates and the key bindings that point at them.
+  ///
+  /// Every write behind this getter requires `AccessGroup.users` and the check
+  /// happens at the far end. Nothing on the interface carries a permission or
+  /// an answer about one — see [AccessTemplateApi].
+  AccessTemplateApi get accessTemplates;
+
+  /// Roles and accounts.
+  ///
+  /// The one family that can hand somebody `force` on a running line, which is
+  /// why `AccessAdminApi.updateRole` is the most consequential hand-made write
+  /// in the product and why the `admin` audit surface exists for it.
+  AccessAdminApi get accessAdmin;
+
+  /// Reads of the audit trail.
+  ///
+  /// Read-only by construction: [AuditApi] has no member that writes one. The
+  /// relay records its own rows server-side, through the injected `AuditSink`.
+  AuditApi get audit;
+
+  /// The backend's own configuration (ACCESS-04).
+  ///
+  /// Editable except for the section that carries the edit: the `relay`
+  /// section is readable and refused on write, because a config screen that
+  /// can cut itself off is a trap.
+  BackendConfigApi get backendConfig;
 
   /// Releases the subscription, the store and the transport.
   ///

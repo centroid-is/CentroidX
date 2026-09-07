@@ -1144,6 +1144,32 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
     // comment on the save button below and `GatewayConfig.advisory`'s own doc.
     final advisory = _edited.advisory;
 
+    // The save button is this card's ONE indicator of unsaved state — the
+    // trailing `Unsaved` pill it used to duplicate is gone by owner ruling
+    // (a second spelling of one fact). That promotion comes with the pill's
+    // legibility obligation: with `backgroundColor: null` the M3 defaults
+    // resolve the unsaved label to `primary` on `surfaceContainerLow`, which
+    // in solarized light is green #859900 on cream base2 — 2.62:1, under
+    // WCAG 1.4.11's 3:1 floor for UI components. So the unsaved face wears
+    // the pill's ratified treatment instead: [HmiStateColors.yellow] —
+    // attention, not alarm; only fault red may be saturated — as a 30-alpha
+    // tint over the card, with the label split on brightness for the reason
+    // `AlarmColors.onSignal` exists: both schemes' yellows are mid-luminance,
+    // readable as ink on a dark card and far too dim on a cream one, where
+    // `onSurface` carries the label and the tint carries the colour. The
+    // tint is pre-blended over the card so the button's `Material` stays
+    // opaque under its elevation. Ratios are pinned per theme by
+    // `server_config_save_button_unsaved_state_test.dart`.
+    final theme = Theme.of(context);
+    final canSave = _hasUnsavedChanges && refusal == null;
+    final attention = HmiStateColors.of(context).yellow;
+    final unsavedInk = theme.brightness == Brightness.dark
+        ? attention
+        : theme.colorScheme.onSurface;
+    final unsavedFill = Color.alphaBlend(
+        attention.withAlpha(30),
+        theme.cardTheme.color ?? theme.colorScheme.surfaceContainerLow);
+
     // Collapsed by default in direct mode — the shape `McpServerSection`
     // already uses for a device-local setting, and the reason is not only
     // consistency: an expanded card here pushes the four sections down the
@@ -1156,12 +1182,6 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
         subtitle: Text(saved.isGateway
             ? 'Relay gateway — ${saved.url}'
             : 'Direct to PLCs'),
-        trailing: _hasUnsavedChanges
-            ? Chip(
-                label: const Text('Unsaved'),
-                backgroundColor: Theme.of(context).colorScheme.errorContainer,
-              )
-            : null,
         // A gateway station opens on its own settings; a direct one does not
         // have any to show.
         initiallyExpanded: saved.isGateway,
@@ -1309,13 +1329,9 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
             children: [
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed:
-                      _hasUnsavedChanges && refusal == null ? _save : null,
+                  onPressed: canSave ? _save : null,
                   icon: FaIcon(FontAwesomeIcons.floppyDisk,
-                      size: 16,
-                      color: _hasUnsavedChanges && refusal == null
-                          ? null
-                          : Colors.grey),
+                      size: 16, color: canSave ? unsavedInk : Colors.grey),
                   label: Text(switch ((_hasUnsavedChanges, refusal)) {
                     (false, _) => 'All Changes Saved',
                     (true, final String _) => 'Cannot save yet',
@@ -1323,9 +1339,8 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
                   }),
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 16),
-                    backgroundColor: _hasUnsavedChanges && refusal == null
-                        ? null
-                        : Colors.grey,
+                    foregroundColor: canSave ? unsavedInk : null,
+                    backgroundColor: canSave ? unsavedFill : Colors.grey,
                   ),
                 ),
               ),

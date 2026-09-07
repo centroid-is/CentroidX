@@ -255,6 +255,21 @@ final class _NoPreferences implements StateManApi {
   @override
   HistoryViewApi get historyViews => _source.historyViews;
 
+  // Delegated, because this double's whole point is that `preferences` is the
+  // ONE thing it declares it has not got. A second local refusal would make it
+  // a source with two absences and stop it being the narrow thing it is.
+  @override
+  AccessTemplateApi get accessTemplates => _source.accessTemplates;
+
+  @override
+  AccessAdminApi get accessAdmin => _source.accessAdmin;
+
+  @override
+  AuditApi get audit => _source.audit;
+
+  @override
+  BackendConfigApi get backendConfig => _source.backendConfig;
+
   @override
   Future<void> dispose() => _source.dispose();
 }

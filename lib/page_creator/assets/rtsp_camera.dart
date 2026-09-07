@@ -10,7 +10,8 @@
 /// missing video output only shows up later, asynchronously, and lands on the
 /// same placeholder via [RtspCameraStatus.unavailable].
 ///
-/// A dropped stream retries on its own every [RtspCameraView.retryDelay]; an
+/// A dropped stream retries on its own, on [RtspLiveness.retryDelay]'s
+/// 5s-doubling-to-60s ladder; an
 /// operator should never have to touch a camera tile to bring it back.
 ///
 /// Liveness is decided by [RtspLiveness] from frames arriving, not from
@@ -124,6 +125,36 @@ class RtspLiveness {
   RtspCameraStatus _status = RtspCameraStatus.connecting;
   RtspCameraStatus get status => _status;
 
+  /// Open attempts that have died without ever painting a picture, in a row.
+  /// Feeds [retryDelay]; reset the moment frames flow.
+  int _consecutiveFailures = 0;
+
+  /// The attempt underway has already been counted — mpv surfaces several
+  /// ffmpeg lines per failed open, and one failed attempt is one rung on the
+  /// ladder, however loudly it fails.
+  bool _diedThisAttempt = false;
+
+  /// How long the owner should wait before the retry it is being asked for.
+  ///
+  /// 5s doubling to a 60s clamp. A flat 5s is what this was, and a flat
+  /// interval against a dead stream is the same defect the subscribe ladder in
+  /// tfc_dart's state_man.dart exists for: on 2026-09-07 an NVR refused opens
+  /// for ~50 minutes and the tile ran ~150 full mpv reopens — demuxer threads,
+  /// an audio-subsystem probe and a TLS dial each — at one per ~6s while the
+  /// operator stood at the panel. The first rung stays short so a genuine blip
+  /// still recovers in seconds; the clamp stays at a minute because an
+  /// operator is looking at this tile, unlike a key subscription, so ten
+  /// minutes between attempts would read as broken long after the camera is
+  /// back.
+  Duration get retryDelay {
+    const base = Duration(seconds: 5);
+    const cap = Duration(seconds: 60);
+    final rung = _consecutiveFailures < 1 ? 0 : _consecutiveFailures - 1;
+    // 5s << 4 overflows nothing and 5 * 2^4 = 80 > cap, so walk at most 4.
+    final delay = base * (1 << (rung > 4 ? 4 : rung));
+    return delay > cap ? cap : delay;
+  }
+
   /// Frames have been seen at least once since the last [reopened].
   bool _decoding = false;
   Duration? _lastPosition;
@@ -150,6 +181,10 @@ class RtspLiveness {
     _lastFrameAt = now;
     _status = RtspCameraStatus.live;
     _retryPending = false;
+    // Pictures are proof the camera is healthy: a later death starts a new
+    // outage at the bottom of the ladder, it is not the tail of the last one.
+    _consecutiveFailures = 0;
+    _diedThisAttempt = false;
   }
 
   /// An error arrived on the player's error stream. Only believed while
@@ -171,13 +206,15 @@ class RtspLiveness {
     _die();
   }
 
-  /// The stream is being (re)opened.
+  /// The stream is being (re)opened. Deliberately not a ladder reset —
+  /// reopening IS the retry, and only frames prove it worked.
   void reopened() {
     _status = RtspCameraStatus.connecting;
     _decoding = false;
     _lastPosition = null;
     _lastFrameAt = null;
     _retryPending = false;
+    _diedThisAttempt = false;
   }
 
   /// The owner has armed the retry it was owed.
@@ -193,15 +230,16 @@ class RtspLiveness {
     _decoding = false;
     _lastFrameAt = null;
     _retryPending = true;
+    if (!_diedThisAttempt) {
+      _diedThisAttempt = true;
+      _consecutiveFailures++;
+    }
   }
 }
 
 class RtspCameraView extends StatefulWidget {
   final RtspCameraConfig config;
   const RtspCameraView({super.key, required this.config});
-
-  /// How long a dead stream waits before reopening.
-  static const Duration retryDelay = Duration(seconds: 5);
 
   /// Test hook: replaces the media_kit backend. Reset to null in tearDown.
   @visibleForTesting
@@ -508,7 +546,10 @@ class _MediaKitPlayback implements RtspCameraPlayback {
     _status.value = _liveness.status;
     if (_liveness.retryPending) {
       if (_retryTimer == null) {
-        _retryTimer = Timer(RtspCameraView.retryDelay, () {
+        // The delay comes from the liveness ladder, not a constant: a camera
+        // that keeps refusing opens is asked again at 5s, 10s, ..., 60s, so a
+        // dead NVR costs one mpv reopen a minute instead of ten.
+        _retryTimer = Timer(_liveness.retryDelay, () {
           _retryTimer = null;
           if (!_disposed) _openMedia();
         });

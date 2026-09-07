@@ -227,6 +227,131 @@ abstract final class DataServiceMethods {
   static const preferencesChanged = 'preferences.changed';
 }
 
+/// The wire names of the four access families, and their per-family sets.
+///
+/// A **third sibling** beside [Methods] and [DataServiceMethods], not more
+/// names inside either. The readability argument is [DataServiceMethods]' own —
+/// a class somebody reads top to bottom stops being one at forty-seven names —
+/// and there is a sharper one here: **these are the names an access review
+/// reads.** Somebody auditing what a station may do to roles, templates, the
+/// audit trail and the backend's own configuration should be able to read one
+/// class and know they have seen all of it, rather than filtering twenty-eight
+/// names out of sixty-two.
+///
+/// Same shape as [DataServiceMethods] in every respect, because the tests that
+/// hold it are the same tests: every name is `family.methodName`, the family
+/// segment is the `StateManApi` getter and the method segment is the interface
+/// member verbatim; the per-family sets are what a closure test iterates rather
+/// than restates; and [all] is spelled from the four sets so a name can only
+/// exist in one place. `access_api_test.dart` compares each family against its
+/// interface in both directions.
+///
+/// There is no notification here. [DataServiceMethods.preferencesChanged] has
+/// no counterpart: nothing on these four families is pushed. A role change
+/// takes effect through the credential sweep (D-08), which closes the session
+/// rather than telling it something.
+abstract final class AccessMethods {
+  static const templateList = 'accessTemplates.list';
+  static const templateBindings = 'accessTemplates.bindings';
+  static const templateKeysBoundTo = 'accessTemplates.keysBoundTo';
+  static const templateCreate = 'accessTemplates.create';
+  static const templateUpdate = 'accessTemplates.update';
+  static const templateRename = 'accessTemplates.rename';
+  static const templateDelete = 'accessTemplates.delete';
+  static const templateBind = 'accessTemplates.bind';
+  static const templateUnbind = 'accessTemplates.unbind';
+
+  /// Every `AccessTemplateApi` method, as data.
+  static const templateMethods = <String>{
+    templateList,
+    templateBindings,
+    templateKeysBoundTo,
+    templateCreate,
+    templateUpdate,
+    templateRename,
+    templateDelete,
+    templateBind,
+    templateUnbind,
+  };
+
+  static const adminRoles = 'accessAdmin.roles';
+  static const adminListUsers = 'accessAdmin.listUsers';
+  static const adminCreateRole = 'accessAdmin.createRole';
+  static const adminUpdateRole = 'accessAdmin.updateRole';
+  static const adminDeleteRole = 'accessAdmin.deleteRole';
+  static const adminRenameRole = 'accessAdmin.renameRole';
+  static const adminCreateUser = 'accessAdmin.createUser';
+  static const adminDeleteUser = 'accessAdmin.deleteUser';
+  static const adminSetUserRole = 'accessAdmin.setUserRole';
+  static const adminSetUserStationAccount = 'accessAdmin.setUserStationAccount';
+  static const adminSetUserPassword = 'accessAdmin.setUserPassword';
+
+  /// Every `AccessAdminApi` method, as data.
+  static const adminMethods = <String>{
+    adminRoles,
+    adminListUsers,
+    adminCreateRole,
+    adminUpdateRole,
+    adminDeleteRole,
+    adminRenameRole,
+    adminCreateUser,
+    adminDeleteUser,
+    adminSetUserRole,
+    adminSetUserStationAccount,
+    adminSetUserPassword,
+  };
+
+  static const auditEntries = 'audit.entries';
+  static const auditMemberCountsByAction = 'audit.memberCountsByAction';
+  static const auditDistinctWho = 'audit.distinctWho';
+
+  /// Every `AuditApi` method, as data — three reads, and there is no fourth.
+  ///
+  /// A `record` name would be the client writing its own audit rows. It is
+  /// absent from this set for the reason it is absent from the interface, and
+  /// `access_api_test.dart` reddens on the set/interface mismatch either way
+  /// round.
+  static const auditMethods = <String>{
+    auditEntries,
+    auditMemberCountsByAction,
+    auditDistinctWho,
+  };
+
+  static const configRead = 'backendConfig.read';
+  static const configValidate = 'backendConfig.validate';
+  static const configWrite = 'backendConfig.write';
+  static const configPrevious = 'backendConfig.previous';
+  static const configRestorePrevious = 'backendConfig.restorePrevious';
+
+  /// Every `BackendConfigApi` method, as data.
+  ///
+  /// The family segment is what keeps `backendConfig.read` and
+  /// `backendConfig.write` from colliding with the session vocabulary's bare
+  /// `read` and `write`. They are different operations that happen to share a
+  /// verb, and the dot is the whole of what tells them apart on the wire.
+  static const configMethods = <String>{
+    configRead,
+    configValidate,
+    configWrite,
+    configPrevious,
+    configRestorePrevious,
+  };
+
+  /// Every access **request** name: twenty-eight, and the whole wire surface
+  /// Phase 17 adds to the gateway. (Twenty-nine originally; the access audit
+  /// cut `accessTemplates.template` — no caller anywhere, including its own
+  /// store; remote implementations derive it from `list()`.)
+  ///
+  /// Spelled from the four sets above rather than as a second copy of the
+  /// strings, so a name can only be in one place.
+  static const all = <String>{
+    ...templateMethods,
+    ...adminMethods,
+    ...auditMethods,
+    ...configMethods,
+  };
+}
+
 /// Application close codes (WebSocket 4000–4999 private range).
 ///
 /// Standard codes other than 1000 throw in web_socket_channel (#1690), and

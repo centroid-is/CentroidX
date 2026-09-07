@@ -116,6 +116,64 @@ void main() {
     expect(l.retryPending, isTrue);
   });
 
+  test('a camera that keeps failing backs off instead of retrying every 5s',
+      () {
+    // 2026-09-07 on hq-skjar: the NVR at 10.50.1.1:7441 refused opens for
+    // ~50 minutes and the tile re-opened mpv every ~6.2s the whole time —
+    // demuxer threads, an audio-subsystem probe and a TLS dial per attempt,
+    // ~150 attempts, on both deployed images. A flat retry interval is what
+    // froze the HMI once before (see kSubscribeBackoffSeconds in
+    // tfc_dart's state_man.dart); the camera tile had the same flat 5s.
+    final l = RtspLiveness();
+    var t = 0;
+    // Each cycle: the owner arms the retry it was asked for, the timer fires,
+    // the stream is reopened, and the open fails again.
+    Duration failOnce() {
+      l.error(at(t++));
+      expect(l.retryPending, isTrue);
+      final delay = l.retryDelay;
+      l.retryArmed();
+      l.reopened();
+      return delay;
+    }
+
+    expect(failOnce(), const Duration(seconds: 5),
+        reason: 'a genuine blip must still recover quickly');
+    expect(failOnce(), const Duration(seconds: 10));
+    expect(failOnce(), const Duration(seconds: 20));
+    expect(failOnce(), const Duration(seconds: 40));
+    expect(failOnce(), const Duration(seconds: 60));
+    expect(failOnce(), const Duration(seconds: 60),
+        reason: 'the ladder is clamped, not unbounded');
+  });
+
+  test('many error events in one open attempt climb the ladder once', () {
+    // mpv surfaces several ffmpeg lines per failed open; each lands on the
+    // error stream. One failed attempt is one rung, however loudly it fails.
+    final l = RtspLiveness();
+    l.error(at(0));
+    l.error(at(0));
+    l.error(at(1));
+    expect(l.retryDelay, const Duration(seconds: 5));
+  });
+
+  test('frames flowing reset the ladder', () {
+    // A camera that came back and later blips again is a healthy camera
+    // having a bad moment, not the tail of the previous outage.
+    final l = RtspLiveness();
+    for (var i = 0; i < 4; i++) {
+      l.error(at(i));
+      l.retryArmed();
+      l.reopened();
+    }
+    expect(l.retryDelay, greaterThan(const Duration(seconds: 5)));
+    l.videoSized();
+    l.frame(const Duration(milliseconds: 33), at(10));
+    expect(l.status, RtspCameraStatus.live);
+    l.completed();
+    expect(l.retryDelay, const Duration(seconds: 5));
+  });
+
   test('media time moving is not a heartbeat before the first picture', () {
     // Regression from the first cut of this fix: libmpv emits a position while
     // it is still negotiating, which made an unreachable camera look alive,

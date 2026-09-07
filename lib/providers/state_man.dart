@@ -15,11 +15,13 @@ import 'package:tfc_relay_client/tfc_relay_client.dart'
     show ClientConfig, RemoteStateMan;
 import '../core/gateway_state_man.dart';
 import '../core/relay_alarm_source.dart';
+import '../core/value_freshness.dart';
 import 'access.dart';
 import 'gateway.dart';
 import 'access_policy.dart';
 import 'preferences.dart';
 import 'collector.dart';
+import 'value_freshness.dart';
 
 part 'state_man.g.dart';
 
@@ -302,6 +304,33 @@ final substitutionsChangedProvider =
 /// Auto-disposed, so leaving a page releases what that page was reading. A
 /// rebuild does not: the watching element re-establishes its subscription
 /// within the same frame, so the listener count never reaches zero.
+///
+/// ## And it is where staleness becomes visible
+///
+/// **The rig measured what this gate is for.** On 2026-09-07 a connected
+/// panel's link was cut and, at +25 s and again at +65 s, the app-bar chip read
+/// yellow `No gateway` while **every plant value on the home page still
+/// rendered definite** — no `!`, no `--- °C`, no greying. The chip was the only
+/// thing on the screen that knew. 16-10-SUMMARY had already named the cause:
+/// `viewIsStale` and `viewFreshness` **had no reader in any `lib/`**.
+///
+/// This is the reader, and it is here rather than in the assets for one
+/// reason: **twenty-odd widgets render values and every one of them reads this
+/// provider.** A greying added to each is twenty chances to miss one, and the
+/// one missed is the one an operator is standing in front of. One funnel, one
+/// gate.
+///
+/// While [valueFreshnessProvider] says the panel cannot vouch for its values
+/// the subject carries [StaleValues] instead of a value — the same channel a
+/// subscribe that threw already uses, which every asset in the library already
+/// renders as its unknown-value form (`(hasData && !hasError) ? … : null` →
+/// `---`, `!`, a grey belt). Nothing about the pixels is invented, so nothing
+/// about the pixels can move.
+///
+/// **The value is withheld, not decorated.** A number the panel cannot vouch
+/// for is a number an operator must not read, and the app's existing word for
+/// that is `---`. Rendering it greyed-but-legible would leave the digits on the
+/// glass to be read across a room by somebody who never saw the chip.
 final keyStreamProvider =
     Provider.autoDispose.family<Stream<DynamicValue>, String>((ref, key) {
   // Rebuilt if the connection is replaced, so the streams handed out are
@@ -310,6 +339,20 @@ final keyStreamProvider =
   // "no value yet" it shows while waiting for a first reading.
   final stateMan = ref.watch(stateManProvider).valueOrNull;
   if (stateMan == null) return const Stream<DynamicValue>.empty();
+
+  // Whether this panel can vouch for what it shows. A direct station's answer
+  // is a constant built without reading anything heavier than its transport
+  // row, so this costs the plant's existing stations nothing and — pinned by
+  // `visible_staleness_test.dart`'s two direct-mode arms — can never grey one
+  // out.
+  //
+  // Watched, not read: the OBJECT is stable across a link flapping (it holds
+  // its own verdict and publishes transitions), so this dependency rebuilds
+  // this provider only when the transport row or the StateMan changes, which
+  // are the two things that already rebuild it. A `watch` on something that
+  // changed identity per transition would drop and re-open every subscription
+  // on the panel each time the link blinked.
+  final freshness = ref.watch(valueFreshnessProvider);
 
   // A key like `Line1.$sb_line_stats_period` names its target through a
   // variable, and StateMan resolves that variable ONCE, at subscribe time.
@@ -333,13 +376,52 @@ final keyStreamProvider =
   // re-listens shows what it last knew instead of blanking.
   final subject = BehaviorSubject<DynamicValue>();
   StreamSubscription<DynamicValue>? subscription;
+  StreamSubscription<bool>? freshnessChanges;
   var disposed = false;
+
+  // The last reading this key received, held so the transition back to fresh
+  // can re-publish it. By then it IS the current connection's value: the
+  // client only clears its badge from `_enter(LinkState.ready)`, which is
+  // reached after every page's snapshot has been adopted (16-10 / S9), and
+  // adopting a snapshot pushes each key through the subscription below.
+  DynamicValue? held;
+
+  /// Puts the panel's current answer for this key on the subject.
+  ///
+  /// One function for both directions so the two cannot drift: a stale panel
+  /// says why it has no value, a fresh one says what the value is.
+  void publish() {
+    if (disposed) return;
+    if (freshness.isStale) {
+      subject.addError(StaleValues(key));
+    } else if (held != null) {
+      subject.add(held!);
+    }
+  }
+
+  // Seeded, not merely followed. A page opened DURING an outage builds this
+  // provider from scratch and would otherwise wait for a transition that
+  // already happened, showing the store's pre-outage reading until the link
+  // came back.
+  if (freshness.isStale) subject.addError(StaleValues(key));
+  freshnessChanges = freshness.changes.listen((_) => publish());
 
   Future<void> open() async {
     try {
       final values = await stateMan.subscribe(key);
       if (disposed) return;
-      subscription = values.listen(subject.add, onError: subject.addError);
+      subscription = values.listen(
+        (value) {
+          held = value;
+          // Through `publish`, not straight onto the subject: values do keep
+          // arriving while the badge is set — the store still answers, and a
+          // resync pushes snapshots for seconds before the view is fresh —
+          // and those are precisely the ones that must not be shown as
+          // current.
+          publish();
+        },
+        onError: subject.addError,
+      );
     } catch (error, stackTrace) {
       // Reported to whoever is watching rather than swallowed: an asset bound
       // to a key the PLC does not serve should show that, and StateMan does
@@ -352,6 +434,7 @@ final keyStreamProvider =
   ref.onDispose(() {
     disposed = true;
     subscription?.cancel();
+    freshnessChanges?.cancel();
     subject.close();
   });
 

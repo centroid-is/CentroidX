@@ -252,9 +252,31 @@ final class FakePlantLink implements PipeWorkerLink {
 
   void deliverAll(Map<String, relay.DynamicValue> values) {
     last.addAll(values);
-    emit(PipeFrame(
-        const <Object?>[], Map<String, relay.DynamicValue>.of(values)));
+    final copy = Map<String, relay.DynamicValue>.of(values);
+    emit(PipeFrame(const <Object?>[], copy, _substitutedIn(copy)));
   }
+
+  /// The claim the real worker makes per sample, made here per frame.
+  ///
+  /// `PipeFrame.substitutedStamps == null` means "this frame states nothing",
+  /// which main reads — by pinned design (`stamp_substitution_flag_test.dart`,
+  /// "a frame that states nothing is read as substituted") — as every value
+  /// substituted. A fake plant that stamps a `sourceTime` and then states
+  /// nothing therefore demotes its own stamp to `backendReceipt`, which is how
+  /// `alarm_ack_e2e_test.dart` arms 2/4/5 came to read the injected clock
+  /// where the plant instant belonged.
+  ///
+  /// Deriving the claim from `sourceTime` is honest in THIS class and nowhere
+  /// else: the real worker cannot (`translateOpcUaSample` substitutes a real,
+  /// non-null `arrivedAt`, so it tracks the fact separately in
+  /// `PipeWorkerEndpoint._lastSubstituted`), but nothing on the fake's path
+  /// substitutes anything — a null stays null — so here "carries an instant"
+  /// and "the source stamped it" are the same fact.
+  static Set<String> _substitutedIn(Map<String, relay.DynamicValue> values) =>
+      <String>{
+        for (final entry in values.entries)
+          if (entry.value.sourceTime == null) entry.key,
+      };
 
   void deliver(String key, relay.DynamicValue value) =>
       deliverAll(<String, relay.DynamicValue>{key: value});
@@ -308,10 +330,14 @@ final class FakePlantLink implements PipeWorkerLink {
     received.add(message);
     switch (message) {
       case PipeResnapshot(keys: final keys):
-        emit(PipeFrame(const <Object?>[], <String, relay.DynamicValue>{
+        // The claim rides the replay too, or every reconnect would demote a
+        // genuine plant stamp — `PipeWorkerEndpoint._lastSubstituted` exists
+        // for exactly this on the real path.
+        final replay = <String, relay.DynamicValue>{
           for (final key in keys)
             if (last[key] != null) key: last[key]!,
-        }));
+        };
+        emit(PipeFrame(const <Object?>[], replay, _substitutedIn(replay)));
       case PipeWriteRequest(id: final id, key: final key, value: final value):
         writes.add(message);
         if (stalled) {
@@ -731,6 +757,22 @@ final class HarnessedBackendStateMan
 
   @override
   relay.PreferencesApi get preferences => _api.preferences;
+
+  // The four access families are forwarded like everything else, so what a
+  // case sees is whatever `BackendStateMan` decided — a refusal today. A
+  // refusal minted here instead would hide which object actually has nothing
+  // behind it, and would have to be un-minted when 17-06 composes them.
+  @override
+  relay.AccessTemplateApi get accessTemplates => _api.accessTemplates;
+
+  @override
+  relay.AccessAdminApi get accessAdmin => _api.accessAdmin;
+
+  @override
+  relay.AuditApi get audit => _api.audit;
+
+  @override
+  relay.BackendConfigApi get backendConfig => _api.backendConfig;
 
   @override
   Future<void> dispose() => _api.dispose();

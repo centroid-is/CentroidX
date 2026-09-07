@@ -558,6 +558,41 @@ final class ChannelStateMan
   @override
   late final ChannelPreferencesApi preferences = ChannelPreferencesApi(_request);
 
+  // -------------------------------------------------- the access families
+  //
+  // Four getters and no forwarders. This channel carries the thirty-four
+  // data-service requests in `channel_sub_apis.dart` and nothing else; plan
+  // 17-05 adds the access forwarders and replaces these four.
+
+  /// The one shape every access refusal on this class takes.
+  ///
+  /// This is the argument the library doc above already makes about the four
+  /// data services — *"a getter returning an empty implementation would have
+  /// let `runDataServicesContract` run against a channel carrying nothing and
+  /// report a colour"* — applied to the four families that are in that state
+  /// now. A green run against a channel that forwards nothing is the one
+  /// outcome this kit exists to make impossible.
+  Never _notCarriedByThisChannel(String member) =>
+      throw UnsupportedError('ChannelStateMan.$member is not available: this '
+          'channel forwards no access family. The kit\'s channel leg carries '
+          'the four data services (channel_sub_apis.dart) and nothing else; '
+          'plan 17-05 adds the access forwarders. An empty answer here would '
+          'let a contract case pass against a channel carrying nothing.');
+
+  @override
+  AccessTemplateApi get accessTemplates =>
+      _notCarriedByThisChannel('accessTemplates');
+
+  @override
+  AccessAdminApi get accessAdmin => _notCarriedByThisChannel('accessAdmin');
+
+  @override
+  AuditApi get audit => _notCarriedByThisChannel('audit');
+
+  @override
+  BackendConfigApi get backendConfig =>
+      _notCarriedByThisChannel('backendConfig');
+
   /// Records samples on the far side — the one data-service lever.
   ///
   /// `void`, so it travels in the ordered notification lane like every other

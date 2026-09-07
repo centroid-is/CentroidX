@@ -477,6 +477,24 @@ final class _DataOnlyApi implements StateManApi, StateManDataHarness {
       'the three historical sub-interfaces, which this fixture cannot answer '
       'honestly');
 
+  // The four access families (17-03). Deliberately not part of this fixture:
+  // a data-services case that reached one is a case in the wrong file, and
+  // this says so instead of answering emptily.
+  @override
+  relay.AccessTemplateApi get accessTemplates =>
+      _notPartOfThisFixture('access template store');
+
+  @override
+  relay.AccessAdminApi get accessAdmin =>
+      _notPartOfThisFixture('access admin store');
+
+  @override
+  relay.AuditApi get audit => _notPartOfThisFixture('audit trail store');
+
+  @override
+  relay.BackendConfigApi get backendConfig =>
+      _notPartOfThisFixture('backend config document');
+
   /// The historical half has no link to bring up: it is serving from the
   /// instant the constructor returns.
   @override
