@@ -1,4 +1,4 @@
-import 'dart:io' show Platform;
+import 'dart:io' show Directory, Platform;
 
 import 'package:logger/logger.dart';
 import 'package:meta/meta.dart' show visibleForTesting;
@@ -49,12 +49,20 @@ PreferencesApi? _deviceLocalStore;
 /// working and far better than a panel in a fish factory that does not start.
 /// The log line is the difference between "degraded" and "haunted": it is the
 /// only place the operator's missing pages are explained. Threat T-01-14.
-Future<void> initDeviceLocalPreferences() async {
+///
+/// [directoryForTest] replaces the platform directory rule, and exists so that
+/// containment can be *proved* rather than reviewed: `boot_ordering_test.dart`
+/// hands it a resolver that throws and a directory holding a deliberately
+/// corrupt `config.sqlite`, and asserts a usable store comes back either way.
+/// Production passes nothing.
+Future<void> initDeviceLocalPreferences({
+  Future<Directory> Function()? directoryForTest,
+}) async {
   if (_deviceLocalStore != null) return;
 
   var directory = '<unresolved>';
   try {
-    final dir = await deviceLocalStoreDirectory();
+    final dir = await (directoryForTest ?? deviceLocalStoreDirectory)();
     directory = dir.path;
     final db = AppDatabase.createLocal(dir);
     final store = SqlitePreferences(

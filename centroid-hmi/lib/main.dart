@@ -39,7 +39,7 @@ import 'package:tfc/transition_delegate.dart';
 import 'package:tfc/providers/theme.dart';
 import 'package:tfc/core/feature_flags.dart';
 import 'package:tfc/providers/preferences.dart'
-    show createDeviceLocalPreferences;
+    show createDeviceLocalPreferences, initDeviceLocalPreferences;
 import 'package:tfc/page_creator/page.dart';
 
 import 'package:tfc/theme.dart';
@@ -247,6 +247,19 @@ Future<void> _startApp([bool debugMode = false]) async {
     // copies from) the old storage on a read miss.
     SecureStorage.setInstance(Platform.isMacOS ? MacOsMigratingSecureStorage() : OtherSecureStorage());
   }
+
+  // Opens the one device-local SQLite handle and, once per station, imports
+  // whatever `shared_preferences` still holds. Both must complete before
+  // `pageManager.load()` below, which is the first read: a station whose
+  // `page_editor_data` has not been imported comes up on the built-in default
+  // pages with its own pages gone — and the editor then persists that default
+  // set as its own. Everything else that reads a preference (the session, the
+  // startup URL, the NTP list) is later still, so this one await covers them.
+  //
+  // It does not throw. A store that cannot be opened is logged and answered
+  // with an in-memory one, because a panel that boots degraded beats a panel
+  // that does not boot.
+  await initDeviceLocalPreferences();
 
   // Register your custom asset type
   // AssetRegistry.registerFromJsonFactory<ChecklistsConfig>(ChecklistsConfig.fromJson);
