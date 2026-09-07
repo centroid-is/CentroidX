@@ -508,6 +508,33 @@ final class SessionHealthStateMan implements StateManApi {
   @override
   PreferencesApi get preferences => source.preferences;
 
+  // ------------------------------------------------------- the access families
+  //
+  // Delegated, exactly like the four above, and that is a decision rather than
+  // an omission.
+  //
+  // This overlay adds health keys and **no authority**. It has a source, so a
+  // refusal minted here would be *faking* an absence rather than reporting one,
+  // and it would hide which layer actually has nothing behind it. Delegating
+  // cannot fail open either: the shipped composition is **policy over health
+  // over source** (`relay_server.dart:755`), so the object every handler is
+  // handed is a `PolicyStateMan`, and that one refuses all four. When 17-07
+  // gives the policy decorator a real gate, these four need no edit —
+  // which is the same reason the four data-service getters above are one line
+  // each.
+
+  @override
+  AccessTemplateApi get accessTemplates => source.accessTemplates;
+
+  @override
+  AccessAdminApi get accessAdmin => source.accessAdmin;
+
+  @override
+  AuditApi get audit => source.audit;
+
+  @override
+  BackendConfigApi get backendConfig => source.backendConfig;
+
   /// Releases this overlay's own store, then delegates — but **only** from the
   /// server-mode instance.
   ///
