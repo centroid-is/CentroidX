@@ -349,7 +349,7 @@ You suggested doing this either as an abstraction on top of drift, or by
 implementing drift's own abstraction over a Postgres connection plus a
 SQLite cache. I looked at the second properly, and it is the wrong layer.
 
-`QueryExecutor` (drift 2.34.4, `runtime/executor/executor.dart`) deals in
+`QueryExecutor` (drift 2.28.2 — the resolved version, `runtime/executor/executor.dart:20`) deals in
 **raw SQL strings and positional args**: `runSelect(String, List)`,
 `runInsert`, `runUpdate`, `runBatched`, `beginTransaction`. An executor
 cannot know that a `SELECT` over `config_item` may be served from cache
