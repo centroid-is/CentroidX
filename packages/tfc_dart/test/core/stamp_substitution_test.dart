@@ -233,16 +233,25 @@ void main() {
     test('NEGATIVE: the cached one-shot read carries none', () async {
       final clock = WireClock();
       final c = _connectedAdapter(clock, specs: {_plainSpec.key: _plainSpec});
-      c.wrapper.connect();
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      final sub = c.adapter.subscribe(_plainSpec.key).listen((_) {});
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      final dv = await c.adapter.read(_plainSpec.key);
-      await sub.cancel();
-      c.adapter.dispose();
+      addTearDown(c.wrapper.dispose);
+
+      await _firstSample(c.wrapper, c.adapter, _plainSpec.key);
+      final atRead = clock.now();
+
+      // Move the clock on WITHOUT a read for this key, the way wall time moves
+      // between one poll and the next. Without this the arm cannot tell a
+      // cached instant from a freshly-minted one — they would be the same
+      // second — and a `read()` that re-stamped with `_clock()` would pass.
+      clock.roundTripCompleted();
+      expect(clock.now(), isNot(atRead), reason: 'the clock actually moved');
+
+      final dv = c.adapter.read(_plainSpec.key);
 
       expect(dv, isNotNull, reason: 'the poll produced a cached value to read');
       expect(dv!.sourceTimestamp, isNull);
+      // Neither the read instant nor "now": nothing at all.
+      expect(dv.sourceTimestamp, isNot(atRead));
+      expect(dv.sourceTimestamp, isNot(clock.now()));
     });
 
     test('NEGATIVE: a UMAS scalar carries none', () {
