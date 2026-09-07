@@ -21,6 +21,7 @@ import 'dart:convert';
 import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/config/config_diff.dart';
+import 'package:tfc_dart/core/config/config_history_policy.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart';
 import 'package:tfc_dart/core/config/key_mapping_codec.dart';
@@ -111,6 +112,17 @@ ConfigItem assetItem(String id, {required String page, int? sortIndex}) =>
       sortIndex: sortIndex,
     );
 
+/// A page image, payload-shaped as 04-03 will leave it: the id is the content
+/// hash, so the bytes never change under it. Nothing here depends on that
+/// shape — the store has never looked inside a payload — but a fixture that
+/// lies about it would read as though images were ordinary mutable rows.
+ConfigItem imageItem(String id, {String bytes = 'iVBORw0KGgo'}) =>
+    ConfigItem.of(
+      kind: ConfigKind.pageImage,
+      id: id,
+      value: {'mime': 'image/png', 'bytes': bytes},
+    );
+
 /// Writes [item] as a stored row — a mirror row as the sync engine would leave
 /// it, or a remote row another station wrote.
 Future<void> seedItemRow(ConfigItem item,
@@ -154,6 +166,11 @@ Future<void> seedBothSides(String key, String identifier, {int rev = 3}) async {
 Future<List<ConfigItemRow>> remoteMappingRows() => (remote
         .select(remote.configItemTable)
       ..where((t) => t.kind.equals(ConfigKind.keyMapping.wireName)))
+    .get();
+
+Future<List<ConfigItemRow>> remoteImageRows() => (remote
+        .select(remote.configItemTable)
+      ..where((t) => t.kind.equals(ConfigKind.pageImage.wireName)))
     .get();
 
 Future<List<ConfigChangeRow>> remoteChanges() =>
@@ -947,6 +964,302 @@ void main() {
               'truth');
       expect(await local.select(local.configItemTable).get(),
           isNot(contains(predicate((ConfigItemRow r) => r.kind == 'page'))));
+    });
+  });
+
+  group('a history-exempt item writes no change row', () {
+    setUp(() => store.attachRemoteDatabase(remote));
+
+    test('an insert lands in config_item and nowhere else', () async {
+      await store.open();
+
+      await store.writeItems(
+        kinds: {ConfigKind.pageImage},
+        wanted: [imageItem('sha256-aaaa')],
+        actionId: 'action-image-1',
+        who: 'jon',
+        roleName: 'engineer',
+      );
+
+      final rows = await remoteImageRows();
+      expect(rows.single.rev, 1);
+      expect(await remoteChanges(), isEmpty,
+          reason: 'the bytes are the row; logging both sides of a 6.7 MB '
+              'base64 blob into a table that is never pruned is C-3');
+    });
+
+    test('an update and a delete are just as silent', () async {
+      await seedItemRow(imageItem('sha256-aaaa'), rev: 4);
+      await seedItemRow(imageItem('sha256-aaaa'), rev: 4, db: remote);
+      await store.open();
+
+      await store.writeItems(
+        kinds: {ConfigKind.pageImage},
+        wanted: [imageItem('sha256-aaaa', bytes: 'Qk0y')],
+        actionId: 'action-image-2',
+        who: 'jon',
+        roleName: 'engineer',
+      );
+      expect((await remoteImageRows()).single.rev, 5);
+      expect(await remoteChanges(), isEmpty);
+
+      await store.writeItems(
+        kinds: {ConfigKind.pageImage},
+        wanted: const [],
+        actionId: 'action-image-3',
+        who: 'jon',
+        roleName: 'engineer',
+      );
+      expect(await remoteImageRows(), isEmpty);
+      expect(await remoteChanges(), isEmpty,
+          reason: 'a garbage-collection pass must not write the whole image '
+              'into the log on its way out');
+    });
+
+    test('a mixed batch logs the item that carries history and only that one',
+        () async {
+      await store.open();
+
+      await store.writeItems(
+        kinds: {ConfigKind.pageImage, ConfigKind.page},
+        wanted: [imageItem('sha256-aaaa'), pageItem('/roe')],
+        actionId: 'action-mixed',
+        who: 'jon',
+        roleName: 'engineer',
+      );
+
+      final log = await remoteChanges();
+      expect(log.map((r) => '${r.kind}:${r.entityId}'), ['page:/roe'],
+          reason: 'the exemption is per item, not per transaction');
+      final items = await remote.select(remote.configItemTable).get();
+      expect(items.map((r) => '${r.kind}:${r.id}').toSet(),
+          {'page_image:sha256-aaaa', 'page:/roe'},
+          reason: 'both still land, and under one transaction');
+    });
+  });
+
+  group('an exempt write nudges the other stations itself', () {
+    late List<(String, String)> notified;
+
+    setUp(() {
+      notified = [];
+      store.notifyChannelForTest = (channel, payload) async {
+        notified.add((channel, payload));
+      };
+      store.attachRemoteDatabase(remote);
+    });
+
+    test('a commit that touched an exempt item names its kinds on the '
+        'config_change channel', () async {
+      await store.open();
+
+      await store.writeItems(
+        kinds: {ConfigKind.pageImage, ConfigKind.page},
+        wanted: [imageItem('sha256-aaaa'), pageItem('/roe')],
+        actionId: 'action-nudge',
+        who: 'jon',
+        roleName: 'engineer',
+      );
+
+      expect(notified, hasLength(1));
+      expect(notified.single.$1, 'config_change');
+      expect(decodeReconcileNudge(notified.single.$2), {ConfigKind.pageImage},
+          reason: 'exempt kinds only — the page beside it wrote a change row '
+              'and reaches the other stations through the trigger, so naming '
+              'it here would be a second notification for one save');
+    });
+
+    test('a save of nothing but ordinary kinds nudges nobody', () async {
+      await store.open();
+
+      await store.writeItems(
+        kinds: {ConfigKind.page},
+        wanted: [pageItem('/roe')],
+        actionId: 'action-plain',
+        who: 'jon',
+        roleName: 'engineer',
+      );
+
+      expect(notified, isEmpty,
+          reason: 'the AFTER INSERT trigger already fired for that row');
+    });
+
+    test('a save refused mid-transaction nudges nobody', () async {
+      // Nothing committed, so there is nothing to reconcile — and a nudge
+      // fired before the commit would have told the plant to re-read a state
+      // that never existed.
+      await seedItemRow(imageItem('sha256-aaaa'), rev: 4);
+      await seedItemRow(imageItem('sha256-aaaa'), rev: 4, db: remote);
+      await store.open();
+      await (remote.update(remote.configItemTable)
+            ..where((t) => t.kind.equals(ConfigKind.pageImage.wireName)))
+          .write(const ConfigItemTableCompanion(rev: Value(99)));
+
+      await expectLater(
+        store.writeItems(
+          kinds: {ConfigKind.pageImage},
+          wanted: [imageItem('sha256-aaaa', bytes: 'Qk0y')],
+          actionId: 'action-lost',
+          who: 'jon',
+          roleName: 'engineer',
+        ),
+        throwsA(isA<ConfigConflict>()),
+      );
+
+      expect(notified, isEmpty);
+    });
+
+    test('a notify that fails does not fail the save that already committed',
+        () async {
+      store.notifyChannelForTest =
+          (_, __) async => throw StateError('connection went away');
+      await store.open();
+
+      await store.writeItems(
+        kinds: {ConfigKind.pageImage},
+        wanted: [imageItem('sha256-aaaa')],
+        actionId: 'action-notify-died',
+        who: 'jon',
+        roleName: 'engineer',
+      );
+
+      expect((await remoteImageRows()), hasLength(1),
+          reason: 'the write is committed before the nudge is sent; a lost '
+              'nudge degrades that kind to sweep latency, it does not undo '
+              'anything');
+    });
+  });
+
+  group('the receiving station acts on a nudge', () {
+    setUp(() => store.attachRemoteDatabase(remote, startSync: false));
+
+    test('a kind-named payload reconciles that kind without touching the '
+        'watermark', () async {
+      await store.open();
+      await seedItemRow(imageItem('sha256-aaaa'), db: remote, rev: 2);
+      final before = store.watermarkForTest;
+
+      await store.handleNotificationForTest(
+          encodeReconcileNudge({ConfigKind.pageImage}));
+
+      expect(store.itemsOf({ConfigKind.pageImage}).single.id, 'sha256-aaaa',
+          reason: 'the image reaches this station now rather than on the '
+              'five-minute sweep — there is no change row for the fast path '
+              'to have seen');
+      expect(store.watermarkForTest, before,
+          reason: 'an exempt write appends no change row, so there is nothing '
+              'to watermark and advancing would skip a row somebody else '
+              'committed');
+    });
+
+    test('the trigger\'s empty payload still means "consume the log"',
+        () async {
+      await store.open();
+      await seedSharedRow('CN04.Belt.Speed', 'gvl.Speed', db: remote);
+      await remote.into(remote.configChangeTable).insert(
+            ConfigChangeTableCompanion.insert(
+              at: DateTime.utc(2026, 3, 3),
+              actionId: 'somebody-else',
+              who: 'gudrun',
+              station: 'other',
+              roleName: 'engineer',
+              kind: ConfigKind.keyMapping.wireName,
+              entityId: 'CN04.Belt.Speed',
+              scope: ConfigScope.shared.wireName,
+              op: 'insert',
+              newValue: const Value('{}'),
+            ),
+          );
+
+      await store.handleNotificationForTest('');
+
+      expect(store.keyMappings.nodes.keys, ['CN04.Belt.Speed']);
+      expect(store.watermarkForTest, greaterThan(0),
+          reason: 'the ordinary path is untouched by any of this');
+    });
+  });
+
+  group('the sweep covers every kind an exempt write can create', () {
+    test('page_image is under sync — without it an exempt row would '
+        'propagate never, not slowly', () {
+      expect(kSharedConfigKinds, contains(ConfigKind.pageImage));
+      expect(
+        ConfigKind.values.toSet().difference(kSharedConfigKinds),
+        {ConfigKind.preference},
+        reason: 'preference is deliberately out: station rows and this '
+            'station\'s own bookkeeping are not the plant\'s configuration. '
+            'Every other kind must be in, because the rev sweep is the only '
+            'net under a kind that writes no change rows.',
+      );
+      expect(kMigrationMarkerIds.keys.toSet(), kSharedConfigKinds,
+          reason: 'a kind under sync with no marker cannot tell an empty '
+              'remote from an unmigrated one, and _remoteIsMigrated logs that '
+              'at error level on every sweep');
+    });
+
+    test('the sweep really does pick a page image up', () async {
+      store.attachRemoteDatabase(remote, startSync: false);
+      await store.open();
+      await seedItemRow(imageItem('sha256-aaaa'), db: remote, rev: 2);
+
+      await store.reconcile();
+
+      expect(store.itemsOf({ConfigKind.pageImage}).single.rev, 2);
+      final mirrored = await local.select(local.configItemTable).get();
+      expect(mirrored.map((r) => r.kind), contains('page_image'),
+          reason: 'and the mirror keeps it, so the next boot has the image '
+              'even with Postgres unreachable');
+    });
+  });
+
+  group('C-12: an insert onto a row that already exists', () {
+    setUp(() => store.attachRemoteDatabase(remote));
+
+    test('raises ConfigConflict naming the entity, not a driver error',
+        () async {
+      await store.open();
+      // The other station created it between this station's read and this
+      // save: the snapshot says "new", the table says otherwise.
+      await seedItemRow(pageItem('/roe'), db: remote, rev: 6);
+
+      await expectLater(
+        store.writeItems(
+          kinds: {ConfigKind.page},
+          wanted: [pageItem('/roe', title: 'Mine')],
+          actionId: 'action-race',
+          who: 'jon',
+          roleName: 'engineer',
+        ),
+        throwsA(isA<ConfigConflict>().having((e) => e.key, 'key', '/roe')),
+      );
+    });
+
+    test('nothing else in the batch commits', () async {
+      await store.open();
+      await seedItemRow(pageItem('/roe'), db: remote, rev: 6);
+
+      await expectLater(
+        store.writeItems(
+          kinds: {ConfigKind.page},
+          wanted: [pageItem('/roe', title: 'Mine'), pageItem('/whitefish')],
+          actionId: 'action-race-2',
+          who: 'jon',
+          roleName: 'engineer',
+        ),
+        throwsA(isA<ConfigConflict>()),
+      );
+
+      final rows = await (remote.select(remote.configItemTable)
+            ..where((t) => t.kind.equals(ConfigKind.page.wireName)))
+          .get();
+      expect(rows.map((r) => r.id), ['/roe'],
+          reason: 'the refusal is the whole transaction\'s, so the sibling '
+              'page must not be left behind on its own');
+      expect(rows.single.updatedBy, 'somebody',
+          reason: 'and the row that was there is untouched');
+      expect(await remoteChanges(), isEmpty);
+      expect(store.itemsOf({ConfigKind.page}), isEmpty,
+          reason: 'the snapshot is not swapped by a save that did not happen');
     });
   });
 }
