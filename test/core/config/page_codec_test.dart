@@ -23,8 +23,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:collection/collection.dart';
+import 'package:flutter/material.dart' show Icons;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/config/page_codec.dart';
+import 'package:tfc/models/menu_item.dart';
+import 'package:tfc/page_creator/assets/common.dart'
+    show Coordinates, RelativeSize;
+import 'package:tfc/page_creator/assets/led.dart';
 import 'package:tfc/page_creator/page.dart';
 import 'package:tfc_dart/core/config/config_diff.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
@@ -507,6 +512,164 @@ void main() {
             reason: 'the generated key has to be written back into the '
                 'payload, or the page disagrees with the map about where it '
                 'lives');
+      }
+    });
+  });
+
+  group('rollout day: adopting the identities already on the rows', () {
+    // Cutover day, in one function. Every station loaded its pages from the
+    // blob before the migration ran, so the manager holds pages and assets
+    // with no id at all — while the rows the migration just wrote hold the
+    // derived ones. Minting fresh ids over that is ~410 removes and ~410 adds
+    // that commit cleanly and sever every identity the migration made.
+    //
+    // What may NOT happen here is deriving an id: `derivedAssetId` is
+    // migration-only, and computing one at save collapses two editors' new
+    // assets into one row. Adoption only ever copies an id that is already on
+    // a stored row.
+
+    /// The rows the migration wrote from [blob].
+    List<ConfigItem> migrated(String blob) => pageItemsFromBlob(blob);
+
+    /// The same layout as the manager holds it after a blob fallback load:
+    /// parsed by the app's own path, with no id anywhere.
+    Map<String, AssetPage> fallback(String blob) =>
+        PageManager.pagesFromJson(blob);
+
+    test('every page and asset takes the id of the row it already is', () {
+      final stored = migrated(_fixtureBlob);
+      final pages = fallback(_fixtureBlob);
+      expect(pages.values.every((p) => p.id == null), isTrue,
+          reason: 'the fallback load mints nothing — that is the premise');
+
+      adoptRowIdentities(pages, stored);
+
+      final storedPageIds = {
+        for (final item in stored)
+          if (item.kind == ConfigKind.page)
+            (item.decode()['menu_item'] as Map)['path'] as String: item.id,
+      };
+      for (final entry in pages.entries) {
+        expect(entry.value.id, storedPageIds[entry.key],
+            reason: 'the page at ${entry.key} must adopt its own row');
+      }
+      // And every asset, against the rows parented by that page.
+      for (final entry in pages.entries) {
+        final rows = [
+          for (final item in stored)
+            if (item.kind == ConfigKind.asset &&
+                item.parentId == entry.value.id)
+              item,
+        ]..sort((a, b) => (a.sortIndex ?? 0).compareTo(b.sortIndex ?? 0));
+        expect(entry.value.assets.map((a) => a.id).toList(),
+            rows.map((r) => r.id).toList(),
+            reason: 'assets on ${entry.key} adopt their rows in order');
+      }
+    });
+
+    test('an adopted layout re-emits the stored items exactly', () {
+      // The proof that matters: what `save()` would write after adoption is
+      // byte-identical to what is stored, so the diff is empty and no row is
+      // touched. Without adoption this is ~410 removes and ~410 adds.
+      final stored = migrated(_fixtureBlob);
+      final pages = fallback(_fixtureBlob);
+
+      adoptRowIdentities(pages, stored);
+      final wanted = pageItems(pages);
+
+      final diff = diffConfigItems(stored: stored, wanted: wanted);
+      expect(diff.added, isEmpty);
+      expect(diff.changed, isEmpty);
+      expect(diff.removed, isEmpty);
+    });
+
+    test('two byte-identical assets adopt in position order', () {
+      // The fixture's home page carries two LEDs identical but for x, and a
+      // real page carries rows of genuinely identical drives. Payload equality
+      // cannot tell those apart, so position is the tiebreak — and getting it
+      // wrong swaps two rows' history for nothing.
+      final stored = migrated(_fixtureBlob);
+      final pages = fallback(_fixtureBlob);
+      adoptRowIdentities(pages, stored);
+
+      final home = pages['/']!;
+      final rows = [
+        for (final item in stored)
+          if (item.kind == ConfigKind.asset && item.parentId == home.id) item,
+      ]..sort((a, b) => (a.sortIndex ?? 0).compareTo(b.sortIndex ?? 0));
+      for (var i = 0; i < home.assets.length; i++) {
+        expect(home.assets[i].id, rows[i].id,
+            reason: 'asset $i must adopt the row at index $i');
+      }
+    });
+
+    test('an asset the rows have never seen is left for pageItems to mint',
+        () {
+      final stored = migrated(_fixtureBlob);
+      final pages = fallback(_fixtureBlob);
+      final home = pages['/']!;
+      final added = LEDConfig(key: 'CN99.New')
+        ..coordinates = Coordinates(x: 0.9, y: 0.9)
+        ..size = const RelativeSize(width: 0.03, height: 0.03);
+      home.assets.add(added);
+
+      adoptRowIdentities(pages, stored);
+
+      expect(added.id, isNull,
+          reason: 'nothing stored is this asset, so nothing may be copied '
+              'onto it; `pageItems` mints a random id');
+      // And the ones that were there still adopted.
+      expect(home.assets.take(home.assets.length - 1).every((a) => a.id != null),
+          isTrue);
+    });
+
+    test('a page whose id is already stored is left entirely alone', () {
+      final stored = migrated(_fixtureBlob);
+      final pages = fallback(_fixtureBlob);
+      // The steady state: this page came off the rows, so it and its assets
+      // carry ids. A new asset on it must NOT take a deleted sibling's row.
+      final home = pages['/']!;
+      home.id = 'aaaaaaaaaaaaaaaaaaaaaaaa';
+      for (final asset in home.assets) {
+        asset.id = null;
+      }
+
+      adoptRowIdentities(pages, stored);
+
+      expect(home.assets.every((a) => a.id == null), isTrue,
+          reason: 'adoption is the rollout-day repair for a page with no '
+              'identity at all, not a general re-pairing pass');
+    });
+
+    test('nothing happens when the store holds no page rows', () {
+      final pages = fallback(_fixtureBlob);
+      adoptRowIdentities(pages, const <ConfigItem>[]);
+      expect(pages.values.every((p) => p.id == null), isTrue);
+      expect(pages.values.expand((p) => p.assets).every((a) => a.id == null),
+          isTrue);
+    });
+
+    test('an id is never derived, only copied', () {
+      // The collision the groundwork fixed: deriving at save gives two
+      // editors' new assets the same id. Adoption must copy or do nothing.
+      final stored = migrated(_fixtureBlob);
+      final pages = fallback(_fixtureBlob);
+      pages['/roe'] = AssetPage(
+        menuItem: const MenuItem(label: 'Roe', path: '/roe', icon: Icons.egg),
+        assets: [],
+        mirroringDisabled: false,
+      );
+
+      adoptRowIdentities(pages, stored);
+
+      expect(pages['/roe']!.id, isNull);
+      expect(pages['/roe']!.id, isNot(derivedPageId('/roe')));
+      final storedIds = {for (final item in stored) item.id};
+      for (final page in pages.values) {
+        if (page.id != null) expect(storedIds, contains(page.id));
+        for (final asset in page.assets) {
+          if (asset.id != null) expect(storedIds, contains(asset.id));
+        }
       }
     });
   });
