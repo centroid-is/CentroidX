@@ -36,6 +36,8 @@ import 'package:stream_channel/stream_channel.dart';
 import 'package:test/test.dart';
 import 'package:tfc_relay_client/src/client_config.dart';
 import 'package:tfc_relay_client/src/heartbeat_pump.dart';
+import 'package:tfc_relay_client/src/remote_state_man.dart'
+    show defaultPageSubscription;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'support/fault_fixture.dart';
@@ -463,6 +465,27 @@ void main() {
               'button with a hundred pings a second');
     });
 
+    test('a busy panel with nothing to acknowledge still skips', () async {
+      // An **absent** ack is not "an ack that has not moved". Read literally,
+      // §6's rule says beat whenever the ack is unchanged — and an empty map
+      // is unchanged for ever, which would put every busy panel between pages
+      // back on a full-rate heartbeat in exchange for telling the gateway a
+      // number it cannot act on. A panel with no subscriptions has no delivery
+      // to be judged on: its `ackedSeq` stays null and the verdict skips it.
+      //
+      // The pre-existing skip arm above covers this for a *null* source; this
+      // one covers a source that answers with an empty map, because the two
+      // must not differ and only one of them is anybody's default.
+      final rig = _Rig(ackSource: () => const {});
+      await busyFor(rig);
+
+      expect(rig.pump.debugHeartbeatsSent, 0,
+          reason: 'the pump sent ${rig.pump.debugHeartbeatsSent} beats for a '
+              'busy panel holding no pages. There is nothing for the gateway '
+              'to learn from them and noteOutbound exists to prevent exactly '
+              'this');
+    });
+
     test('a quiet panel beats whether its ack is moving or not', () async {
       // The other half of the OR, and the one a narrowed gate could silently
       // break: silence alone is still reason enough to beat. A panel watching
@@ -790,6 +813,46 @@ void main() {
       await until('the link to go down',
           () => fixture.client.debugHeartbeatTimerCount == 0,
           budget: const Duration(seconds: 10));
+    }, timeout: const Timeout(Duration(seconds: 60)));
+
+    test('the gateway learns this panel\'s applied sequence from its beat',
+        () async {
+      // **The arm that proves the wiring, and the reason it exists.** Every
+      // other case in this file drives `HeartbeatPump` directly, so all of
+      // them stay green against a pump that is never given an ack source —
+      // which is precisely the shape of the defect this plan was written to
+      // fix, one level down: 16-08 shipped a delivery detector with no
+      // production caller and a full suite proving the detector correct.
+      //
+      // So this one asserts nothing about the pump. It stands up a real
+      // `RemoteStateMan` against a real gateway, touches only the public
+      // surface, and reads the answer off the *server's* send buffer: if
+      // `deliveryGapOf` is a number, then this panel's `SubscriptionState`
+      // reached `HeartbeatPump`, became a `ping` frame, crossed a socket, was
+      // decoded by `PingParams`, and landed in `recordAck`. There is no other
+      // path by which that value can stop being null.
+      final fixture = await faultFixture(
+        keys: const {'ST101.CN01.MOT01.setpoint'},
+        seed: (plant) => plant.setValue('ST101.CN01.MOT01.setpoint', 1200),
+      );
+
+      await until('the link', () => fixture.client.isReady,
+          budget: const Duration(seconds: 10));
+
+      final session = fixture.server.sessions.sessions.single;
+      expect(session.buffer.deliveryGapOf(defaultPageSubscription), isNull,
+          reason: 'the gateway is holding an opinion about delivery before '
+              'the panel has said anything, so the assertion below would pass '
+              'without a beat ever carrying an ack');
+
+      await until('the gateway to learn what this panel has applied',
+          () => session.buffer.deliveryGapOf(defaultPageSubscription) != null,
+          budget: const Duration(seconds: 10));
+
+      expect(session.buffer.deliveryGapOf(defaultPageSubscription), isNonNegative,
+          reason: 'and the number it learned is a real gap: the ack is '
+              'clamped to what was sent, so a panel cannot acknowledge a '
+              'frame this gateway never produced');
     }, timeout: const Timeout(Duration(seconds: 60)));
   }, tags: 'faults');
 }

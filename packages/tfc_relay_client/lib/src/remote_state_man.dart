@@ -162,6 +162,20 @@ final class RemoteStateMan implements StateManApi {
       config: config,
       isReady: () => _supervisor.state == LinkState.ready,
       peer: () => _supervisor.peer,
+      // The delivery ack (16-02-DECISION §5.1). Read straight off the
+      // subscription state the resync path already maintains, so the pump
+      // owns no counter of its own that could disagree with what this client
+      // has actually applied — and so an ack can never claim a frame the
+      // supervisor rejected.
+      //
+      // `lastSeq == null` is an unestablished subscription: it has been asked
+      // for but no snapshot has landed, so there is nothing it could honestly
+      // acknowledge. Those are omitted rather than sent as a zero, which the
+      // gateway would read as a page 10 000 frames behind.
+      ackSource: () => {
+        for (final state in _subscriptions.values)
+          if (state.lastSeq case final seq?) state.subId: seq,
+      },
       // A gateway whose deadline this panel's floor cannot beat reaps it
       // anyway, with the pump running (07-REVIEW WR-01). It surfaces on the
       // one diagnostic list this client has rather than in the silence that
