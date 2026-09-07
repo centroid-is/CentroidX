@@ -83,10 +83,15 @@ void main() {
     // `access_key_binding` (`access_template_table_test.dart`) and
     // `app_user.station_account` (`station_account_column_test.dart`) all
     // arrive in the same v6 arm this suite covers.
-    test('schema version is 6', () async {
+    test('schema version is at least 6', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 6);
+      // At least, not exactly. What this suite cares about is that the access
+      // tables arrived in the `from < 6` arm and that the arm therefore runs
+      // for anything older; the current number is owned by
+      // `database_migration_test.dart`, which is where a bump is asserted
+      // rather than merely tolerated.
+      expect(db.schemaVersion, greaterThanOrEqualTo(6));
     });
 
     test('seeds exactly four roles', () async {
@@ -264,10 +269,11 @@ void main() {
 
       final row =
           await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 6,
+      expect(row.read<int>('user_version'), db.schemaVersion,
           reason: 'a v5 database opens straight to the current version — '
-              'onUpgrade(5, 6) runs the one access branch, which is the whole '
-              'milestone');
+              'onUpgrade(5, current) runs the access branch, which is the '
+              'whole of the milestone this suite covers, and every arm added '
+              'since');
     });
   });
 

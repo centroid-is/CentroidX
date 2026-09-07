@@ -32,9 +32,56 @@ const _accessTables = [
   'audit_entry',
 ];
 
+/// The relational configuration tables added in the v6→v7 migration.
+const _configTables = [
+  'config_item',
+  'config_change',
+];
+
+/// The indexes that go up with them, in the same arm.
+const _configIndexes = [
+  'idx_config_item_scope_kind',
+  'idx_config_change_entity',
+  'idx_config_change_action',
+];
+
+/// Returns the set of named index names in the given [db].
+Future<Set<String>> _indexNames(GeneratedDatabase db) async {
+  final rows = await db.customSelect(
+    "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'",
+  ).get();
+  return rows.map((r) => r.read<String>('name')).toSet();
+}
+
+/// The `CREATE TABLE` text SQLite itself recorded for [table] — what the
+/// engine stored, not what drift meant to say.
+Future<String> _sqliteDdl(GeneratedDatabase db, String table) async {
+  final rows = await db.customSelect(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?",
+    variables: [Variable<String>(table)],
+  ).get();
+  expect(rows, hasLength(1), reason: 'no `$table` table to read DDL from');
+  return rows.first.read<String>('sql');
+}
+
+/// Undoes the v7 arm on an already-created database, leaving it shaped like a
+/// v6 one so the arm can then be run against it for real.
+///
+/// Dropping is how a v6 database is reached from here: `inMemoryForTest`
+/// creates at the current schema version, so there is no other way to an older
+/// shape short of hand-writing the whole of v6.
+Future<void> _dropConfigSchema(GeneratedDatabase db) async {
+  for (final index in _configIndexes) {
+    await db.customStatement('DROP INDEX IF EXISTS $index');
+  }
+  for (final table in _configTables) {
+    await db.customStatement('DROP TABLE IF EXISTS $table');
+  }
+}
+
 void main() {
   group('AppDatabase migration', () {
-    test('fresh install (v6) creates all MCP tables', () async {
+    test('fresh install (v7) creates all MCP tables', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
 
@@ -59,10 +106,94 @@ void main() {
       }
     });
 
-    test('schema version is 6', () async {
+    test('schema version is 7', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 6);
+      expect(db.schemaVersion, 7);
+    });
+
+    test('fresh install creates the config tables and their indexes',
+        () async {
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      await db.customSelect('SELECT 1').getSingle();
+
+      final tables = await _tableNames(db);
+      for (final table in _configTables) {
+        expect(tables, contains(table),
+            reason: 'config table "$table" should exist on fresh install');
+      }
+
+      // The indexes come from `_createConfigIndexes`, called by `onCreate` as
+      // well as by the arm — a fresh install never runs the arm, so without
+      // that call a new station would read `config_item` by table scan.
+      final indexes = await _indexNames(db);
+      for (final index in _configIndexes) {
+        expect(indexes, contains(index),
+            reason: 'config index "$index" should exist on fresh install');
+      }
+    });
+
+    test('the SQLite config tables carry no CHECK on scope', () async {
+      // The invariant, from the side that is easy to break by accident.
+      // `CHECK (scope = 'shared')` belongs on the Postgres tables only: the
+      // local database is where `station:<hostname>` rows live, and the same
+      // constraint here would reject every row this milestone writes.
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      await db.customSelect('SELECT 1').getSingle();
+
+      for (final table in _configTables) {
+        final ddl = await _sqliteDdl(db, table);
+        expect(ddl.toUpperCase().contains('CHECK'), isFalse,
+            reason: 'the SQLite `$table` must not constrain `scope`. Station '
+                'rows are the only rows a local database will ever hold, so a '
+                "CHECK (scope = 'shared') here rejects all of them. It is the "
+                'Postgres DDL that carries it, and only that one.');
+      }
+    });
+
+    test('a v6 database upgrades to v7, twice over', () async {
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      await db.customSelect('SELECT 1').getSingle();
+
+      await _dropConfigSchema(db);
+      expect(await _tableNames(db), isNot(contains('config_item')),
+          reason: 'the teardown must actually reach a v6 shape, or the arm '
+              'below would be asserted against a database that already has '
+              'everything it creates');
+
+      await db.migration.onUpgrade(Migrator(db), 6, 7);
+
+      var tables = await _tableNames(db);
+      var indexes = await _indexNames(db);
+      for (final table in _configTables) {
+        expect(tables, contains(table),
+            reason: 'the v7 arm must create $table');
+      }
+      for (final index in _configIndexes) {
+        expect(indexes, contains(index),
+            reason: 'the v7 arm must create $index');
+      }
+
+      // Several SVN stations share one database and each of them runs the arm
+      // when it opens, so the second one through must be a no-op rather than
+      // an abort that leaves the database half-upgraded. Asserted on SQLite
+      // because that is the arm a test can execute — drift's `createTable`
+      // emits `CREATE TABLE IF NOT EXISTS` too. The Postgres arm's
+      // idempotency rests on its own `IF NOT EXISTS` literals and is
+      // unexercised here, exactly as that arm's comment says.
+      await db.migration.onUpgrade(Migrator(db), 6, 7);
+
+      tables = await _tableNames(db);
+      indexes = await _indexNames(db);
+      for (final table in _configTables) {
+        expect(tables, contains(table));
+      }
+      for (final index in _configIndexes) {
+        expect(indexes, contains(index));
+      }
     });
 
     test('MCP tables support basic CRUD operations', () async {
