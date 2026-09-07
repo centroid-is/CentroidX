@@ -131,25 +131,45 @@ void main() {
       }
     });
 
-    test('no family is delegated to the source instead of refused', () {
-      // The fail-open, stated directly. `PolicyStateMan` wraps a source that
-      // *would* answer if asked, so a getter that forwarded would work — and
-      // would put the administration families on the wire ungated. This arm is
-      // the one that must go red if anybody replaces a refusal with
-      // `source.accessAdmin`.
-      for (final member in accessFamilies) {
-        Object? returned;
-        var threw = false;
-        try {
-          returned = reachFamily(policyOverPlant(), member);
-        } catch (_) {
-          threw = true;
-        }
-        expect(threw, isTrue,
-            reason: 'PolicyStateMan.$member answered with $returned rather '
-                'than refusing. There is no gate in front of these families '
-                'yet, so an answer is an ungated administration surface');
+    test('the refusal is not delegation in disguise: a source that ANSWERS is '
+        'still refused', () {
+      // The fail-open, stated directly — and the fixture matters more than the
+      // assertion. A `FakeStateMan` source refuses these four itself, so a
+      // `PolicyStateMan` that delegated to one would *still throw* and this arm
+      // would pass while the decorator did nothing. That is a vacuous pin, and
+      // sabotage (c) found it: replacing the refusal with `source.accessAdmin`
+      // left this arm green.
+      //
+      // So the source here genuinely answers. Now delegation is observable as a
+      // non-throw, and the arm fails exactly when the decorator stops deciding.
+      final answering = _ConfigAnsweringSource();
+      addTearDown(answering.dispose);
+      final api = PolicyStateMan(
+        source: answering,
+        policy: const AllVisibleOperatorWrites(),
+        resolver: const PermissiveSeriesResolver(),
+        tally: SeriesMappingTally(),
+        identityOf: () => null,
+      );
+
+      // The control on the fixture itself: the source really does answer, so a
+      // refusal below is the decorator's decision and not the source's.
+      expect(answering.backendConfig, isA<BackendConfigApi>(),
+          reason: 'if this throws, the fixture stopped answering and the arm '
+              'below is vacuous again');
+
+      Object? returned;
+      var threw = false;
+      try {
+        returned = api.backendConfig;
+      } catch (_) {
+        threw = true;
       }
+      expect(threw, isTrue,
+          reason: 'PolicyStateMan.backendConfig answered with $returned by '
+              'passing its source through. There is no gate in front of these '
+              'families yet, so an answer is an ungated administration '
+              'surface — D-10 grades all five config methods `administer`');
     });
 
     test('LIVE CONTROL: the four data-service getters still decorate', () {
@@ -233,4 +253,42 @@ void main() {
       expect(stack.timeseries, isA<TimeseriesApi>());
     });
   });
+}
+
+/// A source whose `backendConfig` genuinely answers.
+///
+/// Exists so the fail-open arm above has something to observe. Every other
+/// member is `FakeStateMan`'s, including the other three access refusals — the
+/// single override is the whole point, and a broader stub would blur which
+/// object the arm is judging.
+///
+/// `backendConfig` is the family chosen because its two return types
+/// ([BackendConfigDocument] and [ConfigValidation]) are declared in
+/// `tfc_relay_protocol` itself. The other three answer with `tfc_access`'s own
+/// types (`AccessTemplate`, `AccessRole`, `AuditRecord`), and this package does
+/// not depend on `tfc_access` yet — 17-04 adds that edge, and when it does this
+/// arm can be widened to all four.
+class _ConfigAnsweringSource extends FakeStateMan {
+  @override
+  BackendConfigApi get backendConfig => _AnsweringBackendConfig();
+}
+
+/// The answer a fail-open would let through.
+final class _AnsweringBackendConfig implements BackendConfigApi {
+  @override
+  Future<BackendConfigDocument> read() async =>
+      const BackendConfigDocument(configJson: '{}');
+
+  @override
+  Future<ConfigValidation> validate(String configJson) async =>
+      const ConfigValidation(ok: true);
+
+  @override
+  Future<void> write(String configJson, {String? reason}) async {}
+
+  @override
+  Future<BackendConfigDocument?> previous() async => null;
+
+  @override
+  Future<void> restorePrevious({String? reason}) async {}
 }
