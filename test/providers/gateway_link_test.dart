@@ -562,9 +562,14 @@ void main() {
       final container = await _panel(GatewayConfig(
           mode: TransportMode.gateway, url: gateway.uri.toString()));
 
+      // The predicate is "settled", not "credentialRefused". Waiting on the
+      // kind would turn every mutation of the kind into a five-second timeout,
+      // and a timeout names nothing — the two assertions below fail with the
+      // kind and the flag that actually moved.
       final report = await _report(
-          container, (r) => r.kind == GatewayLinkKind.credentialRefused);
+          container, (r) => r.kind != GatewayLinkKind.connecting);
 
+      expect(report.kind, GatewayLinkKind.credentialRefused);
       expect(report.terminal, isTrue,
           reason: 'the gateway has already decided about this token and would '
               'refuse it again; a panel that kept dialling would be a busy '
@@ -597,8 +602,9 @@ void main() {
           mode: TransportMode.gateway, url: gateway.uri.toString()));
 
       final report = await _report(
-          container, (r) => r.kind == GatewayLinkKind.versionRefused);
+          container, (r) => r.kind != GatewayLinkKind.connecting);
 
+      expect(report.kind, GatewayLinkKind.versionRefused);
       expect(report.terminal, isTrue);
       expect(report.raw, contains(GatewayLinkReasons.versionRefused));
 
