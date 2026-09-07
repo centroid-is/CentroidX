@@ -64,6 +64,16 @@ Future<String> _sqliteDdl(GeneratedDatabase db, String table) async {
   return rows.first.read<String>('sql');
 }
 
+/// The v8 `config_change` NOTIFY statements as the database would receive
+/// them, joined for matching.
+///
+/// The arm that runs them is Postgres-only and nothing in this package can
+/// execute it — the gap the v6 and v7 Postgres arms record about themselves.
+/// So what is left to assert is the text, and it is asserted against the
+/// runtime strings rather than the source, which carries Dart's escaping.
+String _notifyStatements() =>
+    AppDatabase.configChangeNotifyStatementsForTest.join('\n');
+
 /// Undoes the v7 arm on an already-created database, leaving it shaped like a
 /// v6 one so the arm can then be run against it for real.
 ///
@@ -81,7 +91,7 @@ Future<void> _dropConfigSchema(GeneratedDatabase db) async {
 
 void main() {
   group('AppDatabase migration', () {
-    test('fresh install (v7) creates all MCP tables', () async {
+    test('fresh install creates all MCP tables', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
 
@@ -106,10 +116,10 @@ void main() {
       }
     });
 
-    test('schema version is 7', () async {
+    test('schema version is 8', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 7);
+      expect(db.schemaVersion, 8);
     });
 
     test('fresh install creates the config tables and their indexes',
@@ -194,6 +204,63 @@ void main() {
       for (final index in _configIndexes) {
         expect(indexes, contains(index));
       }
+    });
+
+    test('the v8 arm is a no-op on SQLite, run twice over', () async {
+      // The whole content of v8 is a Postgres trigger, so on SQLite there is
+      // nothing to create and nothing to find afterwards. What this pins is
+      // that the arm *runs* here without throwing: an `if (native)` written
+      // the wrong way round, or a `customStatement` outside the dialect
+      // guard, would send `CREATE TRIGGER … EXECUTE FUNCTION` to SQLite and
+      // fail every local database's open — which on a station is not a failed
+      // migration, it is an HMI that will not start.
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      await db.customSelect('SELECT 1').getSingle();
+
+      final before = await _tableNames(db);
+      await db.migration.onUpgrade(Migrator(db), 7, 8);
+      await db.migration.onUpgrade(Migrator(db), 7, 8);
+
+      expect(await _tableNames(db), before,
+          reason: 'the v8 arm must add nothing to a SQLite database');
+    });
+
+    test('the v8 NOTIFY trigger carries a constant empty payload', () async {
+      // The one property of this trigger that must never drift. `pg_notify`
+      // does not truncate an oversized payload, it errors the statement that
+      // fired it — so a trigger that carried the changed row, or the changed
+      // key, would eventually fail the very save it was reporting. A constant
+      // payload also collapses to one delivery per transaction, which is what
+      // "one NOTIFY per action" is made of.
+      final source = _notifyStatements();
+
+      expect(source, contains("pg_notify('config_change', '')"),
+          reason: 'the payload must stay the empty string. Carrying the key '
+              'in it is what enableKeyedNotificationChannel does, and it is '
+              'the wrong primitive here: N keys in one save become N '
+              'payloads and N deliveries, and a large one errors the save.');
+      expect(source.contains('json_build_object'), isFalse,
+          reason: 'a payload built from the row is the 8000-byte hazard this '
+              'trigger exists to avoid');
+    });
+
+    test('the v8 trigger is statement-level, insert-only and re-runnable',
+        () async {
+      final source = _notifyStatements();
+
+      expect(source, contains('AFTER INSERT ON config_change'),
+          reason: 'config_change is append-only; there is no UPDATE or '
+              'DELETE to notify about');
+      expect(source, contains('FOR EACH STATEMENT'),
+          reason: 'with a constant payload a row-level trigger does the same '
+              'work once per row instead of once per statement');
+      expect(source, contains('DROP TRIGGER IF EXISTS config_change_notify'),
+          reason: 'several SVN stations share one database and each of them '
+              'runs this arm when it opens, so it has to be safe twice');
+      expect(source, contains('CREATE OR REPLACE FUNCTION'),
+          reason: 'same reason as the DROP: the second station through must '
+              'not abort the migration half-way');
     });
 
     test('MCP tables support basic CRUD operations', () async {

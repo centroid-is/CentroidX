@@ -599,7 +599,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   }
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
 
   /// The `audit_entry` indexes, created outside Drift because Drift's
   /// `@TableIndex` cannot express `DESC` and every one of these is a
@@ -696,6 +696,88 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     }
   }
 
+  /// The `config_change` NOTIFY trigger — the server side of the change feed.
+  ///
+  /// **The payload is a constant empty string, and that is the whole design.**
+  /// Postgres delivers one event per identical `(channel, payload)` pair
+  /// signalled within a transaction, so a constant payload is exactly one
+  /// notification per committed action however many rows that action wrote.
+  /// It also makes the 8000-byte `pg_notify` cap structurally unreachable —
+  /// and that cap does not truncate, it *errors the statement that fired the
+  /// trigger*, which is to say it would fail the very save it is reporting.
+  ///
+  /// That is also why [enableKeyedNotificationChannel] must **not** be reused
+  /// here. It embeds the changed key in the payload, so nine keys saved
+  /// together are nine distinct payloads and nine deliveries. It stays exactly
+  /// as it is for `alarm_man_config`, whose watcher does need to know which
+  /// row moved; this channel's receivers do not, because what follows an event
+  /// is a `config_change.id` watermark pull that is the same read either way.
+  ///
+  /// `AFTER INSERT` only: `config_change` is append-only, so there is no
+  /// UPDATE or DELETE to report. `FOR EACH STATEMENT` rather than
+  /// `FOR EACH ROW`: with a constant payload the two are indistinguishable to
+  /// a receiver, and the statement-level trigger fires once for a multi-row
+  /// insert instead of once per row.
+  ///
+  /// `DROP TRIGGER IF EXISTS` followed by `CREATE`, not
+  /// `CREATE OR REPLACE TRIGGER`, which needs PG14+ and buys nothing here.
+  /// With `CREATE OR REPLACE FUNCTION` that makes the whole arm safe to run
+  /// twice, which it has to be: several SVN stations share one database and
+  /// each of them runs it when it opens.
+  static const List<String> _configChangeNotifyStatements = [
+    'CREATE OR REPLACE FUNCTION notify_config_change() RETURNS TRIGGER AS '
+        '\$\$ BEGIN PERFORM pg_notify(\'config_change\', \'\'); RETURN NULL; END; \$\$ '
+        'LANGUAGE plpgsql',
+    'DROP TRIGGER IF EXISTS config_change_notify ON config_change',
+    'CREATE TRIGGER config_change_notify AFTER INSERT ON config_change '
+        'FOR EACH STATEMENT EXECUTE FUNCTION notify_config_change()',
+  ];
+
+  /// [_configChangeNotifyStatements] as the database would receive them.
+  ///
+  /// Exists because no test in this package can execute them — there is no
+  /// Postgres in `test/core/` — so the only thing left to assert is their
+  /// text, and asserting the *runtime* strings beats reading them back out of
+  /// the source: the source carries Dart's escaping and an adjacent-literal
+  /// concatenation, and a test that matched that text would be matching the
+  /// spelling rather than the statement.
+  @visibleForTesting
+  static List<String> get configChangeNotifyStatementsForTest =>
+      _configChangeNotifyStatements;
+
+  /// Install [_configChangeNotifyStatements] — **on Postgres only**.
+  ///
+  /// Called from `onCreate` and from the `from < 8` upgrade branch, the way
+  /// [_createConfigIndexes] is called from both, so a database that was
+  /// created at v8 and one that was upgraded to it agree. Without the
+  /// `onCreate` call a freshly created Postgres would simply never notify, and
+  /// the symptom would be "one station's edits do not reach the others" with
+  /// nothing in any log to say why.
+  ///
+  /// **The asymmetry is deliberate.** SQLite has no LISTEN/NOTIFY to install
+  /// this on, and the local file has one writer — the station itself, which
+  /// already knows what it wrote. There is nobody there to tell.
+  ///
+  /// The backend is read off `executor.dialect` rather than through [postgres]
+  /// (`executor is PgDatabase`), which is **false on every station**: the app
+  /// opens its database with [AppDatabase.spawn] and the main-isolate executor
+  /// is a drift remote proxy, not a `PgDatabase`. A migration runs inside the
+  /// isolate, where that getter would in fact work — the dialect check is used
+  /// anyway so this codebase has one rule for reading the backend and not two.
+  ///
+  /// **No test executes the Postgres arm**, exactly as the `from < 6` and
+  /// `from < 7` arms say of their own. The inherited gap is recorded in
+  /// `.planning/phases/01-identity-and-audit/deferred-items.md` §1 and is
+  /// still open. What stands behind these three statements is a read of the
+  /// Postgres documentation and the `config_change` DDL directly above; the
+  /// first thing that will run them is a station.
+  Future<void> _createConfigChangeNotifyTrigger(Migrator m) async {
+    if (m.database.executor.dialect != SqlDialect.postgres) return;
+    for (final stmt in _configChangeNotifyStatements) {
+      await m.database.customStatement(stmt);
+    }
+  }
+
   /// Write the four roles from `kSeedRoles` into `app_role`.
   ///
   /// `onConflict: DoNothing()` emits `ON CONFLICT DO NOTHING`, which both
@@ -739,6 +821,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           await _createAuditIndexes(m);
           await _createAccessBindingIndexes(m);
           await _createConfigIndexes(m);
+          await _createConfigChangeNotifyTrigger(m);
           await _seedAccessRoles();
         },
         onUpgrade: (m, from, to) async {
@@ -961,6 +1044,23 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
                   'CREATE TABLE IF NOT EXISTS config_change (id SERIAL PRIMARY KEY, at TEXT NOT NULL, action_id TEXT NOT NULL, who TEXT NOT NULL, station TEXT NOT NULL, role_name TEXT NOT NULL, reason TEXT, kind TEXT NOT NULL, entity_id TEXT NOT NULL, scope TEXT NOT NULL, op TEXT NOT NULL, old_value TEXT, new_value TEXT, CONSTRAINT config_change_shared_only CHECK (scope = \'shared\'))');
             }
             await _createConfigIndexes(m);
+          }
+
+          // Schema v8: the `config_change` NOTIFY trigger — the server half of
+          // "another station's edit arrives without a restart". v7 gave the log
+          // a place to live; this makes writing to it tell anyone listening.
+          //
+          // The arm is Postgres-only and the SQLite side is deliberately
+          // nothing at all, which is why it is one call rather than an
+          // `if (native)` pair like the two arms above: the asymmetry is the
+          // whole content of the arm, so it is stated once, in
+          // [_createConfigChangeNotifyTrigger], instead of being spread across
+          // a branch here and a comment there.
+          //
+          // No table changed, so no codegen: v8 is DDL that lives outside the
+          // drift schema entirely, the way the indexes above do.
+          if (from < 8) {
+            await _createConfigChangeNotifyTrigger(m);
           }
         },
       );
