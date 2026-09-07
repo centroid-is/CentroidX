@@ -740,7 +740,22 @@ class Database {
   /// These errors mean the connection pool is dead and retrying on the same
   /// pool is pointless. The health monitor will detect the outage and trigger
   /// provider recreation with a fresh pool.
-  static bool _isConnectionError(Object e) {
+  ///
+  /// **Why the message is matched as a string rather than the exception typed.**
+  /// The app builds its database with [AppDatabase.spawn], so every statement
+  /// crosses a DriftIsolate and every failure comes back as a
+  /// `DriftRemoteException` wrapping whatever survived isolate serialisation.
+  /// A `catch (e) if (e is SocketException)` therefore never fires on a
+  /// station: the `SocketException` is on the other side of the port and only
+  /// its `toString()` made the trip. The type check above still earns its
+  /// place for the in-process case (the backend, the collector, tests), and
+  /// the string arms are what make this work through the isolate.
+  ///
+  /// Public because `ConfigStore` classifies a failed shared write with it
+  /// (a mid-session outage must read as "Postgres is unreachable", not as a
+  /// generic driver string), and a second string matcher living beside this
+  /// one would go stale the first time a new driver message appeared.
+  static bool isConnectionError(Object e) {
     if (e is SocketException) return true;
     final msg = e.toString();
     return msg.contains('SocketException') ||
@@ -749,6 +764,10 @@ class Database {
         msg.contains('Connection closed') ||
         msg.contains('broken pipe');
   }
+
+  /// The private name the existing call sites use, delegating to
+  /// [isConnectionError] so there is one classifier and not two.
+  static bool _isConnectionError(Object e) => isConnectionError(e);
 
   /// Returns true if [e] is specifically a "column does not exist" error (42703).
   static bool _isMissingColumnError(Object e) {
