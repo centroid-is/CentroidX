@@ -405,6 +405,20 @@ void main() {
           reason: 'the barrel header promises every export is FFI-free; a new '
               'export has to keep that true. ${walk.report}');
       expect(walk.files.length, greaterThan(5));
+      // Named rather than left to the count: every file added to the barrel is
+      // a file this walk now has to police, and a walk that silently stopped
+      // reaching one would keep passing. `config_consistency.dart` (04-08) is
+      // the newest, and it pulled `config_change.dart`,
+      // `config_history_policy.dart` and the change table's declaration into
+      // the barrel's graph behind it.
+      expect(
+          walk.files.map((f) => p.basename(f)),
+          containsAll([
+            'page_rows.dart',
+            'config_consistency.dart',
+            'config_history_policy.dart',
+            'config_item_table.dart',
+          ]));
     });
 
     test('the walk still catches the pull D-3 arrived through', () {
