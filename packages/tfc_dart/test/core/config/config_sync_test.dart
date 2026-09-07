@@ -196,7 +196,10 @@ void main() {
   });
 
   tearDown(() async {
-    store.detachRemote();
+    // Settle before closing: a reconcile still reading when the database under
+    // it disappears logs a failure that is the teardown's fault and nothing
+    // else's, and reading it in a failure report costs somebody an hour.
+    await store.syncSettled;
     await store.close();
     await local.close();
     await remote.close();

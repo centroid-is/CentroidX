@@ -35,7 +35,10 @@
 ///
 /// ## No dialect branch, deliberately
 ///
-/// There is no `if (postgres) … else …` anywhere in this file. Drift's typed
+/// There is exactly one in the whole library — `config_sync.dart`'s gate on
+/// the notification channel, because LISTEN/NOTIFY is a thing SQLite does not
+/// have rather than a thing it spells differently. Everywhere else, and
+/// nowhere in this file, there is no `if (postgres) … else …`. Drift's typed
 /// query builders emit the right dialect from `executor.dialect`, so the
 /// compare-and-swap, the inserts and the guarded deletes are one piece of code
 /// for both backends — which is also what makes an in-memory SQLite stand-in
@@ -68,6 +71,12 @@ import 'config_store_errors.dart';
 // Prefixed: the codec's `keyMappingItems` and this store's getter of the same
 // name are two different things, and inside the class the getter would win.
 import 'key_mapping_codec.dart' as codec;
+// One constant, and no policy type: the marker is how the sync engine tells a
+// plant with no key mappings from one whose migration has not run. Spelling it
+// out here instead would be a second definition of the same row.
+import 'key_mapping_migration.dart' show kKeyMappingsMigratedMarkerId;
+
+part 'config_sync.dart';
 
 /// The local row that records how far this station has consumed the shared
 /// change log.
@@ -108,10 +117,16 @@ class ConfigStore {
     required ConfigScope stationScope,
     required String station,
     Database? remote,
+    Duration sweepInterval = kConfigSweepInterval,
   })  : _local = local,
         _stationScope = stationScope,
         _station = station,
-        _remote = remote?.db;
+        _sweepInterval = sweepInterval {
+    // A remote given here is attached exactly as one given later is, timer and
+    // notification channel included. Two ways to hand over a remote is
+    // tolerable; two meanings of "attached" is not.
+    if (remote != null) _attach(remote.db);
+  }
 
   /// `config.sqlite` — the mirror of the shared rows and the owner of this
   /// station's own.
@@ -128,6 +143,13 @@ class ConfigStore {
   /// The Postgres side, or null when this process never reached it.
   AppDatabase? _remote;
 
+  /// The sync engine for the attached remote, or null when there is none. Its
+  /// life is the attachment: see [_KeyMappingSync].
+  _KeyMappingSync? _sync;
+
+  /// How often the attached engine runs its full revision sweep.
+  final Duration _sweepInterval;
+
   /// The shared `key_mapping` rows, keyed by mapping key. Replaced wholesale
   /// on every swap; never handed out.
   Map<String, ConfigItem> _snapshot = const {};
@@ -143,7 +165,18 @@ class ConfigStore {
   ///
   /// Idempotent: every step is a no-op the second time, so a caller that is
   /// not sure whether the store is open may simply open it.
-  Future<void> open() async {
+  ///
+  /// Runs on the sync engine's serialisation chain when a remote is attached.
+  /// Without that, an `open()` racing a reconcile would refill the snapshot
+  /// from the mirror behind the reconcile's back and quietly undo it — which
+  /// is the shape of every "the station came up with yesterday's wiring" bug
+  /// this milestone exists to end.
+  Future<void> open() {
+    final sync = _sync;
+    return sync == null ? _open() : sync.serialise(_open);
+  }
+
+  Future<void> _open() async {
     await _rehomePhase1Cache();
     _snapshot = {
       for (final row in await _sharedMappingRows()) row.id: _itemOf(row),
@@ -181,7 +214,9 @@ class ConfigStore {
   /// Whether a shared write can even be attempted right now.
   bool get hasRemote => _remote != null;
 
-  /// Points the write path at [remote].
+  /// Points the write path at [remote] and starts the sync engine: a full
+  /// revision reconcile, the `config_change` notification channel, and the
+  /// five-minute sweep.
   ///
   /// **A reconnect must call this again.** The store's object identity is
   /// stable for the life of the process on purpose — that is what lets a
@@ -192,10 +227,25 @@ class ConfigStore {
   /// with a driver error rather than reporting itself as offline. Re-attaching
   /// on every rebuild of the database provider is the app layer's job, and is
   /// why this is a method rather than a constructor argument.
-  void attachRemote(Database remote) => _remote = remote.db;
+  ///
+  /// Idempotent per handle: attaching the same [Database] twice reconciles
+  /// once and leaves one subscription and one timer. Attaching a *different*
+  /// one detaches the old first — which is why the re-attach reconciles rather
+  /// than pulls: notifications sent while nothing was listening are gone, and
+  /// no watermark can describe what they said.
+  ///
+  /// Returns immediately. The reconcile is queued; [syncSettled] is how a test
+  /// waits for it.
+  void attachRemote(Database remote) => _attach(remote.db);
 
-  /// Forgets the remote. The snapshot and the mirror are untouched.
-  void detachRemote() => _remote = null;
+  /// Cancels the notification subscription and the sweep timer, and forgets
+  /// the remote. The snapshot and the mirror are untouched — they are exactly
+  /// what an offline boot serves.
+  void detachRemote() {
+    _sync?.stop();
+    _sync = null;
+    _remote = null;
+  }
 
   /// Points the write path at a bare [AppDatabase].
   ///
@@ -207,8 +257,61 @@ class ConfigStore {
   /// in-memory [AppDatabase] as "the remote" runs the same generated schema
   /// and the same SQL, so what the tests prove is the statements rather than a
   /// mock's idea of them.
+  ///
+  /// [startSync] false attaches everything except the things that run on their
+  /// own: no initial reconcile, no notification channel, no sweep timer.
+  /// [pullChanges] and [reconcile] still work, and are then the *only* way
+  /// anything is applied.
+  ///
+  /// Two kinds of test need it. One drives the pull and the sweep by hand and
+  /// asserts which rows each of them touched, which a background reconcile
+  /// would answer for them. The other has to control the window between
+  /// another station's write and this store's next save: with sync running
+  /// that window closes on its own — a property the integration suite proves
+  /// on purpose, and one a compare-and-swap test may not quietly depend on.
   @visibleForTesting
-  void attachRemoteDatabase(AppDatabase remote) => _remote = remote;
+  void attachRemoteDatabase(AppDatabase remote, {bool startSync = true}) =>
+      _attach(remote, startSync: startSync);
+
+  void _attach(AppDatabase remote, {bool startSync = true}) {
+    if (identical(_remote, remote) && _sync?.started == startSync) return;
+    detachRemote();
+    _remote = remote;
+    final sync = _KeyMappingSync(this, remote, _sweepInterval);
+    _sync = sync;
+    if (!startSync) return;
+    sync.start();
+    sync._swallow(sync.reconcile());
+  }
+
+  /// Completes when every sync task queued so far has been applied.
+  ///
+  /// Tests await it. The app does not have to: the store's stream and its
+  /// snapshot are the interface, and both are only ever updated at the end of
+  /// one of these tasks.
+  @visibleForTesting
+  Future<void> get syncSettled => _sync?.settled ?? Future<void>.value();
+
+  /// Consumes the shared change log from the watermark — the fast path a
+  /// notification triggers, exposed so the unit lane can trigger it by hand.
+  @visibleForTesting
+  Future<void> pullChanges() => _sync?.pull() ?? Future<void>.value();
+
+  /// The full revision sweep — the net under the watermark, exposed for the
+  /// same reason.
+  @visibleForTesting
+  Future<void> reconcile() => _sync?.reconcile() ?? Future<void>.value();
+
+  /// Whether the five-minute sweep is running. False for a store with no
+  /// remote, which is the whole point: a widget test that never attached one
+  /// must not be left holding a periodic timer.
+  @visibleForTesting
+  bool get sweepTimerActive => _sync?.sweepTimerActive ?? false;
+
+  /// Whether a `config_change` LISTEN subscription is open. False against a
+  /// non-Postgres remote — see [_KeyMappingSync._listen].
+  @visibleForTesting
+  bool get notificationsActive => _sync?.notificationsActive ?? false;
 
   /// The one write path: the shared rows on the remote, the mirror behind it,
   /// the snapshot, and one event.
@@ -398,8 +501,101 @@ class ConfigStore {
     return ConfigWriteResult(diff: diff, actionId: actionId);
   }
 
-  /// Releases the change stream. The databases are the caller's to close.
-  Future<void> close() => _changes.close();
+  /// Releases the change stream and everything an attach started. The
+  /// databases are the caller's to close.
+  ///
+  /// The detach is not tidiness: a sweep timer outliving the store it feeds
+  /// would go on reading a database its owner has closed, once every five
+  /// minutes, for the life of the process.
+  Future<void> close() {
+    detachRemote();
+    return _changes.close();
+  }
+
+  // ---------------------------------------------------------------------
+  // What the sync engine reaches back into. See config_sync.dart.
+  // ---------------------------------------------------------------------
+
+  /// Adopts what a pull or a sweep read from the remote: the snapshot, then
+  /// the mirror, then at most one event.
+  ///
+  /// [fresh] is every item to take as it now stands — including ones whose
+  /// payload did not change but whose `rev` did, because the next
+  /// compare-and-swap guards on that number and a stale one loses to a
+  /// conflict nobody caused. [diff] is what to *announce*, which is content
+  /// only, and may be empty when the whole apply was revisions.
+  ///
+  /// The order matches the write path's: the snapshot moves first because the
+  /// plant's live subscriptions hang off it, and the mirror is a cache of a
+  /// decision already made elsewhere, so a failure to write it is logged and
+  /// repaired by the next sweep rather than reported.
+  Future<void> _applyRemoteState(
+      ConfigDiff diff, Map<String, ConfigItem> fresh) async {
+    final next = Map<String, ConfigItem>.of(_snapshot);
+    for (final item in diff.removed) {
+      next.remove(item.id);
+    }
+    next.addAll(fresh);
+    _snapshot = next;
+
+    try {
+      await _writeMirror(diff, fresh);
+    } catch (e) {
+      _logger.e('key_mappings mirror write failed while applying a shared '
+          'change; this station serves the change now and will re-read it at '
+          'the next sweep: $e');
+    }
+
+    // No event for an apply that only moved revisions: every listener
+    // re-points live subscriptions on one, and doing that for a write nobody
+    // made is the noise this milestone exists to remove.
+    if (diff.isNotEmpty) _changes.add(diff);
+  }
+
+  /// Records how far the shared change log has been consumed, in memory and in
+  /// the local row [open] restores it from.
+  ///
+  /// Never goes backwards: a sweep that read an older maximum than a pull
+  /// already consumed must not re-arm rows that have been applied.
+  ///
+  /// A failed row write is logged and dropped. The cost of losing it is that
+  /// the next boot re-consumes part of a log it has already seen, which is
+  /// idempotent and cheap; refusing to serve a live change because a
+  /// bookkeeping row would not write is not.
+  Future<void> _advanceWatermark(int value) async {
+    if (value <= _watermark) return;
+    _watermark = value;
+    final companion = ConfigItemTableCompanion.insert(
+      kind: ConfigKind.preference.wireName,
+      id: kKeyMappingsWatermarkId,
+      scope: _stationScope.wireName,
+      // The `{"type": …, "value": …}` shape [SqlitePreferences] stores every
+      // preference in, so the row is readable by the same code that reads the
+      // rest of them rather than being a private format in a shared table.
+      payload: ConfigItem.of(
+        kind: ConfigKind.preference,
+        id: kKeyMappingsWatermarkId,
+        value: {'type': 'int', 'value': value},
+        scope: _stationScope,
+      ).payload,
+      updatedAt: DateTime.now(),
+      updatedBy: _syncWriter,
+    );
+    try {
+      final replaced = await (_local.update(_local.configItemTable)
+            ..where((t) =>
+                t.kind.equals(ConfigKind.preference.wireName) &
+                t.id.equals(kKeyMappingsWatermarkId) &
+                t.scope.equals(_stationScope.wireName)))
+          .write(companion);
+      if (replaced == 0) {
+        await _local.into(_local.configItemTable).insert(companion);
+      }
+    } catch (e) {
+      _logger.w('key_mappings watermark row not written ($value); the next '
+          'boot re-consumes part of a log it has already seen: $e');
+    }
+  }
 
   // ---------------------------------------------------------------------
   // The write path's helpers
