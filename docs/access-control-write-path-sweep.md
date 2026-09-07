@@ -264,14 +264,16 @@ in §5.
 | `lib/providers/theme.dart:23, 52` | `prefs.setString(_key, ...)` | device-local, via `localPreferencesProvider` | theme and colour-scheme controls | `left open: device-local UI state` — see §3.6. Off the legacy API since v1.2 plan 01-06; still unguarded, because that provider is |
 | `lib/tech_docs/tech_doc_upload_service.dart:267` | `prefsReader.setString('page_editor_data', ...)` | preferences | deleting a tech doc on the ungated Knowledge Base page | construction `enforced by 03-11` — the store it writes through comes from the factory at `tech_doc_library_section.dart:1197`; see also §3.1 |
 | `lib/tech_docs/tech_doc_library_section.dart:1206` | `_prefs.setString(key, value)` | device-local | the `PrefsReader` adapter the row above uses | construction `enforced by 03-11` |
-| `lib/pages/key_repository.dart:637, 1933` | `prefs.setString('key_mappings', ...)` | preferences | `/advanced/key-repository` | `guarded by 03-06` — and `route-gated (Phase 2)` besides |
+| `lib/pages/key_repository.dart:882, 2417` | `store.saveKeyMappings(...)` | **shared configuration store** | `/advanced/key-repository` — Save, and the JSON import | `guarded by 02-06` — `GuardedConfigStore`, and `route-gated (Phase 2)` besides. One `config_change` row per key that moved, one bounded `audit_entry` over the lot, on one `action_id` |
 | `lib/pages/page_view.dart:270` | `prefs.setString('asset_stack_config', ...)` | device-local | every asset page, on the read path when the key is absent | construction `enforced by 03-11` — the store now comes from `localPreferencesProvider`; the write is unchanged and still once per mount |
 | `lib/pages/dbus_login.dart:127-131` | `prefs.setString/setBool(...)` | device-local, via `localPreferencesProvider` | the D-Bus login form | `left open: station credentials, §2's reasoning survives the move` — see §3.7. Off the legacy API since v1.2 plan 01-06 |
 | `lib/pages/access_session_section.dart` | `prefs.setInt(kAccessInactivityMinutesPrefKey, ...)`, `prefs.setBool(kAccessInactivityDisabledPrefKey, ...)` | device-local | the Session card on `/advanced/access` | `route-gated (Phase 2)` — `users`; and the card records its own audit row per change through `RefAuditSink`, because a device-local write bypasses `GuardedPreferences` and the width of the elevation window — or its removal entirely, the never-expire switch — must not change without a row. Minutes bounded 1..480 before the write; the provider's clamp stays as the backstop for hand-edited stores, and the disable is an explicit boolean so a stray zero still clamps up instead of meaning "never" |
 | `lib/page_creator/page.dart:247` | `prefs.setString(storageKey, jsonString)` | preferences | `PageManager.load()` at boot, **unawaited** | `guarded by 03-06` — routed through `systemWrites` |
 | `lib/page_creator/page.dart:252, 257` | `prefs.setString(storageKey \| orderStorageKey, ...)` | preferences | the page editor's save | `guarded by 03-06` |
 | `lib/page_creator/assets/image_store.dart:96, 129` | `prefs.setString/remove('$keyPrefix$id')` | preferences | page-editor image add and delete | `guarded by 03-06` |
-| `lib/page_creator/assets/common.dart:444` | `prefs.setString('key_mappings', ...)` | preferences | asset key-mapping edits | `guarded by 03-06` |
+| `lib/page_creator/assets/common.dart:846` | `store.saveKeyMappings(next)` | **shared configuration store** | the `+` on any key field in the page editor | `guarded by 02-06` — `GuardedConfigStore`, `configure` on `pref`/`key_mappings`. The `prefs.setString('key_mappings', …)` this row used to name is gone, and with it C-10: it wrote into StateMan's own live map first, emptying the diff it was then measured by |
+| `lib/providers/config_store.dart:43, 60, 108` | `ConfigStore(...)`, `GuardedConfigStore(...)` | **shared configuration store** | once per process, at provider build | `correct as-is` — this is the one construction site, and `scripts/check-preferences-construction.sh` enforces that it stays the only one (its fourth pattern, added by 02-06 and proved non-vacuous by a planted violation). The store cannot be a factory the way `createDeviceLocalPreferences()` is: its snapshot is what every mimic on the station is drawn from, so there must be exactly one per process |
+| `packages/tfc_dart/lib/core/access/guarded_config_store.dart:213, 251, 275, 357` | `save`, `saveKeyMappings`, `seedDefaultIfEmpty` → `_inner.writeKeyMappings` | **shared configuration store** | every operator configuration write, plus the boot seed | `correct as-is` — this **is** the guard. Check → write → audit, deliberately the reverse of `GuardedPreferences`, because this store can still refuse after the check passes (offline, unsafe pool, another station won the row) and a row written first would claim a save that never happened. `seedDefaultIfEmpty` is the `systemWrites` analogue: no check, `origin: 'system'`, still one audit row |
 | `lib/page_creator/assets/recipes.dart:269` | `prefs.setString(prefKey, jsonEncode(recipes))` | preferences | `_getRecipes` on the **read** path | `guarded by 03-06` |
 | `lib/page_creator/assets/recipes.dart:281` | `prefs.setString(prefKey, ...)` | preferences | `_saveRecipes`, behind a control | `guarded by 03-06` |
 | `lib/widgets/preferences.dart:949-957, 979, 981` | `target.setBool/setInt/setDouble/setStringList/setString(e.key, ...)`, `prefs.remove(e.key)`, `localPrefs.remove(e.key)` | preferences and device-local | the raw preference editor on `/advanced/preferences` | `route-gated (Phase 2)` — `administer`; the key is whatever the operator typed, see §5 |
@@ -298,6 +300,34 @@ they get rows so that they are visible rather than implied.
 |---|---|---|---|---|
 | `GuardedPreferences.systemWrites` (plan 03-05) | the seven write members with the session check skipped | preferences | the boot defaults enumerated in plan 03-06 | `left open: the deliberately unchecked write path` — see §3.9 |
 | `GuardedPreferences.database` (plan 03-05) | `guardedPrefs.database.db` → any raw Drift statement | every table | anything holding the guarded object | `left open: \`implements Preferences\` forces the getter` — see §3.10 |
+
+### 2.11 Writes through the shared configuration store (script §10 — 5 hits, new at the v1.2 phase 2 run)
+
+New because the store is new. Milestone v1.2 phase 2 moved the plant's key
+mappings out of `flutter_preferences.key_mappings` and into one `config_item`
+row per key, and a write through that store matches **nothing** above: it is
+not a `setString`, it carries no key literal at the call site, and it touches
+no Drift API there either.
+
+That is worth stating plainly, because of what the sweep would otherwise have
+reported. `lib/pages/key_repository.dart` and
+`lib/page_creator/assets/common.dart` both went quiet in §2.9 during this
+phase — their `prefs.setString('key_mappings', …)` calls are gone — and
+without §10 the report would have shown two fewer preference writes and called
+it progress, while the most consequential writes in the app carried on through
+a path it could not see. Same failure as an empty §2.4 after the store
+changed name; arriving by migration rather than by deletion.
+
+`packages/tfc_dart/lib/core/state_man.dart` lost its `key_mappings` row here
+rather than gaining a new verdict, for the reason 02-05 removed
+`lib/providers/state_man.dart`'s: `KeyMappings.fromPrefs` is deleted, so the
+write the row named does not exist, and a row for a call site the script
+cannot find fails the coverage test in the reverse direction. The file keeps
+its `state_man_config` rows.
+
+| Site | Call | Store | Reached from | Verdict |
+|---|---|---|---|---|
+| the four sites above | `saveKeyMappings`, `writeKeyMappings`, `seedDefaultIfEmpty` | shared configuration store | the key repository, the page editor's key field, and the boot seed | enumerated individually in §2.9's table — this section is the pattern that finds them, not a second set of rows |
 
 ---
 
@@ -865,21 +895,20 @@ from one behind a Save button.
 | `providers/theme.dart:52` | `_key` (`ColorSchemeNotifier`) | `color_scheme` | exact `color_scheme` | `operate` | behind a control — same |
 | `tech_doc_upload_service.dart:267` | `'page_editor_data'` | `page_editor_data` | exact `page_editor_data` | `configure` | **delete-path** — rewritten when a tech doc is deleted, from an ungated route (§3.1) |
 | `tech_doc_library_section.dart:1203` | `key` (a `PrefsReader` parameter) | `page_editor_data` — the adapter's only caller is the row above | exact `page_editor_data` | `configure` | same |
-| `key_repository.dart:637, 1933` | `'key_mappings'` | `key_mappings` | exact `key_mappings` | `configure` | behind a control, on a `configure`-gated route |
+| `key_repository.dart:882, 2417` | `kConfigWriteKeys[ConfigKind.keyMapping]` | `key_mappings` | exact `key_mappings` | `configure` | behind a control, on a `configure`-gated route — through the configuration store since 02-06 |
 | `page_view.dart:264` | `'asset_stack_config'` | `asset_stack_config` | exact `asset_stack_config` | `operate` | **read-path** — written when the key is absent, on mount of any asset page |
 | `dbus_login.dart:127-131` | five literals | `connectionType`, `host`, `username`, `autoLogin`, `sshPrivateKeyPath` | five exact rules | `administer` | behind a control — device-local store since v1.2 plan 01-06; **still never reaches the guard**, §3.7 |
 | `page_creator/page.dart:247` | `storageKey` | `page_editor_data` | exact `page_editor_data` | `configure` | **boot-time, unawaited** — a denial here surfaces as an unhandled async error and a default that never persists |
 | `page_creator/page.dart:252` | `storageKey` | `page_editor_data` | exact | `configure` | behind a control |
 | `page_creator/page.dart:257` | `orderStorageKey` | `page_editor_top_level_order` | exact `page_editor_top_level_order` | `configure` | behind a control |
 | `image_store.dart:96, 129` | `'$keyPrefix$id'` | `page_editor_image:<id>` | prefix `page_editor_image:` | `configure` | behind a control |
-| `page_creator/assets/common.dart:444` | `'key_mappings'` | `key_mappings` | exact | `configure` | behind a control |
+| `page_creator/assets/common.dart:846` | `kConfigWriteKeys[ConfigKind.keyMapping]` | `key_mappings` | exact | `configure` | behind a control — through the configuration store since 02-06, not through preferences |
 | `recipes.dart:269` | `'${widget.config.recipesBucket}.recipes'` | `<bucket>.recipes` | suffix `.recipes` | `setpoints` | **read-path** — `_getRecipes` writes an empty default, so an anonymous operator merely opening a recipes asset triggers it |
 | `recipes.dart:281` | same expression | `<bucket>.recipes` | suffix `.recipes` | `setpoints` | behind a control |
 | `widgets/preferences.dart:949-957, 979, 981` | `e.key` | **cannot be resolved to a literal or a prefix** — the key is whatever row the operator is editing, so the group is whatever rule matches at runtime | every rule, at runtime | varies | behind a control, on the `administer`-gated `/advanced/preferences` |
 | `color_picker_dialog.dart:66` | `prefsKey` | `color_picker_recent_colors` | exact `color_picker_recent_colors` | `operate` | behind a control (confirming a colour) |
 | `tfc_dart/core/state_man.dart:442` | `configKey` | `state_man_config` | exact `state_man_config` | `administer` | **boot-time** — `StateManConfig.fromPrefs` writes a default when absent |
 | `tfc_dart/core/state_man.dart:450` | `configKey` | `state_man_config` | exact | `administer` | behind a control |
-| `tfc_dart/core/state_man.dart:626` | `'key_mappings'` | `key_mappings` | exact | `configure` | behind a control |
 | `tfc_dart/core/alarm.dart:220` | `'alarm_man_config'` | `alarm_man_config` | exact `alarm_man_config` | `configure` | **boot-time** — `AlarmMan.create` writes a default when absent |
 | `tfc_dart/core/alarm.dart:303` | `'alarm_man_config'` | `alarm_man_config` | exact | `configure` | behind a control — `addAlarm`/`removeAlarm`/`updateAlarm` only. **`ackAlarm` writes nothing**, so this rule does not stand between an operator and an alarm ack |
 | `read_toggles.dart:38, 114` | `McpConfig.kPrefKey` | `mcp.config` | prefix `mcp.` | `administer` | over MCP, not from a widget (§3.2) |

@@ -37,6 +37,20 @@
 # for one release (rollback insurance), so a regression to the old constructor
 # is still possible and still caught; they leave with the package in Phase 4.
 #
+# The FOURTH is `ConfigStore()` — the shared configuration store, which
+# milestone v1.2 phase 2 made the one write path for the plant's wiring. It is
+# here for the same reason as the other three and for one more: a store
+# constructed in a widget is not wrapped by `GuardedConfigStore`, so its writes
+# pass no `configure` check, leave no `audit_entry`, and — unlike a preference
+# write — produce `config_change` rows that claim an author the trail has no
+# row for. The pattern deliberately also matches `GuardedConfigStore(`, because
+# constructing the guard outside `lib/providers/` means building a second
+# store's worth of session, policy and audit wiring by hand, which is the same
+# hole one layer up.
+#
+# The one construction site is `lib/providers/config_store.dart`. Everything
+# else reads `configStoreProvider`.
+#
 # This check is the ENFORCED SUBSET of `scripts/sweep-write-paths.sh`, whose
 # sections 4 and 5 are these two patterns. That script is a report over nine
 # kinds of write path and always exits 0; this one is a gate over two of them.
@@ -150,14 +164,16 @@ hits_for() {
 async_hits="$(hits_for 'SharedPreferencesAsync[[:space:]]*\(' async)"
 legacy_hits="$(hits_for 'SharedPreferences\.getInstance[[:space:]]*\(' legacy)"
 sqlite_hits="$(hits_for 'SqlitePreferences[[:space:]]*\(' sqlite)"
+config_hits="$(hits_for 'ConfigStore[[:space:]]*\(' config)"
 
-if [ -z "$async_hits" ] && [ -z "$legacy_hits" ] && [ -z "$sqlite_hits" ]; then
+if [ -z "$async_hits" ] && [ -z "$legacy_hits" ] && [ -z "$sqlite_hits" ] \
+   && [ -z "$config_hits" ]; then
   [ "$quiet" = "1" ] || printf 'check-preferences-construction: clean — the only construction site is in lib/providers/.\n'
   exit 0
 fi
 
 {
-  printf '\n  ERROR: a device-local preferences store is constructed outside lib/providers/.\n\n'
+  printf '\n  ERROR: a configuration store is constructed outside lib/providers/.\n\n'
   if [ -n "$async_hits" ]; then
     printf '  SharedPreferencesAsync() — the constructor spec §6 names:\n\n'
     printf '%s\n' "$async_hits" | sed 's/^/    /'
@@ -173,19 +189,28 @@ fi
     printf '%s\n' "$sqlite_hits" | sed 's/^/    /'
     printf '\n'
   fi
+  if [ -n "$config_hits" ]; then
+    printf '  ConfigStore() / GuardedConfigStore() — the shared configuration store; read configStoreProvider instead:\n\n'
+    printf '%s\n' "$config_hits" | sed 's/^/    /'
+    printf '\n'
+  fi
   cat <<'EOF'
-  A store constructed here is not wrapped by GuardedPreferences: its writes
-  pass no access check and leave no audit row, and nothing about the call
-  site looks wrong. See docs/access-control-spec.md §6.
+  A store constructed here is not wrapped by its guard: its writes pass no
+  access check and leave no audit row, and nothing about the call site looks
+  wrong. See docs/access-control-spec.md §6.
 
   The fix is one line:
 
     * a `ref` is in scope (ConsumerWidget, ConsumerState) —
-        ref.read(localPreferencesProvider)
+        ref.read(localPreferencesProvider)      // device-local preferences
+        ref.read(configStoreProvider.future)    // shared configuration
       This is the better fix: a test can override the provider.
 
     * no `ref` (a static method, a plain function, anything before runApp) —
         createDeviceLocalPreferences()      // lib/providers/preferences.dart
+      There is no factory equivalent for the configuration store, and there
+      should not be: it has to be one object per process (its snapshot is what
+      every mimic is drawn from), so it is provider-only by design.
 
   If the site genuinely cannot use either, the allow list at the top of this
   script takes an entry — with its reason, and a row in
