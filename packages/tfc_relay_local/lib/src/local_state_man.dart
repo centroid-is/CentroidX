@@ -1327,25 +1327,41 @@ final class LocalStateMan implements StateManApi {
   /// reason): the liveness an operator's finger is supposed to provide must not
   /// be something a peer can assert.
   @override
-  Future<HoldHandle> holdToRun(String key) async {
-    final engagement = await write(key, 1);
-    final hold = HoldHandle(
-      key: key,
-      engagement: engagement,
-      onTick: (counter) => _feedDeadman(key, counter),
-      onRelease: (counter) => write(key, counter),
-    );
-    if (hold.isHeld) {
-      _liveHolds.add(hold);
-      // The handle completes `onReleased` exactly once, however the hold ends,
-      // so this is the one place the set is pruned.
-      unawaited(hold.onReleased.then((_) => _liveHolds.remove(hold)));
-    }
-    return hold;
-  }
+  Future<HoldHandle> holdToRun(String key) => _holds.engage(key);
 
   /// Every hold this source is currently feeding, so [dispose] can end them.
-  final Set<HoldHandle> _liveHolds = <HoldHandle>{};
+  ///
+  /// Shared with `tfc_dart` since 18-05 (`hold_registry.dart`): the live set,
+  /// the engage guard and release-all were the same forty lines in both
+  /// packages. Three things about this construction are load-bearing:
+  ///
+  ///  * **[feed] is [write] and [onTick] is [_feedDeadman], and they are two
+  ///    different functions.** That is difference 4 of the four the extraction
+  ///    found, left exactly where it was: an engage and a release are ordinary
+  ///    commands somebody may ask `writeStatus` about, and a tick is liveness
+  ///    that deliberately never reaches the outcome log. A registry that
+  ///    derived the tick from the feed would have moved 1 200 entries per
+  ///    two-minute hold into a bounded log.
+  ///  * **`awaitReleases: true` is this side's answer** to the one question the
+  ///    two call sites answer differently. Awaited, and safely: every upstream
+  ///    write is bounded by its *required* deadline (`upstream_link.dart`), so
+  ///    there is nothing here that can hang — and a dispose that gave up half
+  ///    way would leave the thing it was disposing in a state nobody owns.
+  ///    `tfc_dart` passes `false` and says a teardown that waited would hang on
+  ///    the dead link that caused it; that argument does not survive a required
+  ///    deadline, which is why 18-05 records changing *that* side as the
+  ///    deferred decision rather than this one.
+  ///  * **No `onLostWrite`.** This package has no logger by design — the
+  ///    constructor spawns nothing and errors become values rather than log
+  ///    lines (see the header) — and the release loop this replaces swallowed
+  ///    its errors silently too. Preserved rather than improved; the one thing
+  ///    it now hides that it did not before is a *throw* out of the engage,
+  ///    which `write` promises never to do.
+  late final HoldRegistry _holds = HoldRegistry(
+    feed: (key, counter) => write(key, counter),
+    onTick: _feedDeadman,
+    awaitReleases: true,
+  );
 
   /// One tick: the gateway's counter, onto the plant, with nobody waiting.
   ///
@@ -1398,18 +1414,13 @@ final class LocalStateMan implements StateManApi {
   /// Awaited, and safely: every upstream write is bounded by its required
   /// deadline (`upstream_link.dart`), so there is nothing here that can hang
   /// and therefore no `.timeout(` on this path — a dispose that gave up half
-  /// way would leave the thing it was disposing in a state nobody owns.
-  Future<void> _releaseHolds(HoldEnded reason) async {
-    if (_liveHolds.isEmpty) return;
-    final holds = List<HoldHandle>.of(_liveHolds);
-    _liveHolds.clear();
-    for (final hold in holds) {
-      // `release` is idempotent, so a disconnect racing an operator's finger
-      // cannot put two zeros on the wire. The outcome is informational: the
-      // machine stopped when the counter stopped.
-      await hold.release(reason: reason).then((_) {}, onError: (Object _) {});
-    }
-  }
+  /// way would leave the thing it was disposing in a state nobody owns. That
+  /// argument is now `awaitReleases: true` on [_holds]; `release` is still
+  /// idempotent, so a disconnect racing an operator's finger cannot put two
+  /// zeros on the wire, and one throwing release still does not abandon the
+  /// rest.
+  Future<void> _releaseHolds(HoldEnded reason) =>
+      _holds.releaseAll(reason: reason);
 
   // ---------------------------------------------------- the live address space
 
