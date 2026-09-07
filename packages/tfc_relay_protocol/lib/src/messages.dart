@@ -203,7 +203,13 @@ final class HelloResult {
           (json['capabilities'] as Map? ?? const {}).cast<String, Object?>(),
       sessionId: session['id'] as String,
       epoch: session['epoch'] as String,
-      resumed: session['resumed'] as bool,
+      // Tolerant of absence, and it has to be. This read was
+      // `session['resumed'] as bool`, which throws on a missing key — so the
+      // first gateway that stopped emitting the field would have taken every
+      // panel's handshake down with a cast error naming no field. The emit is
+      // removed in the very next commit; the tolerance goes in first so that
+      // the two are never the same change and a bisect can land between them.
+      resumed: session['resumed'] as bool? ?? false,
       serverTime: (clock['serverTime'] as num).toInt(),
       publisherId: json['publisherId'] as String?,
     );
