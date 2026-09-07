@@ -136,9 +136,6 @@ Set<String> readModifyWriteKeysOf(KeyMappings keyMappings) => <String>{
 /// 30 s, so one full cycle plus a resync) with room to spare.
 const Duration kBackendWriteOutcomeTtl = Duration(seconds: 60);
 
-/// Crockford base32, exactly as `ulid.dart` mints it: no I, L, O or U.
-const String _crockford = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-
 /// The write this outcome was recorded for: the tag, the payload and the
 /// compare-and-set guard.
 ///
@@ -627,7 +624,7 @@ final class BackendWrites implements BackendWriteSource {
     final held = _log.entryFor(cmd);
     if (held != null) return held.result;
 
-    final mintedAt = _mintedAtOf(cmd);
+    final mintedAt = relay.ulidMs(cmd);
     if (mintedAt == null) {
       return relay.WriteUnknown(
           cmd,
@@ -656,24 +653,6 @@ final class BackendWrites implements BackendWriteSource {
             message: 'this command is older than this source\'s '
                 '${_log.ttl.inSeconds} s memory. Forgetting is not evidence '
                 'that it never happened — read the value back before acting'));
-  }
-
-  /// The millisecond a ULID was minted at, or null if it is not one.
-  ///
-  /// Arithmetic rather than shifts, exactly as `ulid.dart` argues: JavaScript's
-  /// bitwise operators coerce to signed 32 bits, so `<<` here would silently
-  /// discard the top of the timestamp under `dart2js` and date every id wrong
-  /// by up to 49.7 days — which on this path is the difference between
-  /// `not_received` and `unknown`.
-  static int? _mintedAtOf(String cmd) {
-    if (cmd.length != 26) return null;
-    var ms = 0;
-    for (var i = 0; i < 10; i++) {
-      final digit = _crockford.indexOf(cmd[i]);
-      if (digit < 0) return null;
-      ms = ms * 32 + digit;
-    }
-    return ms;
   }
 
   // ------------------------------------------------------------------- holds

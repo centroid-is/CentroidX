@@ -128,9 +128,9 @@ void main() {
   test('the 2023 prefix decodes to exactly 1700000000000', () {
     // **Stated as a value, not as a platform, and that is deliberate.**
     //
-    // This arm passes on the VM under BOTH arithmetics — `(ms << 5) | digit`
-    // and `ms * 32 + digit` are identical on 64-bit ints — so on the VM it
-    // proves only that the decode is right. Its job is to carry the literal
+    // This arm passes on the VM under BOTH arithmetics — the shift-and-or
+    // form and the multiply-and-add form are identical on 64-bit ints — so on
+    // the VM it proves only that the decode is right. Its job is the literal
     // that a `dart test -p chrome` run turns red: under dart2js the bitwise
     // form coerces to 32 bits and this same id decodes to 3487918080, which
     // is 1970-02-10. See ulid_web_test.dart for the arm that actually runs
@@ -154,7 +154,7 @@ void main() {
     // I, L, O and U are excluded from the alphabet, so their appearance in
     // the timestamp half means the string was never minted here.
     for (final bad in <String>['I', 'L', 'O', 'U']) {
-      expect(ulidMs('01HF7YAT$bad0$_suffix'), isNull,
+      expect(ulidMs('01HF7YAT${bad}0$_suffix'), isNull,
           reason: '"$bad" in the timestamp half is not a Crockford digit');
     }
   });
