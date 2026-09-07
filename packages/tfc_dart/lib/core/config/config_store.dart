@@ -87,6 +87,27 @@ part 'config_sync.dart';
 /// engine; this store only restores it at [ConfigStore.open].
 const String kKeyMappingsWatermarkId = '_sync.key_mappings.watermark';
 
+/// One item's identity inside an in-memory snapshot: its kind and its id.
+///
+/// `config_item`'s primary key is `(kind, id, scope)` and the **scope is
+/// deliberately not here**: a snapshot holds one scope — shared — so carrying
+/// it would be a constant in every key. `config_diff`'s own `_key` does carry
+/// it, because a diff may legitimately be handed a station-scoped item beside
+/// a shared one and collapsing those two would make a station's own setting
+/// look like an edit to everybody's.
+///
+/// The kind, on the other hand, is load-bearing today and structural from
+/// Phase 3: a page path and a mapping key may be the same string, the table
+/// allows it, and an index keyed by id alone would have one silently evict the
+/// other. The symptom of that would be a mimic bound to a key that resolves to
+/// a page — so the composite key lands now, while this store holds one kind
+/// and the change is provably behaviour-preserving.
+String configSnapshotKey(ConfigKind kind, String id) =>
+    '${kind.wireName} $id';
+
+/// [item]'s key in a snapshot. See [configSnapshotKey].
+String _snapshotKeyOf(ConfigItem item) => configSnapshotKey(item.kind, item.id);
+
 /// Only ever used off the happy path — the re-home, and a mirror write that
 /// failed after the shared write had already committed. Nothing here logs per
 /// read or per write.
@@ -150,8 +171,8 @@ class ConfigStore {
   /// How often the attached engine runs its full revision sweep.
   final Duration _sweepInterval;
 
-  /// The shared `key_mapping` rows, keyed by mapping key. Replaced wholesale
-  /// on every swap; never handed out.
+  /// The shared rows, keyed by [configSnapshotKey] — kind and id, never id
+  /// alone. Replaced wholesale on every swap; never handed out.
   Map<String, ConfigItem> _snapshot = const {};
 
   /// How far this station has consumed the shared change log.
@@ -179,7 +200,8 @@ class ConfigStore {
   Future<void> _open() async {
     await _rehomePhase1Cache();
     _snapshot = {
-      for (final row in await _sharedMappingRows()) row.id: _itemOf(row),
+      for (final row in await _sharedMappingRows())
+        configSnapshotKey(ConfigKind.keyMapping, row.id): _itemOf(row),
     };
     _watermark = await _readWatermark();
   }
@@ -201,8 +223,11 @@ class ConfigStore {
   ///
   /// [ConfigItem] is immutable, so a copy of the list is the whole defence.
   List<ConfigItem> get keyMappingItems {
-    final ids = _snapshot.keys.toList()..sort();
-    return [for (final id in ids) _snapshot[id]!];
+    final items = [
+      for (final item in _snapshot.values)
+        if (item.kind == ConfigKind.keyMapping) item,
+    ];
+    return items..sort((a, b) => a.id.compareTo(b.id));
   }
 
   /// Emits once after every snapshot swap.
@@ -385,7 +410,7 @@ class ConfigStore {
                   updatedBy: who,
                 ),
               );
-          written[item.id] =
+          written[_snapshotKeyOf(item)] =
               item.stored(rev: 1, updatedAt: at, updatedBy: who);
           await _appendChange(
               remote,
@@ -405,7 +430,7 @@ class ConfigStore {
           // this transaction: re-reading it here would turn the compare-and-
           // swap back into the read-check-write it exists to replace, and the
           // window it closes is precisely the one another station writes in.
-          final stored = _snapshot[item.id]!;
+          final stored = _snapshot[_snapshotKeyOf(item)]!;
           final won = await (remote.update(remote.configItemTable)
                 ..where((t) => _identity(t, item) & t.rev.equals(stored.rev)))
               .write(ConfigItemTableCompanion(
@@ -424,7 +449,7 @@ class ConfigStore {
           if (won != 1) {
             throw ConfigConflict(item.id, expectedRev: stored.rev);
           }
-          written[item.id] = item.stored(
+          written[_snapshotKeyOf(item)] = item.stored(
               rev: stored.rev + 1, updatedAt: at, updatedBy: who);
           await _appendChange(
               remote,
@@ -484,7 +509,7 @@ class ConfigStore {
     // would have them do it twice.
     final next = Map<String, ConfigItem>.of(_snapshot);
     for (final item in diff.removed) {
-      next.remove(item.id);
+      next.remove(_snapshotKeyOf(item));
     }
     next.addAll(written);
     _snapshot = next;
@@ -519,7 +544,8 @@ class ConfigStore {
   /// Adopts what a pull or a sweep read from the remote: the snapshot, then
   /// the mirror, then at most one event.
   ///
-  /// [fresh] is every item to take as it now stands — including ones whose
+  /// [fresh] is keyed by [configSnapshotKey] and is every item to take as it
+  /// now stands — including ones whose
   /// payload did not change but whose `rev` did, because the next
   /// compare-and-swap guards on that number and a stale one loses to a
   /// conflict nobody caused. [diff] is what to *announce*, which is content
@@ -533,7 +559,7 @@ class ConfigStore {
       ConfigDiff diff, Map<String, ConfigItem> fresh) async {
     final next = Map<String, ConfigItem>.of(_snapshot);
     for (final item in diff.removed) {
-      next.remove(item.id);
+      next.remove(_snapshotKeyOf(item));
     }
     next.addAll(fresh);
     _snapshot = next;

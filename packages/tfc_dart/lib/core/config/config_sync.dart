@@ -259,9 +259,8 @@ class _KeyMappingSync {
       final advanceTo = await _maxChangeId();
 
       final revs = await _remoteRevisions();
-      if (revs.isEmpty &&
-          _store._snapshot.isNotEmpty &&
-          !await _remoteIsMigrated()) {
+      final held = _store.keyMappingItems;
+      if (revs.isEmpty && held.isNotEmpty && !await _remoteIsMigrated()) {
         // The cutover boot: this station reached Postgres before any station
         // ran the blob→rows migration. Reading "no rows" as "every key was
         // deleted" would empty the mirror too, and the station would come up
@@ -273,20 +272,25 @@ class _KeyMappingSync {
         // an empty result for the backend's boot.
         _logger.w('key_mappings reconcile: the shared store holds no '
             'key_mapping rows and no migration marker, so it has not been '
-            'migrated yet; keeping this station\'s ${_store._snapshot.length} '
+            'migrated yet; keeping this station\'s ${held.length} '
             'mirrored keys');
         return;
       }
 
       final candidates = <String>{};
       for (final entry in revs.entries) {
-        final stored = _store._snapshot[entry.key];
+        final stored = _store._snapshot[_key(entry.key)];
         if (stored == null || stored.rev != entry.value) {
           candidates.add(entry.key);
         }
       }
-      for (final id in _store._snapshot.keys) {
-        if (!revs.containsKey(id)) candidates.add(id);
+      // Over the snapshot's key mappings by id, never over its keys: the
+      // snapshot is keyed by kind and id, and from Phase 3 it holds pages and
+      // assets whose ids this sweep has no business comparing against the
+      // shared key-mapping revisions.
+      for (final item in _store._snapshot.values) {
+        if (item.kind != ConfigKind.keyMapping) continue;
+        if (!revs.containsKey(item.id)) candidates.add(item.id);
       }
 
       if (candidates.isNotEmpty) await _apply(candidates);
@@ -316,15 +320,21 @@ class _KeyMappingSync {
     // and a row that is *unchanged* must not end up in the same bucket.
     final removedIds = {
       for (final id in ids)
-        if (!fetched.containsKey(id) && _store._snapshot.containsKey(id)) id,
+        if (!fetched.containsKey(id) &&
+            _store._snapshot.containsKey(_key(id)))
+          id,
     };
 
     // A row whose revision and content both match what is already held is not
     // an update; dropping it here keeps the mirror write and the emitted diff
     // to what actually moved.
-    final fresh = Map<String, ConfigItem>.of(fetched)
-      ..removeWhere((id, item) {
-        final stored = _store._snapshot[id];
+    // Keyed by [configSnapshotKey] from here on, because that is what the
+    // store's snapshot is keyed by and [ConfigStore._applyRemoteState] adds
+    // this map to it wholesale.
+    final fresh = <String, ConfigItem>{
+      for (final entry in fetched.entries) _key(entry.key): entry.value,
+    }..removeWhere((key, item) {
+        final stored = _store._snapshot[key];
         return stored != null &&
             stored.rev == item.rev &&
             stored.sameContentAs(item);
@@ -346,8 +356,8 @@ class _KeyMappingSync {
     // made.
     final diff = diffConfigItems(
       stored: [
-        for (final id in {...fresh.keys, ...removedIds})
-          if (_store._snapshot.containsKey(id)) _store._snapshot[id]!,
+        for (final key in {...fresh.keys, ...removedIds.map(_key)})
+          if (_store._snapshot.containsKey(key)) _store._snapshot[key]!,
       ],
       wanted: fresh.values,
     );
@@ -447,6 +457,12 @@ class _KeyMappingSync {
       },
     );
   }
+
+  /// A shared `key_mapping` id as the store's snapshot keys it. Every row
+  /// this engine reads is `kind='key_mapping'` by its own `WHERE` clause, so
+  /// the kind is a constant here rather than something to carry around.
+  static String _key(String id) =>
+      configSnapshotKey(ConfigKind.keyMapping, id);
 
   /// Attaches a handler to a future nothing awaits.
   ///

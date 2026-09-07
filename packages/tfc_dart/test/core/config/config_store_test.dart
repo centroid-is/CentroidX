@@ -645,4 +645,46 @@ void main() {
               'between this station reading and saving');
     });
   });
+
+  group('the snapshot is keyed by kind and id, not by id alone', () {
+    // Phase 3 makes this store item-shaped: pages, assets and key mappings in
+    // one snapshot, and `config_item`'s primary key is `(kind, id, scope)`. A
+    // page whose path happens to equal a mapping key is legal in the table, so
+    // an index keyed by id alone would have one of them silently evict the
+    // other — and the symptom is a mimic bound to a key that resolves to a
+    // page. Scope is deliberately not part of the key: this snapshot holds
+    // shared rows only, which is why `config_diff`'s own `_key` needs a third
+    // part and this one does not.
+    test('a kind is part of the identity, and a scope is not', () {
+      expect(configSnapshotKey(ConfigKind.keyMapping, 'CN04.Belt.Speed'),
+          isNot(configSnapshotKey(ConfigKind.page, 'CN04.Belt.Speed')));
+      expect(configSnapshotKey(ConfigKind.keyMapping, 'a'),
+          configSnapshotKey(ConfigKind.keyMapping, 'a'));
+      // Non-vacuous: two ids that differ must differ under one kind too, so
+      // the assertion above cannot pass by the function ignoring its input.
+      expect(configSnapshotKey(ConfigKind.keyMapping, 'a'),
+          isNot(configSnapshotKey(ConfigKind.keyMapping, 'b')));
+    });
+
+    test(
+        'a mapping whose key equals the watermark row\'s id is served, and '
+        'does not disturb the watermark', () async {
+      // The one id collision across kinds that is constructible today: the
+      // watermark is a `preference` row and this is a `key_mapping` row, both
+      // in `config_item`, both with the same id string. Every read and every
+      // write in the store names its kind, so the two coexist.
+      await seedSharedRow(kKeyMappingsWatermarkId, 'gvl.Odd');
+      await SqlitePreferences(local, scope: kStationScope)
+          .setInt(kKeyMappingsWatermarkId, 41);
+
+      await store.open();
+
+      expect(store.keyMappings.nodes.keys, [kKeyMappingsWatermarkId]);
+      expect(
+          store.keyMappings.nodes[kKeyMappingsWatermarkId]!.opcuaNode!
+              .identifier,
+          'gvl.Odd');
+      expect(store.watermark, 41);
+    });
+  });
 }
