@@ -500,16 +500,652 @@ class ConfigItemTableCompanion extends UpdateCompanion<ConfigItemRow> {
   }
 }
 
+class $ConfigChangeTableTable extends ConfigChangeTable
+    with TableInfo<$ConfigChangeTableTable, ConfigChangeRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $ConfigChangeTableTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<int> id = GeneratedColumn<int>(
+      'id', aliasedName, false,
+      hasAutoIncrement: true,
+      type: DriftSqlType.int,
+      requiredDuringInsert: false,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('PRIMARY KEY AUTOINCREMENT'));
+  static const VerificationMeta _atMeta = const VerificationMeta('at');
+  @override
+  late final GeneratedColumn<DateTime> at = GeneratedColumn<DateTime>(
+      'at', aliasedName, false,
+      type: DriftSqlType.dateTime, requiredDuringInsert: true);
+  static const VerificationMeta _actionIdMeta =
+      const VerificationMeta('actionId');
+  @override
+  late final GeneratedColumn<String> actionId = GeneratedColumn<String>(
+      'action_id', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _whoMeta = const VerificationMeta('who');
+  @override
+  late final GeneratedColumn<String> who = GeneratedColumn<String>(
+      'who', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _stationMeta =
+      const VerificationMeta('station');
+  @override
+  late final GeneratedColumn<String> station = GeneratedColumn<String>(
+      'station', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _roleNameMeta =
+      const VerificationMeta('roleName');
+  @override
+  late final GeneratedColumn<String> roleName = GeneratedColumn<String>(
+      'role_name', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _reasonMeta = const VerificationMeta('reason');
+  @override
+  late final GeneratedColumn<String> reason = GeneratedColumn<String>(
+      'reason', aliasedName, true,
+      type: DriftSqlType.string, requiredDuringInsert: false);
+  static const VerificationMeta _kindMeta = const VerificationMeta('kind');
+  @override
+  late final GeneratedColumn<String> kind = GeneratedColumn<String>(
+      'kind', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _entityIdMeta =
+      const VerificationMeta('entityId');
+  @override
+  late final GeneratedColumn<String> entityId = GeneratedColumn<String>(
+      'entity_id', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _scopeMeta = const VerificationMeta('scope');
+  @override
+  late final GeneratedColumn<String> scope = GeneratedColumn<String>(
+      'scope', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _opMeta = const VerificationMeta('op');
+  @override
+  late final GeneratedColumn<String> op = GeneratedColumn<String>(
+      'op', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _oldValueMeta =
+      const VerificationMeta('oldValue');
+  @override
+  late final GeneratedColumn<String> oldValue = GeneratedColumn<String>(
+      'old_value', aliasedName, true,
+      type: DriftSqlType.string, requiredDuringInsert: false);
+  static const VerificationMeta _newValueMeta =
+      const VerificationMeta('newValue');
+  @override
+  late final GeneratedColumn<String> newValue = GeneratedColumn<String>(
+      'new_value', aliasedName, true,
+      type: DriftSqlType.string, requiredDuringInsert: false);
+  @override
+  List<GeneratedColumn> get $columns => [
+        id,
+        at,
+        actionId,
+        who,
+        station,
+        roleName,
+        reason,
+        kind,
+        entityId,
+        scope,
+        op,
+        oldValue,
+        newValue
+      ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'config_change';
+  @override
+  VerificationContext validateIntegrity(Insertable<ConfigChangeRow> instance,
+      {bool isInserting = false}) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('at')) {
+      context.handle(_atMeta, at.isAcceptableOrUnknown(data['at']!, _atMeta));
+    } else if (isInserting) {
+      context.missing(_atMeta);
+    }
+    if (data.containsKey('action_id')) {
+      context.handle(_actionIdMeta,
+          actionId.isAcceptableOrUnknown(data['action_id']!, _actionIdMeta));
+    } else if (isInserting) {
+      context.missing(_actionIdMeta);
+    }
+    if (data.containsKey('who')) {
+      context.handle(
+          _whoMeta, who.isAcceptableOrUnknown(data['who']!, _whoMeta));
+    } else if (isInserting) {
+      context.missing(_whoMeta);
+    }
+    if (data.containsKey('station')) {
+      context.handle(_stationMeta,
+          station.isAcceptableOrUnknown(data['station']!, _stationMeta));
+    } else if (isInserting) {
+      context.missing(_stationMeta);
+    }
+    if (data.containsKey('role_name')) {
+      context.handle(_roleNameMeta,
+          roleName.isAcceptableOrUnknown(data['role_name']!, _roleNameMeta));
+    } else if (isInserting) {
+      context.missing(_roleNameMeta);
+    }
+    if (data.containsKey('reason')) {
+      context.handle(_reasonMeta,
+          reason.isAcceptableOrUnknown(data['reason']!, _reasonMeta));
+    }
+    if (data.containsKey('kind')) {
+      context.handle(
+          _kindMeta, kind.isAcceptableOrUnknown(data['kind']!, _kindMeta));
+    } else if (isInserting) {
+      context.missing(_kindMeta);
+    }
+    if (data.containsKey('entity_id')) {
+      context.handle(_entityIdMeta,
+          entityId.isAcceptableOrUnknown(data['entity_id']!, _entityIdMeta));
+    } else if (isInserting) {
+      context.missing(_entityIdMeta);
+    }
+    if (data.containsKey('scope')) {
+      context.handle(
+          _scopeMeta, scope.isAcceptableOrUnknown(data['scope']!, _scopeMeta));
+    } else if (isInserting) {
+      context.missing(_scopeMeta);
+    }
+    if (data.containsKey('op')) {
+      context.handle(_opMeta, op.isAcceptableOrUnknown(data['op']!, _opMeta));
+    } else if (isInserting) {
+      context.missing(_opMeta);
+    }
+    if (data.containsKey('old_value')) {
+      context.handle(_oldValueMeta,
+          oldValue.isAcceptableOrUnknown(data['old_value']!, _oldValueMeta));
+    }
+    if (data.containsKey('new_value')) {
+      context.handle(_newValueMeta,
+          newValue.isAcceptableOrUnknown(data['new_value']!, _newValueMeta));
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  ConfigChangeRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return ConfigChangeRow(
+      id: attachedDatabase.typeMapping
+          .read(DriftSqlType.int, data['${effectivePrefix}id'])!,
+      at: attachedDatabase.typeMapping
+          .read(DriftSqlType.dateTime, data['${effectivePrefix}at'])!,
+      actionId: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}action_id'])!,
+      who: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}who'])!,
+      station: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}station'])!,
+      roleName: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}role_name'])!,
+      reason: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}reason']),
+      kind: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}kind'])!,
+      entityId: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}entity_id'])!,
+      scope: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}scope'])!,
+      op: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}op'])!,
+      oldValue: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}old_value']),
+      newValue: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}new_value']),
+    );
+  }
+
+  @override
+  $ConfigChangeTableTable createAlias(String alias) {
+    return $ConfigChangeTableTable(attachedDatabase, alias);
+  }
+}
+
+class ConfigChangeRow extends DataClass implements Insertable<ConfigChangeRow> {
+  /// Surrogate, and per-database: the SQLite log and the Postgres log are two
+  /// independent id spaces and are not reconciled. Nothing joins them.
+  final int id;
+
+  /// When the change was made. TEXT on both backends, as [ConfigItemTable]'s
+  /// `updatedAt` is.
+  final DateTime at;
+
+  /// Groups the rows written by one user action, so a save that touched nine
+  /// assets reads as one operation rather than nine.
+  final String actionId;
+
+  /// Username, or `'anonymous'`.
+  final String who;
+
+  /// The hostname the change was made on.
+  final String station;
+
+  /// The role that authorised it, as it was named at the time.
+  final String roleName;
+
+  /// Free text from the operator, when the surface asked for one.
+  final String? reason;
+
+  /// `ConfigKind.wireName` of the entity that changed.
+  final String kind;
+
+  /// The changed entity's id — `config_item.id`, matched by value and with no
+  /// foreign key, because the log outlives the row it describes: a delete's
+  /// own entry would be unstorable otherwise.
+  final String entityId;
+
+  /// The changed entity's scope.
+  final String scope;
+
+  /// `ConfigChangeOp.wireName` — create, update or delete.
+  final String op;
+
+  /// The payload before, null on a create.
+  final String? oldValue;
+
+  /// The payload after, null on a delete.
+  final String? newValue;
+  const ConfigChangeRow(
+      {required this.id,
+      required this.at,
+      required this.actionId,
+      required this.who,
+      required this.station,
+      required this.roleName,
+      this.reason,
+      required this.kind,
+      required this.entityId,
+      required this.scope,
+      required this.op,
+      this.oldValue,
+      this.newValue});
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<int>(id);
+    map['at'] = Variable<DateTime>(at);
+    map['action_id'] = Variable<String>(actionId);
+    map['who'] = Variable<String>(who);
+    map['station'] = Variable<String>(station);
+    map['role_name'] = Variable<String>(roleName);
+    if (!nullToAbsent || reason != null) {
+      map['reason'] = Variable<String>(reason);
+    }
+    map['kind'] = Variable<String>(kind);
+    map['entity_id'] = Variable<String>(entityId);
+    map['scope'] = Variable<String>(scope);
+    map['op'] = Variable<String>(op);
+    if (!nullToAbsent || oldValue != null) {
+      map['old_value'] = Variable<String>(oldValue);
+    }
+    if (!nullToAbsent || newValue != null) {
+      map['new_value'] = Variable<String>(newValue);
+    }
+    return map;
+  }
+
+  ConfigChangeTableCompanion toCompanion(bool nullToAbsent) {
+    return ConfigChangeTableCompanion(
+      id: Value(id),
+      at: Value(at),
+      actionId: Value(actionId),
+      who: Value(who),
+      station: Value(station),
+      roleName: Value(roleName),
+      reason:
+          reason == null && nullToAbsent ? const Value.absent() : Value(reason),
+      kind: Value(kind),
+      entityId: Value(entityId),
+      scope: Value(scope),
+      op: Value(op),
+      oldValue: oldValue == null && nullToAbsent
+          ? const Value.absent()
+          : Value(oldValue),
+      newValue: newValue == null && nullToAbsent
+          ? const Value.absent()
+          : Value(newValue),
+    );
+  }
+
+  factory ConfigChangeRow.fromJson(Map<String, dynamic> json,
+      {ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return ConfigChangeRow(
+      id: serializer.fromJson<int>(json['id']),
+      at: serializer.fromJson<DateTime>(json['at']),
+      actionId: serializer.fromJson<String>(json['actionId']),
+      who: serializer.fromJson<String>(json['who']),
+      station: serializer.fromJson<String>(json['station']),
+      roleName: serializer.fromJson<String>(json['roleName']),
+      reason: serializer.fromJson<String?>(json['reason']),
+      kind: serializer.fromJson<String>(json['kind']),
+      entityId: serializer.fromJson<String>(json['entityId']),
+      scope: serializer.fromJson<String>(json['scope']),
+      op: serializer.fromJson<String>(json['op']),
+      oldValue: serializer.fromJson<String?>(json['oldValue']),
+      newValue: serializer.fromJson<String?>(json['newValue']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<int>(id),
+      'at': serializer.toJson<DateTime>(at),
+      'actionId': serializer.toJson<String>(actionId),
+      'who': serializer.toJson<String>(who),
+      'station': serializer.toJson<String>(station),
+      'roleName': serializer.toJson<String>(roleName),
+      'reason': serializer.toJson<String?>(reason),
+      'kind': serializer.toJson<String>(kind),
+      'entityId': serializer.toJson<String>(entityId),
+      'scope': serializer.toJson<String>(scope),
+      'op': serializer.toJson<String>(op),
+      'oldValue': serializer.toJson<String?>(oldValue),
+      'newValue': serializer.toJson<String?>(newValue),
+    };
+  }
+
+  ConfigChangeRow copyWith(
+          {int? id,
+          DateTime? at,
+          String? actionId,
+          String? who,
+          String? station,
+          String? roleName,
+          Value<String?> reason = const Value.absent(),
+          String? kind,
+          String? entityId,
+          String? scope,
+          String? op,
+          Value<String?> oldValue = const Value.absent(),
+          Value<String?> newValue = const Value.absent()}) =>
+      ConfigChangeRow(
+        id: id ?? this.id,
+        at: at ?? this.at,
+        actionId: actionId ?? this.actionId,
+        who: who ?? this.who,
+        station: station ?? this.station,
+        roleName: roleName ?? this.roleName,
+        reason: reason.present ? reason.value : this.reason,
+        kind: kind ?? this.kind,
+        entityId: entityId ?? this.entityId,
+        scope: scope ?? this.scope,
+        op: op ?? this.op,
+        oldValue: oldValue.present ? oldValue.value : this.oldValue,
+        newValue: newValue.present ? newValue.value : this.newValue,
+      );
+  ConfigChangeRow copyWithCompanion(ConfigChangeTableCompanion data) {
+    return ConfigChangeRow(
+      id: data.id.present ? data.id.value : this.id,
+      at: data.at.present ? data.at.value : this.at,
+      actionId: data.actionId.present ? data.actionId.value : this.actionId,
+      who: data.who.present ? data.who.value : this.who,
+      station: data.station.present ? data.station.value : this.station,
+      roleName: data.roleName.present ? data.roleName.value : this.roleName,
+      reason: data.reason.present ? data.reason.value : this.reason,
+      kind: data.kind.present ? data.kind.value : this.kind,
+      entityId: data.entityId.present ? data.entityId.value : this.entityId,
+      scope: data.scope.present ? data.scope.value : this.scope,
+      op: data.op.present ? data.op.value : this.op,
+      oldValue: data.oldValue.present ? data.oldValue.value : this.oldValue,
+      newValue: data.newValue.present ? data.newValue.value : this.newValue,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ConfigChangeRow(')
+          ..write('id: $id, ')
+          ..write('at: $at, ')
+          ..write('actionId: $actionId, ')
+          ..write('who: $who, ')
+          ..write('station: $station, ')
+          ..write('roleName: $roleName, ')
+          ..write('reason: $reason, ')
+          ..write('kind: $kind, ')
+          ..write('entityId: $entityId, ')
+          ..write('scope: $scope, ')
+          ..write('op: $op, ')
+          ..write('oldValue: $oldValue, ')
+          ..write('newValue: $newValue')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(id, at, actionId, who, station, roleName,
+      reason, kind, entityId, scope, op, oldValue, newValue);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is ConfigChangeRow &&
+          other.id == this.id &&
+          other.at == this.at &&
+          other.actionId == this.actionId &&
+          other.who == this.who &&
+          other.station == this.station &&
+          other.roleName == this.roleName &&
+          other.reason == this.reason &&
+          other.kind == this.kind &&
+          other.entityId == this.entityId &&
+          other.scope == this.scope &&
+          other.op == this.op &&
+          other.oldValue == this.oldValue &&
+          other.newValue == this.newValue);
+}
+
+class ConfigChangeTableCompanion extends UpdateCompanion<ConfigChangeRow> {
+  final Value<int> id;
+  final Value<DateTime> at;
+  final Value<String> actionId;
+  final Value<String> who;
+  final Value<String> station;
+  final Value<String> roleName;
+  final Value<String?> reason;
+  final Value<String> kind;
+  final Value<String> entityId;
+  final Value<String> scope;
+  final Value<String> op;
+  final Value<String?> oldValue;
+  final Value<String?> newValue;
+  const ConfigChangeTableCompanion({
+    this.id = const Value.absent(),
+    this.at = const Value.absent(),
+    this.actionId = const Value.absent(),
+    this.who = const Value.absent(),
+    this.station = const Value.absent(),
+    this.roleName = const Value.absent(),
+    this.reason = const Value.absent(),
+    this.kind = const Value.absent(),
+    this.entityId = const Value.absent(),
+    this.scope = const Value.absent(),
+    this.op = const Value.absent(),
+    this.oldValue = const Value.absent(),
+    this.newValue = const Value.absent(),
+  });
+  ConfigChangeTableCompanion.insert({
+    this.id = const Value.absent(),
+    required DateTime at,
+    required String actionId,
+    required String who,
+    required String station,
+    required String roleName,
+    this.reason = const Value.absent(),
+    required String kind,
+    required String entityId,
+    required String scope,
+    required String op,
+    this.oldValue = const Value.absent(),
+    this.newValue = const Value.absent(),
+  })  : at = Value(at),
+        actionId = Value(actionId),
+        who = Value(who),
+        station = Value(station),
+        roleName = Value(roleName),
+        kind = Value(kind),
+        entityId = Value(entityId),
+        scope = Value(scope),
+        op = Value(op);
+  static Insertable<ConfigChangeRow> custom({
+    Expression<int>? id,
+    Expression<DateTime>? at,
+    Expression<String>? actionId,
+    Expression<String>? who,
+    Expression<String>? station,
+    Expression<String>? roleName,
+    Expression<String>? reason,
+    Expression<String>? kind,
+    Expression<String>? entityId,
+    Expression<String>? scope,
+    Expression<String>? op,
+    Expression<String>? oldValue,
+    Expression<String>? newValue,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (at != null) 'at': at,
+      if (actionId != null) 'action_id': actionId,
+      if (who != null) 'who': who,
+      if (station != null) 'station': station,
+      if (roleName != null) 'role_name': roleName,
+      if (reason != null) 'reason': reason,
+      if (kind != null) 'kind': kind,
+      if (entityId != null) 'entity_id': entityId,
+      if (scope != null) 'scope': scope,
+      if (op != null) 'op': op,
+      if (oldValue != null) 'old_value': oldValue,
+      if (newValue != null) 'new_value': newValue,
+    });
+  }
+
+  ConfigChangeTableCompanion copyWith(
+      {Value<int>? id,
+      Value<DateTime>? at,
+      Value<String>? actionId,
+      Value<String>? who,
+      Value<String>? station,
+      Value<String>? roleName,
+      Value<String?>? reason,
+      Value<String>? kind,
+      Value<String>? entityId,
+      Value<String>? scope,
+      Value<String>? op,
+      Value<String?>? oldValue,
+      Value<String?>? newValue}) {
+    return ConfigChangeTableCompanion(
+      id: id ?? this.id,
+      at: at ?? this.at,
+      actionId: actionId ?? this.actionId,
+      who: who ?? this.who,
+      station: station ?? this.station,
+      roleName: roleName ?? this.roleName,
+      reason: reason ?? this.reason,
+      kind: kind ?? this.kind,
+      entityId: entityId ?? this.entityId,
+      scope: scope ?? this.scope,
+      op: op ?? this.op,
+      oldValue: oldValue ?? this.oldValue,
+      newValue: newValue ?? this.newValue,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<int>(id.value);
+    }
+    if (at.present) {
+      map['at'] = Variable<DateTime>(at.value);
+    }
+    if (actionId.present) {
+      map['action_id'] = Variable<String>(actionId.value);
+    }
+    if (who.present) {
+      map['who'] = Variable<String>(who.value);
+    }
+    if (station.present) {
+      map['station'] = Variable<String>(station.value);
+    }
+    if (roleName.present) {
+      map['role_name'] = Variable<String>(roleName.value);
+    }
+    if (reason.present) {
+      map['reason'] = Variable<String>(reason.value);
+    }
+    if (kind.present) {
+      map['kind'] = Variable<String>(kind.value);
+    }
+    if (entityId.present) {
+      map['entity_id'] = Variable<String>(entityId.value);
+    }
+    if (scope.present) {
+      map['scope'] = Variable<String>(scope.value);
+    }
+    if (op.present) {
+      map['op'] = Variable<String>(op.value);
+    }
+    if (oldValue.present) {
+      map['old_value'] = Variable<String>(oldValue.value);
+    }
+    if (newValue.present) {
+      map['new_value'] = Variable<String>(newValue.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ConfigChangeTableCompanion(')
+          ..write('id: $id, ')
+          ..write('at: $at, ')
+          ..write('actionId: $actionId, ')
+          ..write('who: $who, ')
+          ..write('station: $station, ')
+          ..write('roleName: $roleName, ')
+          ..write('reason: $reason, ')
+          ..write('kind: $kind, ')
+          ..write('entityId: $entityId, ')
+          ..write('scope: $scope, ')
+          ..write('op: $op, ')
+          ..write('oldValue: $oldValue, ')
+          ..write('newValue: $newValue')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$ConfigItemSchema extends GeneratedDatabase {
   _$ConfigItemSchema(QueryExecutor e) : super(e);
   $ConfigItemSchemaManager get managers => $ConfigItemSchemaManager(this);
   late final $ConfigItemTableTable configItemTable =
       $ConfigItemTableTable(this);
+  late final $ConfigChangeTableTable configChangeTable =
+      $ConfigChangeTableTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
   @override
-  List<DatabaseSchemaEntity> get allSchemaEntities => [configItemTable];
+  List<DatabaseSchemaEntity> get allSchemaEntities =>
+      [configItemTable, configChangeTable];
 }
 
 typedef $$ConfigItemTableTableCreateCompanionBuilder = ConfigItemTableCompanion
@@ -746,10 +1382,303 @@ typedef $$ConfigItemTableTableProcessedTableManager = ProcessedTableManager<
     ),
     ConfigItemRow,
     PrefetchHooks Function()>;
+typedef $$ConfigChangeTableTableCreateCompanionBuilder
+    = ConfigChangeTableCompanion Function({
+  Value<int> id,
+  required DateTime at,
+  required String actionId,
+  required String who,
+  required String station,
+  required String roleName,
+  Value<String?> reason,
+  required String kind,
+  required String entityId,
+  required String scope,
+  required String op,
+  Value<String?> oldValue,
+  Value<String?> newValue,
+});
+typedef $$ConfigChangeTableTableUpdateCompanionBuilder
+    = ConfigChangeTableCompanion Function({
+  Value<int> id,
+  Value<DateTime> at,
+  Value<String> actionId,
+  Value<String> who,
+  Value<String> station,
+  Value<String> roleName,
+  Value<String?> reason,
+  Value<String> kind,
+  Value<String> entityId,
+  Value<String> scope,
+  Value<String> op,
+  Value<String?> oldValue,
+  Value<String?> newValue,
+});
+
+class $$ConfigChangeTableTableFilterComposer
+    extends Composer<_$ConfigItemSchema, $ConfigChangeTableTable> {
+  $$ConfigChangeTableTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get id => $composableBuilder(
+      column: $table.id, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<DateTime> get at => $composableBuilder(
+      column: $table.at, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get actionId => $composableBuilder(
+      column: $table.actionId, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get who => $composableBuilder(
+      column: $table.who, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get station => $composableBuilder(
+      column: $table.station, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get roleName => $composableBuilder(
+      column: $table.roleName, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get reason => $composableBuilder(
+      column: $table.reason, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get kind => $composableBuilder(
+      column: $table.kind, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get entityId => $composableBuilder(
+      column: $table.entityId, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get scope => $composableBuilder(
+      column: $table.scope, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get op => $composableBuilder(
+      column: $table.op, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get oldValue => $composableBuilder(
+      column: $table.oldValue, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get newValue => $composableBuilder(
+      column: $table.newValue, builder: (column) => ColumnFilters(column));
+}
+
+class $$ConfigChangeTableTableOrderingComposer
+    extends Composer<_$ConfigItemSchema, $ConfigChangeTableTable> {
+  $$ConfigChangeTableTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get id => $composableBuilder(
+      column: $table.id, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<DateTime> get at => $composableBuilder(
+      column: $table.at, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get actionId => $composableBuilder(
+      column: $table.actionId, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get who => $composableBuilder(
+      column: $table.who, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get station => $composableBuilder(
+      column: $table.station, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get roleName => $composableBuilder(
+      column: $table.roleName, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get reason => $composableBuilder(
+      column: $table.reason, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get kind => $composableBuilder(
+      column: $table.kind, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get entityId => $composableBuilder(
+      column: $table.entityId, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get scope => $composableBuilder(
+      column: $table.scope, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get op => $composableBuilder(
+      column: $table.op, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get oldValue => $composableBuilder(
+      column: $table.oldValue, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get newValue => $composableBuilder(
+      column: $table.newValue, builder: (column) => ColumnOrderings(column));
+}
+
+class $$ConfigChangeTableTableAnnotationComposer
+    extends Composer<_$ConfigItemSchema, $ConfigChangeTableTable> {
+  $$ConfigChangeTableTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get at =>
+      $composableBuilder(column: $table.at, builder: (column) => column);
+
+  GeneratedColumn<String> get actionId =>
+      $composableBuilder(column: $table.actionId, builder: (column) => column);
+
+  GeneratedColumn<String> get who =>
+      $composableBuilder(column: $table.who, builder: (column) => column);
+
+  GeneratedColumn<String> get station =>
+      $composableBuilder(column: $table.station, builder: (column) => column);
+
+  GeneratedColumn<String> get roleName =>
+      $composableBuilder(column: $table.roleName, builder: (column) => column);
+
+  GeneratedColumn<String> get reason =>
+      $composableBuilder(column: $table.reason, builder: (column) => column);
+
+  GeneratedColumn<String> get kind =>
+      $composableBuilder(column: $table.kind, builder: (column) => column);
+
+  GeneratedColumn<String> get entityId =>
+      $composableBuilder(column: $table.entityId, builder: (column) => column);
+
+  GeneratedColumn<String> get scope =>
+      $composableBuilder(column: $table.scope, builder: (column) => column);
+
+  GeneratedColumn<String> get op =>
+      $composableBuilder(column: $table.op, builder: (column) => column);
+
+  GeneratedColumn<String> get oldValue =>
+      $composableBuilder(column: $table.oldValue, builder: (column) => column);
+
+  GeneratedColumn<String> get newValue =>
+      $composableBuilder(column: $table.newValue, builder: (column) => column);
+}
+
+class $$ConfigChangeTableTableTableManager extends RootTableManager<
+    _$ConfigItemSchema,
+    $ConfigChangeTableTable,
+    ConfigChangeRow,
+    $$ConfigChangeTableTableFilterComposer,
+    $$ConfigChangeTableTableOrderingComposer,
+    $$ConfigChangeTableTableAnnotationComposer,
+    $$ConfigChangeTableTableCreateCompanionBuilder,
+    $$ConfigChangeTableTableUpdateCompanionBuilder,
+    (
+      ConfigChangeRow,
+      BaseReferences<_$ConfigItemSchema, $ConfigChangeTableTable,
+          ConfigChangeRow>
+    ),
+    ConfigChangeRow,
+    PrefetchHooks Function()> {
+  $$ConfigChangeTableTableTableManager(
+      _$ConfigItemSchema db, $ConfigChangeTableTable table)
+      : super(TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$ConfigChangeTableTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$ConfigChangeTableTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$ConfigChangeTableTableAnnotationComposer(
+                  $db: db, $table: table),
+          updateCompanionCallback: ({
+            Value<int> id = const Value.absent(),
+            Value<DateTime> at = const Value.absent(),
+            Value<String> actionId = const Value.absent(),
+            Value<String> who = const Value.absent(),
+            Value<String> station = const Value.absent(),
+            Value<String> roleName = const Value.absent(),
+            Value<String?> reason = const Value.absent(),
+            Value<String> kind = const Value.absent(),
+            Value<String> entityId = const Value.absent(),
+            Value<String> scope = const Value.absent(),
+            Value<String> op = const Value.absent(),
+            Value<String?> oldValue = const Value.absent(),
+            Value<String?> newValue = const Value.absent(),
+          }) =>
+              ConfigChangeTableCompanion(
+            id: id,
+            at: at,
+            actionId: actionId,
+            who: who,
+            station: station,
+            roleName: roleName,
+            reason: reason,
+            kind: kind,
+            entityId: entityId,
+            scope: scope,
+            op: op,
+            oldValue: oldValue,
+            newValue: newValue,
+          ),
+          createCompanionCallback: ({
+            Value<int> id = const Value.absent(),
+            required DateTime at,
+            required String actionId,
+            required String who,
+            required String station,
+            required String roleName,
+            Value<String?> reason = const Value.absent(),
+            required String kind,
+            required String entityId,
+            required String scope,
+            required String op,
+            Value<String?> oldValue = const Value.absent(),
+            Value<String?> newValue = const Value.absent(),
+          }) =>
+              ConfigChangeTableCompanion.insert(
+            id: id,
+            at: at,
+            actionId: actionId,
+            who: who,
+            station: station,
+            roleName: roleName,
+            reason: reason,
+            kind: kind,
+            entityId: entityId,
+            scope: scope,
+            op: op,
+            oldValue: oldValue,
+            newValue: newValue,
+          ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ));
+}
+
+typedef $$ConfigChangeTableTableProcessedTableManager = ProcessedTableManager<
+    _$ConfigItemSchema,
+    $ConfigChangeTableTable,
+    ConfigChangeRow,
+    $$ConfigChangeTableTableFilterComposer,
+    $$ConfigChangeTableTableOrderingComposer,
+    $$ConfigChangeTableTableAnnotationComposer,
+    $$ConfigChangeTableTableCreateCompanionBuilder,
+    $$ConfigChangeTableTableUpdateCompanionBuilder,
+    (
+      ConfigChangeRow,
+      BaseReferences<_$ConfigItemSchema, $ConfigChangeTableTable,
+          ConfigChangeRow>
+    ),
+    ConfigChangeRow,
+    PrefetchHooks Function()>;
 
 class $ConfigItemSchemaManager {
   final _$ConfigItemSchema _db;
   $ConfigItemSchemaManager(this._db);
   $$ConfigItemTableTableTableManager get configItemTable =>
       $$ConfigItemTableTableTableManager(_db, _db.configItemTable);
+  $$ConfigChangeTableTableTableManager get configChangeTable =>
+      $$ConfigChangeTableTableTableManager(_db, _db.configChangeTable);
 }

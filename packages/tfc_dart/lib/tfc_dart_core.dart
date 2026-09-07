@@ -32,5 +32,6 @@ export 'core/mcp_database.dart';
 // open62541, `dart:ffi` and `package:flutter`, and
 // `test/core/config/page_rows_test.dart` walks the import graph to keep it
 // that way. Adding an export here means accepting that check.
+export 'core/config/config_consistency.dart';
 export 'core/config/config_item.dart';
 export 'core/config/page_rows.dart';

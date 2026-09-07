@@ -23,7 +23,8 @@ import 'alarm.dart';
 import 'database.dart';
 import 'database_batch_insert.dart';
 import 'database_connections.dart';
-import 'config/config_item_table.dart' show ConfigItemTable;
+import 'config/config_item_table.dart'
+    show ConfigChangeTable, ConfigItemTable;
 import 'mcp_tables.dart';
 import 'mcp_database.dart';
 import 'sqlite_loader.dart';
@@ -297,77 +298,18 @@ class AccessKeyBindingTable extends Table {
 /// is a declared foreign key to app_role` fails — so if that test goes red
 /// after a codegen run, the generated file is the suspect, not the schema.
 ///
-/// `config_item` is declared in `config/config_item_table.dart`, not here.
+/// `config_item` and `config_change` are declared in
+/// `config/config_item_table.dart`, not here.
 ///
-/// It is the one table this database shares with readers that must not link
-/// open62541 — this library does, through `alarm.dart`. The declaration moved
+/// They are the tables this database shares with readers that must not link
+/// open62541 — this library does, through `alarm.dart`. The declarations moved
 /// there so those readers get a generated accessor without it; `AppDatabase`
-/// names the same class below and generates its own exactly as before, so
+/// names the same classes below and generates its own exactly as before, so
 /// nothing about the schema, the migrations or [ConfigItemRow] changed.
-/// See that file's header for the full argument (D-3).
-
-/// One append-only entry in the configuration change log. Drift stores it as
-/// `config_change`.
-///
-/// The columns mirror `ConfigChange` in `core/config/config_change.dart`.
-///
-/// **A station-scoped change gets a row here and nowhere else.** It does not
-/// reach the central `audit_entry` table, and this is a decision rather than
-/// an omission: forwarding one would need a store-and-forward queue for the
-/// hours a station spends unable to reach Postgres, and this milestone
-/// declines to build that. Said out loud here because "the same audit trail"
-/// would otherwise read as a promise the design does not keep.
-@DataClassName('ConfigChangeRow')
-class ConfigChangeTable extends Table {
-  /// See [AccessTemplateTable.tableName]; `ConfigChange` is likewise taken by
-  /// the value type in `core/config/`.
-  @override
-  String get tableName => 'config_change';
-
-  /// Surrogate, and per-database: the SQLite log and the Postgres log are two
-  /// independent id spaces and are not reconciled. Nothing joins them.
-  IntColumn get id => integer().autoIncrement()();
-
-  /// When the change was made. TEXT on both backends, as [ConfigItemTable]'s
-  /// `updatedAt` is.
-  DateTimeColumn get at => dateTime()();
-
-  /// Groups the rows written by one user action, so a save that touched nine
-  /// assets reads as one operation rather than nine.
-  TextColumn get actionId => text()();
-
-  /// Username, or `'anonymous'`.
-  TextColumn get who => text()();
-
-  /// The hostname the change was made on.
-  TextColumn get station => text()();
-
-  /// The role that authorised it, as it was named at the time.
-  TextColumn get roleName => text()();
-
-  /// Free text from the operator, when the surface asked for one.
-  TextColumn get reason => text().nullable()();
-
-  /// `ConfigKind.wireName` of the entity that changed.
-  TextColumn get kind => text()();
-
-  /// The changed entity's id — `config_item.id`, matched by value and with no
-  /// foreign key, because the log outlives the row it describes: a delete's
-  /// own entry would be unstorable otherwise.
-  TextColumn get entityId => text()();
-
-  /// The changed entity's scope.
-  TextColumn get scope => text()();
-
-  /// `ConfigChangeOp.wireName` — create, update or delete.
-  TextColumn get op => text()();
-
-  /// The payload before, null on a create.
-  TextColumn get oldValue => text().nullable()();
-
-  /// The payload after, null on a delete.
-  TextColumn get newValue => text().nullable()();
-}
+/// `config_change` followed `config_item` when the consistency check
+/// (`config/config_consistency.dart`) had to read the log beside the items
+/// from inside the FFI-free barrel. See that file's header for the full
+/// argument (D-3).
 
 /// Saved History Views (name + keys)
 class HistoryView extends Table {
