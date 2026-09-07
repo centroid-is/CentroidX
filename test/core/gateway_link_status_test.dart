@@ -429,6 +429,43 @@ void main() {
       expect(unparseable.detail, contains(kPath));
     });
 
+    // **This arm exists because a sabotage turned nothing red.** Splicing
+    // `failure.raw` straight into `detail` left every other arm in this file
+    // and in `test/providers/gateway_link_test.dart` green — including the
+    // provider arm named "its contents never reach the prose". The reason is
+    // measurable: that arm drives a CA file that is present but is not a PEM,
+    // and the real `TlsException` reads "Failure trusting builtin roots (OS
+    // Error: BAD_PKCS12_DATA...)" without echoing one byte of the file. So the
+    // arm could not fail, whatever the mapper did with the text.
+    //
+    // Here the leak is put where it can be seen: a `raw` that provably carries
+    // something which must not reach the two lines an operator reads across a
+    // room. The general property is asserted as well as the sentinel, because
+    // the next leak will not be spelled DO-NOT-LOG.
+    test('the failure\'s own text never becomes the operator\'s two lines',
+        () {
+      const String sentinel = 'ST101-TOKEN-3f9a2b7c-DO-NOT-LOG';
+      const String leaky = "FileSystemException: Cannot open file, path = "
+          "'$kPath' (OS Error: No such file or directory, errno = 2) while "
+          'presenting $sentinel';
+      final report = describeGatewayLinkFailure(
+        url: kByAddress,
+        failure: const GatewayLinkBuildFailure(raw: leaky, path: kPath),
+      );
+
+      expect(report.headline, isNot(contains(sentinel)));
+      expect(report.detail, isNot(contains(sentinel)));
+      // The general form, and the one a future leak trips over: `detail` is
+      // built out of this file's own constants and the operator's own path,
+      // so it can never contain the failure text whole.
+      expect(report.detail, isNot(contains(leaky)));
+      // The distinction, stated: the paste-into-a-ticket field may carry it,
+      // exactly as it does for the gateway's `-32003` refusal.
+      expect(report.raw, contains(sentinel));
+      // Not vacuous: the sentence the operator needs is still complete.
+      expect(report.detail, contains(kPath));
+    });
+
     test('userinfo in the configured URL is never rendered here either', () {
       final leaky = Uri.parse('wss://user:secret@10.50.10.11:9444');
       final report = describeGatewayLinkFailure(

@@ -178,6 +178,34 @@ void main() {
   });
 
   group('a terminal report reads differently', () {
+    // **The arms below read their expectation off the object under test, and
+    // 15-08 measured what that costs.** Flipping `_Voice.fileUnreadable`'s
+    // terminal to `false` in the mapper turned four arms red across three
+    // files — and not one of these. They cannot: `report.terminal ? present :
+    // absent` re-derives the answer from the same field, so the test *name*
+    // silently changed from "present" to "absent" and the case still passed.
+    // That is honest for their scope (they pin the widget, not the mapper) but
+    // it reads as coverage nobody has.
+    //
+    // So the answer is stated once, here, as a list somebody has to edit on
+    // purpose. A kind that changes side now fails this arm by name.
+    test('and which kinds those are is written down, not read back', () {
+      const stopped = {
+        GatewayLinkKind.credentialRefused,
+        GatewayLinkKind.versionRefused,
+        // Terminal in the strongest sense the surface has: there is no retry
+        // loop to have stopped, because none was started.
+        GatewayLinkKind.notBuilt,
+      };
+      for (final kind in GatewayLinkKind.values) {
+        expect(_everyKind[kind]!.terminal, stopped.contains(kind),
+            reason: '$kind changed sides. Either the mapper is now telling an '
+                'operator to stand and watch something that will never clear, '
+                'or it is telling them to go and fix something that is about '
+                'to fix itself');
+      }
+    });
+
     for (final kind in GatewayLinkKind.values) {
       final report = _everyKind[kind]!;
       testWidgets(
