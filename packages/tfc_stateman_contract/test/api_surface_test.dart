@@ -34,7 +34,7 @@
 ///
 /// The wire grew four families — [AccessTemplateApi], [AccessAdminApi],
 /// [AuditApi], [BackendConfigApi] — and four `StateManApi` getters to reach
-/// them by. That is **thirty-three new members**, the largest single growth
+/// them by. That is **thirty-two new members**, the largest single growth
 /// this surface has had, and every one of them is a thing any connected client
 /// may invoke against a gateway. So they are written out below as literals,
 /// family by family, rather than allowed to arrive as a number that went up:
@@ -43,9 +43,15 @@
 ///
 /// The four new interfaces are added to [wireSurface] and not merely tolerated
 /// through the getters. A getter whose type is not walked would put
-/// twenty-nine methods on the wire with nothing here counting them — which is
+/// twenty-eight methods on the wire with nothing here counting them — which is
 /// the same hole WR-07 closed for superinterfaces, arriving by a different
 /// door.
+///
+/// One name has since been cut: `accessTemplates.template`. The access audit
+/// of all twenty-nine names found it had no caller anywhere, including its own
+/// store; remote implementations derive it from `list()`. Its removal is the
+/// other edge of this file's blade — a removed member silently breaks a
+/// deployed client that still calls it, and no deployed client ever did.
 library;
 
 import 'dart:mirrors';
@@ -157,12 +163,15 @@ const Set<String> expectedPreferencesApi = {
   'onPreferencesChanged',
 };
 
-/// The ten template members, names mirrored verbatim from
+/// The nine template members, names mirrored verbatim from
 /// `AccessTemplateStore`. Every one of the six writes changes **who may write a
 /// key**, which is why the whole family is graded `users` at the far end.
+///
+/// `template` (one row by name) was cut by the access audit: no caller
+/// anywhere, including its own store — the store reads rows through its
+/// private `_row()`. Remote implementations derive it from `list()`.
 const Set<String> expectedAccessTemplateApi = {
   'list',
-  'template',
   'bindings',
   'keysBoundTo',
   'create',
@@ -318,7 +327,7 @@ void main() {
       });
     }
 
-    test('the whole surface is 82 members over nine types, 80 distinct names',
+    test('the whole surface is 81 members over nine types, 79 distinct names',
         () {
       final actual = <String>{
         for (final type in wireTypes) ...declaredMemberNames(type),
@@ -331,15 +340,19 @@ void main() {
               'moved from one sub-interface to another still has to be a '
               'deliberate edit here');
 
-      // 49 until Phase 17, then +4 StateManApi getters and +29 access methods.
+      // 49 until Phase 17, then +4 StateManApi getters and +29 access
+      // methods; 81 since the access audit cut accessTemplates.template —
+      // no caller anywhere, including its own store; remote implementations
+      // derive it from list().
       final total = wireTypes
           .map((type) => declaredMemberNames(type).length)
           .fold<int>(0, (sum, length) => sum + length);
-      expect(total, 82,
+      expect(total, 81,
           reason: 'the count is written down so a same-size swap — one member '
               'removed, another added — cannot slip through as a coincidence. '
-              '82 = 49 before Phase 17, plus four StateManApi getters, plus '
-              'the twenty-nine access methods behind them');
+              '81 = 49 before Phase 17, plus four StateManApi getters, plus '
+              'the twenty-eight access methods behind them after the audit '
+              'cut accessTemplates.template');
 
       // The union is SHORTER than the sum, and the gap is named rather than
       // left as an arithmetic surprise: BackendConfigApi.read and .write share
@@ -347,10 +360,10 @@ void main() {
       // happen to share a verb, kept apart on the wire by the
       // `backendConfig.` family segment. Asserting both numbers is what stops
       // a future collision from being absorbed silently by the set.
-      expect(actual, hasLength(80),
+      expect(actual, hasLength(79),
           reason: 'exactly two names appear on two types — read and write, on '
               'StateManApi and BackendConfigApi. A third collision would drop '
-              'this to 79 while the per-type tables above still passed, so it '
+              'this to 78 while the per-type tables above still passed, so it '
               'is counted here on purpose');
       expect(
           expectedStateManApi
@@ -359,7 +372,7 @@ void main() {
             ..sort(),
           ['read', 'write'],
           reason: 'and the two are named, not merely counted — a different '
-              'pair of colliding names would keep the length at 80 and mean '
+              'pair of colliding names would keep the length at 79 and mean '
               'something entirely different');
     });
   });
