@@ -63,19 +63,50 @@ class ModbusRegisterSpec {
 // Internal subscription and poll group classes
 // =============================================================================
 
+/// A Modbus reading together with the instant the round trip that produced it
+/// completed.
+///
+/// **Why the instant travels with the value rather than beside it.** Modbus
+/// carries no device timestamp, so the driver's own read instant is the best
+/// estimate the protocol admits, and everything downstream — the alarm engine's
+/// `ts_source`, the collector, the freshness badge — needs to know *which* read
+/// a value came from, not merely that some read happened recently. Reading a
+/// "last read at" field off the wrapper at delivery time would be a different
+/// number as soon as a second poll lands between the emit and the listener, and
+/// that is precisely the class of quiet substitution this milestone exists to
+/// end.
+final class ModbusSample {
+  const ModbusSample({required this.value, required this.readAt});
+
+  /// The parsed reading (bool, int, double, or null).
+  final Object? value;
+
+  /// The instant the Modbus round trip that produced [value] completed.
+  ///
+  /// This is a clock on THIS host, not on the device: Modbus has no source
+  /// timestamp to send. It is the moment the answer came off the socket, which
+  /// is as close to the wire as the protocol allows anyone to get.
+  final DateTime readAt;
+
+  @override
+  String toString() => 'ModbusSample($value @ ${readAt.toIso8601String()})';
+}
+
 /// Holds the runtime state for a single subscribed register.
 class _RegisterSubscription {
   final ModbusRegisterSpec spec;
   final ModbusElement element;
-  final BehaviorSubject<Object?> value$;
+  final BehaviorSubject<ModbusSample> sample$;
 
   _RegisterSubscription({
     required this.spec,
     required this.element,
-  }) : value$ = BehaviorSubject<Object?>();
+  }) : sample$ = BehaviorSubject<ModbusSample>();
 
-  Object? get currentValue => value$.valueOrNull;
-  Stream<Object?> get stream => value$.stream;
+  ModbusSample? get currentSample => sample$.valueOrNull;
+  Object? get currentValue => sample$.valueOrNull?.value;
+  Stream<ModbusSample> get sampleStream => sample$.stream;
+  Stream<Object?> get stream => sample$.stream.map((s) => s.value);
 }
 
 /// A named group of register subscriptions polled at a common interval.
@@ -278,8 +309,17 @@ class ModbusClientWrapper {
     ModbusClientTcp Function(String, int, int)? clientFactory,
     Duration heartbeatInterval = const Duration(seconds: 10),
     this.heartbeatAddress = 0,
+    DateTime Function()? clock,
   })  : _clientFactory = clientFactory ?? _defaultFactory,
-        _heartbeatInterval = heartbeatInterval;
+        _heartbeatInterval = heartbeatInterval,
+        _clock = clock ?? DateTime.timestamp;
+
+  /// The clock read to stamp [ModbusSample.readAt], injected so a test can
+  /// pin the *site* of the reading rather than merely its presence.
+  ///
+  /// Defaults to `DateTime.timestamp` (UTC): the stamp travels into
+  /// `alarm_history` and a local-zone instant there is a different bug.
+  final DateTime Function() _clock;
 
   /// The holding register address to read during idle heartbeat probes.
   /// Defaults to 0 for backward compatibility. Override for devices where
@@ -358,8 +398,8 @@ class ModbusClientWrapper {
     _pollLifecycleSubscription = null;
     // Close all subscription BehaviorSubjects
     for (final sub in _subscriptions.values) {
-      if (!sub.value$.isClosed) {
-        sub.value$.close();
+      if (!sub.sample$.isClosed) {
+        sub.sample$.close();
       }
     }
     if (!_status.isClosed) {
@@ -396,7 +436,17 @@ class ModbusClientWrapper {
   ///
   /// If the spec's poll group does not exist, it is lazily created with the
   /// default 1-second interval.
-  Stream<Object?> subscribe(ModbusRegisterSpec spec) {
+  ///
+  /// The value alone. Callers that need to know WHEN the reading was taken —
+  /// which is everything feeding the alarm engine — want [subscribeSamples].
+  Stream<Object?> subscribe(ModbusRegisterSpec spec) =>
+      subscribeSamples(spec).map((s) => s.value);
+
+  /// [subscribe], but each event carries the instant its read completed.
+  ///
+  /// Registration is identical; this is the same subject with the provenance
+  /// left on.
+  Stream<ModbusSample> subscribeSamples(ModbusRegisterSpec spec) {
     // Return existing subscription if already subscribed (prevents duplicate
     // accumulation in poll group on repeated calls from widget rebuilds).
     final existing = _subscriptions[spec.key];
@@ -404,7 +454,7 @@ class ModbusClientWrapper {
       // Verify the existing subscription spec matches — if not, tear down the
       // stale subscription so we recreate with the updated parameters.
       if (_specMatches(existing.spec, spec)) {
-        return existing.stream;
+        return existing.sampleStream;
       }
       unsubscribe(spec.key);
     }
@@ -434,7 +484,7 @@ class ModbusClientWrapper {
       _startAllPolling();
     }
 
-    return subscription.stream;
+    return subscription.sampleStream;
   }
 
   /// Returns the last-known cached value for [key], or null if not subscribed
@@ -442,6 +492,15 @@ class ModbusClientWrapper {
   Object? read(String key) {
     return _subscriptions[key]?.currentValue;
   }
+
+  /// [read], but with the instant the read that produced the cached value
+  /// completed.
+  ///
+  /// The instant is the CACHED one, not "now": a value sitting in the subject
+  /// is exactly as old as the round trip that fetched it, and re-stamping it on
+  /// the way out would make a stale reading look fresh — the same substitution
+  /// one layer down.
+  ModbusSample? readSample(String key) => _subscriptions[key]?.currentSample;
 
   /// Removes the subscription for [key] from its poll group.
   void unsubscribe(String key) {
@@ -455,8 +514,8 @@ class ModbusClientWrapper {
       group._dirty = true; // trigger coalescing recalculation on next tick
     }
 
-    if (!sub.value$.isClosed) {
-      sub.value$.close();
+    if (!sub.sample$.isClosed) {
+      sub.sample$.close();
     }
 
     // Resume heartbeat if no subscriptions remain and still connected
@@ -502,6 +561,9 @@ class ModbusClientWrapper {
     final element = _createElement(spec);
     final request = element.getWriteRequest(value);
     final result = await _client!.send(request);
+    // The device acknowledged. Same class of instant as a read: a clock on this
+    // host, taken the moment the wire answered.
+    final ackedAt = _clock();
 
     if (result != ModbusResponseCode.requestSucceed) {
       throw StateError(
@@ -510,8 +572,8 @@ class ModbusClientWrapper {
 
     // Optimistic update: push written value into BehaviorSubject if subscribed
     final sub = _subscriptions[spec.key];
-    if (sub != null && !sub.value$.isClosed) {
-      sub.value$.add(value);
+    if (sub != null && !sub.sample$.isClosed) {
+      sub.sample$.add(ModbusSample(value: value, readAt: ackedAt));
     }
   }
 
@@ -725,11 +787,18 @@ class ModbusClientWrapper {
         group._dirty = false;
       }
 
-      // Elements whose batch actually came back this tick. Only these may be
-      // published: the element objects hold their PREVIOUS reading when a
-      // read fails, so publishing unconditionally re-emits the last good
-      // value at the poll rate and a dead device looks like a steady one.
-      final freshlyRead = Set<ModbusElement>.identity();
+      // Elements whose batch actually came back this tick, and WHEN it came
+      // back. Only these may be published: the element objects hold their
+      // PREVIOUS reading when a read fails, so publishing unconditionally
+      // re-emits the last good value at the poll rate and a dead device looks
+      // like a steady one.
+      //
+      // The instant is recorded per BATCH, immediately after the send returns,
+      // not once per tick and not at publish time below. A tick reads several
+      // batches in sequence; stamping them all with one instant would date the
+      // first batch by however long the last one took, and stamping at publish
+      // time would date every reading by the whole tick.
+      final freshlyRead = Map<ModbusElement, DateTime>.identity();
 
       for (final elemGroup in group._cachedGroups) {
         if (_disposed || connectionStatus != ConnectionStatus.connected) break;
@@ -740,6 +809,9 @@ class ModbusClientWrapper {
           );
           recordRequest();
           final result = await _client!.send(request);
+          // Read the clock here, on the line after the wire answered, and
+          // nowhere later. This is the whole claim the stamp makes.
+          final readAt = _clock();
 
           if (result != ModbusResponseCode.requestSucceed) {
             _lastError = 'Poll group "${group.name}": ${result.name}';
@@ -753,7 +825,9 @@ class ModbusClientWrapper {
             // Last-known values remain in BehaviorSubjects (SCADA behavior)
           } else {
             _consecutiveReadFailures = 0;
-            freshlyRead.addAll(elemGroup);
+            for (final element in elemGroup) {
+              freshlyRead[element] = readAt;
+            }
           }
         } catch (e) {
           _lastError = e.toString();
@@ -779,9 +853,13 @@ class ModbusClientWrapper {
       // behaviour), but no new event is emitted, so nothing downstream --
       // above all the collector -- records a reading that never happened.
       for (final sub in group._subscriptions) {
-        if (!freshlyRead.contains(sub.element)) continue;
-        if (!sub.value$.isClosed) {
-          sub.value$.add(_coerceValue(sub.element.value, sub.spec.dataType));
+        final readAt = freshlyRead[sub.element];
+        if (readAt == null) continue;
+        if (!sub.sample$.isClosed) {
+          sub.sample$.add(ModbusSample(
+            value: _coerceValue(sub.element.value, sub.spec.dataType),
+            readAt: readAt,
+          ));
         }
       }
     } catch (e, st) {
