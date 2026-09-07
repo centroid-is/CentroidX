@@ -466,6 +466,14 @@ final class ConflatingSendBuffer {
   /// client staying above the soft ceiling continuously — see
   /// `server_config.dart`'s `peakThreshold`, which says so in the same words a
   /// reader will find at the other end.
+  ///
+  /// **The delivery record deliberately does not drain** (16-08). `_subs` is
+  /// cleared here; `_delivery` is not, and that asymmetry is the whole reason
+  /// the delivery verdict can see something the production ones cannot. A gap
+  /// that reset every tick would measure the same nothing this paragraph is
+  /// about. The delivery record is cleared by [dropSub] instead — on
+  /// unsubscribe and on re-establishment — because those are the two events
+  /// after which an old acknowledged sequence means nothing.
   DrainedFrame drain() {
     final priority = List<Object?>.of(_priority);
     _priority.clear();

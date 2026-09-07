@@ -37,10 +37,33 @@
 /// `ConflatingSendBuffer.poll` measures across ticks is therefore this client's
 /// own **production** — how many distinct handles changed for it between two
 /// ticks — and not how far behind it has fallen (STATE.md 03-REVIEW WR-11, and
-/// `send_buffer.dart:180-200` says it in the same words). Nobody should read
-/// G5's green as evidence that the gateway can see how far behind a panel is.
-/// It cannot, and the eviction it performs is a judgement about the *plant's*
-/// rate for that page, taken on the panel's behalf.
+/// `send_buffer.dart` says it in the same words). Nobody should read G5's green
+/// as evidence that the gateway can see how far behind a panel is: **these arms
+/// carry no delivery ack**, so what evicts in them is still a judgement about
+/// the *plant's* rate for that page, taken on the panel's behalf.
+///
+/// **What 16-08 changed about the sentence above, and what it did not.** The
+/// flat claim that the gateway *cannot* see a panel's backlog is no longer
+/// true as a statement about the design. `16-02-DECISION.md` took option (c) —
+/// the panel reports the highest sequence it has applied per subscription on
+/// the heartbeat it already sends, and `ConflatingSendBuffer` evicts on a gap
+/// that stays wide for a window. So the gateway can see a backlog **when the
+/// panel tells it**, and never by observing the socket.
+///
+/// Two qualifications, both load-bearing:
+///
+///  * **It is a self-report, from the party being judged.** It is clamped to
+///    sequences the server actually sent, so a client cannot over-report its
+///    way out of eviction (T-16-02a); under-reporting is left alone, because a
+///    client that evicts itself costs only itself a snapshot. Nothing here
+///    observes the transport, and no amount of acking makes `dart:io` grow a
+///    `bufferedAmount`.
+///  * **The wire is not connected yet.** `ping` does not carry the `ack` map:
+///    the DTO and the server-side ingestion were outside 16-08's fence. Until
+///    they land, every session in production has a null `ackedSeq`, the
+///    delivery verdict skips it by design, and these arms describe the whole of
+///    what the gateway does. They will keep describing an un-acking client
+///    afterwards, which is why they are still correct as written.
 ///
 /// **Why the throttle is the in-process proxy and not `tc netem`.**
 /// 07-RESEARCH §B.1: the netem command builder in this repository has no
@@ -849,7 +872,11 @@ void main() {
               'cannot tell those apart reconnects into the same wall for ever. '
               'The set is every code latched at 2 ms since the fixture came '
               'up, so a 1006 during the quiet arm would still be in it');
-      expect(reason, contains('unable to keep up'),
+      // `contains('unable to keep up')` until 16-08. The verdict is the same
+      // verdict and this arm still pins the same boundary; the sentence stopped
+      // attributing a measurement of the server's own production to the panel
+      // receiving it (`16-02-DECISION.md` §5.4, T-16-08e).
+      expect(reason, contains('sustained production'),
           reason: 'the close reason was "$reason". This arm is about the '
               '**soft** ceiling — the sustained-peak verdict, judged over a '
               'window — and the hard `maxPending` limit carries a different '

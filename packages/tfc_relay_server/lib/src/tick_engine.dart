@@ -26,8 +26,17 @@
 ///     data was not being sent. A stall the fan-out itself caused is visible
 ///     here and nowhere else.
 ///  3. per session: `buffer.poll(nowMs)` **before** `drain()`, act on the
-///     verdict, drain, write the priority lane, write the conflated telemetry,
-///     write the tick notification.
+///     verdict, drain, write the priority lane, write the conflated telemetry
+///     — **recording each `seq` as it is minted** (`buffer.noteSent`, 16-08) —
+///     then write the tick notification.
+///
+///     `noteSent` sits inside the telemetry write rather than beside the poll
+///     because it must record what was *actually emitted*: a subscription held
+///     back by its own `maxRateHz`, or one dropped between the change and this
+///     tick, advances no sequence and must not appear to be a frame the client
+///     owes an acknowledgement for. Recording it earlier would manufacture a
+///     delivery gap out of the server's own rate limiting, and evict the
+///     slowest-refreshing panels first.
 ///  4. the heartbeat sweep, once, over every session ([TickEngine.reap]).
 ///
 /// **Why the poll comes before the drain.** `ConflatingSendBuffer.drain()`
@@ -48,27 +57,74 @@
 /// buffer's own verdicts is what §5's flush-gating maps to on this transport.
 /// A reader at this line does not have to go and find the plan.
 ///
-/// **What the backpressure verdicts actually measure** (03-REVIEW WR-11, and
-/// this is the honest version of the paragraph above). `drain()` runs
-/// unconditionally every tick and `ws.sink.add` never blocks, so the buffer is
-/// empty at the start of every tick by construction. What `poll` reads is
-/// therefore **how much this server produced for one client during one tick** —
-/// not how far behind that client is. A genuinely slow client's backlog
-/// accumulates in the `dart:io` socket's own unbounded write buffer, which is
-/// exactly the thing this process cannot see. So `maxPending` is a
-/// per-client *production* ceiling wearing a backpressure ceiling's name, the
-/// soft `peakThreshold` window measures sustained heavy production rather than
-/// sustained client backlog, and **a slow client is detected only by the
-/// heartbeat deadline** — a panel that stops reading stops sending heartbeats,
-/// and the reaper is what notices.
+/// **What the backpressure verdicts measure, and which of them is the
+/// slow-consumer defence** (03-REVIEW WR-11; the choice this paragraph used to
+/// ask for was made in `.planning/phases/16-transport-hardening/16-02-DECISION.md`
+/// and implemented by 16-08).
 ///
-/// This is the accepted `dart:io` divergence taken to its conclusion rather
-/// than a defect in the implementation of a decision, but SRV-04's "convert
-/// silent heap growth into a visible reconnect" is only half met and the docs
-/// used to read as though it were fully met. Phase 6 has exactly two real
-/// options and should choose deliberately: a periodic `ws.sink.done`-based
-/// liveness check, or moving to `package:web_socket` if it ever exposes a
-/// completion signal.
+/// `drain()` runs unconditionally every tick and `ws.sink.add` never blocks, so
+/// the buffer is empty at the start of every tick by construction. What
+/// `maxPending` and `peakThreshold` read is therefore **how much this server
+/// produced for one client during one tick** — never how far behind that client
+/// is. A genuinely slow client's backlog accumulates in the `dart:io` socket's
+/// own unbounded write buffer, which is exactly the thing this process cannot
+/// see. **That has not changed and cannot be changed on this transport.** What
+/// changed is what is done about it.
+///
+/// **The choice, and why it is not the one this paragraph used to recommend.**
+/// The two options named here since Phase 3 were a periodic `ws.sink.done`
+/// liveness check, or moving to `package:web_socket` if it ever exposed a
+/// completion signal. 16-02 measured the first and **refuted it**: `sink.done`
+/// completes at 2.00 × `pingInterval` — it *is* the pong timeout, so it cannot
+/// detect anything sooner — and `await sink.addStream(frame)`, the only
+/// completion-shaped signal `dart:io` offers, returned in 0 ms on all 152
+/// frames while 9.5 MiB piled into a socket nobody was reading. The second is
+/// not implementable: `web_socket_channel` 3.0.3 already wraps
+/// `package:web_socket`, and neither adapter exposes `bufferedAmount`, a
+/// `flush()` or a per-message future.
+///
+/// So the answer is a third option the source comment never named: an
+/// **application-level delivery ack**. The client reports, on the heartbeat it
+/// already sends, the highest sequence it has *applied* per subscription; the
+/// gap between that and what this server sent is the one quantity on this
+/// transport that distinguishes a slow link from a stopped one. It separates by
+/// magnitude (healthy gaps ≤ 24, 64 after a staleness penalty; unhealthy floor
+/// 90) and, more robustly, by **slope**: a latent link's gap plateaus at
+/// `latency ÷ tick` with zero slope however high it sits, and only a link that
+/// cannot carry the production rate grows without bound — 15–20 frames/s.
+/// It is also the only one of the three that is identical on Flutter web, which
+/// CLAUDE.md makes a hard future constraint and which both `dart:io` options
+/// fail outright.
+///
+/// **The verdicts, in the order `ConflatingSendBuffer.poll` checks them.** The
+/// two hard memory ceilings first — `maxPendingBytes`, then `maxPending` — and
+/// they are untouched by any of this (T-16-02b): a client whose buffer
+/// genuinely explodes is evicted whatever it says about itself. Then the
+/// delivery gap. Then `peakThreshold`, which still measures **production**,
+/// says so in its reason string since 16-08, and is **null by default** —
+/// because 16-02 measured it evicting a healthy 1100-key page after 10.1 s
+/// under a sentence that told the panel it could not keep up, while a panel
+/// that had stopped reading altogether sat at 41 pending against its threshold
+/// of 1024. It was two orders of magnitude from tripping on the failure it was
+/// documented as defending against, and it was reliably tripping on panels that
+/// were fine.
+///
+/// **SRV-04's status, and it is still not "met".** The half that was silently
+/// hurting the plant is closed: no healthy page is evicted for producing, and
+/// no PLC-reconnect burst takes every panel down at once. The half this
+/// paragraph was written about — converting a stuck reader's silent heap growth
+/// into a prompt, visible reconnect — has a detector that is **built, pinned by
+/// `slow_consumer_test.dart`, and not yet fed**. `ping` does not carry an `ack`
+/// map yet: the DTO belongs in `tfc_relay_protocol`'s `messages.dart` and the
+/// ingestion in `RelaySession._ping`, and both files were outside 16-08's
+/// fence. Until they land, `ackedSeq` is null for every session in production,
+/// the delivery verdict skips every session by design (an un-acking client is
+/// an old client, never a stall), and a stuck reader is still detected only by
+/// the heartbeat deadline and the platform's pong timeout — 20–40 s at the
+/// shipping `pingInterval`, median 33 s. That is exactly where it was before,
+/// so nothing regressed; but a reader should not take the presence of the
+/// mechanism for the presence of the defence. See 16-08's SUMMARY for the two
+/// lines that close it.
 library;
 
 import 'dart:async';

@@ -89,10 +89,16 @@ final class ServerConfig {
   /// this is compared against is what the server produced for one client
   /// during one tick. On `dart:io` WebSockets there is no observable client
   /// backlog at all — it sits in the socket's own unbounded write buffer — so
-  /// a genuinely slow client is detected only by [heartbeatDeadline]: it stops
-  /// reading, therefore it stops sending heartbeats, and the reaper is what
-  /// notices. `tick_engine.dart`'s library doc carries the full statement and
-  /// the two options Phase 6 has.
+  /// **this is a production ceiling and not the slow-consumer defence.** That
+  /// role now belongs to `ConflatingSendBuffer.ackGapThreshold`, which measures
+  /// what the client says it has applied (`16-02-DECISION.md`, option (c));
+  /// `tick_engine.dart`'s library doc carries the full statement, including
+  /// which half of SRV-04 is closed and which is not.
+  ///
+  /// **It stays hard regardless** (T-16-02b). This is a memory ceiling: it
+  /// bounds what one client can make this isolate hold, and the isolate serves
+  /// every screen in the plant. No claim a client makes about itself can raise
+  /// it or defer it.
   final int maxPending;
 
   /// Soft ceiling on **production**: how many entries this server may pile up
