@@ -1106,5 +1106,45 @@ void main() {
       expect(source.activeStreamClosed, isFalse,
           reason: 'this source was closed on purpose; nothing failed');
     });
+
+    // ---------------------------------------------------------------- 15f
+    test('nor is a teardown that takes the transport down with it', () async {
+      // 15e alone is not evidence for the `_closing` guard, and that was
+      // MEASURED: deleting `_closing = true` from `close()` turned nothing red,
+      // because cancelling a StreamSubscription does not fire `onDone` at all.
+      // The guard exists for the ordering 15e cannot reach — the client going
+      // down in the same breath as the panel tears the source down, which is
+      // what `stateManProvider`'s own `onDispose` does one line after this
+      // provider's.
+      //
+      // The order below is the deterministic one: `StreamController.close()`
+      // SCHEDULES its done event rather than delivering it, and
+      // `RelayAlarmSource.close()` sets `_closing` synchronously before its
+      // first await. So the flag is set before the done event runs — unless it
+      // is not set at all, and then a routine key-mappings save prints a
+      // gateway-is-dead line on every panel in the plant. A fault line that
+      // cries wolf on every save is a fault line nobody reads, which is the
+      // same silence by a longer route.
+      final transport = _RecordingTransport();
+      final container = _container(
+        gateway: true,
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source =
+          await container.read(alarmManProvider.future) as RelayAlarmSource;
+      await _settle(source);
+
+      final closingTransport = transport.close();
+      final closingSource = source.close();
+      await closingTransport;
+      await closingSource;
+      await Future<void>.delayed(Duration.zero);
+
+      expect(source.activeStreamClosed, isFalse,
+          reason: 'the client and the source went down together, on purpose. '
+              'Nothing failed, and nothing should be reported.');
+    });
   });
 }

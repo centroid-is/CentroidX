@@ -189,6 +189,21 @@ class RelayAlarmSource implements AlarmSource {
 
   /// Set by [close] before the subscription is cancelled, so a deliberate
   /// teardown is not reported as a dead gateway.
+  ///
+  /// **Inert as this file stands today, and that was measured rather than
+  /// assumed.** `close()` reaches `_subscription.cancel()` synchronously — no
+  /// await comes before it — and a cancelled subscription is never delivered
+  /// the done event a `StreamController.close()` had already scheduled. So
+  /// deleting this flag on its own turns nothing red.
+  ///
+  /// It is kept because it stops being inert the moment anybody puts a single
+  /// `await` in front of that cancel, and the mutation matrix says so in both
+  /// directions: with the flag present, inserting that await keeps every arm
+  /// green; with it absent, the same await turns arm 15f red. What that arm
+  /// would then be reporting on a plant is a gateway-is-dead line printed on
+  /// **every** key-mappings save — and a fault line that cries wolf on every
+  /// save is a fault line nobody reads, which is the same silence by a longer
+  /// route.
   bool _closing = false;
 
   void _listen() {
