@@ -1427,6 +1427,13 @@ class _ServerSectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // The badge speaks the repo's state vocabulary: yellow is attention
+    // (unsaved is the normal state of a keyboard mid-edit), where the old
+    // raw `Colors.orange` read as forced/override — and orange has meant an
+    // elevated session too since plan 01-08. `onState` is the designed ink
+    // for any solid state fill. Colours only; whether a per-section badge
+    // should exist at all is a separate owner call.
+    final states = HmiStateColors.of(context);
     return LayoutBuilder(
       builder: (context, constraints) {
         final isNarrow = constraints.maxWidth < 500;
@@ -1448,11 +1455,11 @@ class _ServerSectionHeader extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                          color: Colors.orange,
+                          color: states.yellow,
                           borderRadius: BorderRadius.circular(12)),
-                      child: const Text('Unsaved',
+                      child: Text('Unsaved',
                           style: TextStyle(
-                              color: Colors.white,
+                              color: states.onState,
                               fontSize: 10,
                               fontWeight: FontWeight.bold)),
                     ),
@@ -1478,11 +1485,11 @@ class _ServerSectionHeader extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                    color: Colors.orange,
+                    color: states.yellow,
                     borderRadius: BorderRadius.circular(12)),
-                child: const Text('Unsaved Changes',
+                child: Text('Unsaved Changes',
                     style: TextStyle(
-                        color: Colors.white,
+                        color: states.onState,
                         fontSize: 12,
                         fontWeight: FontWeight.bold)),
               ),
