@@ -196,7 +196,7 @@ void main() {
     test('a well-formed entry loads as a verified station account', () async {
       final validator = await FileTokenValidator.load(
           _writeTokenFile(_tempDir(), _oneStation()),
-          users: _seedUsers().resolve);
+          accounts: _seedUsers().resolve);
 
       final verdict =
           await validator.validate(_helloWith(_stationOneToken));
@@ -235,7 +235,7 @@ void main() {
         });
 
         await expectLater(
-            FileTokenValidator.load(path, users: _seedUsers().resolve),
+            FileTokenValidator.load(path, accounts: _seedUsers().resolve),
             throwsA(isA<FormatException>().having(
                 (e) => e.message,
                 'message',
@@ -269,7 +269,7 @@ void main() {
       });
 
       await expectLater(
-          FileTokenValidator.load(path, users: _seedUsers().resolve),
+          FileTokenValidator.load(path, accounts: _seedUsers().resolve),
           throwsA(isA<FormatException>().having(
               (e) => e.message,
               'message',
@@ -300,7 +300,7 @@ void main() {
         });
 
         await expectLater(
-            FileTokenValidator.load(path, users: _seedUsers().resolve),
+            FileTokenValidator.load(path, accounts: _seedUsers().resolve),
             throwsA(isA<FormatException>()),
             reason: '"${group.name}" in a role key is the credential '
                 'mechanism answering "and therefore may do X" — and a file '
@@ -317,7 +317,7 @@ void main() {
       await expectLater(
           FileTokenValidator.load(
               _writeTokenFile(_tempDir(), _oneStation()),
-              users: _seedUsers().resolve),
+              accounts: _seedUsers().resolve),
           completes);
     });
 
@@ -330,7 +330,7 @@ void main() {
       });
 
       await expectLater(
-          FileTokenValidator.load(path, users: _seedUsers().resolve),
+          FileTokenValidator.load(path, accounts: _seedUsers().resolve),
           throwsA(isA<FormatException>().having((e) => e.message, 'message',
               allOf(contains('stationId'), contains('station'),
                   contains('username')))),
@@ -387,7 +387,7 @@ void main() {
         },
       });
       final validator =
-          await FileTokenValidator.load(path, users: users.resolve);
+          await FileTokenValidator.load(path, accounts: users.resolve);
 
       final ghost = await validator.validate(_helloWith(_stationOneToken));
       final real = await validator.validate(_helloWith(_stationTwoToken));
@@ -433,7 +433,7 @@ void main() {
         },
       });
       final validator =
-          await FileTokenValidator.load(path, users: users.resolve);
+          await FileTokenValidator.load(path, accounts: users.resolve);
 
       final asRole = await validator.validate(_helloWith(_stationOneToken));
       final real = await validator.validate(_helloWith(_stationTwoToken));
@@ -457,7 +457,7 @@ void main() {
       final users = _seedUsers();
       final validator = await FileTokenValidator.load(
           _writeTokenFile(_tempDir(), _oneStation()),
-          users: users.resolve);
+          accounts: users.resolve);
 
       final reachable = await validator.validate(_helloWith(_stationOneToken));
       expect(reachable, isA<TokenAccepted>(),
@@ -481,7 +481,7 @@ void main() {
               },
             },
           }),
-          users: ghostUsers.resolve);
+          accounts: ghostUsers.resolve);
       final ghost = await ghostValidator.validate(_helloWith(_stationOneToken))
           as TokenRejected;
 
@@ -514,7 +514,7 @@ void main() {
         },
       });
       final validator =
-          await FileTokenValidator.load(path, users: users.resolve);
+          await FileTokenValidator.load(path, accounts: users.resolve);
 
       final person = await validator.validate(_helloWith(_stationOneToken));
       final panel = await validator.validate(_helloWith(_stationTwoToken));
@@ -549,7 +549,7 @@ void main() {
       final users = _seedUsers();
       final validator = await FileTokenValidator.load(
           _writeTokenFile(_tempDir(), _oneStation()),
-          users: users.resolve);
+          accounts: users.resolve);
       expect(users.calls, 0,
           reason: 'loading the file resolved nobody: the file names '
               'identities, and who they currently are is a question for the '
@@ -592,7 +592,7 @@ void main() {
       });
 
       await expectLater(
-          FileTokenValidator.load(path, users: _seedUsers().resolve),
+          FileTokenValidator.load(path, accounts: _seedUsers().resolve),
           throwsA(isA<FormatException>().having((e) => e.message, 'message',
               allOf(contains('ST101'), contains(path)))),
           reason: 'two tokens answering to one station makes a revocation '
@@ -620,7 +620,7 @@ void main() {
       });
 
       await expectLater(
-          FileTokenValidator.load(path, users: _seedUsers().resolve),
+          FileTokenValidator.load(path, accounts: _seedUsers().resolve),
           throwsA(isA<FormatException>().having((e) => e.message, 'message',
               allOf(contains('ST101-panel'), contains(path)))),
           reason: 'one account per station: an audit row records a username, '
@@ -639,7 +639,7 @@ void main() {
       });
 
       await expectLater(
-          FileTokenValidator.load(path, users: _seedUsers().resolve),
+          FileTokenValidator.load(path, accounts: _seedUsers().resolve),
           throwsA(isA<FormatException>().having(
               (e) => e.message,
               'message',
@@ -656,7 +656,7 @@ void main() {
       final path = _writeTokenFile(_tempDir(), _oneStation(), mode: '644');
 
       await expectLater(
-          FileTokenValidator.load(path, users: _seedUsers().resolve),
+          FileTokenValidator.load(path, accounts: _seedUsers().resolve),
           throwsA(isA<FileSystemException>()
               .having((e) => e.message, 'message', contains('readable'))),
           reason: 'the credential set is the plant\'s keys; a file every '
@@ -670,7 +670,7 @@ void main() {
 
       await expectLater(
           FileTokenValidator.load('${dir.path}/absent.json',
-              users: _seedUsers().resolve),
+              accounts: _seedUsers().resolve),
           throwsA(isA<FileSystemException>()),
           reason: 'there is no permissive fallback: a gateway that accepted '
               'every panel because somebody misspelled a path would look '
@@ -681,7 +681,7 @@ void main() {
         'repeats it', () async {
       final validator = await FileTokenValidator.load(
           _writeTokenFile(_tempDir(), _oneStation()),
-          users: _seedUsers().resolve);
+          accounts: _seedUsers().resolve);
 
       const impostor = 'IMPOSTOR-4d2f8e1c6b9a3057fe4d2c8b';
       final unknown = await validator.validate(_helloWith(impostor));
@@ -704,7 +704,7 @@ void main() {
       final users = _seedUsers();
       final validator = await FileTokenValidator.load(
           _writeTokenFile(_tempDir(), _oneStation()),
-          users: users.resolve);
+          accounts: users.resolve);
       final before = users.calls;
 
       await validator.validate(_helloWith('IMPOSTOR-4d2f8e1c6b9a3057fe4d2c8b'));
@@ -721,7 +721,7 @@ void main() {
       final dir = _tempDir();
       final path = _writeTokenFile(dir, _twoStations());
       final validator =
-          await FileTokenValidator.load(path, users: _seedUsers().resolve);
+          await FileTokenValidator.load(path, accounts: _seedUsers().resolve);
 
       final one = await validator.validate(_helloWith(_stationOneToken))
           as TokenAccepted;
@@ -753,7 +753,7 @@ void main() {
       final users = _seedUsers();
       final validator = await FileTokenValidator.load(
           _writeTokenFile(_tempDir(), _oneStation()),
-          users: users.resolve);
+          accounts: users.resolve);
 
       final operating = await validator.validate(_helloWith(_stationOneToken))
           as TokenAccepted;
@@ -783,7 +783,7 @@ void main() {
       final users = _seedUsers();
       final validator = await FileTokenValidator.load(
           _writeTokenFile(_tempDir(), _oneStation()),
-          users: users.resolve);
+          accounts: users.resolve);
       final operating = await validator.validate(_helloWith(_stationOneToken))
           as TokenAccepted;
       expect(
@@ -806,7 +806,7 @@ void main() {
       final users = _seedUsers();
       final validator = await FileTokenValidator.load(
           _writeTokenFile(_tempDir(), _oneStation()),
-          users: users.resolve);
+          accounts: users.resolve);
       final operating = await validator.validate(_helloWith(_stationOneToken))
           as TokenAccepted;
       expect(
@@ -835,7 +835,7 @@ void main() {
       final users = _seedUsers();
       final validator = await FileTokenValidator.load(
           _writeTokenFile(_tempDir(), _oneStation()),
-          users: users.resolve);
+          accounts: users.resolve);
 
       final operating = await validator.validate(_helloWith(_stationOneToken))
           as TokenAccepted;
@@ -873,7 +873,7 @@ void main() {
       final users = _seedUsers();
       final validator = await FileTokenValidator.load(
           _writeTokenFile(_tempDir(), _oneStation()),
-          users: users.resolve);
+          accounts: users.resolve);
       final operating = await validator.validate(_helloWith(_stationOneToken))
           as TokenAccepted;
 
@@ -901,7 +901,7 @@ void main() {
       final dir = _tempDir();
       final path = _writeTokenFile(dir, _oneStation());
       final validator =
-          await FileTokenValidator.load(path, users: _seedUsers().resolve);
+          await FileTokenValidator.load(path, accounts: _seedUsers().resolve);
 
       final accepted = await validator.validate(_helloWith(_stationOneToken))
           as TokenAccepted;
@@ -943,7 +943,7 @@ void main() {
       final dir = _tempDir();
       final path = _writeTokenFile(dir, _twoStations());
       final validator =
-          await FileTokenValidator.load(path, users: _seedUsers().resolve);
+          await FileTokenValidator.load(path, accounts: _seedUsers().resolve);
       final two = await validator.validate(_helloWith(_stationTwoToken))
           as TokenAccepted;
 
@@ -961,7 +961,7 @@ void main() {
       final dir = _tempDir();
       final path = _writeTokenFile(dir, _oneStation());
       final validator =
-          await FileTokenValidator.load(path, users: _seedUsers().resolve);
+          await FileTokenValidator.load(path, accounts: _seedUsers().resolve);
       final accepted = await validator.validate(_helloWith(_stationOneToken))
           as TokenAccepted;
 
