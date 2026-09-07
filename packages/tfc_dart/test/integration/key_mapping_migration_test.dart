@@ -26,10 +26,12 @@ import 'dart:io';
 
 import 'package:postgres/postgres.dart' as pg;
 import 'package:test/test.dart';
+import 'package:tfc_dart/core/config/config_diff.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/key_mapping_codec.dart';
 import 'package:tfc_dart/core/config/key_mapping_migration.dart';
 import 'package:tfc_dart/core/database.dart';
+import 'package:tfc_dart/core/state_man.dart';
 
 import 'docker_compose.dart';
 
@@ -251,21 +253,55 @@ void main() {
       expect(await changeCount(), 0);
     });
 
-    test('every key comes back out of the rows unchanged', () async {
-      expect(await migrateKeyMappingsBlobToRows(database),
-          MigrationOutcome.migrated);
-
+    /// The migrated rows, read back as items the way a reconcile reads them.
+    Future<List<ConfigItem>> storedItems() async {
       final rows = await other.execute(
-          "SELECT id, payload FROM config_item WHERE kind = 'key_mapping' "
-          "AND scope = 'shared'");
-      final items = [
+          'SELECT id, payload, parent_id, sort_index FROM config_item '
+          "WHERE kind = 'key_mapping' AND scope = 'shared'");
+      return [
         for (final row in rows)
           ConfigItem(
             kind: ConfigKind.keyMapping,
             id: row[0]! as String,
             payload: row[1]! as String,
+            parentId: row[2] as String?,
+            sortIndex: (row[3] as num?)?.toInt(),
           )
       ];
+    }
+
+    test('the first reconcile after the migration diffs as nothing at all',
+        () async {
+      expect(await migrateKeyMappingsBlobToRows(database),
+          MigrationOutcome.migrated);
+
+      // The **wanted** side built the way a booting station builds it: from a
+      // `KeyMappings` in memory, through `keyMappingItems` — not through the
+      // blob parser the migration itself used. That is the whole point.
+      // `KeyMappingEntry.toJson()` emits an explicit null for each of its
+      // unset optionals, so a payload assembled any other way is structurally
+      // a different item and `diffConfigItems` is right to call it a change.
+      // If this ever fails, every station's first reconcile after the cutover
+      // reports every key changed, re-subscribes every key, and writes a
+      // change row for an edit nobody made — the exact noise this milestone
+      // exists to remove, reintroduced by the migration that started it.
+      final wanted = keyMappingItems(
+          KeyMappings.fromJson(jsonDecode(blob) as Map<String, dynamic>));
+      final diff =
+          diffConfigItems(stored: await storedItems(), wanted: wanted);
+
+      expect(diff.isEmpty, isTrue,
+          reason: 'the migration wrote payloads a station would not: $diff '
+              '(+${diff.added.map((i) => i.id).take(3).toList()} '
+              '~${diff.changed.map((i) => i.id).take(3).toList()} '
+              '-${diff.removed.map((i) => i.id).take(3).toList()})');
+    });
+
+    test('every key comes back out of the rows unchanged', () async {
+      expect(await migrateKeyMappingsBlobToRows(database),
+          MigrationOutcome.migrated);
+
+      final items = await storedItems();
 
       // Compared against what the codec makes of the same blob, not against
       // the blob's bytes: the codec's own round trip is proven in
