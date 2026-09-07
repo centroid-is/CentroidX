@@ -89,11 +89,21 @@ void main() {
     required FakeStateMan plant,
     TlsConfig? tls,
     KeyPolicy policy = const AllVisibleOperatorWrites(),
+    // **Named rather than defaulted since 16-08.** The `link_degraded` case
+    // below needs *a* soft ceiling to push one session over, and it used to
+    // borrow `ServerConfig`'s default. That default is now null
+    // (`16-02-DECISION.md` §5.4 — it measured production and evicted healthy
+    // panels for it), so the case has to say what ceiling it means. It is a
+    // better case for saying so: its property is that one session's reading is
+    // its own, and that has nothing to do with where the ceiling happens to
+    // sit.
+    int? peakThreshold,
   }) {
     final server = RelayServer(
       resolver: const PermissiveSeriesResolver(),
       api: plant,
-      config: ServerConfig(tick: ServerConfig.minTick, tls: tls),
+      config: ServerConfig(
+          tick: ServerConfig.minTick, tls: tls, peakThreshold: peakThreshold),
       policy: policy,
       onError: (_, __, ___) {},
     );
@@ -217,7 +227,7 @@ void main() {
       // The phase's most likely mistake, in one case: an overlay built once in
       // `start()` reports the busiest client's condition to everybody.
       final plant = FakeStateMan()..setValue(_speedKey, 1450);
-      final server = buildServer(plant: plant);
+      final server = buildServer(plant: plant, peakThreshold: 1024);
       await server.start();
 
       final quiet = await station(server);

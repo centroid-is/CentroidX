@@ -646,9 +646,22 @@ final class TickEngine {
       RelaySession session, SubscriptionState state, PendingSub pending,
       int nowMs) {
     session.noteServedTick(nowMs);
+    final seq = state.nextSeq();
+    // **The numerator of the delivery gap, recorded where the sequence is
+    // minted and nowhere else** (16-08, `16-02-DECISION.md` §5.2). Both halves
+    // of the gap have to come from the same counter or the comparison is
+    // between two different generations of it; and this doubles as the clamp
+    // ceiling every client ack is held to, which is what stops an
+    // over-reporting client from vetoing its own eviction (T-16-02a).
+    //
+    // `_writeTick` reports `state.seq` too and deliberately does not call
+    // this: a tick notification is not a push, it advances no sequence, and
+    // counting it would make a subscription that never changes look
+    // permanently behind.
+    session.buffer.noteSent(state.sub, seq);
     session.emit(encoder.updateFrame(
       sub: state.literal(encoder.subLiteral),
-      seq: state.nextSeq(),
+      seq: seq,
       t: wallAt(nowMs),
       generation: state.generation,
       body:

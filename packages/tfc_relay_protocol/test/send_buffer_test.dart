@@ -135,7 +135,7 @@ void main() {
       }
     }
 
-    test('above threshold for the full window: client cannot keep up', () {
+    test('above threshold for the full window: sustained production', () {
       final buf = make();
       fill(buf, 6);
       expect(buf.poll(0), isA<BufferOk>(),
@@ -143,7 +143,16 @@ void main() {
       expect(buf.poll(9_999), isA<BufferOk>());
       final verdict = buf.poll(10_001) as BufferDisconnect;
       expect(verdict.closeCode, CloseCodes.backpressureOverrun);
-      expect(verdict.reason, contains('keep up'));
+      // **The sentence changed in 16-08 and the change is the point.** This
+      // used to assert `contains('keep up')`, on a reason string that said
+      // "client unable to keep up" about a count of what *this server*
+      // produced for that client in one tick. 16-02 measured what that cost —
+      // a healthy 1100-key page evicted after 10.1 s and told it was at fault,
+      // while a panel that had stopped reading entirely sat at 41 pending
+      // against a threshold of 1024. The verdict still exists and still
+      // measures production; it no longer blames the panel for it.
+      expect(verdict.reason, contains('sustained production'));
+      expect(verdict.reason, isNot(contains('keep up')));
     });
 
     test('recovering below threshold resets the window', () {

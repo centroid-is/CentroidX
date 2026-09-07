@@ -55,15 +55,69 @@ final class _SubState {
   bool get isEmpty => pendingCount == 0;
 }
 
+/// What one subscription has been **sent** against what it has **acknowledged**
+/// — the pair option (c) of `16-02-DECISION.md` puts on the wire.
+///
+/// Deliberately not part of [_SubState]: that is cleared by every [drain], and
+/// a delivery gap that reset every tick would measure exactly the same nothing
+/// the production counters already measure.
+final class _Delivery {
+  /// The highest seq this server has actually emitted for the subscription.
+  /// **The clamp's source of truth** (T-16-02a): a client cannot acknowledge
+  /// what was never sent.
+  int sentSeq = 0;
+
+  /// The highest seq the client has claimed to have applied, clamped and
+  /// monotonic. Null until it claims anything at all.
+  int? ackedSeq;
+
+  /// When the gap first went over the ceiling, or null while it is under —
+  /// the same shape and the same reset rule as [ConflatingSendBuffer._peakSinceMs].
+  int? gapSinceMs;
+}
+
 final class ConflatingSendBuffer {
   /// Hard ceiling on pending entries; exceeding it is an immediate
   /// disconnect verdict (HA: MAX_PENDING_MSG).
   final int maxPending;
 
-  /// Soft ceiling: staying above it for [peakWindowMs] continuously means
-  /// the client cannot keep up (HA: PENDING_MSG_PEAK / PEAK_TIME).
+  /// Soft ceiling on **production**: how many entries this server may pile up
+  /// for one client in one tick, sustained over [peakWindowMs].
+  ///
+  /// **It is not the slow-consumer defence and it never was** — see [poll].
+  /// Null, its default since 16-08, means no production ceiling at all.
   final int? peakThreshold;
   final int peakWindowMs;
+
+  /// How far behind a subscription's acknowledged sequence may fall before the
+  /// grace window opens, or null to disable the delivery verdict entirely.
+  ///
+  /// **128, from `16-02-DECISION.md` §5.3, and the number has a derivation.**
+  /// Across seven healthy runs — including one over a 1000 ms WAN link — the
+  /// largest gap observed was **24**, and a real ack rides a heartbeat, so the
+  /// server's copy is stale by up to one beat: at a 2 s beat and a 50 ms tick
+  /// that is a constant +40 frames, giving an adjusted healthy ceiling of
+  /// **64**. Unhealthy links floored at **90** and grew without bound at 15–20
+  /// frames/s. 128 is 2× the healthy ceiling and still an order of magnitude
+  /// below where a stuck link sits ten seconds in.
+  ///
+  /// **Magnitude is the weaker half of the separation and it is worth knowing
+  /// which half you are relying on.** A latent link's gap *plateaus* at
+  /// `latency ÷ tick` — it shifts up and its slope stays zero. Only a link
+  /// that cannot carry the production rate has a slope at all, which is why
+  /// [ackGapWindowMs] rather than this number is what actually distinguishes
+  /// slow from stuck.
+  final int? ackGapThreshold;
+
+  /// How long the gap may stay over [ackGapThreshold] continuously before the
+  /// session is evicted.
+  ///
+  /// Defaults to [peakWindowMs] rather than to a constant of its own: the two
+  /// answer the same question — *is this a burst or a stall?* — and a
+  /// deployment that has already tuned one has said what it thinks the answer
+  /// is. 15–20 frames/s of unbounded growth cannot be transient over ten
+  /// seconds; a page change or a GC pause can.
+  final int ackGapWindowMs;
 
   /// Ceiling on **bytes** held in the priority lane, or null for none.
   ///
@@ -86,6 +140,7 @@ final class ConflatingSendBuffer {
 
   final _priority = <Object?>[];
   final _subs = <String, _SubState>{};
+  final _delivery = <String, _Delivery>{};
   int? _peakSinceMs;
   int _priorityBytes = 0;
 
@@ -94,7 +149,9 @@ final class ConflatingSendBuffer {
     this.peakThreshold,
     this.peakWindowMs = 10_000,
     this.maxPendingBytes,
-  });
+    this.ackGapThreshold = 128,
+    int? ackGapWindowMs,
+  }) : ackGapWindowMs = ackGapWindowMs ?? peakWindowMs;
 
   int get pendingCount =>
       _priority.length +
@@ -157,6 +214,67 @@ final class ConflatingSendBuffer {
     s.removed.add(handle);
   }
 
+  /// Records that the server emitted [seq] for [sub] — the numerator of the
+  /// delivery gap, and the ceiling every ack is clamped to.
+  ///
+  /// Called by the tick engine at the one place a sequence is minted, so the
+  /// two halves of the gap can never be read from different generations of the
+  /// same counter.
+  void noteSent(String sub, int seq) {
+    final d = _delivery.putIfAbsent(sub, _Delivery.new);
+    if (seq > d.sentSeq) d.sentSeq = seq;
+  }
+
+  /// Records what the client claims to have applied for [sub].
+  ///
+  /// **This is a claim by the party being judged, and the four rules below are
+  /// the whole of how far it is trusted** (`16-02-DECISION.md` §5.2).
+  ///
+  ///  1. **Clamped to what was actually sent** (T-16-02a). Without this, a
+  ///     client that has stopped reading can answer every beat with a sequence
+  ///     beyond anything this server produced, hold the gap permanently
+  ///     negative, and grow this isolate's heap for ever — and the isolate
+  ///     serves every screen in the plant. The clamp makes eviction something
+  ///     the client cannot veto. **Under-reporting is deliberately left
+  ///     alone**: a client that evicts itself is harmless and pays for it with
+  ///     one snapshot.
+  ///  2. **Never decreases.** Beats reorder on the wire and a client can
+  ///     restart its own counter; neither is evidence a frame was un-applied,
+  ///     and treating a late beat as a regression would open a window against a
+  ///     healthy panel.
+  ///  3. **Scoped to subscriptions this session actually holds** — an ack
+  ///     naming anything else is discarded without creating an entry, because a
+  ///     map keyed by whatever a peer puts in an ack is a peer-controlled
+  ///     allocation on a path that runs every heartbeat.
+  ///  4. **Reset on re-establishment**, via [dropSub]: a generation's acks say
+  ///     nothing about its successor.
+  void recordAck(String sub, int reported, int nowMs) {
+    final d = _delivery[sub];
+    if (d == null) return; // rule 3
+    final clamped = reported > d.sentSeq ? d.sentSeq : reported; // rule 1
+    final previous = d.ackedSeq;
+    if (previous != null && clamped <= previous) return; // rule 2
+    d.ackedSeq = clamped;
+    // An ack that moves is recovery, and recovery closes the window on the
+    // spot rather than waiting for the next poll to notice. Same branch, same
+    // reason, as the `else` in [poll]: a window that accumulates with no
+    // recovery signal evicts every panel eventually.
+    if (d.sentSeq - clamped <= (ackGapThreshold ?? -1)) d.gapSinceMs = null;
+  }
+
+  /// How many frames [sub] is behind, or null when it holds no subscription of
+  /// that name or the client has never acknowledged anything for it.
+  ///
+  /// Read by tests and by the health overlay. Null is a third answer and not a
+  /// zero: "this client has made no claim" and "this client is exactly caught
+  /// up" call for opposite responses.
+  int? deliveryGapOf(String sub) {
+    final d = _delivery[sub];
+    final acked = d?.ackedSeq;
+    if (d == null || acked == null) return null;
+    return d.sentSeq - acked;
+  }
+
   /// Forgets everything pending for [sub].
   ///
   /// For a subscription being **re-established** under the same name: the
@@ -166,7 +284,16 @@ final class ConflatingSendBuffer {
   /// generation and a sequence the client accepts, so the mimic goes backwards
   /// under good quality — which is the same failure the generation exists to
   /// stop, arriving by a different door.
-  void dropSub(String sub) => _subs.remove(sub);
+  ///
+  /// The delivery record goes with it (§5.2 rule 4). A re-established
+  /// subscription starts its sequence afresh, so an `ackedSeq` carried across
+  /// the boundary would be a number from the previous life measured against a
+  /// counter from this one — either an instant eviction or a permanent
+  /// immunity, depending only on which way the two counters happened to sit.
+  void dropSub(String sub) {
+    _subs.remove(sub);
+    _delivery.remove(sub);
+  }
 
   /// RPC responses, write acks, status, ticks: appended verbatim, flushed
   /// ahead of telemetry, never conflated — a degraded link must still
@@ -220,6 +347,34 @@ final class ConflatingSendBuffer {
   /// [poll] — not [drain] — is the only thing that decides a client has
   /// recovered, and it decides it on the count it measured before the drain
   /// emptied the buffer. See [drain] for why that used to be untrue.
+  ///
+  /// ## Four verdicts, and what each of them actually measures
+  ///
+  /// The order below is the order they are checked in, and it is not
+  /// arbitrary:
+  ///
+  ///  1. **[maxPendingBytes]** and 2. **[maxPending]** — hard memory ceilings,
+  ///     first, because they are the only two verdicts that are about this
+  ///     process surviving. They stay hard whatever any client says about
+  ///     itself (T-16-02b), which is what stops the delivery verdict below
+  ///     from being bought by removing backpressure.
+  ///  3. **[ackGapThreshold]** — *delivery*. How far behind the client says it
+  ///     is, sustained over [ackGapWindowMs]. This is the slow-consumer
+  ///     defence, per `16-02-DECISION.md`.
+  ///  4. **[peakThreshold]** — *production*, and nothing else. Null by default
+  ///     since 16-08.
+  ///
+  /// **Why (4) is no longer the slow-consumer defence** (03-REVIEW WR-11,
+  /// settled by `16-02-DECISION.md` §2.3). [drain] runs unconditionally every
+  /// tick and `ws.sink.add` never blocks, so the count (4) reads is *how much
+  /// this server produced for one client during one tick* — never how far
+  /// behind that client is. 16-02 measured both ends of what that costs: a
+  /// comprehensively stuck panel produced **41 pending entries a tick** against
+  /// a threshold of 1024, so the defence was watching a number two orders of
+  /// magnitude from tripping on a session that had stopped reading entirely;
+  /// and a **healthy** 1100-key page was evicted after 10.1 s and told, in the
+  /// close reason, that it could not keep up. Two symmetric failures, and a
+  /// fix that closed one by opening the other would not have been a fix.
   BufferVerdict poll(int nowMs) {
     final byteCeiling = maxPendingBytes;
     if (byteCeiling != null && _priorityBytes > byteCeiling) {
@@ -233,13 +388,20 @@ final class ConflatingSendBuffer {
       return BufferDisconnect(CloseCodes.backpressureOverrun,
           'pending messages ($pending) exceeded hard limit ($maxPending)');
     }
+    final stalled = _deliveryVerdict(nowMs);
+    if (stalled != null) return stalled;
     final threshold = peakThreshold;
     if (threshold != null) {
       if (pending > threshold) {
         _peakSinceMs ??= nowMs;
         if (nowMs - _peakSinceMs! > peakWindowMs) {
+          // **The string says production, because production is what was
+          // measured.** It used to say "client unable to keep up", which was
+          // the finding's second half in one sentence: a verdict computed from
+          // this server's own output, reported to an operator as a statement
+          // about a panel (T-16-08e).
           return BufferDisconnect(CloseCodes.backpressureOverrun,
-              'client unable to keep up: > $threshold pending for '
+              'sustained production: > $threshold pending per tick for '
               '${peakWindowMs}ms');
         }
       } else {
@@ -247,6 +409,47 @@ final class ConflatingSendBuffer {
       }
     }
     return const BufferOk();
+  }
+
+  /// The delivery verdict: a subscription whose acknowledged sequence has
+  /// stayed more than [ackGapThreshold] behind for longer than
+  /// [ackGapWindowMs], or null when there is none.
+  ///
+  /// **A client that has never acknowledged anything is not judged here at
+  /// all.** The gateway and the panels do not ship together, so a `ping`
+  /// carrying no ack stays valid for ever and such a session is governed by
+  /// the hard ceilings and the heartbeat reaper exactly as it was before. The
+  /// alternative — treating silence as a stall — is a fleet-wide outage on the
+  /// morning of an upgrade.
+  BufferDisconnect? _deliveryVerdict(int nowMs) {
+    final ceiling = ackGapThreshold;
+    if (ceiling == null) return null;
+    for (final entry in _delivery.entries) {
+      final d = entry.value;
+      final acked = d.ackedSeq;
+      if (acked == null) continue;
+      final gap = d.sentSeq - acked;
+      if (gap <= ceiling) {
+        // Recovery, and it is load-bearing. `send_buffer.dart`'s own peak
+        // window already records what happens without one: a window that
+        // accumulates and never resets evicts every panel eventually.
+        d.gapSinceMs = null;
+        continue;
+      }
+      final since = d.gapSinceMs ??= nowMs;
+      if (nowMs - since > ackGapWindowMs) {
+        // Names the subscription, the distance and both sequences: an operator
+        // reading the close ledger learns which page stalled and how far
+        // behind it was without reading this source. 4004 because the soft and
+        // hard verdicts are the same failure at different speeds, and a client
+        // should not have to learn two codes to handle one condition.
+        return BufferDisconnect(
+            CloseCodes.backpressureOverrun,
+            'delivery stalled: "${entry.key}" is $gap frames behind '
+            '(applied $acked of ${d.sentSeq}) for ${ackGapWindowMs}ms');
+      }
+    }
+    return null;
   }
 
   /// Drains everything pending. The buffer is empty afterwards — recovery

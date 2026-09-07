@@ -51,7 +51,14 @@ void main() {
               'leaves the non-browser panels, which send no Origin, working; '
               'Phase 6 supplies the real list');
       expect(c.maxPending, greaterThan(0));
-      expect(c.peakThreshold, isNotNull);
+      expect(c.peakThreshold, isNull,
+          reason: 'the soft PRODUCTION ceiling is off by default since 16-08. '
+              'It was never the slow-consumer defence — at 1024 a panel that '
+              'had stopped reading produced 41 pending entries a tick, while '
+              'a healthy 1100-key page was evicted after 10.1 s and told it '
+              'could not keep up (16-02-DECISION.md §2.3, §5.4). What '
+              'replaced it measures delivery, and lives on the buffer as '
+              'ackGapThreshold. The two HARD ceilings did not move');
       expect(c.peakWindowMs, 10_000,
           reason: 'matches ConflatingSendBuffer\'s own default, so the buffer '
               'this config configures behaves as its tests describe');
