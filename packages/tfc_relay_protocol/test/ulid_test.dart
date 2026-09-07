@@ -159,12 +159,12 @@ void main() {
     // The prefix is written as a literal rather than computed, for the reason
     // ulid_web_test.dart records at length: a test may not build its inputs
     // with the construct under test.
-    expect(ulidMs('01HF7YAT00${_suffix}'), 1700000000000);
+    expect(ulidMs('01HF7YAT00$_suffix'), 1700000000000);
   });
 
   test('only a 26-character string is datable', () {
     expect(ulidMs(''), isNull);
-    expect(ulidMs('01HF7YAT00${_suffix}'.substring(0, 25)), isNull,
+    expect(ulidMs('01HF7YAT00$_suffix'.substring(0, 25)), isNull,
         reason: '25 characters is not an id this side could have issued');
     expect(ulidMs('01HF7YAT00${_suffix}Z'), isNull,
         reason: '27 characters is not one either');
