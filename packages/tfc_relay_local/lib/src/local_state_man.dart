@@ -1327,7 +1327,30 @@ final class LocalStateMan implements StateManApi {
   /// reason): the liveness an operator's finger is supposed to provide must not
   /// be something a peer can assert.
   @override
-  Future<HoldHandle> holdToRun(String key) => _holds.engage(key);
+  Future<HoldHandle> holdToRun(String key) {
+    // **Ahead of the registry's engage guard, and it is a finding rather than
+    // caution.** [write] throws a `StateError` on a disposed source *on
+    // purpose* — "a lifecycle bug in the caller, not a write outcome" (`:730`,
+    // pinned by `write_test.dart:541`). 18-05 adopted `tfc_dart`'s
+    // throw-into-outcome guard for the engage, on the argument that a throw
+    // there is a bug rather than news about a plant; that argument is right
+    // about a link blowing up and wrong about this line, which is the one
+    // throw on this path that is a deliberate, documented answer. Without this
+    // check the guard would quietly turn it into
+    // `WriteUnknown(write_path_failed)` and hand back an inert handle — a loud
+    // lifecycle bug converted into a jog button that silently does nothing.
+    //
+    // `tfc_dart` needs no equivalent: its own write REFUSES after teardown
+    // rather than throwing (`backend_writes_test.dart`, "is disposed loudly"),
+    // so its guard never had this case to swallow.
+    if (_disposed) {
+      throw StateError('holdToRun($key) on a disposed source: the store and '
+          'the upstream links are both gone, so no hold taken here could be '
+          'fed and no outcome reported here could be true. This is a '
+          'lifecycle bug in the caller, not a write outcome.');
+    }
+    return _holds.engage(key);
+  }
 
   /// Every hold this source is currently feeding, so [dispose] can end them.
   ///
