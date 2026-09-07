@@ -69,6 +69,12 @@ Future<void> seedPhase1Cache(String blob) =>
 
 /// Writes a shared `key_mapping` row directly — a mirror row as the sync
 /// engine would leave it. Into [local] unless [db] says otherwise.
+///
+/// The payload comes from the codec rather than being written out here, and
+/// that is load-bearing: `KeyMappingEntry.toJson()` emits every field
+/// including the seven nulls, so a hand-written `{"opcua_node": …}` is a
+/// *different* payload structurally and every boot would diff as though the
+/// whole plant had been rewired.
 Future<void> seedSharedRow(String key, String identifier,
         {int rev = 3, AppDatabase? db}) =>
     (db ?? local).into((db ?? local).configItemTable).insert(
@@ -76,9 +82,7 @@ Future<void> seedSharedRow(String key, String identifier,
           kind: ConfigKind.keyMapping.wireName,
           id: key,
           scope: ConfigScope.shared.wireName,
-          payload: canonicalJson({
-            'opcua_node': {'namespace': 4, 'identifier': identifier},
-          }),
+          payload: keyMappingItems(mappingsOf({key: identifier})).single.payload,
           rev: Value(rev),
           updatedAt: DateTime.utc(2026, 1, 1),
           updatedBy: 'somebody',
@@ -109,9 +113,7 @@ Future<void> otherStationEdits(String key, String identifier) async {
             t.id.equals(key) &
             t.scope.equals(ConfigScope.shared.wireName)))
       .write(ConfigItemTableCompanion(
-    payload: Value(canonicalJson({
-      'opcua_node': {'namespace': 4, 'identifier': identifier},
-    })),
+    payload: Value(keyMappingItems(mappingsOf({key: identifier})).single.payload),
     rev: const Value(99),
     updatedAt: Value(DateTime.utc(2026, 2, 2)),
     updatedBy: const Value('the-other-station'),
@@ -137,6 +139,10 @@ Future<ConfigItemRow?> stationCacheRow() => (local.select(local.configItemTable)
 Future<List<ConfigChangeRow>> changes() => local.select(local.configChangeTable).get();
 
 void main() {
+  // Two AppDatabase instances is the design here, not the race drift's warning
+  // is about: the local mirror and the remote are two separate files with two
+  // separate executors, which is exactly the shape a station runs in.
+  driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
   setUp(() {
     local = AppDatabase.inMemoryForTest();
     remote = AppDatabase.inMemoryForTest();

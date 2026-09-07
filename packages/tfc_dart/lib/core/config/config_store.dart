@@ -55,13 +55,19 @@ import 'dart:convert';
 
 import 'package:drift/drift.dart';
 import 'package:logger/logger.dart';
+import 'package:meta/meta.dart';
 
 import '../database.dart';
+import '../database_connections.dart';
 import '../database_drift.dart';
 import '../state_man.dart' show KeyMappings;
+import 'config_change.dart';
 import 'config_diff.dart';
 import 'config_item.dart';
-import 'key_mapping_codec.dart';
+import 'config_store_errors.dart';
+// Prefixed: the codec's `keyMappingItems` and this store's getter of the same
+// name are two different things, and inside the class the getter would win.
+import 'key_mapping_codec.dart' as codec;
 
 /// The local row that records how far this station has consumed the shared
 /// change log.
@@ -154,7 +160,7 @@ class ConfigStore {
   /// success having written nothing. [keyMappingsOf] rebuilds every entry from
   /// its payload, so nothing a caller does to what it is handed can reach in
   /// here.
-  KeyMappings get keyMappings => keyMappingsOf(keyMappingItems);
+  KeyMappings get keyMappings => codec.keyMappingsOf(keyMappingItems);
 
   /// The stored items, as a fresh list every call, in canonical key order —
   /// the order [keyMappingItems] itself produces, so a diff of a round trip
@@ -181,18 +187,300 @@ class ConfigStore {
   /// Forgets the remote. The snapshot and the mirror are untouched.
   void detachRemote() => _remote = null;
 
-  /// The one write path.
+  /// Points the write path at a bare [AppDatabase].
+  ///
+  /// The seam every unit test in this library uses, and the reason the write
+  /// path is written against the [AppDatabase] surface rather than [Database]:
+  /// the [Database] wrapper cannot wrap a SQLite config at all, so without
+  /// this there would be no way to exercise the compare-and-swap, the change
+  /// rows or the rollback except against a real Postgres. Attaching a second
+  /// in-memory [AppDatabase] as "the remote" runs the same generated schema
+  /// and the same SQL, so what the tests prove is the statements rather than a
+  /// mock's idea of them.
+  @visibleForTesting
+  void attachRemoteDatabase(AppDatabase remote) => _remote = remote;
+
+  /// The one write path: the shared rows on the remote, the mirror behind it,
+  /// the snapshot, and one event.
+  ///
+  /// [actionId] is the caller's and is shared with the `audit_entry` row the
+  /// app layer writes for the same action, so a save that touched nine keys
+  /// reads as one operation with nine rows beneath it rather than nine
+  /// unrelated ones. [who] and [roleName] are likewise the caller's: this
+  /// layer has no session to ask.
+  ///
+  /// ## Order of the checks, and why refusal comes before the diff
+  ///
+  /// The remote and the pool are checked **before** the diff is computed, so a
+  /// save with nowhere to go is refused even when it happens to change
+  /// nothing. That is the fail-loud reading of the offline rule: a caller
+  /// whose write cannot reach Postgres is told so every time, rather than
+  /// being told so only when it would have written something. A caller that
+  /// legitimately saves-if-changed while offline — a boot seed, say — must
+  /// therefore compare against [keyMappingItems] itself rather than calling
+  /// this and hoping.
+  ///
+  /// Throws [ConfigStoreOfflineException] when there is no remote or the
+  /// connection dies mid-write, [ConfigStoreUnsafePoolException] when the
+  /// pool is wider than one, and [ConfigConflict] when another station moved
+  /// a row first. In every one of those cases nothing is committed anywhere.
   Future<ConfigWriteResult> writeKeyMappings(
     KeyMappings wanted, {
     required String actionId,
     required String who,
     required String roleName,
     String? reason,
-  }) =>
-      throw UnimplementedError();
+  }) async {
+    final attempted = _describe(wanted);
+
+    final remote = _remote;
+    if (remote == null) {
+      throw ConfigStoreOfflineException(attempted: attempted);
+    }
+    final poolSize = resolvePoolSize(remote.config.maxPoolConnections);
+    if (poolSize > 1) {
+      throw ConfigStoreUnsafePoolException(
+          attempted: attempted, poolSize: poolSize);
+    }
+
+    final diff = diffConfigItems(
+      stored: keyMappingItems,
+      wanted: codec.keyMappingItems(wanted),
+    );
+    // SC-1's other half. Save pressed twice is not a change, so it is not a
+    // row, not a change entry, not an audit entry and not an event — the same
+    // rule the local row writer applies at `sqlite_preferences.dart:399`.
+    if (diff.isEmpty) {
+      return ConfigWriteResult(diff: ConfigDiff.none, actionId: actionId);
+    }
+
+    final at = DateTime.now();
+    final written = <String, ConfigItem>{};
+    try {
+      await remote.transaction(() async {
+        for (final item in diff.added) {
+          await remote.into(remote.configItemTable).insert(
+                ConfigItemTableCompanion.insert(
+                  kind: item.kind.wireName,
+                  id: item.id,
+                  scope: item.scope.wireName,
+                  parentId: Value(item.parentId),
+                  sortIndex: Value(item.sortIndex),
+                  payload: item.payload,
+                  rev: const Value(1),
+                  updatedAt: at,
+                  updatedBy: who,
+                ),
+              );
+          written[item.id] =
+              item.stored(rev: 1, updatedAt: at, updatedBy: who);
+          await _appendChange(
+              remote,
+              ConfigChange.of(
+                at: at,
+                actionId: actionId,
+                who: who,
+                station: _station,
+                roleName: roleName,
+                after: item,
+                reason: reason,
+              ));
+        }
+
+        for (final item in diff.changed) {
+          // The revision comes from the snapshot, never from a read inside
+          // this transaction: re-reading it here would turn the compare-and-
+          // swap back into the read-check-write it exists to replace, and the
+          // window it closes is precisely the one another station writes in.
+          final stored = _snapshot[item.id]!;
+          final won = await (remote.update(remote.configItemTable)
+                ..where((t) => _identity(t, item) & t.rev.equals(stored.rev)))
+              .write(ConfigItemTableCompanion(
+            payload: Value(item.payload),
+            parentId: Value(item.parentId),
+            sortIndex: Value(item.sortIndex),
+            rev: Value(stored.rev + 1),
+            updatedAt: Value(at),
+            updatedBy: Value(who),
+          ));
+          // Throwing is what makes drift issue ROLLBACK. Skipping the lost key
+          // and carrying on would commit the rest of the save, leave the
+          // editor believing all of it landed, and leave the connection in an
+          // aborted state that the health monitor's next `SELECT 1` reads as
+          // "Postgres is down".
+          if (won != 1) {
+            throw ConfigConflict(item.id, expectedRev: stored.rev);
+          }
+          written[item.id] = item.stored(
+              rev: stored.rev + 1, updatedAt: at, updatedBy: who);
+          await _appendChange(
+              remote,
+              ConfigChange.of(
+                at: at,
+                actionId: actionId,
+                who: who,
+                station: _station,
+                roleName: roleName,
+                before: stored,
+                after: item,
+                reason: reason,
+              ));
+        }
+
+        for (final item in diff.removed) {
+          // Guarded by `rev` for the same reason an update is: an unguarded
+          // delete would silently throw away an edit another station made
+          // between this station's read and this save.
+          final won = await (remote.delete(remote.configItemTable)
+                ..where((t) => _identity(t, item) & t.rev.equals(item.rev)))
+              .go();
+          if (won != 1) {
+            throw ConfigConflict(item.id, expectedRev: item.rev);
+          }
+          await _appendChange(
+              remote,
+              ConfigChange.of(
+                at: at,
+                actionId: actionId,
+                who: who,
+                station: _station,
+                roleName: roleName,
+                before: item,
+                reason: reason,
+              ));
+        }
+      });
+    } on ConfigConflict {
+      // Already the right shape, and already rolled back.
+      rethrow;
+    } catch (e) {
+      // The write *is* the probe. `Database.connectionState` is not consulted:
+      // it is up to 30 s stale, and with a pool of one our own aborted
+      // transaction can make it false, so trusting it would tell an operator
+      // who is online that the database is down.
+      if (Database.isConnectionError(e)) {
+        throw ConfigStoreOfflineException(attempted: attempted, cause: e);
+      }
+      rethrow;
+    }
+
+    // Past here the remote has committed and the save has happened. The mirror
+    // is a cache of that fact, so its failure is logged rather than reported
+    // as a failed save — the boot after would read a stale row and 02-04's
+    // reconcile would repair it, whereas telling the operator the save failed
+    // would have them do it twice.
+    final next = Map<String, ConfigItem>.of(_snapshot);
+    for (final item in diff.removed) {
+      next.remove(item.id);
+    }
+    next.addAll(written);
+    _snapshot = next;
+
+    try {
+      await _writeMirror(diff, written);
+    } catch (e) {
+      _logger.e('key_mappings mirror write failed after the shared write '
+          'committed; this station will read a stale row until the next '
+          'reconcile: $e');
+    }
+
+    _changes.add(diff);
+    return ConfigWriteResult(diff: diff, actionId: actionId);
+  }
 
   /// Releases the change stream. The databases are the caller's to close.
   Future<void> close() => _changes.close();
+
+  // ---------------------------------------------------------------------
+  // The write path's helpers
+  // ---------------------------------------------------------------------
+
+  /// One row's primary key. Every part is a bound variable, never
+  /// interpolated: a mapping key is operator-authored text and has no business
+  /// reaching the database as SQL.
+  Expression<bool> _identity($ConfigItemTableTable t, ConfigItem item) =>
+      t.kind.equals(item.kind.wireName) &
+      t.id.equals(item.id) &
+      t.scope.equals(item.scope.wireName);
+
+  /// Appends one row to [db]'s change log.
+  ///
+  /// Always built through [ConfigChange.of] by the caller, which is the one
+  /// place `encodeEntity()` — payload **and** position — is applied. Sides
+  /// encoded by hand lose position and make a restore write the entity back in
+  /// the wrong place.
+  Future<void> _appendChange(AppDatabase db, ConfigChange change) =>
+      db.into(db.configChangeTable).insert(
+            ConfigChangeTableCompanion.insert(
+              at: change.at,
+              actionId: change.actionId,
+              who: change.who,
+              station: change.station,
+              roleName: change.roleName,
+              reason: Value(change.reason),
+              kind: change.kind.wireName,
+              entityId: change.entityId,
+              scope: change.scope.wireName,
+              op: change.op.wireName,
+              oldValue: Value(change.oldValue),
+              newValue: Value(change.newValue),
+            ),
+          );
+
+  /// Brings the local mirror level with what the remote just committed.
+  ///
+  /// Plain upserts and unguarded deletes: **the mirror never compare-and-
+  /// swaps**. It is a copy of a decision already made elsewhere, and guarding
+  /// it would let a stale local revision refuse to record what Postgres has
+  /// already accepted.
+  ///
+  /// No `config_change` rows either. The shared history lives on the remote;
+  /// writing it locally as well would be two histories of one event, with two
+  /// id spaces that nothing reconciles.
+  Future<void> _writeMirror(
+      ConfigDiff diff, Map<String, ConfigItem> written) async {
+    await _local.transaction(() async {
+      for (final item in diff.removed) {
+        await (_local.delete(_local.configItemTable)
+              ..where((t) => _identity(t, item)))
+            .go();
+      }
+      for (final item in written.values) {
+        final companion = ConfigItemTableCompanion.insert(
+          kind: item.kind.wireName,
+          id: item.id,
+          scope: item.scope.wireName,
+          parentId: Value(item.parentId),
+          sortIndex: Value(item.sortIndex),
+          payload: item.payload,
+          rev: Value(item.rev),
+          updatedAt: item.updatedAt!,
+          updatedBy: item.updatedBy!,
+        );
+        final replaced = await (_local.update(_local.configItemTable)
+              ..where((t) => _identity(t, item)))
+            .write(companion);
+        if (replaced == 0) {
+          await _local.into(_local.configItemTable).insert(companion);
+        }
+      }
+    });
+  }
+
+  /// What the operator was trying to save, in their words.
+  ///
+  /// A refusal is only useful if it names the work that did not land, so this
+  /// carries the count and enough keys to recognise the save by. Three names,
+  /// because the plant has ten thousand and an operator reading a snackbar
+  /// needs to recognise the save, not audit it.
+  static String _describe(KeyMappings wanted) {
+    final keys = wanted.nodes.keys.toList()..sort();
+    final shown = keys.take(3).join(', ');
+    final tail = keys.length > 3 ? ', …' : '';
+    return 'key mappings: ${keys.length} '
+        '${keys.length == 1 ? 'key' : 'keys'}'
+        '${keys.isEmpty ? '' : ' ($shown$tail)'}';
+  }
 
   // ---------------------------------------------------------------------
   // The re-home (C-5)
@@ -239,7 +527,7 @@ class ConfigStore {
       final cached = await (_local.select(_local.configItemTable)
             ..where((t) =>
                 t.kind.equals(ConfigKind.preference.wireName) &
-                t.id.equals(kKeyMappingsPrefKey) &
+                t.id.equals(codec.kKeyMappingsPrefKey) &
                 t.scope.equals(_stationScope.wireName)))
           .getSingleOrNull();
       // The ordinary case from the second boot onwards. Nothing to do, and
@@ -251,7 +539,8 @@ class ConfigStore {
       if (existing.isEmpty) {
         final List<ConfigItem> items;
         try {
-          items = keyMappingItemsFromBlob(_unwrapCachedBlob(cached.payload));
+          items =
+              codec.keyMappingItemsFromBlob(_unwrapCachedBlob(cached.payload));
         } catch (e) {
           // Leave the row. It is the only remaining evidence of what this
           // station was configured with, and a station booting empty with the
@@ -285,7 +574,7 @@ class ConfigStore {
       await (_local.delete(_local.configItemTable)
             ..where((t) =>
                 t.kind.equals(ConfigKind.preference.wireName) &
-                t.id.equals(kKeyMappingsPrefKey) &
+                t.id.equals(codec.kKeyMappingsPrefKey) &
                 t.scope.equals(_stationScope.wireName)))
           .go();
 

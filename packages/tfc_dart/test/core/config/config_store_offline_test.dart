@@ -71,6 +71,10 @@ Future<List<String>> localFingerprint() async {
 }
 
 void main() {
+  // Two AppDatabase instances is the design here, not the race drift's warning
+  // is about: the local mirror and the remote are two separate files with two
+  // separate executors, which is exactly the shape a station runs in.
+  driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
   setUp(() {
     local = AppDatabase.inMemoryForTest();
     store = ConfigStore(
