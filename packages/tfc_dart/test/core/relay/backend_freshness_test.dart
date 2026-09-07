@@ -25,6 +25,7 @@ import 'package:tfc_dart/core/pipe_send_buffer.dart';
 import 'package:tfc_dart/core/pipe_worker_endpoint.dart';
 import 'package:tfc_dart/core/relay/backend_freshness.dart';
 import 'package:tfc_dart/core/relay/backend_live_values.dart';
+import 'package:tfc_dart/core/relay/backend_seams.dart' show StampedValue;
 import 'package:tfc_dart/core/state_man.dart'
     show KeyMappings, KeyMappingEntry, OpcUANodeConfig;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
@@ -496,6 +497,49 @@ void main() {
           reason: 'an unwatched key was aged; the sweep must only account for '
               'what it is actually watching, or every unbound tag in the key '
               'mappings goes grey on a healthy plant');
+    });
+
+    test(
+        'a key watched ONLY through subscribeStamped is aged like any other — '
+        'the alarm engine is a watcher too', () async {
+      final f = _Fixture();
+      addTearDown(f.tearDown);
+
+      // The alarm engine's road in since ALRM-03: `AlarmRuleWatcher` subscribes
+      // through the STAMPED stream and touches no plain handle at all. If that
+      // road does not register with the sweep, an alarm input the plant stopped
+      // sending stays `good` forever, D-3's quality gate never suspends the
+      // rule, and the rule keeps evaluating a number nobody is producing — the
+      // exact lie this sweep exists to catch. `alarm_two_panels_test.dart`
+      // arm 7 found it end to end; this is the fast-lane pin.
+      final seen = <StampedValue>[];
+      final sub = f.sweep.subscribeStamped(_speedKey).listen(seen.add);
+      addTearDown(sub.cancel);
+
+      f.alpha.deliver(_speedKey, _good(1450));
+      await _settle();
+
+      await f.pastDeadline();
+
+      expect(f.sweep.read(_speedKey)!.quality, relay.Quality.badStale,
+          reason: 'the stamped subscription never registered its key with the '
+              'sweep, so the sweep is ageing nothing on the alarm engine\'s '
+              'behalf');
+      expect(seen.last.value.quality, relay.Quality.badStale,
+          reason: 'and the degradation must arrive ON the stamped stream '
+              'itself — the watcher\'s quality gate (D-3) can only suspend on '
+              'a badge it is actually handed');
+
+      // The listener gate is a refcount, not a latch: the engine letting go
+      // must release the key, or a page's worth of retired alarm rules keeps
+      // the sweep grinding forever.
+      await sub.cancel();
+      f.alpha.deliver(_speedKey, _good(1500));
+      await _settle();
+      await f.pastDeadline();
+      expect(f.sweep.read(_speedKey)!.quality, relay.Quality.good,
+          reason: 'the key was still being aged after the last stamped '
+              'listener cancelled');
     });
 
     test('dispose cancels the timer and nothing sweeps afterwards', () async {
