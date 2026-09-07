@@ -159,17 +159,39 @@ final class HeartbeatPump {
   }
 
   /// Says so when the gateway's patience is shorter than this panel's floor
-  /// can promise (07-REVIEW WR-01).
+  /// can promise (07-REVIEW WR-01; the boundary is S13's).
   ///
   /// **The worst-case silence is two periods, not one.** [noteOutbound]'s skip
   /// rule means an outbound frame landing just after a beat suppresses the
   /// next one, so the gateway last sees a frame at `kp+e` and next sees one at
   /// `(k+2)p`. At the derived period that is two thirds of the deadline and
   /// safe by construction. At the floor it is a flat two floors against
-  /// whatever the gateway chose — so a gateway advertising two floors or less
-  /// reaps this panel anyway, with the pump running and
-  /// [debugHeartbeatsSent] climbing, which is the six-second-resync defect
-  /// this class exists to fix wearing a green light.
+  /// whatever the gateway chose.
+  ///
+  /// **So a full beat of margin needs three floors, and that is where this
+  /// complains from.** The margin is `advertised - 2 x floor`; the panel can
+  /// absorb one lost frame only when that is at least one whole period, which
+  /// is `advertised >= floor * 3`. This gate used to be `floor * 2 <
+  /// advertised` while the message below recommended raising the deadline
+  /// above `floor * 3` — **the code disagreed with its own advice**, and the
+  /// band in between was the quiet half: at 2500 ms against the default 1 s
+  /// floor the period clamps to the floor, the gateway legitimately sees
+  /// 2000 ms of silence, the margin is 500 ms, and one Wi-Fi retransmit reaps
+  /// the session on every loss burst — the pump running, [debugHeartbeatsSent]
+  /// climbing, and nothing said. That is the six-second-resync defect this
+  /// class exists to fix wearing a green light. At `2f + 1` the margin is one
+  /// millisecond.
+  ///
+  /// Three floors is not a round number picked here: it is exactly
+  /// `ServerConfig.minHeartbeatDeadline`'s default of 3 s against this
+  /// [ClientConfig.heartbeatFloor] default of 1 s. **The two ends' numbers
+  /// meet at this boundary**, so a gateway that passes its own validation is a
+  /// gateway this panel is silent about, and the only configurations that
+  /// complain are the ones the server would have refused to hold itself to.
+  ///
+  /// Narrowing the skip rule (16-02 §6) does not move this: a narrower gate
+  /// can only *un*-skip beats, so `2 x period` stays the bound and the
+  /// boundary derived from it stays where it is.
   ///
   /// [period] does not bend for it: the floor is this panel's own limit on
   /// what it will do about somebody else's configuration, and a panel beating
@@ -184,13 +206,19 @@ final class HeartbeatPump {
     final complain = _onComplaint;
     if (complain == null || advertised == null) return;
     final floorMs = config.heartbeatFloor.inMilliseconds;
-    if (floorMs * 2 < advertised) return;
+    // The two quantities the boundary is made of, named rather than spelled
+    // twice: the silence the skip rule allows at the floor, and the smallest
+    // deadline that leaves a whole beat of margin against it.
+    final worstCaseSilenceMs = floorMs * 2;
+    final marginedDeadlineMs = floorMs * 3;
+    if (marginedDeadlineMs <= advertised) return;
     complain('this gateway advertises a $advertised ms heartbeat deadline and '
         'this panel will not beat faster than its $floorMs ms floor. The '
-        'skip-on-traffic rule means the gateway can see up to ${floorMs * 2} '
+        'skip-on-traffic rule means the gateway can see up to '
+        '$worstCaseSilenceMs '
         'ms of silence between beats, so it will reap this session and the '
         'panel will resync its whole page every cycle. Raise the gateway\'s '
-        'heartbeatDeadline above ${floorMs * 3} ms, or lower '
+        'heartbeatDeadline above $marginedDeadlineMs ms, or lower '
         'ClientConfig.heartbeatFloor.');
   }
 
