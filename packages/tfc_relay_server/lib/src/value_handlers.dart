@@ -141,6 +141,24 @@ final class ValueHandlers {
   /// of it, no cmd, no outcome and no refusal path.
   final _holds = <String, HoldHandle>{};
 
+  /// Whether [releaseAllHolds] has run — which is to say, whether the session
+  /// this object belongs to has been torn down.
+  ///
+  /// It exists for exactly one reader: the store in [write]'s hold branch,
+  /// which resumes after an `await` that [releaseAllHolds] can happen in the
+  /// middle of. `RelaySession._teardown` calls that method **synchronously**
+  /// (`relay_session.dart:1471`), on purpose — the counter has to stop in the
+  /// same turn the session is given up on — and it clears [_holds] on the way
+  /// out. A handler suspended in `api.holdToRun` at that instant would
+  /// otherwise resume into a cleared map, find it empty, and store a **held**
+  /// handle into a dead session: a counter nothing will tick and nothing will
+  /// release, because the teardown that would have has already run.
+  ///
+  /// One-way. A session does not come back; a reconnect builds a new
+  /// `ValueHandlers` (`relay_session.dart` constructs one per session), which
+  /// is the same reason [_holds] is per-session in the first place.
+  bool _closed = false;
+
   /// How many ticks were dropped: malformed, naming a hold this session never
   /// engaged, or thrown out of by the source.
   ///
@@ -577,6 +595,13 @@ final class ValueHandlers {
     // hold for its own reasons (a PLC link dropping under it). An inert
     // handle is not an orphan — there is nothing left to release — and
     // refusing against one would wedge the key for the life of the session.
+    //
+    // **And it is only half of the invariant.** This check is synchronous and
+    // nothing above it in `write` awaits anything, so within one turn it holds
+    // absolutely. It says nothing about the suspend at `api.holdToRun` further
+    // down, where a second engage or a teardown can arrive; the re-check
+    // beside that call is the other half, and neither half is sufficient
+    // alone.
     if (request.hold && request.value == 1) {
       final live = _holds[request.key];
       if (live != null && live.isHeld) {
@@ -606,6 +631,14 @@ final class ValueHandlers {
         fingerprint);
 
     WriteResult result;
+    // Set when this engage lost a race it could only lose *across* the await
+    // in the hold branch below — see the re-check there. Thrown after the
+    // outcome has been recorded rather than from inside the branch, for two
+    // reasons: the `catch` below turns every throw into `WriteUnknown`, which
+    // is the wrong answer for a refusal this gateway is certain about; and a
+    // refusal that skipped `_record` would leave `writeStatus` answering
+    // `unknown(in_flight)` for ever about a command that has already settled.
+    rpc.RpcException? lostTheRace;
     try {
       // **The hold branch (D-P5-C).** An engage and a release are ordinary
       // writes — same idempotency window above, same in-flight pre-record,
@@ -644,16 +677,90 @@ final class ValueHandlers {
       final hold = request.hold ? _holds[request.key] : null;
       if (request.hold && request.value == 1) {
         final handle = await api.holdToRun(request.key);
-        // Recorded only when it took. A refused engage produces an inert
-        // handle (`hold_handle.dart`), and keeping one would make the next
-        // tick look authorized for a hold that never existed.
+        // **The re-check after the await.** This file's instance of the
+        // pattern; `relay_session.dart`'s `_hello` carries the other one, and
+        // the two are one idea.
         //
-        // Never an overwrite: the refusal above guarantees this key holds no
-        // live hold, and an inert entry was dropped there. Every handle this
-        // gateway takes is therefore in the map that `releaseAllHolds`
-        // iterates (05-REVIEW WR-02).
-        if (handle.isHeld) _holds[request.key] = handle;
-        result = _withCmd(handle.engagement, request.cmd);
+        // The refusal at :583 is synchronous and `write` has no `await` at all
+        // in front of it, so *within one turn* it does guarantee this key
+        // holds no live hold. What it cannot survive is the suspend on the
+        // line above, and two things can happen during that suspend:
+        //
+        //  * **Another engage wins.** `json_rpc_2`'s `listen` does not await
+        //    its dispatch (`server.dart:115`), and a JSON-RPC batch runs its
+        //    members through `Future.wait` (`:175-181`), so a second engage
+        //    can pass the guard while this one is upstream. Storing over the
+        //    winner would leave its handle unreachable by `holdTick` (the
+        //    `_holds` lookup is that frame's authorisation boundary), by the
+        //    release branch below, and by `releaseAllHolds`.
+        //  * **The session died.** `RelaySession._teardown:1471` calls
+        //    `releaseAllHolds` synchronously, so this handler can resume into
+        //    a map that has already been cleared for a socket that is gone.
+        //    That one needs no second client at all.
+        //
+        // The loser's handle is **released, not dropped**. Dropping it is the
+        // same strand wearing a different hat: a handle nobody holds a
+        // reference to is a `1` placed on a deadman that nothing will ever
+        // explicitly take back. Releasing writes the 0 and completes
+        // `onReleased`, so the source stops counting it as live.
+        final displaced = _holds[request.key];
+        final String? lost = _closed
+            ? 'this session was torn down while the engage was upstream'
+            : (displaced != null && displaced.isHeld
+                ? 'another engage on this key took the hold while this one '
+                    'was upstream'
+                : null);
+        if (lost == null) {
+          // Recorded only when it took. A refused engage produces an inert
+          // handle (`hold_handle.dart`), and keeping one would make the next
+          // tick look authorized for a hold that never existed.
+          if (handle.isHeld) _holds[request.key] = handle;
+          result = _withCmd(handle.engagement, request.cmd);
+        } else {
+          if (handle.isHeld) {
+            // Not awaited, and errors swallowed, for `releaseAllHolds`'s
+            // reasons exactly: the machine stops when the counter stops, which
+            // has already happened here, and the source may be going away
+            // underneath us.
+            //
+            // `HoldEnded.disposed` because that is what is happening to this
+            // handle — the gateway is disposing of one it cannot make
+            // reachable. `refused` would be a lie (the engage *did* come back
+            // applied) and `operatorLetGo` names something nobody did.
+            unawaited(handle
+                .release(reason: HoldEnded.disposed)
+                .then((_) {}, onError: (Object _) {}));
+          }
+          // Rejected, with the instant, because that is what happened: the
+          // command reached the source and was taken back. It is recorded so
+          // that `writeStatus` and a replay of this cmd both agree with the
+          // refusal the client is about to receive.
+          result = WriteRejected(
+              request.cmd,
+              WriteReason('hold_race_lost', message: lost),
+              at: now());
+          // **The same refusal shape the synchronous guard uses**, so a client
+          // sees one answer for "one key, one hold" whichever side of the
+          // await it lost on — and the message says the one thing that is
+          // *not* the same. Everywhere else on this ladder `INVALID_PARAMS`
+          // means "definitively no effect, nothing sent"; here the engage did
+          // reach the plant and was taken back, so the tag went to 1 and
+          // returned to 0. Saying so is the whole difference between a refusal
+          // an operator can act on and one that is quietly wrong.
+          lostTheRace = _refuse(
+              Methods.write,
+              'this engage was not the one that took the hold on '
+              '"${request.key}": $lost. One key is one deadman counter — one '
+              'finger, one button — and the handle this call was given has '
+              'been released rather than kept, because a hold nothing can '
+              'tick and nothing can release is a 1 left on a deadman by an '
+              'engage nobody will ever take back. Unlike the refusals raised '
+              'before the source is consulted, something *was* sent: the tag '
+              'was taken to 1 and returned to 0 by that release, and this '
+              'command is recorded as rejected. Read the tag back before '
+              'acting, and engage again only once the live hold has been '
+              'released');
+        }
       } else if (hold != null && request.value == 0) {
         _holds.remove(request.key);
         result = _withCmd(await hold.release(), request.cmd);
@@ -689,6 +796,11 @@ final class ValueHandlers {
     }
 
     _record(request.cmd, result, fingerprint);
+    // After the record, and outside the `catch`: see the declaration. The
+    // rejected outcome is on the log before the client is told, so the two
+    // never disagree about a command whose engage this gateway took and gave
+    // straight back.
+    if (lostTheRace != null) throw lostTheRace;
     return result.toJson();
   }
 
@@ -707,6 +819,12 @@ final class ValueHandlers {
   /// on exactly the dead link that caused it. Errors are swallowed for the
   /// same reason — the source may already be disposed underneath us.
   void releaseAllHolds() {
+    // Set *before* the iteration, so a handler that resumes from
+    // `api.holdToRun` at any point during or after this method sees it. The
+    // iteration below is synchronous and cannot itself be interleaved with;
+    // what can is the suspend in [write]'s hold branch, which is why the flag
+    // is raised on the first line rather than the last.
+    _closed = true;
     for (final hold in List<HoldHandle>.of(_holds.values)) {
       unawaited(hold
           .release(reason: HoldEnded.disposed)
