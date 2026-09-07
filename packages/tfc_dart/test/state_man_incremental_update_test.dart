@@ -5,6 +5,9 @@ import 'package:modbus_client_tcp/modbus_client_tcp.dart';
 import 'package:test/test.dart';
 import 'package:open62541/open62541.dart'
     show ClientApi, DynamicValue, MonitoringMode, NodeId;
+import 'package:tfc_dart/core/config/config_diff.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/key_mapping_codec.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:tfc_dart/core/state_man.dart';
@@ -328,6 +331,136 @@ void main() {
                 'for a group that had no members at construction');
       } finally {
         adapter.dispose();
+      }
+    });
+  });
+
+  group('updateKeyMappings — the store\'s diff and the recompute agree', () {
+    // SC-3's signature half. The `ConfigStore` has already computed exactly
+    // this diff to decide which rows to write; handing it over saves
+    // re-deriving the same three sets by encoding every entry on both sides
+    // to JSON — 430 encodes of objects that did not move, per save, on this
+    // plant. What must be true is that it is the SAME answer, so each case
+    // below runs both paths over identical inputs and compares them.
+    //
+    // The diff is built the way the store builds it: through the codec, over
+    // `ConfigItem`s. A hand-assembled payload is structurally a different
+    // payload — every model class emits its unset optionals as explicit nulls
+    // — and the consequence is every key diffing as changed.
+    ConfigDiff diffOf(
+            Map<String, KeyMappingEntry> before, Map<String, KeyMappingEntry> after) =>
+        diffConfigItems(
+          stored: keyMappingItems(KeyMappings(nodes: before)),
+          wanted: keyMappingItems(KeyMappings(nodes: after)),
+        );
+
+    /// Runs both paths over the same edit and asserts they cannot be told
+    /// apart. Two `StateMan`s, because the apply mutates the one it runs on.
+    Future<void> expectEquivalent(
+      Map<String, KeyMappingEntry> before,
+      Map<String, KeyMappingEntry> after, {
+      List<DeviceClient> Function()? deviceClients,
+    }) async {
+      final next = KeyMappings(nodes: after);
+      final recomputing =
+          await buildStateMan(before, deviceClients: deviceClients?.call() ?? const []);
+      final given =
+          await buildStateMan(before, deviceClients: deviceClients?.call() ?? const []);
+      try {
+        final a = recomputing.updateKeyMappings(next);
+        final b = given.updateKeyMappings(next, diff: diffOf(before, after));
+
+        expect(b.added, a.added);
+        expect(b.removed, a.removed);
+        expect(b.changed, a.changed);
+        expect(b.resubscribed, a.resubscribed);
+        expect(b.reloadReasons, a.reloadReasons);
+        expect(b.requiresReload, a.requiresReload);
+        expect(given.keyMappings.nodes.keys, recomputing.keyMappings.nodes.keys);
+      } finally {
+        await recomputing.close();
+        await given.close();
+      }
+    }
+
+    test('an add, an edit and a removal in one save', () async {
+      await expectEquivalent(
+        {'a': opcuaEntry('A'), 'b': opcuaEntry('B'), 'gone': opcuaEntry('Gone')},
+        {'a': opcuaEntry('A'), 'b': opcuaEntry('B2'), 'new': opcuaEntry('New')},
+      );
+    });
+
+    test('a save that changes nothing', () async {
+      await expectEquivalent(
+        {'a': opcuaEntry('A')},
+        {'a': opcuaEntry('A')},
+      );
+    });
+
+    test('a classic-Modbus edit still asks for a reload', () async {
+      // The requiresReload classification is what a station feels: it is the
+      // difference between re-pointing a subscription and dropping every
+      // connection on the panel. It must not depend on where the sets came
+      // from.
+      await expectEquivalent(
+        {'m': modbusEntry(10), 'keep': opcuaEntry('K')},
+        {'m': modbusEntry(11), 'keep': opcuaEntry('K')},
+      );
+      await expectEquivalent(
+        {'m': modbusEntry(10)},
+        {},
+      );
+      await expectEquivalent(
+        {},
+        {'m': modbusEntry(10)},
+      );
+    });
+
+    test('an M2400 change and a protocol switch', () async {
+      await expectEquivalent(
+        {'w': m2400Entry(statusFilter: 1)},
+        {'w': m2400Entry(statusFilter: 2)},
+      );
+      await expectEquivalent(
+        {'p': opcuaEntry('P')},
+        {'p': modbusEntry(7, variableName: 'Speed')},
+      );
+    });
+
+    test('a bitMask edit, which no key name reveals', () async {
+      // The two paths could agree on every case where the key set moves and
+      // still disagree here: the store's diff is structural over the payload,
+      // and `bit_mask` is a field of it.
+      await expectEquivalent(
+        {'a': opcuaEntry('A')},
+        {'a': opcuaEntry('A', bitMask: 3)},
+      );
+    });
+
+    test('a diff carrying items of another kind is ignored, not applied',
+        () async {
+      // From Phase 3 the store holds pages and assets in the same snapshot and
+      // emits one diff over all of them. A page id that happened to match a
+      // mapping key would otherwise tear down that key's subscription.
+      final stateMan = await buildStateMan({'a': opcuaEntry('A')});
+      try {
+        final result = stateMan.updateKeyMappings(
+          KeyMappings(nodes: {'a': opcuaEntry('A')}),
+          diff: ConfigDiff(
+            added: const [],
+            changed: const [],
+            removed: [
+              ConfigItem.of(
+                  kind: ConfigKind.page, id: 'a', value: const {'title': 'A'}),
+            ],
+          ),
+        );
+
+        expect(result.removed, isEmpty);
+        expect(result.requiresReload, isFalse);
+        expect(stateMan.keyMappings.nodes.keys, ['a']);
+      } finally {
+        await stateMan.close();
       }
     });
   });

@@ -20,6 +20,8 @@ import 'package:modbus_client/modbus_client.dart'
     show ModbusElementType, ModbusEndianness;
 
 import 'collector.dart';
+import 'config/config_diff.dart';
+import 'config/config_item.dart' show ConfigKind;
 import 'conn_meta.dart';
 import 'modbus_client_wrapper.dart' show ModbusDataType;
 import 'modbus_device_client.dart'
@@ -2083,21 +2085,47 @@ class StateMan {
     return _monitor(key);
   }
 
-  KeyMappingsUpdateResult updateKeyMappings(KeyMappings newKeyMappings) {
+  /// Applies [newKeyMappings] in place, re-pointing what can be re-pointed.
+  ///
+  /// [diff] is what the caller already knows about the change — from Phase 2
+  /// onwards the [ConfigStore] computes exactly this diff to decide which rows
+  /// to write, and handing it over here saves re-deriving the same three sets
+  /// by encoding every entry on both sides to JSON. A save of one key on this
+  /// plant is 430 encodes of an object that did not move.
+  ///
+  /// **Optional, and the recompute is not going anywhere.** The backend, the
+  /// tests and any caller that has two `KeyMappings` and nothing else still
+  /// pass nothing and get the same answer; the apply body below is one piece
+  /// of code either way. Items of another kind in [diff] are ignored, so a
+  /// caller may hand over a whole-snapshot diff.
+  KeyMappingsUpdateResult updateKeyMappings(KeyMappings newKeyMappings,
+      {ConfigDiff? diff}) {
     final old = keyMappings;
     final added = <String>{};
     final removed = <String>{};
     final changed = <String>{};
-    for (final key in newKeyMappings.nodes.keys) {
-      if (!old.nodes.containsKey(key)) added.add(key);
-    }
-    for (final entry in old.nodes.entries) {
-      final newEntry = newKeyMappings.nodes[entry.key];
-      if (newEntry == null) {
-        removed.add(entry.key);
-      } else if (jsonEncode(newEntry.toJson()) !=
-          jsonEncode(entry.value.toJson())) {
-        changed.add(entry.key);
+    if (diff != null) {
+      for (final item in diff.added) {
+        if (item.kind == ConfigKind.keyMapping) added.add(item.id);
+      }
+      for (final item in diff.changed) {
+        if (item.kind == ConfigKind.keyMapping) changed.add(item.id);
+      }
+      for (final item in diff.removed) {
+        if (item.kind == ConfigKind.keyMapping) removed.add(item.id);
+      }
+    } else {
+      for (final key in newKeyMappings.nodes.keys) {
+        if (!old.nodes.containsKey(key)) added.add(key);
+      }
+      for (final entry in old.nodes.entries) {
+        final newEntry = newKeyMappings.nodes[entry.key];
+        if (newEntry == null) {
+          removed.add(entry.key);
+        } else if (jsonEncode(newEntry.toJson()) !=
+            jsonEncode(entry.value.toJson())) {
+          changed.add(entry.key);
+        }
       }
     }
 
