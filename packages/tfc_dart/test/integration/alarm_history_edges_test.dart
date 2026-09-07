@@ -651,7 +651,11 @@ void main() {
       // in the current config (alarm.dart:525-533), which is EXACTLY the set
       // this branch exists to close (P-9). Reading open rows through it would
       // leave a deleted alarm's row open forever, invisibly.
-      final alarmMan = await AlarmMan.create(preferences, UnusedStateMan());
+      final alarmMan = await AlarmMan.create(preferences, UnusedStateMan(),
+          // Required as of 14-07 (D-2: no file on the alarm path reads a real
+          // clock). This file's own fixed backend instant, so nothing here
+          // reads a wall clock either.
+          clock: () => machineNow);
       final recent = await alarmMan.getRecentAlarms();
       expect(recent.map((a) => a.alarm.config.uid), isNot(contains('DELETED.ALARM')),
           reason: 'if getRecentAlarms ever DID return this row, the direct '
