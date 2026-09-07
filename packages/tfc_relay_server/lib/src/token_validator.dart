@@ -19,6 +19,7 @@ library;
 
 import 'dart:typed_data';
 
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'auth/identity.dart';
@@ -71,14 +72,14 @@ sealed class TokenVerdict {
 final class TokenAccepted extends TokenVerdict {
   const TokenAccepted(this.identity, {this.credentialDigest});
 
-  final Identity identity;
+  final StationIdentity identity;
 
   /// A one-way digest of the credential that was accepted, when the validator
   /// has one — never the credential.
   ///
-  /// **What it is for.** [Identity] is `{stationId, role}` and is deliberately
-  /// credential-free, which means two different tokens that name the same
-  /// station with the same role are *equal* identities. That is the right
+  /// **What it is for.** [StationIdentity] is deliberately credential-free,
+  /// which means two different tokens that name the same station as the same
+  /// account with the same role are *equal* identities. That is the right
   /// shape for everything downstream of the handshake, and it is blind to the
   /// one revocation an operator actually performs: a leaked token is
   /// remediated by **replacing** it, and the session holding the leaked one
@@ -87,7 +88,7 @@ final class TokenAccepted extends TokenVerdict {
   /// `RevocableTokenValidator.stillValid` tell "this station is still
   /// entitled" from "this *credential* is still the one".
   ///
-  /// **Safe to hold and to log**, by the same argument [Identity] is: a
+  /// **Safe to hold and to log**, by the same argument [StationIdentity] is: a
   /// SHA-256 of a token at or above the loader's 24-character floor is not
   /// reversible, and the digest is already what the loaded credential set is
   /// keyed by (`file_token_validator.dart`'s library doc).
@@ -115,32 +116,70 @@ final class TokenRejected extends TokenVerdict {
   const TokenRejected(this.reason);
 }
 
+/// The role name a permissive gateway hands out.
+///
+/// Names itself, for the same reason [PermissiveTokenValidator.stationId] does:
+/// it lands in `AuthenticatedUser.roleName`, in `AccessSession.roleName` and in
+/// every audit row a permissive gateway writes. A trail full of
+/// `Permissive (development)` is a deployment telling on itself; a neutral name
+/// like `Default` would read as a role somebody created.
+///
+/// Deliberately **not** a row in `app_role` and deliberately not resolved
+/// through the `GroupResolver`: this validator has no database, which is the
+/// whole of what makes it permissive.
+const String kPermissiveRoleName = 'Permissive (development)';
+
 /// Accepts every client. The default, and the whole of this phase's auth.
 ///
 /// Named for what it does rather than for what it lacks, so a deployment that
 /// still has one in Phase 6 is legible in a config diff.
+///
+/// **It is now permissive about permissions as well as about credentials, and
+/// that is a larger claim than it used to make.** Before Phase 17 it granted
+/// `operate`, one of two values; now it mints a session holding the **full**
+/// `AccessGroup` set — every group the master system has, including
+/// `administer` and `users`. Nothing about the deployment changed, but what the
+/// label covers did, and this is why `RelayServer`'s `exposureWarning` still
+/// logs before the bind rather than after it.
 final class PermissiveTokenValidator implements TokenValidator {
   const PermissiveTokenValidator();
 
   /// The station id every client gets from a permissive gateway.
   ///
   /// Names itself, because it is going to be printed: it reaches close
-  /// reasons, logs and — once the policy seam lands — whatever a refusal says
-  /// about who was refused. A neutral-looking id like `default` reads as a
-  /// station somebody configured.
+  /// reasons, logs and whatever a refusal says about who was refused. A
+  /// neutral-looking id like `default` reads as a station somebody configured.
   static const String stationId = 'any-station-permissive-validator';
 
-  /// **`operate`, and that is the honest label rather than a generous one.**
+  /// **Every group, and that is the honest label rather than a generous one.**
   ///
   /// This validator's semantics today are "everyone may do everything", and
-  /// `Role.operate` is that written down. Answering `view` would be a
-  /// different, quieter lie: every existing fixture in this workspace runs on
-  /// this default and writes through it, so a `view` here would either break
-  /// them all or — worse — leave a gateway whose declared role says one thing
-  /// and whose behaviour does another. A deployment still running one stays
-  /// legible in a config diff, which is this class's whole reason for having
-  /// a name instead of being a null check.
+  /// the full group set is that written down. Granting a narrower set would be
+  /// a different, quieter lie: every existing fixture in this workspace runs on
+  /// this default and writes through it, so a narrow set here would either
+  /// break them all or — worse — leave a gateway whose declared role says one
+  /// thing and whose behaviour does another. A deployment still running one
+  /// stays legible in a config diff, which is this class's whole reason for
+  /// having a name instead of being a null check.
+  ///
+  /// `stationAccount: true` because it is still a panel rather than a person;
+  /// the permissiveness is in the groups, not in the kind of account.
+  static final StationIdentity identity = StationIdentity(
+    user: _permissiveUser,
+    station: stationId,
+    session: AccessSession(
+      user: _permissiveUser,
+      groups: AccessGroup.values.toSet(),
+    ),
+  );
+
+  static final AuthenticatedUser _permissiveUser = const AuthenticatedUser(
+    username: stationId,
+    roleName: kPermissiveRoleName,
+    stationAccount: true,
+  );
+
   @override
   Future<TokenVerdict> validate(HelloParams params) async =>
-      const TokenAccepted(Identity(stationId: stationId, role: Role.operate));
+      TokenAccepted(identity);
 }
