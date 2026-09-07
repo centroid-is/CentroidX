@@ -384,13 +384,27 @@ void main() {
         () async {
       await prefs.setString('a', '1');
       await prefs.setInt('b', 2);
+
+      await prefs.clear();
+
+      expect(await items(), isEmpty);
+    });
+
+    test('it leaves the store\'s own internal rows standing', () async {
+      await prefs.setString('a', '1');
       await seedRow(
           id: '_import.shared_preferences_v1',
           payload: '{"type":"bool","value":true}');
 
       await prefs.clear();
 
-      expect(await items(), isEmpty);
+      final rows = await items();
+      expect(rows.map((r) => r.id), ['_import.shared_preferences_v1'],
+          reason: 'the import marker is bookkeeping, not a preference: a clear '
+              'that took it would let the next boot re-import a stale '
+              'shared_preferences file over newer local edits');
+      expect(await prefs.getAll(), isEmpty,
+          reason: 'and it is still invisible as a preference');
     });
 
     test('it never reaches another kind at the same scope', () async {

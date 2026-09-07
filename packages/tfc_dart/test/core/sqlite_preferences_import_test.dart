@@ -98,8 +98,7 @@ void main() {
   group('importAll is one action', () {
     test('every change row shares one actionId, and every op is insert',
         () async {
-      await prefs.importAll({'a': '1', 'b': 2, 'c': true},
-          markerId: kMarkerId);
+      await prefs.importAll({'a': '1', 'b': 2, 'c': true}, markerId: kMarkerId);
 
       final rows = await changes();
       expect(rows, hasLength(4), reason: 'three keys plus the marker');
@@ -127,8 +126,9 @@ void main() {
       final itemsBefore = (await items()).length;
       final changesBefore = (await changes()).length;
 
-      final second = await prefs
-          .importAll({'startup_url': '/other', 'new': 'x'}, markerId: kMarkerId);
+      final second = await prefs.importAll(
+          {'startup_url': '/other', 'new': 'x'},
+          markerId: kMarkerId);
 
       expect(second, isFalse);
       expect((await items()).length, itemsBefore);
@@ -140,19 +140,20 @@ void main() {
     });
 
     test('a key deleted after the import stays deleted', () async {
-      await prefs
-          .importAll({'startup_url': '/roe', 'keep': 'me'}, markerId: kMarkerId);
+      await prefs.importAll({'startup_url': '/roe', 'keep': 'me'},
+          markerId: kMarkerId);
       await prefs.remove('startup_url');
 
-      await prefs
-          .importAll({'startup_url': '/roe', 'keep': 'me'}, markerId: kMarkerId);
+      await prefs.importAll({'startup_url': '/roe', 'keep': 'me'},
+          markerId: kMarkerId);
 
       expect(await prefs.containsKey('startup_url'), isFalse,
           reason: 'per-key insert-if-absent alone would resurrect it');
       expect(await prefs.getString('keep'), 'me');
     });
 
-    test('an import over rows that already hold those values writes only the '
+    test(
+        'an import over rows that already hold those values writes only the '
         'marker', () async {
       await prefs.setString('startup_url', '/roe');
       final changesBefore = (await changes()).length;
@@ -182,8 +183,8 @@ void main() {
     });
 
     test('a null value is skipped rather than stored as a null row', () async {
-      await prefs.importAll({'good': 'yes', 'nothing': null},
-          markerId: kMarkerId);
+      await prefs
+          .importAll({'good': 'yes', 'nothing': null}, markerId: kMarkerId);
 
       expect(await prefs.containsKey('nothing'), isFalse);
       expect(await prefs.getString('good'), 'yes');

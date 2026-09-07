@@ -4,6 +4,7 @@ library;
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
+import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart' show newActionId;
 
 import 'config/config_change.dart';
@@ -24,6 +25,10 @@ const String _noRole = '';
 /// Ids beginning with this are the store's own bookkeeping and are not
 /// preferences.
 const String _internalIdPrefix = '_';
+
+/// Only ever used off the happy path — a legacy value of a type this API
+/// cannot carry. Nothing here logs per write.
+final Logger _logger = Logger();
 
 /// A [PreferencesApi] over `config_item` rows at one [ConfigScope].
 ///
@@ -223,15 +228,21 @@ class SqlitePreferences implements PreferencesApi {
   /// The whole batch shares one `action_id`, so a clear of nine keys reads as
   /// one action rather than nine unrelated ones.
   ///
-  /// A clear with no [allowList] also removes the store's internal rows — the
-  /// import marker among them. That is the contract [PreferencesApi.clear]
-  /// documents ("all preferences will be removed... may include values not set
-  /// by this instance"), and after it the store is genuinely empty rather than
-  /// empty-looking.
+  /// **The store's own internal rows survive a clear** — the import marker
+  /// above all. [PreferencesApi.clear] documents removing "all preferences",
+  /// and the marker is not one: it is bookkeeping, invisible to [getKeys] and
+  /// [getAll], and nothing that reads a preference can see it. Taking it would
+  /// mean the next boot re-imports a `shared_preferences` file that is by then
+  /// months stale, over local edits made since — silent data loss from an
+  /// operation whose whole point was to *remove* data. A caller that genuinely
+  /// wants the import to run again names the marker to [remove]; that is a
+  /// deliberate act, and clearing is not.
   @override
   Future<void> clear({Set<String>? allowList}) async {
     await _db.transaction(() async {
-      final rows = await _rows(allowList: allowList);
+      final rows = (await _rows(allowList: allowList))
+          .where((row) => !_isInternal(row.id))
+          .toList(growable: false);
       if (rows.isEmpty) return;
       final actionId = newActionId();
       final at = DateTime.now();
@@ -248,6 +259,97 @@ class SqlitePreferences implements PreferencesApi {
   }
 
   // ---------------------------------------------------------------------
+  // The one-shot import
+  // ---------------------------------------------------------------------
+
+  /// Copies a legacy `shared_preferences` store into this one, once, and
+  /// records that it has done so. Returns whether it imported.
+  ///
+  /// Everything lands in **one transaction under one `action_id`**: every
+  /// typed row, every change row, and the marker row [markerId] last. Either
+  /// the station has imported or it has not — there is no half-imported state
+  /// to reason about after a power cut mid-boot.
+  ///
+  /// ## Why a marker row and not a file, or a per-key insert-if-absent
+  ///
+  /// If a row with id [markerId] already exists at this [scope], this returns
+  /// false having written nothing. `INSERT … ON CONFLICT DO NOTHING` per key
+  /// would not be enough on its own: a key the operator legitimately *deleted*
+  /// after the import would come back on the next boot, over and over. The flag
+  /// has to be about the import, not about the keys.
+  ///
+  /// A row rather than a file on disk, so a database restored from a backup
+  /// carries the flag along with the data it describes. It is `kind`
+  /// `'preference'` with an underscore-prefixed id, which is what keeps it out
+  /// of [getKeys], [getAll] and [clear].
+  ///
+  /// ## What is skipped
+  ///
+  /// [PreferencesApi] carries five types. A value of any other runtime type —
+  /// a `List<int>`, a null — is skipped with a log line and the rest of the
+  /// import proceeds: one unreadable legacy entry must cost that entry, never
+  /// the startup page. Lists are accepted as `List<dynamic>` when every element
+  /// is a `String`, because the raw-file fallback the app reads with decodes
+  /// JSON and JSON has no typed lists.
+  ///
+  /// A key whose stored value already matches writes nothing at all — the same
+  /// dedupe every setter runs, so re-importing an already-correct store costs
+  /// one row, the marker.
+  Future<bool> importAll(
+    Map<String, Object?> values, {
+    required String markerId,
+  }) =>
+      _db.transaction(() async {
+        if (await _row(markerId) != null) return false;
+        final at = DateTime.now();
+        final actionId = newActionId();
+        for (final entry in values.entries) {
+          final tagged = _tag(entry.value);
+          if (tagged == null) {
+            _logger.w('Import skipped "${entry.key}": '
+                '${entry.value.runtimeType} is not a preference type');
+            continue;
+          }
+          await _writeRow(
+            key: entry.key,
+            type: tagged.type,
+            value: tagged.value,
+            at: at,
+            actionId: actionId,
+          );
+        }
+        // Last, and inside the same transaction: a marker written before the
+        // rows would, on a crash between the two, leave a station that believes
+        // it has imported and has not.
+        await _writeRow(
+          key: markerId,
+          type: _stringType,
+          value: at.toIso8601String(),
+          at: at,
+          actionId: actionId,
+        );
+        return true;
+      });
+
+  /// The type tag and the value to store for [value], or null when
+  /// [PreferencesApi] cannot carry its type.
+  static ({String type, Object value})? _tag(Object? value) {
+    if (value is bool) return (type: _boolType, value: value);
+    if (value is int) return (type: _intType, value: value);
+    if (value is double) return (type: _doubleType, value: value);
+    if (value is String) return (type: _stringType, value: value);
+    if (value is List && value.every((e) => e is String)) {
+      // Cast now, so the payload is a list of strings whatever the source's
+      // static type was.
+      return (
+        type: _stringListType,
+        value: value.cast<String>().toList(growable: false),
+      );
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------
   // The row writer
   // ---------------------------------------------------------------------
 
@@ -258,49 +360,74 @@ class SqlitePreferences implements PreferencesApi {
   /// neither, because a change row describing a write that did not land is
   /// worse than no history.
   Future<void> _set(String key, String type, Object value) async {
+    await _db.transaction(() => _writeRow(
+          key: key,
+          type: type,
+          value: value,
+          at: DateTime.now(),
+          actionId: newActionId(),
+        ));
+  }
+
+  /// Writes one typed row and the change row describing it, or writes nothing
+  /// at all when the stored payload already says the same thing. Returns
+  /// whether anything was written.
+  ///
+  /// [at] and [actionId] are the caller's rather than minted here, because
+  /// [importAll] writes a whole legacy store as **one** action: a change log in
+  /// which one import reads as forty unrelated actions is a log nobody can
+  /// undo.
+  ///
+  /// **Not a transaction on its own** — every caller wraps it, because a change
+  /// row describing a write that did not land is worse than no history.
+  Future<bool> _writeRow({
+    required String key,
+    required String type,
+    required Object value,
+    required DateTime at,
+    required String actionId,
+  }) async {
     final after = ConfigItem.of(
       kind: ConfigKind.preference,
       id: key,
       value: {'type': type, 'value': value},
       scope: scope,
     );
-    await _db.transaction(() async {
-      final existing = await _row(key);
-      // C-1. Structural, not textual: a payload written before the canonical
-      // encoding existed must not read as an edit on sight.
-      if (existing != null && samePayload(existing.payload, after.payload)) {
-        return;
-      }
-      final now = DateTime.now();
-      if (existing == null) {
-        await _db.into(_db.configItemTable).insert(
-              ConfigItemTableCompanion.insert(
-                kind: ConfigKind.preference.wireName,
-                id: key,
-                scope: scope.wireName,
-                payload: after.payload,
-                rev: const Value(1),
-                updatedAt: now,
-                updatedBy: _anonymous,
-              ),
-            );
-      } else {
-        await (_db.update(_db.configItemTable)
-              ..where((t) => _identity(t, existing.id)))
-            .write(ConfigItemTableCompanion(
-          payload: Value(after.payload),
-          rev: Value(existing.rev + 1),
-          updatedAt: Value(now),
-          updatedBy: const Value(_anonymous),
-        ));
-      }
-      await _log(
-        at: now,
-        actionId: newActionId(),
-        before: existing == null ? null : _itemOf(existing),
-        after: after,
-      );
-    });
+    final existing = await _row(key);
+    // C-1. Structural, not textual: a payload written before the canonical
+    // encoding existed must not read as an edit on sight.
+    if (existing != null && samePayload(existing.payload, after.payload)) {
+      return false;
+    }
+    if (existing == null) {
+      await _db.into(_db.configItemTable).insert(
+            ConfigItemTableCompanion.insert(
+              kind: ConfigKind.preference.wireName,
+              id: key,
+              scope: scope.wireName,
+              payload: after.payload,
+              rev: const Value(1),
+              updatedAt: at,
+              updatedBy: _anonymous,
+            ),
+          );
+    } else {
+      await (_db.update(_db.configItemTable)
+            ..where((t) => _identity(t, existing.id)))
+          .write(ConfigItemTableCompanion(
+        payload: Value(after.payload),
+        rev: Value(existing.rev + 1),
+        updatedAt: Value(at),
+        updatedBy: const Value(_anonymous),
+      ));
+    }
+    await _log(
+      at: at,
+      actionId: actionId,
+      before: existing == null ? null : _itemOf(existing),
+      after: after,
+    );
+    return true;
   }
 
   /// Appends one row to the local change log.
@@ -444,10 +571,14 @@ class SqlitePreferences implements PreferencesApi {
 
   /// Whether [id] names one of the store's own rows rather than a preference.
   ///
-  /// The one-shot `shared_preferences` import records that it has run as a row
-  /// of `kind='preference'` with an underscore-prefixed id, so that a restored
-  /// backup carries the flag along with the data it describes. This filter is
-  /// why that row never surfaces from [getKeys] or [getAll] and is never copied
-  /// anywhere as though it were a setting.
+  /// [importAll] records that it has run as a row of `kind='preference'` with
+  /// an underscore-prefixed id, so that a restored backup carries the flag
+  /// along with the data it describes. This filter is why that row never
+  /// surfaces from [getKeys] or [getAll], is never removed by [clear], and is
+  /// never copied anywhere as though it were a setting.
+  ///
+  /// [containsKey] and [remove] are deliberately *not* filtered: the import has
+  /// to be able to ask whether it has run, and a caller that names the marker
+  /// outright means it.
   static bool _isInternal(String id) => id.startsWith(_internalIdPrefix);
 }
