@@ -62,12 +62,64 @@ library;
 /// Named arguments with defaults, in `ServerConfig`'s style — the caller sets
 /// what it cares about and the rest are the researched numbers.
 final class ClientConfig {
-  /// Deadline for control-plane calls: `hello`, `subscribe`, `unsubscribe`,
-  /// `read`, `readMany`. `json_rpc_2` has no per-request timeout of its own
+  /// Deadline for control-plane calls: `hello`, `unsubscribe`, `read`,
+  /// `readMany`. `json_rpc_2` has no per-request timeout of its own
   /// (04-RESEARCH Finding 1) and a peer that stops answering without closing
   /// leaves the future pending forever, so this is the only thing standing
   /// between a malformed peer and a panel stuck on a spinner.
+  ///
+  /// **`subscribe` used to be on this list and no longer is** (16-01, finding
+  /// S1b). See [snapshotDeadline] for what that cost.
   final Duration controlDeadline;
+
+  /// Deadline for `subscribe` — the one call whose answer is a whole page.
+  ///
+  /// **Why it is not [controlDeadline].** A `hello` carries five fields. A
+  /// `subscribe` answer carries a ~1500-key snapshot, measured at about 100 kB
+  /// on this plant's largest page. Bounding both with the same one second is a
+  /// statement that the two cost the same, and on any link slower than the
+  /// bench they do not: at a tenth of a megabit — which is what the plant link
+  /// degrades to under load, and what `slow_link_gate_test.dart` meters — that
+  /// page needs eight seconds on the wire before the gateway has done anything
+  /// wrong.
+  ///
+  /// **The two failures that came out of sharing the number**, both reproduced
+  /// in `snapshot_deadline_test.dart` before this field existed:
+  ///
+  /// 1. *A self-sustaining lockout.* The hello succeeds, the snapshot is
+  ///    abandoned at one second, `_resubscribeAll` rethrows, the supervisor
+  ///    calls `_down` and redials — and asks for the same snapshot again, and
+  ///    abandons it again, pushing another partial page into the congestion
+  ///    that caused it. `backoff.reset()` lives only in `_enter(ready)`, and
+  ///    correctly so, but `ready` is reachable only after a *completed* resync,
+  ///    so the schedule never resets and the panel sits at the backoff ceiling
+  ///    forever over a link that would serve it fine at steady state.
+  /// 2. *A permanently dead page on a healthy socket.* The same expiry
+  ///    mid-connection is not retried at all: `_recover` swallows it,
+  ///    `_unestablish` sets `lastSeq = null`, and every rebuild path is guarded
+  ///    on that being non-null. The gateway's late answer did establish the
+  ///    subscription at its end and it goes on pushing, the heartbeat keeps the
+  ///    socket up for days, and the page stays blank until somebody
+  ///    power-cycles the panel.
+  ///
+  /// **Fifteen seconds, and it is not the link-death detector.** Nothing waits
+  /// on this to notice a dead gateway: `FreshnessWatchdog` tears down a socket
+  /// that has gone [freshnessDeadline] without a frame *of any kind*, and it
+  /// covers the resyncing state as well as the ready one, so a gateway that
+  /// has genuinely stopped speaking is gone in three seconds no matter what
+  /// this says. What this bounds is the narrower failure `deadline.dart` was
+  /// written for — a peer that keeps answering everything *else* while one
+  /// request never settles — and that one has no other floor under it, so the
+  /// number can afford to be generous. Fifteen seconds is the metered eight
+  /// plus room for the gateway to assemble the page and for the already
+  /// committed backlog ahead of it to drain.
+  ///
+  /// **Setting it below [controlDeadline] is the defect, deliberately
+  /// configured.** It is not refused at construction, because the honest
+  /// refusal would have to know which calls are snapshot-bearing and this class
+  /// is pure data. It is said here instead, where whoever types the number is
+  /// already reading.
+  final Duration snapshotDeadline;
 
   /// Deadline for `write`. Longer than [controlDeadline] because a write
   /// travels further — through the gateway into the PLC and back — and because
@@ -390,6 +442,7 @@ final class ClientConfig {
 
   ClientConfig({
     this.controlDeadline = const Duration(seconds: 1),
+    this.snapshotDeadline = const Duration(seconds: 15),
     this.writeDeadline = const Duration(seconds: 2),
     this.freshnessDeadline = const Duration(seconds: 3),
     this.backoffBase = const Duration(milliseconds: 250),
@@ -414,6 +467,12 @@ final class ClientConfig {
     }
     _positive('deadlineFloor', deadlineFloor);
     _atLeastFloor('controlDeadline', controlDeadline);
+    // After controlDeadline, and the order is load-bearing:
+    // `client_config_test.dart`'s "a raised floor refuses a default that was
+    // fine before" reads the *name* out of the message a raised floor produces,
+    // and it names controlDeadline. A check inserted above this line would
+    // change which field a raised floor complains about first.
+    _atLeastFloor('snapshotDeadline', snapshotDeadline);
     _atLeastFloor('writeDeadline', writeDeadline);
     _atLeastFloor('freshnessDeadline', freshnessDeadline);
 

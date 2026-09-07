@@ -628,6 +628,19 @@ final class ConnectionSupervisor {
   /// not be retargeted at the replacement socket. The liveness reset below is
   /// guarded by the same capture, because a reply belonging to a retired
   /// connection must not tell the watchdog that *this* one is alive.
+  ///
+  /// **[ClientConfig.snapshotDeadline], not `controlDeadline`** (16-01, finding
+  /// S1b). This call and the `hello` at [_serve] were bounded by the same one
+  /// second, and they are not the same size: the hello is five fields, this
+  /// answer is the whole page. On a link slow enough that the snapshot needs
+  /// three seconds, sharing the number produced a panel that could never reach
+  /// `ready` — every attempt abandoned the page and redialled, and
+  /// `backoff.reset()` is reachable only from `_enter(ready)`, so the loop was
+  /// self-sustaining — and, mid-connection, a page left permanently
+  /// unestablished on a socket the heartbeat kept alive for days. The
+  /// asymmetry was the tell: the identical expiry during `onHello` got
+  /// infinite retries and mid-connection got none. `ClientConfig` carries the
+  /// arithmetic for the number.
   Future<DecodedSubscribeResult> _subscribe(String sub, Set<String> keys) async {
     final gen = _generation;
     final raw = await callWithDeadline(
@@ -635,7 +648,7 @@ final class ConnectionSupervisor {
       Methods.subscribe,
       params: SubscribeParams(sub: sub, keys: keys.toList(growable: false))
           .toJson(),
-      deadline: config.controlDeadline,
+      deadline: config.snapshotDeadline,
     );
     if (gen == _generation) watchdog.sawFrame(InboundFrame.rpcResponse);
     return decodeSubscribeResult(raw);
@@ -764,16 +777,53 @@ final class ConnectionSupervisor {
   /// says so on the surface `RemoteStateMan.complaints` publishes. On a
   /// healthy link this bookkeeping is never touched: G1c and G1d prove the
   /// comparison costs zero rebuilds when the two ends agree.
+  ///
+  /// **A page with no sequence at all is rebuilt too, and this is the door
+  /// that used to be locked** (16-01, finding S1b). This loop used to skip
+  /// `lastSeq == null` outright, on the reading that it meant "a subscribe
+  /// whose snapshot has not landed yet". It means that, and it also means the
+  /// opposite: `ResyncEngine._unestablish` sets it to null when a rebuild
+  /// fails, deliberately, so the next frame is not read as a false gap. The
+  /// one signal therefore carried both "not yet" and "given up on", and every
+  /// path that could have healed the second was guarded against the first —
+  /// `_update`'s rebuild at the method above, this loop here. A page dropped
+  /// by one transient snapshot timeout was then blank until the socket
+  /// happened to drop, which the heartbeat is specifically there to prevent,
+  /// so in practice until somebody power-cycled the panel.
+  ///
+  /// **The gateway naming the page in its tick is what makes this safe.** A
+  /// tick entry is the gateway stating, at its own cadence, that the
+  /// subscription exists at its end — which is exactly the situation the
+  /// defect produces, because the abandoned `subscribe` did arrive and was
+  /// answered. A page the gateway has genuinely forgotten is never named, so
+  /// this never asks for it and the reconnect path keeps that case.
+  ///
+  /// **Bounded by the same damper, and deliberately not by a retry counter.**
+  /// One attempt per subscription per [ClientConfig.freshnessDeadline], the
+  /// limit the mismatch case already uses. A counter would close the door
+  /// again after N, and the condition this recovers from is congestion, which
+  /// lasts as long as it lasts. `resync_test.dart`'s
+  /// `costs nothing at all once the page has been left unestablished` keeps
+  /// the *update* path shut, and it stays shut: what reopens here is the tick,
+  /// at the tick's cadence, through the damper — not one rebuild per inbound
+  /// frame, which is the storm that arm is about.
   Future<void> _tick(rpc.Parameters params) async {
     final tick = TickParams.fromJson(_asJson(sanitize(params.asMap).value));
     watchdog.sawTick(tick);
     for (final entry in tick.subs.entries) {
-      // A subscription this client does not hold, or one with no numbered
-      // frame yet: skipped, and neither is a complaint. The first is a page
-      // somebody else opened on this session; the second is a subscribe whose
-      // snapshot has not landed.
-      final lastSeq = subscriptions[entry.key]?.lastSeq;
-      if (lastSeq == null || entry.value.seq <= lastSeq) continue;
+      // A subscription this client does not hold: skipped, and not a
+      // complaint. It is a page somebody else opened on this session.
+      final state = subscriptions[entry.key];
+      if (state == null) continue;
+
+      final lastSeq = state.lastSeq;
+      // Established and no further along than this client: nothing to do. The
+      // comparison is "ahead of", not "different from" — see above.
+      if (lastSeq != null && entry.value.seq <= lastSeq) continue;
+
+      // Null is the *other* reason to rebuild, and until 16-01 it was the
+      // reason to give up. See this method's doc for the whole of it.
+      final unestablished = lastSeq == null;
 
       final sinceLast = _elapsed.elapsedMilliseconds;
       final rebuiltAt = _tickResyncAtMs[entry.key];
@@ -782,7 +832,13 @@ final class ConnectionSupervisor {
         // Once per subscription per connection, not once per suppressed tick:
         // a line at the tick cadence is the unbounded list WR-07 is about,
         // and every one of them would say the same thing.
-        if (_tickResyncComplained.add(entry.key)) {
+        //
+        // Only for the mismatch case, because only that one has anything to
+        // report: the sentence below is about a rebuild that *happened and did
+        // not help*, which is a fact about the gateway. A suppressed retry on
+        // an unestablished page is this client pacing itself, and `_recover`
+        // has already said out loud why the page is down.
+        if (!unestablished && _tickResyncComplained.add(entry.key)) {
           _resync.complaints.add('"${entry.key}" was rebuilt on a '
               'tick-sequence mismatch and the mismatch survived the rebuild: '
               'the gateway advertises sequence ${entry.value.seq} and this '
