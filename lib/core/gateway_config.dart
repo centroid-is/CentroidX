@@ -24,6 +24,8 @@ import 'dart:io';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 
+import 'gateway_link_status.dart' show isIpLiteralHost;
+
 /// Where a station gets its values from.
 enum TransportMode {
   /// This station opens its own OPC UA sessions, Modbus sockets and Postgres
@@ -180,13 +182,28 @@ final class GatewayConfig {
     if (!isGateway) return null;
     if (validationError != null) return null;
     if (uri.scheme != 'wss') return null;
-    // The one is-this-a-name-or-an-address test in the phase. Anything else
-    // that needs the distinction — `lib/core/gateway_link_status.dart`'s SAN
-    // hint, which must stay quiet on an IP-literal dial — calls this getter
-    // rather than growing a second spelling. A `host.contains('.')` shortcut
-    // reads 10.50.10.11 as a name and an IPv6 literal as an address, both
-    // backwards.
-    if (InternetAddress.tryParse(uri.host) != null) return null;
+    // The one is-this-a-name-or-an-address test in the app. It lives in
+    // `gateway_link_status.dart` because the other caller — that file's SAN
+    // hint, which must stay quiet on an IP-literal dial — is in a file that may
+    // not import `dart:io`, so the direction of the collapse is forced.
+    //
+    // **This comment used to claim the reverse, and was wrong about it.** It
+    // said the SAN hint "calls this getter rather than growing a second
+    // spelling". It did not: it had its own `_isIpLiteral`, did not import this
+    // file, and the two disagreed on `1.2.3.+4`, `0x1.2.3.4` and `a:b`. What
+    // that cost is not theoretical — this advisory is the *proactive* half of
+    // rig FIND-B and the SAN hint is the *reactive* half, so a host the two
+    // spellings disagreed about got the warning while the operator was typing
+    // and then no hint at all when the handshake failed, or the other way
+    // round. One spelling is what makes them agree by construction.
+    //
+    // `InternetAddress.tryParse` was here and is measurably better on
+    // degenerate input; it is not available to the other caller, so
+    // `gateway_config_test.dart`'s differential arm keeps it as the control and
+    // the one remaining divergence is a written-down host rather than a
+    // surprise. A `host.contains('.')` shortcut, for the record, reads
+    // 10.50.10.11 as a name and an IPv6 literal as an address — both backwards.
+    if (isIpLiteralHost(uri.host)) return null;
     return 'The gateway certificate must carry a subject-alternative name for '
         'exactly "${uri.host}". A certificate issued for an IP address instead '
         'fails the handshake with a message about trust rather than about the '

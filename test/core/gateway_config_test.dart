@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/gateway_config.dart';
+import 'package:tfc/core/gateway_link_status.dart' show isIpLiteralHost;
 import 'package:tfc_dart/core/preferences.dart';
 
 void main() {
@@ -299,6 +300,87 @@ void main() {
       expect(saveEnabled, isTrue,
           reason: 'an operator who cannot save a legal hostname is worse off '
               'than one who saves it and corrects the certificate');
+    });
+
+    // -----------------------------------------------------------------------
+    // The collapse, judged against a live control.
+    //
+    // 15-01 wrote its own `_isIpLiteral` and promised to fold it onto this
+    // getter "when 15-02 lands". 15-02 landed at `81f8af6e` and the fold never
+    // happened, so the comment in `gateway_config.dart` claiming the SAN hint
+    // "calls this getter rather than growing a second spelling" was a false
+    // statement in `lib/` for two plans. 15-08 performed the collapse — onto
+    // the pure spelling, because the other caller may not import `dart:io`.
+    //
+    // That direction is a downgrade on degenerate input, so it is measured
+    // rather than assumed: `InternetAddress.tryParse` stays here as the
+    // control, every host below is run through both, and the ONE case where
+    // they still differ is named. Anything else diverging fails by host.
+    // -----------------------------------------------------------------------
+    test('the one host-shape predicate agrees with the OS resolver', () {
+      const hosts = [
+        // Ordinary addresses.
+        '10.50.10.11', '127.0.0.1', '0.0.0.0', '255.255.255.255',
+        // Leading zeros are what a hand-typed address looks like, and are
+        // addresses to the OS.
+        '01.02.03.04', '1.2.3.04', '010.1.1.1',
+        // Not addresses.
+        '256.1.1.1', '1.2.3', '1.2.3.4.5', '999.1.1.1', '1.2.3.-4',
+        // The four the spelling this replaced got wrong, and why: int.tryParse
+        // accepts a leading `+`, and with no radix it accepts a `0x` prefix.
+        '1.2.3.+4', '0x1.2.3.4', '1.2.3. 4', '1.2.3.4 ',
+        // IPv6, as `Uri.host` hands it over — brackets already stripped.
+        '::1', 'fe80::1', 'fd00::1', '2001:db8::8a2e:370:7334',
+        // A name with a stray colon. An address to the old spelling, because
+        // any colon at all counted as IPv6.
+        'a:b',
+        // Names.
+        'plc-gw.svn', 'gateway', 'gw.example.com', 'xn--80ak6aa92e.com',
+        '', '1e2.3.4.5', '1.2.3.4e0',
+      ];
+
+      /// The single measured residue. `Uri` cannot produce a dial from it, so
+      /// neither surface this predicate feeds is reachable with it — but it is
+      /// written down here rather than left for somebody to rediscover.
+      const knownDivergence = {':::'};
+
+      for (final host in [...hosts, ...knownDivergence]) {
+        final os = InternetAddress.tryParse(host) != null;
+        final ours = isIpLiteralHost(host);
+        if (knownDivergence.contains(host)) {
+          expect(ours, isNot(os),
+              reason: '"$host" is the stated exception. If it now AGREES, '
+                  'delete it from knownDivergence rather than leaving a '
+                  'comment claiming a divergence that is gone');
+          continue;
+        }
+        expect(ours, os,
+            reason: '"$host": the pure predicate and the OS resolver must not '
+                'disagree about a host somebody could actually type. They '
+                'feed the two halves of rig FIND-B — the advisory while the '
+                'operator is typing and the SAN hint when the handshake fails '
+                '— and a host that gets one without the other is worse than '
+                'a host that gets neither');
+      }
+    });
+
+    test('and the advisory is the caller, so the two halves cannot drift', () {
+      // The property the collapse exists for, asserted end to end rather than
+      // on the helper alone: a host the predicate calls an address gets no
+      // advisory, and a host it calls a name gets one. An advisory that had
+      // kept its own spelling would pass every arm above and still disagree
+      // with the hint.
+      for (final host in ['10.50.10.11', 'fd00::1', 'plc-gw.svn', 'gateway']) {
+        final config = GatewayConfig(
+          mode: TransportMode.gateway,
+          url: host.contains(':') ? 'wss://[$host]:9444' : 'wss://$host:9444',
+          caCertPath: '/pki/ca.pem',
+        );
+        expect(config.advisory == null, isIpLiteralHost(host),
+            reason: '"$host": the advisory and the SAN hint must reach the '
+                'same conclusion, because they are the proactive and reactive '
+                'halves of one finding');
+      }
     });
 
     // The blast-radius guard. `advisory` is new; validationError is not, and a

@@ -416,7 +416,7 @@ GatewayLinkReport describeGatewayLink({
 
   final where = _render(url);
   final showSanHint =
-      voice == _Voice.certificateRefused && url.scheme == 'wss' && !_isIpLiteral(url.host);
+      voice == _Voice.certificateRefused && url.scheme == 'wss' && !isIpLiteralHost(url.host);
 
   return GatewayLinkReport(
     kind: voice.kind,
@@ -596,22 +596,60 @@ String _render(Uri url) => url.replace(userInfo: '').toString();
 
 /// Whether [host] is an address rather than a name.
 ///
-/// **Duplicated, knowingly, and only until 15-02 lands.** Plan 15-02 puts the
-/// same host-shape question on `GatewayConfig` for its hostname advisory, and
-/// there should be one spelling of "is this an address or a name" in this
-/// phase. `InternetAddress.tryParse` would be the obvious answer and is not
-/// available: `dart:io` must not be imported here, because this file is
-/// deliberately pure and 15-07's goldens depend on that. Collapse this onto
-/// `GatewayConfig`'s helper when both are on the branch.
-bool _isIpLiteral(String host) {
-  // IPv6 literals are the only hosts that can carry a colon.
-  if (host.contains(':')) return true;
+/// **The one spelling of that question in the app**, and the collapse 15-01
+/// promised, 15-02 did not perform and 15-08 finished. `GatewayConfig.advisory`
+/// calls this rather than keeping a second one; the comment there claiming the
+/// reverse was a false statement in `lib/` for two plans.
+///
+/// **Why the pure spelling is the survivor, and not `InternetAddress.tryParse`.**
+/// That is the better predicate and it lives in `dart:io`, which this file may
+/// not import: purity is what makes the golden frames constants. The direction
+/// of the collapse is therefore forced. What matters is that the *two surfaces
+/// agree with each other* — the proactive advisory an operator reads while
+/// typing, and the reactive SAN hint they read when the handshake fails. Two
+/// spellings meant a host that got the advisory and then no hint, or the other
+/// way round, which is worse than either answer alone.
+///
+/// **Measured, not asserted** — 30 hosts through both, `InternetAddress.tryParse`
+/// as the control, pinned by `gateway_config_test.dart`'s differential arm:
+///
+///  * the spelling this replaces disagreed with the OS on **six**. `1.2.3.+4`
+///    and `0x1.2.3.4` because `int.tryParse` accepts a leading `+` and, with no
+///    radix, a `0x` prefix; `1.2.3. 4` and the trailing-space form for the same
+///    reason; `a:b` and `:::` because any colon at all counted as IPv6.
+///  * this one disagrees on **one**, `:::`, which no `Uri` can produce a dial
+///    from. It is named in that arm rather than left to be rediscovered.
+///
+/// Leading zeros (`01.02.03.04`, `010.1.1.1`) are addresses to the OS and to
+/// this, deliberately: that is what a hand-typed address looks like.
+bool isIpLiteralHost(String host) {
+  if (host.contains(':')) {
+    // `Uri.host` strips the brackets off an IPv6 literal, so this is what
+    // `wss://[fd00::1]:9444` arrives as.
+    final groups = host.split(':');
+    // Two colons minimum — the shortest IPv6 literal there is, `::`. One colon
+    // is a name with a stray separator, which `a:b` measured.
+    if (groups.length < 3) return false;
+    return groups.every((group) =>
+        group.isEmpty ||
+        (group.length <= 4 && group.codeUnits.every(_isHexDigit)));
+  }
   final parts = host.split('.');
   if (parts.length != 4) return false;
   for (final part in parts) {
     if (part.isEmpty || part.length > 3) return false;
-    final value = int.tryParse(part);
-    if (value == null || value < 0 || value > 255) return false;
+    // Digits and nothing else. `int.tryParse` is not this: it takes `+4`, and
+    // with no radix it takes `0x1` as well, so `0x1.2.3.4` read as an address
+    // and the SAN hint stayed quiet on a host the OS calls a name.
+    if (!part.codeUnits.every(_isAsciiDigit)) return false;
+    if (int.parse(part) > 255) return false;
   }
   return true;
 }
+
+bool _isAsciiDigit(int code) => code >= 0x30 && code <= 0x39;
+
+bool _isHexDigit(int code) =>
+    _isAsciiDigit(code) ||
+    (code >= 0x41 && code <= 0x46) ||
+    (code >= 0x61 && code <= 0x66);
