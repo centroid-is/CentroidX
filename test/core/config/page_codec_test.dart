@@ -104,6 +104,27 @@ const String _fixtureBlob = '''
 
 void main() {
   final realBlobPath = Platform.environment[_realBlobEnv];
+
+  // The cutover gate must not be satisfiable by running nothing.
+  //
+  // Falling back to the committed fixture is right for everyday work, and
+  // wrong for the one question the cutover asks: *has this suite run green
+  // against current production data?* Without this guard that question is
+  // answered green by a run that never opened a dump — the same vacuous-pass
+  // defect `scripts/check-preferences-construction.sh` is armed against, and
+  // the same one that script's header calls "the invariant that will rot
+  // silently".
+  //
+  // Set CENTROIDX_REQUIRE_REAL_BLOB=1 in the cutover runbook. The group name
+  // below prints the source, so the runbook can require the line naming the
+  // dump file as its evidence.
+  if (Platform.environment['CENTROIDX_REQUIRE_REAL_BLOB'] == '1' &&
+      realBlobPath == null) {
+    throw StateError('CENTROIDX_REQUIRE_REAL_BLOB=1 but $_realBlobEnv is not '
+        'set: this run would have passed against the committed fixture and '
+        'proved nothing about production data.');
+  }
+
   final blob = realBlobPath != null
       ? File(realBlobPath).readAsStringSync()
       : _fixtureBlob;

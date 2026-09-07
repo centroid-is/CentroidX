@@ -113,6 +113,18 @@ const String _fixtureBlob = '''
 
 void main() {
   final realBlobPath = Platform.environment[_realBlobEnv];
+
+  // See the same guard in `test/core/config/page_codec_test.dart`: the
+  // cutover gate asks whether this suite ran green against *current
+  // production data*, and a fixture fallback answers that green having opened
+  // no dump at all.
+  if (Platform.environment['CENTROIDX_REQUIRE_REAL_BLOB'] == '1' &&
+      realBlobPath == null) {
+    throw StateError('CENTROIDX_REQUIRE_REAL_BLOB=1 but $_realBlobEnv is not '
+        'set: this run would have passed against the committed fixture and '
+        'proved nothing about production data.');
+  }
+
   final blob = realBlobPath != null
       ? File(realBlobPath).readAsStringSync()
       : _fixtureBlob;
