@@ -61,9 +61,11 @@ abstract final class HarnessErrorCodes {
   /// the client, so a refusal is the **same type** on both legs — the property
   /// D-09 requires ("one exception type, so a screen cannot tell which
   /// transport refused it"). The harness mints its own number rather than
-  /// importing `tfc_relay_server`'s `ServerErrorCodes.forbidden`: this kit may
-  /// not depend on the server, and the number only has to be stable across this
-  /// one channel. The **domain** refusals — a bound template, the last
+  /// importing the gateway's `forbidden` code: this kit may not depend on the
+  /// gateway package (`handler_table_test` requires this name to appear zero
+  /// times in its production lib, and the reverse edge is equally forbidden),
+  /// and the number only has to be stable across this one channel. The
+  /// **domain** refusals — a bound template, the last
   /// users-holder, a bad config — travel as [subApiFailed] instead, because
   /// they are deliberately NOT authorisation verdicts and the contract asserts
   /// they arrive as something other than an AccessDenied.
