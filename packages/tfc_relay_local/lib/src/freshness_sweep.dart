@@ -103,22 +103,21 @@ final class FreshnessSweep {
   /// hand it — see the library doc's fourth property.
   final int Function() _elapsedMs;
 
-  /// The floor under [intervalFor].
+  /// The floor under [intervalFor]. [minimumFreshnessInterval], under this
+  /// object's own name.
   ///
   /// An implausibly short deadline out of a configuration file must not turn
   /// the sweep into a busy loop on the one isolate serving every client.
-  static const Duration minimumInterval = Duration(milliseconds: 5);
+  static const Duration minimumInterval = minimumFreshnessInterval;
 
-  /// A quarter of the deadline, floored.
+  /// A quarter of the deadline, floored — [freshnessIntervalFor].
   ///
-  /// A value is then reported stale within 125% of its deadline rather than
-  /// within 200% — `fake_state_man.dart:200-213`'s arithmetic and its reason:
-  /// the margin between those two numbers is what keeps a freshness case green
-  /// on a loaded machine.
-  static Duration intervalFor(Duration staleAfter) {
-    final quarter = staleAfter ~/ 4;
-    return quarter < minimumInterval ? minimumInterval : quarter;
-  }
+  /// The arithmetic lives in `tfc_relay_protocol` because the backend's
+  /// `BackendFreshnessSweep` needs the same answer and used to reach it by
+  /// carrying the same four lines. The reasoning is in that file's library doc.
+  /// Kept as a static member here because callers and cases name it.
+  static Duration intervalFor(Duration staleAfter) =>
+      freshnessIntervalFor(staleAfter);
 
   /// This sweep's cadence.
   Duration get interval => intervalFor(staleAfter);
@@ -198,18 +197,25 @@ final class FreshnessSweep {
           ? cached.copyWith(quality: Quality.badStale)
           : cached;
 
-  bool _isStale(String key, DynamicValue cached, int nowMs) {
-    if (PipeKeys.isPipeKey(key)) return false;
-    final arrived = _lastArrival[key];
-    if (arrived == null) return false;
-    // Two readings of a monotonic counter. The subtraction that used to be
-    // here took two `DateTime.now()` readings, and a backwards NTP step made
-    // it negative for every key at once — the sweep then degraded nothing and
-    // the whole plant read fresh (08-REVIEW CR-02).
-    if (nowMs - arrived < staleAfter.inMilliseconds) return false;
-    if (Quality.badStale.band <= cached.quality.band) return false;
-    return true;
-  }
+  /// The shared predicate, with this sweep's alarm policy stated.
+  ///
+  /// **`skipAlarmKeys: false`, and that is a decision rather than an
+  /// omission.** The backend's sweep passes `true` because that is where the
+  /// `AlarmEngine` publishes; nothing writes an `ALARM.*` key into *this*
+  /// store — this package references `AlarmKeys` nowhere, and [_lastArrival] is
+  /// written in one place (`local_state_man.dart`'s `applyUpstreamBatch`) and
+  /// therefore only for keys that genuinely arrived from an upstream link. A
+  /// key named `ALARM.*` in a gateway keymapping is an ordinary plant tag with
+  /// an unfortunate name, and staling it is correct. The argument is required
+  /// so the two sides can be compared by reading them.
+  bool _isStale(String key, DynamicValue cached, int nowMs) => isStaleNow(
+        key: key,
+        quality: cached.quality,
+        lastHeardMs: _lastArrival[key],
+        nowMs: nowMs,
+        staleAfter: staleAfter,
+        skipAlarmKeys: false,
+      );
 
   /// Teardown. A timer that outlives its source keeps the isolate alive and
   /// keeps sweeping a store nobody is watching, so a leak in one case surfaces

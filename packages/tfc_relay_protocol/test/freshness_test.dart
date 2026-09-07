@@ -95,7 +95,11 @@ void main() {
       // `uncertainNotYetKnown` and `badStale` are different statements, and
       // the second implies the first was once true. Nothing has ever arrived
       // for this key, so there is no silence to notice.
-      expect(stale(lastHeardMs: null, nowMs: 1 << 40), isFalse);
+      // A day of elapsed time, written as a decimal and not as a shift: this
+      // package's other web arm exists because a `<<` that is 48 bits wide on
+      // the VM is 32 bits wide under dart2js (18-01), and a fixture built from
+      // one is a fixture that means something different per target.
+      expect(stale(lastHeardMs: null, nowMs: 86400000), isFalse);
     });
 
     test('the sweep only ever degrades: already badStale stages nothing', () {

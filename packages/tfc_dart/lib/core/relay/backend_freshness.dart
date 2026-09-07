@@ -168,13 +168,15 @@ final class BackendFreshnessSweep implements BackendValueSource {
   /// This sweep's cadence. See [intervalFor] for how it was chosen.
   final Duration interval;
 
-  /// The floor under [intervalFor].
+  /// The floor under [intervalFor]. [relay.minimumFreshnessInterval], under
+  /// this object's own name.
   ///
   /// An implausibly short deadline out of a configuration file must not turn
   /// the sweep into a busy loop on the one isolate serving every client.
-  static const Duration minimumInterval = Duration(milliseconds: 5);
+  static const Duration minimumInterval = relay.minimumFreshnessInterval;
 
-  /// A quarter of the deadline, floored at [minimumInterval].
+  /// A quarter of the deadline, floored at [minimumInterval] —
+  /// [relay.freshnessIntervalFor].
   ///
   /// **The interval is chosen deliberately and the reasoning is this**, because
   /// it is two costs pulling against each other. It bounds how late a stale
@@ -187,11 +189,12 @@ final class BackendFreshnessSweep implements BackendValueSource {
   /// comparison, and stages nothing at all unless something has actually gone
   /// quiet (rule 1). A quarter is the same arithmetic the gateway's
   /// `FreshnessSweep.intervalFor` settled on; the two sides of the pipe having
-  /// one answer is worth more here than a second opinion.
-  static Duration intervalFor(Duration staleAfter) {
-    final quarter = staleAfter ~/ 4;
-    return quarter < minimumInterval ? minimumInterval : quarter;
-  }
+  /// one answer is worth more here than a second opinion — which is why the
+  /// arithmetic now lives in `tfc_relay_protocol`, below both, instead of being
+  /// carried twice with a comment promising the two would stay in step. Kept as
+  /// a static member because callers and cases name it.
+  static Duration intervalFor(Duration staleAfter) =>
+      relay.freshnessIntervalFor(staleAfter);
 
   /// The clock. A named field, so `freeze_test.dart`-style timer scans can see
   /// exactly one of them in this file.
@@ -350,17 +353,25 @@ final class BackendFreshnessSweep implements BackendValueSource {
     final stale = <String>[];
     for (final entry in _watched.entries) {
       final key = entry.key;
-      // Additive, never a replacement: `PIPE.` stays excluded. See rule 2 for
-      // why alarm keys are a second reason and not the same one.
-      if (relay.PipeKeys.isPipeKey(key)) continue;
-      if (relay.AlarmKeys.isAlarmKey(key)) continue;
-      final heard = _lastHeard[key];
-      if (heard == null) continue;
-      // Two readings of one monotonic counter. The subtraction that used to be
-      // here elsewhere took two wall-clock readings, and a backwards NTP step
-      // made it negative for every key at once.
-      if (now - heard < staleAfter.inMilliseconds) continue;
-      if (relay.Quality.badStale.band <= entry.value.value.quality.band) {
+      // The four conditions are `relay.isStaleNow`, shared with the gateway's
+      // `FreshnessSweep` so neither side can be corrected without the other.
+      //
+      // `skipAlarmKeys: true`, stated rather than defaulted. This is the one
+      // place the two sweeps genuinely differ: the gateway passes `false`
+      // because no alarm producer writes into its store, and this side passes
+      // `true` because `AlarmEngine` publishes into the pipe store underneath
+      // it. The argument is required precisely so that difference is two call
+      // sites a reader can compare instead of a missing line in one file. See
+      // rule 2 for why alarm keys are a second reason and not the same one as
+      // `PIPE.`, and the kernel's library doc for both at length.
+      if (!relay.isStaleNow(
+        key: key,
+        quality: entry.value.value.quality,
+        lastHeardMs: _lastHeard[key],
+        nowMs: now,
+        staleAfter: staleAfter,
+        skipAlarmKeys: true,
+      )) {
         continue;
       }
       stale.add(key);
