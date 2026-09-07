@@ -208,10 +208,14 @@ class _KeyMappingSync {
   /// a second read of the change log.
   Future<void> _reconcile() async {
     try {
-      // Read first, and before the revisions. Anything that commits after this
-      // is either caught by the revision read below or is a change row above
-      // this id, which the fast path will consume — advancing past a row that
-      // committed between the two reads is the one way this could lose work.
+      // Read first, and before the revisions, which narrows one window as far
+      // as two statements can: a transaction that commits between these two
+      // reads is seen by the revision read below. What is left is a row that
+      // took an id below this maximum and commits after the revision read —
+      // and that row is invisible to the watermark and to this sweep both.
+      // The **next** sweep catches it, which is why the net is periodic rather
+      // than something that runs once at attach: five minutes is the stated
+      // worst case, not an accident.
       final advanceTo = await _maxChangeId();
 
       final revs = await _remoteRevisions();
