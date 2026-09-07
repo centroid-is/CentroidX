@@ -16,11 +16,12 @@
 /// (`packages/tfc_stateman_contract/test/api_surface_test.dart:34,177`), and
 /// mirrors are available because both packages are pure Dart under `dart test`.
 ///
-/// On the arithmetic: `StateManApi` declares **14** members. Thirteen of them
-/// refuse — nine calls plus the four sub-interface getters — and `dispose` does
-/// not, because disposing something that was never composed is a no-op and
-/// contract cases register it with `addTearDown`. The mirror arm below is the
-/// statement of that count that cannot drift.
+/// On the arithmetic: `StateManApi` declares **18** members. Seventeen of them
+/// refuse — nine calls plus the four data-service sub-interface getters plus
+/// the four access families plan 17-03 added — and `dispose` does not, because
+/// disposing something that was never composed is a no-op and contract cases
+/// register it with `addTearDown`. The mirror arm below is the statement of
+/// that count that cannot drift.
 library;
 
 import 'dart:mirrors';
@@ -93,6 +94,27 @@ final Map<String, Refusal> refusals = <String, Refusal>{
   'preferences': (
     collaborator: 'PreferencesApi',
     invoke: (s) async => s.preferences,
+  ),
+  // The four access families (17-03). They join the roster on exactly the
+  // argument the nine above joined it on: this adapter was composed without an
+  // access store, and an `AuditApi` that answered "no entries" would be a claim
+  // about a trail it has never read. 17-06 gives them collaborators; until then
+  // each is one more constructor argument that is null.
+  'accessTemplates': (
+    collaborator: 'AccessTemplateApi',
+    invoke: (s) async => s.accessTemplates,
+  ),
+  'accessAdmin': (
+    collaborator: 'AccessAdminApi',
+    invoke: (s) async => s.accessAdmin,
+  ),
+  'audit': (
+    collaborator: 'AuditApi',
+    invoke: (s) async => s.audit,
+  ),
+  'backendConfig': (
+    collaborator: 'BackendConfigApi',
+    invoke: (s) async => s.backendConfig,
   ),
 };
 
@@ -204,10 +226,12 @@ void main() {
       expect(covered.difference(declared), isEmpty,
           reason: 'the roster names something StateManApi no longer declares; '
               'a stale entry makes the count above meaningless');
-      expect(declared, hasLength(14),
-          reason: 'thirteen members refuse and dispose does not; if this '
+      expect(declared, hasLength(18),
+          reason: 'seventeen members refuse and dispose does not; if this '
               'number moved, the interface grew and somebody owes the new '
-              'member a decision');
+              'member a decision. It moved from 14 to 18 when plan 17-03 added '
+              'the four access families, and the four decisions are recorded '
+              'in the roster above');
     });
   });
 }
