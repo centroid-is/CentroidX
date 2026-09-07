@@ -108,8 +108,35 @@ int? _handleKey(Object? raw) =>
 /// Decodes a `subscribe` result into [DecodedSubscribeResult].
 ///
 /// Throws [FormatException] when [raw] is not a JSON object. Everything
-/// narrower than that — an unmapped handle, a rejected key, a poison number —
-/// is recorded and the call still succeeds.
+/// narrower than that — an unmapped handle, a rejected key, a poison number,
+/// **an entry of the wrong shape** — is recorded and the call still succeeds.
+///
+/// **Why per entry, and not per response** (WSH-08). `resync_engine.dart:62-65`
+/// states the promise this file is the last holdout of: *"a page carries ~1500
+/// hand-edited keys and one typo must cost one tag"*. `_recover` keeps it,
+/// `RemoteStateMan._answerFor` keeps it, and [byKey] below already kept it for
+/// an unannounced handle — but the entry *decoders* did not, so one snapshot
+/// value that was not a JSON object, or one `rejected` entry with no string
+/// `kind`, threw out of the whole call. Reached from `ResyncEngine.onHello`,
+/// which every reconnect performs, that throw becomes
+/// `_resubscribeAll`'s rethrow → `_down` → backoff → redial → the same
+/// poisoned snapshot: a permanent reconnect loop from one bad entry, against
+/// a snapshot no amount of waiting changes.
+///
+/// **A structurally undecodable response still throws, and still reaches that
+/// roll-back.** The distinction is the whole design: a bad *entry* is a data
+/// problem, and the page is worth having without it; a response that is not a
+/// JSON object at all is a *peer* problem, and a client that shrugged and
+/// carried on would be running on an empty page it believes is a snapshot.
+/// `poisoned_snapshot_test.dart`'s fifth arm is the pin on that line.
+///
+/// **Complaints name the handle, the key and the failure's type — never the
+/// exception's message.** A `stopReason`-style rule: this text reaches a panel
+/// standing where anybody can read it, and the message of an exception thrown
+/// while decoding gateway-supplied data can carry gateway-supplied strings of
+/// unbounded length. The type is the diagnostic that matters anyway —
+/// `FormatException` is "not an object", a `TypeError` is "a field of the
+/// wrong type".
 DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
   final json = _asJson(raw);
 
@@ -142,8 +169,25 @@ DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
   }
 
   /// Re-keys a handle-keyed wire map to tag names, complaining about entries
-  /// that name a handle nobody announced.
-  Map<String, T> byKey<T>(Object? wire, String what, T Function(Object?) decode) {
+  /// that name a handle nobody announced — and about entries whose own decode
+  /// refuses them.
+  ///
+  /// **The try is inside the loop, per entry**, and that is the whole point: a
+  /// single try around the loop is the behaviour this change replaced, at a
+  /// finer grain, because the first bad entry would still take every entry
+  /// after it.
+  ///
+  /// A bare `catch`, so `Error` subtypes are caught too. That is deliberate
+  /// and it is the opposite of `failure_taxonomy.dart`'s rule, for a reason
+  /// that survives the difference: there, an `Error` escaping means *this
+  /// client* has a bug worth surfacing; here, the cast that failed was applied
+  /// to a peer's data, so a `TypeError` is a statement about the gateway and
+  /// not about us.
+  Map<String, T> byKey<T>(
+    Object? wire,
+    String what,
+    T Function(int handle, String key, Object? value) decode,
+  ) {
     final out = <String, T>{};
     if (wire is! Map) return out;
     for (final entry in wire.entries) {
@@ -154,21 +198,44 @@ DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
             'key and was dropped rather than filed under a guess');
         continue;
       }
-      out[key] = decode(entry.value);
+      try {
+        out[key] = decode(handle!, key, entry.value);
+      } catch (error) {
+        complaints.add('$what entry for handle $handle ("$key") could not be '
+            'decoded (${error.runtimeType}) and was dropped. One typo costs '
+            'one tag, not the page');
+      }
     }
     return out;
   }
 
-  final values = byKey(snapshot, 'snapshot', (v) {
+  final values = byKey(snapshot, 'snapshot', (handle, key, v) {
+    // `_asJson` first, and inside the per-entry try: a bare number where
+    // `{"v": …}` belongs is the shape that used to end the whole decode.
+    final wire = _asJson(v);
+
+    // The timestamp lane says so separately, because its outcome is not a
+    // dropped entry. `WireValue` treats a `t` outside `DateTime`'s range as
+    // absent rather than fatal (WSH-08) — the right value and the wrong
+    // silence, since a reading whose source time was discarded can no longer
+    // be aged by anything downstream. This is the only place that knows both
+    // that it happened and which handle it happened to.
+    final t = wire['t'];
+    if (t != null && !isRepresentableEpochMs(t)) {
+      complaints.add('snapshot entry for handle $handle ("$key") carried a '
+          'source timestamp outside the range DateTime can represent and was '
+          'adopted without one; its freshness cannot be computed');
+    }
+
     // `WireValue.fromJson` sanitizes the value and composes
     // `Quality.badNonFinite` over `Quality.fromWire`'s clamp, so neither the
     // poison nor an out-of-band code is range-checked by hand here.
     // `toDynamicValue` carries the source timestamp across; building the
     // `DynamicValue` by hand here is how it used to get dropped.
-    return WireValue.fromJson(_asJson(v)).toDynamicValue();
+    return WireValue.fromJson(wire).toDynamicValue();
   });
 
-  final meta = byKey<Object?>(envelope['meta'], 'meta', (v) => v);
+  final meta = byKey<Object?>(envelope['meta'], 'meta', (_, __, v) => v);
 
   // Absent, null and `{}` all mean the same thing: nothing was rejected.
   // Finding 7 observed the live server omitting the field entirely.
@@ -176,7 +243,20 @@ DecodedSubscribeResult decodeSubscribeResult(Object? raw) {
   final rejected = <String, KeyReject>{};
   if (wireRejected is Map) {
     for (final entry in wireRejected.entries) {
-      rejected['${entry.key}'] = KeyReject.fromJson(_asJson(entry.value));
+      final key = '${entry.key}';
+      // Its own try, and its own lane. `KeyReject.fromJson` casts
+      // `json['kind'] as String` (`messages.dart:272`), so a rejection with no
+      // `kind` — or a non-string one — threw a `TypeError` out of a decode
+      // that had already finished the entire snapshot. The gateway is telling
+      // the panel that this key is unusable; losing the other 1499 keys over
+      // how it phrased that is the disproportion this whole change is about.
+      try {
+        rejected[key] = KeyReject.fromJson(_asJson(entry.value));
+      } catch (error) {
+        complaints.add('rejected entry for "$key" could not be decoded '
+            '(${error.runtimeType}) and was dropped. The gateway refused the '
+            'key but did not say how, so treat the key as unusable');
+      }
     }
   }
 
