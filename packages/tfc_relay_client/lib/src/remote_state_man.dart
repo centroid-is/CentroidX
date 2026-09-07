@@ -775,7 +775,32 @@ final class RemoteStateMan implements StateManApi {
           _writesSent++;
         },
       );
-      result = WriteResult.fromJson(_asJson(raw));
+      // **Sanitized like every other ingress, and this was the one that was
+      // not** (16-04 S8). The hello result, `u`, `tick`, `resync`, `status`
+      // and the preference notifications all decode through
+      // `_asJson(sanitize(...).value)` in `connection_supervisor.dart`; this —
+      // the one message an operator's finger is waiting on — decoded straight
+      // out of `_asJson(raw)`.
+      //
+      // What that admitted: `"at": 1e999` decodes to `Infinity` in silence
+      // (that is the whole reason F28's sanitization exists), `at is num`
+      // accepts it because `Infinity` is a `num`, and `at.toInt()` throws
+      // `UnsupportedError`. The taxonomy below rethrows every `Error` on
+      // purpose — a defect in this process must never be reported to an
+      // operator as a condition of the plant — so the throw escaped `write`,
+      // which had promised an outcome and never an exception.
+      //
+      // Sanitized it becomes null, `at is num` is false, and
+      // `WriteResult.fromJson` answers `WriteUnknown` under
+      // `malformed_result:applied` — its own existing verdict for an applied
+      // answer with no legible instant on it, on the stated grounds that half
+      // an audit record is not proof of application. That leaves the command
+      // in [_unresolved] and therefore re-queryable, which is the one property
+      // an unreadable answer must not cost.
+      //
+      // It covers the `readback` too, and by the same rule as everywhere else:
+      // a non-finite reading is not a number this panel may put on a mimic.
+      result = WriteResult.fromJson(_asJson(sanitize(raw).value));
     } catch (error) {
       // One seam decides whether this means "we do not know" or "the server
       // said no", and it rethrows anything that is a defect in this process
@@ -845,22 +870,111 @@ final class RemoteStateMan implements StateManApi {
   ///
   /// The push that follows carries the same reading, so `applyBatch`'s equality
   /// guard makes it free: one notification for one write, not two.
+  ///
+  /// **Two things it refuses to adopt, and it is total over both** (16-04).
+  /// A readback is a confirmation about *an instant*, and this is the one place
+  /// that instant is in hand next to the instant already on the page. Neither
+  /// check belongs in [ValueStore.applyBatch]: a `seq`-less batch is also how a
+  /// **snapshot** is applied, and a snapshot legitimately carries stamps older
+  /// than the cache when the plant is quiet — a store that refused older values
+  /// outright would refuse the recovery path this whole client resyncs through.
+  ///
+  /// Neither refusal throws, and that is the second half of the fix. This is
+  /// called from `_write` *after* the command has been struck from
+  /// [_unresolved] and *outside* the try that would have turned a failure into
+  /// an outcome, so anything thrown here escapes `write` — the operator is
+  /// shown an error for a write that landed and was read back, about a command
+  /// nothing will re-query. An operator shown a failure for a write that
+  /// succeeded is an invitation to re-actuate.
   void _adoptReadback(String key, WriteResult result) {
     if (_disposed) return;
     if (result is! WriteApplied) return;
+
+    // **S8: a stamp that is not an instant.** `1e17` ms is finite, so nothing
+    // upstream of here refuses it — an unset RTC or a microsecond/millisecond
+    // unit confusion produces exactly this — and
+    // `DateTime.fromMillisecondsSinceEpoch` throws `RangeError` outside
+    // ±[_representableMs]. The outcome itself is untouched: the gateway
+    // established `applied` and named the readback the device reported
+    // holding, and refusing to *stamp the page* is not grounds to unsay that.
+    // Reporting unknown here would send a fitter out to look at a machine that
+    // already reported back, which is how a plant learns to ignore the word.
+    if (result.at.abs() > _representableMs) {
+      _declineReadback(
+          key,
+          'the gateway stamped it ${result.at} ms from the epoch, which is not '
+          'an instant this panel can represent — the write itself stands as '
+          'applied, but nothing here can say when');
+      return;
+    }
+    // `at` is epoch milliseconds on the wire; UTC here for the same reason
+    // `WireValue.toDynamicValue` uses it — a local-time stamp would be compared
+    // against gateway stamps that are not.
+    final stamp = DateTime.fromMillisecondsSinceEpoch(result.at, isUtc: true);
+
+    // **S3: a readback older than what is already on the page.** A write is
+    // dispatched at t0 and its answer lost; the tag moves to something else at
+    // t1 > t0 while the panel is dark; the resync lands that, correctly; and
+    // then the reconnect's `writeStatus` re-query answers `applied` with the
+    // t0 readback. Adopting it puts a superseded reading back on the mimic
+    // under [Quality.good] — and the gateway conflates, so it will not re-push
+    // the truth unless the tag changes again. On a quiet plant the wrong
+    // number stands for the rest of the shift, wearing the one badge that says
+    // it can be acted on.
+    //
+    // Strictly older, not "not newer": the ordinary race this method exists
+    // for is the RPC answer beating a tick-quantised push carrying the same
+    // reading, and those share an instant. Refusing an equal stamp would put
+    // the pending badge back for a whole tick on every write.
+    //
+    // A cached value with no stamp at all is adopted onto, because there is
+    // nothing to compare and inventing an ordering would be worse than the
+    // race: it would silently stop confirming writes on every source that does
+    // not report source times.
+    final store = _storeOf(key);
+    final cached = store.peek(key)?.sourceTime;
+    if (cached != null && stamp.isBefore(cached)) {
+      _declineReadback(
+          key,
+          'it is stamped $stamp and the reading already on the page is stamped '
+          '$cached, so adopting it would put a superseded value back under '
+          'good quality — and a conflating gateway would not correct it until '
+          'the tag next moves');
+      return;
+    }
+
     // A clamped write reports what the device took; an unclamped one reports
     // the value back unchanged. Both are the device's word, and both clear the
     // pending badge that the write itself put on.
-    _storeOf(key).applyBatch({
+    store.applyBatch({
       key: DynamicValue(
         value: result.readback,
         quality: Quality.good,
-        // `at` is epoch milliseconds on the wire; UTC here for the same reason
-        // `WireValue.toDynamicValue` uses it — a local-time stamp would be
-        // compared against gateway stamps that are not.
-        sourceTime: DateTime.fromMillisecondsSinceEpoch(result.at, isUtc: true),
+        sourceTime: stamp,
       ),
     });
+  }
+
+  /// The widest instant `DateTime.fromMillisecondsSinceEpoch` accepts, either
+  /// side of the epoch. Named rather than inlined so the range check and the
+  /// constructor it protects cannot drift apart silently.
+  static const int _representableMs = 8640000000000000;
+
+  /// Records a readback this client would not put on the page.
+  ///
+  /// **Never silent.** A readback dropped without a trace is a gateway clock
+  /// skew nobody can diagnose from a panel: the number on the mimic is simply
+  /// right, and the operator's write confirmation simply never appears. It goes
+  /// on the same surface [_answerFor] records a misaligned `writeStatus` entry
+  /// on — the one the panel puts in front of an engineer — and it names the tag,
+  /// because a refusal that does not say what it refused is one nobody can act
+  /// on.
+  ///
+  /// Never thrown, for [complaints]' own stated reason: a page carries ~1500
+  /// hand-edited keys and one bad answer must cost one tag.
+  void _declineReadback(String key, String why) {
+    _supervisor.resync.complaints
+        .add('the write readback for "$key" was not put on the page: $why');
   }
 
   // `_markNonFinite` lived here: it stamped [Quality.badNonFinite] on a key

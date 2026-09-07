@@ -269,13 +269,20 @@ void main() {
               'is shown a figure wearing the one badge that says it can be '
               'acted on. Refusing the readback has to leave the last confirmed '
               'reading exactly as it was, badge included');
-      expect(now?.sourceTime, movedAt,
+      // Against what the *resync* established rather than against [movedAt]
+      // itself: `DynamicValue.toJson` puts `millisecondsSinceEpoch` on the
+      // wire, so the microseconds `DateTime.now()` gives the plant are gone by
+      // the time the page has it, and comparing the two is a test that can
+      // never pass for a reason that has nothing to do with the client.
+      expect(now?.sourceTime, resynced.sourceTime,
           reason: 'the page shows source time ${now?.sourceTime} against the '
-              '$movedAt the plant stamped. A value whose stamp walked '
-              'backwards is one every downstream age calculation — the '
-              'freshness badge, the trend, the alarm dwell — now computes from '
-              'the wrong instant, and it is the half of this defect that '
-              'survives even when the two values happen to be equal');
+              '${resynced.sourceTime} the resync established (the plant '
+              'stamped $movedAt, to the millisecond the wire carries). A value '
+              'whose stamp walked backwards is one every downstream age '
+              'calculation — the freshness badge, the trend, the alarm dwell — '
+              'now computes from the wrong instant, and it is the half of this '
+              'defect that survives even when the two values happen to be '
+              'equal');
       expect(fixture.client.complaints, isNotEmpty,
           reason: 'the client refused the readback and said nothing about it. '
               'A silent decline is a gateway clock skew nobody can diagnose '
