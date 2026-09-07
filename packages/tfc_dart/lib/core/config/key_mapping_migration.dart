@@ -172,7 +172,15 @@ Future<MigrationOutcome> migrateKeyMappingsBlobToRows(Database remote) async {
     // protected by it, including the idempotency gate: a gate read outside the
     // lock is a race with the station that is mid-copy.
     final lock = await db.customSelect(
-      r'SELECT pg_try_advisory_xact_lock($1, $2) AS got',
+      // `::int4` on both placeholders, and not decoration: drift binds every
+      // Dart `int` as `bigint`, and the two-argument advisory-lock functions
+      // are declared `(int4, int4)` — the one-argument form is the only
+      // `bigint` one. Without the casts Postgres answers `42883: function
+      // pg_try_advisory_xact_lock(bigint, bigint) does not exist` and the
+      // migration fails at the first statement of the transaction, on a
+      // station, where nothing else would have caught it. Both constants are
+      // well inside int4 for the same reason.
+      r'SELECT pg_try_advisory_xact_lock($1::int4, $2::int4) AS got',
       variables: [
         Variable.withInt(kConfigLockNamespace),
         Variable.withInt(kKeyMappingMigrationLock),
