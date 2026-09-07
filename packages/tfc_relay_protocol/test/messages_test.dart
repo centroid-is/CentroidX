@@ -232,6 +232,87 @@ void main() {
             'this frame');
   });
 
+  // --- the session-resume withdrawal (16-11, HARD-03) -----------------------
+  //
+  // Session resume was withdrawn rather than implemented: honouring it meant
+  // the gateway retaining per-session subscription state across a socket loss
+  // and replaying from a per-subscription `lastSeq`, which is delta replay, and
+  // CLAUDE.md's doctrine is "resync = snapshot, never delta replay". The
+  // reasoning is in 16-CONTEXT.md. What is left behind is a compatibility
+  // question in two directions, and these two arms are the two directions.
+
+  /// A hello result frame, with the `session` map spliced in as raw JSON text.
+  ///
+  /// Text rather than a `HelloResult` built by the constructor, because the
+  /// whole point of both arms below is a frame this build would not itself
+  /// produce — one from the other side of a version skew. A fixture that could
+  /// only express what the current encoder emits could not ask the question.
+  HelloResult withSession(String sessionJson) =>
+      HelloResult.fromJson((jsonDecode('{'
+                  '"protocol":"$protocolVersion",'
+                  '"server":{"name":"tfc-relay","version":"0.1.0"},'
+                  '"session":$sessionJson,'
+                  '"clock":{"serverTime":1786000000123}}') as Map)
+          .cast<String, Object?>());
+
+  test('a hello result that still carries `resumed` decodes, and the field is '
+      'ignored', () {
+    // The backwards direction: a gateway that predates the withdrawal, or a
+    // capture replayed from one, still hands this build a frame with the key
+    // in it. The library's rule is that decoders read known keys and ignore
+    // everything else, so this must be an unremarkable decode — not an error,
+    // and not a value anybody can act on.
+    final r = withSession('{"id":"sid","epoch":"e1","resumed":true}');
+
+    expect(r.sessionId, 'sid');
+    expect(r.epoch, 'e1',
+        reason: 'the epoch is what the client feeds to ResyncEngine.onHello; a '
+            'frame carrying a withdrawn key must still deliver it');
+
+    expect(r.serverTime, 1786000000123,
+        reason: 'the whole frame decodes, not just the part before the '
+            'withdrawn key');
+  });
+
+  test('a decoded `resumed` is not laundered back onto the wire', () {
+    // Separate from the arm above on purpose. That one is about *tolerance* —
+    // this build accepting an old frame — and it is green on both sides of the
+    // withdrawal. This one is about the *emit*, and it is the arm that the
+    // deletion turns green. Asserting both in one case would leave a failure
+    // unable to say which of the two properties broke.
+    //
+    // `resumed: true` is the dangerous value: a client that believed it would
+    // keep a cache the gateway cannot honour and show stale plant data under a
+    // link that looks healthy. Re-emitting it after decoding would launder a
+    // stale promise from a build that predates the withdrawal into one that
+    // appears to make it — worse than the field ever was, because the second
+    // gateway looks like it means it.
+    final r = withSession('{"id":"sid","epoch":"e1","resumed":true}');
+
+    expect(jsonEncode(r.toJson()), isNot(contains('resumed')),
+        reason: 'the withdrawn key survived a decode/encode hop. Nothing in '
+            'this build can produce a truthful value for it, so anything it '
+            'emits is a guess wearing a protocol field');
+  });
+
+  test('a hello result with no `resumed` decodes', () {
+    // The forwards direction, and the one that was broken. The decoder read
+    // `session['resumed'] as bool`, which throws on absence — so the moment
+    // anything stopped emitting the key, every panel with the old decoder
+    // failed its handshake with a cast error and no diagnosis. The tolerance
+    // has to land before the emit is removed, not with it, which is why this
+    // arm exists on its own rather than as a corollary of the deletion.
+    final r = withSession('{"id":"sid","epoch":"e1"}');
+
+    expect(r.sessionId, 'sid');
+    expect(r.epoch, 'e1',
+        reason: 'this is the frame this build now emits. If it cannot be '
+            'decoded, the gateway cannot talk to itself');
+    expect(r.serverTime, 1786000000123,
+        reason: 'a decode that threw partway would take the clock offset with '
+            'it, and staleness is measured against that offset');
+  });
+
   test('SubscribeResult: handles, snapshot, meta, and per-key rejection', () {
     final result = SubscribeResult(
       sub: 's1',
