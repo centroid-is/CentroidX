@@ -147,10 +147,32 @@ The store can hand it that diff directly instead of having it recomputed
 from two full blobs.
 
 `AppDatabase` already runs the same generated schema on either backend
-(`database_drift.dart:725`, `bool get native => executor is NativeDatabase`),
-`AppDatabase.create` already accepts a `sqliteFolder`, and
-`sqlite3_flutter_libs` is already in `pubspec.lock` — so a local SQLite
-store ships on Windows and elinux with no new native-assets story.
+(`database_drift.dart:725`, `bool get native => executor is NativeDatabase`)
+and `AppDatabase.create` already accepts a `sqliteFolder` (which has zero
+callers today).
+
+**Correction, 2026-09-07.** An earlier draft of this section said
+`sqlite3_flutter_libs` being in `pubspec.lock` means the native library
+"ships on Windows and elinux with no new native-assets story". **That is
+false for eLinux, and unfixed it stops every station booting.**
+`sqlite3_flutter_libs` declares a `linux:` plugin with a `pluginClass`, i.e.
+the CMake plugin pipeline — and flutter-elinux does not run that pipeline.
+This repo already documents the exact failure at
+`docker/frontend/Dockerfile:119`: *"Download libpdfium.so (flutter-elinux
+skips the CMake FFI plugin pipeline)"*. pdfium is downloaded by hand for
+precisely this reason.
+
+The image installs the `sqlite3` apt package, which brings
+`libsqlite3.so.0` but not the unversioned `libsqlite3.so` that
+`package:sqlite3` opens. That is the same shape as the three symlink hacks
+already in the file for `libgio`, `libglib` and `libsecret`
+(`Dockerfile:95-97`), and the same principle the `libmpv2` comment states —
+on Linux these packages "bundle nothing; they expect the distro's".
+
+So the fix is known and cheap — a Dockerfile symlink plus a loader override
+in drift's `isolateSetup` — but it is **Phase 1 work with a station-boot
+blast radius**, not a free ride. It must be verified on the rig before the
+phase is called done.
 
 ---
 
