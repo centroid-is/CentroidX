@@ -218,6 +218,24 @@ void main() {
       expect(log.map((c) => c.who).toSet(), {'migration'});
     });
 
+    test('the marker is the last row the copy writes', () async {
+      await seedBlob(_blob);
+      expect(await runCopy(), MigrationOutcome.migrated);
+
+      // Insertion order, read straight off sqlite's rowid. Structurally the
+      // marker is the last statement of the copy body and the body runs inside
+      // one transaction, but "last" is the property every station's first
+      // sweep after the cutover depends on — 03-01's per-kind marker guard
+      // refuses page rows on a sweep that finds no marker — so it is asserted
+      // rather than left to the reader of the source.
+      final order = await db
+          .customSelect('SELECT id FROM config_item ORDER BY rowid')
+          .map((row) => row.read<String>('id'))
+          .get();
+      expect(order.last, _markerId);
+      expect(order, hasLength(5));
+    });
+
     test('the marker is written, and the source blob is left in place',
         () async {
       await seedBlob(_blob);
