@@ -121,9 +121,29 @@ final class ConnectSucceeded extends ConnectAttempt {
 /// is why it is a value the supervisor can count, back off from, and put on
 /// the health line.
 final class ConnectFailed extends ConnectAttempt {
-  ConnectFailed(this._ws, this.error, this.stackTrace);
+  ConnectFailed(this._ws, this.error, this.stackTrace,
+      {this.certificateUntrusted = false});
 
   final WebSocketChannel _ws;
+
+  /// Whether the dial failed because this panel would not trust what the
+  /// gateway presented.
+  ///
+  /// **Classified here on purpose** (16-07, WSH-14). The supervisor used to ask
+  /// `error is HandshakeException` itself, which cost it an
+  /// `import 'dart:io' show HandshakeException` for one exception type — and
+  /// the supervisor is the state machine a web build reuses through its own
+  /// `dial:` seam, so it would not compile there for that one line. This file
+  /// is already `dart:io`-only and says at length why (see the library doc):
+  /// a pinned dial has no other seam. So the platform-specific judgement lives
+  /// in the platform-specific place, which is exactly the split a web leg would
+  /// need, and the supervisor reads a `bool`.
+  ///
+  /// False by default, which is the honest answer for any [ConnectAttempt] a
+  /// harness builds by hand: an unknown failure is not a certificate failure,
+  /// and the health line that says "the gateway did not answer" is the one that
+  /// is right whenever this cannot be established.
+  final bool certificateUntrusted;
 
   /// What `ready` threw — a `WebSocketChannelException` wrapping the
   /// `SocketException` in the refused case. The operator-facing health line
@@ -181,10 +201,26 @@ Future<ConnectAttempt> connect(
     // its trace. Swallow that copy; the caller gets the one above.
     ws.stream.listen(null, onError: (Object _) {}, cancelOnError: true);
     unawaited(ws.sink.done.catchError((Object _) => null));
-    return ConnectFailed(ws, error, stack);
+    return ConnectFailed(ws, error, stack,
+        certificateUntrusted: _certificateWasRefused(error));
   }
   return ConnectSucceeded(ws, wsChannel(ws));
 }
+
+/// Whether [error] is this panel refusing the gateway's certificate.
+///
+/// One level of unwrapping, because that is where the exception is:
+/// `web_socket_channel` hands the failure over as a `WebSocketChannelException`
+/// with the real one in `.inner` (06-RESEARCH §A.3).
+///
+/// The type and nothing finer. *Which* certificate problem it was is
+/// deliberately not read here — see `ConnectionSupervisor._refusalReason`,
+/// which owns that argument: openssl volunteers a reason on Linux and Windows
+/// and says nothing on macOS, so a panel that named the fault would be silent
+/// on the desktops and confident on the eLinux screens for the same broken
+/// leaf.
+bool _certificateWasRefused(Object error) =>
+    error is WebSocketChannelException && error.inner is HandshakeException;
 
 /// Wraps [ws] as a channel of whole string messages.
 ///

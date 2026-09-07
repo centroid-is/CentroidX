@@ -54,17 +54,10 @@
 library;
 
 import 'dart:async';
-// For `HandshakeException` and nothing else: the one failure this file has to
-// name differently from the rest. `ws_transport.dart` is already `dart:io`-only
-// for the same underlying reason — a pinned dial has no other seam — so this
-// costs nothing that was not already spent.
-import 'dart:io' show HandshakeException;
 
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:stream_channel/stream_channel.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
-import 'package:web_socket_channel/web_socket_channel.dart'
-    show WebSocketChannelException;
 
 import 'backoff.dart';
 import 'client_config.dart';
@@ -468,8 +461,9 @@ final class ConnectionSupervisor {
     // `ConnectAttempt` is a compile error here rather than a dial whose result
     // nobody looked at.
     switch (attempt) {
-      case ConnectFailed(:final error):
-        _down(gen, _refusalReason(error));
+      case ConnectFailed(:final error, :final certificateUntrusted):
+        _down(gen,
+            _refusalReason(error, certificateUntrusted: certificateUntrusted));
       case ConnectSucceeded(:final channel):
         await _serve(gen, channel);
     }
@@ -512,10 +506,19 @@ final class ConnectionSupervisor {
   /// service — three things that are all fine — before anybody thinks of the
   /// leaf that lapsed on Sunday.
   ///
-  /// One level of unwrapping, because that is where the exception is:
-  /// `web_socket_channel` hands the failure over as a
-  /// `WebSocketChannelException` with the real one in `.inner` (06-RESEARCH
-  /// §A.3). The original text is kept whole — the `OS Error` line is what an
+  /// **The classification comes in as a `bool`, from the dial seam** (16-07,
+  /// WSH-14). This method used to ask `error is HandshakeException` itself,
+  /// which cost this file an `import 'dart:io' show HandshakeException` — one
+  /// import, for one exception type, in the state machine a web build reuses
+  /// through its own `dial:` seam. It would not compile there, for that line.
+  /// `ws_transport.dart` is already `dart:io`-only and documents why at
+  /// length — a pinned dial has no other seam — so the platform-specific
+  /// judgement now lives in the platform-specific place and
+  /// `ConnectFailed.certificateUntrusted` carries the answer across. Unlike
+  /// `RemoteStateMan`'s `HttpClient` dependence (S11, deliberate debt with no
+  /// browser equivalent), this one was avoidable today.
+  ///
+  /// The original text is kept whole — the `OS Error` line is what an
   /// integrator pastes into a ticket, and it is the only part of this a
   /// support engineer can act on remotely.
   ///
@@ -546,9 +549,9 @@ final class ConnectionSupervisor {
   /// coverage, which is the argument `suite_integrity_test.dart:104-108`
   /// makes about vacuous checks, applied to an enum. The connect path
   /// produces a link-state reason string, and this is it.
-  static String _refusalReason(Object error) {
-    final inner = error is WebSocketChannelException ? error.inner : null;
-    if (inner is HandshakeException) {
+  static String _refusalReason(Object error,
+      {required bool certificateUntrusted}) {
+    if (certificateUntrusted) {
       return 'the gateway\'s certificate was not trusted by this panel: '
           '$error';
     }
