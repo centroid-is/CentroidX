@@ -7,6 +7,8 @@
 /// are named rather than paraphrased.
 library;
 
+import 'dart:convert';
+
 // `isNull` and `isNotNull` are matchers here, not drift's SQL expressions of
 // the same names.
 import 'package:drift/drift.dart' hide isNotNull, isNull;
@@ -44,6 +46,18 @@ Future<void> seedRow({
           id: id,
           scope: (scope ?? kScope).wireName,
           payload: payload,
+          updatedAt: DateTime.utc(2026, 1, 1),
+          updatedBy: 'anonymous',
+        ));
+
+/// Writes a row of some other kind at this scope — the thing [clear] must not
+/// touch however wide its reach.
+Future<void> seedOtherKind({required String id}) =>
+    db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
+          kind: ConfigKind.page.wireName,
+          id: id,
+          scope: kScope.wireName,
+          payload: '{"title":"Roe"}',
           updatedAt: DateTime.utc(2026, 1, 1),
           updatedBy: 'anonymous',
         ));
@@ -269,6 +283,201 @@ void main() {
       expect(await prefs.containsKey('k'), isTrue);
       await prefs.remove('k');
       expect(await prefs.containsKey('k'), isFalse);
+    });
+  });
+
+  group('getAll and getKeys', () {
+    test('every type comes back as its native Dart value', () async {
+      await prefs.setBool('b', true);
+      await prefs.setInt('i', 7);
+      await prefs.setDouble('d', 7.5);
+      await prefs.setString('s', 'seven');
+      await prefs.setStringList('l', const ['a', 'b']);
+
+      expect(await prefs.getAll(), {
+        'b': true,
+        'i': 7,
+        'd': 7.5,
+        's': 'seven',
+        'l': ['a', 'b'],
+      });
+      expect(await prefs.getKeys(), {'b', 'i', 'd', 's', 'l'});
+    });
+
+    test('a corrupt row and an unknown tag are silently skipped', () async {
+      await prefs.setString('good', 'yes');
+      await seedRow(id: 'corrupt', payload: 'not json{');
+      await seedRow(id: 'future', payload: '{"type":"Duration","value":7}');
+
+      expect(await prefs.getAll(), {'good': 'yes'});
+      expect(await prefs.getKeys(), {'good'},
+          reason: 'getKeys and getAll must agree, or a sync that reads one and '
+              'writes the other loops forever');
+    });
+
+    test('an internal row never surfaces as a preference', () async {
+      await prefs.setString('startup_url', '/roe');
+      await seedRow(
+          id: '_import.shared_preferences_v1',
+          payload: '{"type":"bool","value":true}');
+
+      expect(await prefs.getKeys(), {'startup_url'});
+      expect(await prefs.getAll(), {'startup_url': '/roe'});
+      expect(await prefs.containsKey('_import.shared_preferences_v1'), isTrue,
+          reason: 'the import still has to be able to ask whether it has run');
+    });
+
+    test('an allowList narrows both to the keys named', () async {
+      await prefs.setString('a', '1');
+      await prefs.setString('b', '2');
+      await prefs.setString('c', '3');
+
+      expect(await prefs.getKeys(allowList: {'a', 'c'}), {'a', 'c'});
+      expect(await prefs.getAll(allowList: {'a', 'c'}), {'a': '1', 'c': '3'});
+    });
+
+    test('an empty allowList selects nothing rather than everything', () async {
+      await prefs.setString('a', '1');
+
+      expect(await prefs.getKeys(allowList: const {}), isEmpty);
+      expect(await prefs.getAll(allowList: const {}), isEmpty);
+    });
+  });
+
+  group('remove', () {
+    test('removing a key that was never there writes nothing', () async {
+      await prefs.remove('nope');
+
+      expect(await items(), isEmpty);
+      expect(await changes(), isEmpty);
+    });
+
+    test('removing a key logs one delete holding what was lost', () async {
+      await prefs.setString('startup_url', '/roe');
+      await prefs.remove('startup_url');
+
+      expect(await items(), isEmpty);
+      final log = await changes();
+      expect(log, hasLength(2));
+      expect(log.last.op, 'delete');
+      expect(log.last.newValue, isNull);
+      final entity = jsonDecode(log.last.oldValue!) as Map<String, dynamic>;
+      expect(entity['payload'], {'type': 'String', 'value': '/roe'},
+          reason: 'a delete row that does not say what was there cannot be '
+              'undone');
+    });
+  });
+
+  group('clear', () {
+    test('the allowList is a removal list, not a keep-list', () async {
+      await prefs.setString('a', '1');
+      await prefs.setString('b', '2');
+
+      await prefs.clear(allowList: {'a'});
+
+      expect(await prefs.getKeys(), {'b'},
+          reason: 'Pitfall 5: read the other way round, this wipes the store');
+      expect(await prefs.getString('b'), '2');
+    });
+
+    test('with no allowList it removes every preference at this scope',
+        () async {
+      await prefs.setString('a', '1');
+      await prefs.setInt('b', 2);
+      await seedRow(
+          id: '_import.shared_preferences_v1',
+          payload: '{"type":"bool","value":true}');
+
+      await prefs.clear();
+
+      expect(await items(), isEmpty);
+    });
+
+    test('it never reaches another kind at the same scope', () async {
+      await prefs.setString('a', '1');
+      await seedOtherKind(id: '/roe');
+
+      await prefs.clear();
+
+      final left = await items();
+      expect(left, hasLength(1));
+      expect(left.single.kind, ConfigKind.page.wireName);
+    });
+
+    test('three keys are three delete rows under one actionId', () async {
+      await prefs.setString('a', '1');
+      await prefs.setString('b', '2');
+      await prefs.setString('c', '3');
+
+      await prefs.clear();
+
+      final deletes =
+          (await changes()).where((c) => c.op == 'delete').toList();
+      expect(deletes, hasLength(3));
+      expect(deletes.map((c) => c.actionId).toSet(), hasLength(1),
+          reason: 'one operator action is one actionId, however many rows it '
+              'touched');
+      expect(deletes.map((c) => c.entityId).toSet(), {'a', 'b', 'c'});
+    });
+
+    test('clearing an empty store writes nothing', () async {
+      await prefs.clear();
+
+      expect(await changes(), isEmpty);
+    });
+  });
+
+  group("another station's rows are inert", () {
+    late ConfigScope foreign;
+
+    setUp(() async {
+      foreign = ConfigScope.forStation('svn-nes-ot-cl02');
+      await seedRow(
+        id: 'startup_url',
+        payload: '{"type":"String","value":"/their-page"}',
+        scope: foreign,
+      );
+    });
+
+    test('they are invisible to every read', () async {
+      expect(await prefs.getString('startup_url'), isNull);
+      expect(await prefs.containsKey('startup_url'), isFalse);
+      expect(await prefs.getKeys(), isEmpty);
+      expect(await prefs.getAll(), isEmpty);
+      expect(await prefs.getKeys(allowList: {'startup_url'}), isEmpty);
+    });
+
+    test('writing the same key here leaves theirs alone', () async {
+      await prefs.setString('startup_url', '/ours');
+
+      final rows = await items();
+      expect(rows, hasLength(2), reason: 'same key, two scopes, two rows');
+      expect(
+        rows.firstWhere((r) => r.scope == foreign.wireName).payload,
+        '{"type":"String","value":"/their-page"}',
+      );
+      expect(await prefs.getString('startup_url'), '/ours');
+    });
+
+    test('a clear with no allowList does not touch them', () async {
+      await prefs.setString('startup_url', '/ours');
+
+      await prefs.clear();
+
+      final rows = await items();
+      expect(rows, hasLength(1));
+      expect(rows.single.scope, foreign.wireName,
+          reason: 'a database restored from another machine stays inert, it '
+              'is not adopted');
+      expect((await changes()).where((c) => c.op == 'delete').length, 1,
+          reason: 'only our own row was deleted, so only one delete is logged');
+    });
+
+    test('a store at their scope reads their value, not ours', () async {
+      await prefs.setString('startup_url', '/ours');
+
+      final theirs = SqlitePreferences(db, scope: foreign);
+      expect(await theirs.getString('startup_url'), '/their-page');
     });
   });
 }
