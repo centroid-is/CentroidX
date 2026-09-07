@@ -277,11 +277,14 @@ void main() {
     });
 
     test('an id survives a round trip through an old station', () {
-      // Late migrators only converge if the id-bearing blob is dual-written
-      // back — which requires deployed editors to preserve ids they do not
-      // know about. `BaseAsset.id` is `@JsonKey(includeIfNull: false)`, so it
-      // round-trips when set and is absent when not. If that ever changes,
-      // every migrated id is lost on the next save by an old station.
+      // Not a dual-write claim — the milestone rules dual-write out and does a
+      // coordinated rollout instead. What this pins is narrower and still
+      // load-bearing: the *current* code preserves ids it did not mint,
+      // because `BaseAsset.id` is `@JsonKey(includeIfNull: false)` and so
+      // round-trips when set and is absent when not. It is what makes the
+      // compatibility blob safe to hand to a reader that has never heard of
+      // ids, and if it ever changes, every migrated id is lost on the next
+      // save that goes through the blob.
       final migrated = pageItemsFromBlob(_fixtureBlob);
       final ids = migrated
           .where((i) => i.kind == ConfigKind.asset)
@@ -339,7 +342,172 @@ void main() {
 
       expect(diff.changed, hasLength(1));
       expect(diff.changed.single.kind, ConfigKind.page);
-      expect(diff.changed.single.id, '/');
+      // The item is named by the page's minted id, not by '/' — the whole
+      // point of the id, and the reason the edit found the same row after a
+      // trip through the blob.
+      expect(diff.changed.single.id, pages['/']!.id);
+    });
+  });
+
+  group('page identity', () {
+    test('a page item is named by the page id, not by its path', () {
+      final pages = PageManager.pagesFromJson(_fixtureBlob);
+      final items = pageItems(pages)
+          .where((i) => i.kind == ConfigKind.page)
+          .toList();
+
+      expect(items.map((i) => i.id).toSet(),
+          {pages['/']!.id, pages['/diagnostics']!.id});
+      expect(items.map((i) => i.id), everyElement(isNot(startsWith('/'))),
+          reason: 'a path-named row loses its history at every rename');
+    });
+
+    test('the minted id lands on the live page, not only in the row', () {
+      // Same reason `pageItems` stamps asset ids on the live objects: an id
+      // that exists only in the row means the next save mints a second one.
+      final pages = PageManager.pagesFromJson(_fixtureBlob);
+      expect(pages['/']!.id, isNull);
+
+      pageItems(pages);
+
+      expect(pages['/']!.id, isNotNull);
+      expect(pages['/diagnostics']!.id, isNotNull);
+    });
+
+    test('an asset item names its page by id', () {
+      final pages = PageManager.pagesFromJson(_fixtureBlob);
+      final items = pageItems(pages);
+      final parents = items
+          .where((i) => i.kind == ConfigKind.asset)
+          .map((i) => i.parentId)
+          .toSet();
+
+      expect(parents, {pages['/']!.id});
+    });
+
+    test('a rename is one changed page and zero changed assets', () {
+      // SC-4's codec half. Path-keyed, renaming `/` would be a page DELETE
+      // plus INSERT and an UPDATE of every asset on it: 4 change rows here,
+      // 90 on `/roe` in production, for typing a name.
+      final pages = PageManager.pagesFromJson(_fixtureBlob);
+      final stored = pageItems(pages);
+
+      final renamed = Map<String, AssetPage>.from(pages);
+      final page = renamed.remove('/')!;
+      renamed['/home'] =
+          page.copyWith(menuItem: page.menuItem.copyWith(path: '/home'));
+
+      final diff = diffConfigItems(stored: stored, wanted: pageItems(renamed));
+
+      expect(diff.added, isEmpty);
+      expect(diff.removed, isEmpty);
+      expect(diff.changed, hasLength(1));
+      expect(diff.changed.single.kind, ConfigKind.page);
+      expect(diff.changed.single.id, page.id,
+          reason: 'the row survives the rename, and so does its history');
+    });
+
+    test('a page id survives the editor undo round trip', () {
+      // The undo stack is 50 encoded page-JSON strings and the save itself is
+      // jsonEncode -> pagesFromJson, so an id held beside the object would be
+      // gone at the first Ctrl+Z and the page that came back would be a
+      // different row.
+      final pages = PageManager.pagesFromJson(_fixtureBlob);
+      pageItems(pages);
+      final before = {for (final e in pages.entries) e.key: e.value.id};
+
+      final undone = PageManager.copyPages(pages);
+
+      expect({for (final e in undone.entries) e.key: e.value.id}, before);
+      expect(
+        pageItems(undone)
+            .where((i) => i.kind == ConfigKind.page)
+            .map((i) => i.id)
+            .toSet(),
+        before.values.toSet(),
+        reason: 'a second mint after an undo would orphan every asset row',
+      );
+    });
+
+    test('a page without an id serialises without the key', () {
+      // `includeIfNull: false` is what keeps the field additive: a page saved
+      // before ids existed round-trips exactly as it did.
+      final pages = PageManager.pagesFromJson(_fixtureBlob);
+      expect(pages['/']!.toJson().containsKey('id'), isFalse);
+      expect(jsonDecode(pageBlobOf(pageItems(pages)))['/'],
+          isA<Map<String, dynamic>>().having((m) => m['id'], 'id', isNotNull),
+          reason: 'and once minted it rides along in the compatibility blob');
+    });
+
+    test('two stations migrating the same blob derive the same page ids', () {
+      final a = pageItemsFromBlob(_fixtureBlob)
+          .where((i) => i.kind == ConfigKind.page)
+          .map((i) => i.id);
+      final b = pageItemsFromBlob(_fixtureBlob)
+          .where((i) => i.kind == ConfigKind.page)
+          .map((i) => i.id);
+
+      expect(a, b);
+      expect(a, contains(derivedPageId('/')));
+    });
+
+    test('two independent saves mint different page ids', () {
+      // SC-6 extended to pages. Deriving at save time would collapse two
+      // editors' new pages into one row, exactly as it would for assets.
+      final idsA = pageItems(PageManager.pagesFromJson(_fixtureBlob))
+          .where((i) => i.kind == ConfigKind.page)
+          .map((i) => i.id)
+          .toSet();
+      final idsB = pageItems(PageManager.pagesFromJson(_fixtureBlob))
+          .where((i) => i.kind == ConfigKind.page)
+          .map((i) => i.id)
+          .toSet();
+
+      expect(idsA.intersection(idsB), isEmpty);
+    });
+
+    test('page ids look like minted ones', () {
+      for (final items in [
+        pageItemsFromBlob(_fixtureBlob),
+        pageItems(PageManager.pagesFromJson(_fixtureBlob)),
+      ]) {
+        for (final item in items.where((i) => i.kind == ConfigKind.page)) {
+          expect(item.id, matches(RegExp(r'^[0-9a-f]{24}$')));
+        }
+      }
+    });
+
+    test('pagesOf keys by the payload path, so navigation is untouched', () {
+      final rebuilt = pagesOf(pageItemsFromBlob(_fixtureBlob));
+      expect(rebuilt.keys.toSet(), {'/', '/diagnostics'});
+      expect(rebuilt['/diagnostics']!.menuItem.path, '/diagnostics');
+    });
+
+    test('two pages with empty paths do not collide on one key', () {
+      // `pagesFromJson` slugs a key for a path-less page rather than letting
+      // both land on ''. `pagesOf` has to do the same, or one of them is
+      // silently overwritten by the other.
+      final pages = PageManager.pagesFromJson(_fixtureBlob);
+      pageItems(pages);
+      final items = [
+        for (final page in pages.values)
+          ConfigItem.of(
+            kind: ConfigKind.page,
+            id: page.id!,
+            value: pageFieldsOf(page.copyWith(
+                menuItem: page.menuItem.copyWith(path: ''))),
+          ),
+      ];
+
+      final rebuilt = pagesOf(items);
+
+      expect(rebuilt, hasLength(2));
+      for (final entry in rebuilt.entries) {
+        expect(entry.value.menuItem.path, entry.key,
+            reason: 'the generated key has to be written back into the '
+                'payload, or the page disagrees with the map about where it '
+                'lives');
+      }
     });
   });
 
