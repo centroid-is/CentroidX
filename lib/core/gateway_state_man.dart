@@ -120,26 +120,35 @@ class GatewayStateMan implements StateMan {
       required Set<String> keys,
     })? buildRemote,
   }) async {
-    // Spelled as a ternary with `subscriptionKeys(keyMappings)` written out on
-    // both arms rather than hoisted into a local or hidden behind a
-    // `buildRemote ?? _default` closure. `alarm_gateway_mode_test.dart:914`
-    // reads this file's source, takes the statement containing the first
-    // literal `RemoteStateMan(` and requires `subscriptionKeys(keyMappings)`
-    // inside it — because its behavioural arm about `ALARM.active` is worth
-    // nothing if the production path stops going through that function. Either
-    // of the tidier spellings moves the construction out of that statement and
-    // the guard passes on a file it can no longer see.
-    final remote = buildRemote == null
-        ? RemoteStateMan(
-            uri: uri,
-            config: clientConfig,
-            keys: subscriptionKeys(keyMappings),
-          )
-        : buildRemote(
-            uri: uri,
-            config: clientConfig,
-            keys: subscriptionKeys(keyMappings),
-          );
+    // The default is inlined into the call rather than hoisted into a local or
+    // written as a ternary, and both of the tidier spellings are wrong here
+    // for a measured reason.
+    //
+    //  * **One argument list, so the seam cannot be a blind spot.** A ternary
+    //    would spell the key set twice, once on each arm, and a test that goes
+    //    through `buildRemote` would then never observe the default arm's
+    //    copy — shortening only that one would leave every arm green and every
+    //    panel grey. Written this way there is one `keys:` expression and both
+    //    paths take it.
+    //  * **`alarm_gateway_mode_test.dart:914` reads this file's source**,
+    //    takes the statement holding the first literal `RemoteStateMan(` and
+    //    requires `subscriptionKeys(keyMappings)` inside it, because its
+    //    behavioural arm about `ALARM.active` is worth nothing if the
+    //    production path stops going through that function. Hoisting the
+    //    default into `final build = …;` moves the construction into a
+    //    statement that carries no key set, and the guard then passes on a
+    //    file it can no longer see.
+    final remote = (buildRemote ??
+        ({
+          required Uri uri,
+          required ClientConfig config,
+          required Set<String> keys,
+        }) =>
+            RemoteStateMan(uri: uri, config: config, keys: keys))(
+      uri: uri,
+      config: clientConfig,
+      keys: subscriptionKeys(keyMappings),
+    );
     return GatewayStateMan(
       remote: remote,
       config: config,
