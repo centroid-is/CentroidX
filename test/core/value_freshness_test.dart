@@ -32,6 +32,34 @@ void main() {
       expect(freshness.isWatchingLink, isFalse);
     });
 
+    test('is one shared object, and one reader disposing cannot close it for '
+        'the next', () async {
+      // **Found by sabotage, not by design.** `ValueFreshness.fresh()` is a
+      // singleton because `keyStreamProvider` watches the provider that hands
+      // it out and Riverpod rebuilds a dependent when the value changes by
+      // `==` — a new object per build re-opens every subscription on the panel
+      // (measured: it doubled every subscribe count in
+      // `key_stream_provider_test.dart`). Sharing it makes `dispose` a
+      // question: one container tearing down would otherwise close the stream
+      // every later container is about to listen to. Removing the guard that
+      // answers it turned NOTHING red until this arm existed.
+      final first = ValueFreshness.fresh();
+      final second = ValueFreshness.fresh();
+      expect(identical(first, second), isTrue,
+          reason: 'a per-build object here is the subscription-churn defect');
+
+      await first.dispose();
+
+      var closed = false;
+      final sub = second.changes.listen((_) {}, onDone: () => closed = true);
+      addTearDown(sub.cancel);
+      await _settle();
+
+      expect(closed, isFalse,
+          reason: 'one container\'s teardown closed the verdict stream every '
+              'other container on this panel reads');
+    });
+
     test('publishes a stream that never fires', () async {
       final freshness = ValueFreshness.fresh();
       final seen = <bool>[];
