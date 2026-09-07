@@ -46,6 +46,10 @@ import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/pipe_send_buffer.dart';
 import 'package:tfc_dart/core/pipe_worker_endpoint.dart';
 import 'package:tfc_dart/core/relay/alarm_rule_watcher.dart';
+import 'package:tfc_dart/core/relay/backend_live_values.dart';
+import 'package:tfc_dart/core/relay/backend_seams.dart';
+import 'package:tfc_dart/core/state_man.dart'
+    show KeyMappings, KeyMappingEntry, OpcUANodeConfig;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
 import 'relay/fake_backend_value_source.dart';
@@ -343,6 +347,75 @@ void main() {
       await _pump();
 
       expect(endpoint.stampSourceOf('a.two'), AlarmTsSource.backendReceipt);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  //
+  // The arm this group exists for was MISSING until a sabotage found it. Moving
+  // `_recordStampProvenance` to AFTER `store.applyBatch` — defeating the whole
+  // ordering argument written at that call site — turned nothing red, because
+  // every other arm here either calls `stampSourceOf` directly after the frame
+  // has fully landed or runs against the fake, which pairs at push. Neither can
+  // see a listener being handed the previous frame's claim.
+  group('BackendLiveValues pairs inside the store\'s own notification', () {
+    late _FakeLink alpha;
+    late PipeMainEndpoint pipe;
+    late BackendLiveValues values;
+
+    setUp(() {
+      alpha = _FakeLink('alpha');
+      pipe = PipeMainEndpoint(logger: Logger(level: Level.off));
+      pipe.addWorker(alpha, const ['a.one']);
+      values = BackendLiveValues(
+        pipe: pipe,
+        keyMappings: KeyMappings(nodes: <String, KeyMappingEntry>{
+          'a.one': KeyMappingEntry(
+            opcuaNode: OpcUANodeConfig(namespace: 2, identifier: 'a.one'),
+          ),
+        }),
+        logger: Logger(level: Level.off),
+      );
+    });
+
+    tearDown(() async {
+      await values.dispose();
+      pipe.dispose();
+      alpha.dispose();
+    });
+
+    test('an emission carries THIS frame\'s claim, not the previous one',
+        () async {
+      final seen = <StampedValue>[];
+      final sub = values.subscribeStamped('a.one').listen(seen.add);
+      await _pump();
+
+      // Frame 1: a genuine plant stamp.
+      alpha.emit(PipeFrame(
+          const [], {'a.one': _value(1, at: _plantClock)}, const <String>{}));
+      await _pump();
+
+      // Frame 2: the SAME key, now substituted. This is the transition a
+      // provenance recorded after the batch would get wrong: the listener would
+      // be woken with value 2 while the claim still said frame 1's.
+      alpha.emit(PipeFrame(
+          const [], {'a.one': _value(2, at: _arrivedAt)}, const {'a.one'}));
+      await _pump();
+
+      await sub.cancel();
+
+      // Not vacuous: two distinct readings actually arrived.
+      final withValues =
+          seen.where((s) => s.value.value != null).toList(growable: false);
+      expect(withValues.map((s) => s.value.value), containsAllInOrder([1, 2]));
+
+      final first = withValues.firstWhere((s) => s.value.value == 1);
+      final second = withValues.firstWhere((s) => s.value.value == 2);
+      expect(first.stampSource, AlarmTsSource.plant);
+      expect(second.stampSource, AlarmTsSource.backendReceipt,
+          reason: 'the emission carrying value 2 must carry value 2\'s claim');
+      // And the two really do differ, so neither expectation is trivially met.
+      expect(first.stampSource, isNot(second.stampSource));
     });
   });
 
