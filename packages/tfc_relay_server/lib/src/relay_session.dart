@@ -1185,30 +1185,71 @@ final class RelaySession {
     final decoded = sanitize(params.asMap).value as Map;
     final hello = HelloParams.fromJson(decoded.cast<String, Object?>());
 
-    // **The credential is checked once per session, and the guard is around
-    // the check rather than around its result.**
+    // **The credential is checked once per session — and once means once
+    // across the `await` below, not merely once per turn.**
     //
-    // It has to be *before* the gate — a rejected credential must not spend
-    // the one `hello` the session allows — which means a second `hello`
-    // reaches the validator on a session that already has an identity. There
-    // is nothing left for the validator to decide there, and two things went
-    // wrong when it was consulted anyway. A second `hello` carrying another
-    // station's *valid* token would overwrite the field: a view station could
-    // talk itself into an operate identity on a handshake the gate then
-    // refuses, and the refusal would not matter, because the damage is the
-    // field rather than the answer. A second `hello` carrying an *invalid*
-    // token reached `TokenRejected` and closed the socket with 4001 — tearing
-    // down a session that authenticated correctly and has been serving the
-    // plant, for a frame that gets `alreadyHelloed` when the token happens to
-    // be good. Only the peer can do that to itself, but a client with a state
-    // bug should not be able to disconnect itself over a field the server has
-    // already decided.
+    // The check has to be *before* the gate: a rejected credential must not
+    // spend the one `hello` the session allows. So a second `hello` does reach
+    // the validator on a session that already has an identity, and there is
+    // nothing left for the validator to decide there. Two things went wrong
+    // when it was consulted anyway:
     //
-    // Skipping the check answers both: the gate answers `alreadyHelloed`, the
-    // identity and its digest are what the accepted handshake set, and the
-    // session lives.
+    //  * A second `hello` carrying another station's **valid** token
+    //    overwrote the field. A view station could talk itself into an operate
+    //    identity on a handshake the gate then refuses, and the refusal would
+    //    not matter, because the damage is the field rather than the answer.
+    //  * A second `hello` carrying an **invalid** token reached
+    //    `TokenRejected` and closed the socket with 4001 — tearing down a
+    //    session that authenticated correctly and has been serving the plant,
+    //    for a frame that gets `alreadyHelloed` when the token happens to be
+    //    good. Only the peer can do that to itself, but a client with a state
+    //    bug should not be able to disconnect itself over a field the server
+    //    has already decided.
+    //
+    // **The guard below is only half of the answer, and the comment here used
+    // to claim it was the whole one.** It is around the check rather than
+    // around its result, which is right — but it is evaluated in one turn and
+    // the assignment happens in another, after `validator.validate`. Two
+    // hellos that both reach this line before either resumes both pass it, and
+    // both failures above come straight back: `json_rpc_2` does not await its
+    // dispatch (`server.dart:115`), and a JSON-RPC **batch** runs its members
+    // through `Future.wait` (`:175-181`), which makes the interleaving
+    // deterministic in a single frame. Two separate frames do the same against
+    // any validator that suspends on an event rather than on a microtask —
+    // the very implementation `token_validator.dart:39-62` warns about for the
+    // revocation sweep, biting the identity itself.
+    //
+    // So the invariant is re-checked *after* the await as well. This is the
+    // session's instance of **re-check after the await**;
+    // `value_handlers.dart`'s hold store carries the other one, and the two
+    // are one idea: a synchronous guard, a suspend, and a write that assumed
+    // the guard still held.
     if (_identity == null) {
-      switch (await validator.validate(hello)) {
+      final verdict = await validator.validate(hello);
+      if (_identity != null) {
+        // This call lost. It is refused **with a response and never a close**
+        // — that is the whole of the second failure above, and restoring a
+        // `_requestClose` here would restore it exactly.
+        //
+        // `alreadyHelloed` deliberately, because it is the code a *sequential*
+        // second hello already gets (`_gate.negotiate` answers `GateReject`
+        // below). A client that says hello twice sees one answer for it
+        // whether the frames raced or not, and the timing it lost by is not a
+        // fact it has to model.
+        //
+        // Returned before `_gate.negotiate`: the winner spent the gate's one
+        // slot, and running `negotiate` for the loser would advance gate state
+        // on behalf of a handshake that is being refused. The verdict above is
+        // discarded on purpose — accepted or rejected, there is nothing left
+        // for it to decide.
+        throw rpc.RpcException(
+            ServerErrorCodes.alreadyHelloed,
+            'hello refused: already_helloed — another hello on this session '
+            'was accepted while this one was still with the credential '
+            'validator. The session keeps the identity that handshake set',
+            data: _substitute(Methods.hello));
+      }
+      switch (verdict) {
         case TokenRejected(:final reason):
           _requestClose(CloseCodes.authExpired, 'credential rejected');
           throw rpc.RpcException(
