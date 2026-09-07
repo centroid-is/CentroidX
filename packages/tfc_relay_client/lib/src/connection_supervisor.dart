@@ -758,6 +758,52 @@ final class ConnectionSupervisor {
   /// names. They are opt-in and default off, so a deployment that never turned
   /// them on would never detect this at all — and this is the client that has
   /// to be right on the panel nobody configured.
+  ///
+  /// ## All four lanes, since 16-10 (finding S4, WSH-04)
+  ///
+  /// This method used to iterate `update.changes` and nothing else. A `u` frame
+  /// can say four things and three of them were decoded into `UpdateParams` and
+  /// then dropped on the floor here, with **no comment anywhere in the client
+  /// recording a decision to drop them**. That absence is the finding: not a
+  /// tradeoff somebody made, a seam nobody joined. The wire contract declares
+  /// the lanes, `frame_encoder.dart:94-105` emits them, `SendBuffer` conflates
+  /// them with real care — `putQuality` composes rather than replaces a
+  /// `badNonFinite` band and explains why — and the server suite tests them.
+  /// Every layer treated them as real except the one that has to render them.
+  ///
+  /// * **`qualities` (`q`)** — a quality transition on a value that has not
+  ///   moved, which is the ordinary shape of a comm fault: the source drops
+  ///   while the last reading stands. Dropping it applied an empty change set
+  ///   and advanced the sequence *cleanly*, so nothing downstream could tell.
+  ///   No gap for the gap check to find, no complaint, and no resync to heal
+  ///   it: the widget kept the old number under [Quality.good] until something
+  ///   unrelated forced a rebuild. A comm fault on the line is the one thing
+  ///   this product exists to put on the screen and it was the one thing that
+  ///   could not get there.
+  /// * **`removed` (`r`)** — the handle is gone from availability. Dropping it
+  ///   left the last value being served as good forever.
+  /// * **`t`** — the batch timestamp, whose own doc (`messages.dart:373`) says
+  ///   it applies "to values without their own". Slim pushes are *defined* by
+  ///   omitting per-value timestamps, so dropping the batch stamp meant every
+  ///   slim push landed with `sourceTime: null` — and value-age staleness
+  ///   stopped being computable at the panel, which is the exact failure
+  ///   [WireValue.toDynamicValue]'s doc says the type exists to prevent.
+  ///
+  /// **Latent, not live, and fixed anyway.** No shipping gateway can currently
+  /// emit `q` or `r`: `SendBuffer.putQuality` / `.remove` have exactly one
+  /// production caller between them (`tick_engine.dart:534/:537`, inside
+  /// `_defer`) and `_defer`'s inputs come out of `buffer.drain()` — the same
+  /// two lanes it is putting them back into, a closed loop with no entrance.
+  /// The origin-side filler is `session_handlers.dart:241`, which calls
+  /// `putValue`, and `putValue` *deletes* from both other lanes on the way past.
+  /// A decoder that silently discards a declared lane is a defect the day the
+  /// other end starts using it, and the other end is already built to.
+  ///
+  /// **One change-set, not three routes to the store.** All four lanes are
+  /// folded into the same map handed to [ResyncEngine.onUpdate], so the store
+  /// applies one batch and the sequence advances once. Three lanes reaching the
+  /// store by three routes is three chances to disagree about ordering, and the
+  /// store is the only thing entitled to judge the sequence.
   Future<void> _update(rpc.Parameters params) async {
     watchdog.sawFrame(InboundFrame.update);
     final update = UpdateParams.fromJson(_asJson(sanitize(params.asMap).value));
@@ -790,23 +836,113 @@ final class ConnectionSupervisor {
 
     var sawUnknownHandle = false;
     final changes = <String, DynamicValue>{};
-    for (final entry in update.changes.entries) {
-      final key = state.handles[entry.key];
-      if (key == null) {
-        // Never filed under a guess: a value on a mimic under a label the
-        // gateway never agreed to is worse than a value missing from it.
-        sawUnknownHandle = true;
-        // Diagnostic, and only where there is something to diagnose: on an
-        // unestablished page this is a line per handle per frame on an
-        // unbounded list, for the life of the socket (07-REVIEW WR-07).
-        if (established) {
-          _resync.complain('update for "${update.sub}" named handle '
-              '${entry.key}, which this session never announced');
-        }
-        continue;
+
+    /// Resolves [handle] to its key, or records a stranger and returns null.
+    ///
+    /// Shared by all three handle-addressed lanes so a stranger costs the same
+    /// wherever it is named. A lane with its own resolution would be a second
+    /// door into [ResyncEngine.onResync], outside 16-07's shared budget —
+    /// which is S14 reintroduced by the back way (T-16-10a, T-16-10b).
+    String? keyFor(int handle) {
+      final key = state.handles[handle];
+      if (key != null) return key;
+      // Never filed under a guess: a value on a mimic under a label the
+      // gateway never agreed to is worse than a value missing from it.
+      sawUnknownHandle = true;
+      // Diagnostic, and only where there is something to diagnose: on an
+      // unestablished page this is a line per handle per frame on an
+      // unbounded list, for the life of the socket (07-REVIEW WR-07).
+      if (established) {
+        _resync.complain('update for "${update.sub}" named handle '
+            '$handle, which this session never announced');
       }
-      changes[key] = entry.value.toDynamicValue();
+      return null;
     }
+
+    // The batch timestamp, as a `DateTime` or absent.
+    //
+    // **Range-checked, because `UpdateParams.fromJson` does not check this
+    // one.** `WireValue` has carried [isRepresentableEpochMs] since 16-05 —
+    // `1e17` is finite, passes an `isFinite` guard, and makes
+    // `DateTime.fromMillisecondsSinceEpoch` throw — but the batch `t` is
+    // decoded straight through `(json['t'] as num).toInt()` with no such
+    // guard. Without this check a single hostile or broken batch stamp would
+    // throw out of the fallback below and cost the whole frame through
+    // `_armored`, once per frame, for as long as the gateway kept sending
+    // them. Out of range is treated as **absent**, which is `WireValue.of`'s
+    // own rule and for its reason: a clamped timestamp is a lie about
+    // freshness, and `null` is the honest answer every consumer already
+    // handles.
+    final batchTime = isRepresentableEpochMs(update.t)
+        ? DateTime.fromMillisecondsSinceEpoch(update.t, isUtc: true)
+        : null;
+
+    for (final entry in update.changes.entries) {
+      final key = keyFor(entry.key);
+      if (key == null) continue;
+      final value = entry.value.toDynamicValue();
+      // **The batch stamp is a fallback and never an override.**
+      // `messages.dart:373` — "applying to values without their own" — is the
+      // specification, and that sentence decides the direction. A batch stamp
+      // that won would let one number at the top of a frame rewrite the source
+      // times of every honestly-stamped value under it (T-16-10e).
+      changes[key] = value.sourceTime == null && batchTime != null
+          ? DynamicValue(
+              value: value.value, quality: value.quality, sourceTime: batchTime)
+          : value;
+    }
+
+    // **The quality lane: the quality changes, the value does not.**
+    // Rebuilt from what the store already holds rather than from anything in
+    // the frame, because a quality-only transition is by definition not news
+    // about the value — inventing a null here would land an open-circuit
+    // 4-20 mA reading as a blank box that looks like an unbound tag rather
+    // than as a fault, which is the same substitution `SendBuffer.putQuality`
+    // refuses to make at the other end.
+    //
+    // **The source time is the store's, not the batch's.** The plant measured
+    // that number when it measured it; the gateway noticing a fault now does
+    // not make the reading newer. Re-stamping it would make a frozen value
+    // look freshly measured for as long as the fault lasted — the panel would
+    // hold a number under `badCommFault` whose age it could no longer compute,
+    // which is the other half of this very finding.
+    for (final entry in update.qualities.entries) {
+      final key = keyFor(entry.key);
+      if (key == null) continue;
+      final held = storeFor(update.sub).node(key).value;
+      changes[key] = DynamicValue(
+          value: held.value,
+          quality: entry.value,
+          sourceTime: held.sourceTime);
+    }
+
+    // **The removal lane: affirmatively gone, and the node stays.**
+    // [Quality.errorConfig], not a dropped node and not
+    // `uncertainNotYetKnown`. The store's own doc draws exactly this
+    // distinction (`value_store.dart:28-41`): a key that has not arrived yet
+    // is uncertain and waiting will help, while "a key the source has
+    // affirmatively been told is gone is a different fact, and carries
+    // [Quality.errorConfig]". An `r` entry is the gateway making that
+    // statement, so the store's existing rule decides this and no new one was
+    // invented for it.
+    //
+    // **And the node is not removed from the store.** Widgets hold
+    // [ValueStoreNode] as a `ValueListenable` directly, with no adapter object
+    // per key — so dropping it from the map detaches nobody: the widget keeps
+    // its reference to the orphan, `node(key)` mints a fresh one for the next
+    // arrival, and the mimic freezes on its last reading with no path back, on
+    // a healthy link, silently. That is a worse version of the bug being fixed
+    // here, arrived at while fixing it.
+    //
+    // The value goes to null with it: a number nobody stands behind is not a
+    // number to leave on a screen.
+    for (final handle in update.removed) {
+      final key = keyFor(handle);
+      if (key == null) continue;
+      changes[key] = DynamicValue(
+          value: null, quality: Quality.errorConfig, sourceTime: batchTime);
+    }
+
     await _resync.onUpdate(update.sub,
         seq: update.seq, changes: changes, generation: update.generation);
     // **Only for a page this client still believes in** (07-REVIEW WR-07).
@@ -1219,6 +1355,15 @@ final class ConnectionSupervisor {
       // **Here and nowhere else.** See the library doc: a link earns its
       // forgiveness by delivering a snapshot, not by answering the phone.
       backoff.reset();
+      // And the badge clears on the same principle, for the same reason
+      // (16-10, finding S9). Reaching `ready` is the only moment this client
+      // knows every page has cleared its store and adopted a snapshot from
+      // *this* connection; a frame arriving somewhere upstream of that proves
+      // the link is alive and nothing at all about what is on the screen. The
+      // link deadline is still fed by every inbound frame, including the hello
+      // and subscribe responses — that is the half-open detector and it is a
+      // different signal. See [FreshnessWatchdog.viewBecameFresh].
+      watchdog.viewBecameFresh();
     }
     if (!_states.isClosed) _states.add(next);
   }

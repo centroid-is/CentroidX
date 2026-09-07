@@ -207,10 +207,53 @@ final class FreshnessWatchdog {
   ///
   /// Runs on every frame — twenty times a second on the measured cadence — so
   /// it stays a cancel and a reschedule and nothing else.
+  ///
+  /// **It does not clear the badge, and that is the whole of 16-10 / S9.**
+  /// This method used to call [_becomeFresh] as well, which made one call do
+  /// two jobs whose difference is invisible until a resync takes real time: a
+  /// frame arriving proves the *link* is alive, and proves nothing whatever
+  /// about whether the values on the screen came from it. The `hello` response
+  /// is a frame, and it answers seconds before the first snapshot lands. See
+  /// [viewBecameFresh] for where the badge moved to and why.
   void sawFrame(InboundFrame kind) {
     if (_disposed) return;
     _deadline?.cancel();
     _deadline = Timer(config.freshnessDeadline, _linkWentQuiet);
+  }
+
+  /// The view is now showing data from the current connection.
+  ///
+  /// Called by the supervisor from `_enter(LinkState.ready)` and from nowhere
+  /// else — a state reached, by construction, only after `ResyncEngine.onHello`
+  /// has returned with every page's store cleared and its snapshot adopted.
+  ///
+  /// **Why this is not [sawFrame]'s job** (16-10, finding S9). The badge is the
+  /// one surface an operator uses to decide whether to trust the screen, and it
+  /// used to clear on any inbound frame. The order it ran in was: enter
+  /// `resyncing`, await `hello`, **clear the badge**, then subscribe each page
+  /// in turn and adopt its snapshot, then enter `ready`. Every page held its
+  /// pre-outage values under [Quality.good] for the whole of that middle
+  /// stretch, with a badge saying the view was fresh. After a sixty-second
+  /// outage that is a minute-old number displayed as current, and not for a
+  /// millisecond of it: the snapshots land one page at a time, each behind its
+  /// own subscribe round trip, on precisely the multi-page slow link this
+  /// client was designed for. 16-01 widened that window further, deliberately
+  /// and correctly, by giving snapshots a payload-scaled deadline instead of a
+  /// ping's.
+  ///
+  /// **The promise changed, not just the timing.** The badge used to mean "a
+  /// frame arrived"; it now means "this view is showing data from the current
+  /// connection". Those are different statements and the old one was the
+  /// finding.
+  ///
+  /// **The stale direction did not move.** [_linkWentQuiet] is a different
+  /// property on a different timer and `stall_gate_test.dart:41-49` documents
+  /// it. Nor did what the badge *measures*: it stays link-level and is never
+  /// coupled to store contents — `latency_gate_test.dart:146-161` is emphatic
+  /// that this verdict and [staleSubscriptions] are deliberately independent,
+  /// and coupling them would turn every slow-moving tag into a grey panel.
+  void viewBecameFresh() {
+    if (_disposed) return;
     _becomeFresh();
   }
 

@@ -166,7 +166,21 @@ void main() {
           reason: 'one death produced more than one transition');
     });
 
-    test('resuming frames brings the view back exactly once', () async {
+    test('a recovered view comes back exactly once — and on data, not on a frame',
+        () async {
+      // **Retargeted by 16-10 (finding S9), and the property is unchanged.**
+      // This arm has always been about "exactly one death and one recovery".
+      // What moved is *who announces the recovery*. It used to be `sawFrame`,
+      // which is the finding: a frame arriving proves the link is alive and
+      // proves nothing about whether the values on the screen came from it, so
+      // the `hello` response cleared the badge seconds before the first
+      // snapshot landed. The supervisor now calls `viewBecameFresh` from
+      // `_enter(LinkState.ready)`, which is reached only once every page has
+      // adopted its snapshot.
+      //
+      // Both halves are asserted here, at the unit, because a unit that only
+      // checked the new caller would go green again the day somebody put the
+      // old one back.
       final log = TransitionLog();
       final watchdog =
           FreshnessWatchdog(config: testConfig(), onViewFreshnessChanged: log.record);
@@ -175,15 +189,34 @@ void main() {
       watchdog.sawFrame(InboundFrame.tick);
       await within(log.firstStale, 'the view going stale after the frames stopped',
           budget: deadline + ceiling + period);
+
+      // A frame arrives. The link deadline restarts — but the badge does not
+      // move, because nothing yet says the screen is showing this connection's
+      // data.
       watchdog.sawFrame(InboundFrame.tick);
-      await within(log.firstFreshAgain, 'the view coming back when frames resumed',
+      await Future<void>.delayed(period);
+      expect(watchdog.viewIsStale, isTrue,
+          reason: 'an inbound frame cleared the view badge on its own. That is '
+              'S9: the hello response is a frame, and it answers seconds '
+              'before the first page snapshot lands');
+      expect(log.staleFlags, equals(<bool>[true]),
+          reason: 'and it announced a recovery that had not happened');
+
+      // The pages are holding their snapshots.
+      watchdog.viewBecameFresh();
+      await within(log.firstFreshAgain, 'the view coming back once its data did',
           budget: ceiling);
 
       expect(log.staleFlags, equals(<bool>[true, false]),
           reason: 'a link that died and recovered did not read as exactly one '
               'death and one recovery');
       expect(watchdog.viewIsStale, isFalse,
-          reason: 'frames are arriving again and the view is still grey');
+          reason: 'the view is holding current data and is still grey');
+
+      // Idempotent: reaching `ready` twice without an intervening death is one
+      // recovery, not two indicator repaints.
+      watchdog.viewBecameFresh();
+      expect(log.staleFlags, equals(<bool>[true, false]));
     });
 
     test('a tick frame alone keeps the view fresh, so an idle plant is never called dead',
