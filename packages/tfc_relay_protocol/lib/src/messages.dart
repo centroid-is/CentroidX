@@ -26,10 +26,6 @@ final class HelloParams {
   final PeerInfo client;
   final Map<String, Object?> capabilities;
 
-  /// Present when attempting to resume: previous session id + epoch and the
-  /// last seen sequence per subscription.
-  final SessionResume? session;
-
   /// The station's credential, presented on the first frame. Null when the
   /// deployment runs no token file — every fixture in this workspace does.
   ///
@@ -57,7 +53,6 @@ final class HelloParams {
     required this.supported,
     required this.client,
     this.capabilities = const {},
-    this.session,
     this.token,
   });
 
@@ -68,9 +63,6 @@ final class HelloParams {
         client: PeerInfo.fromJson((json['client'] as Map).cast()),
         capabilities:
             (json['capabilities'] as Map? ?? const {}).cast<String, Object?>(),
-        session: json['session'] == null
-            ? null
-            : SessionResume.fromJson((json['session'] as Map).cast()),
         token: json['token'] as String?,
       );
 
@@ -79,26 +71,8 @@ final class HelloParams {
         'supported': supported,
         'client': client.toJson(),
         if (capabilities.isNotEmpty) 'capabilities': capabilities,
-        if (session != null) 'session': session!.toJson(),
         if (token != null) 'token': token,
       };
-}
-
-final class SessionResume {
-  final String id;
-  final String epoch;
-  final Map<String, int> lastSeq;
-  const SessionResume(
-      {required this.id, required this.epoch, this.lastSeq = const {}});
-
-  factory SessionResume.fromJson(Map<String, Object?> json) => SessionResume(
-        id: json['id'] as String,
-        epoch: json['epoch'] as String,
-        lastSeq: (json['lastSeq'] as Map? ?? const {}).cast<String, int>(),
-      );
-
-  Map<String, Object?> toJson() =>
-      {'id': id, 'epoch': epoch, if (lastSeq.isNotEmpty) 'lastSeq': lastSeq};
 }
 
 /// The keys the gateway may put in [HelloResult.capabilities].
@@ -146,8 +120,41 @@ final class HelloResult {
   final String sessionId;
   final String epoch;
 
-  /// False ⇒ the client's cache means nothing: resubscribe from scratch.
-  final bool resumed;
+  // --- where `resumed` used to be (withdrawn in 16-11, HARD-03) ------------
+  //
+  // A protocol reader looking for the missing field will look here, so the
+  // answer lives here rather than only in a plan.
+  //
+  // `session.resumed` said "your cache survived; resubscribe nothing", and
+  // alongside it `HelloParams.session` (a `SessionResume` carrying a previous
+  // session id, an epoch and a per-subscription `lastSeq`) said "here is where
+  // I left off". Neither was ever honoured: no client in this workspace set
+  // the request field, the server decoded it and read nothing, and the answer
+  // was hardcoded `false` for eleven phases behind a comment promising it
+  // would mean something in a phase that had already come and gone.
+  //
+  // **Withdrawn rather than implemented, and that is the decision.** Honouring
+  // a resume means the gateway retaining per-session subscription state across
+  // a socket loss and replaying from `lastSeq` — delta replay. This product's
+  // doctrine, in CLAUDE.md's own words, is "resync = snapshot, never delta
+  // replay". Implementing the field would have been implementing the one thing
+  // the architecture refuses, and leaving it standing was worse than either:
+  // a field that promises fault tolerance it does not have is what the next
+  // milestone builds on. The reasoning is written out in
+  // `.planning/phases/16-transport-hardening/16-CONTEXT.md`.
+  //
+  // If a future milestone wants resume, it starts from that doctrine question
+  // — what may be replayed, and how a resumed session is bound to the
+  // credential that owns it, since the request field was an unauthenticated
+  // claim about a prior session — and not from re-declaring these fields.
+  //
+  // **Decoding stays tolerant in both directions.** `fromJson` ignores a
+  // `resumed` key that is still present (a gateway from before this change) as
+  // it ignores any unknown key, and no longer requires one. What it cannot fix
+  // is the third direction: a *decoder* from before this change reads
+  // `session['resumed'] as bool` and throws on the frame this build now emits.
+  // Nothing in this package can reach that binary. It is survivable only
+  // because gateway and panels ship together this milestone.
 
   /// Server wall clock at handshake (UTC epoch ms) — the client derives its
   /// clock offset from this so staleness is measured against one clock.
@@ -188,7 +195,6 @@ final class HelloResult {
     this.capabilities = const {},
     required this.sessionId,
     required this.epoch,
-    required this.resumed,
     required this.serverTime,
     this.publisherId,
   });
@@ -203,13 +209,9 @@ final class HelloResult {
           (json['capabilities'] as Map? ?? const {}).cast<String, Object?>(),
       sessionId: session['id'] as String,
       epoch: session['epoch'] as String,
-      // Tolerant of absence, and it has to be. This read was
-      // `session['resumed'] as bool`, which throws on a missing key — so the
-      // first gateway that stopped emitting the field would have taken every
-      // panel's handshake down with a cast error naming no field. The emit is
-      // removed in the very next commit; the tolerance goes in first so that
-      // the two are never the same change and a bisect can land between them.
-      resumed: session['resumed'] as bool? ?? false,
+      // No `resumed` read. A frame that still carries the key is decoded and
+      // the key ignored, which is this library's general rule rather than a
+      // special case; see the block where the field was declared.
       serverTime: (clock['serverTime'] as num).toInt(),
       publisherId: json['publisherId'] as String?,
     );
@@ -219,7 +221,13 @@ final class HelloResult {
         'protocol': protocol,
         'server': server.toJson(),
         if (capabilities.isNotEmpty) 'capabilities': capabilities,
-        'session': {'id': sessionId, 'epoch': epoch, 'resumed': resumed},
+        // The `session` object stays, and only the withdrawn key leaves it.
+        // `epoch` is the whole epoch-change re-establishment mechanism — the
+        // client feeds it straight to `ResyncEngine.onHello` — and `id` is what
+        // server-side attribution is written against. A withdrawal that took
+        // the object whole would break every reconnection in the plant while
+        // looking like the same deletion.
+        'session': {'id': sessionId, 'epoch': epoch},
         'clock': {'serverTime': serverTime},
         if (publisherId != null) 'publisherId': publisherId,
       };

@@ -17,24 +17,31 @@ void main() {
       supported: const [protocolVersion],
       client: const PeerInfo('centroid-hmi', '1.4.0'),
       capabilities: const {'deltaPush': true},
-      session: const SessionResume(
-          id: '01J8', epoch: '01J7', lastSeq: {'s1': 4210}),
     );
-    final p = HelloParams.fromJson(viaJson(params.toJson()));
+    // The frame carries a `session` object it no longer has a field for — a
+    // hello from a panel that predates 16-11's withdrawal. It is an unknown key
+    // now, and the rule for unknown keys is that they are ignored, so this is
+    // also the inbound half of the compatibility the withdrawal has to survive.
+    final p = HelloParams.fromJson(viaJson(params.toJson(), extra: const {
+      'futureField': 123,
+      'session': {'id': '01J8', 'epoch': '01J7', 'lastSeq': {'s1': 4210}},
+    }));
     expect(p.protocol, protocolVersion);
-    expect(p.session!.lastSeq, {'s1': 4210});
     expect(p.capabilities['deltaPush'], true);
+    expect(p.toJson().containsKey('session'), isFalse,
+        reason: 'a resume claim the gateway cannot honour must not be carried '
+            'back out of a decode; there is no field to hold it and no code '
+            'that could act on it');
 
     final result = HelloResult(
       protocol: protocolVersion,
       server: const PeerInfo('tfc-relay', '0.1.0'),
       sessionId: 'sid',
       epoch: 'e1',
-      resumed: false,
       serverTime: 1786000000123,
     );
     final r = HelloResult.fromJson(viaJson(result.toJson()));
-    expect(r.resumed, isFalse);
+    expect(r.epoch, 'e1');
     expect(r.serverTime, 1786000000123);
   });
 
@@ -103,7 +110,6 @@ void main() {
       capabilities: const {'tickMs': 50, 'heartbeatDeadlineMs': 6000},
       sessionId: 'sid',
       epoch: 'e1',
-      resumed: false,
       serverTime: 1786000000123,
     );
 
@@ -174,7 +180,6 @@ void main() {
       server: const PeerInfo('tfc-relay', '0.1.0'),
       sessionId: 'sid',
       epoch: 'e1',
-      resumed: false,
       serverTime: 1786000000123,
       publisherId: 'gw-st101',
     );
@@ -198,7 +203,6 @@ void main() {
       server: const PeerInfo('tfc-relay', '0.1.0'),
       sessionId: 'sid',
       epoch: 'e1',
-      resumed: false,
       serverTime: 1786000000123,
     );
 
@@ -215,16 +219,30 @@ void main() {
     // protocol version is interpolated because bumping it is a deliberate
     // wire change with its own decision, and this arm is making a claim about
     // one optional key, not about the version constant.
+    //
+    // **`"resumed":false` left this literal in 16-11, and that is exactly the
+    // kind of edit this arm exists to make somebody justify.** It is not an
+    // additive optional key going quiet; it is a field withdrawn from the
+    // wire, which is a deliberate wire change with its own decision (HARD-03,
+    // 16-CONTEXT.md) — the same category as bumping the protocol version, and
+    // it had to be argued rather than absorbed. What makes it survivable is
+    // that gateway and panels ship as one binary this milestone, so there is
+    // no deployed decoder on the other side of the change. The decoder in this
+    // build tolerates the key's presence *and* its absence; a decoder from
+    // before it does not, and nothing in this package can reach one.
     expect(
         jsonEncode(wire),
         '{"protocol":"$protocolVersion",'
         '"server":{"name":"tfc-relay","version":"0.1.0"},'
-        '"session":{"id":"sid","epoch":"e1","resumed":false},'
+        '"session":{"id":"sid","epoch":"e1"},'
         '"clock":{"serverTime":1786000000123}}',
         reason: 'an already-deployed panel decodes this frame; a byte that '
             'moved is a fleet-wide handshake failure, and the additive-'
             'optional idiom is what makes the field safe in both directions '
-            'with no version negotiation');
+            'with no version negotiation. If this failed on the `session` '
+            'object, read the paragraph above before updating the literal — '
+            'that key was withdrawn once, deliberately, and a second one going '
+            'the same way needs the same argument');
 
     expect(HelloResult.fromJson(viaJson(wire)).publisherId, isNull,
         reason: 'a frame with no publisher key decodes to no publisher, and '
