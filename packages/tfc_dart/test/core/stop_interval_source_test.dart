@@ -20,12 +20,16 @@ AlarmRule rule(AlarmLevel level) => AlarmRule(
 /// history half is decoded out of `alarm_history` and the live half arrives
 /// off the pipe, so the same activation is two different instances and an
 /// identity-keyed dedupe cannot see that they are one thing.
+/// [start] overrides [from] when the arm cares about the exact instant — the
+/// sub-millisecond and time-zone-mode arms below, where `at(minutes)` cannot
+/// express what the two halves really carry.
 AlarmActive activation(
   String uid, {
   required int from,
   int? to,
   AlarmLevel level = AlarmLevel.error,
   int? ruleIndex = 0,
+  DateTime? start,
 }) {
   final config = AlarmConfig(
     uid: uid,
@@ -40,7 +44,7 @@ AlarmActive activation(
       active: to == null,
       expression: null,
       rule: rule(level),
-      timestamp: at(from),
+      timestamp: start ?? at(from),
       ruleIndex: ruleIndex,
     ),
     deactivated: to == null ? null : at(to),
@@ -182,6 +186,94 @@ void main() {
         active: [activation('CN04.MOT01', from: 0, ruleIndex: null)],
       );
       expect(source.all, hasLength(1));
+    });
+
+    // ------------------------------------------------------- CR-03 (14-REVIEW)
+    //
+    // The key was `(uid, ruleIndex, DateTime)` compared with `DateTime.==`,
+    // and the two halves do not carry the same `DateTime`. They never did:
+    //
+    //  * history — `relay_alarm_source.dart:433` hands over `row.createdAt`,
+    //    which drift reads out of the TEXT column at MICROSECOND resolution,
+    //    and `AlarmHistoryWriter._sqlInstant` wrote the full
+    //    `toIso8601String()`, so microseconds survive the `::timestamp` round
+    //    trip.
+    //  * live — `relay_alarm_source.dart:252` builds
+    //    `DateTime.fromMillisecondsSinceEpoch(entry.activeAtMs)`, and
+    //    `activeAtMs` is `stamp.at.toUtc().millisecondsSinceEpoch`
+    //    (`backend_alarms.dart:254`). Microseconds truncated, on the wire, by
+    //    construction.
+    //
+    // An OPC UA `sourceTimestamp` is a 100 ns tick, so a plant instant with
+    // microseconds in it is the ordinary case and not the exotic one. These
+    // two arms are the P-8/D-12 double-count returning through a different
+    // hole, and the third is what stops the repair from becoming a swallow.
+    test(
+        'a plant instant with microseconds still dedupes across the two halves',
+        () {
+      // 12:00:00.123456Z as the history row holds it, and .123000Z as the
+      // wire could ever carry it. One standing alarm, two halves.
+      final fromDb = DateTime.utc(2026, 8, 29, 12, 0, 0, 123, 456);
+      final fromPipe = DateTime.fromMillisecondsSinceEpoch(
+          fromDb.millisecondsSinceEpoch,
+          isUtc: true);
+      expect(fromDb, isNot(fromPipe),
+          reason: 'the premise: the two halves carry different DateTimes for '
+              'one activation. If these ever compare equal the arm is '
+              'vacuous.');
+
+      final source = StopIntervalSource.fromAlarms(
+        history: [activation('CN04.MOT01', from: 0, start: fromDb)],
+        active: [activation('CN04.MOT01', from: 0, start: fromPipe)],
+      );
+
+      expect(source.all, hasLength(1),
+          reason: 'the same current stop drawn twice on the timeline and '
+              'counted twice in the totals — exactly the double-count the '
+              'identity set was replaced to fix (P-8, D-12), reached through '
+              'the microseconds the wire cannot carry. Got: ${source.all}');
+      expect(source.open, isEmpty,
+          reason: 'and the history record still wins, as it always did');
+    });
+
+    test('the same instant in local mode and UTC mode is one activation', () {
+      // `DateTime.==` compares the `isUtc` flag as well as the microseconds,
+      // so a producer that hands over a local-mode instant misses at ANY
+      // precision. Direct mode's live stamp is whatever `sourceTimestamp` the
+      // open62541 value carried, which is not guaranteed to be UTC-flagged.
+      final utc = DateTime.utc(2026, 8, 29, 12, 0, 0);
+      final local = utc.toLocal();
+      expect(local.isUtc, isFalse,
+          reason: 'the premise: two DateTime objects for one instant, '
+              'differing only in mode');
+
+      final source = StopIntervalSource.fromAlarms(
+        history: [activation('CN04.MOT01', from: 0, start: utc)],
+        active: [activation('CN04.MOT01', from: 0, start: local)],
+      );
+
+      expect(source.all, hasLength(1),
+          reason: 'one instant, one activation. Got: ${source.all}');
+    });
+
+    test('two activations one millisecond apart are still two', () {
+      // The anti-vacuity half. Normalising the key must not become rounding
+      // it: a dedupe that collapsed to whole seconds would pass both arms
+      // above while quietly merging genuinely distinct stops, which is the
+      // failure the "two genuinely different activations" arm exists for —
+      // taken here to the finest resolution the wire can express.
+      final first = DateTime.utc(2026, 8, 29, 12, 0, 0, 123);
+      final second = DateTime.utc(2026, 8, 29, 12, 0, 0, 124);
+
+      final source = StopIntervalSource.fromAlarms(
+        history: [activation('CN04.MOT01', from: 0, to: 1, start: first)],
+        active: [activation('CN04.MOT01', from: 0, start: second)],
+      );
+
+      expect(source.all, hasLength(2),
+          reason: 'a millisecond is the finest thing ALARM.active can say, so '
+              'two entries a millisecond apart are two activations and the '
+              'key must keep them apart. Got: ${source.all}');
     });
   });
 
