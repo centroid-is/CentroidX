@@ -123,6 +123,7 @@ final class _Rig {
     Duration floor = _floor,
     int? deadlineMs,
     int Function()? elapsed,
+    Map<String, int> Function()? ackSource,
   }) : scripted = _ScriptedPeer(answer: answer) {
     isReady = ready;
     hasPeer = withPeer;
@@ -131,6 +132,7 @@ final class _Rig {
       isReady: () => isReady,
       peer: () => hasPeer ? scripted.peer : null,
       elapsed: elapsed,
+      ackSource: ackSource,
       onComplaint: complaints.add,
     );
     if (deadlineMs != null) pump.learnedDeadlineMs(deadlineMs);
@@ -318,6 +320,162 @@ void main() {
           reason: 'the heartbeat is a request rather than a notification, so '
               'a gateway that answers it proves the round trip and a gateway '
               'that does not is visible as silence to the freshness watchdog');
+    });
+  });
+
+  /// The delivery ack the beat now carries, and the gate change that makes it
+  /// worth carrying (`16-02-DECISION.md` §5.1 and §6).
+  ///
+  /// **The two halves are one mechanism and neither works alone.** The gateway
+  /// can only judge delivery from an ack it actually receives, and the skip
+  /// rule this file already pins means a *busy* panel sends no beats at all —
+  /// so the panel that most needs judging, one that is writing while it has
+  /// stopped reading, would send the gateway nothing to judge it by. §6's rule
+  /// closes that: beat when the wire has been quiet **or** when the ack has not
+  /// moved; skip only when there was recent traffic **and** the ack has moved.
+  ///
+  /// **`16-CONTEXT.md` states this backwards in one sentence and correctly in
+  /// the next**, and 16-02 ruled on which half is meant: an *unchanged* ack is
+  /// precisely the signal that the panel may have stopped reading, and the one
+  /// case where the gateway most needs to hear from it. The arms below are
+  /// written so the wrong half cannot pass — `_ackFrozen` and `_ackMoving` are
+  /// opposite outcomes on identical traffic, so an implementation that skips on
+  /// a frozen ack fails one of them whichever way round it is written.
+  group('the beat carries the delivery ack', () {
+    test('a beat names the sequence each subscription has applied', () async {
+      final rig = _Rig(ackSource: () => {'page-1': 10432, 'pane-motor-3': 88});
+      rig.pump.start();
+      await Future<void>.delayed(_severalBeats);
+
+      expect(rig.scripted.requests, isNotEmpty,
+          reason: 'nothing reached the wire, so there is no frame to read an '
+              'ack off');
+      expect(rig.scripted.requests.last['params'], {
+        'ack': {'page-1': 10432, 'pane-motor-3': 88}
+      },
+          reason: 'this is the whole of the client half: the gateway cannot '
+              'see how far behind a panel is — dart:io exposes no '
+              'bufferedAmount — so the only number it can act on is the one '
+              'the panel puts here');
+    });
+
+    test('a panel holding no subscriptions beats exactly as it always did',
+        () async {
+      // The 47-byte frame. A panel between pages, or one whose subscribe has
+      // not landed yet, must not start emitting an empty object to say nothing
+      // with — and a gateway too old to read an ack must keep seeing the frame
+      // it understands.
+      final rig = _Rig(ackSource: () => const {});
+      rig.pump.start();
+      await Future<void>.delayed(_severalBeats);
+
+      expect(rig.scripted.requests, isNotEmpty);
+      for (final request in rig.scripted.requests) {
+        expect(request['params'], anyOf(isNull, isEmpty),
+            reason: 'a beat with nothing to acknowledge carries no ack key');
+      }
+    });
+
+    test('a pump wired to no ack source at all still beats', () async {
+      // The supervisor builds the pump before it has any subscriptions to read
+      // from, and every existing case in this file constructs one with no
+      // source. A null source is "I have nothing to say", never "do not beat".
+      final rig = _Rig();
+      rig.pump.start();
+      await Future<void>.delayed(_severalBeats);
+
+      expect(rig.pump.debugHeartbeatsSent, greaterThan(0));
+      expect(rig.scripted.requests.last['params'], anyOf(isNull, isEmpty));
+    });
+  });
+
+  group('a busy panel that has stopped reading still beats', () {
+    /// Ten periods of a panel putting frames on the wire the whole time.
+    const periods = 10;
+    final window = _floor * periods;
+
+    /// Drives [rig] busy for one `window` — an operator on a jog button —
+    /// while its own `ackSource` says what it can honestly claim to have
+    /// applied.
+    Future<void> busyFor(_Rig rig) async {
+      rig.pump.start();
+      final chatter = Timer.periodic(
+          const Duration(milliseconds: 10), (_) => rig.pump.noteOutbound());
+      addTearDown(chatter.cancel);
+      await Future<void>.delayed(window);
+      chatter.cancel();
+    }
+
+    test('_ackMoving: a busy panel that is keeping up sends no beats at all',
+        () async {
+      // Unchanged behaviour, and the half of the rule that must survive §6:
+      // this panel is reading everything the gateway sends, and every frame it
+      // sends is already a heartbeat as far as the reaper is concerned. A ping
+      // on top would be pure cost on the busiest path there is.
+      var applied = 0;
+      final rig = _Rig(ackSource: () => {'page-1': ++applied});
+      await busyFor(rig);
+
+      expect(rig.pump.debugHeartbeatsSent, 0,
+          reason: 'the pump sent ${rig.pump.debugHeartbeatsSent} beats while '
+              'the panel was both busy and demonstrably reading. §2.5 models '
+              'this row at 0.00 beats/min and it must stay there — the skip '
+              'rule exists for exactly this panel');
+    });
+
+    test('_ackFrozen: a busy panel whose ack has stopped moving beats anyway',
+        () async {
+      // The stuck reader, and the hole §6 exists to close. Answering pings and
+      // decoding `u` frames are different code paths: a panel wedged behind a
+      // slow render keeps writing while its applied sequence stands still.
+      // Under the old rule it sent nothing, so the gateway had no ack to judge
+      // it by and the delivery verdict could never fire for the one client it
+      // was built for.
+      final rig = _Rig(ackSource: () => const {'page-1': 4242});
+      await busyFor(rig);
+
+      expect(rig.pump.debugHeartbeatsSent, greaterThanOrEqualTo(periods - 2),
+          reason: 'the pump sent ${rig.pump.debugHeartbeatsSent} beats over '
+              '$periods periods while the ack stood still. §2.5 models this '
+              'row at the full un-skipped rate: a panel busy *writing* has '
+              'proved nothing about whether it is *reading*');
+      expect(rig.scripted.requests.last['params'], {
+        'ack': {'page-1': 4242}
+      },
+          reason: 'and every one of those beats carried the frozen number, '
+              'which is what the gateway needs to see standing still');
+    });
+
+    test('no cadence a panel can produce beats faster than the period',
+        () async {
+      // The structural ceiling §2.5 argues rather than measures, measured.
+      // Both rules run inside the same Timer.periodic, so the narrowed gate
+      // can only ever *restore* the un-skipped rate — it cannot invent a beat
+      // between two ticks. No storm is available at any traffic level, and
+      // this is the arm that would catch one.
+      final rig = _Rig(ackSource: () => const {'page-1': 1});
+      await busyFor(rig);
+
+      expect(rig.pump.debugHeartbeatsSent, lessThanOrEqualTo(periods),
+          reason: 'the pump sent ${rig.pump.debugHeartbeatsSent} beats in '
+              '$periods periods. A gate that beat once per outbound frame '
+              'rather than once per tick would answer an operator on a jog '
+              'button with a hundred pings a second');
+    });
+
+    test('a quiet panel beats whether its ack is moving or not', () async {
+      // The other half of the OR, and the one a narrowed gate could silently
+      // break: silence alone is still reason enough to beat. A panel watching
+      // a page that is genuinely changing has a moving ack and no traffic, and
+      // it must not be talked out of its heartbeat by the new condition.
+      var applied = 0;
+      final rig = _Rig(ackSource: () => {'page-1': ++applied});
+      rig.pump.start();
+      await Future<void>.delayed(window);
+
+      expect(rig.pump.debugHeartbeatsSent, greaterThan(0),
+          reason: 'a silent panel with a healthy moving ack sent nothing and '
+              'will be reaped at 4003 for a silence the ack rule invented');
     });
   });
 
