@@ -453,7 +453,16 @@ final class ConnectionSupervisor {
       _down(gen, 'the dial failed: $error');
       return;
     }
-    if (_disposed || gen != _generation) return;
+    if (_disposed || gen != _generation) {
+      // **Both doors of this condition, one answer** (16-07, finding S12).
+      // The dial has already completed: the socket is up and the WebSocket
+      // upgrade has happened. Returning here without closing it dropped it
+      // where nothing else in this file can reach — the only sink close is
+      // `_stopServing`'s `peer.close()`, and the peer is built inside
+      // [_serve], which this path never enters.
+      await _closeAbandonedDial(attempt);
+      return;
+    }
 
     // Sealed, two arms, and no fallthrough: a third outcome added to
     // `ConnectAttempt` is a compile error here rather than a dial whose result
@@ -463,6 +472,33 @@ final class ConnectionSupervisor {
         _down(gen, _refusalReason(error));
       case ConnectSucceeded(:final channel):
         await _serve(gen, channel);
+    }
+  }
+
+  /// Closes the socket a dial produced for a connection nobody will serve.
+  ///
+  /// **`_pinned?.close(force: true)` does not reap this**, which is the reason
+  /// it is worth three lines rather than none. The WebSocket upgrade detaches
+  /// the socket from the `HttpClient` connection pool, so closing the panel's
+  /// pinned client leaves it open and the gateway carries a session nobody is
+  /// on until its own reaper fires. The window is `connectTimeout` wide — ten
+  /// seconds by default — and a gateway coming back from a reboot is exactly
+  /// what fills it: a panel shutting down mid-restart leaks one session per
+  /// occurrence, and a control room shuts its panels down together.
+  ///
+  /// A [ConnectFailed] has no socket to close: `connect` has already drained
+  /// the second copy of the exception off its stream and attached a handler to
+  /// its `done`, which is the whole of that outcome's cleanup.
+  ///
+  /// Swallowed rather than reported, on [_retirePeer]'s reasoning: a close that
+  /// fails is a socket that was already gone, which is the ordinary shape of a
+  /// teardown after a cut cable.
+  Future<void> _closeAbandonedDial(ConnectAttempt attempt) async {
+    if (attempt is! ConnectSucceeded) return;
+    try {
+      await attempt.channel.sink.close();
+    } catch (_) {
+      // See above.
     }
   }
 
