@@ -7,8 +7,12 @@ import 'assets/common.dart';
 import 'assets/registry.dart';
 import '../models/menu_item.dart';
 import 'package:tfc_dart/core/fuzzy_match.dart';
+import 'package:logger/logger.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_store.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc/converter/icon.dart';
+import '../core/config/page_codec.dart';
 
 part 'page.g.dart';
 
@@ -115,6 +119,35 @@ class AssetListConverter implements JsonConverter<List<Asset>, List<dynamic>> {
   }
 }
 
+/// Off the happy path only: a mirror that would not read, a blob that would
+/// not parse. Nothing here logs per read.
+final Logger _logger = Logger();
+
+/// Where the pages [PageManager] currently holds came from.
+///
+/// The distinction this exists to make is **"empty" versus "not yet loaded"**.
+/// A manager whose [PageManager.pages] is empty may be a station whose layout
+/// really is empty, or one whose [PageManager.load] has not run — and the
+/// re-load trigger in `providers/page_manager.dart` has to tell them apart or
+/// it silently never fires, which looks exactly like a window that never
+/// opened.
+enum PageSource {
+  /// [PageManager.load] has not run on this manager. Every construction
+  /// starts here, including the 64 in `test/`.
+  notLoaded,
+
+  /// Rows from the local mirror, through [pagesOf]. The steady state after
+  /// the migration.
+  rows,
+
+  /// The device-local `page_editor_data` blob, read **read-only**. What a
+  /// station serves between boot and the reconcile that brings it rows.
+  blob,
+
+  /// The built-in default layout, held in memory and persisted nowhere.
+  builtInDefault,
+}
+
 class PageManager {
   static const String storageKey = 'page_editor_data';
   static const String orderStorageKey = 'page_editor_top_level_order';
@@ -132,29 +165,69 @@ class PageManager {
   /// order alone.
   List<String> topLevelOrder = [];
 
-  /// Where [load]'s **seed write** goes, and nowhere else.
+  /// The local mirror [load] reads pages from, or null for the blob-only
+  /// behaviour every construction had before rows existed.
   ///
-  /// A station with no stored `page_editor_data` writes the hardcoded default
-  /// layout at boot, with nobody signed in, against a `configure` key. On the
-  /// guarded store that is a denial — and because the seed is not awaited, it
-  /// surfaces as an unhandled asynchronous error rather than a failed load:
-  /// the station comes up on the default layout, never persists it, and greets
-  /// whoever is standing there with a denial prompt on every cold boot.
+  /// **Reads only, by convention, and the convention is the whole defence.**
+  /// This is the raw [ConfigStore], not the guarded one: it has an ungated
+  /// `writeItems` on it. The same [PageManager] instance is what
+  /// `page_editor.dart` calls [save] through, and that write is a person
+  /// editing pages — it must stay gated, and treating this field as a write
+  /// path would unlock the editor for everybody. The save (03-06) goes
+  /// through `GuardedConfigStore`; nothing in this class writes here.
   ///
-  /// **It is a separate field, and that is the whole point.** The same
-  /// [PageManager] instance is what `page_editor.dart` calls [save] through,
-  /// and that write is a person editing pages — it must stay gated. Handing
-  /// the unchecked store in as [prefs] would unlock the editor for everybody.
-  /// Defaults to [prefs], so every existing construction and every existing
-  /// test is unaffected.
-  final PreferencesApi bootstrapPrefs;
+  /// This replaces the separate bootstrap preferences handle, which existed
+  /// to route [load]'s seed write away from the guarded object. That seed is
+  /// deleted: a station with
+  /// no stored layout wrote the built-in default at boot with nobody signed
+  /// in, against a `configure` key, unawaited — so on a guarded store it was a
+  /// denial prompt on every cold boot rather than a failed load. Its only
+  /// purpose, that a virgin station has a Home page, is served by the
+  /// in-memory default below; the first real Save persists it, gated and
+  /// audited, by a person.
+  final ConfigStore? store;
+
+  /// Where the pages in memory came from — see [PageSource].
+  PageSource get source => _source;
+  PageSource _source = PageSource.notLoaded;
+
+  /// Whether [load] fell back off the rows: the blob, or the built-in default.
+  ///
+  /// The re-load trigger in `providers/page_manager.dart` reads this. It is a
+  /// named, tested property rather than an inference from `pages.isEmpty`
+  /// because the two differ exactly where it matters: on rollout day a station
+  /// serving a full blob has a hundred pages and no row identities at all.
+  bool get servingFallback =>
+      _source == PageSource.blob || _source == PageSource.builtInDefault;
 
   PageManager({
     required this.pages,
     required this.prefs,
-    PreferencesApi? bootstrapPrefs,
-  }) : bootstrapPrefs = bootstrapPrefs ?? prefs;
+    this.store,
+  });
 
+  /// Fills [pages] and [topLevelOrder] from the best source this station has.
+  ///
+  /// Order, and each step is a fallback from the one above:
+  ///
+  /// 1. **Rows** from [store]'s local mirror. No Postgres and no network — the
+  ///    snapshot is already in memory by the time this runs.
+  /// 2. **The `page_editor_data` blob** in [prefs], parsed by today's code
+  ///    path. **Read-only.** Nothing is written back and no id is minted: an
+  ///    asset id is derived from its content, so a station one save behind
+  ///    would derive different ids for everything after the divergence point
+  ///    and mint permanent ghost rows on the plant's mimic that no reconcile
+  ///    has any reason to delete. The rows arrive at the next reconcile; the
+  ///    blob stays where it is as rollback insurance.
+  /// 3. **The built-in default layout**, in memory. Persisted nowhere — see
+  ///    [store] for the seed write that used to be here and why it is gone.
+  ///
+  /// [topLevelOrder] still comes from [prefs] at every step: it is a
+  /// device-local preference, not shared configuration, until Phase 4.
+  ///
+  /// It does not throw. A mirror that will not read and a blob that will not
+  /// parse are both logged and fallen through, because a panel that comes up
+  /// degraded beats one that does not come up.
   Future<void> load() async {
     final orderJson = await prefs.getString(orderStorageKey);
     if (orderJson != null) {
@@ -164,7 +237,6 @@ class PageManager {
         topLevelOrder = [];
       }
     }
-    String? jsonString = await prefs.getString(storageKey);
     final defaultPages = {
       '/': AssetPage(
         menuItem: const MenuItem(label: 'Home', path: '/', icon: Icons.home),
@@ -172,18 +244,66 @@ class PageManager {
         mirroringDisabled: false,
       ),
     };
+
+    if (_loadFromRows()) return;
+
+    final jsonString = await prefs.getString(storageKey);
     if (jsonString != null) {
       try {
         fromJson(jsonString);
         if (pages.isEmpty) {
           pages = defaultPages;
+          _source = PageSource.builtInDefault;
+        } else {
+          _source = PageSource.blob;
         }
       } catch (e) {
+        _logger.e('The stored page layout could not be parsed; this station '
+            'comes up on the built-in default pages and persists nothing: $e');
         pages = defaultPages;
+        _source = PageSource.builtInDefault;
       }
-    } else {
-      // some sane default
-      jsonString = r'''
+      return;
+    }
+
+    // A station that has never stored a layout. In memory only: the seed write
+    // that used to follow this line is deleted.
+    fromJson(_builtInLayoutJson);
+    _source = PageSource.builtInDefault;
+  }
+
+  /// Serves [pages] out of [store]'s mirror, or answers false so [load] falls
+  /// through to the blob.
+  ///
+  /// False on all three of: no store, a store holding no page or asset rows,
+  /// and rows that reassemble into no pages at all. The last is not the same
+  /// as "the mirror is empty" and is treated the same way on purpose — pages
+  /// that could not be rebuilt are pages this station cannot serve.
+  bool _loadFromRows() {
+    final store = this.store;
+    if (store == null) return false;
+    try {
+      final items = store.itemsOf(const {ConfigKind.page, ConfigKind.asset});
+      if (items.isEmpty) return false;
+      final fromRows = pagesOf(items);
+      if (fromRows.isEmpty) return false;
+      pages = fromRows;
+      _source = PageSource.rows;
+      return true;
+    } catch (e) {
+      _logger.e('The mirrored page rows could not be read; this station falls '
+          'back to its stored layout: $e');
+      return false;
+    }
+  }
+
+  /// The layout a station that has never stored one comes up on.
+  ///
+  /// Held here rather than written anywhere. It was the *seed*: [load] used to
+  /// persist it at boot with nobody signed in, which on the guarded store is a
+  /// denial. Nothing writes it now — the first Save by a person does, through
+  /// the gate.
+  static const String _builtInLayoutJson = r'''
         {
           "Home": {
             "menu_item": {
@@ -293,12 +413,6 @@ class PageManager {
           }
         }
       ''';
-      fromJson(jsonString);
-      // Through [bootstrapPrefs], not [prefs]: the app initialising itself,
-      // not a person editing pages. Still unawaited, as it always was.
-      bootstrapPrefs.setString(storageKey, jsonString);
-    }
-  }
 
   Future<void> save() async {
     await prefs.setString(storageKey, toJson());
@@ -353,9 +467,14 @@ class PageManager {
     final manager = PageManager(
       pages: otherPages ?? pages,
       prefs: prefs,
+      // Carried, or the copy would silently drop back to blob-only behaviour
+      // — the field-by-field rebuild trap [AssetPage.copyWith] documents,
+      // one level up.
+      store: store,
     );
     final json = manager.toJson();
     manager.fromJson(json);
+    manager._source = _source;
     return manager;
   }
 

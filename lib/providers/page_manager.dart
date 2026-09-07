@@ -1,6 +1,11 @@
+import 'dart:async';
+
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
+
 import '../page_creator/page.dart';
+import 'config_store.dart';
 import 'preferences.dart';
 
 part 'page_manager.g.dart';
@@ -24,19 +29,75 @@ part 'page_manager.g.dart';
 /// test working without one.
 final bootstrapPageManagerProvider = Provider<PageManager?>((ref) => null);
 
+/// The kinds a page layout is assembled from. A diff touching neither is not
+/// this provider's business.
+const Set<ConfigKind> _pageKinds = {ConfigKind.page, ConfigKind.asset};
+
 @Riverpod(keepAlive: true)
 Future<PageManager> pageManager(Ref ref) async {
   final prefs = await ref.watch(preferencesProvider.future);
+  // The **raw** store, for reads. `configStoreProvider` deliberately never
+  // watches `databaseProvider` — its object identity is stable for the life of
+  // the process and the remote is attached underneath it — so the manager
+  // holds one store for the whole session and the change stream below stays
+  // attached across every reconnect. Writes are not this field's business:
+  // `save()` stays on the guarded object, because the page editor's save is a
+  // person editing pages and is exactly what `configure` is for.
+  final store = (await ref.watch(configStoreProvider.future)).inner;
 
   final pageManager = PageManager(
     pages: {},
     prefs: prefs,
-    // The seed write in `load()` only. `save()` stays on the guarded object,
-    // because the page editor's save is a person editing pages and is exactly
-    // what `configure` is for — see `PageManager.bootstrapPrefs`.
-    bootstrapPrefs: await ref.watch(systemPreferencesProvider.future),
+    store: store,
   );
 
   await pageManager.load();
+
+  // ## The rollout-day window, and why it has to close without a restart
+  //
+  // Page rows cannot pre-exist the migration that mints them, so on cutover
+  // day *every* station loads before its mirror holds any — it comes up on
+  // the blob, read-only, holding pages with no row identity. Without this
+  // listener it holds them for the whole session, and the first Save mints
+  // fresh random ids for all of them and rewrites ~410 rows, severing every
+  // identity the migration just minted. That save commits cleanly; nothing
+  // downstream detects it. So the window is closed at the reconcile, not at
+  // the next boot.
+  //
+  // Only while the manager is serving a fallback: a manager already on rows
+  // is the steady state, and re-loading it out from under a live layout on
+  // every incoming diff is a different feature with a different blast radius
+  // (Phase 4). `servingFallback` is a named flag on the manager rather than
+  // `pages.isEmpty` because a station on the blob has a hundred pages.
+  //
+  // The re-load cannot clobber an open editing session: the editor works on
+  // `PageManager.copyPages` output, not on this object's map. That session's
+  // own save is covered by 03-06's identity adoption — the other half.
+  if (pageManager.servingFallback) {
+    late final StreamSubscription<void> subscription;
+    subscription = store.keyMappingChanges.listen((diff) {
+      final touchesPages = [
+        ...diff.added,
+        ...diff.changed,
+        ...diff.removed,
+      ].any((item) => _pageKinds.contains(item.kind));
+      if (!touchesPages) return;
+      // Synchronous through the store's snapshot for the rows; the only await
+      // inside `load()` is the device-local `topLevelOrder` read.
+      unawaited(pageManager.load().then((_) {
+        if (!pageManager.servingFallback) {
+          // The window is closed. Nothing left to watch for.
+          unawaited(subscription.cancel());
+        }
+        ref.notifyListeners();
+      }).catchError((Object e) {
+        // `load()` does not throw, but an unawaited future with no handler is
+        // an unhandled asynchronous error if that ever stops being true.
+        return;
+      }));
+    });
+    ref.onDispose(() => unawaited(subscription.cancel()));
+  }
+
   return pageManager;
 }
