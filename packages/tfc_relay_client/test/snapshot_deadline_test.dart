@@ -263,10 +263,12 @@ Future<_Panel> _panelOn(
   _SlowGateway gateway, {
   required Duration freshness,
   Duration control = const Duration(milliseconds: 200),
+  Duration snapshot = const Duration(seconds: 15),
   bool establish = true,
 }) async {
   final config = ClientConfig(
     controlDeadline: control,
+    snapshotDeadline: snapshot,
     writeDeadline: const Duration(milliseconds: 600),
     freshnessDeadline: freshness,
     backoffBase: const Duration(milliseconds: 40),
@@ -423,6 +425,139 @@ void main() {
               'defect is that the heartbeat keeps a healthy socket open for '
               'days, so a recovery that needs a drop is a recovery that waits '
               'for the end of the shift');
+    });
+
+    test('comes back from the timeout that dropped it, not merely from a '
+        'refusal', () async {
+      // The arm above isolates the closed door by using a refusal. This one is
+      // the plant sequence end to end, with the clock in it: a rebuild whose
+      // snapshot is slower than the deadline, the page dropped for that reason
+      // alone, and the congestion then clearing while the socket stays up.
+      final gateway = await _SlowGateway.start();
+      const snapshot = Duration(milliseconds: 300);
+      const slow = Duration(milliseconds: 800);
+      expect(slow, greaterThan(snapshot),
+          reason: 'the rebuild has to outlast its own deadline or nothing '
+              'below is about a timeout');
+
+      final panel = await _panelOn(gateway,
+          freshness: const Duration(seconds: 1), snapshot: snapshot);
+      expect(gateway.subscribes, 1);
+
+      // The congestion arrives. The gateway is not broken and never refuses:
+      // it answers, correctly, too late.
+      gateway.subscribeDelay = slow;
+      gateway.tick(_snapshotSeq + 5);
+      await _until('the rebuild the divergent tick asked for',
+          () => gateway.subscribes == 2);
+      await _until('that rebuild to be abandoned on its deadline',
+          () => panel.subscriptions[_page]!.lastSeq == null);
+
+      // The congestion clears. Nothing else changes — same socket, same
+      // session, same gateway announcing the page in every tick.
+      gateway.subscribeDelay = Duration.zero;
+      gateway.snapshotValue = 3000;
+      gateway.snapshotSeq = _snapshotSeq + 10;
+      _ticking(gateway, _snapshotSeq + 5);
+
+      await _until('the page to come back once the link is quick again',
+          () => panel.subscriptions[_page]!.lastSeq != null);
+      await Future<void>.delayed(_settle);
+
+      expect(panel.store.peek(_pageKey)?.value, 3000,
+          reason: 'the page is established again but is not holding the '
+              'snapshot the successful rebuild answered with');
+      expect(gateway.hellos, 1,
+          reason: 'a transient snapshot timeout cost the panel '
+              '${gateway.hellos - 1} redials. It must cost none: the socket '
+              'was healthy throughout and the gateway never stopped speaking');
+      expect(
+          panel.supervisor.resync.complaints
+              .where((line) => line.contains('holds null'))
+              .toList(),
+          isEmpty,
+          reason: 'the client accused the gateway of a sequence mismatch '
+              'against a baseline it did not have. A page with no sequence '
+              'cannot disagree with one, and a complaint that says it does '
+              'sends whoever reads it to the wrong end of the link');
+    });
+
+    test('is retried at a bounded rate when the gateway will never answer',
+        () async {
+      // **The other direction, and it is the direction that keeps the door
+      // narrow.** `resync_test.dart`'s
+      // `costs nothing at all once the page has been left unestablished`
+      // protects the *update* path from exactly this: a page that cannot be
+      // rebuilt, retried once per inbound frame, forever. Reopening the tick
+      // path puts that hazard within reach again at 10 Hz, so the damper is
+      // load-bearing and this arm is what fails without it.
+      final gateway = await _SlowGateway.start();
+      const freshness = Duration(seconds: 1);
+      final panel = await _panelOn(gateway, freshness: freshness);
+      expect(gateway.subscribes, 1);
+
+      // Broken for good, and ticking all the while — the shape of a gateway
+      // with a bug in its own subscription bookkeeping.
+      gateway.refuseSubscribe = true;
+      _ticking(gateway, _snapshotSeq + 5);
+
+      const watched = Duration(milliseconds: 2500);
+      await Future<void>.delayed(watched);
+
+      // Twenty-five ticks went out over that window.
+      const undamped = 25;
+      final windows = watched.inMilliseconds / freshness.inMilliseconds;
+      expect(gateway.subscribes, greaterThan(1),
+          reason: 'the client asked for no rebuild at all across '
+              '$undamped ticks at a page it has given up on. That is the '
+              'locked door this file is about, and a bound with nothing '
+              'happening under it is a bound that proves nothing');
+      expect(gateway.subscribes, lessThan(8),
+          reason: 'the client asked for ${gateway.subscribes} rebuilds across '
+              '$undamped ticks. One per subscription per '
+              '${freshness.inMilliseconds} ms allows about '
+              '${windows.round()} across this window; one per tick is the '
+              'F9/G3 resync storm, aimed at the one process serving every '
+              'screen in the plant, and driven by a page nothing can fix');
+      expect(panel.supervisor.resync.complaints.length, lessThan(8),
+          reason: 'the complaint list grew to '
+              '${panel.supervisor.resync.complaints.length} entries while the '
+              'client was pacing itself. An unbounded List<String> filled by a '
+              'loop is the leak, not just the symptom of it');
+    });
+  });
+
+  group('the deadline a snapshot is given', () {
+    test('is its own number, and a far larger one than a ping gets', () {
+      final config = ClientConfig();
+
+      expect(config.snapshotDeadline, const Duration(seconds: 15),
+          reason: 'the plant\'s largest page is ~1500 keys and about 100 kB. '
+              'A link metered at a tenth of a megabit — which is what '
+              'slow_link_gate_test.dart holds the plant link to — needs eight '
+              'seconds for that before the gateway has done anything wrong, '
+              'and the gateway still has to assemble it behind whatever '
+              'backlog is already committed to the socket');
+      expect(config.snapshotDeadline, greaterThan(config.controlDeadline),
+          reason: 'a snapshot is bounded no more generously than a hello, '
+              'which is the whole of S1b: the panel abandons a page that was '
+              'about to land, redials, and asks for it again — and '
+              'backoff.reset() lives only in _enter(ready), which it can '
+              'never reach');
+    });
+
+    test('is still refused below the floor, by name', () {
+      expect(
+        () => ClientConfig(snapshotDeadline: const Duration(milliseconds: 100)),
+        throwsA(isA<ArgumentError>().having(
+          (e) => e.message.toString(),
+          'message',
+          allOf(contains('snapshotDeadline'), contains('100 ms')),
+        )),
+        reason: 'a new deadline that skipped the floor check would be the one '
+            'number in this class that can be set under a measured round '
+            'trip, and it is the number a whole page is bounded by',
+      );
     });
   });
 }
