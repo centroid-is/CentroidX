@@ -23,9 +23,11 @@
 /// counter-example: `enum Role { view, operate }` was a second role vocabulary
 /// beside the seven `AccessGroup`s, and `Identity {stationId, role}` was a
 /// second identity axis. Both are deleted. What replaced them answers **who**;
-/// the groups on [StationIdentity.session] were resolved from `app_role` in the
-/// database, never from the credential. The token file names a role and grants
-/// nothing (D-06, ruled 2026-09-07).
+/// the [StationIdentity.user] is the `app_user` row the server resolved, and
+/// the groups on [StationIdentity.session] were chased user → role → groups
+/// through the database, never read from the credential. The token file names
+/// a USER and grants nothing — not even a role name (D-06 as ruled, redirected
+/// 2026-09-07: *"we will use a user for a station"*).
 ///
 /// Without this file the gateway can only answer "the credential was good",
 /// which is enough to let a panel in and not enough to close one station's
@@ -39,7 +41,7 @@ import 'package:tfc_access/tfc_access.dart';
 /// A const-constructible value type with value equality, because it is
 /// compared rather than mutated: the revocation sweep asks the token file
 /// whether the identity a live session is carrying is still the identity that
-/// file — and the role rows behind it — describe. An identity type with
+/// file — and the account row behind it — describe. An identity type with
 /// reference equality would answer "no" for every session on every reload and
 /// close the whole plant.
 ///
@@ -57,13 +59,16 @@ final class StationIdentity {
     required this.session,
   });
 
-  /// The account this panel authenticates as, with `stationAccount: true`.
+  /// The `app_user` row this panel authenticates as, resolved by the server.
   ///
-  /// This is what an audit row's `who` column records (D-11): the identity a
-  /// relay write is attributed to is one the **server** verified by
-  /// constant-time digest compare, and it is honestly a panel rather than a
-  /// person. The client may not supply it, and there is no wire field through
-  /// which a hand-rolled client could name somebody else.
+  /// This is what an audit row's `who` column records (D-11, improved by the
+  /// redirect): the token file only *named* this account, and everything on
+  /// it — the role, the `stationAccount: true` marking, even the display name
+  /// — is what the **server** read out of the database after verifying the
+  /// credential by constant-time digest compare. Attribution is therefore to
+  /// a verified user rather than to a file's claim. The client may not supply
+  /// it, and there is no wire field through which a hand-rolled client could
+  /// name somebody else.
   final AuthenticatedUser user;
 
   /// The station this session speaks for — `ST101`, `PACK-02`. Stable across
@@ -72,11 +77,12 @@ final class StationIdentity {
   /// session id cannot.
   final String station;
 
-  /// What this station's role resolved to, as of the moment its `hello` was
+  /// What this station's user resolved to, as of the moment its `hello` was
   /// accepted.
   ///
-  /// **The groups came from the database, not from the file.** That is the
-  /// whole of D-06: the credential mechanism may answer "which identity is
+  /// **The role and the groups came from the database, not from the file —
+  /// the file has nowhere left to put either.** That is the whole of D-06 as
+  /// redirected: the credential mechanism may answer "which identity is
   /// this" and may not answer "and therefore may do X". It does not track
   /// later edits on its own — the sweep in `RelayServer.reloadTokens` is what
   /// makes a demotion take effect, by closing the session that is still

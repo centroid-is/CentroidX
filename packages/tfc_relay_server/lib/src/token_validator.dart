@@ -124,9 +124,9 @@ final class TokenRejected extends TokenVerdict {
 /// `Permissive (development)` is a deployment telling on itself; a neutral name
 /// like `Default` would read as a role somebody created.
 ///
-/// Deliberately **not** a row in `app_role` and deliberately not resolved
-/// through the `GroupResolver`: this validator has no database, which is the
-/// whole of what makes it permissive.
+/// Deliberately **not** a row in `app_user` or `app_role` and deliberately not
+/// resolved through the `UserResolver`: this validator has no database, which
+/// is the whole of what makes it permissive.
 const String kPermissiveRoleName = 'Permissive (development)';
 
 /// Accepts every client. The default, and the whole of this phase's auth.

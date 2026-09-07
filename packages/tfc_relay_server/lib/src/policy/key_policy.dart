@@ -20,9 +20,10 @@
 ///
 /// ## What breaks in the plant without this file
 ///
-/// A wall display in the canteen can start a conveyor. A station's role is a
-/// name in a token file with nothing behind it until something asks what that
-/// name may do, and this interface is where the wire asks (T-06-35).
+/// A wall display in the canteen can start a conveyor. A station is a username
+/// in a token file with nothing behind it until the database says who that is
+/// and what its role may do, and this interface is where the wire asks
+/// (T-06-35).
 ///
 /// The quieter half is [canSee]. A gateway that answers *forbidden* for a tag
 /// a station may not see has told that station the tag exists; ask about a
@@ -48,8 +49,8 @@
 ///
 /// There is nothing here to await. Every question is a switch over constants
 /// plus a set membership test, and the group set the identity is carrying was
-/// resolved once, at `hello`, from a role cache the same reload refreshes the
-/// token set from (`file_token_validator.dart`'s `GroupResolver`). A future
+/// resolved once, at `hello`, from a user cache the same reload refreshes the
+/// token set from (`file_token_validator.dart`'s `UserResolver`). A future
 /// policy that genuinely needs a directory lookup should cache into memory on
 /// reload — the way the token set does — rather than make this interface
 /// asynchronous. `key_policy_test.dart` pins the return types of all three
