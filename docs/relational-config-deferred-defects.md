@@ -135,3 +135,44 @@ anything ships.**
 - **Gapped ordering keys.** Dense integer `sort_index` renumbers siblings on
   every drag. It is a wire format, so it must be settled before anything
   ships.
+
+---
+
+## D-4 — `deleteAndCleanAssets` has never removed a single `techDocId`
+
+**Verified 2026-09-07.** `lib/tech_docs/tech_doc_upload_service.dart:253`:
+
+```dart
+final assets = pageMap['assets'];
+if (assets is! Map<String, dynamic>) continue;
+```
+
+`assets` is a **List**, not a Map. `AssetPage` declares
+`@AssetListConverter() List<Asset> assets` and `AssetListConverter implements
+JsonConverter<List<Asset>, List<dynamic>>` (`lib/page_creator/page.dart`), so
+every page in `page_editor_data` serialises its assets as a JSON array. The
+type test is therefore true for every real page, the loop `continue`s, and the
+function returns having modified nothing.
+
+**Effect:** deleting a technical document leaves a dangling `techDocId` on
+every asset that referenced it. Silent — the method reports success, and the
+`modified` flag simply never flips, so it does not even write.
+
+A second, independent defect in the same method: it reads and writes through
+the **device-local** store, while `page_editor_data` is a shared,
+Postgres-owned value. Even with the type test fixed it would edit a copy
+nothing authoritative reads.
+
+The method's own test fixture encodes the bug — it builds `assets` as a Map,
+so the test passes against a shape production never produces. That is why this
+survived review.
+
+**Fix shape:** correct the type test to `List`, point the read/write at the
+shared store, and rebuild the fixture from a real `AssetPage.toJson()` rather
+than a hand-written map. Phase 3 was going to "port" this method to the row
+store; porting a no-op faithfully would preserve the bug, so the port must be
+an explicit behaviour change, decided rather than inherited.
+
+Note the surrounding `on AccessDenied { rethrow; }` arm is correct and
+deliberate — its comment explains that swallowing a guard refusal would let a
+delete proceed as though cleanup succeeded. Keep it.
