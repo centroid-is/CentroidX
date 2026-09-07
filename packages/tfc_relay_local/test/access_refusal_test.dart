@@ -152,11 +152,17 @@ void main() {
       // Without this, the four arms above are satisfied by a LocalStateMan
       // that never started — which refuses everything for a reason that has
       // nothing to do with access control.
+      //
+      // The value goes in through the composer's own ingest seam rather than
+      // through the link, for `fanin_test.dart`'s reason: it is the shortest
+      // path that proves the value lane is alive, and it does not depend on
+      // the fan-in's routing having been exercised first.
       expect(man.browse, isA<BrowseApi>());
       expect(man.keys, contains(st101Key));
-      link.setValue(st101Key, 42);
-      await pumpEventQueue();
-      expect(man.read(st101Key)?.value, 42);
+      man.applyUpstreamBatch({st101Key: DynamicValue(value: 42)});
+      expect(man.read(st101Key)?.value, 42,
+          reason: 'the value lane must be demonstrably working, or the four '
+              'refusals above are a broken fixture wearing a decision');
     });
   });
 }

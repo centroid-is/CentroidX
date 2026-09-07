@@ -637,6 +637,21 @@ final class HarnessedLocalStateMan
   @override
   PreferencesApi get preferences => _man.preferences;
 
+  // Undecorated, for the reason given above `timeseries`: a case must reach
+  // `LocalStateMan`'s refusal by name, and a harness frame in front of the
+  // message would hide what is actually missing.
+  @override
+  AccessTemplateApi get accessTemplates => _man.accessTemplates;
+
+  @override
+  AccessAdminApi get accessAdmin => _man.accessAdmin;
+
+  @override
+  AuditApi get audit => _man.audit;
+
+  @override
+  BackendConfigApi get backendConfig => _man.backendConfig;
+
   @override
   Future<void> dispose() => _man.dispose();
 }
