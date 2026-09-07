@@ -42,13 +42,30 @@ import 'package:tfc_dart/core/database.dart' show DatabaseConfig;
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/route_registry.dart';
 
+import 'package:tfc/core/config/page_codec.dart' show pagesOf;
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_store.dart' show ConfigStore;
+
 import 'test_helpers.dart'
-    show FakeSecureStorage, useInMemoryDeviceLocalPreferences;
+    show
+        FakeSecureStorage,
+        createTestConfigStore,
+        kConfiguringTestSession,
+        useInMemoryDeviceLocalPreferences;
 
 /// Minimal in-memory [PreferencesApi] so the editor can load and save.
 /// Doubles as the read-back channel for [saveAndReadBack].
 class FakeEditorPreferences implements PreferencesApi {
   final Map<String, Object> _store = {};
+
+  /// The rows the editor saves into, once [editorManagerWith] has built one.
+  ///
+  /// It sits on the preferences fake rather than being threaded through
+  /// sixteen test files because that is what [readBackHomeAssets] is handed —
+  /// the read-back channel moved from the blob to the rows and its signature
+  /// did not have to. Image blobs still live in [_store]: the image store is
+  /// preference-backed and is not this phase's.
+  ConfigStore? configStore;
 
   @override
   Future<String?> getString(String key) async => _store[key] as String?;
@@ -100,10 +117,25 @@ DrawnBoxConfig editorBox(double x, double y, {double? angle}) {
     ..size = const RelativeSize(width: 0.12, height: 0.06);
 }
 
-/// A one-page manager holding [assets], saving into [prefs].
-PageManager editorManagerWith(List<Asset> assets, FakeEditorPreferences prefs) {
+/// A one-page manager holding [assets], saving through a store of its own.
+///
+/// Two in-memory SQLite databases — a mirror and a stand-in for Postgres,
+/// attached through `attachRemoteDatabase`, no Docker — behind a permissive
+/// [GuardedConfigStore]. `kConfiguringTestSession` is what makes the save land:
+/// the default session is an anonymous operator, which the guard refuses, and
+/// an editor test asserting on a read-back is by definition standing somebody
+/// at the panel who may configure.
+///
+/// [prefs] is still where image blobs and the top-level order go, and is what
+/// [readBackHomeAssets] is handed — it carries the store on it.
+Future<PageManager> editorManagerWith(
+    List<Asset> assets, FakeEditorPreferences prefs) async {
+  final guarded =
+      await createTestConfigStore(session: kConfiguringTestSession);
+  prefs.configStore = guarded.inner;
   return PageManager(
     prefs: prefs,
+    store: guarded.inner,
     pages: {
       '/': AssetPage(
         menuItem: const MenuItem(label: 'Home', path: '/', icon: Icons.home),
@@ -112,6 +144,12 @@ PageManager editorManagerWith(List<Asset> assets, FakeEditorPreferences prefs) {
         navigationPriority: 0,
       ),
     },
+    writeItems: (wanted, {reason}) => guarded.write(
+      wanted,
+      kinds: const {ConfigKind.page, ConfigKind.asset},
+      checkKind: ConfigKind.page,
+      reason: reason,
+    ),
   );
 }
 
@@ -237,8 +275,8 @@ Future<FakeEditorPreferences> pumpEditorWith(
   addTearDown(tester.view.reset);
 
   final prefs = FakeEditorPreferences();
-  await tester
-      .pumpWidget(buildEditorUnderTest(editorManagerWith(assets, prefs)));
+  await tester.pumpWidget(
+      buildEditorUnderTest(await editorManagerWith(assets, prefs)));
   await tester.pumpAndSettle();
   return prefs;
 }
@@ -390,8 +428,24 @@ Future<List<Map<String, dynamic>>> saveAndReadBack(
 /// saved yet. The read-back half of [saveAndReadBack], for tests that save
 /// some other way than the FAB (e.g. Ctrl/Cmd+S).
 List<Map<String, dynamic>>? readBackHomeAssets(FakeEditorPreferences prefs) {
-  // The manager writes the whole page map under a single key; find the entry
-  // that parses as one and contains our page.
+  // The rows, when the manager under test has a store — which since v1.2
+  // phase 3 is every editor test. One row per top-level asset, reassembled by
+  // the codec so paint order comes back off `sort_index` exactly as the app
+  // reads it, and re-encoded so the shape is the JSON these call sites always
+  // got rather than live objects.
+  final store = prefs.configStore;
+  if (store != null) {
+    final items = store.itemsOf(const {ConfigKind.page, ConfigKind.asset});
+    if (items.isEmpty) return null; // Nothing saved yet.
+    final home = pagesOf(items)['/'];
+    if (home == null) return null;
+    final encoded = jsonDecode(jsonEncode(home.toJson()['assets']));
+    return (encoded as List).cast<Map<String, dynamic>>();
+  }
+
+  // The blob, for a manager built without a store. The manager writes the
+  // whole page map under a single key; find the entry that parses as one and
+  // contains our page.
   for (final value in prefs._store.values) {
     if (value is! String) continue;
     final Object? decoded;
