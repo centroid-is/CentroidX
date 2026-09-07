@@ -245,11 +245,47 @@ final class ConnectionSupervisor {
   /// one correction (the WR-03 shape, in a third file).
   final Stopwatch _elapsed = Stopwatch()..start();
 
-  /// When each subscription was last rebuilt because a tick advertised a
-  /// sequence ahead of it, in [_elapsed]'s clock, and which of them this
-  /// connection has already complained about. Cleared on the way down.
-  final Map<String, int> _tickResyncAtMs = <String, int>{};
-  final Set<String> _tickResyncComplained = <String>{};
+  /// When each subscription was last rebuilt on this client's own initiative,
+  /// in [_elapsed]'s clock, and which of them this connection has already
+  /// complained about suppressing. Cleared on the way down.
+  ///
+  /// **One budget, and three consumers** (16-07, finding S14). A rebuild is a
+  /// rebuild whichever detector asked for it, and 07-REVIEW WR-02's bound is
+  /// one per subscription per [ClientConfig.freshnessDeadline] — so two
+  /// detectors each honouring their own copy of that limit is not that bound,
+  /// it is twice it. The three that consult this pair:
+  ///
+  /// 1. [_tick]'s sequence-mismatch branch, the original (07-07, WR-02);
+  /// 2. [_tick]'s unestablished branch (16-01, S1b) — the way back for a page
+  ///    a snapshot timeout gave up on;
+  /// 3. [_update]'s unannounced-handle branch (16-07, S14), which reached the
+  ///    same `ResyncEngine.onResync` with no rate limit at all. At 10–20 Hz
+  ///    with a handle this session never announced in every frame, that was
+  ///    several full ~1500-key snapshot requests per second against the one
+  ///    process serving every screen in the plant, indefinitely.
+  ///
+  /// The name has no `tick` in it for that reason: anything that adds a fourth
+  /// detector must come through here too, and a field named after one of them
+  /// invites a second map beside it.
+  final Map<String, int> _resyncAtMs = <String, int>{};
+  final Set<String> _resyncComplained = <String>{};
+
+  /// Whether [sub] may be rebuilt now, and books the rebuild if so.
+  ///
+  /// The one gate all three detectors pass through. Stamped **before** the
+  /// caller awaits `onResync`, deliberately: stamping afterwards reopens a
+  /// window in which a second detector starts a second rebuild while the first
+  /// is still in flight, which is the storm this exists to prevent.
+  bool _mayRebuild(String sub) {
+    final sinceLast = _elapsed.elapsedMilliseconds;
+    final rebuiltAt = _resyncAtMs[sub];
+    if (rebuiltAt != null &&
+        sinceLast - rebuiltAt < config.freshnessDeadline.inMilliseconds) {
+      return false;
+    }
+    _resyncAtMs[sub] = sinceLast;
+    return true;
+  }
 
   /// The `gateway_stalled` reason and its absolute duration, carried up from the
   /// last such resync on this connection (09-07). Both null until the gateway
@@ -689,6 +725,24 @@ final class ConnectionSupervisor {
     final state = subscriptions[update.sub];
     if (state == null) return;
 
+    // **The generation gate, resolved here rather than left to `onUpdate`**
+    // (16-07, finding S14). It is the same rule `ResyncEngine.onUpdate`
+    // applies — a frame from an establishment this client has already replaced
+    // is dropped silently, without touching the sequence — moved to the front
+    // of this method because the two things below it used to run *around* the
+    // gate rather than behind it: the handle-resolution loop filed a complaint
+    // per unknown handle, and the rebuild trigger asked for a full page
+    // snapshot, both for a frame nothing was ever going to apply. A peer that
+    // replays retired frames could therefore drive an unbounded rebuild storm
+    // and an unbounded complaint list without a single frame being accepted.
+    //
+    // Resolved first rather than collected-and-appended-afterwards because it
+    // is also cheaper: the handle lookups for a frame that is going nowhere are
+    // skipped with it. `onUpdate` keeps its own copy of the check — this is a
+    // detector shortcut, not a relocation of the rule, and the engine is
+    // driven directly by `resync_test.dart` with no supervisor in front of it.
+    if (update.generation != state.generation) return;
+
     // Whether this client still believes in the page at all. An unestablished
     // one has no handle table, so *every* handle in every frame the gateway
     // goes on pushing is unknown — and none of them is a fault anybody can act
@@ -724,7 +778,32 @@ final class ConnectionSupervisor {
     // that just failed, each with another complaint on an unbounded list.
     // `lastSeq == null` is the same "unestablished" signal `_tick`'s loop
     // skips on two methods down, so the two branches agree.
+    //
+    // **And through the same budget the tick detector uses** (16-07, finding
+    // S14). This branch had no rate limit at all, while the detector two
+    // methods down was capped at one rebuild per subscription per
+    // `freshnessDeadline` because "the F9/G3 resync-storm hazard reached
+    // through this detector" (07-REVIEW WR-02). The hazard reaches through
+    // this one too, and harder: a tick arrives at the gateway's fan-out
+    // cadence, while `u` frames arrive as fast as the plant moves. See
+    // [_resyncAtMs] for why the two share one map rather than owning one each.
     if (sawUnknownHandle && state.lastSeq != null) {
+      if (!_mayRebuild(update.sub)) {
+        // Once per subscription per connection, like the tick path's, and
+        // through the same set: one suppression is one operator-facing
+        // sentence however many detectors noticed it.
+        if (_resyncComplained.add(update.sub)) {
+          _resync.complaints.add('"${update.sub}" was rebuilt less than '
+              '${config.freshnessDeadline.inMilliseconds} ms ago and the '
+              'gateway is still sending handles this session never announced. '
+              'Further rebuilds on this subscription are suppressed to one '
+              'per ${config.freshnessDeadline.inMilliseconds} ms while that '
+              'lasts. The complaints above name the handles; a page whose key '
+              'list the gateway no longer agrees with is fixed by editing the '
+              'page, not by rebuilding it.');
+        }
+        return;
+      }
       await _resync.onResync(update.sub);
     }
   }
@@ -825,32 +904,39 @@ final class ConnectionSupervisor {
       // reason to give up. See this method's doc for the whole of it.
       final unestablished = lastSeq == null;
 
-      final sinceLast = _elapsed.elapsedMilliseconds;
-      final rebuiltAt = _tickResyncAtMs[entry.key];
-      if (rebuiltAt != null &&
-          sinceLast - rebuiltAt < config.freshnessDeadline.inMilliseconds) {
+      if (!_mayRebuild(entry.key)) {
         // Once per subscription per connection, not once per suppressed tick:
         // a line at the tick cadence is the unbounded list WR-07 is about,
         // and every one of them would say the same thing.
         //
         // Only for the mismatch case, because only that one has anything to
-        // report: the sentence below is about a rebuild that *happened and did
-        // not help*, which is a fact about the gateway. A suppressed retry on
-        // an unestablished page is this client pacing itself, and `_recover`
-        // has already said out loud why the page is down.
-        if (!unestablished && _tickResyncComplained.add(entry.key)) {
-          _resync.complaints.add('"${entry.key}" was rebuilt on a '
-              'tick-sequence mismatch and the mismatch survived the rebuild: '
-              'the gateway advertises sequence ${entry.value.seq} and this '
-              'client holds $lastSeq after re-establishing from its snapshot. '
-              'Further rebuilds on this subscription are suppressed to one '
-              'per ${config.freshnessDeadline.inMilliseconds} ms while it '
-              'lasts. The disagreement is at the gateway; this end cannot '
-              'rebuild its way out of it.');
+        // report. A suppressed retry on an unestablished page is this client
+        // pacing itself, and `_recover` has already said out loud why the page
+        // is down.
+        //
+        // **And it says what is true, not what would be tidier** (16-07). This
+        // sentence used to read "the mismatch survived the rebuild… the
+        // disagreement is at the gateway", which is a claim about a rebuild
+        // that has *finished*. The budget is stamped before the await, so on
+        // any link where a rebuild's round trip outlasts one tick period —
+        // which is every slow link, and slow links are what this client is
+        // for — the rebuild it was talking about was still in flight. Saying
+        // "the gateway is wrong" about a round trip that has not landed sends
+        // the engineer to the wrong end of the plant.
+        if (!unestablished && _resyncComplained.add(entry.key)) {
+          _resync.complaints.add('"${entry.key}" was rebuilt less than '
+              '${config.freshnessDeadline.inMilliseconds} ms ago and the '
+              'gateway is still advertising a sequence ahead of this client: '
+              'it advertises ${entry.value.seq} and this client holds '
+              '$lastSeq. Further rebuilds on this subscription are suppressed '
+              'to one per ${config.freshnessDeadline.inMilliseconds} ms while '
+              'that lasts. That rebuild may still be in flight — this line is '
+              'stamped when a rebuild is declined, not when one has been '
+              'proved not to help — so if the two ends agree again on the next '
+              'tick, nothing further is said.');
         }
         continue;
       }
-      _tickResyncAtMs[entry.key] = sinceLast;
       await _resync.onResync(entry.key);
     }
   }
@@ -1079,8 +1165,8 @@ final class ConnectionSupervisor {
       // divergent tick earns a rebuild and, if it survives one, its own
       // complaint. Carrying the suppression across would let a page that
       // recovered be refused the rebuild it needs.
-      _tickResyncAtMs.clear();
-      _tickResyncComplained.clear();
+      _resyncAtMs.clear();
+      _resyncComplained.clear();
       // The stall surface is a fact about the socket that heard the
       // announcement (09-07): a new connection starts with no stall reason, and
       // the once-per-connection complaint damper re-arms.
