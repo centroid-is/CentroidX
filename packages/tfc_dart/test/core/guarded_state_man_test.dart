@@ -139,6 +139,24 @@ class _RecordingStateMan implements StateMan {
       );
 }
 
+/// A second, distinct `StateMan` type — the shape `innerAs<T>()` exists for.
+///
+/// The real caller is the Flutter app: `stateManProvider` wraps either a local
+/// `StateMan` or a `GatewayStateMan` in a guard, and a gateway-only surface has
+/// to be able to ask which one it got without being handed a write path.
+/// `tfc_dart` knows nothing about that adapter, so the two-types-one-interface
+/// situation is reproduced here instead: a guard over one of these answers
+/// `innerAs<_GatewayLikeStateMan>()`, a guard over a plain
+/// [_RecordingStateMan] answers null, and both directions are observable.
+class _GatewayLikeStateMan extends _RecordingStateMan {
+  _GatewayLikeStateMan(super.journal);
+
+  /// The member the app reaches the hatch *for*: a fact about the transport
+  /// that is not on `StateMan` and never will be. `RemoteStateMan.linkState`
+  /// is the real one.
+  String get linkFact => 'ready';
+}
+
 /// An `AuditSink` that appends into the shared journal.
 ///
 /// [failWith] makes it throw, which the `AuditSink` interface does not forbid:
@@ -793,6 +811,99 @@ void main() {
       expect(journal.writes, hasLength(1),
           reason: 'making a jog wait on a PLC round trip that is not '
               'answering would trade a usability feature for an outage');
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // The read-only escape hatch
+  // ---------------------------------------------------------------------
+  //
+  // `implements StateMan` is what makes the guard invisible to its callers,
+  // and it is also what makes the object underneath unreachable: `_inner` is
+  // private and every one of the ~20 forwarded members hands back the inner's
+  // *answer*, never the inner. That is correct for everything on the
+  // interface. It is wrong for the handful of facts that are not on it at
+  // all — a transport's link state, a clock offset — which have no forwarding
+  // member to come back through and never will, because they do not exist on
+  // `StateMan`.
+  //
+  // `innerAs<T>()` is the narrow answer: the caller must name the type it
+  // wants, and gets null rather than a `StateMan` when the inner object is
+  // something else. The alternative that was rejected in writing is a bare
+  // `inner` getter, which hands out an object whose `write` skips the access
+  // check and the audit row — the two things this class exists to add.
+  group('innerAs', () {
+    /// A guard over [target], with everything else exactly as [build] has it.
+    GuardedStateMan guardOver(StateMan target, {AccessPolicy? withPolicy}) =>
+        GuardedStateMan(
+          inner: target,
+          policy: withPolicy ?? policy,
+          session: () => current,
+          audit: audit,
+          station: 'SVN-NES-OT-CL02',
+          logger: Logger(level: Level.off),
+        );
+
+    test('returns the inner object when it is a T', () {
+      final gateway = _GatewayLikeStateMan(journal);
+      final guard = guardOver(gateway);
+
+      final unwrapped = guard.innerAs<_GatewayLikeStateMan>();
+
+      expect(identical(unwrapped, gateway), isTrue,
+          reason: 'a copy, a re-wrap or a second decorator would all satisfy '
+              'a type check and none of them would be the object holding the '
+              'live socket');
+      expect(unwrapped!.linkFact, 'ready',
+          reason: 'the member the hatch exists for is one the guard has no '
+              'forwarding member for; reaching it is the whole point');
+    });
+
+    test('returns null for a type the inner object is not', () {
+      final guard = guardOver(inner);
+
+      // Anti-vacuity. If the two stand-ins were the same type the assertion
+      // below would pass for the wrong reason and keep passing after the
+      // accessor stopped discriminating.
+      expect(inner, isNot(isA<_GatewayLikeStateMan>()),
+          reason: 'the inner object must genuinely not be the type asked for, '
+              'or the null below proves nothing');
+
+      expect(guard.innerAs<_GatewayLikeStateMan>(), isNull,
+          reason: 'a station in direct mode holds a local StateMan, and a '
+              'gateway-only surface asking for the adapter must be told no '
+              'rather than handed something it will cast');
+    });
+
+    test('is inert: obtaining a handle writes nothing and arms no bypass',
+        () async {
+      const key = 'CN04.MOT01.HMI.p_cmd_Start';
+      final denying =
+          _RecordingPolicy(tagBindings: _bind(key, AccessGroup.administer));
+      final gateway = _GatewayLikeStateMan(journal);
+      final guard = guardOver(gateway, withPolicy: denying);
+
+      final before =
+          await _denialFrom(guard.write(key, DynamicValue(value: true)));
+      final journalledBefore = journal.entries.length;
+
+      final handle = guard.innerAs<_GatewayLikeStateMan>();
+      expect(handle, isNotNull);
+
+      expect(journal.entries, hasLength(journalledBefore),
+          reason: 'the accessor is a type test and a field read: it must not '
+              'reach the inner object, the policy or the audit sink');
+
+      final after =
+          await _denialFrom(guard.write(key, DynamicValue(value: true)));
+
+      expect(after.itemKey, before.itemKey);
+      expect(journal.writes, isEmpty,
+          reason: 'this arm does NOT prove the returned handle cannot be '
+              'misused — nothing in Dart can, and the doc beside innerAs is '
+              'the fence for that. It proves the accessor itself is inert: '
+              'taking a handle changes no state and leaves the guard denying '
+              'exactly what it denied before');
     });
   });
 
