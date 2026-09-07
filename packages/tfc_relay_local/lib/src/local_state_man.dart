@@ -954,7 +954,7 @@ final class LocalStateMan implements StateManApi {
     final held = _outcomes[cmd];
     if (held != null) return held.result;
 
-    final mintedAt = _ulidMs(cmd);
+    final mintedAt = ulidMs(cmd);
     if (mintedAt == null) {
       return WriteUnknown(
           cmd,
@@ -1046,7 +1046,7 @@ final class LocalStateMan implements StateManApi {
     while (_outcomes.length > maxWriteOutcomes) {
       final oldest = _outcomes.keys.first;
       _forgottenBeforeMs =
-          [_forgottenBeforeMs, _ulidMs(oldest) ?? 0].reduce((a, b) => a > b ? a : b);
+          [_forgottenBeforeMs, ulidMs(oldest) ?? 0].reduce((a, b) => a > b ? a : b);
       _outcomes.remove(oldest);
     }
   }
@@ -1077,7 +1077,7 @@ final class LocalStateMan implements StateManApi {
     final cutoff = _now().millisecondsSinceEpoch - writeOutcomeTtl.inMilliseconds;
     _outcomes.removeWhere((cmd, entry) {
       if (entry.at >= cutoff) return false;
-      final minted = _ulidMs(cmd) ?? 0;
+      final minted = ulidMs(cmd) ?? 0;
       if (minted > _forgottenBeforeMs) _forgottenBeforeMs = minted;
       return true;
     });
@@ -1286,27 +1286,6 @@ final class LocalStateMan implements StateManApi {
     if (cached == null || cached.quality != Quality.goodWritePending) return;
     if (confirmed == null) return;
     _degrade(<String, DynamicValue>{key: confirmed});
-  }
-
-  /// Crockford base32, the alphabet `newUlid` encodes with.
-  static const String _ulidAlphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-
-  /// The millisecond a ULID was minted at, or null when [cmd] is not one.
-  ///
-  /// A deliberate copy of `fake_state_man.dart:744-756`, which is itself a
-  /// copy of `value_handlers.dart:479-488`, and the reason is the same in both
-  /// places: the evidence rule has to be identical across the three
-  /// implementations, and sharing twelve lines of decode would cost the
-  /// independence that makes the contract suite worth running.
-  static int? _ulidMs(String cmd) {
-    if (cmd.length != 26) return null;
-    var ms = 0;
-    for (var i = 0; i < 10; i++) {
-      final digit = _ulidAlphabet.indexOf(cmd[i]);
-      if (digit < 0) return null;
-      ms = (ms << 5) | digit;
-    }
-    return ms;
   }
 
   /// Engages a hold-to-run deadman on [key] and hands back the live hold.

@@ -867,7 +867,7 @@ final class ValueHandlers {
     final held = outcomes.entryFor(cmd);
     if (held != null) return held.result;
 
-    final mintedAt = _ulidMs(cmd);
+    final mintedAt = ulidMs(cmd);
     if (mintedAt == null) {
       return WriteUnknown(
           cmd,
@@ -1035,22 +1035,4 @@ final class ValueHandlers {
   }
 
   /// Crockford base32, the same alphabet `newUlid` encodes with.
-  static const String _alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-
-  /// The millisecond a ULID was minted at, or null when [cmd] is not one.
-  ///
-  /// The decode half of `ulid.dart`'s encoder, kept here rather than there
-  /// because this is the only place that needs it and the property it is used
-  /// for — "could this command still be inside the not-received window?" — is
-  /// a gateway question, not an id question.
-  static int? _ulidMs(String cmd) {
-    if (cmd.length != 26) return null;
-    var ms = 0;
-    for (var i = 0; i < 10; i++) {
-      final digit = _alphabet.indexOf(cmd[i]);
-      if (digit < 0) return null;
-      ms = (ms << 5) | digit;
-    }
-    return ms;
-  }
 }

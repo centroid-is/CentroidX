@@ -118,6 +118,53 @@ String newUlid({int? nowMs}) {
   return out.join();
 }
 
+/// The millisecond [id] was minted at, or `null` when it is not an id this
+/// side could have issued.
+///
+/// The inverse of the timestamp prefix [newUlid] writes: the leading
+/// [_timeChars] characters, read as Crockford base32. The random half is never
+/// looked at, so an id whose suffix has been mangled still dates correctly —
+/// deliberately, because the callers use this to decide what they can rule
+/// out, and refusing to date a legal id is the more dangerous error.
+///
+/// **`null` and `0` are different answers and must stay different.** `null`
+/// means "not datable" — `writeStatus` answers `unrecognized_cmd` and nothing
+/// about the command can be ruled out. `0` is a date, the epoch, and flows
+/// into the ordinary window checks. Collapsing the two turns a malformed id
+/// into a merely ancient one.
+///
+/// **The arithmetic is a multiply and an add, never a shift and an or, and
+/// that is the whole reason this function lives here.** See the migration note
+/// on [_twoTo48] above: JavaScript's bitwise operators coerce to 32 bits, and
+/// the timestamp field is 48. `newUlid` was moved off `<<`/`&` for exactly
+/// that, but the decode half had been copied into four private helpers before
+/// the fix landed and three of them kept the bitwise form — so under `dart2js`
+/// they folded the timestamp onto its low 32 bits. Measured on this alphabet,
+/// compiled with `dart compile js`:
+///
+/// ```text
+///                     VM          dart2js, shift-and-or form
+///   1700000000000     1700000000000            3487918080   (1970-02-10)
+///   4102444800000     4102444800000             751032320   (1970-01-09)
+/// ```
+///
+/// The two forms are byte-for-byte identical on the VM — a five-bit left shift
+/// is a multiply by 32 on 64-bit integers, and the low five bits are always
+/// clear so the or is an add — which is why no VM suite could ever catch it,
+/// and why the bug survived in three copies. On this path a mis-dated id is the
+/// difference between `WriteNotReceived`, which invites an operator to
+/// re-send, and an `unknown` that does not.
+int? ulidMs(String id) {
+  if (id.length != _timeChars + _randomChars) return null;
+  var ms = 0;
+  for (var i = 0; i < _timeChars; i++) {
+    final digit = _alphabet.indexOf(id[i]);
+    if (digit < 0) return null;
+    ms = ms * _base32 + digit;
+  }
+  return ms;
+}
+
 void _drawEntropy() {
   for (var i = 0; i < _randomChars; i++) {
     _lastRandom[i] = _entropy.nextInt(32);
