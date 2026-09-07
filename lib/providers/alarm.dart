@@ -29,10 +29,37 @@ part 'alarm.g.dart';
 /// plant when a gateway-mode panel evaluates it.
 @Riverpod(keepAlive: true)
 Future<AlarmSource> alarmMan(Ref ref) async {
-  // Use ref.read to avoid cascade invalidation from DB reconnects.
-  // AlarmMan reads config once at creation; it doesn't need live DB updates.
+  // WATCH, not read, and taken **before the first await** so the dependency is
+  // registered synchronously (CR-01).
+  //
+  // Every source this provider builds is wired to the StateMan below — the
+  // gateway branch through the relay client's alarm port, the direct branch
+  // through the rule subscriptions `AlarmMan` opens on it — so an alarm source
+  // that outlives its StateMan is an alarm source reading a connection that is
+  // gone.
+  //
+  // It happens on an ordinary operator action. `GatewayStateMan`
+  // `updateKeyMappings` returns a non-empty `reloadReasons` unconditionally,
+  // so in gateway mode **every** `key_mappings` save takes
+  // `state_man.dart:139`'s `ref.invalidateSelf()` and disposes the
+  // `RemoteStateMan`. With `ref.read` this provider was never invalidated: it
+  // kept a `RemoteAlarmTransport` over a disposed client for the life of the
+  // process, and because that client CLOSES its handed-out streams rather than
+  // erroring them, the banner froze with no error on screen and no line on
+  // stderr. Direct mode has the same shape on the Modbus-spec / M2400 reload
+  // path, one step rarer.
+  //
+  // This is not the "cascade invalidation from DB reconnects" the old comment
+  // guarded against: `stateManProvider` itself reads `preferencesProvider` with
+  // `ref.read`, so a database reconnect does not rebuild it and therefore does
+  // not reach here. What does reach here is exactly what should — the StateMan
+  // being replaced.
+  final stateManFuture = ref.watch(stateManProvider.future);
+
+  // Still `ref.read`: preferences are read once at construction and a
+  // reconnect must not tear the alarm source down under a live banner.
   final prefs = await ref.read(preferencesProvider.future);
-  final stateMan = await ref.read(stateManProvider.future);
+  final stateMan = await stateManFuture;
 
   // `AlarmMan.create` writes an empty default when `alarm_man_config` is
   // absent — at boot, on a station that has never been configured, with nobody
@@ -61,8 +88,15 @@ Future<AlarmSource> alarmMan(Ref ref) async {
           'through. Fix the gateway branch of lib/providers/state_man.dart — '
           'do not fall back to evaluating the rules here.');
     }
-    return await RelayAlarmSource.create(
+    final source = await RelayAlarmSource.create(
         transport: transport, preferences: prefs);
+    // `RelayAlarmSource.close` had no caller anywhere before CR-01, so every
+    // rebuild — a key-mappings save, an alarm edit, which invalidates this
+    // provider by name (`alarm_editor.dart:245`) — left a live subscription,
+    // two BehaviorSubjects and a `_reloadHistory` chain behind on a client
+    // that no longer existed.
+    ref.onDispose(source.close);
+    return source;
   }
 
   // `clock: DateTime.now` is required, and this provider is the composition

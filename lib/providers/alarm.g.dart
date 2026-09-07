@@ -6,7 +6,7 @@ part of 'alarm.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$alarmManHash() => r'963f6bb7bef27cdea4d448cced680d3550ee4547';
+String _$alarmManHash() => r'ea8aadd9c7dc22165c76855048a3093db9a3e176';
 
 /// Where this panel's alarms come from, which depends on the transport.
 ///
@@ -15,8 +15,8 @@ String _$alarmManHash() => r'963f6bb7bef27cdea4d448cced680d3550ee4547';
 /// PLCs and evaluates its own rules, so it builds an [AlarmMan] and nothing
 /// about that changes. In gateway mode the backend's alarm engine has already
 /// evaluated them and published the answer under `ALARM.active`, so the panel
-/// is TOLD its active set and builds a [RelayAlarmSource] with no `Evaluator`
-/// in it at all.
+/// is TOLD its active set and builds a [RelayAlarmSource], which evaluates
+/// nothing and subscribes to no rule variable at all.
 ///
 /// There is deliberately **no fallback**. If gateway mode resolves a
 /// `StateMan` with no relay client behind it, this refuses by name rather than
