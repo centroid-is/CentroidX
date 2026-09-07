@@ -35,6 +35,7 @@ import 'package:tfc/pages/tech_doc_library.dart';
 import 'package:tfc/pages/first_user.dart';
 import 'package:tfc/pages/audit_trail.dart';
 import 'package:tfc/pages/access_admin.dart';
+import 'package:tfc/pages/config_history.dart';
 import 'package:tfc/transition_delegate.dart';
 import 'package:tfc/providers/theme.dart';
 import 'package:tfc/core/feature_flags.dart';
@@ -541,7 +542,11 @@ RoutesLocationBuilder createLocationBuilder(
         child: child,
       );
 
-  // Nine routes are gated, and only nine. Two of them sit at `users`.
+  // Ten routes are gated, and only ten. Two of them sit at `users`, and
+  // '/advanced/config-history' sits at `configure` — its own entry rather than
+  // a widened audit-trail one, because the engineer who edits pages must be
+  // able to read what changed without also being handed the authorization
+  // record (lib/access_routes.dart, kConfigHistoryRoute).
   // '/advanced/audit-trail' is raised for what it *displays* rather than what
   // it writes: the trail is every write anybody ever made, with old and new
   // values, so it sits beside the roles that govern it. '/advanced/access'
@@ -680,6 +685,11 @@ RoutesLocationBuilder createLocationBuilder(
         key: const ValueKey('/advanced/access'),
         title: 'Access',
         child: gated('/advanced/access', 'Access', const AccessAdminPage())),
+    kConfigHistoryRoute: (context, state, args) => BeamPage(
+        key: const ValueKey(kConfigHistoryRoute),
+        title: kConfigHistoryTitle,
+        child: gated(
+            kConfigHistoryRoute, kConfigHistoryTitle, const ConfigHistoryPage())),
   };
 
   // Statement-level const guard rather than a collection-if inside the map
