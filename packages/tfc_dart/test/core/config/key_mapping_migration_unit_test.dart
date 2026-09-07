@@ -17,7 +17,6 @@ library;
 
 import 'dart:io';
 
-import 'package:drift/backends.dart';
 import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:logger/logger.dart';
 import 'package:test/test.dart';
