@@ -5,6 +5,7 @@ import 'package:test/test.dart';
 
 import 'package:tfc_mcp_server/src/database/server_database.dart';
 import 'package:tfc_mcp_server/src/services/config_service.dart';
+import '../helpers/config_rows.dart';
 import '../helpers/test_database.dart';
 
 void main() {
@@ -768,6 +769,68 @@ void main() {
       test('an unmigrated database is not an error either', () async {
         expect(await service.findAlarmReferences('alarm-1'), isEmpty);
       });
+    });
+  });
+
+  group('ConfigService.checkConsistency', () {
+    // The service half of the production arm: what the MCP tool calls. The
+    // check's own semantics are proven in tfc_dart
+    // (`test/core/config/config_consistency_test.dart` plants one violation
+    // per invariant, including the position-only divergence a payload
+    // comparison cannot see); what matters here is that it reaches the
+    // database this service was handed, and that an unreadable database is an
+    // error rather than an empty list.
+    late ServerDatabase db;
+    late ConfigService service;
+
+    setUp(() async {
+      db = createTestDatabase();
+      await db.customStatement('SELECT 1');
+      service = ConfigService(db);
+    });
+
+    tearDown(() => db.close());
+
+    test('answers with the violations it finds', () async {
+      await createConfigItemTable(db);
+      await createConfigChangeTable(db);
+      await insertConfigRow(db,
+          kind: 'asset',
+          id: 'a1',
+          parentId: 'page-gone',
+          sortIndex: 2,
+          payload: {'asset_name': 'lamp'});
+      await insertConfigChangeRow(db,
+          kind: 'asset',
+          id: 'a1',
+          newValue: entityOf({'asset_name': 'lamp'},
+              parentId: 'page-gone', sortIndex: 0));
+
+      final found = await service.checkConsistency();
+
+      // The orphan, and the position the log disagrees about — the payload is
+      // identical on both sides.
+      expect(found.map((v) => v.invariant.wireName),
+          ['orphaned_parent', 'entity_disagrees']);
+    });
+
+    test('is silent on a consistent database', () async {
+      await createConfigItemTable(db);
+      await createConfigChangeTable(db);
+      await insertConfigRow(db,
+          kind: 'key_mapping', id: 'CN01.RUN', payload: {'ns': 4});
+      await insertConfigChangeRow(db,
+          kind: 'key_mapping', id: 'CN01.RUN', newValue: entityOf({'ns': 4}));
+
+      expect(await service.checkConsistency(), isEmpty);
+    });
+
+    test('throws on an unmigrated database rather than reporting it clean',
+        () async {
+      // Every other read in this class swallows this. A check must not: the
+      // caller has to be able to tell "nothing is wrong" from "I read
+      // nothing".
+      expect(service.checkConsistency(), throwsA(anything));
     });
   });
 }

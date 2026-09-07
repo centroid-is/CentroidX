@@ -18,6 +18,7 @@ library;
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
+import 'package:tfc_dart/tfc_dart_core.dart' show canonicalJson;
 
 /// `config_item`, matching tfc_dart's migration.
 Future<void> createConfigItemTable(GeneratedDatabase db) => db.customStatement(
@@ -26,6 +27,61 @@ Future<void> createConfigItemTable(GeneratedDatabase db) => db.customStatement(
     'sort_index INTEGER, payload TEXT NOT NULL, '
     'rev INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, '
     'updated_by TEXT NOT NULL, PRIMARY KEY (kind, id, scope))');
+
+/// `config_change`, matching tfc_dart's migration.
+///
+/// Only the consistency check reads this table, and only tests of it need the
+/// table to exist: a fixture that seeds `config_item` alone is a database no
+/// station has ever written to, which is exactly what the check reports.
+Future<void> createConfigChangeTable(GeneratedDatabase db) =>
+    db.customStatement('CREATE TABLE IF NOT EXISTS config_change ('
+        'id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, '
+        'action_id TEXT NOT NULL, who TEXT NOT NULL, station TEXT NOT NULL, '
+        'role_name TEXT NOT NULL, reason TEXT, kind TEXT NOT NULL, '
+        'entity_id TEXT NOT NULL, scope TEXT NOT NULL, op TEXT NOT NULL, '
+        'old_value TEXT, new_value TEXT)');
+
+/// One change row. [newValue] is the whole entity — `{parent_id, sort_index,
+/// payload}` — never the bare payload, because that is what the column holds
+/// and what the consistency check compares against.
+Future<void> insertConfigChangeRow(
+  GeneratedDatabase db, {
+  required String kind,
+  required String id,
+  required String? newValue,
+  String scope = 'shared',
+  String op = 'insert',
+}) =>
+    db.customStatement(
+      'INSERT INTO config_change (at, action_id, who, station, role_name, '
+      'kind, entity_id, scope, op, new_value) '
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        '2026-09-07T00:00:00Z',
+        'action-1',
+        'tester',
+        'test-station',
+        'Engineering',
+        kind,
+        id,
+        scope,
+        op,
+        newValue,
+      ],
+    );
+
+/// The change row a correct write of this item would have left: the entity,
+/// canonically encoded, position included.
+String entityOf(
+  Object? payload, {
+  String? parentId,
+  int? sortIndex,
+}) =>
+    canonicalJson({
+      'parent_id': parentId,
+      'sort_index': sortIndex,
+      'payload': payload,
+    });
 
 /// One row, payload encoded.
 Future<void> insertConfigRow(

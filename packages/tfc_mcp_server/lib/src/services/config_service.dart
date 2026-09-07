@@ -7,7 +7,9 @@ import 'package:tfc_dart/core/config/key_mapping_codec.dart'
     show keyMappingBlobOf;
 import 'package:tfc_dart/tfc_dart_core.dart'
     show
+        ConfigInconsistency,
         McpDatabase,
+        checkConfigConsistency,
         fuzzyFilter,
         pagesJsonOf,
         readSharedPageLayout,
@@ -497,4 +499,25 @@ class ConfigService implements KeyMappingLookup {
 
     return refs;
   }
+
+  /// Every way this database's configuration contradicts its own history.
+  ///
+  /// SC-6's production arm. The same function CI runs against a throwaway
+  /// Postgres, pointed at whatever database this server was opened on — which
+  /// is the whole point of it existing here: the corruptions it looks for (a
+  /// row written without a change row, a `parent_id` orphaned by a rename)
+  /// happen on a live plant over months, and a check that only ever ran in CI
+  /// would be proving the invariant over rows the test had just written
+  /// itself.
+  ///
+  /// **Errors are not swallowed here**, unlike every other read in this
+  /// class. Those answer "nothing configured" when `config_item` is missing,
+  /// because a standalone server can open a database tfc_dart has not
+  /// migrated yet and taking out `list_pages` to report a table that is about
+  /// to exist helps nobody. A *check* cannot do that: "I read no rows" and
+  /// "the rows are consistent" are the same empty list, and a tool that
+  /// reported the first as the second would be worse than no tool at all. The
+  /// caller catches and says which one it is.
+  Future<List<ConfigInconsistency>> checkConsistency() =>
+      checkConfigConsistency(_db);
 }

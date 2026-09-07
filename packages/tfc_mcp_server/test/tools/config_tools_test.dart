@@ -158,4 +158,150 @@ void main() {
       expect(text, contains('Pump 3 High Temp'));
     });
   });
+
+  group('check_config_consistency', () {
+    // The production arm of SC-6. The check itself is proven in tfc_dart, over
+    // planted violations and over real writes to Postgres; what is proven here
+    // is that an engineer can point it at a plant database through MCP and get
+    // an answer they can act on — including when the answer is "I could not
+    // check", which must never be dressed up as "clean".
+    late ServerDatabase db;
+    late McpServer mcpServer;
+    late MockMcpClient client;
+
+    setUp(() async {
+      db = ServerDatabase.inMemory();
+      await db.customStatement('SELECT 1');
+
+      mcpServer = McpServer(
+        const Implementation(name: 'test-server', version: '0.1.0'),
+        options: McpServerOptions(
+          capabilities: ServerCapabilities(tools: ServerCapabilitiesTools()),
+        ),
+      );
+      final registry = ToolRegistry(
+        mcpServer: mcpServer,
+        auditLogService: AuditLogService(db),
+      );
+      registerConfigTools(registry, ConfigService(db));
+      client = await MockMcpClient.connect(mcpServer);
+    });
+
+    tearDown(() async {
+      await client.close();
+      await db.close();
+    });
+
+    Future<String> check([Map<String, dynamic> arguments = const {}]) async {
+      final result = await client.callTool('check_config_consistency',
+          Map<String, dynamic>.from(arguments));
+      expect(result.isError, isNot(true));
+      return (result.content.first as TextContent).text;
+    }
+
+    test('is listed among the tools', () async {
+      final names = (await client.listTools()).map((t) => t.name);
+      expect(names, contains('check_config_consistency'));
+    });
+
+    test('says so when the tables are not there, rather than "no violations"',
+        () async {
+      // A ServerDatabase opened on a database tfc_dart has not migrated. Every
+      // other read in ConfigService answers "nothing configured" here; this
+      // one must not, because an unread table and a consistent one are the
+      // same empty list.
+      final text = await check();
+
+      expect(text, contains('Could not check'));
+      expect(text, isNot(contains('no violations')));
+    });
+
+    test('reports a clean database as clean', () async {
+      await createConfigItemTable(db);
+      await createConfigChangeTable(db);
+      await insertConfigRow(db,
+          kind: 'key_mapping', id: 'CN01.RUN', payload: {'ns': 4});
+      await insertConfigChangeRow(db,
+          kind: 'key_mapping',
+          id: 'CN01.RUN',
+          newValue: entityOf({'ns': 4}));
+
+      expect(await check(), contains('no violations'));
+    });
+
+    test('lists planted violations with the invariant each breaks', () async {
+      await createConfigItemTable(db);
+      await createConfigChangeTable(db);
+      // A row the log never heard of, and an asset whose page is gone.
+      await insertConfigRow(db,
+          kind: 'key_mapping', id: 'CN01.RUN', payload: {'ns': 4});
+      await insertConfigRow(db,
+          kind: 'asset',
+          id: 'a1',
+          parentId: 'page-gone',
+          sortIndex: 0,
+          payload: {'asset_name': 'lamp'});
+
+      final text = await check();
+
+      expect(text, contains('inconsistencies (3)'));
+      expect(text, contains('missing_history'));
+      expect(text, contains('orphaned_parent'));
+      expect(text, contains('CN01.RUN'));
+      expect(text, contains('page-gone'));
+    });
+
+    test('reports a position moved behind the log', () async {
+      // The position pin, through the tool: the payload matches its history
+      // exactly and only `sort_index` differs.
+      await createConfigItemTable(db);
+      await createConfigChangeTable(db);
+      await insertConfigRow(db,
+          kind: 'asset', id: 'a1', sortIndex: 3, payload: {'asset_name': 'l'});
+      await insertConfigChangeRow(db,
+          kind: 'asset',
+          id: 'a1',
+          newValue: entityOf({'asset_name': 'l'}, sortIndex: 0));
+
+      final text = await check();
+
+      expect(text, contains('entity_disagrees'));
+      expect(text, contains('"sort_index":3'));
+      expect(text, contains('"sort_index":0'));
+    });
+
+    test('caps the values it renders', () async {
+      // T-04-08b: a violation carries whole entities, and an entity can be
+      // megabytes of base64. The response must not become the payload.
+      await createConfigItemTable(db);
+      await createConfigChangeTable(db);
+      final huge = 'A' * 5000;
+      await insertConfigRow(db,
+          kind: 'preference', id: 'big', payload: {'blob': huge});
+      await insertConfigChangeRow(db,
+          kind: 'preference', id: 'big', newValue: entityOf({'blob': 'B'}));
+
+      final text = await check();
+
+      expect(text, contains('entity_disagrees'));
+      expect(text, contains('chars total'));
+      expect(text, isNot(contains(huge)));
+      expect(text.length, lessThan(1500));
+    });
+
+    test('limit bounds the list without hiding the count', () async {
+      await createConfigItemTable(db);
+      await createConfigChangeTable(db);
+      for (var i = 0; i < 5; i++) {
+        await insertConfigRow(db,
+            kind: 'key_mapping', id: 'CN0$i.RUN', payload: {'ns': i});
+      }
+
+      final text = await check({'limit': 2});
+
+      expect(text, contains('inconsistencies (5, showing 2)'));
+      expect(text, contains('CN00.RUN'));
+      expect(text, isNot(contains('CN04.RUN')));
+    });
+  });
 }
