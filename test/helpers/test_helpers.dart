@@ -304,9 +304,24 @@ Future<void> settle(WidgetTester tester) async {
 /// and writes. Pass one to seed a station into gateway mode, or to read back
 /// what a save wrote; the default is an empty in-memory store, which is a
 /// station that has never been configured and therefore runs direct.
+///
+/// [theme] and [overrides] are **additive and defaulted**, so all thirteen
+/// existing callers render byte-identically without being edited. They exist
+/// for the themed goldens in plan 15-07: the bare `MaterialApp` below carries
+/// no theme at all, which means `HmiStateColors.of(context)` silently falls
+/// back to `solarizedLight` and a colour regression on the dark scheme cannot
+/// be caught. Pass `themedGoldenTheme(dark: …)` from
+/// `test/helpers/themed_golden_host.dart` to shoot this page under the real
+/// station themes.
+///
+/// [overrides] is appended **after** the four above, so a caller can add
+/// `gatewayLinkProvider.overrideWith(…)` without restating them — and, because
+/// it comes last, can deliberately replace one of them.
 Widget buildTestableServerConfig({
   StateManConfig? stateManConfig,
   PreferencesApi? localPreferences,
+  ThemeData? theme,
+  List<Override> overrides = const [],
 }) {
   return ProviderScope(
     overrides: [
@@ -321,10 +336,12 @@ Widget buildTestableServerConfig({
       // so connection status shows "Not active" (grey).
       stateManProvider
           .overrideWith((ref) => throw StateError('No StateMan in tests')),
+      ...overrides,
     ],
     child: MaterialApp(
       // Keeps the debug ribbon out of the corner of golden captures.
       debugShowCheckedModeBanner: false,
+      theme: theme,
       home: Scaffold(
         body: const ServerConfigBody(),
       ),
