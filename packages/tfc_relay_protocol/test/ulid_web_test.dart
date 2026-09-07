@@ -126,4 +126,57 @@ void main() {
         reason: 'a second id from the same millisecond must sort after the '
             'first');
   });
+
+  // --------------------------------------------------- the decode half
+  //
+  // **These are the only arms in the repo that can see the bug they guard.**
+  //
+  // `ulidMs` had three private copies before Phase 18 and three of the four
+  // computed the timestamp with `<<` and `|`. On the VM that is *identical*
+  // to the multiply-and-add form — a five-bit shift is a multiply by 32 on
+  // 64-bit ints, and the low bits are always clear so the or is an add — so
+  // every VM suite in this repo was green the entire time the defect shipped.
+  // That is precisely how it survived in three copies.
+  //
+  // Here it is visible, because this is the backend that breaks. Measured on
+  // the bitwise form under dart2js, these arms return 3487918080 and 0 rather
+  // than the real millisecond: 1970, for ids minted this year.
+  //
+  // If these arms are ever deleted as redundant with ulid_test.dart, the
+  // decoder goes back to being guarded only by suites that cannot fail.
+
+  test('a timestamp above 2^32 decodes back to itself', () {
+    // The mirror of the first encoder arm. A 32-bit-coerced decoder folds
+    // this onto its low bits and dates a fresh command to 1970 — which on the
+    // write path turns `not_received`, the verdict that tells an operator a
+    // re-send is safe, into `unknown`.
+    expect(ulidMs(newUlid(nowMs: _beyond32 + 7)), equals(_beyond32 + 7));
+    expect(ulidMs(newUlid(nowMs: _twoTo40)), equals(_twoTo40));
+  });
+
+  test('the 2023 prefix decodes to exactly 1700000000000 on this backend', () {
+    // The literal ulid_test.dart carries for a reader who never runs chrome.
+    // There it passes under both arithmetics and documents the bug; here it
+    // is an actual gate. Written as a literal, never computed — a test may
+    // not build its inputs with the construct under test.
+    expect(ulidMs('01HF7YAT000123456789ABCDEF'), equals(1700000000000));
+  });
+
+  test('the whole 48-bit field round-trips through encode and decode', () {
+    // The top of the field is the worst case for a 32-bit fold: the bitwise
+    // form saturates every id at or above 2^32 into the low word, so this one
+    // comes back as 4294967295 rather than 2^48 - 1.
+    expect(ulidMs(newUlid(nowMs: _twoTo48 - 1)), equals(_twoTo48 - 1));
+    expect(ulidMs(newUlid(nowMs: _last32)), equals(_last32),
+        reason: 'the last millisecond that does fit in 32 bits must survive '
+            'too — a fix that only handles the large case is not a fix');
+  });
+
+  test('a non-id is still not datable on this backend', () {
+    // The null-versus-zero distinction the callers rely on is arithmetic-free,
+    // but it is cheap to pin here and its loss would be silent.
+    expect(ulidMs(''), isNull);
+    expect(ulidMs('01HF7YAU000123456789ABCDEF'), isNull);
+    expect(ulidMs(newUlid(nowMs: 0)), equals(0));
+  });
 }
