@@ -283,6 +283,140 @@ class AccessKeyBindingTable extends Table {
   DateTimeColumn get updatedAt => dateTime()();
 }
 
+/// One configuration entity, whatever kind it is. Drift stores it as
+/// `config_item`.
+///
+/// The columns mirror `ConfigItem` in `core/config/config_item.dart`, which is
+/// the source of truth for the list — this table is its storage, not a second
+/// definition of the shape. `updatedAt` and `updatedBy` are nullable *there*
+/// because a `ConfigItem` that has not been stored yet has neither; a row, by
+/// definition, has been stored, so both are `NOT NULL` here.
+///
+/// The payload stays JSON. One generic table rather than a table per kind is
+/// the settled design decision (`docs/relational-config-research.md` §3.1):
+/// the reads this store serves are all "everything of kind K at scope S", and
+/// a column per kind's fields would buy nothing for them while costing a
+/// migration per new kind.
+@DataClassName('ConfigItemRow')
+class ConfigItemTable extends Table {
+  /// See [AccessTemplateTable.tableName] for why this is spelled out: drift
+  /// does not strip a trailing `Table`, and the `Table` suffix on the class
+  /// has to stay because `ConfigItem` is the value type in `core/config/`.
+  @override
+  String get tableName => 'config_item';
+
+  /// `(kind, id, scope)`, so the same entity can exist once per scope: a
+  /// station-scoped override and the shared row it overrides are two rows,
+  /// not a conflict.
+  @override
+  Set<Column> get primaryKey => {kind, id, scope};
+
+  /// `ConfigKind.wireName` — the entity's type.
+  TextColumn get kind => text()();
+
+  /// The entity's own id, unique within its kind and scope.
+  TextColumn get id => text()();
+
+  /// `'shared'` or `'station:<hostname>'`, and the column that carries
+  /// ownership: shared rows are Postgres-owned, station rows never leave the
+  /// machine that wrote them. On Postgres a `CHECK` makes that structural —
+  /// see the `from < 7` arm. Here it deliberately does not, because station
+  /// rows are the only rows a local SQLite file will ever hold.
+  TextColumn get scope => text()();
+
+  /// The entity this one belongs to — an asset's page path — or null when the
+  /// kind has no parent. **No `REFERENCES`**, deliberately: see
+  /// `ConfigItem.parentId`'s doc. An asset outlives its page during a move,
+  /// and a constraint would turn a reorder into a delete and re-insert that
+  /// the change log would report as a destroy and recreate.
+  TextColumn get parentId => text().nullable()();
+
+  /// Position among siblings, for kinds where order is meaning — a page's
+  /// asset list is paint order. Null for kinds that are a set.
+  IntColumn get sortIndex => integer().nullable()();
+
+  /// The entity's own JSON, canonically encoded.
+  TextColumn get payload => text()();
+
+  /// Monotonic write counter, zero for a row written by a migration that had
+  /// no counter to carry.
+  ///
+  /// `integer()`, not `int64()`: drift's postgres dialect already maps
+  /// `integer()` to `bigint`, whereas `BigIntColumn` would change the *Dart*
+  /// type to `BigInt` and break every arithmetic use of a revision number.
+  IntColumn get rev => integer().withDefault(const Constant(0))();
+
+  /// When the row was last written. TEXT on both backends — this database
+  /// sets `storeDateTimeAsText: true`; see the note on [AppDatabase.options].
+  DateTimeColumn get updatedAt => dateTime()();
+
+  /// Username of whoever last wrote it, or `'anonymous'`.
+  TextColumn get updatedBy => text()();
+}
+
+/// One append-only entry in the configuration change log. Drift stores it as
+/// `config_change`.
+///
+/// The columns mirror `ConfigChange` in `core/config/config_change.dart`.
+///
+/// **A station-scoped change gets a row here and nowhere else.** It does not
+/// reach the central `audit_entry` table, and this is a decision rather than
+/// an omission: forwarding one would need a store-and-forward queue for the
+/// hours a station spends unable to reach Postgres, and this milestone
+/// declines to build that. Said out loud here because "the same audit trail"
+/// would otherwise read as a promise the design does not keep.
+@DataClassName('ConfigChangeRow')
+class ConfigChangeTable extends Table {
+  /// See [AccessTemplateTable.tableName]; `ConfigChange` is likewise taken by
+  /// the value type in `core/config/`.
+  @override
+  String get tableName => 'config_change';
+
+  /// Surrogate, and per-database: the SQLite log and the Postgres log are two
+  /// independent id spaces and are not reconciled. Nothing joins them.
+  IntColumn get id => integer().autoIncrement()();
+
+  /// When the change was made. TEXT on both backends, as [ConfigItemTable]'s
+  /// `updatedAt` is.
+  DateTimeColumn get at => dateTime()();
+
+  /// Groups the rows written by one user action, so a save that touched nine
+  /// assets reads as one operation rather than nine.
+  TextColumn get actionId => text()();
+
+  /// Username, or `'anonymous'`.
+  TextColumn get who => text()();
+
+  /// The hostname the change was made on.
+  TextColumn get station => text()();
+
+  /// The role that authorised it, as it was named at the time.
+  TextColumn get roleName => text()();
+
+  /// Free text from the operator, when the surface asked for one.
+  TextColumn get reason => text().nullable()();
+
+  /// `ConfigKind.wireName` of the entity that changed.
+  TextColumn get kind => text()();
+
+  /// The changed entity's id — `config_item.id`, matched by value and with no
+  /// foreign key, because the log outlives the row it describes: a delete's
+  /// own entry would be unstorable otherwise.
+  TextColumn get entityId => text()();
+
+  /// The changed entity's scope.
+  TextColumn get scope => text()();
+
+  /// `ConfigChangeOp.wireName` — create, update or delete.
+  TextColumn get op => text()();
+
+  /// The payload before, null on a create.
+  TextColumn get oldValue => text().nullable()();
+
+  /// The payload after, null on a delete.
+  TextColumn get newValue => text().nullable()();
+}
+
 /// Saved History Views (name + keys)
 class HistoryView extends Table {
   IntColumn get id => integer().autoIncrement()();
@@ -355,6 +489,9 @@ class HistoryViewPeriod extends Table {
   // Access template tables (schema v6):
   AccessTemplateTable,
   AccessKeyBindingTable,
+  // Relational configuration tables (schema v7):
+  ConfigItemTable,
+  ConfigChangeTable,
 ])
 class AppDatabase extends _$AppDatabase implements McpDatabase {
   final DatabaseConfig config;
@@ -461,7 +598,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   }
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
 
   /// The `audit_entry` indexes, created outside Drift because Drift's
   /// `@TableIndex` cannot express `DESC` and every one of these is a
@@ -522,6 +659,42 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     }
   }
 
+  /// The `config_item` and `config_change` indexes.
+  ///
+  /// `idx_config_item_scope_kind` is the one every read of this store goes
+  /// through. The primary key leads with `kind`, so the actual query shape —
+  /// `WHERE kind = ? AND scope = ?` — can only prefix-scan it; leading with
+  /// `scope` is what makes "everything of kind K on this station" an index
+  /// seek rather than a scan of every scope's rows.
+  ///
+  /// The two `config_change` indexes serve reads this phase does not yet
+  /// perform (an entity's history, and the join back to an action). They go in
+  /// now for the same reason the Postgres `CHECK` does: an index is cheapest
+  /// to add before there is data to build it over.
+  ///
+  /// `IF NOT EXISTS` on both backends, for the same reason
+  /// [_auditIndexStatements] uses it: several SVN stations share one database
+  /// and each of them opens it.
+  static const List<String> _configIndexStatements = [
+    'CREATE INDEX IF NOT EXISTS idx_config_item_scope_kind '
+        'ON config_item (scope, kind)',
+    'CREATE INDEX IF NOT EXISTS idx_config_change_entity '
+        'ON config_change (kind, entity_id, scope, id)',
+    'CREATE INDEX IF NOT EXISTS idx_config_change_action '
+        'ON config_change (action_id)',
+  ];
+
+  /// Create the [_configIndexStatements] indexes.
+  ///
+  /// Called from `onCreate` and from the `from < 7` upgrade branch, on both
+  /// backends — the statements are identical on each, so they live in one
+  /// place rather than being copied into both arms.
+  Future<void> _createConfigIndexes(Migrator m) async {
+    for (final stmt in _configIndexStatements) {
+      await m.database.customStatement(stmt);
+    }
+  }
+
   /// Write the four roles from `kSeedRoles` into `app_role`.
   ///
   /// `onConflict: DoNothing()` emits `ON CONFLICT DO NOTHING`, which both
@@ -564,6 +737,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           await m.createAll();
           await _createAuditIndexes(m);
           await _createAccessBindingIndexes(m);
+          await _createConfigIndexes(m);
           await _seedAccessRoles();
         },
         onUpgrade: (m, from, to) async {
@@ -718,6 +892,74 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
             await _createAuditIndexes(m);
             await _createAccessBindingIndexes(m);
             await _seedAccessRoles();
+          }
+
+          // Schema v7: the relational configuration store — `config_item`
+          // holds every configuration entity as one row, `config_change` is
+          // its append-only log.
+          //
+          // Both tables go up on **both** backends now, before either holds a
+          // row. Phase 1 writes only station-scoped rows, into SQLite, and
+          // touches no Postgres read or write path at all — but the `CHECK`
+          // and the three indexes below are cheapest to add to an empty table,
+          // and an empty table is exactly what a shared Postgres has today.
+          //
+          // **The `CHECK (scope = 'shared')` is Postgres-only, and that
+          // asymmetry is the point.** The invariant it makes structural is
+          // that a `station:<hostname>` row never leaves the machine that
+          // wrote it — the rows at that scope are a station's own endpoints
+          // and its own local state, and repository code declining to write
+          // them centrally is a guarantee that lasts until somebody writes a
+          // second repository. A constraint lasts longer. The SQLite side must
+          // **not** carry it: station-scoped rows are the only rows a local
+          // file will ever hold, so the same constraint there would reject
+          // everything this phase writes.
+          //
+          // Datetimes are TEXT on both backends — `updated_at` and `at` are
+          // declared `TEXT`, not `TIMESTAMPTZ`. This database sets
+          // `DriftDatabaseOptions(storeDateTimeAsText: true)` (see the
+          // `options` override) and the root `build.yaml` sets
+          // `store_date_time_values_as_text: true`, so drift reads an ISO
+          // string out of these columns and a `TIMESTAMPTZ` would fail on the
+          // first row. Every existing Postgres arm above writes TEXT for the
+          // same reason. `docs/relational-config-research.md` §3.1 sketches
+          // `TIMESTAMPTZ`; that sketch is wrong for this database.
+          //
+          // `parent_id` carries no `REFERENCES`, deliberately — see
+          // [ConfigItemTable.parentId].
+          //
+          // `rev` is `integer()` on the drift side and `BIGINT` here: drift's
+          // postgres dialect maps `integer()` to `bigint` already, and
+          // `int64()` would change the Dart type to `BigInt`.
+          //
+          // **No test executes the Postgres arm**, exactly as the `from < 6`
+          // arm above says of its own. Phase 1 of the previous milestone
+          // recorded that gap on 2026-08-28 in
+          // `.planning/phases/01-identity-and-audit/deferred-items.md` §1 and
+          // it is still open; this phase inherits it rather than closing it.
+          // What stands behind these two statements is the source-derived
+          // column-parity test in `access_key_binding_table_test.dart`, which
+          // compares these string literals against the drift tables and
+          // nothing more — it does not connect to Postgres and cannot see a
+          // wrong type or a statement that fails at runtime. The first thing
+          // that will actually run them is a station.
+          if (from < 7) {
+            if (native) {
+              await m.createTable(configItemTable);
+              await m.createTable(configChangeTable);
+            } else {
+              // PostgreSQL: raw `IF NOT EXISTS` DDL rather than
+              // `m.createTable`, following the two arms above. Several SVN
+              // stations share one Postgres database and every one of them
+              // runs this branch when it opens, so it has to be safe to run
+              // twice — otherwise the second station aborts the migration and
+              // leaves the database half-upgraded.
+              await m.database.customStatement(
+                  'CREATE TABLE IF NOT EXISTS config_item (kind TEXT NOT NULL, id TEXT NOT NULL, scope TEXT NOT NULL, parent_id TEXT, sort_index INTEGER, payload TEXT NOT NULL, rev BIGINT NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL, PRIMARY KEY (kind, id, scope), CONSTRAINT config_item_shared_only CHECK (scope = \'shared\'))');
+              await m.database.customStatement(
+                  'CREATE TABLE IF NOT EXISTS config_change (id SERIAL PRIMARY KEY, at TEXT NOT NULL, action_id TEXT NOT NULL, who TEXT NOT NULL, station TEXT NOT NULL, role_name TEXT NOT NULL, reason TEXT, kind TEXT NOT NULL, entity_id TEXT NOT NULL, scope TEXT NOT NULL, op TEXT NOT NULL, old_value TEXT, new_value TEXT, CONSTRAINT config_change_shared_only CHECK (scope = \'shared\'))');
+            }
+            await _createConfigIndexes(m);
           }
         },
       );
