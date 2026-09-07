@@ -108,9 +108,18 @@ void main() {
     expect(result.protocol, protocolVersion);
     expect(result.sessionId, isNotEmpty);
     expect(result.epoch, isNotEmpty);
-    expect(result.resumed, isFalse,
-        reason: 'nothing is resumable until 03-09; a client told otherwise '
-            'keeps a cache the server cannot honour');
+    // There was an `expect(result.resumed, isFalse)` here, under a comment
+    // saying nothing was resumable "until 03-09". 16-11 withdrew the surface
+    // rather than deferring it again (HARD-03): honouring it meant delta replay
+    // across a socket loss, and this product resyncs by snapshot.
+    //
+    // No replacement assertion in this file, deliberately — `fixture.hello`
+    // hands back a decoded `HelloResult`, so the withdrawn key is not visible
+    // from here and an assertion written against the object could only restate
+    // that a field does not exist, which the compiler already enforces. The
+    // wire-level pin lives in `session_hello_test.dart`, which holds the raw
+    // frame and asserts the emitted `session` object key for key. The two
+    // assertions above are the half that had to survive.
 
     await fixture.client.sink.close();
     await within(fixture.untilNoSessions(),

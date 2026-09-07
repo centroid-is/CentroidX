@@ -1385,10 +1385,29 @@ final class RelaySession {
           },
           sessionId: id,
           epoch: _epoch!,
-          // Always false this phase: nothing is resumable until 03-09, and a
-          // client told its cache survived when it did not shows stale plant
-          // data under a healthy-looking link.
-          resumed: false,
+          // This used to also send `resumed: false`, under a comment saying
+          // nothing was resumable "until 03-09" — a phase that came and went
+          // eight phases ago, leaving a wire field that was hardcoded on one
+          // side, never set on the other, and read by nobody in between.
+          //
+          // **Session resume was withdrawn in Phase 16 (HARD-03), not
+          // deferred again.** Honouring it means retaining this session's
+          // subscription state across a socket loss and replaying from a
+          // per-subscription `lastSeq`; that is delta replay, and this
+          // product's doctrine is snapshot-never-replay (CLAUDE.md). So the
+          // field could not have been implemented without implementing the
+          // thing the architecture refuses, and leaving it standing was the
+          // worse option: a client told its cache survived when it did not
+          // shows stale plant data under a healthy-looking link, which is the
+          // exact failure this gateway exists to prevent.
+          //
+          // The reasoning, and the fork it resolves, are in
+          // `.planning/phases/16-transport-hardening/16-CONTEXT.md`. A future
+          // milestone that wants resume starts from the doctrine question, not
+          // from this field.
+          //
+          // `sessionId` and `epoch` stay, and they are the load-bearing half:
+          // the client feeds `epoch` straight into `ResyncEngine.onHello`.
           serverTime: _now(),
           // Read from the config this session was built with, never a
           // literal, and omitted from `toJson` when null — so a deployment

@@ -198,7 +198,6 @@ final class _StormGateway {
                   server: const PeerInfo('storm-gateway', '0.0.1'),
                   sessionId: 'S1',
                   epoch: 'E1',
-                  resumed: false,
                   serverTime: DateTime.now().millisecondsSinceEpoch,
                 ).toJson(),
               });

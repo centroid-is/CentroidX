@@ -143,9 +143,26 @@ void main() {
     expect(result.protocol, protocolVersion);
     expect(result.sessionId, isNotEmpty);
     expect(result.epoch, isNotEmpty);
-    expect(result.resumed, isFalse,
-        reason: 'nothing is resumable yet; a client told otherwise would keep '
-            'a cache the server cannot honour');
+    // The `session` object this gateway emits, asserted key for key.
+    //
+    // This replaces `expect(result.resumed, isFalse)`: 16-11 withdrew the
+    // resume surface (HARD-03), so there is no longer a field to read. It is
+    // written as an exact key set rather than as "does not contain `resumed`"
+    // on purpose — a bare absence assertion is satisfied by a `session` object
+    // that has gone missing altogether, which is the *other* way this deletion
+    // could have been wrong and the one that breaks every reconnection in the
+    // plant. Naming both surviving keys makes the arm fail in both directions.
+    final session = ((raw as Map)['session'] as Map).cast<String, Object?>();
+    expect(session.keys, unorderedEquals(<String>['id', 'epoch']),
+        reason: 'the hello response emitted ${session.keys.toList()}. `id` and '
+            '`epoch` are load-bearing — the client feeds `epoch` straight into '
+            'ResyncEngine.onHello, and `id` is what server-side attribution is '
+            'written against. `resumed` is not: honouring it meant retaining '
+            'subscription state across a socket loss and replaying from a '
+            'per-subscription sequence, which is delta replay, and this '
+            'product resyncs by snapshot (CLAUDE.md). It was hardcoded false '
+            'for eleven phases, and a client told its cache survived when it '
+            'did not shows stale plant data under a healthy-looking link');
     expect(result.serverTime,
         inInclusiveRange(before, DateTime.now().millisecondsSinceEpoch),
         reason: 'the client derives its clock offset from this, so staleness '

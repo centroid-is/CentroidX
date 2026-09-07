@@ -145,7 +145,6 @@ final class _SlowGateway {
                   server: const PeerInfo('slow-gateway', '0.0.1'),
                   sessionId: 'S1',
                   epoch: 'E1',
-                  resumed: false,
                   serverTime: DateTime.now().millisecondsSinceEpoch,
                 ).toJson(),
               });
