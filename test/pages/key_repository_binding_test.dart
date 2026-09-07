@@ -26,6 +26,7 @@
 library;
 
 import 'dart:convert';
+import 'package:tfc_dart/core/access/guarded_config_store.dart';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -40,6 +41,7 @@ import 'package:tfc/pages/key_repository.dart';
 import 'package:tfc/providers/access_policy.dart';
 import 'package:tfc/providers/access_templates.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/config_store.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/widgets/access_denied_prompt.dart';
@@ -209,6 +211,7 @@ void main() {
   late Directory tmp;
   AccessTemplateStore? store;
   Preferences? prefs;
+  GuardedConfigStore? configStore;
 
   setUp(() async {
     db = AppDatabase.inMemoryForTest();
@@ -244,6 +247,16 @@ void main() {
     bool noDatabase = false,
     bool reusePrefs = false,
   }) async {
+    // The plant's wiring lives in `config_item` rows since v1.2 phase 2 plan
+    // 06, so the page loads and saves through the configuration store. The
+    // preferences store below still supplies `state_man_config`, which is not
+    // this milestone's key.
+    configStore = configStore != null && reusePrefs
+        ? configStore
+        : await createTestConfigStore(
+            keyMappings: keyMappings ?? _keys([]),
+            session: kConfiguringTestSession,
+          );
     // Re-mounting the page over the **same** preferences is how the import
     // tests see what the operator sees on coming back to it: the import card
     // writes the blob, and the key section has never reloaded itself.
@@ -270,6 +283,7 @@ void main() {
               station: _station,
               onDenied: (denial) => reportAccessDenial(ref, denial),
             )),
+        configStoreProvider.overrideWith((ref) async => configStore!),
         databaseProvider.overrideWith((ref) async => null),
         stateManProvider
             .overrideWith((ref) => throw StateError('No StateMan in tests')),
@@ -369,7 +383,7 @@ void main() {
       await seeder().create(_conveyor());
       await tester.pumpWidget(await host(keyMappings: _keys([_keyA])));
       await tester.pumpAndSettle();
-      final before = await prefs!.getString('key_mappings');
+      final before = jsonEncode(configStore!.inner.keyMappings.toJson());
 
       await expand(tester, _keyA);
       await choose(tester, _keyA, 'conveyor');
@@ -380,8 +394,8 @@ void main() {
       // `users`-gated table.
       expect(find.text('All Changes Saved'), findsOneWidget);
       expect(find.text('Save Key Mappings'), findsNothing);
-      expect(await prefs!.getString('key_mappings'), before,
-          reason: 'the binding must not have touched the key-mapping blob');
+      expect(jsonEncode(configStore!.inner.keyMappings.toJson()), before,
+          reason: 'the binding must not have touched the key mappings');
     });
 
     testWidgets('clearing a binding removes the row', (tester) async {
@@ -523,12 +537,17 @@ void main() {
 
     test('the control added no third key_mappings write site', () {
       final source = File('lib/pages/key_repository.dart').readAsStringSync();
-      final sites = RegExp(r"setString\('key_mappings'").allMatches(source);
+      // Since v1.2 phase 2 plan 06 the two sites write rows through the
+      // guarded configuration store rather than the preference blob. The
+      // count is what this test is about, not the spelling.
+      final sites = RegExp(r"store\.saveKeyMappings\(").allMatches(source);
       expect(sites, hasLength(2),
           reason: 'the two pre-existing sites are `_saveKeyMappings` and '
               '`_onImport`. A binding is a row in a `users`-gated table, not a '
-              'field in a `configure`-gated blob — a third site here would be '
-              'the 2026-08-30 ruling undone.');
+              'field in a `configure`-gated set of rows — a third site here '
+              'would be the 2026-08-30 ruling undone.');
+      expect(RegExp(r"setString\('key_mappings'").allMatches(source), isEmpty,
+          reason: 'the blob is not a write path any more');
     });
   });
 

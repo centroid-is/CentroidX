@@ -6,11 +6,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:tfc_dart/core/preferences.dart';
-import 'package:tfc_dart/core/secure_storage/interface.dart';
+import 'package:tfc_dart/core/access/guarded_config_store.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import 'package:tfc/pages/key_repository.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/config_store.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/proposal_state.dart';
 import 'package:tfc/providers/state_man.dart';
@@ -228,7 +229,7 @@ void main() {
       expect(staged.proposals.accepted, [_idOne, _idTwo],
           reason: 'every staged proposal must be marked accepted, or the '
               'batch comes back on the next load');
-      final saved = await _savedKeys(staged.prefs.last);
+      final saved = _savedKeys(staged.store);
       expect(saved, containsAll([_keyOne, _keyTwo]),
           reason: 'the mappings must reach preferences');
     });
@@ -243,36 +244,49 @@ void main() {
       await tester.pump();
 
       expect(staged.proposals.rejected, [_idOne, _idTwo]);
-      final saved = await _savedKeys(staged.prefs.last);
+      final saved = _savedKeys(staged.store);
       expect(saved, isNot(contains(_keyOne)),
           reason: 'reject must not touch the mappings');
     });
   });
 
   // preferencesProvider is invalidated under a staged batch -- a server-config
-  // import does it, and so does the reconnect re-sync. A `Future<Preferences>`
-  // resolved when the proposal was staged still completes, with the instance
-  // that was current then, whose database may already be closed. Reading the
-  // container at press time is what keeps the write going to the live one.
+  // import does it, and so does the reconnect re-sync. A future resolved when
+  // the proposal was staged still completes, with the instance that was
+  // current then, whose database may already be closed. Reading the container
+  // at press time is what keeps the write going to the live one.
+  //
+  // Since plan 02-06 the mappings go to the configuration store rather than to
+  // preferences, and the store's identity is deliberately stable across every
+  // rebuild of the things beneath it — so this is now the assertion that a
+  // rebuild under a staged batch changes nothing about where the batch lands.
+  // The read still happens at press time, and this test still fails if it
+  // stops.
   group('a staged batch survives preferences being invalidated', () {
-    testWidgets('accept writes through the current preferences, not the one '
-        'that was current when the batch was staged', (tester) async {
+    testWidgets('accept writes through the container read at press time',
+        (tester) async {
       final staged = await _stageBatch(tester);
       final commit = staged.commit!;
+      final storeBefore = await staged.container.read(configStoreProvider.future);
 
       staged.container.invalidate(preferencesProvider);
+      // Read it back, so the rebuild actually happens: the accept no longer
+      // touches preferences at all, so an invalidation nobody reads is not a
+      // rebuild and the premise below would pass vacuously.
+      await staged.container.read(preferencesProvider.future);
       await tester.pump();
 
       await commit();
       await tester.pump();
 
       expect(staged.prefs, hasLength(2),
-          reason: 'the accept must have built the replacement preferences');
-      expect(await _savedKeys(staged.prefs.last), containsAll([_keyOne, _keyTwo]),
-          reason: 'the batch must land in the live preferences');
-      expect(await _savedKeys(staged.prefs.first), isNot(contains(_keyOne)),
-          reason: 'writing through the superseded instance is the bug: its '
-              'database can already be closed');
+          reason: 'the premise: the preferences really were rebuilt');
+      expect(identical(storeBefore,
+          await staged.container.read(configStoreProvider.future)), isTrue,
+          reason: 'the store keeps its identity across the rebuild — that is '
+              'the contract lib/providers/config_store.dart is built on');
+      expect(_savedKeys(staged.store), containsAll([_keyOne, _keyTwo]),
+          reason: 'the batch must land in the live store');
       expect(staged.proposals.accepted, [_idOne, _idTwo]);
     });
   });
@@ -280,7 +294,10 @@ void main() {
   group('a batch that did not fully land stays up', () {
     testWidgets('a failed save accepts nothing and keeps the batch',
         (tester) async {
-      final staged = await _stageBatch(tester, prefsBuilder: _failingPrefs);
+      // A station whose shared database is unreachable. The store refuses
+      // the write outright, which is what a save that does not land looks
+      // like now that the mappings are rows.
+      final staged = await _stageBatch(tester, failSave: true);
 
       await staged.commit!();
       await tester.pump();
@@ -290,7 +307,8 @@ void main() {
               'or it is lost with nothing written');
       expect(staged.commit, isNotNull,
           reason: 'the banner must keep offering Accept');
-      expect(find.textContaining('Failed to save'), findsOneWidget);
+      expect(find.textContaining('Not saved — the database is unreachable.'),
+          findsOneWidget);
     });
 
     testWidgets('an accept that only half took keeps the batch and says so',
@@ -301,7 +319,7 @@ void main() {
       await tester.pump();
 
       expect(staged.proposals.accepted, [_idOne]);
-      expect(await _savedKeys(staged.prefs.last), containsAll([_keyOne, _keyTwo]),
+      expect(_savedKeys(staged.store), containsAll([_keyOne, _keyTwo]),
           reason: 'the save itself succeeded');
       expect(staged.commit, isNotNull,
           reason: 'the database still says pending for one of them, so the '
@@ -361,13 +379,16 @@ void main() {
       await staged.commit!();
       await tester.pump();
 
-      final json = await staged.prefs.last.getString('key_mappings');
-      final mappings = KeyMappings.fromJson(jsonDecode(json!));
+      final mappings = staged.store.inner.keyMappings;
       expect(mappings.lookupServerAlias(_keyOne), 'st101');
       expect(mappings.lookupServerAlias(_keyTwo), 'st101');
+      // Through the stored payload, not through the model: the row is what
+      // the next station reads, and the alias has to be nested under
+      // `opcua_node` in it. A top-level `server_alias` round-trips through
+      // the model and is invisible to StateMan.
       expect(
-        (jsonDecode(json) as Map)['nodes'][_keyOne]['opcua_node']
-            ['server_alias'],
+        (jsonDecode(jsonEncode(mappings.toJson())) as Map)['nodes'][_keyOne]
+            ['opcua_node']['server_alias'],
         'st101',
         reason: 'the alias is nested under opcua_node, and StateMan looks '
             'for it there',
@@ -434,11 +455,14 @@ const _keyTwo = 'PROPOSED.KEY.TWO';
 /// A staged batch: the container the page is running in, the notifier its
 /// decisions land on, and every [Preferences] the provider has built.
 class _Staged {
-  _Staged(this.container, this.proposals, this.prefs);
+  _Staged(this.container, this.proposals, this.prefs, this.store);
 
   final ProviderContainer container;
   final _RecordingProposals proposals;
   final List<Preferences> prefs;
+
+  /// Where the key mappings actually land, since plan 02-06.
+  final GuardedConfigStore store;
 
   /// Read fresh each time, exactly as the banner reads them: a resolved batch
   /// clears both slots, so a non-null callback means the batch is still up.
@@ -455,6 +479,8 @@ Future<_Staged> _stageBatch(
   Set<int> failAccept = const {},
   Set<int> failReject = const {},
   Future<Preferences> Function()? prefsBuilder,
+  /// Stands the store up with no remote, so every save is refused.
+  bool failSave = false,
   String? alias,
 }) async {
   final proposals = _RecordingProposals(
@@ -479,12 +505,21 @@ Future<_Staged> _stageBatch(
                   ..serverAlias = alias,
             ]),
           );
+  // The plant's wiring is `config_item` rows since v1.2 phase 2 plan 06, so
+  // the accept writes through the configuration store. `withRemote: false` is
+  // a station whose shared database is unreachable — the store refuses every
+  // write, which is how this file reproduces a save that does not land.
+  final store = await createTestConfigStore(
+    session: kConfiguringTestSession,
+    withRemote: !failSave,
+  );
   final container = ProviderContainer(overrides: [
     preferencesProvider.overrideWith((ref) async {
       final prefs = await build();
       built.add(prefs);
       return prefs;
     }),
+    configStoreProvider.overrideWith((ref) async => store),
     databaseProvider.overrideWith((ref) async => null),
     stateManProvider
         .overrideWith((ref) => throw StateError('No StateMan in tests')),
@@ -498,7 +533,7 @@ Future<_Staged> _stageBatch(
   ));
   await settle(tester);
 
-  return _Staged(container, proposals, built);
+  return _Staged(container, proposals, built, store);
 }
 
 /// Advances fake time far enough for a queued snackbar to replace the one in
@@ -541,11 +576,8 @@ PendingProposal _proposal(int id, String key, {String? alias}) =>
       createdAt: DateTime(2026, 8, 21),
     );
 
-Future<Iterable<String>> _savedKeys(Preferences prefs) async {
-  final json = await prefs.getString('key_mappings');
-  if (json == null) return const [];
-  return KeyMappings.fromJson(jsonDecode(json)).nodes.keys;
-}
+Iterable<String> _savedKeys(GuardedConfigStore store) =>
+    store.inner.keyMappings.nodes.keys;
 
 /// Records what the page decided, and can make a chosen id throw instead.
 ///
@@ -580,32 +612,4 @@ class _RecordingProposals extends ProposalStateNotifier {
   }
 }
 
-/// Preferences that load fine and refuse to save, so the accept path meets a
-/// save that did not land.
-class _FailingPreferences extends Preferences {
-  _FailingPreferences(MySecureStorage storage)
-      : super(database: null, secureStorage: storage);
 
-  bool explode = false;
-
-  @override
-  Future<void> setString(String key, String value,
-      {bool saveToDb = true, bool secret = false}) async {
-    if (explode) throw StateError('preferences database is closed');
-    return super.setString(key, value, saveToDb: saveToDb, secret: secret);
-  }
-}
-
-Future<Preferences> _failingPrefs() async {
-  Preferences.clearSecretCache();
-  final storage = FakeSecureStorage();
-  final prefs = _FailingPreferences(storage);
-  await prefs.setString(
-      'key_mappings', jsonEncode(KeyMappings(nodes: {}).toJson()));
-  await storage.write(
-    key: StateManConfig.configKey,
-    value: jsonEncode(StateManConfig(opcua: []).toJson()),
-  );
-  prefs.explode = true;
-  return prefs;
-}
