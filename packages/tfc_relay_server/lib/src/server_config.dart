@@ -89,15 +89,42 @@ final class ServerConfig {
   /// this is compared against is what the server produced for one client
   /// during one tick. On `dart:io` WebSockets there is no observable client
   /// backlog at all — it sits in the socket's own unbounded write buffer — so
-  /// a genuinely slow client is detected only by [heartbeatDeadline]: it stops
-  /// reading, therefore it stops sending heartbeats, and the reaper is what
-  /// notices. `tick_engine.dart`'s library doc carries the full statement and
-  /// the two options Phase 6 has.
+  /// **this is a production ceiling and not the slow-consumer defence.** That
+  /// role now belongs to `ConflatingSendBuffer.ackGapThreshold`, which measures
+  /// what the client says it has applied (`16-02-DECISION.md`, option (c));
+  /// `tick_engine.dart`'s library doc carries the full statement, including
+  /// which half of SRV-04 is closed and which is not.
+  ///
+  /// **It stays hard regardless** (T-16-02b). This is a memory ceiling: it
+  /// bounds what one client can make this isolate hold, and the isolate serves
+  /// every screen in the plant. No claim a client makes about itself can raise
+  /// it or defer it.
   final int maxPending;
 
-  /// Soft ceiling: staying above it for [peakWindowMs] continuously means the
-  /// client cannot keep up (HA: PENDING_MSG_PEAK). Same caveat as
-  /// [maxPending]: what stays above it is production, not backlog.
+  /// Soft ceiling on **production**: how many entries this server may pile up
+  /// for one client in one tick, sustained over [peakWindowMs].
+  ///
+  /// **Null by default since 16-08, and that is the fix rather than a
+  /// loosening** (`16-02-DECISION.md` §5.4). This was documented as the
+  /// slow-consumer defence and measurement showed it was the opposite of one.
+  /// At the shipping 1024 a panel that had stopped reading altogether produced
+  /// **41 pending entries a tick** — the defence sat two orders of magnitude
+  /// from tripping on a comprehensively broken session — while a **healthy**
+  /// 1100-key page was disconnected after 10.1 s with a 4004 that told it it
+  /// could not keep up. Worse, survival did not depend on severity: 1100 and
+  /// 1800 changed handles were both evicted after the same 202 ticks, because
+  /// the verdict is a timer on being above a line and not a measure of how far
+  /// above it. A 1500-key page — the size this project's own fan-out benchmark
+  /// uses — was above the line on every tick it changed, so it was
+  /// disconnected every ten seconds and reconnected into the same wall.
+  ///
+  /// **The field stays** because an operator may legitimately want a
+  /// production ceiling, and setting it restores exactly the old behaviour
+  /// under a name that no longer lies about what it measures. What replaced it
+  /// as the slow-consumer defence is `ConflatingSendBuffer.ackGapThreshold`,
+  /// which measures delivery. The two hard memory ceilings — [maxPending] and
+  /// [maxPendingBytes] — did **not** move (T-16-02b) and are unaffected by any
+  /// of this.
   final int? peakThreshold;
 
   /// How long [peakThreshold] may be exceeded continuously before the session
@@ -416,7 +443,7 @@ final class ServerConfig {
     this.pingInterval = const Duration(seconds: 20),
     this.stallThreshold = const Duration(milliseconds: 300),
     this.maxPending = 4096,
-    this.peakThreshold = 1024,
+    this.peakThreshold,
     this.peakWindowMs = 10_000,
     this.allowedOrigins = const [],
     this.maxKeysPerSubscribe = 2000,

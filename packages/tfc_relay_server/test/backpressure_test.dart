@@ -243,9 +243,22 @@ void main() {
           reason: 'the soft ceiling and the hard one are the same failure at '
               'different speeds, and a client should not have to learn two '
               'codes to handle one condition');
-      expect(verdict.reason, contains('unable to keep up'),
+      // **Changed in 16-08, and the change is the finding being closed.** This
+      // asserted `contains('unable to keep up')` — a sentence about the client
+      // attached to a measurement of the server's own production. `poll` reads
+      // a count that `drain()` empties every tick, so it can only ever say how
+      // much this server produced for one client during one tick; 16-02
+      // measured a healthy 1100-key page evicted by it after 10.1 s under
+      // exactly that sentence, and a comprehensively stuck panel sitting at 41
+      // pending against a threshold of 1024. The verdict still exists and
+      // still measures production. It no longer blames the panel for it, and
+      // it is no longer the slow-consumer defence — `slow_consumer_test.dart`
+      // holds that, and it reads `delivery stalled`.
+      expect(verdict.reason, contains('sustained production'),
           reason: 'the reason distinguishes the two arms for whoever reads the '
-              'log, even though the code does not');
+              'log, even though the code does not — and it names what was '
+              'measured rather than who is at fault (T-16-08e)');
+      expect(verdict.reason, isNot(contains('keep up')));
     });
 
     test('a dip below the threshold reopens the grace period', () {
