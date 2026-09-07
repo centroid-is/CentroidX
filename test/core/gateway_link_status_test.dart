@@ -71,7 +71,7 @@ void main() {
   // this file, which is what makes plan 15-07's golden frames constants rather
   // than a race against macOS CI's wall clock.
 
-  group('the six kinds', () {
+  group('the kinds a live client produces', () {
     test('a ready link reads connected and is not terminal', () {
       final report = describeGatewayLink(
         state: LinkState.ready,
@@ -323,6 +323,124 @@ void main() {
         patience: const Duration(seconds: 2),
       );
       expect(report.kind, GatewayLinkKind.unreachable);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // The kind no live client can produce, because there is no live client.
+  //
+  // `describeGatewayLink` cannot describe this case: with nothing built there
+  // is no `LinkState`, no `lastDownReason` and no elapsed time, so a caller
+  // forced through that entry point would have to invent all three. The
+  // socket-level half of these arms — that a real missing file really does
+  // arrive here — is `test/providers/gateway_link_test.dart`'s; these pin the
+  // mapping, which is the part a unit arm can own.
+  // ---------------------------------------------------------------------
+  group('a transport that could not be built', () {
+    const String kPath = '/home/centroid/relay_config/pki/plant-root.pem';
+    const String kThrew = "PathNotFoundException: Cannot open file, path = "
+        "'$kPath' (OS Error: No such file or directory, errno = 2)";
+
+    test('a failure that named a file names it back, and is terminal', () {
+      final report = describeGatewayLinkFailure(
+        url: kByAddress,
+        failure: const GatewayLinkBuildFailure(raw: kThrew, path: kPath),
+      );
+
+      expect(report.kind, GatewayLinkKind.notBuilt);
+      expect(report.terminal, isTrue,
+          reason: 'terminal in the strongest sense this surface has: there is '
+              'no retry loop to have stopped, because none was started');
+      expect(report.detail, contains(kPath));
+      expect(report.raw, kThrew,
+          reason: 'the ticket field carries the panel\'s own error whole and '
+              'unedited, the way it carries the gateway\'s on every other '
+              'kind');
+      expect(report.sanHint, isNull,
+          reason: 'nothing was dialled, so no certificate was presented and '
+              'the name is not a candidate cause of anything');
+    });
+
+    test('and the sentence does not send anybody to the cable', () {
+      final report = describeGatewayLinkFailure(
+        url: kByAddress,
+        failure: const GatewayLinkBuildFailure(raw: kThrew, path: kPath),
+      );
+      final said = '${report.headline} ${report.detail}';
+
+      // The whole reason this is not `unreachable`. That kind's detail reads
+      // "Check the address and the port above, that the gateway is running,
+      // and the cable and switch between this panel and it" — which is the
+      // wrong end of the wire for a file on this station's own disk, and the
+      // wrong-end failure the entire vocabulary exists to prevent.
+      expect(said, isNot(contains('cable')));
+      expect(said, isNot(contains('switch')));
+      expect(said, contains('restart'),
+          reason: 'transport is restart-to-apply, so fixing the path is only '
+              'half of what the operator has to do');
+    });
+
+    test('a failure that named no file falls to the wider sentence', () {
+      const String tls = 'TlsException: Failure trusting builtin roots '
+          '(OS Error: BAD_PKCS12_DATA(pkcs8_x509.cc:559), errno = 318767204)';
+      final report = describeGatewayLinkFailure(
+        url: kByAddress,
+        failure: const GatewayLinkBuildFailure(raw: tls),
+      );
+
+      expect(report.kind, GatewayLinkKind.notBuilt);
+      expect(report.terminal, isTrue);
+      expect(report.raw, tls);
+      // Not vacuous: it still tells the operator where to go, it just cannot
+      // point at one filename.
+      expect(report.detail, contains('CA root file'));
+      expect(report.detail, contains('credential file'));
+    });
+
+    test('an empty path is the same as no path, not a blank filename', () {
+      // `FileSystemException.path` is nullable AND can be the empty string.
+      // A sentence reading "could not open ." is worse than the wider one.
+      final report = describeGatewayLinkFailure(
+        url: kByAddress,
+        failure: const GatewayLinkBuildFailure(raw: 'boom', path: ''),
+      );
+      expect(report.detail, contains('CA root file'));
+    });
+
+    test('a URL that will not parse renders as nothing rather than as a '
+        'blank endpoint', () {
+      // `gatewayLinkProvider` passes `Uri()` when the configured URL does not
+      // parse — which is one of the failures being reported. Neither sentence
+      // for this kind may interpolate it.
+      const failure = GatewayLinkBuildFailure(raw: kThrew, path: kPath);
+      final unparseable = describeGatewayLinkFailure(
+        url: Uri(),
+        failure: failure,
+      );
+      final ordinary =
+          describeGatewayLinkFailure(url: kByAddress, failure: failure);
+
+      // Stronger than a `isNot(contains(' '))` sniff, and it is the property:
+      // the two sentences for this kind are the same sentences whatever the
+      // URL is, so an empty one cannot render as a hole in the middle of a
+      // line an operator is reading.
+      expect(unparseable.headline, ordinary.headline);
+      expect(unparseable.detail, ordinary.detail);
+      expect(unparseable.detail, contains(kPath));
+    });
+
+    test('userinfo in the configured URL is never rendered here either', () {
+      final leaky = Uri.parse('wss://user:secret@10.50.10.11:9444');
+      final report = describeGatewayLinkFailure(
+        url: leaky,
+        failure: const GatewayLinkBuildFailure(raw: kThrew, path: kPath),
+      );
+      final said = '${report.headline} ${report.detail}';
+      expect(said, isNot(contains('secret')));
+      expect(said, isNot(contains('user:')));
+      expect(said, isNot(contains('@')));
+      // Not vacuous: the sentence an operator reads is still there in full.
+      expect(said, contains(kPath));
     });
   });
 

@@ -137,6 +137,7 @@ class _Pill extends StatelessWidget {
       GatewayLinkKind.untrustedCertificate => state.yellow,
       GatewayLinkKind.credentialRefused => state.red,
       GatewayLinkKind.versionRefused => state.red,
+      GatewayLinkKind.notBuilt => state.red,
     };
   }
 
@@ -153,6 +154,10 @@ class _Pill extends StatelessWidget {
         GatewayLinkKind.untrustedCertificate => 'Cert refused',
         GatewayLinkKind.credentialRefused => 'Token refused',
         GatewayLinkKind.versionRefused => 'Version refused',
+        // Not "no gateway": this panel never asked one. The word an operator
+        // needs is that the fault is on this station, so that somebody walking
+        // past reads "go to Server Config" and not "go to the switch cupboard".
+        GatewayLinkKind.notBuilt => 'Panel misconfigured',
       };
 
   @override

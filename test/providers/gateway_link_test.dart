@@ -857,9 +857,17 @@ void main() {
           reason: 'this is the gap: a construction failure and "this is a '
               'direct station" both published null, so the operator got grey '
               'values on every page and nothing anywhere saying why');
-      expect(settled!.terminal, isTrue,
+      expect(settled!.kind, GatewayLinkKind.notBuilt,
+          reason: 'not `unreachable`: that sentence sends the operator to the '
+              'address, the port and the cable, and this fault is entirely on '
+              'this station\'s own disk');
+      expect(settled.terminal, isTrue,
           reason: 'there is no client and no retry loop — nothing about this '
               'will change until somebody fixes the path and restarts');
+      expect(settled.raw, contains('PathNotFoundException'),
+          reason: 'the paste-into-a-ticket field carries the panel\'s own '
+              'error whole, the way it carries the gateway\'s on every other '
+              'kind');
       expect(settled.detail, contains(kNowhere),
           reason: 'the message has to name the file that could not be opened; '
               'a panel that says only "something went wrong" sends the '
@@ -880,7 +888,8 @@ void main() {
       final settled = await _lastSettled(container);
 
       expect(settled, isNotNull);
-      expect(settled!.detail, contains(kNoToken));
+      expect(settled!.kind, GatewayLinkKind.notBuilt);
+      expect(settled.detail, contains(kNoToken));
       expect(settled.detail, isNot(contains(throwawayCaPath())),
           reason: 'naming the file that actually failed is the point; naming '
               'both would send the operator to the one that is fine');
@@ -912,7 +921,14 @@ void main() {
           reason: 'a CA file that is present but unusable fails in the same '
               'constructor as an absent one, and must reach a screen the same '
               'way');
-      expect(settled!.terminal, isTrue);
+      expect(settled!.kind, GatewayLinkKind.notBuilt);
+      expect(settled.terminal, isTrue);
+      // TlsException names no path, so this is the wider sentence rather than
+      // the one that points at a filename — the branch the missing-file arms
+      // above cannot reach.
+      expect(settled.detail, isNot(contains(file.path)),
+          reason: 'the failure named no file, and a surface that invented one '
+              'would be guessing at the operator\'s expense');
       final said = '${settled.headline} ${settled.detail}';
       expect(said, isNot(contains(secret)),
           reason: 'the two lines an operator reads across a room are this '

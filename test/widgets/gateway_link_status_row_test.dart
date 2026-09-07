@@ -1,7 +1,7 @@
-/// The live link status row, rendered — one report, six kinds, no spinner.
+/// The live link status row, rendered — one report, every kind, no spinner.
 ///
 /// **Why this file exists when plan 15-05 named only two test files.** Its
-/// success criterion is "the live status row renders each of the six kinds
+/// success criterion is "the live status row renders each of the kinds
 /// distinguishably", and neither named file can measure that: the page test
 /// drives the card through a provider and the source scan reads text. The
 /// distinguishing is done by chrome the widget adds — a colour and a terminal
@@ -10,11 +10,11 @@
 /// **What "distinguishably" means here, precisely.** The widget does not
 /// re-say the kind: the words come from [GatewayLinkReport.headline] and
 /// [GatewayLinkReport.detail], which are `gateway_link_status.dart`'s and are
-/// already six different sentences pinned by plan 15-01's arms. What this file
-/// pins is that the widget partitions the six into the four state colours the
-/// repo's vocabulary allows, that the two terminal kinds carry a *stopped
-/// retrying* sentence the four retrying ones do not, and that all six reach the
-/// screen with their own headline rather than a paraphrase.
+/// already one sentence each, pinned by plan 15-01's arms. What this file
+/// pins is that the widget partitions them into the four state colours the
+/// repo's vocabulary allows, that the terminal kinds carry a *stopped
+/// retrying* sentence the retrying ones do not, and that every one of them
+/// reaches the screen with its own headline rather than a paraphrase.
 ///
 /// The pixel half — whether the colour survives the theme into an image — is
 /// plan 15-07's, which owns the themed goldens. This is the half that can be
@@ -28,9 +28,14 @@ import 'package:tfc/theme.dart';
 import 'package:tfc/widgets/gateway_link_status_row.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart' show LinkState;
 
-/// The six kinds, each built by the real mapper from the real inputs that
-/// produce it — not hand-constructed, so a mapping change shows up here too.
-final Map<GatewayLinkKind, GatewayLinkReport> _sixKinds = {
+/// Every kind, each built by the real mapper from the real inputs that produce
+/// it — not hand-constructed, so a mapping change shows up here too.
+///
+/// The last entry is 15-08's: a station whose client could not be built. It
+/// comes through the mapper's second entry point, `describeGatewayLinkFailure`,
+/// because there is no `LinkState` to hand the first one — which is the whole
+/// reason that entry point exists.
+final Map<GatewayLinkKind, GatewayLinkReport> _everyKind = {
   for (final report in <GatewayLinkReport>[
     describeGatewayLink(
       state: LinkState.ready,
@@ -67,6 +72,15 @@ final Map<GatewayLinkKind, GatewayLinkReport> _sixKinds = {
       elapsed: const Duration(seconds: 20),
       stopReason: GatewayLinkReasons.versionRefused,
     ),
+    describeGatewayLinkFailure(
+      url: Uri.parse('wss://10.50.10.11:9443'),
+      failure: const GatewayLinkBuildFailure(
+        raw: "PathNotFoundException: Cannot open file, path = "
+            "'/home/centroid/relay_config/pki/ca.pem' (OS Error: No such file "
+            'or directory, errno = 2)',
+        path: '/home/centroid/relay_config/pki/ca.pem',
+      ),
+    ),
   ])
     report.kind: report,
 };
@@ -90,18 +104,18 @@ Color _markColour(WidgetTester tester) => tester
     .color;
 
 void main() {
-  test('the fixture really did produce all six kinds', () {
+  test('the fixture really did produce every kind', () {
     // Anti-vacuity: every arm below iterates this map, and a map that lost a
     // member would silently stop testing that kind.
-    expect(_sixKinds.keys, containsAll(GatewayLinkKind.values));
-    expect(_sixKinds.length, GatewayLinkKind.values.length);
+    expect(_everyKind.keys, containsAll(GatewayLinkKind.values));
+    expect(_everyKind.length, GatewayLinkKind.values.length);
   });
 
-  group('all six kinds reach the screen', () {
+  group('every kind reaches the screen', () {
     for (final kind in GatewayLinkKind.values) {
       testWidgets('${kind.name}: headline and detail, verbatim',
           (tester) async {
-        final report = _sixKinds[kind]!;
+        final report = _everyKind[kind]!;
         await tester.pumpWidget(_host(report));
 
         expect(find.text(report.headline), findsOneWidget,
@@ -114,12 +128,12 @@ void main() {
     }
   });
 
-  group('the colours partition the six', () {
+  group('the colours partition the kinds', () {
     /// The mark colour for each kind, measured once.
     Future<Map<GatewayLinkKind, Color>> colours(WidgetTester tester) async {
       final out = <GatewayLinkKind, Color>{};
       for (final kind in GatewayLinkKind.values) {
-        await tester.pumpWidget(_host(_sixKinds[kind]!));
+        await tester.pumpWidget(_host(_everyKind[kind]!));
         out[kind] = _markColour(tester);
       }
       return out;
@@ -146,7 +160,7 @@ void main() {
       final seen = await colours(tester);
       final distinct = seen.values.toSet();
       expect(distinct.length, 4,
-          reason: 'four colours over six kinds is the design; three would mean '
+          reason: 'four colours over the kinds is the design; three would mean '
               'two groups had collapsed into one and an operator across the '
               'room could not tell them apart');
     });
@@ -157,7 +171,7 @@ void main() {
       // MaterialApp, which is exactly why an unthemed test cannot catch a
       // colour regression. This one builds the real station theme.
       await tester.pumpWidget(
-          _host(_sixKinds[GatewayLinkKind.credentialRefused]!, dark: true));
+          _host(_everyKind[GatewayLinkKind.credentialRefused]!, dark: true));
       final (_, night) = solarized();
       expect(_markColour(tester), night.extension<HmiStateColors>()!.red);
     });
@@ -165,7 +179,7 @@ void main() {
 
   group('a terminal report reads differently', () {
     for (final kind in GatewayLinkKind.values) {
-      final report = _sixKinds[kind]!;
+      final report = _everyKind[kind]!;
       testWidgets(
           '${kind.name}: the stopped-retrying notice is '
           '${report.terminal ? 'present' : 'absent'}', (tester) async {
@@ -184,7 +198,7 @@ void main() {
   group('the SAN hint', () {
     testWidgets('shows on a certificate refused for a dial by name',
         (tester) async {
-      final report = _sixKinds[GatewayLinkKind.untrustedCertificate]!;
+      final report = _everyKind[GatewayLinkKind.untrustedCertificate]!;
       expect(report.sanHint, isNotNull,
           reason: 'the fixture dials wss://plc-gw.svn — a name');
       await tester.pumpWidget(_host(report));
@@ -211,7 +225,7 @@ void main() {
     for (final kind in GatewayLinkKind.values) {
       testWidgets('${kind.name} renders no CircularProgressIndicator',
           (tester) async {
-        await tester.pumpWidget(_host(_sixKinds[kind]!));
+        await tester.pumpWidget(_host(_everyKind[kind]!));
         expect(find.byType(CircularProgressIndicator), findsNothing,
             reason: 'criterion 2: the UI stops pretending. Even connecting '
                 'says what it is dialling and for how long, in words');
@@ -220,7 +234,7 @@ void main() {
 
     testWidgets('raw sits behind an affordance rather than on the card',
         (tester) async {
-      final report = _sixKinds[GatewayLinkKind.unreachable]!;
+      final report = _everyKind[GatewayLinkKind.unreachable]!;
       expect(report.raw, contains('errno = 61'),
           reason: 'the fixture carries a real OS Error tail');
       await tester.pumpWidget(_host(report));
@@ -238,7 +252,7 @@ void main() {
 
     testWidgets('and a report with no raw offers no affordance at all',
         (tester) async {
-      final report = _sixKinds[GatewayLinkKind.connected]!;
+      final report = _everyKind[GatewayLinkKind.connected]!;
       expect(report.raw, isNull);
       await tester.pumpWidget(_host(report));
 

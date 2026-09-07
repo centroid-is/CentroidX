@@ -5,7 +5,7 @@
 /// **neither computes its own message.** In direct mode it publishes `null`,
 /// which those surfaces render as absence rather than as an empty pill.
 ///
-/// ## Four properties, and none of them is decoration
+/// ## Five properties, and none of them is decoration
 ///
 /// **1. The config is consulted first, and direct mode short-circuits before
 /// `stateManProvider` is ever read.** That is what makes the chip's absence
@@ -33,6 +33,23 @@
 /// `DateTime.now` and is overridden by a golden or a unit arm; nothing calls
 /// `DateTime.now()` at a render site, and `describeGatewayLink` is pure. The
 /// goldens for these frames compare on macOS CI.
+///
+/// **5. `null` means direct mode and nothing else.** A station whose client
+/// could not be *built* — a `caCertPath` naming a file that is not there, a
+/// credential file that is not there, a certificate that parses as nothing —
+/// publishes a [GatewayLinkKind.notBuilt] report, not `null`. It used to
+/// publish `null`, which is the same value direct mode uses, and the two
+/// surfaces render `null` as absence: the panel showed grey values on every
+/// page with nothing anywhere saying why, on the one case of criterion 2 that
+/// the failure happens *before a client exists* rather than on the wire. That
+/// conflation was the defect; keeping the two facts apart is the fix, and
+/// `test/providers/gateway_link_test.dart`'s "a transport that could not be
+/// built" group pins both directions of it.
+///
+/// The still-honest silence is narrower than it was: `stateManProvider` merely
+/// *building* is not a failure and publishes nothing, because a panel that
+/// flashed a red pill for the first second of every boot is a panel whose red
+/// pill stops being read.
 ///
 /// ## Why this file is allowed a timer
 ///
@@ -62,6 +79,11 @@
 library;
 
 import 'dart:async';
+// For `FileSystemException` and nothing else: the one type test that turns a
+// throw out of client construction into "which file could not be opened". It is
+// here, and not in `lib/core/gateway_link_status.dart`, because that file is
+// pure by declaration and thirteen golden frames depend on it.
+import 'dart:io' show FileSystemException;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
@@ -129,13 +151,32 @@ final gatewayLinkProvider = StreamProvider<GatewayLinkReport?>((ref) {
   //    on the panel just to be told there is no link to report on. See property
   //    2 in the library doc for why this is not `value is GatewayStateMan`.
   RemoteStateMan? client;
+  GatewayLinkBuildFailure? failure;
   if (config != null && config.isGateway) {
-    final guarded = ref.watch(stateManProvider).valueOrNull;
+    final built = ref.watch(stateManProvider);
+    final guarded = built.valueOrNull;
     client = guarded is GuardedStateMan
         ? guarded.innerAs<GatewayStateMan>()?.remote
         : null;
+    if (client == null && built.hasError) {
+      // Property 5, and the reason this branch reads the whole `AsyncValue`
+      // rather than `.valueOrNull`. See the library doc.
+      //
+      // The `dart:io` type test lives here rather than in
+      // `gateway_link_status.dart` because that file is pure and thirteen
+      // golden frames depend on it staying so. `PathNotFoundException` extends
+      // `FileSystemException`, which is what a missing CA root and a missing
+      // credential file both arrive as; `path` on it is the string the operator
+      // typed into Server Config, never the file's contents.
+      final error = built.error!;
+      failure = GatewayLinkBuildFailure(
+        raw: error.toString(),
+        path: error is FileSystemException ? error.path : null,
+      );
+    }
   }
   final remote = client;
+  final buildFailure = failure;
 
   StreamSubscription<LinkState>? states;
   Timer? patienceTimer;
@@ -185,8 +226,36 @@ final gatewayLinkProvider = StreamProvider<GatewayLinkReport?>((ref) {
       // Still reading the device-local row: say nothing yet rather than
       // publish a "no report" this provider is about to contradict.
       if (config == null) return;
-      if (!config.isGateway || remote == null) {
+      if (!config.isGateway) {
         controller.add(null);
+        return;
+      }
+      if (remote == null) {
+        // **The two nulls that used to be one.** A station whose client could
+        // not be built published exactly what a direct station publishes, so
+        // the chip rendered `SizedBox.shrink()` and the Transport card rendered
+        // no row — the panel knew what was wrong and said nothing. A build
+        // failure is a conclusion reached before there is anything to listen
+        // to, so it is emitted here and no timer is armed for it: nothing on a
+        // wire can change it, and the provider rebuilds if the config or
+        // `stateManProvider` does.
+        //
+        // `buildFailure == null` is still the honest silence: gateway mode with
+        // `stateManProvider` merely *building*. That is the unresolved state
+        // `gateway_link_chip.dart:101-105` renders as zero width on purpose.
+        if (buildFailure == null) {
+          controller.add(null);
+          return;
+        }
+        controller.add(describeGatewayLinkFailure(
+          // `GatewayConfig.uri` throws on a URL that will not parse, and this
+          // provider is the one caller that can be looking at exactly that —
+          // `stateManProvider` refuses an undiallable row by name, which is one
+          // of the failures being reported here. An empty Uri renders as the
+          // empty string, and neither sentence for this kind interpolates it.
+          url: Uri.tryParse(config.url.trim()) ?? Uri(),
+          failure: buildFailure,
+        ));
         return;
       }
       // Listen first, then seed. See property 3 in the library doc.

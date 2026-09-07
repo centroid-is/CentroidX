@@ -16,6 +16,17 @@
 /// deliberate refusal to name *which* certificate fault it is was argued and
 /// measured across three platforms. This file wraps it. It does not improve it.
 ///
+/// **Two entry points, one vocabulary.** [describeGatewayLink] describes a
+/// client that exists and is doing something; [describeGatewayLinkFailure]
+/// describes a station that could not build one at all. The second exists
+/// because the first cannot be honest about the case: with no client there is
+/// no `LinkState` to pass, and inventing one would make the caller lie about
+/// what it observed. Both spend the same private prose functions and the same
+/// [GatewayLinkKind], because the whole point of this file is that the app
+/// reads its refusal text from one place — see
+/// [GatewayLinkKind.notBuilt] for why that case is a kind of its own rather
+/// than a seventh spelling of "unreachable".
+///
 /// **It is pure.** No widgets, no `DateTime.now()`, no I/O. Elapsed time
 /// arrives as a [Duration] the caller measured, which is why the string
 /// `DateTime.now(` does not appear below. The goldens for these frames compare
@@ -93,10 +104,15 @@ abstract final class GatewayLinkReasons {
       "the link died before the snapshot landed";
 }
 
-/// What the link is doing. Six, and no seventh — every switch over this enum is
-/// exhaustive with no fallthrough arm, matching `LinkState`'s own
-/// four-and-no-fifth discipline, so a new member is a compile error rather than
-/// a state some surface renders as a blank.
+/// What the link is doing — or, for the last member, that there is no link to
+/// ask.
+///
+/// Every switch over this enum is exhaustive with no fallthrough arm, matching
+/// `LinkState`'s own four-and-no-fifth discipline, so a new member is a compile
+/// error rather than a state some surface renders as a blank. That property is
+/// what made [notBuilt] cheap to add and is the reason it must be kept: adding
+/// it turned `gateway_link_status_row_test.dart`'s completeness arm red until
+/// the new kind had a colour and reached the screen.
 enum GatewayLinkKind {
   /// A session is up and holding snapshots.
   connected,
@@ -119,6 +135,31 @@ enum GatewayLinkKind {
   /// The gateway will not speak this build's protocol and the retry loop has
   /// stopped.
   versionRefused,
+
+  /// This station is in gateway mode and **no client was ever built**, so
+  /// nothing was dialled and nothing is retrying.
+  ///
+  /// A `caCertPath` naming a file that is not there throws
+  /// `PathNotFoundException` out of `RemoteStateMan`'s constructor
+  /// (`remote_state_man.dart:132`, `..setTrustedCertificates(tls.rootCertPath)`)
+  /// and a missing credential file throws out of `GatewayConfig.toClientConfig`
+  /// — both *before* a socket exists, so there is no `LinkState`, no
+  /// `lastDownReason` and nothing for the other six kinds to describe.
+  ///
+  /// **It is not a seventh spelling of [unreachable], and collapsing it into
+  /// one would undo the fix.** `unreachable` sends an operator to the address,
+  /// the port and the cable; this fault is entirely on the station's own disk,
+  /// and it is the wrong-end failure the rest of this file exists to prevent.
+  /// It is also terminal in the strongest sense the surface has: there is no
+  /// retry loop to have stopped, because none was started.
+  ///
+  /// **Phase 15's own gap, measured.** Before this member existed the provider
+  /// published `null` here — the same value that means "direct mode, nothing to
+  /// report" — so the chip rendered `SizedBox.shrink()` and the Transport card
+  /// rendered no row. The panel knew exactly what was wrong and said nothing,
+  /// which is this milestone's "silence is not success" rule failing on the one
+  /// case criterion 2 names and the phase shipped without.
+  notBuilt,
 }
 
 /// One sentence, and the kind it reports under.
@@ -147,7 +188,16 @@ enum _Voice {
   noAnswerYet,
   certificateRefused,
   credentialRefused,
-  versionRefused;
+  versionRefused,
+
+  /// A file this station's configuration names could not be opened, and the
+  /// path is known. The one voice that can point at a filename.
+  fileUnreadable,
+
+  /// The client could not be built and the failure named no file — a
+  /// certificate that parses as nothing, an unusable address, anything else
+  /// thrown before a socket existed.
+  transportNotBuilt;
 
   /// The public kind this voice reports under. Total, no `default`.
   GatewayLinkKind get kind => switch (this) {
@@ -160,12 +210,72 @@ enum _Voice {
         _Voice.certificateRefused => GatewayLinkKind.untrustedCertificate,
         _Voice.credentialRefused => GatewayLinkKind.credentialRefused,
         _Voice.versionRefused => GatewayLinkKind.versionRefused,
+        _Voice.fileUnreadable => GatewayLinkKind.notBuilt,
+        _Voice.transportNotBuilt => GatewayLinkKind.notBuilt,
       };
 
-  /// Whether the client's retry loop has stopped. Two of nine, and both of them
-  /// are answers that will not change on the next attempt.
-  bool get terminal =>
-      this == _Voice.credentialRefused || this == _Voice.versionRefused;
+  /// Whether this is an answer that will not change on the next attempt.
+  ///
+  /// Written as a total switch rather than the two `==` comparisons it used to
+  /// be: with four members now answering `true` out of eleven, an `||` chain is
+  /// a place a new voice silently defaults to "the panel is still trying" —
+  /// which is the one lie this surface must not tell.
+  ///
+  /// The last two are terminal for a stronger reason than the first two. A
+  /// refused credential stopped a retry loop; a transport that was never built
+  /// has no loop to stop, and nothing on the wire can change the answer.
+  bool get terminal => switch (this) {
+        _Voice.connected => false,
+        _Voice.connecting => false,
+        _Voice.dialNeverLanded => false,
+        _Voice.linkDropped => false,
+        _Voice.wentQuiet => false,
+        _Voice.noAnswerYet => false,
+        _Voice.certificateRefused => false,
+        _Voice.credentialRefused => true,
+        _Voice.versionRefused => true,
+        _Voice.fileUnreadable => true,
+        _Voice.transportNotBuilt => true,
+      };
+}
+
+/// Why this station could not build a gateway client at all.
+///
+/// The input to [describeGatewayLinkFailure], and deliberately **not** a
+/// `dart:io` exception: this file is pure, and 15-07's thirteen golden frames
+/// depend on it staying that way. The caller — `lib/providers/gateway_link.dart`
+/// — does the one type test that needs `dart:io` and hands the two facts over.
+///
+/// The split between the two fields is the same one [GatewayLinkReport.raw]
+/// makes and for the same reason. [path] is a string the *operator typed into
+/// this app's own settings page*, so it may be read back to them on a panel
+/// anybody can walk past; [raw] is a message this app did not write, and it
+/// belongs behind the paste-into-a-ticket affordance. Nothing here ever carries
+/// the *contents* of the file at [path].
+final class GatewayLinkBuildFailure {
+  const GatewayLinkBuildFailure({required this.raw, this.path});
+
+  /// The error, whole and unedited, for a ticket.
+  final String raw;
+
+  /// The file that could not be opened, when the failure named one.
+  ///
+  /// Null for every failure that is not about a file — a certificate that
+  /// parses as nothing throws `TlsException`, which names no path — and the
+  /// prose falls back to naming the three fields rather than inventing a
+  /// filename.
+  final String? path;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is GatewayLinkBuildFailure && other.raw == raw && other.path == path;
+
+  @override
+  int get hashCode => Object.hash(raw, path);
+
+  @override
+  String toString() => 'GatewayLinkBuildFailure(path: $path)';
 }
 
 /// What to put on a panel about the gateway link, right now.
@@ -311,11 +421,55 @@ GatewayLinkReport describeGatewayLink({
   return GatewayLinkReport(
     kind: voice.kind,
     headline: _headline(voice, where, elapsed, patience),
-    detail: _detail(voice, where),
+    detail: _detail(voice, where, null),
     url: url,
     raw: raw,
     terminal: voice.terminal,
     sanHint: showSanHint ? _sanHint(url.host) : null,
+  );
+}
+
+/// What to put on a panel when this station could not build a client at all.
+///
+/// The sibling of [describeGatewayLink], and the answer to the one case that
+/// function cannot describe: with no client there is no `LinkState`, no
+/// `lastDownReason` and no elapsed time, so a caller forced through the other
+/// entry point would have to invent all three. It shares the same prose
+/// functions, the same [GatewayLinkKind] and the same
+/// nothing-operator-facing-carries-a-credential rule.
+///
+/// **[url] is what the station is configured to dial, not what it dialled** —
+/// nothing was dialled. It is carried so a surface can still say which endpoint
+/// the broken configuration was for, and it is rendered through [_render] like
+/// every other URL here, so a `userInfo` in a preferences row cannot reach a
+/// screen. A URL that will not parse at all is the caller's problem: it passes
+/// an empty [Uri] and the two sentences below never interpolate one, which is
+/// why neither of them can render as a blank.
+///
+/// **The failure's own text goes to [GatewayLinkReport.raw] and nowhere else.**
+/// `PathNotFoundException.toString()` is fine to show a support engineer and is
+/// not the sentence an operator should be reading across a room; the file's
+/// *contents* appear in neither, because [GatewayLinkBuildFailure] never
+/// carries them.
+GatewayLinkReport describeGatewayLinkFailure({
+  required Uri url,
+  required GatewayLinkBuildFailure failure,
+}) {
+  // The one decision: did the failure name a file, or not. `TlsException` from
+  // a certificate that parses as nothing names none, so that lands on the
+  // wider sentence rather than on a filename this file made up.
+  final voice = failure.path == null || failure.path!.isEmpty
+      ? _Voice.transportNotBuilt
+      : _Voice.fileUnreadable;
+  final where = _render(url);
+
+  return GatewayLinkReport(
+    kind: voice.kind,
+    headline: _headline(voice, where, Duration.zero, Duration.zero),
+    detail: _detail(voice, where, failure.path),
+    url: url,
+    raw: failure.raw,
+    terminal: voice.terminal,
   );
 }
 
@@ -362,10 +516,22 @@ String _headline(_Voice voice, String where, Duration elapsed, Duration patience
       _Voice.certificateRefused => 'The certificate at $where was refused',
       _Voice.credentialRefused => 'The gateway refused this panel',
       _Voice.versionRefused => 'The gateway refused this build',
+      // Neither of the two below interpolates `where`. Nothing was dialled, so
+      // naming the endpoint would put the operator's eye on the one part of the
+      // configuration that is not the problem — and on a station whose URL will
+      // not parse, `where` is the empty string and the headline would read as a
+      // typo of itself.
+      _Voice.fileUnreadable => 'This panel could not open a file it needs',
+      _Voice.transportNotBuilt =>
+        'This panel could not build its gateway connection',
     };
 
 /// The end of the wire to go and check. Total over [_Voice], no `default`.
-String _detail(_Voice voice, String where) => switch (voice) {
+///
+/// [path] is non-null only for [_Voice.fileUnreadable], and it is a path the
+/// operator typed into this app's own settings page — never a file's contents,
+/// and never anything the far end wrote.
+String _detail(_Voice voice, String where, String? path) => switch (voice) {
       _Voice.connected =>
         'The panel is holding a live session and the values on screen are '
             'coming from it.',
@@ -400,6 +566,16 @@ String _detail(_Voice voice, String where) => switch (voice) {
         'The panel has stopped retrying: this build and the gateway speak '
             'different protocol versions, so one of the two has to be '
             'updated.',
+      _Voice.fileUnreadable =>
+        'The connection was never built, so nothing was dialled and nothing '
+            'is retrying. This panel could not open $path. Check that the '
+            'file is on this station at exactly that path and that the panel '
+            'may read it, then restart the panel.',
+      _Voice.transportNotBuilt =>
+        'The connection was never built, so nothing was dialled and nothing '
+            'is retrying. Check the gateway address, the CA root file and the '
+            'credential file on this station\'s Server Config page, then '
+            'restart the panel.',
     };
 
 /// The extra sentence for a certificate refused on a dial by name.
