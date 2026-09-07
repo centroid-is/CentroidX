@@ -501,6 +501,10 @@ void main() {
               'heavier is touched, which is what keeps '
               'base_scaffold_appbar_golden_test.dart — which overrides only '
               'alarmManProvider — from having to build a real StateMan');
+      expect(container.read(gatewayLinkTimerProbeProvider).armedFor, isEmpty,
+          reason: 'a station with no link has nothing whose patience could '
+              'expire; a timer armed here is one running on every direct '
+              'panel in the plant, forever, for nobody');
     });
 
     test('a closed port reads as unreachable, and the panel keeps retrying',
@@ -774,6 +778,70 @@ void main() {
               'becomes a cable fault');
       expect(credential, startsWith(GatewayLinkReasons.credentialRefused));
       expect(version, startsWith(GatewayLinkReasons.versionRefused));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The declared absence, on the source text.
+  //
+  // **These exist because a mutation turned nothing red.** Replacing the
+  // one-shot with an always-on `Timer.periodic` created at provider
+  // construction left this file 15/15 green and `flutter test test/widgets`
+  // 1134/1134 green. The reason is measurable: `grep -rln gatewayLinkProvider
+  // lib/` returns only the provider's own file, so **nothing in the app
+  // watches it yet** — the status row is plan 15-05 and the app-bar chip is
+  // 15-06 — and project memory `timers-must-be-listener-gated`'s canary ("A
+  // Timer is still pending" in an unrelated widget test) has nothing to fire
+  // on. A guard nobody can break is a guard nobody will keep.
+  //
+  // So the rule is asserted where it *is* observable today: on the file's own
+  // source, the discipline `audit_trail_test.dart:334-355` already uses for
+  // the symmetrical no-timer rule in `lib/providers/audit_trail.dart`. When
+  // 15-05 or 15-06 puts a widget in front of this provider, the behavioural
+  // canary becomes available and should be added there — these do not replace
+  // it, they cover the window in which it cannot exist.
+  // -------------------------------------------------------------------------
+  group('the timer rule, on the source', () {
+    /// `lib/providers/gateway_link.dart` with every whole-line comment
+    /// dropped, so the paragraph explaining the rule cannot satisfy the test
+    /// enforcing it.
+    List<String> sourceLines() {
+      final file = File('lib/providers/gateway_link.dart');
+      expect(file.existsSync(), isTrue,
+          reason: 'run this suite from the package root; without the file '
+              'every assertion below passes vacuously');
+      return file
+          .readAsLinesSync()
+          .where((line) => !line.trimLeft().startsWith('//'))
+          .toList();
+    }
+
+    test('the derivation reads a real file, not an empty one', () {
+      // First, and in its own case: an absence asserted over nothing is the
+      // failure mode this whole group is about.
+      expect(sourceLines().length, greaterThan(40));
+      expect(sourceLines().join('\n'), contains('gatewayLinkProvider'));
+    });
+
+    test('names no Timer.periodic', () {
+      expect(sourceLines().join('\n'), isNot(contains('Timer.periodic')),
+          reason: 'the patience window expires once and the conclusion it '
+              'expires to is never `connecting` again, so a periodic timer '
+              'here would be a clock running forever on every gateway panel '
+              'to re-derive an answer that cannot change');
+    });
+
+    test('and it reaches for onListen and onCancel instead', () {
+      // The paired half. An absence alone passes on a file that creates no
+      // timer at all — including one somebody deleted the gating *and* the
+      // timer from, which would take "never an indefinite spinner" with it.
+      final source = sourceLines().join('\n');
+      expect(source, contains('onListen:'));
+      expect(source, contains('onCancel:'));
+      expect(source, contains('Timer('),
+          reason: 'and there is still a timer to gate — without one the '
+              'panel says "connecting…" until something happens on the wire, '
+              'which on a dead address is forever');
     });
   });
 }
