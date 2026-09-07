@@ -66,24 +66,29 @@
 /// second id is created, the one the operator's action already carries is put
 /// back on an answer that lost it at a transport boundary.
 ///
-/// ## Why the outcome log is written here rather than reused
+/// ## The outcome log is shared, and no longer written here
 ///
-/// `tfc_relay_server` has a `WriteOutcomeLog` with exactly these semantics, and
-/// it is deliberately **not** on that package's barrel — the barrel's own doc
-/// says an embedder "configures and starts a server, it does not reach into a
-/// session". Reaching past it with a `package:tfc_relay_server/src/…` import
-/// trips `implementation_imports`, which `flutter_lints` has on, and adding the
-/// export is an edit to a package this plan is scoped out of. So the evidence
-/// rules are re-stated here, in [BackendWriteOutcomeLog], deliberately spelled
-/// the same way so the two cannot drift on the one question that matters
-/// (`witnessed` / `insideWindow`).
+/// This file used to carry its own `BackendWriteOutcomeLog`, re-stating the
+/// evidence rules because `tfc_relay_server`'s `WriteOutcomeLog` was not on
+/// that package's barrel and reaching past it would have tripped
+/// `implementation_imports`. The two were byte-identical across nine members
+/// and **neither said so** — the only undeclared copy in Phase 18's inventory.
 ///
-/// The two logs do **not** answer about the same command in the mounted
+/// Since 18-04 both are [relay.WriteOutcomeLog], in `tfc_relay_protocol`, which
+/// is a package both sides already depend on. The evidence rules, and the
+/// reason `tfc_relay_local` keeps a third and different log, are in that file's
+/// library doc rather than restated here — a restatement is what drifted.
+///
+/// One shape changed in the move and it is the one worth knowing about: this
+/// side's `fingerprint` was already required and non-nullable where the
+/// server's was optional, and **this side's shape is the one that survived**.
+///
+/// The two logs still do **not** answer about the same command in the mounted
 /// composition, and that is worth stating because it is not obvious:
-/// `value_handlers.dart:720` answers a wire `writeStatus` entirely from the
+/// `value_handlers.dart` answers a wire `writeStatus` entirely from the
 /// gateway's own log and never delegates to `StateManApi.writeStatus`. So the
 /// server's log answers clients; this one answers in-process callers and the
-/// contract suite. See 13-10.
+/// contract suite. See 13-10. Sharing the class did not merge the instances.
 ///
 /// Protocol types are imported `as relay`, the house rule inside `tfc_dart`.
 library;
@@ -136,106 +141,6 @@ Set<String> readModifyWriteKeysOf(KeyMappings keyMappings) => <String>{
 /// 30 s, so one full cycle plus a resync) with room to spare.
 const Duration kBackendWriteOutcomeTtl = Duration(seconds: 60);
 
-/// The write this outcome was recorded for: the tag, the payload and the
-/// compare-and-set guard.
-///
-/// One question — "is the frame in my hand the same operator action as the one
-/// I already answered?" — so one record rather than three loose fields that can
-/// drift apart. `expect` is in here deliberately: "set 1450" and "set 1450 only
-/// if it still reads 1200" are two different operator intents, and answering
-/// the unguarded one from the guarded one's entry would report that a check
-/// passed which was never made.
-typedef BackendWriteFingerprint = ({String key, Object? value, Object? expect});
-
-/// One recorded outcome, and the instant it was recorded at.
-final class BackendWriteOutcomeEntry {
-  const BackendWriteOutcomeEntry(this.result, this.atMs, this.fingerprint);
-
-  /// What became of the write. A write still upstream is recorded too, as
-  /// [relay.WriteUnknown]: a `writeStatus` crossing a command on its way to a
-  /// machine must not answer that it never arrived.
-  final relay.WriteResult result;
-
-  /// This source's clock when the outcome was recorded.
-  final int atMs;
-
-  /// The write the outcome is about.
-  final BackendWriteFingerprint fingerprint;
-
-  /// Whether [other] is the same operator action this outcome belongs to.
-  ///
-  /// Deep JSON equality on the payload and the guard (`json_equality.dart`),
-  /// which is insensitive to object key order and holds numbers to their
-  /// runtime type so a DINT `1` and a REAL `1.0` stay two different writes.
-  bool matches(BackendWriteFingerprint other) =>
-      fingerprint.key == other.key &&
-      relay.jsonEquals(fingerprint.value, other.value) &&
-      relay.jsonEquals(fingerprint.expect, other.expect);
-}
-
-/// Every write outcome this source is still prepared to speak about.
-///
-/// Pruned on access rather than by a clock of its own: it is data with a clock
-/// passed in, not a scheduler, so a case models an aged entry with arithmetic
-/// instead of a sleep.
-final class BackendWriteOutcomeLog {
-  BackendWriteOutcomeLog({required this.ttl, required this.now})
-      : startedAtMs = now();
-
-  /// How long an outcome is kept, and the width of the `not_received` window.
-  final Duration ttl;
-
-  /// Epoch milliseconds, injected: every promise here is arithmetic about
-  /// *when*.
-  final int Function() now;
-
-  /// This source's own clock at the moment it began recording.
-  ///
-  /// The lower bound on every `not_received`. On a running backend that is boot
-  /// time, so the window opens once and stays open across every client
-  /// reconnect — which is the difference between "I was watching and it never
-  /// came" and "I have only just started watching".
-  final int startedAtMs;
-
-  final Map<String, BackendWriteOutcomeEntry> _entries =
-      <String, BackendWriteOutcomeEntry>{};
-
-  /// How many outcomes are being held. The observable behind the bounded-log
-  /// arm; nothing in production depends on it.
-  int get recordedOutcomes => _entries.length;
-
-  /// Records [result] for [cmd], replacing whatever was there.
-  void record(String cmd, relay.WriteResult result,
-      BackendWriteFingerprint fingerprint) {
-    prune();
-    _entries[cmd] = BackendWriteOutcomeEntry(result, now(), fingerprint);
-  }
-
-  /// The entry held for [cmd] after pruning, or null.
-  BackendWriteOutcomeEntry? entryFor(String cmd) {
-    prune();
-    return _entries[cmd];
-  }
-
-  /// Whether this log was recording when [mintedAtMs] was minted, and whether
-  /// that instant is one this clock can vouch for.
-  ///
-  /// False for a command from before [startedAtMs] and for one from the future.
-  /// Both are "forgetting is not evidence" wearing different clothes.
-  bool witnessed(int mintedAtMs) =>
-      mintedAtMs >= startedAtMs && mintedAtMs <= now();
-
-  /// Whether [mintedAtMs] is inside the window this log still answers for.
-  bool insideWindow(int mintedAtMs) =>
-      now() - mintedAtMs <= ttl.inMilliseconds;
-
-  /// Drops everything past the TTL.
-  void prune() {
-    final horizon = now() - ttl.inMilliseconds;
-    _entries.removeWhere((_, entry) => entry.atMs < horizon);
-  }
-}
-
 /// `BackendWriteSource` over [PipeMainEndpoint]. See the library doc.
 final class BackendWrites implements BackendWriteSource {
   /// Composes the write half over an already-built pipe and value source.
@@ -266,7 +171,7 @@ final class BackendWrites implements BackendWriteSource {
         _readModifyWriteKeys = Set<String>.unmodifiable(readModifyWriteKeys),
         _now = now ?? _wallClock,
         _logger = logger ?? Logger(),
-        _log = BackendWriteOutcomeLog(
+        _log = relay.WriteOutcomeLog(
             ttl: outcomeTtl, now: now ?? _wallClock) {
     _holds = BackendHoldRegistry(feed: _feedDeadman, logger: _logger);
   }
@@ -280,7 +185,7 @@ final class BackendWrites implements BackendWriteSource {
   final Set<String> _readModifyWriteKeys;
   final int Function() _now;
   final Logger _logger;
-  final BackendWriteOutcomeLog _log;
+  final relay.WriteOutcomeLog _log;
 
   /// The live holds this source is keeping. See `backend_hold.dart`.
   late final BackendHoldRegistry _holds;
@@ -437,7 +342,7 @@ final class BackendWrites implements BackendWriteSource {
         // records is dated by the injected one. Two clocks in one outcome log
         // is how a `not_received` window starts lying.
         final refusal = relay.WriteRejected(id, guard.reason, at: _now());
-        _log.record(id, refusal, fingerprint);
+        _log.record(id, refusal, fingerprint: fingerprint);
         return Future<relay.WriteResult>.value(refusal);
       }
     }
@@ -455,7 +360,7 @@ final class BackendWrites implements BackendWriteSource {
                   '"$key" holds ${current?.value}; nothing was sent'),
           at: _now(),
         );
-        _log.record(id, refusal, fingerprint);
+        _log.record(id, refusal, fingerprint: fingerprint);
         return Future<relay.WriteResult>.value(refusal);
       }
     }
@@ -470,7 +375,7 @@ final class BackendWrites implements BackendWriteSource {
           const relay.WriteReason('in_flight',
               message: 'this command is upstream and has not been answered '
                   'yet; read the value back before acting')),
-      fingerprint,
+      fingerprint: fingerprint,
     );
 
     _attempts[id] = (_attempts[id] ?? 0) + 1;
@@ -494,7 +399,7 @@ final class BackendWrites implements BackendWriteSource {
           const relay.WriteReason('write_path_failed',
               message: 'the write path failed on the way out; whether the '
                   'command reached the plant is not established'));
-      _log.record(id, lost, fingerprint);
+      _log.record(id, lost, fingerprint: fingerprint);
       return Future<relay.WriteResult>.value(lost);
     }
 
@@ -511,7 +416,7 @@ final class BackendWrites implements BackendWriteSource {
   Future<relay.WriteResult> _settle(
     String cmd,
     String key,
-    BackendWriteFingerprint fingerprint,
+    relay.WriteFingerprint fingerprint,
     Future<relay.WriteResult> upstream,
   ) async {
     var badgeHandled = false;
@@ -519,7 +424,7 @@ final class BackendWrites implements BackendWriteSource {
       final result = _restamp(cmd, await upstream);
       _applyOutcome(key, result);
       badgeHandled = true;
-      _log.record(cmd, result, fingerprint);
+      _log.record(cmd, result, fingerprint: fingerprint);
       return result;
     } catch (error, stack) {
       _logger.e('backend writes: settling the write to "$key" failed',
@@ -529,7 +434,7 @@ final class BackendWrites implements BackendWriteSource {
           const relay.WriteReason('write_path_failed',
               message: 'the outcome could not be settled on this side; '
                   'whether the plant applied the command is not established'));
-      _log.record(cmd, lost, fingerprint);
+      _log.record(cmd, lost, fingerprint: fingerprint);
       return lost;
     } finally {
       // T-13-08-e. Whatever happened above, the badge does not outlive this
