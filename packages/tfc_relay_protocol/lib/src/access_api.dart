@@ -9,8 +9,8 @@
 ///
 /// `state_man_api.dart`'s own rule governs this file too: *a method that exists
 /// is a thing any connected client may invoke, so adding one is an
-/// access-control decision, not a convenience*. Twenty-nine such decisions
-/// discovered a handler at a time is twenty-nine decisions nobody made. They
+/// access-control decision, not a convenience*. Twenty-eight such decisions
+/// discovered a handler at a time is twenty-eight decisions nobody made. They
 /// are here so a reviewer sees the whole surface at once, and
 /// `test/access_api_test.dart` plus the contract kit's `api_surface_test.dart`
 /// are where the count is written down.
@@ -68,11 +68,18 @@ import 'package:tfc_access/tfc_access.dart';
 
 /// Access templates and the key bindings that point at them.
 ///
-/// The ten member names are `AccessTemplateStore`'s verbatim
+/// The nine member names are `AccessTemplateStore`'s verbatim
 /// (`packages/tfc_dart/lib/core/access/access_template_store.dart`), because
 /// that is what lets `AccessMethods.templateMethods` be compared against this
 /// interface by reflection in both directions, and because a wire that renamed
 /// them would be a third vocabulary for one concept.
+///
+/// The store's `template(name)` single-row read is **deliberately not here**.
+/// The access audit found no caller anywhere — including the store itself,
+/// which reads rows through its private `_row()` — so it would have been wire
+/// surface nobody uses. A remote implementation that wants one template
+/// derives it client-side from [list()]: same snapshot semantics, zero extra
+/// wire names.
 ///
 /// Every write requires `AccessGroup.users`
 /// (`AccessPolicy.groupForTemplate`) and the check happens **server-side**.
@@ -81,9 +88,6 @@ import 'package:tfc_access/tfc_access.dart';
 abstract interface class AccessTemplateApi {
   /// Every template, for the templates section.
   Future<List<AccessTemplate>> list();
-
-  /// One template by [name], or null when there is no such row.
-  Future<AccessTemplate?> template(String name);
 
   /// Every key→template binding, keyed by key name.
   Future<Map<String, String>> bindings();

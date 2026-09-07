@@ -47,7 +47,9 @@
 ///    enforcement and makes the read path legible.
 ///  * **The four access families are grouped the same way** ([AccessTemplateApi],
 ///    [AccessAdminApi], [AuditApi], [BackendConfigApi], declared in
-///    `access_api.dart`). Phase 17 adds twenty-nine methods and four getters,
+///    `access_api.dart`). Phase 17 adds twenty-eight methods and four getters
+///    (twenty-nine were declared; `accessTemplates.template` was cut on the
+///    2026-09-07 surface audit — no caller anywhere, including its own store),
 ///    which is the largest single growth this interface has had, and it is why
 ///    they are declared in one file a reviewer can read end to end rather than
 ///    discovered a handler at a time. **No member of any of them takes a

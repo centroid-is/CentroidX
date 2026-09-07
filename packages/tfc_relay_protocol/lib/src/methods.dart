@@ -235,8 +235,8 @@ abstract final class DataServiceMethods {
 /// and there is a sharper one here: **these are the names an access review
 /// reads.** Somebody auditing what a station may do to roles, templates, the
 /// audit trail and the backend's own configuration should be able to read one
-/// class and know they have seen all of it, rather than filtering twenty-nine
-/// names out of sixty-three.
+/// class and know they have seen all of it, rather than filtering twenty-eight
+/// names out of sixty-two.
 ///
 /// Same shape as [DataServiceMethods] in every respect, because the tests that
 /// hold it are the same tests: every name is `family.methodName`, the family
@@ -252,7 +252,6 @@ abstract final class DataServiceMethods {
 /// rather than telling it something.
 abstract final class AccessMethods {
   static const templateList = 'accessTemplates.list';
-  static const templateGet = 'accessTemplates.template';
   static const templateBindings = 'accessTemplates.bindings';
   static const templateKeysBoundTo = 'accessTemplates.keysBoundTo';
   static const templateCreate = 'accessTemplates.create';
@@ -265,7 +264,6 @@ abstract final class AccessMethods {
   /// Every `AccessTemplateApi` method, as data.
   static const templateMethods = <String>{
     templateList,
-    templateGet,
     templateBindings,
     templateKeysBoundTo,
     templateCreate,
@@ -339,8 +337,10 @@ abstract final class AccessMethods {
     configRestorePrevious,
   };
 
-  /// Every access **request** name: twenty-nine, and the whole wire surface
-  /// Phase 17 adds to the gateway.
+  /// Every access **request** name: twenty-eight, and the whole wire surface
+  /// Phase 17 adds to the gateway. (Twenty-nine originally; the access audit
+  /// cut `accessTemplates.template` — no caller anywhere, including its own
+  /// store; remote implementations derive it from `list()`.)
   ///
   /// Spelled from the four sets above rather than as a second copy of the
   /// strings, so a name can only be in one place.

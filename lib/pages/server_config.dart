@@ -1156,12 +1156,7 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
         subtitle: Text(saved.isGateway
             ? 'Relay gateway — ${saved.url}'
             : 'Direct to PLCs'),
-        trailing: _hasUnsavedChanges
-            ? Chip(
-                label: const Text('Unsaved'),
-                backgroundColor: Theme.of(context).colorScheme.errorContainer,
-              )
-            : null,
+        trailing: _hasUnsavedChanges ? const _UnsavedPill() : null,
         // A gateway station opens on its own settings; a direct one does not
         // have any to show.
         initiallyExpanded: saved.isGateway,
@@ -1337,6 +1332,63 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The Transport card's "Unsaved" marker.
+///
+/// [HmiStateColors.yellow] — attention, not alarm. Unsaved changes are the
+/// normal state of a keyboard mid-edit, and yellow is already what this
+/// feature's surfaces use for "needs attention, still recoverable"
+/// (`gateway_link_chip.dart`, `gateway_link_status_row.dart`, and the
+/// hostname advisory on this very card). Not red: only fault red may be
+/// saturated in this repo, and the old `errorContainer` chip fell back to
+/// exactly that — 15-07's golden review measured it as "the lowest-contrast
+/// element in any of the 26 images" (dark-red-on-red at 1.15:1). Not orange
+/// either: orange means forced/override and, since plan 01-08, an elevated
+/// session (`access_status_action.dart`).
+///
+/// The geometry is `gateway_link_chip.dart`'s pill — tinted fill, 47%-alpha
+/// border in the same colour — so the two badges an operator sees on this
+/// page read as one vocabulary.
+///
+/// The label colour splits on brightness for the same reason
+/// [AlarmColors.onSignal] exists: both schemes' yellows are mid-luminance,
+/// bright enough to read on a dark card (3.8:1 on solarized base02) and far
+/// too dim to read on a cream one (2.2:1 on base2). On light surfaces the
+/// tint and border carry the colour and the label falls back to `onSurface`.
+/// Measured label-on-fill contrast: 3.8:1 solarized dark, 3.3:1 solarized
+/// light, 4.2:1 muted dark, 7.5:1 muted light — every one of them above the
+/// scheme's own body text, where the old chip was below everything.
+/// `server_config_unsaved_chip_contrast_test.dart` pins all four at >= 3.0:1
+/// (WCAG 1.4.11).
+class _UnsavedPill extends StatelessWidget {
+  const _UnsavedPill();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colour = HmiStateColors.of(context).yellow;
+    final label = theme.brightness == Brightness.dark
+        ? colour
+        : theme.colorScheme.onSurface;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: colour.withAlpha(30),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colour.withAlpha(120)),
+      ),
+      child: Text(
+        'Unsaved',
+        maxLines: 1,
+        style: TextStyle(
+          color: label,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
