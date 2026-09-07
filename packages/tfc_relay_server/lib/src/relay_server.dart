@@ -39,6 +39,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'alarm_ack_sink.dart';
 import 'auth/file_token_validator.dart';
+import 'close_codes.dart';
 import 'error_reporter.dart';
 import 'handle_table.dart';
 import 'health/cert_health_state_man.dart';
@@ -62,35 +63,6 @@ import 'ws_channel.dart';
 /// here.
 void writeFrame(WebSocketChannel socket, String frame) =>
     socket.sink.add(frame);
-
-/// The two close codes this gateway sends that `CloseCodes` does not name yet.
-///
-/// **They belong in `CloseCodes` (`tfc_relay_protocol`'s `methods.dart`) and
-/// this is not a second table.** They live here because 16-09's scope is this
-/// package and the protocol package was owned by another plan in the same
-/// wave; promoting them is a two-line move and a deletion of this class, and
-/// nothing but the constant's spelling changes when it happens. What must
-/// **not** happen is a number being reused: these continue `CloseCodes`'
-/// sequence (4001–4005) rather than starting one, so promotion cannot
-/// collide.
-///
-/// Both exist because the close ledger records **codes, not sentences**
-/// (`ConnectionClose`), so the code is the only thing that survives to tell an
-/// operator which of these happened. Sharing `heartbeatTimeout` for the first
-/// would point an engineer at a beat that was never due, and sharing
-/// `serverDraining` for the second would tell a panel to reconnect quietly
-/// about a gateway that is not going anywhere.
-abstract final class GatewayCloseCodes {
-  /// The peer completed the upgrade and never said `hello` inside
-  /// `ServerConfig.preHelloDeadline`. Reconnect and complete the handshake —
-  /// the credential was never the problem, because it was never presented.
-  static const preHelloTimeout = 4006;
-
-  /// The gateway was already holding `ServerConfig.maxUnhelloedSessions`
-  /// un-helloed connections. Reconnect with backoff: this is transient and it
-  /// is about the gateway's load, not about this peer's credential.
-  static const unhelloedBudget = 4007;
-}
 
 /// The sessions a server is currently holding.
 ///
@@ -851,14 +823,6 @@ final class RelayServer {
       probe.session = session;
       _sessions.add(session);
 
-      // The other half of the pre-hello budget: how *long*, not how many
-      // (16-09, WSH-13). Armed here, at the upgrade, because that is the
-      // instant the clock is about — `RelaySession`'s `_LastSeen` will not
-      // move until the handshake lands, so an un-helloed session's silence is
-      // simply its age, and until this existed the only thing that noticed
-      // that age was the 6 s heartbeat reaper.
-      connection.armPreHello(config.preHelloDeadline);
-
       unawaited(session.closed.then((_) => _release(connection)));
     } catch (error, stack) {
       unawaited(_failConnection(ws, error, stack));
@@ -1160,25 +1124,6 @@ final class _Connection {
   RelaySession? session;
   var _finished = false;
 
-  /// The one-shot pre-hello deadline, or null once it has fired or been
-  /// cancelled (16-09, WSH-13).
-  ///
-  /// **A timer here needs a word, because this class used to own one and
-  /// losing it was an improvement.** Until 03-07 `_Connection` pumped its own
-  /// buffer on a `Timer.periodic`, one per connected panel, and the engine
-  /// replaced all of them with the server's single timer — see [write]. This
-  /// is not that timer coming back. It is **one-shot**, it is armed once at
-  /// the upgrade and never re-armed, it is cancelled by both teardown paths,
-  /// and there are at most `ServerConfig.maxUnhelloedSessions` of them alive
-  /// at any moment because the cap and this deadline bound each other. What
-  /// `tick_engine.dart` argues against — a per-session timer that is reset on
-  /// every frame and outlives the session it captured — is a different object
-  /// with a different lifetime.
-  ///
-  /// It could not be a pass of the engine's sweep without editing the sweep,
-  /// and the sweep belongs to another plan in this wave.
-  Timer? _preHello;
-
   /// Whether [finish] has already run.
   ///
   /// Both paths into it are real and can race: the session completing on its
@@ -1186,39 +1131,6 @@ final class _Connection {
   /// disconnect in the ledger that never happened.
   bool get released => _released;
   var _released = false;
-
-  /// Starts the pre-hello deadline for this connection.
-  ///
-  /// The predicate is checked **when the timer fires**, not when it is armed,
-  /// and nothing cancels it on `hello`. That is deliberate: a cancel-on-hello
-  /// needs a hook inside the handshake and a second place that can get the
-  /// lifetime wrong, where checking `session.helloed` at the one moment it
-  /// matters cannot go stale. A panel that authenticated is simply left alone
-  /// and the timer is discarded.
-  ///
-  /// Closes through the **session**, not through [closeSocket]: the session's
-  /// own teardown is what records the code for the close ledger, releases the
-  /// plant listeners and detaches the subscriptions. Closing the socket
-  /// underneath it would drop the panel and keep everything the panel was
-  /// expensive for.
-  void armPreHello(Duration deadline) {
-    _preHello?.cancel();
-    _preHello = Timer(deadline, () {
-      _preHello = null;
-      final session = this.session;
-      if (session == null || _finished || _released) return;
-      if (session.helloed) return;
-      unawaited(session.close(
-          GatewayCloseCodes.preHelloTimeout,
-          'no hello within the ${deadline.inMilliseconds} ms pre-hello '
-              'deadline'));
-    });
-  }
-
-  void _cancelPreHello() {
-    _preHello?.cancel();
-    _preHello = null;
-  }
 
   /// The session's `emitFrame`: one already-encoded frame onto this socket.
   ///
@@ -1263,7 +1175,6 @@ final class _Connection {
   /// order, which is what the whole close-code discipline is for.
   Future<void> closeSocket(int code, String reason) async {
     flushPriority();
-    _cancelPreHello();
     _finished = true;
     try {
       await _ws.sink.close(code, _clampReason(reason));
@@ -1306,13 +1217,6 @@ final class _Connection {
   /// (1005 when it sent none) and reading it later risks racing our own close.
   ConnectionClose finish() {
     _released = true;
-    // Both teardown paths cancel it, and both are needed: this one is the
-    // funnel every release goes through, and `closeSocket` runs a turn or more
-    // earlier on the eviction path. Cancelling twice is free; cancelling
-    // neither would leave a closure holding this connection's buffer, sink and
-    // socket for the remainder of the deadline, which is exactly the ghost
-    // `teardown_test.dart`'s kill cycle hunts.
-    _cancelPreHello();
     final close = ConnectionClose(
       clientCloseCode: _ws.closeCode,
       serverCloseCode: session?.sentCloseCode,

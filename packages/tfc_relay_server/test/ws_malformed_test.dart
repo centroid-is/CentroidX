@@ -528,7 +528,30 @@ void main() {
 
     test('every method except hello is refused before the handshake',
         () async {
-      final fixture = relayFixture();
+      // A deliberately generous pre-hello window, and it is a statement about
+      // this **sweep** rather than about the gateway (16-09).
+      //
+      // The case below sends one request per registered name — forty-odd of
+      // them — before the handshake, each waiting a tick for its answer:
+      // several seconds of un-helloed conversation that no panel has ever had.
+      // `ServerConfig.preHelloDeadline` is an age since the upgrade and
+      // deliberately does *not* move on pre-hello traffic (`_LastSeen.touch`,
+      // 05-REVIEW WR-03: a peer shouting at a gate that keeps refusing it must
+      // not be able to hold its own session open). So at the shipping 2 s the
+      // gateway takes the socket back halfway through the sweep and this case
+      // starts measuring the deadline instead of the gate.
+      //
+      // Raised through `heartbeatDeadline` rather than by setting
+      // `preHelloDeadline` directly, so the derivation is the thing carrying
+      // it: 30 s of heartbeat is 10 s of pre-hello, and the ping interval
+      // moves with it because the constructor insists the deadline stay
+      // inside it.
+      final fixture = relayFixture(
+          config: ServerConfig(
+        tick: ServerConfig.minTick,
+        heartbeatDeadline: const Duration(seconds: 30),
+        pingInterval: const Duration(seconds: 60),
+      ));
       await fixture.ready;
 
       // A **sweep, not a list** (06-RESEARCH §H.5). Phase 10 adds browse,

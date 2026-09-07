@@ -76,6 +76,7 @@ import 'dart:convert';
 
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
+import 'close_codes.dart';
 import 'error_reporter.dart';
 import 'frame_encoder.dart';
 import 'lag_monitor.dart';
@@ -364,6 +365,7 @@ final class TickEngine {
   /// (`relay_session.dart`) is untouched.
   void reap(int tickNowMs, [LagVerdict drift = const LagOk()]) {
     final deadlineMs = config.heartbeatDeadline.inMilliseconds;
+    final preHelloMs = config.preHelloDeadline.inMilliseconds;
     final forgivenMs = switch (drift) {
       LagStalled(:final stalledMs) => stalledMs,
       LagOk() => 0,
@@ -374,6 +376,33 @@ final class TickEngine {
       // credit it back before the deadline is applied. A dead session's
       // pre-freeze silence outlives the credit and it is still reaped.
       final chargedMs = silentMs - forgivenMs;
+      // **The pre-hello deadline, and why it is this loop's business** (16-09,
+      // WSH-13). For a session that has not helloed, `silentForMs` is not a
+      // measure of silence at all — `RelaySession`'s `_LastSeen.touch` refuses
+      // to move until the handshake lands (05-REVIEW WR-03), so the figure is
+      // simply the session's age since the upgrade. That is exactly the
+      // quantity a pre-hello deadline wants, which is what makes this sweep
+      // the right place for it rather than a timer per connection: the
+      // measurement already exists here, and `teardown_test.dart`'s
+      // no-per-session-timer sweep exists to stop anyone reaching for the
+      // other answer. Finding 8's argument, applied to a second deadline.
+      //
+      // The freeze credit applies here too, for the same reason it applies
+      // below: a gateway that stalled for a second did not observe a panel
+      // failing to hello, it observed nothing at all, and 4006-ing every
+      // connection that was mid-handshake across a thaw would be F22 wearing a
+      // different close code.
+      //
+      // `ServerConfig` refuses a pre-hello deadline that is not strictly
+      // shorter than the heartbeat one, so this branch always fires first for
+      // an un-helloed session and the `continue` costs nothing.
+      if (!session.helloed) {
+        if (chargedMs > preHelloMs) {
+          unawaited(session.close(GatewayCloseCodes.preHelloTimeout,
+              'no hello within the $preHelloMs ms pre-hello deadline'));
+        }
+        continue;
+      }
       if (chargedMs <= deadlineMs) continue;
       // `unawaited` is safe precisely because the registry removal is the
       // synchronous half of `close` (Finding 9, step 2): the session is out
