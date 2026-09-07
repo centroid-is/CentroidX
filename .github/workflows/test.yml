@@ -352,8 +352,17 @@ jobs:
     # hosted image. The floor is the same idiom as the soak lane's — `dart test`
     # with a selector that matches nothing exits 0, and a browser-tagged file
     # that stopped being compiled would otherwise read as covered.
-    # **Scoped to the one file that is web-verified today, and the scope is a
-    # finding rather than a convenience.** Running the whole package under
+    # **Scoped to the two files that are web-verified today, and the scope is a
+    # finding rather than a convenience.** `ulid_web_test.dart` pins the
+    # decoder; `write_outcome_log_web_test.dart` (18-04) pins the composition
+    # that decoder feeds — `ulidMs` -> `witnessed` / `insideWindow`, which is
+    # the positive-evidence rule behind every `not_received`. A folded
+    # timestamp dates a fresh command to 1970, which is before any log's
+    # `startedAtMs`, so a browser client would never be told a re-send is safe.
+    # The floor below is raised in step with the file list: a floor that stays
+    # at 5 while 14 tests are expected would pass with either file silently
+    # dropped, which is the whole failure mode this floor exists to catch.
+    # Running the whole package under
     # dart2js — which the first version of this step did by accident — fails
     # three further cases, and two of them are a real and unsolved problem:
     # every JavaScript number is a double, so `isDouble` answers true for an
@@ -370,14 +379,14 @@ jobs:
       shell: bash
       working-directory: packages/tfc_relay_protocol
       run: |
-        dart test -p chrome test/ulid_web_test.dart -r expanded --file-reporter "json:web-report.json"
+        dart test -p chrome test/ulid_web_test.dart test/write_outcome_log_web_test.dart -r expanded --file-reporter "json:web-report.json"
         [ -f web-report.json ] || { echo "::error::no web-report.json — the chrome lane never produced a report"; exit 1; }
         total=$( { grep -o '"type":"testStart"' web-report.json || true; } | wc -l)
         loading=$( { grep -o '"name":"loading ' web-report.json || true; } | wc -l)
         ran=$((total - loading))
         echo "browser-tagged tests reported: $ran"
-        if [ "$ran" -lt 5 ]; then
-          echo "::error::the chrome lane ran only $ran tests, expected at least 5 — the browser lane is not selecting what it used to"
+        if [ "$ran" -lt 14 ]; then
+          echo "::error::the chrome lane ran only $ran tests, expected at least 14 — the browser lane is not selecting what it used to"
           exit 1
         fi
 

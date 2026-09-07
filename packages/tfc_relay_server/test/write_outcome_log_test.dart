@@ -17,7 +17,6 @@ library;
 
 import 'package:test/test.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
-import 'package:tfc_relay_server/src/write_outcome_log.dart';
 
 import 'support/fake_clock.dart';
 
@@ -134,17 +133,28 @@ void main() {
               'outcome reports that a check passed which was never made');
     });
 
-    test('an entry recorded with no fingerprint matches nothing', () {
-      final clock = FakeClock(start: _epochStart);
-      final log = WriteOutcomeLog(ttl: _ttl, now: clock.now);
-      log.record('CMD-A', _applied('CMD-A'));
-
-      expect(log.entryFor('CMD-A')!.matches(_setSpeed1200), isFalse,
-          reason: 'absence of the request is not evidence that a replay is '
-              'the same request. A null fingerprint therefore refuses rather '
-              'than matches — the direction that costs an INVALID_PARAMS, '
-              'which on the write path means "definitively no effect"');
-    });
+    // REMOVED by 18-04: 'an entry recorded with no fingerprint matches
+    // nothing'.
+    //
+    // That arm recorded an outcome with no fingerprint and asserted the entry
+    // then matched nothing. Its subject no longer exists: the shared
+    // `WriteOutcomeLog` makes `fingerprint` **required and non-nullable**, so
+    // the state the arm constructed is now unrepresentable and the line no
+    // longer compiles.
+    //
+    // The branch it covered was already dead in production — this file's own
+    // doc recorded that both record sites in `value_handlers.dart` have the
+    // decoded `WriteParams` in scope — so nothing but this arm ever built one.
+    // Making the unsafe state unrepresentable is strictly stronger than
+    // refusing it at runtime.
+    //
+    // The guarantee did not go unguarded. It moved and changed kind: it is now
+    // a STRUCTURAL arm in
+    // `tfc_relay_protocol/test/write_outcome_log_test.dart` ("the fingerprint
+    // is compared, and the type system refuses a null one"), which asserts on
+    // `record`'s own function type. A behavioural arm cannot exist for this —
+    // the nullable and non-nullable shapes both refuse a replay — which is
+    // exactly why reverting the improvement would otherwise be silent.
 
     test('the entry hands back the request it was recorded for', () {
       final clock = FakeClock(start: _epochStart);

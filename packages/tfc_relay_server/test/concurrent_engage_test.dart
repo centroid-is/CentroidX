@@ -63,7 +63,6 @@ import 'package:tfc_relay_server/src/handle_table.dart';
 import 'package:tfc_relay_server/src/relay_session.dart';
 import 'package:tfc_relay_server/src/server_config.dart';
 import 'package:tfc_relay_server/src/value_handlers.dart';
-import 'package:tfc_relay_server/src/write_outcome_log.dart';
 import 'package:tfc_stateman_contract/channel_harness.dart';
 import 'package:tfc_stateman_contract/testing/fake_state_man.dart';
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';

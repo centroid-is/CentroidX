@@ -28,7 +28,6 @@ import 'package:test/test.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_relay_server/src/server_config.dart';
 import 'package:tfc_relay_server/src/value_handlers.dart';
-import 'package:tfc_relay_server/src/write_outcome_log.dart';
 import 'package:tfc_stateman_contract/testing/fake_state_man.dart';
 
 import 'support/fake_clock.dart';

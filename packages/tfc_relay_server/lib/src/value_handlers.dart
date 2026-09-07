@@ -58,7 +58,6 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'error_codes.dart';
 import 'server_config.dart';
 import 'session_handlers.dart' show KeyRejectKinds;
-import 'write_outcome_log.dart';
 
 /// The handler bodies for one session's value methods.
 ///
