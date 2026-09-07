@@ -255,11 +255,14 @@ final class ConflatingSendBuffer {
     final previous = d.ackedSeq;
     if (previous != null && clamped <= previous) return; // rule 2
     d.ackedSeq = clamped;
-    // An ack that moves is recovery, and recovery closes the window on the
-    // spot rather than waiting for the next poll to notice. Same branch, same
-    // reason, as the `else` in [poll]: a window that accumulates with no
-    // recovery signal evicts every panel eventually.
-    if (d.sentSeq - clamped <= (ackGapThreshold ?? -1)) d.gapSinceMs = null;
+    // **[gapSinceMs] is deliberately not touched here.** An earlier draft also
+    // closed the window on the spot when a moving ack brought the gap back
+    // under the ceiling — which was correct, and redundant, and therefore
+    // worse than useless: it made the recovery branch in [_deliveryVerdict]
+    // unreachable, so deleting that branch left the whole suite green. The gap
+    // shrinks only when an ack arrives and grows only when a frame is sent, so
+    // one reset site is enough and the verdict is the right one to own it. It
+    // mirrors `_peakSinceMs` exactly, which is what §5.2 asks for.
   }
 
   /// How many frames [sub] is behind, or null when it holds no subscription of
