@@ -73,6 +73,7 @@ import '../database_drift.dart';
 import '../state_man.dart' show KeyMappings;
 import 'config_change.dart';
 import 'config_diff.dart';
+import 'config_history_policy.dart';
 import 'config_item.dart';
 import 'config_store_errors.dart';
 // Prefixed: the codec's `keyMappingItems` and this store's getter of the same
@@ -103,10 +104,16 @@ const String kKeyMappingsWatermarkId = '_sync.key_mappings.watermark';
 /// watermark and the migration markers — are this station's account of what it
 /// has read, not configuration anybody wrote. A sweep that adopted them would
 /// let one station's position overwrite another's.
+///
+/// [ConfigKind.pageImage] is in the set and has to be. It writes no
+/// `config_change` rows at all (`config_history_policy.dart`), so the rev
+/// sweep is the *only* net under it: a kind left out of here would not
+/// propagate slowly, it would propagate never.
 const Set<ConfigKind> kSharedConfigKinds = {
   ConfigKind.keyMapping,
   ConfigKind.page,
   ConfigKind.asset,
+  ConfigKind.pageImage,
 };
 
 /// The marker the page/asset blob→rows migration writes last.
@@ -130,6 +137,10 @@ const Map<ConfigKind, String> kMigrationMarkerIds = {
   ConfigKind.keyMapping: kKeyMappingsMigratedMarkerId,
   ConfigKind.page: kPagesMigratedMarkerId,
   ConfigKind.asset: kPagesMigratedMarkerId,
+  // The images come out of the same page blob in the same transaction, so the
+  // page marker is the honest answer for them too: there is no state where the
+  // pages migrated and their images did not.
+  ConfigKind.pageImage: kPagesMigratedMarkerId,
 };
 
 /// The wire names of [kinds], for an `IN` clause. Bound variables, never
@@ -401,6 +412,23 @@ class ConfigStore {
   @visibleForTesting
   Future<void> pullChanges() => _sync?.pull() ?? Future<void>.value();
 
+  /// Where the post-commit nudge goes, when a test wants to see it.
+  ///
+  /// `pg_notify` needs a Postgres server, and everything else about the nudge
+  /// — when it fires, which kinds it names, that it never fires for a
+  /// rolled-back write — is provable without one. The transport itself is
+  /// proved against a real server in 04-09's integration test.
+  @visibleForTesting
+  Future<void> Function(String channel, String payload)? notifyChannelForTest;
+
+  /// One notification, as the LISTEN subscription would deliver it.
+  ///
+  /// The receiving half of the same split: the payload's meaning is decided
+  /// here and the delivery is Postgres's problem.
+  @visibleForTesting
+  Future<void> handleNotificationForTest(String payload) =>
+      _sync?.onNotification(payload) ?? Future<void>.value();
+
   /// The full revision sweep — the net under the watermark, exposed for the
   /// same reason.
   @visibleForTesting
@@ -553,6 +581,20 @@ class ConfigStore {
     try {
       await remote.transaction(() async {
         for (final item in diff.added) {
+          // C-12. An insert has no `rev` to compare against, so its collision
+          // is the (kind, id, scope) primary key — and left to the driver that
+          // surfaces as a raw unique-violation from inside the transaction:
+          // a stack trace where the update arm gives a sentence. The read is
+          // inside the transaction and immediately before the insert, which is
+          // as narrow as this can be made without a rev to swap on; the unique
+          // constraint is still the backstop underneath it.
+          final existing = await (remote.select(remote.configItemTable)
+                ..where((t) => _identity(t, item))
+                ..limit(1))
+              .getSingleOrNull();
+          if (existing != null) {
+            throw ConfigConflict.created(item.id);
+          }
           await remote.into(remote.configItemTable).insert(
                 ConfigItemTableCompanion.insert(
                   kind: item.kind.wireName,
@@ -678,8 +720,52 @@ class ConfigStore {
           'reconcile: $e');
     }
 
+    await _nudgeExemptKinds(remote, diff);
+
     _changes.add(diff);
     return ConfigWriteResult(diff: diff, actionId: actionId);
+  }
+
+  /// Tells the other stations to reconcile the exempt kinds this commit
+  /// touched, because nothing else will.
+  ///
+  /// Both of the ways a station hears about a shared write are driven by
+  /// change rows — the `AFTER INSERT ON config_change` trigger
+  /// (`database_drift.dart:731-733`) and the `config_change.id` watermark
+  /// (`config_sync.dart:12-13`) — and an exempt item writes none. Without this
+  /// the other stations would learn about an uploaded image only on the
+  /// five-minute rev sweep: the asset would arrive in seconds and the picture
+  /// it points at minutes later, which is a broken mimic in between and a
+  /// regression against the keyed `flutter_preferences` trigger this milestone
+  /// replaces.
+  ///
+  /// Three properties, each deliberate:
+  ///
+  ///   * **exempt kinds only.** An ordinary kind already notified through the
+  ///     trigger; naming it here would be a second notification for one save.
+  ///   * **after the commit, as its own statement.** A rolled-back write never
+  ///     gets here, and a nudge for a write that then failed would ask for an
+  ///     idempotent reconcile against committed state — harmless either way.
+  ///   * **failure is logged, never thrown.** The save has already happened;
+  ///     telling the operator it failed would have them do it twice. A
+  ///     connection that dies between the commit and this notify degrades that
+  ///     one write's propagation to sweep latency, which is the same failure
+  ///     an ordinary write has when a notification is lost with its
+  ///     connection.
+  Future<void> _nudgeExemptKinds(AppDatabase remote, ConfigDiff diff) async {
+    final kinds = <ConfigKind>{
+      for (final item in [...diff.added, ...diff.changed, ...diff.removed])
+        if (historyExempt(item.kind, item.id)) item.kind,
+    };
+    if (kinds.isEmpty) return;
+    final send = notifyChannelForTest ?? remote.notifyChannel;
+    try {
+      await send(kConfigChangeChannel, encodeReconcileNudge(kinds));
+    } catch (e) {
+      _logger.w('the reconcile nudge for '
+          '${kinds.map((k) => k.wireName).join(', ')} was not sent; the other '
+          'stations will pick this write up on their next sweep instead: $e');
+    }
   }
 
   /// Releases the change stream and everything an attach started. The
@@ -797,23 +883,32 @@ class ConfigStore {
   /// place `encodeEntity()` — payload **and** position — is applied. Sides
   /// encoded by hand lose position and make a restore write the entity back in
   /// the wrong place.
+  ///
+  /// **The exemption is asked here and not at the call sites.** All three arms
+  /// of [writeItems] end up in this method, and a fourth added later would
+  /// too; asking in the arms would make the rule something a future arm has to
+  /// remember. What is skipped is only the change row — the `config_item`
+  /// write and its compare-and-swap have already happened and are untouched.
+  /// See `config_history_policy.dart`.
   Future<void> _appendChange(AppDatabase db, ConfigChange change) =>
-      db.into(db.configChangeTable).insert(
-            ConfigChangeTableCompanion.insert(
-              at: change.at,
-              actionId: change.actionId,
-              who: change.who,
-              station: change.station,
-              roleName: change.roleName,
-              reason: Value(change.reason),
-              kind: change.kind.wireName,
-              entityId: change.entityId,
-              scope: change.scope.wireName,
-              op: change.op.wireName,
-              oldValue: Value(change.oldValue),
-              newValue: Value(change.newValue),
-            ),
-          );
+      historyExempt(change.kind, change.entityId)
+          ? Future<void>.value()
+          : db.into(db.configChangeTable).insert(
+              ConfigChangeTableCompanion.insert(
+                at: change.at,
+                actionId: change.actionId,
+                who: change.who,
+                station: change.station,
+                roleName: change.roleName,
+                reason: Value(change.reason),
+                kind: change.kind.wireName,
+                entityId: change.entityId,
+                scope: change.scope.wireName,
+                op: change.op.wireName,
+                oldValue: Value(change.oldValue),
+                newValue: Value(change.newValue),
+              ),
+            );
 
   /// Brings the local mirror level with what the remote just committed.
   ///
@@ -870,8 +965,12 @@ class ConfigStore {
     final ids = [for (final item in wanted) item.id]..sort();
     final shown = ids.take(3).join(', ');
     final tail = ids.length > 3 ? ', …' : '';
-    final (plural, one, many) =
-        kinds.length == 1 ? _nouns[kinds.single]! : _configurationNoun;
+    // A kind with no entry falls back to the generic noun rather than
+    // throwing: this runs on the refusal path, and a save that could not be
+    // written must not fail again while explaining itself.
+    final (plural, one, many) = (kinds.length == 1
+        ? _nouns[kinds.single] ?? _configurationNoun
+        : _configurationNoun);
     return '$plural: ${ids.length} ${ids.length == 1 ? one : many}'
         '${ids.isEmpty ? '' : ' ($shown$tail)'}';
   }
@@ -882,6 +981,7 @@ class ConfigStore {
     ConfigKind.page: ('pages', 'page', 'pages'),
     ConfigKind.asset: ('assets', 'asset', 'assets'),
     ConfigKind.preference: ('preferences', 'preference', 'preferences'),
+    ConfigKind.pageImage: ('images', 'image', 'images'),
   };
 
   static const (String, String, String) _configurationNoun =

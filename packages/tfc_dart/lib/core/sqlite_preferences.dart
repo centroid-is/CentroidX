@@ -8,6 +8,7 @@ import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart' show newActionId;
 
 import 'config/config_change.dart';
+import 'config/config_history_policy.dart';
 import 'config/config_item.dart';
 import 'database_drift.dart';
 import 'preferences.dart';
@@ -430,10 +431,17 @@ class SqlitePreferences implements PreferencesApi {
     return true;
   }
 
-  /// Appends one row to the local change log.
+  /// Appends one row to the local change log, unless the preference is one
+  /// that carries no history.
   ///
   /// Built through [ConfigChange.of] rather than by hand: it is what guarantees
   /// each side is `ConfigItem.encodeEntity()` and therefore restorable.
+  ///
+  /// The exemption is asked here rather than by the caller, and it is not
+  /// theoretical: `server_config_envelope` is PBKDF2+AES-256-GCM ciphertext
+  /// and this is the store it lands in once it leaves `flutter_preferences`.
+  /// `config_change` is never pruned, so a ciphertext written here would
+  /// outlive every rotation of it. See `config/config_history_policy.dart`.
   Future<void> _log({
     required DateTime at,
     required String actionId,
@@ -449,6 +457,7 @@ class SqlitePreferences implements PreferencesApi {
       before: before,
       after: after,
     );
+    if (historyExempt(change.kind, change.entityId)) return;
     await _db.into(_db.configChangeTable).insert(
           ConfigChangeTableCompanion.insert(
             at: change.at,

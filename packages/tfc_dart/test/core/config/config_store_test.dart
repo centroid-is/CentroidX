@@ -1137,7 +1137,7 @@ void main() {
         'watermark', () async {
       await store.open();
       await seedItemRow(imageItem('sha256-aaaa'), db: remote, rev: 2);
-      final before = store.watermarkForTest;
+      final before = store.watermark;
 
       await store.handleNotificationForTest(
           encodeReconcileNudge({ConfigKind.pageImage}));
@@ -1146,7 +1146,7 @@ void main() {
           reason: 'the image reaches this station now rather than on the '
               'five-minute sweep — there is no change row for the fast path '
               'to have seen');
-      expect(store.watermarkForTest, before,
+      expect(store.watermark, before,
           reason: 'an exempt write appends no change row, so there is nothing '
               'to watermark and advancing would skip a row somebody else '
               'committed');
@@ -1174,7 +1174,7 @@ void main() {
       await store.handleNotificationForTest('');
 
       expect(store.keyMappings.nodes.keys, ['CN04.Belt.Speed']);
-      expect(store.watermarkForTest, greaterThan(0),
+      expect(store.watermark, greaterThan(0),
           reason: 'the ordinary path is untouched by any of this');
     });
   });

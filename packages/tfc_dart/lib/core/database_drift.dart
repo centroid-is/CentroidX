@@ -1937,6 +1937,30 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     return controller.stream;
   }
 
+  /// Sends one notification on [channelName] — the writer's side of
+  /// [listenToChannel].
+  ///
+  /// Exists for the one thing a trigger cannot do: announce a write that left
+  /// no row for a trigger to fire on. `ConfigStore` uses it after a commit
+  /// that touched a history-exempt item, because those write no `config_change`
+  /// row and are therefore invisible to the `AFTER INSERT` trigger and to the
+  /// `config_change.id` watermark both.
+  ///
+  /// The channel and the payload are **bound variables**, never interpolated:
+  /// both are constructed in this tree today, and a `pg_notify` built by
+  /// string concatenation is one refactor away from being an injection.
+  ///
+  /// A no-op off Postgres, gated on `executor.dialect` rather than
+  /// [postgres] — that getter is false on every station, because the app opens
+  /// its database through [AppDatabase.spawn] and the executor is a
+  /// DriftIsolate remote. SQLite has no LISTEN/NOTIFY and the local file has
+  /// one writer, so there is nobody there to tell.
+  Future<void> notifyChannel(String channelName, String payload) async {
+    if (executor.dialect != SqlDialect.postgres) return;
+    await customStatement(
+        r'SELECT pg_notify($1, $2)', [channelName, payload]);
+  }
+
   /// Enable notifications for a table
   Future<String> enableNotificationChannel(String tableName) async {
     final channelName = 'table_${tableName}_changes';

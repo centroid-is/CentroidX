@@ -61,10 +61,18 @@
 ///
 /// ## What "the row set under sync" means now
 ///
-/// [kSharedConfigKinds] — key mappings, pages and assets. Every read here
-/// filters on that set and on `scope='shared'`, so the row a station owns, the
-/// watermark beside it and the migration markers are all structurally out of
-/// reach: they are `preference` rows, and `preference` is not in the set.
+/// [kSharedConfigKinds] — key mappings, pages, assets and page images. Every
+/// read here filters on that set and on `scope='shared'`, so the row a station
+/// owns, the watermark beside it and the migration markers are all
+/// structurally out of reach: they are `preference` rows, and `preference` is
+/// not in the set.
+///
+/// Page images are in the set for a reason worth stating where the sweep is
+/// described: they write no `config_change` rows at all
+/// (`config_history_policy.dart`), so neither the trigger nor the watermark
+/// can ever see one and this sweep is their only net. That is also why an
+/// exempt write sends its own notification naming the kinds to reconcile —
+/// see [onNotification], the arm that answers it.
 ///
 /// A row is identified by a **(kind, id) pair** rather than a bare id, all the
 /// way through both paths. That is not tidiness. A page path and a mapping key
@@ -107,6 +115,15 @@ const Duration kConfigSweepInterval = Duration(minutes: 5);
 /// that a save "takes minutes to reach the other screens". `bin/main.dart`
 /// answers the same problem the same way.
 const Duration kConfigRelistenBackoff = Duration(seconds: 5);
+
+/// The one channel a station listens on for shared configuration.
+///
+/// Two things notify on it: the `AFTER INSERT ON config_change` trigger, whose
+/// payload is empty, and [ConfigStore._nudgeExemptKinds], whose payload names
+/// kinds. One channel rather than two because a receiver has to be listening
+/// on it for either to arrive, and a second channel would be a second thing to
+/// re-listen to after every reconnect.
+const String kConfigChangeChannel = 'config_change';
 
 /// `updated_by` on the watermark row. Not a person: no operator wrote it.
 const String _syncWriter = 'sync';
@@ -211,6 +228,27 @@ class _ConfigSync {
   /// The net: compare every shared revision against the snapshot.
   Future<void> reconcile() => serialise(_reconcile);
 
+  /// What one notification means.
+  ///
+  /// An empty payload is the trigger's and means "consume the change log" —
+  /// the fast path, unchanged. A payload naming kinds is
+  /// [ConfigStore._nudgeExemptKinds]'s, and means "compare those kinds'
+  /// revisions now": those kinds write no change rows, so there is nothing for
+  /// the watermark path to find and nothing for it to advance to. Advancing
+  /// the watermark on one would be worse than useless — it would carry it past
+  /// change rows this station has not read.
+  Future<void> onNotification(String payload) {
+    final kinds = decodeReconcileNudge(payload);
+    if (kinds == null) return pull();
+    if (kinds.isEmpty) {
+      // A nudge naming only kinds this build has never heard of. There is
+      // nothing this station can do with them and nothing it needs to.
+      _logger.d('config nudge named no kind this build knows: "$payload"');
+      return Future<void>.value();
+    }
+    return serialise(() => _reconcileKinds(kinds, advanceWatermark: false));
+  }
+
   // ---------------------------------------------------------------------
   // The two paths
   // ---------------------------------------------------------------------
@@ -269,7 +307,20 @@ class _ConfigSync {
 
   /// The net. See the library doc for why it is a revision comparison and not
   /// a second read of the change log.
-  Future<void> _reconcile() async {
+  Future<void> _reconcile() =>
+      _reconcileKinds(kSharedConfigKinds, advanceWatermark: true);
+
+  /// The net, over [kinds] only.
+  ///
+  /// The periodic sweep passes every kind under sync and advances the
+  /// watermark with what it read. A nudge passes the exempt kinds it names and
+  /// does **not**: those kinds append no change rows, so the log's maximum id
+  /// says nothing about them, and adopting it would skip somebody else's
+  /// ordinary write.
+  Future<void> _reconcileKinds(Set<ConfigKind> kinds,
+      {required bool advanceWatermark}) async {
+    final swept = kinds.intersection(kSharedConfigKinds);
+    if (swept.isEmpty) return;
     try {
       // Read first, and before the revisions, which narrows one window as far
       // as two statements can: a transaction that commits between these two
@@ -279,10 +330,10 @@ class _ConfigSync {
       // The **next** sweep catches it, which is why the net is periodic rather
       // than something that runs once at attach: five minutes is the stated
       // worst case, not an accident.
-      final advanceTo = await _maxChangeId();
+      final advanceTo = advanceWatermark ? await _maxChangeId() : 0;
 
-      final revs = await _remoteRevisions();
-      final refused = await _refusedKinds(revs);
+      final revs = await _remoteRevisions(swept);
+      final refused = await _refusedKinds(revs, swept);
 
       final candidates = <_Ref>{};
       for (final entry in revs.entries) {
@@ -296,7 +347,7 @@ class _ConfigSync {
       // keys: the snapshot holds pages, assets and key mappings, and an id
       // present under one kind says nothing about the same id under another.
       for (final item in _store._snapshot.values) {
-        if (!kSharedConfigKinds.contains(item.kind)) continue;
+        if (!swept.contains(item.kind)) continue;
         if (refused.contains(item.kind)) continue;
         final ref = (item.kind, item.id);
         if (!revs.containsKey(ref)) candidates.add(ref);
@@ -309,7 +360,7 @@ class _ConfigSync {
       if (candidates.isEmpty && refused.isNotEmpty) return;
 
       if (candidates.isNotEmpty) await _apply(candidates);
-      await _store._advanceWatermark(advanceTo);
+      if (advanceWatermark) await _store._advanceWatermark(advanceTo);
     } catch (e) {
       _logger.w('config reconcile abandoned; the next sweep retries it: $e');
     }
@@ -412,11 +463,11 @@ class _ConfigSync {
   /// `(kind, id) → rev` for every shared row under sync. Three short columns
   /// per row, which is what makes a five-minute full comparison affordable at
   /// all.
-  Future<Map<_Ref, int>> _remoteRevisions() async {
+  Future<Map<_Ref, int>> _remoteRevisions(Set<ConfigKind> kinds) async {
     final t = _remote.configItemTable;
     final rows = await (_remote.selectOnly(t)
           ..addColumns([t.kind, t.id, t.rev])
-          ..where(t.kind.isIn(_wireNamesOf(kSharedConfigKinds)) &
+          ..where(t.kind.isIn(_wireNamesOf(kinds)) &
               t.scope.equals(ConfigScope.shared.wireName)))
         .get();
     final revs = <_Ref, int>{};
@@ -458,9 +509,10 @@ class _ConfigSync {
   /// (otherwise there is nothing to protect and refusing would only stall the
   /// first reconcile of a fresh station), and no marker (otherwise the empty
   /// remote is the truth and this station's rows are what is stale).
-  Future<Set<ConfigKind>> _refusedKinds(Map<_Ref, int> revs) async {
+  Future<Set<ConfigKind>> _refusedKinds(
+      Map<_Ref, int> revs, Set<ConfigKind> kinds) async {
     final refused = <ConfigKind>{};
-    for (final kind in kSharedConfigKinds) {
+    for (final kind in kinds) {
       if (revs.keys.any((ref) => ref.$1 == kind)) continue;
       final held = [
         for (final item in _store._snapshot.values)
@@ -522,11 +574,13 @@ class _ConfigSync {
   void _listen() {
     if (_stopped) return;
     if (_remote.executor.dialect != SqlDialect.postgres) return;
-    _channel = _remote.listenToChannel('config_change').listen(
-      // The payload carries nothing by design, so the notification says only
-      // "something changed" and the pull decides whether any of it was a key
-      // mapping. From Phase 3 a page edit lands on this channel too.
-      (_) => _swallow(pull()),
+    _channel = _remote.listenToChannel(kConfigChangeChannel).listen(
+      // The trigger's payload carries nothing by design, so that notification
+      // says only "something changed" and the pull decides what of it this
+      // station wanted. From Phase 3 a page edit lands on this channel too,
+      // and from Phase 4 so does a nudge naming the exempt kinds a write
+      // touched — see [onNotification].
+      (payload) => _swallow(onNotification(payload)),
       onError: (Object e) =>
           _logger.w('config_change channel error, ignored: $e'),
       onDone: () {

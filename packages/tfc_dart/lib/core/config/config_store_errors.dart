@@ -74,18 +74,31 @@ class ConfigStoreOfflineException implements Exception {
 class ConfigConflict implements Exception {
   const ConfigConflict(this.key, {required this.expectedRev});
 
+  /// An entity this station believed did not exist and that already does —
+  /// C-12, the insert arm's collision.
+  ///
+  /// The same exception rather than a second type: to everybody above this
+  /// layer the two are one situation ("the world moved under your save"), and
+  /// undo-a-delete refusing to re-create a row somebody else re-created is the
+  /// case this exists for. Only the sentence differs, because "expected
+  /// revision 0" would be an odd thing to tell an operator.
+  const ConfigConflict.created(this.key) : expectedRev = 0;
+
   /// The entity id whose revision moved — a mapping key, here.
   final String key;
 
   /// The revision this station believed was stored. The row is at some higher
-  /// one; the difference is somebody else's edit.
+  /// one; the difference is somebody else's edit. Zero means this station
+  /// believed there was no row at all — see [ConfigConflict.created].
   final int expectedRev;
 
   @override
-  String toString() =>
-      'Not saved — "$key" was changed on another station while you were '
-      'editing (expected revision $expectedRev). Nothing was written; reload '
-      'and apply your change again.';
+  String toString() => expectedRev == 0
+      ? 'Not saved — "$key" was created on another station while you were '
+          'editing. Nothing was written; reload and apply your change again.'
+      : 'Not saved — "$key" was changed on another station while you were '
+          'editing (expected revision $expectedRev). Nothing was written; '
+          'reload and apply your change again.';
 }
 
 /// The remote's connection pool is larger than one, so a drift transaction on

@@ -132,7 +132,16 @@ enum ConfigKind {
 
   /// One scalar preference — what `flutter_preferences` holds today for
   /// everything that is not one of the two big blobs.
-  preference('preference');
+  preference('preference'),
+
+  /// One image a page displays, content-addressed: the id is the sha256
+  /// prefix of the bytes, so the bytes never change under an id and an "edit"
+  /// is a different row.
+  ///
+  /// The one kind that writes no `config_change` rows at all — see
+  /// `config_history_policy.dart` for why, and for the notification that
+  /// keeps it propagating between stations anyway.
+  pageImage('page_image');
 
   const ConfigKind(this.wireName);
 

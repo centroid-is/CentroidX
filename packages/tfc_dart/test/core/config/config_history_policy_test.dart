@@ -92,8 +92,13 @@ void main() {
       final writers = <String>[];
       final unguarded = <String>[];
       for (final file in _libSources()) {
+        // Generated code defines the companion; it never writes one.
+        if (file.path.endsWith('.g.dart')) continue;
         final source = file.readAsStringSync();
-        if (!source.contains('configChangeTable).insert')) continue;
+        // The companion is what a writer has to construct, and matching it
+        // survives reformatting in a way that matching the `insert(` call
+        // chain does not.
+        if (!source.contains('ConfigChangeTableCompanion.insert')) continue;
         writers.add(file.path);
         if (!source.contains('historyExempt')) unguarded.add(file.path);
       }

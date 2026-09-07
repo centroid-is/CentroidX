@@ -245,6 +245,9 @@ void adoptRowIdentities(
         }
       case ConfigKind.keyMapping:
       case ConfigKind.preference:
+      // A page's images are rows beside its assets, not part of the page
+      // object this codec builds: an asset names the image it draws by id.
+      case ConfigKind.pageImage:
         break;
     }
   }
@@ -391,6 +394,9 @@ Map<String, AssetPage> pagesOf(Iterable<ConfigItem> items) {
         }
       case ConfigKind.keyMapping:
       case ConfigKind.preference:
+      // A page's images are rows beside its assets, not part of the page
+      // object this codec builds: an asset names the image it draws by id.
+      case ConfigKind.pageImage:
         break;
     }
   }

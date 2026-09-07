@@ -52,6 +52,17 @@ enum ConfigChangeOp {
 /// write to the members that changed. Doing it on write would mean the stored
 /// history could only answer the questions the writer thought of.
 ///
+/// ## The one deliberate bend in that rule
+///
+/// A few entities are exempt from the history altogether — page images, whose
+/// payload is a multi-megabyte blob under a content-addressed id, and the
+/// `server_config_envelope` ciphertext. See `config_history_policy.dart` for
+/// the argument. The bend is in the safe direction: for an exempt entity
+/// **nothing is written**, rather than a row with its sides redacted or
+/// truncated. Every row that exists still carries the complete entity on both
+/// sides, so no [ConfigChange] ever lies about what it holds; there are simply
+/// entities the log is silent about.
+///
 /// ## The join to the audit trail
 ///
 /// [actionId] is `AuditRecord.actionId`. One human action — a page save — is

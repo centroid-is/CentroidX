@@ -69,6 +69,7 @@ import 'package:tfc_access/tfc_access.dart' show newActionId;
 import '../database_connections.dart';
 import '../database_drift.dart';
 import 'config_change.dart';
+import 'config_history_policy.dart';
 import 'config_item.dart';
 import 'sort_keys.dart';
 
@@ -373,17 +374,26 @@ Future<void> _insertItem(AppDatabase db, ConfigItem item,
           updatedBy: _migrationActor,
         ));
 
+/// One row of the change log for a migrated entity — unless the entity is one
+/// that carries no history, which the migration asks about for the same reason
+/// the store does: `config_change` is never pruned, so a kind exempted for the
+/// size of its payload or the secrecy of it must be exempt on every path into
+/// the table, including this one. See `config_history_policy.dart`.
 Future<void> _insertChange(AppDatabase db, ConfigChange change) =>
-    db.into(db.configChangeTable).insert(ConfigChangeTableCompanion.insert(
-          at: change.at,
-          actionId: change.actionId,
-          who: change.who,
-          station: change.station,
-          roleName: change.roleName,
-          kind: change.kind.wireName,
-          entityId: change.entityId,
-          scope: change.scope.wireName,
-          op: change.op.wireName,
-          oldValue: Value(change.oldValue),
-          newValue: Value(change.newValue),
-        ));
+    historyExempt(change.kind, change.entityId)
+        ? Future<void>.value()
+        : db
+            .into(db.configChangeTable)
+            .insert(ConfigChangeTableCompanion.insert(
+              at: change.at,
+              actionId: change.actionId,
+              who: change.who,
+              station: change.station,
+              roleName: change.roleName,
+              kind: change.kind.wireName,
+              entityId: change.entityId,
+              scope: change.scope.wireName,
+              op: change.op.wireName,
+              oldValue: Value(change.oldValue),
+              newValue: Value(change.newValue),
+            ));
