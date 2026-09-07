@@ -628,6 +628,19 @@ final class ConnectionSupervisor {
   /// not be retargeted at the replacement socket. The liveness reset below is
   /// guarded by the same capture, because a reply belonging to a retired
   /// connection must not tell the watchdog that *this* one is alive.
+  ///
+  /// **[ClientConfig.snapshotDeadline], not `controlDeadline`** (16-01, finding
+  /// S1b). This call and the `hello` at [_serve] were bounded by the same one
+  /// second, and they are not the same size: the hello is five fields, this
+  /// answer is the whole page. On a link slow enough that the snapshot needs
+  /// three seconds, sharing the number produced a panel that could never reach
+  /// `ready` — every attempt abandoned the page and redialled, and
+  /// `backoff.reset()` is reachable only from `_enter(ready)`, so the loop was
+  /// self-sustaining — and, mid-connection, a page left permanently
+  /// unestablished on a socket the heartbeat kept alive for days. The
+  /// asymmetry was the tell: the identical expiry during `onHello` got
+  /// infinite retries and mid-connection got none. `ClientConfig` carries the
+  /// arithmetic for the number.
   Future<DecodedSubscribeResult> _subscribe(String sub, Set<String> keys) async {
     final gen = _generation;
     final raw = await callWithDeadline(
@@ -635,7 +648,7 @@ final class ConnectionSupervisor {
       Methods.subscribe,
       params: SubscribeParams(sub: sub, keys: keys.toList(growable: false))
           .toJson(),
-      deadline: config.controlDeadline,
+      deadline: config.snapshotDeadline,
     );
     if (gen == _generation) watchdog.sawFrame(InboundFrame.rpcResponse);
     return decodeSubscribeResult(raw);
