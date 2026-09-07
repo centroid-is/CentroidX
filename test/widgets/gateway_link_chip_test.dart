@@ -299,6 +299,59 @@ void main() {
             'the hall; colour alone is not a message');
   });
 
+  testWidgets('a transport that was never built gets a pill of its own, and '
+      'it does not read like a plant fault', (tester) async {
+    // 15-08's gap. Before it, this station published the same `null` a direct
+    // station does and the chip rendered `SizedBox.shrink()` — the panel
+    // showed grey values on every page with nothing anywhere saying why.
+    await _pump(tester,
+        link: _gateway(GatewayLinkKind.unreachable));
+    final unreachableLabel = tester
+        .widget<Text>(find.descendant(
+          of: find.byKey(kGatewayLinkChipKey),
+          matching: find.byType(Text),
+        ))
+        .data;
+
+    await _pump(tester,
+        link: _gateway(GatewayLinkKind.notBuilt, terminal: true));
+
+    expect(find.byKey(kGatewayLinkChipKey), findsOneWidget,
+        reason: 'present, not absent: absence is what a DIRECT station means, '
+            'and a misconfigured gateway station is not a direct station');
+
+    final notBuiltLabel = tester
+        .widget<Text>(find.descendant(
+          of: find.byKey(kGatewayLinkChipKey),
+          matching: find.byType(Text),
+        ))
+        .data;
+    expect(notBuiltLabel, isNot(unreachableLabel),
+        reason: 'the fault is on this station\'s own disk. A label reading '
+            'like the unreachable one sends whoever walks past to the switch '
+            'cupboard, which is the wrong-end failure the whole vocabulary '
+            'exists to prevent');
+
+    final context = tester.element(find.byKey(kGatewayLinkChipMarkKey));
+    final border = ((tester.widget<Container>(find.byKey(kGatewayLinkChipMarkKey))
+        .decoration! as BoxDecoration).border! as Border);
+    expect(border.top.color, HmiStateColors.of(context).red.withAlpha(120),
+        reason: 'nothing retries and nothing on the wire can clear it, which '
+            'is the strongest form of the condition red already means here');
+  });
+
+  testWidgets('direct mode is still absence, even beside a chip that now has '
+      'more to say', (tester) async {
+    // The live control for the arm above. A change that reported a build
+    // failure unconditionally would make the chip appear on every direct
+    // station in the plant, and this is the only place that would notice.
+    await _pump(tester, link: _direct());
+    expect(find.byKey(kGatewayLinkChipKey), findsNothing);
+    expect(find.byType(GatewayLinkChip), findsOneWidget,
+        reason: 'anti-vacuity: the widget is in the tree and chose to draw '
+            'nothing, rather than base_scaffold having stopped placing it');
+  });
+
   testWidgets('dialog: tapping the chip shows the report in a dialog, not in a '
       'tooltip', (tester) async {
     await _pump(tester,

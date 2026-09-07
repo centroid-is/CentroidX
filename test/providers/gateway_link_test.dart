@@ -291,6 +291,46 @@ Future<GatewayLinkReport?> _settled(
   return completer.future.timeout(budget).whenComplete(subscription.close);
 }
 
+/// The last value [container] settles on inside [window], and whether it
+/// settled at all.
+///
+/// **An arm about the missing-CA gap cannot use [_report].** That helper skips
+/// nulls by construction, so on the defect it simply times out — and a timeout
+/// names nothing, least of all "the panel published the same null it uses for a
+/// direct station". This one watches a window close and reports what a panel is
+/// left showing when it does, which is the operator-visible fact.
+///
+/// The window has to outlast at least two settles: the provider publishes
+/// `null` while `stateManProvider` is still building, and only then can it
+/// publish what the build failed with.
+Future<GatewayLinkReport?> _lastSettled(
+  ProviderContainer container, {
+  Duration window = const Duration(milliseconds: 900),
+}) async {
+  GatewayLinkReport? last;
+  var settled = false;
+  final subscription = container.listen<AsyncValue<GatewayLinkReport?>>(
+    gatewayLinkProvider,
+    (previous, next) {
+      if (next is AsyncData<GatewayLinkReport?>) {
+        settled = true;
+        last = next.value;
+      }
+    },
+    fireImmediately: true,
+  );
+  await Future<void>.delayed(window);
+  subscription.close();
+
+  // Anti-vacuity, and it is the whole difference between "the panel shows
+  // nothing" and "nobody looked": a provider that never left AsyncLoading
+  // would satisfy an `isNull` assertion below for entirely the wrong reason.
+  expect(settled, isTrue,
+      reason: 'the provider never settled inside $window, so every assertion '
+          'about what it settled on is about a value nobody published');
+  return last;
+}
+
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
@@ -778,6 +818,168 @@ void main() {
               'becomes a cable fault');
       expect(credential, startsWith(GatewayLinkReasons.credentialRefused));
       expect(version, startsWith(GatewayLinkReasons.versionRefused));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // A transport that could not be built at all — the fourth case criterion 2
+  // names and the one the phase shipped without.
+  //
+  // Every arm above dials. These do not get that far: a `caCertPath` naming a
+  // file that is not there throws `PathNotFoundException` out of
+  // `RemoteStateMan`'s constructor (`remote_state_man.dart:132`) and a missing
+  // credential file throws out of `GatewayConfig.toClientConfig`, both **before
+  // a client exists**. `stateManProvider` ends in `AsyncError`, and the defect
+  // this group pins is what happened next: the provider published `null` — the
+  // *same* value it publishes for a direct station — so the chip rendered
+  // `SizedBox.shrink()` and the Transport card rendered no row. The panel knew
+  // exactly what was wrong and said nothing.
+  //
+  // The paths below are absolute and under a directory no test creates, so a
+  // machine where they happened to exist would fail these arms loudly rather
+  // than pass them vacuously.
+  // -------------------------------------------------------------------------
+  group('a transport that could not be built', () {
+    /// A directory nothing in this repository ever makes.
+    const String kNowhere = '/no/such/phase15/plant-root.pem';
+    const String kNoToken = '/no/such/phase15/station.token';
+
+    test('a CA root that names no file is reported, not swallowed', () async {
+      final container = await _panel(const GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://10.50.10.11:9444',
+        caCertPath: kNowhere,
+      ));
+
+      final settled = await _lastSettled(container);
+
+      expect(settled, isNotNull,
+          reason: 'this is the gap: a construction failure and "this is a '
+              'direct station" both published null, so the operator got grey '
+              'values on every page and nothing anywhere saying why');
+      expect(settled!.kind, GatewayLinkKind.notBuilt,
+          reason: 'not `unreachable`: that sentence sends the operator to the '
+              'address, the port and the cable, and this fault is entirely on '
+              'this station\'s own disk');
+      expect(settled.terminal, isTrue,
+          reason: 'there is no client and no retry loop — nothing about this '
+              'will change until somebody fixes the path and restarts');
+      expect(settled.raw, contains('PathNotFoundException'),
+          reason: 'the paste-into-a-ticket field carries the panel\'s own '
+              'error whole, the way it carries the gateway\'s on every other '
+              'kind');
+      expect(settled.detail, contains(kNowhere),
+          reason: 'the message has to name the file that could not be opened; '
+              'a panel that says only "something went wrong" sends the '
+              'operator to the same wrong end of the wire the whole '
+              'vocabulary exists to prevent');
+    });
+
+    test('a credential file that names no file is reported too', () async {
+      final container = await _panel(GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://10.50.10.11:9444',
+        // A real PEM, so the CA is not what fails here and the arm is about
+        // the token path alone.
+        caCertPath: throwawayCaPath(),
+        tokenPath: kNoToken,
+      ));
+
+      final settled = await _lastSettled(container);
+
+      expect(settled, isNotNull);
+      expect(settled!.kind, GatewayLinkKind.notBuilt);
+      expect(settled.detail, contains(kNoToken));
+      expect(settled.detail, isNot(contains(throwawayCaPath())),
+          reason: 'naming the file that actually failed is the point; naming '
+              'both would send the operator to the one that is fine');
+    });
+
+    test('a CA file that exists but is not a PEM is reported, and its '
+        'contents never reach the prose', () async {
+      // Obviously synthetic and carrying -DO-NOT-LOG, the shape
+      // `auth_refusal_test.dart:79` established. This is the leak question
+      // 15-07 verified across thirteen frames and this new surface must not
+      // reopen: the report may name the *path* an operator typed, and may
+      // never carry what is behind it.
+      const String secret = 'PEM-BODY-SENTINEL-8c1d47ae-DO-NOT-LOG';
+      final file = File('${Directory.systemTemp.createTempSync(
+        'phase15-notapem',
+      ).path}/plant-root.pem');
+      file.writeAsStringSync(secret);
+      addTearDown(() => file.parent.deleteSync(recursive: true));
+
+      final container = await _panel(GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://10.50.10.11:9444',
+        caCertPath: file.path,
+      ));
+
+      final settled = await _lastSettled(container);
+
+      expect(settled, isNotNull,
+          reason: 'a CA file that is present but unusable fails in the same '
+              'constructor as an absent one, and must reach a screen the same '
+              'way');
+      expect(settled!.kind, GatewayLinkKind.notBuilt);
+      expect(settled.terminal, isTrue);
+      // TlsException names no path, so this is the wider sentence rather than
+      // the one that points at a filename — the branch the missing-file arms
+      // above cannot reach.
+      expect(settled.detail, isNot(contains(file.path)),
+          reason: 'the failure named no file, and a surface that invented one '
+              'would be guessing at the operator\'s expense');
+      final said = '${settled.headline} ${settled.detail}';
+      expect(said, isNot(contains(secret)),
+          reason: 'the two lines an operator reads across a room are this '
+              'app\'s own words; the file behind the path is not one of them');
+    });
+
+    // -----------------------------------------------------------------------
+    // The paired negative arms. Both of these must be able to go red: a fix
+    // that made *everything* report a failure would be caught here and
+    // nowhere else, because absence is the thing no present affordance can
+    // guard.
+    // -----------------------------------------------------------------------
+    test('direct mode with a CA path that names no file still publishes '
+        'nothing', () async {
+      var built = false;
+      final container = await _panel(
+        const GatewayConfig(mode: TransportMode.direct, caCertPath: kNowhere),
+        extra: [
+          stateManProvider.overrideWith((ref) {
+            built = true;
+            throw StateError('stateManProvider was built in direct mode');
+          }),
+        ],
+      );
+
+      expect(await _lastSettled(container), isNull,
+          reason: 'the row is stale config on a station that runs its own '
+              'sessions; a panel that grew a red pill over it would be '
+              'reporting a fault it does not have');
+      expect(built, isFalse,
+          reason: 'and it decided that on the config row, without touching '
+              'anything heavier — the property that keeps '
+              'base_scaffold_appbar_golden_test.dart from needing a StateMan');
+    });
+
+    test('gateway mode that builds cleanly still reports the link, not a '
+        'build failure', () async {
+      // The other direction of the same guard. Without this, a change that
+      // reported a build failure unconditionally would leave every arm above
+      // green.
+      final gateway = await _healthyGateway();
+      final container = await _panel(GatewayConfig(
+          mode: TransportMode.gateway, url: gateway.uri.toString()));
+
+      final report = await _report(
+          container, (r) => r.kind == GatewayLinkKind.connected);
+
+      expect(report.terminal, isFalse);
+      expect(report.raw, isNull,
+          reason: 'a healthy link has no reason text at all, so a report '
+              'carrying one here is a build failure wearing the wrong kind');
     });
   });
 

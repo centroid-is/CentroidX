@@ -119,6 +119,10 @@ class GatewayLinkStatusRow extends StatelessWidget {
       GatewayLinkKind.untrustedCertificate => state.yellow,
       GatewayLinkKind.credentialRefused => state.red,
       GatewayLinkKind.versionRefused => state.red,
+      // Red for the same reason as the two above and a stronger one: there is
+      // no retry loop to have stopped, because none was started. Nothing on the
+      // wire can clear it.
+      GatewayLinkKind.notBuilt => state.red,
     };
   }
 
@@ -187,7 +191,20 @@ class GatewayLinkStatusRow extends StatelessWidget {
                 ],
                 if (report.raw != null) ...[
                   const SizedBox(height: 6),
-                  _RawDetails(raw: report.raw!),
+                  _RawDetails(
+                    raw: report.raw!,
+                    // Whose message it actually is. On every other kind the
+                    // text came off the wire; on `notBuilt` nothing was
+                    // dialled, so it is this station's own exception and a
+                    // toggle offering "the gateway's own message" would be a
+                    // false statement on the one frame whose whole point is
+                    // that the fault is local. The four words are chosen so
+                    // the existing label is character-for-character unchanged
+                    // for the six kinds that had one.
+                    whose: report.kind == GatewayLinkKind.notBuilt
+                        ? 'this panel'
+                        : 'the gateway',
+                  ),
                 ],
               ],
             ),
@@ -205,9 +222,13 @@ class GatewayLinkStatusRow extends StatelessWidget {
 /// because an operator reading a panel across a room needs the two sentences
 /// above it and not this.
 class _RawDetails extends StatefulWidget {
-  const _RawDetails({required this.raw});
+  const _RawDetails({required this.raw, required this.whose});
 
   final String raw;
+
+  /// Who wrote [raw] — `'the gateway'` on every kind that reached a socket,
+  /// `'this panel'` on [GatewayLinkKind.notBuilt], where nothing was dialled.
+  final String whose;
 
   @override
   State<_RawDetails> createState() => _RawDetailsState();
@@ -237,8 +258,8 @@ class _RawDetailsState extends State<_RawDetails> {
                 ),
                 const SizedBox(width: 4),
                 Text(
-                  _open ? 'Hide the gateway\'s own message'
-                      : 'Show the gateway\'s own message',
+                  _open ? 'Hide ${widget.whose}\'s own message'
+                      : 'Show ${widget.whose}\'s own message',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurface.withValues(alpha: 0.75),
                   ),

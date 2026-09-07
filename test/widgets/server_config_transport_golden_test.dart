@@ -45,6 +45,7 @@
 @Tags(['golden'])
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -152,6 +153,7 @@ void main() {
       required bool dark,
       PreferencesApi? localPreferences,
       GatewayLinkReport? linkReport,
+      bool pinLinkUnresolved = false,
     }) async {
       await tester.binding.setSurfaceSize(_surface);
       // 1:1 pixels — this golden is for reading in a PR, not pixel
@@ -169,6 +171,17 @@ void main() {
           overrides: [
             if (linkReport != null)
               gatewayLinkProvider.overrideWith((ref) => Stream.value(linkReport)),
+            // A stream that never carries anything and is never closed: the
+            // provider stays `AsyncLoading`, which is a *different* state from
+            // one that resolved to `null`. A closed empty stream would be a
+            // third thing again. `gateway_link_chip_test.dart:151-158` states
+            // the same distinction for the same reason.
+            if (pinLinkUnresolved)
+              gatewayLinkProvider.overrideWith((ref) {
+                final controller = StreamController<GatewayLinkReport?>();
+                ref.onDispose(controller.close);
+                return controller.stream;
+              }),
           ],
         ),
       );
@@ -251,8 +264,33 @@ void main() {
           tester,
           dark: dark,
           localPreferences: await _savedGatewayStation(),
+          // **This frame used to depend on the machine's filesystem, and 15-08
+          // found out by accident.** It is the only frame that saves a gateway
+          // row and then leaves the REAL `gatewayLinkProvider` running, and the
+          // row it saves names `/home/centroid/relay_config/pki/ca.pem` — a
+          // path that exists on a panel and on nobody's laptop. While a CA that
+          // could not be opened was being swallowed as `null`, the absence
+          // below was indistinguishable from the unresolved state this frame's
+          // subject needs, so the image looked right for the wrong reason.
+          // With 15-08 the same station reports `notBuilt`, the status row
+          // appears, and 25.98% of these pixels move — on a laptop, and not on
+          // the rig, which is a golden that disagrees with itself by machine.
+          //
+          // Pinned rather than re-baselined: the subject of this image is the
+          // corrected Postgres copy in `_DirectSectionsHiddenNote`, not the
+          // link, and a frame whose subject is one paragraph must not be
+          // hostage to whether a certificate happens to be mounted.
+          pinLinkUnresolved: true,
         );
         expectNoSpinner('hidden note');
+
+        // Anti-vacuity for the pin above: this frame is only the unresolved
+        // frame if the row really is absent. Without this, a change that made
+        // the provider resolve here would silently re-shoot the image.
+        expect(find.byKey(kGatewayLinkStatusRowKey), findsNothing,
+            reason: 'the device-local row has been read but the transport has '
+                'not been built yet — the state a gateway panel is in for the '
+                'first moment of every boot, and the one this image records');
 
         // The sentence this frame exists for is the second paragraph — the one
         // that stopped claiming this station opens no connections of its own,
