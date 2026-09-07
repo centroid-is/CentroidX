@@ -507,11 +507,21 @@ void main() {
       // Twenty-five ticks went out over that window.
       const undamped = 25;
       final windows = watched.inMilliseconds / freshness.inMilliseconds;
-      expect(gateway.subscribes, greaterThan(1),
-          reason: 'the client asked for no rebuild at all across '
-              '$undamped ticks at a page it has given up on. That is the '
-              'locked door this file is about, and a bound with nothing '
-              'happening under it is a bound that proves nothing');
+      // **Two, not one, and the difference is the whole lower bound.** The
+      // first tick arrives while the page is still established, so it takes
+      // the *mismatch* branch and costs a rebuild — which is refused, which is
+      // what leaves the page unestablished in the first place. A client that
+      // then locked the door would sit at exactly two for the rest of the
+      // window. Measured at four here against a bound of two, and the version
+      // with the door shut was measured at two: a `greaterThan(1)` would have
+      // passed on both and proved nothing, which is what it did on the first
+      // pass of this matrix.
+      expect(gateway.subscribes, greaterThan(2),
+          reason: 'the client asked for ${gateway.subscribes} rebuilds across '
+              '$undamped ticks at a page it has given up on. Two is the count '
+              'a locked door produces — the establish, and the one refused '
+              'rebuild that unestablished the page — so anything at or below '
+              'it means no tick ever reopened anything');
       expect(gateway.subscribes, lessThan(8),
           reason: 'the client asked for ${gateway.subscribes} rebuilds across '
               '$undamped ticks. One per subscription per '
