@@ -1311,6 +1311,14 @@ class StateMan {
   /// Returns the original value unchanged if [bitMask] is null.
   /// Single-bit mask returns bool; multi-bit returns int.
   /// Non-numeric values pass through unchanged.
+  ///
+  /// **The provenance rides across the mask.** A masked read builds a *fresh*
+  /// [DynamicValue], and until this carried them over it silently dropped the
+  /// server's `statusCode` and `sourceTimestamp` — so a masked OPC UA key
+  /// arrived at the pipe looking like a value no server ever vouched for, and
+  /// `translateOpcUaSample` substituted its own arrival instant for a stamp the
+  /// PLC had actually sent. Masking selects a bit out of a reading; it does not
+  /// make the reading come from somewhere else.
   static DynamicValue applyBitMask(
       DynamicValue value, int? bitMask, int? bitShift) {
     if (bitMask == null) return value;
@@ -1321,9 +1329,13 @@ class StateMan {
     // Single-bit: power of two check (exactly one bit set)
     final isSingle = bitMask != 0 && (bitMask & (bitMask - 1)) == 0;
     if (isSingle) {
-      return DynamicValue(value: masked != 0, typeId: NodeId.boolean);
+      return DynamicValue(value: masked != 0, typeId: NodeId.boolean)
+        ..statusCode = value.statusCode
+        ..sourceTimestamp = value.sourceTimestamp;
     }
-    return DynamicValue(value: masked, typeId: value.typeId);
+    return DynamicValue(value: masked, typeId: value.typeId)
+      ..statusCode = value.statusCode
+      ..sourceTimestamp = value.sourceTimestamp;
   }
 
   final List<ClientWrapper> clients;
