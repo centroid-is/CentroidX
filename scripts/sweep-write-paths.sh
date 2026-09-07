@@ -219,12 +219,19 @@ search "$S3" | report
 printf '\n'
 
 # ---------------------------------------------------------------------------
-S4='SharedPreferencesAsync[[:space:]]*\('
-printf '## 4. Async shared preferences — constructed, not injected\n'
+S4='(SharedPreferencesAsync|SqlitePreferences)[[:space:]]*\('
+printf '## 4. A device-local store — constructed, not injected\n'
 printf '#\n'
 printf '# The constructor spec §6 names in its CI check: nothing outside\n'
 printf '# `lib/providers/` may construct one. Every hit outside that directory is\n'
 printf '# a store a widget owns privately, which no decorator can wrap.\n'
+printf '#\n'
+printf '# TWO constructors, because the store changed under the rule. Milestone\n'
+printf '# v1.2 replaced `shared_preferences` with `SqlitePreferences`, so a\n'
+printf '# section that watched only the old name would report an empty, healthy\n'
+printf '# looking column while every device-local store in the app was built\n'
+printf '# somewhere it could not see. The rule is about ownership, not about\n'
+printf '# which package holds the bytes.\n'
 cmd "$S4"
 search "$S4" | report
 printf '\n'
@@ -234,7 +241,13 @@ S5='SharedPreferences\.getInstance[[:space:]]*\('
 printf '## 5. Legacy synchronous shared preferences\n'
 printf '#\n'
 printf '# The pre-`Async` API. Spec §6 does not mention it and the CI check it\n'
-printf '# asks for would never catch it, and it is in the tree today.\n'
+printf '# asks for would never catch it.\n'
+printf '#\n'
+printf '# EMPTY SINCE MILESTONE v1.2 PLAN 01-06, which moved the last six calls\n'
+printf '# (`providers/theme.dart` and `pages/dbus_login.dart`) onto the\n'
+printf '# device-local store. The section stays because `shared_preferences` is\n'
+printf '# still a readable dependency for one release, so a regression to this\n'
+printf '# API is still possible; it leaves with the package in Phase 4.\n'
 cmd "$S5"
 search "$S5" | report
 printf '\n'

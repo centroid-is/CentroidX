@@ -346,7 +346,7 @@ void main() {
 
     test('every one of the eight sections is represented', () {
       final sections = hits.map((h) => h.section).toSet();
-      for (final n in ['1', '2', '3', '5', '6', '7', '8', '9']) {
+      for (final n in ['1', '2', '3', '6', '7', '8', '9']) {
         expect(sections, contains(n),
             reason: 'script section $n produced no hits at all');
       }
@@ -354,7 +354,23 @@ void main() {
       // removed nine of its twelve constructions and CI refuses a tenth. It
       // still has the one sanctioned site, so it is asserted separately rather
       // than dropped from the list above.
+      expect(sections, contains('4'));
       expect(raw, contains('lib/providers/preferences.dart'));
+
+      // Section 5 is empty, and that is the finished state rather than a
+      // collapsed grep: milestone v1.2 plan 01-06 moved the last six
+      // `SharedPreferences.getInstance()` calls onto the device-local store.
+      // It is asserted as empty rather than dropped, because the pattern stays
+      // in the script while `shared_preferences` remains a readable dependency
+      // — a regression to it must show up here.
+      //
+      // The store those six calls moved TO is what section 4 grew a second
+      // constructor for in the same plan, so the sweep did not lose sight of
+      // device-local construction when the package under it changed.
+      expect(sections, isNot(contains('5')),
+          reason: 'section 5 has hits again — something reintroduced '
+              'SharedPreferences.getInstance(); it should be reaching '
+              'localPreferencesProvider or createDeviceLocalPreferences()');
     });
   });
 

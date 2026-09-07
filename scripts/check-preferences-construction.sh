@@ -19,10 +19,23 @@
 #     `runApp`), call `createDeviceLocalPreferences()` from
 #     `lib/providers/preferences.dart`.
 #
-# TWO patterns, not one. Spec §6 names only `SharedPreferencesAsync()`. The
+# THREE patterns, not one. Spec §6 names only `SharedPreferencesAsync()`. The
 # legacy synchronous `SharedPreferences.getInstance()` reaches the same
 # per-device store and a check written to §6's wording would never see it, so
-# it is covered here as well. It is in the tree today — see the allow list.
+# it is covered here as well.
+#
+# The third is `SqlitePreferences()`, the store that replaced both of them in
+# milestone v1.2. It is not an addition for completeness — it is what keeps
+# this check from enforcing nothing. `shared_preferences` construction is gone
+# from `lib/` as of plan 01-06, so a two-pattern version of this script now
+# matches nothing and prints "clean" forever, however many stores a future
+# widget news up. An invariant that is satisfied by the disappearance of the
+# thing it watched is precisely "the invariant that will rot silently" this
+# file opens by quoting, so the check follows the store.
+#
+# The two `shared_preferences` patterns STAY. The dependency is still readable
+# for one release (rollback insurance), so a regression to the old constructor
+# is still possible and still caught; they leave with the package in Phase 4.
 #
 # This check is the ENFORCED SUBSET of `scripts/sweep-write-paths.sh`, whose
 # sections 4 and 5 are these two patterns. That script is a report over nine
@@ -94,12 +107,12 @@ NOT_A_COMMENT='^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)'
 # rule already covers it. That is a decision, not an oversight — see the sweep
 # document §3.6: device-local UI state (`theme_mode`, `color_scheme`), left
 # open deliberately.
+#
+# `lib/pages/dbus_login.dart` is no longer here. Its exemption was spent by
+# milestone v1.2 plan 01-06: both of its `getInstance()` calls now read the
+# device-local store — the factory in `loadSavedDbusCredentials`, which has no
+# `ref`, and `localPreferencesProvider` in `_saveCredentials`, which does.
 ALLOW_LIST=(
-  # Spec §2 excludes this file from the milestone outright: the D-Bus login
-  # form is not being changed in this phase. Sweep document §3.7. Two
-  # `SharedPreferences.getInstance()` calls writing five bare keys.
-  'lib/pages/dbus_login.dart|legacy|spec §2 excludes this file from the milestone (sweep §3.7)'
-
   # The one-shot import from `shared_preferences` into the relational config
   # store (milestone v1.2, phase 1). It READS the legacy store once, at boot,
   # and writes nothing through it — every write goes to `SqlitePreferences`.
@@ -136,8 +149,9 @@ hits_for() {
 
 async_hits="$(hits_for 'SharedPreferencesAsync[[:space:]]*\(' async)"
 legacy_hits="$(hits_for 'SharedPreferences\.getInstance[[:space:]]*\(' legacy)"
+sqlite_hits="$(hits_for 'SqlitePreferences[[:space:]]*\(' sqlite)"
 
-if [ -z "$async_hits" ] && [ -z "$legacy_hits" ]; then
+if [ -z "$async_hits" ] && [ -z "$legacy_hits" ] && [ -z "$sqlite_hits" ]; then
   [ "$quiet" = "1" ] || printf 'check-preferences-construction: clean — the only construction site is in lib/providers/.\n'
   exit 0
 fi
@@ -152,6 +166,11 @@ fi
   if [ -n "$legacy_hits" ]; then
     printf '  SharedPreferences.getInstance() — the legacy API, same store:\n\n'
     printf '%s\n' "$legacy_hits" | sed 's/^/    /'
+    printf '\n'
+  fi
+  if [ -n "$sqlite_hits" ]; then
+    printf '  SqlitePreferences() — the SQLite store; construct only behind createDeviceLocalPreferences():\n\n'
+    printf '%s\n' "$sqlite_hits" | sed 's/^/    /'
     printf '\n'
   fi
   cat <<'EOF'
