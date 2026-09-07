@@ -159,6 +159,15 @@ RUN LIBDIR=$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
     && ln -sf /usr/lib/${LIBDIR}/libglib-2.0.so.0 /usr/lib/${LIBDIR}/libglib-2.0.so \
     && ln -sf /usr/lib/${LIBDIR}/libsecret-1.so.0 /usr/lib/${LIBDIR}/libsecret-1.so
 
+# package:sqlite3 dlopens the unversioned name. The `sqlite3` package above
+# brings libsqlite3-0, which ships only libsqlite3.so.0 — the unversioned
+# symlink lives in libsqlite3-dev, which no runtime image installs. The local
+# configuration store is opened before runApp, so without this the app does not
+# start at all. packages/tfc_dart/lib/core/sqlite_loader.dart makes the same
+# fallback from Dart; either half alone is enough.
+RUN LIBDIR=$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
+    && ln -sf /usr/lib/${LIBDIR}/libsqlite3.so.0 /usr/lib/${LIBDIR}/libsqlite3.so
+
 RUN useradd -m centroid
 
 ARG APP_DIR=/flutter-app
