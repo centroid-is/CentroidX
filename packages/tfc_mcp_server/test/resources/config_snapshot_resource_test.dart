@@ -1,11 +1,11 @@
 import 'dart:convert';
 
-import 'package:drift/drift.dart';
 import 'package:test/test.dart';
 
 import 'package:tfc_mcp_server/src/database/server_database.dart';
 import 'package:tfc_mcp_server/src/server.dart';
 import '../helpers/mock_alarm_reader.dart';
+import '../helpers/config_rows.dart';
 import '../helpers/mock_mcp_client.dart';
 import '../helpers/mock_state_reader.dart';
 
@@ -17,34 +17,37 @@ void main() {
     late TfcMcpServer server;
     late MockMcpClient client;
 
-    /// Sample page_editor_data JSON.
-    final pageEditorData = {
-      'overview': {
+    /// Two pages, as the rows store them: keyed by the page's stable id, with
+    /// the path the pages map keys on inside `menu_item`.
+    final pageRows = {
+      'page-overview': {
         'title': 'Overview',
         'key': 'overview',
+        'menu_item': {'label': 'Overview', 'path': 'overview'},
         'widgets': [
           {'type': 'gauge', 'key': 'pump3.speed'},
         ],
       },
-      'conveyor': {
+      'page-conveyor': {
         'title': 'Conveyor Control',
         'key': 'conveyor',
+        'menu_item': {'label': 'Conveyor', 'path': 'conveyor'},
         'widgets': [
           {'type': 'display', 'key': 'conveyor.speed'},
         ],
       },
     };
 
-    /// Sample key_mappings JSON.
+    /// Sample key mappings. The `collect` entries these carried were
+    /// `{'enabled': ...}`, a shape `CollectEntry` has no field for; the blob
+    /// read let it through and the rows read does not.
     final keyMappings = {
       'nodes': {
         'pump3.speed': {
           'opcua_node': {'namespace': 2, 'identifier': 'Pump3.Speed'},
-          'collect': {'enabled': true},
         },
         'conveyor.speed': {
           'opcua_node': {'namespace': 2, 'identifier': 'Conv.Speed'},
-          'collect': {'enabled': false},
         },
       },
     };
@@ -56,48 +59,30 @@ void main() {
       stateReader = MockStateReader();
       alarmReader = MockAlarmReader();
 
-      // Seed page_editor_data
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'page_editor_data',
-              value: Value(jsonEncode(pageEditorData)),
-              type: 'String',
-            ),
-          );
+      // Seed the page rows
+      await seedPages(db, pageRows);
 
-      // Seed key_mappings
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'key_mappings',
-              value: Value(jsonEncode(keyMappings)),
-              type: 'String',
-            ),
-          );
+      // Seed the key_mapping rows
+      await seedKeyMappings(db, keyMappings);
 
       // Seed alarm definitions where AlarmMan keeps them -- the `alarm`
       // table is in the schema but nothing writes it.
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'alarm_man_config',
-              value: Value(jsonEncode({
-                'alarms': [
-                  {
-                    'uid': 'alarm-1',
-                    'title': 'Pump 3 High Temp',
-                    'description': 'Temperature exceeds 80C',
-                    'rules': [],
-                  },
-                  {
-                    'uid': 'alarm-2',
-                    'title': 'Tank 1 Overflow',
-                    'description': 'Level exceeds 100%',
-                    'rules': [],
-                  },
-                ],
-              })),
-              type: 'String',
-            ),
-          );
+      await seedPreferenceRow(db, 'alarm_man_config', {
+        'alarms': [
+          {
+            'uid': 'alarm-1',
+            'title': 'Pump 3 High Temp',
+            'description': 'Temperature exceeds 80C',
+            'rules': [],
+          },
+          {
+            'uid': 'alarm-2',
+            'title': 'Tank 1 Overflow',
+            'description': 'Level exceeds 100%',
+            'rules': [],
+          },
+        ],
+      });
 
       server = TfcMcpServer(
         database: db,

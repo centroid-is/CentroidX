@@ -26,7 +26,6 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:drift/drift.dart' show Value;
 import 'package:mcp_dart/mcp_dart.dart';
 import 'package:test/test.dart';
 
@@ -38,6 +37,7 @@ import 'package:tfc_mcp_server/src/services/config_service.dart';
 import 'package:tfc_mcp_server/src/services/proposal_service.dart';
 import 'package:tfc_mcp_server/src/tools/access_template_tools.dart';
 import 'package:tfc_mcp_server/src/tools/tool_registry.dart';
+import '../helpers/config_rows.dart';
 import '../helpers/mock_mcp_client.dart';
 
 void main() {
@@ -102,13 +102,10 @@ void main() {
     await db.customStatement('SELECT 1');
     if (withTables) await createAccessTables();
 
-    await db.into(db.serverFlutterPreferences).insert(
-          ServerFlutterPreferencesCompanion.insert(
-            key: 'key_mappings',
-            value: Value(jsonEncode(keyMappings)),
-            type: 'String',
-          ),
-        );
+    // The key universe, as the rows that replaced the blob. This is the
+    // set `list_unbound_keys` measures the bindings against, so seeding the
+    // blob here would measure them against a key set nothing updates.
+    await seedKeyMappings(db, keyMappings);
 
     mcpServer = McpServer(
       const Implementation(name: 'test-server', version: '0.1.0'),

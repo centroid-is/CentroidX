@@ -1,6 +1,3 @@
-import 'dart:convert';
-
-import 'package:drift/drift.dart';
 import 'package:mcp_dart/mcp_dart.dart';
 import 'package:test/test.dart';
 
@@ -9,6 +6,7 @@ import 'package:tfc_mcp_server/src/database/server_database.dart';
 import 'package:tfc_mcp_server/src/services/config_service.dart';
 import 'package:tfc_mcp_server/src/tools/config_tools.dart';
 import 'package:tfc_mcp_server/src/tools/tool_registry.dart';
+import '../helpers/config_rows.dart';
 import '../helpers/mock_mcp_client.dart';
 
 void main() {
@@ -17,34 +15,37 @@ void main() {
     late McpServer mcpServer;
     late MockMcpClient client;
 
-    /// Sample page_editor_data JSON.
-    final pageEditorData = {
-      'overview': {
+    /// Two pages, as the rows store them: keyed by the page's stable id, with
+    /// the path the pages map keys on inside `menu_item`.
+    final pageRows = {
+      'page-overview': {
         'title': 'Overview',
         'key': 'overview',
+        'menu_item': {'label': 'Overview', 'path': 'overview'},
         'widgets': [
           {'type': 'gauge', 'key': 'pump3.speed'},
         ],
       },
-      'conveyor': {
+      'page-conveyor': {
         'title': 'Conveyor Control',
         'key': 'conveyor',
+        'menu_item': {'label': 'Conveyor', 'path': 'conveyor'},
         'widgets': [
           {'type': 'display', 'key': 'conveyor.speed'},
         ],
       },
     };
 
-    /// Sample key_mappings JSON.
+    /// Sample key mappings. Every value has to be one the codec accepts now
+    /// that these arrive as rows — reading the blob validated nothing, so the
+    /// truncated `collect` entries this fixture used to carry went unnoticed.
     final keyMappings = {
       'nodes': {
         'pump3.speed': {
           'opcua_node': {'namespace': 2, 'identifier': 'Pump3.Speed'},
-          'collect': {'enabled': true},
         },
         'conveyor.speed': {
           'opcua_node': {'namespace': 2, 'identifier': 'Conv.Speed'},
-          'collect': {'enabled': false},
         },
       },
     };
@@ -53,39 +54,21 @@ void main() {
       db = ServerDatabase.inMemory();
       await db.customStatement('SELECT 1');
 
-      // Seed test data
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'page_editor_data',
-              value: Value(jsonEncode(pageEditorData)),
-              type: 'String',
-            ),
-          );
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'key_mappings',
-              value: Value(jsonEncode(keyMappings)),
-              type: 'String',
-            ),
-          );
+      // Seed test data, as config_item rows
+      await seedPages(db, pageRows);
+      await seedKeyMappings(db, keyMappings);
       // Alarm definitions live in the alarm_man_config preference, which is
       // what AlarmMan loads and saves. The `alarm` table is never written.
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'alarm_man_config',
-              value: Value(jsonEncode({
-                'alarms': [
-                  {
-                    'uid': 'alarm-1',
-                    'title': 'Pump 3 High Temp',
-                    'description': 'Temperature exceeds 80C',
-                    'rules': [],
-                  },
-                ],
-              })),
-              type: 'String',
-            ),
-          );
+      await seedPreferenceRow(db, 'alarm_man_config', {
+        'alarms': [
+          {
+            'uid': 'alarm-1',
+            'title': 'Pump 3 High Temp',
+            'description': 'Temperature exceeds 80C',
+            'rules': [],
+          },
+        ],
+      });
 
       final auditService = AuditLogService(db);
 

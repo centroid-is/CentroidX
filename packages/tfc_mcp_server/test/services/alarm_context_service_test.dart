@@ -1,4 +1,3 @@
-import 'dart:convert';
 
 import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:test/test.dart';
@@ -11,6 +10,7 @@ import 'package:tfc_mcp_server/src/services/tag_service.dart';
 import 'package:tfc_mcp_server/src/services/trend_service.dart';
 import '../helpers/mock_alarm_reader.dart';
 import '../helpers/mock_state_reader.dart';
+import '../helpers/config_rows.dart';
 
 void main() {
   group('AlarmContextService', () {
@@ -71,36 +71,30 @@ void main() {
       stateReader.setValue('conveyor.speed', 3.2);
 
       // Definitions the context reads, from the preference AlarmMan uses.
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'alarm_man_config',
-              value: Value(jsonEncode({
-                'alarms': [
-                  {
-                    'uid': 'alarm-1',
-                    'title': 'Pump 3 Overcurrent',
-                    'description': 'Current exceeds 15A threshold',
-                    'rules': [
-                      {'type': 'threshold', 'value': 15.0, 'operator': '>'},
-                    ],
-                  },
-                  {
-                    'uid': 'alarm-2',
-                    'title': 'Pump 3 Over Temperature',
-                    'description': 'Temperature exceeds 90C',
-                    'rules': [],
-                  },
-                  {
-                    'uid': 'alarm-3',
-                    'title': 'Tank 1 Overflow',
-                    'description': 'Level exceeds 100%',
-                    'rules': [],
-                  },
-                ],
-              })),
-              type: 'String',
-            ),
-          );
+      await seedPreferenceRow(db, 'alarm_man_config', {
+        'alarms': [
+          {
+            'uid': 'alarm-1',
+            'title': 'Pump 3 Overcurrent',
+            'description': 'Current exceeds 15A threshold',
+            'rules': [
+              {'type': 'threshold', 'value': 15.0, 'operator': '>'},
+            ],
+          },
+          {
+            'uid': 'alarm-2',
+            'title': 'Pump 3 Over Temperature',
+            'description': 'Temperature exceeds 90C',
+            'rules': [],
+          },
+          {
+            'uid': 'alarm-3',
+            'title': 'Tank 1 Overflow',
+            'description': 'Level exceeds 100%',
+            'rules': [],
+          },
+        ],
+      });
 
       // The same alarms as table rows: alarm_history has a foreign key onto
       // alarm(uid), so the history seeded below will not insert without them.
