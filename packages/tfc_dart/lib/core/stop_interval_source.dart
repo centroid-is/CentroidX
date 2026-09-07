@@ -95,7 +95,18 @@ class StopIntervalSource {
     //
     // Milliseconds because that is the coarsest representation on the wire;
     // anything finer cannot match across the two halves, and anything coarser
-    // would start merging genuinely distinct stops.
+    // would start merging genuinely distinct stops — measured: rounding this
+    // key to whole seconds turns the "two activations one millisecond apart"
+    // arm red on its own.
+    //
+    // **The `.toUtc()` below is documentary, not load-bearing, and that was
+    // measured rather than assumed.** `millisecondsSinceEpoch` is already an
+    // absolute instant, so dropping the call changes no value on any machine
+    // in any zone — a sabotage run that removed it turned NOTHING red, which
+    // is reported here rather than left to look like coverage. The mode half
+    // of the defect is fixed by leaving `DateTime` behind at all. It is kept
+    // because a bare `millisecondsSinceEpoch` on a key that two different
+    // producers feed reads as if the mode had simply not been thought about.
     final seen = <(String, int?, int)>{};
 
     (String, int?, int) keyOf(AlarmActive entry) => (
