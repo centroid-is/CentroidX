@@ -533,6 +533,29 @@ void main() {
       expect(panel.events.where((e) => e.stale), isEmpty,
           reason: 'and the badge never went stale during a resync that was '
               'slow but alive');
+
+      // ## The live control, without which this arm asserts nothing
+      //
+      // Everything above is a statement that something did **not** happen, and
+      // the detector being *disarmed* satisfies all of it. That is not
+      // hypothetical: `_deadline` is armed in exactly one place — inside
+      // `sawFrame` — and it starts null, so a client that fed it from nowhere
+      // would sail through every expectation above while having no half-open
+      // detector at all. Sabotage (f) did precisely that and this arm was green
+      // for it.
+      //
+      // So: go silent and prove the deadline was armed and running the whole
+      // time by watching it fire. A detector that can still kill a genuinely
+      // quiet link is one that was alive to be *not* fired during the resync.
+      gateway.subscribeDelay = Duration.zero;
+      await _until(
+          'the half-open detector to fire once the link really does go quiet',
+          () => panel.watchdog.viewIsStale);
+      expect(panel.events.where((e) => e.stale), hasLength(1),
+          reason: 'the link deadline was never armed during the resync, so '
+              '"the connection was not torn down" above was a statement about '
+              'a detector that was not running. `sawFrame` is what arms it and '
+              'the hello and subscribe responses are what feed it');
     });
   });
 
