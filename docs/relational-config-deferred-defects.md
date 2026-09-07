@@ -111,6 +111,18 @@ graph, and `test/smoke/compile_test.dart` passes because it only exercises
 already hit: a native dependency that resolves on the build machine and may
 not on the target.
 
+**Reproduction, one command** (added 2026-09-07 by plan 04-03, which did not
+fix this): `cd packages/tfc_mcp_server && dart build cli -o <dir>` puts every
+native asset the package resolved into `<dir>/bundle/lib/`. On a Mac that
+directory holds exactly one file, `libopen62541.dylib`. The binary itself
+links nothing unusual (`otool -L` shows libSystem and four system
+frameworks), which is why `--version` passes and the defect is invisible to
+the smoke test as written.
+
+`test/smoke/compile_test.dart` now carries that assertion as a **skipped**
+test, `links no native OPC UA stack`. It is the acceptance test for this
+fix: remove the `skip` when the codec stops reaching `state_man.dart`.
+
 **Fix shape:** the codec needs only `KeyMappingEntry.fromJson` and
 `KeyMappings`. Either lift those model types out of `state_man.dart` into an
 FFI-free file, or give the codec an FFI-free entry point. Both restore the
