@@ -334,6 +334,38 @@ void main() {
       await conn.execute('TRUNCATE TABLE alarm_history');
     });
 
+    // ------------------------------------------------------------------ 0 --
+    test('arm 0: the panels outlive the reaper — the foundation every other '
+        'arm\'s attachment check rests on', () async {
+      final rig = await _Rig.standUp();
+      final deadline = rig.a.heartbeatDeadline;
+      expect(deadline, isNotNull,
+          reason: 'the gateway advertised no usable heartbeat deadline, so the '
+              'harness runs no pump and every session in this file is on a '
+              'six-second fuse it cannot see');
+
+      // Past the deadline, with a margin. Nothing the gateway SENDS keeps a
+      // session alive (`relay_session.dart:1264`), so a panel that is merely
+      // watching a page is reaped one deadline after its handshake unless it
+      // beats — and an arm asserting anything about a reaped panel is
+      // vacuously true, which is how 14-11 lost a whole property without
+      // noticing.
+      await Future<void>.delayed(deadline! * 1.5);
+
+      for (final panel in [rig.a, rig.b]) {
+        expect(panel.client.closedByServer, isFalse,
+            reason: '${panel.name} was reaped. ${rig.evidence()}');
+        expect(panel.client.heartbeats, greaterThan(0),
+            reason: '${panel.name} is alive by luck rather than because it did '
+                'what a panel does. ${rig.evidence()}');
+      }
+
+      // Every other arm in this file finishes well inside one deadline, so its
+      // `requireAttached()` is a cheap live check rather than this wait. This
+      // arm is what makes that check mean "attached" rather than "not yet
+      // noticed missing".
+    });
+
     // ------------------------------------------------------------------ 1 --
     test('arm 1: the acknowledge crosses the wire and the alarm leaves BOTH '
         'panels\' ALARM.active', () async {
@@ -446,7 +478,8 @@ void main() {
       await rig.backend.engine!.persistenceIdle();
       await _waitUntil(
         () => rig.backend.engine!.acknowledgedStandingCount == 0,
-        reason: 'the clear never reached the engine. ${rig.evidence()}',
+        reason: () => 'the clear never reached the engine. '
+            '${rig.evidence()}',
       );
       await rig.backend.engine!.persistenceIdle();
 
@@ -475,22 +508,23 @@ void main() {
       // glances at a screen is still a fault somebody must see.
       rig.raiseHeld();
       await _waitUntil(() => rig.a.uids.contains(kHeldAlarmUid),
-          reason: 'the held alarm never reached panel A. ${rig.evidence()}');
+          reason: () => 'the held alarm never reached panel A. '
+              '${rig.evidence()}');
 
       rig.clearHeld();
       await _waitUntil(
         () => rig.a.entryFor(kHeldAlarmUid)?.pendingAck == true &&
             rig.b.entryFor(kHeldAlarmUid)?.pendingAck == true,
-        reason: 'the cleared alarm was not held for acknowledgement on both '
-            'panels. ${rig.evidence()}',
+        reason: () => 'the cleared alarm was not held for acknowledgement '
+            'on both panels. ${rig.evidence()}',
       );
 
       await rig.a.client.ackAlarm(kHeldAlarmUid, 0);
       await _waitUntil(
         () => !rig.a.uids.contains(kHeldAlarmUid) &&
             !rig.b.uids.contains(kHeldAlarmUid),
-        reason: 'the acknowledgement never took the held alarm off both '
-            'banners. ${rig.evidence()}',
+        reason: () => 'the acknowledgement never took the held alarm off '
+            'both banners. ${rig.evidence()}',
       );
       await rig.backend.engine!.persistenceIdle();
 
@@ -568,7 +602,8 @@ void main() {
       rig.clear();
       await _waitUntil(
         () => rig.backend.engine!.acknowledgedStandingCount == 0,
-        reason: 'the clear never reached the engine. ${rig.evidence()}',
+        reason: () => 'the clear never reached the engine. '
+            '${rig.evidence()}',
       );
       // One tick plus a margin, so a frame B was owed has had time to land.
       await Future<void>.delayed(const Duration(milliseconds: 500));
@@ -686,15 +721,16 @@ final class _Rig {
   Future<void> awaitStanding() async {
     await _waitUntil(
       () => a.uids.contains(kAlarmUid) && b.uids.contains(kAlarmUid),
-      reason: 'the activation never reached both panels. ${evidence()}',
+      reason: () => 'the activation never reached both panels. '
+          '${evidence()}',
     );
     await backend.engine!.persistenceIdle();
   }
 
   Future<void> awaitSilenced() => _waitUntil(
         () => !a.uids.contains(kAlarmUid) && !b.uids.contains(kAlarmUid),
-        reason: 'the acknowledge never took the alarm off both banners. '
-            '${evidence()}',
+        reason: () => 'the acknowledge never took the alarm off both '
+            'banners. ${evidence()}',
       );
 
   /// **The anti-vacuity check, and it is not decoration.**
@@ -729,10 +765,11 @@ final class _Rig {
 /// One panel: a socket, a session, one subscription, and everything it has been
 /// told about the active set.
 final class _Panel {
-  _Panel._(this.client, this._snapshot, this._frames);
+  _Panel._(this.client, this._snapshot, this._frames,
+      this._heartbeatDeadlineMs);
 
   static Future<_Panel> attach(BackendRelayClient client, String token) async {
-    await client.hello(token: token);
+    final hello = await client.hello(token: token);
     // Listening BEFORE the subscribe goes out: an update that raced the answer
     // would otherwise be a frame nobody saw, and this panel's view would be
     // permanently one transition behind for a reason no arm names.
@@ -741,12 +778,24 @@ final class _Panel {
     addTearDown(sub.cancel);
 
     final result = await client.subscribe(kSub, <String>[relay.AlarmKeys.active]);
-    return _Panel._(client, result, frames);
+    return _Panel._(client, result, frames, hello.heartbeatDeadlineMs);
   }
 
   final BackendRelayClient client;
   final relay.SubscribeResult _snapshot;
   final List<ServerNotification> _frames;
+
+  /// What the gateway advertised, never a literal.
+  ///
+  /// `relay_session.dart:1258-1271` is emphatic about this: a constant on the
+  /// client that must match a server config nobody diffs fails silently a year
+  /// later. Null when the gateway advertised nothing usable, and arm 0 refuses
+  /// to proceed on a null.
+  final int? _heartbeatDeadlineMs;
+
+  Duration? get heartbeatDeadline => _heartbeatDeadlineMs == null
+      ? null
+      : Duration(milliseconds: _heartbeatDeadlineMs);
 
   String get name => 'panel ${client.name}';
 
@@ -796,6 +845,15 @@ final class _Panel {
     return null;
   }
 
+  /// A live snapshot, and the fact that it is live is load-bearing.
+  ///
+  /// **Measured, this plan:** 14-11's `_waitUntil(reason: '…')` takes a STRING,
+  /// so its evidence is rendered at the call site *before* the poll begins — a
+  /// barrier that times out after twenty seconds then prints the rig as it was
+  /// at second zero, which reads exactly like the rig as it was at second
+  /// twenty. Under sabotage (h') that showed two panels with `beats=0` and made
+  /// it look as though the heartbeat pump were dead. It is not; the reading was
+  /// one second old. The barrier here takes a closure for that reason.
   String describe() => 'closedByServer=${client.closedByServer}, '
       'beats=${client.heartbeats}, handle=$_handle, '
       'entries=${[
@@ -812,12 +870,12 @@ final class _Panel {
 /// poll would turn a passing barrier into a failure nobody could reproduce.
 Future<void> _waitUntil(
   bool Function() condition, {
-  required String reason,
+  required String Function() reason,
   Duration budget = const Duration(seconds: 20),
 }) async {
   final elapsed = Stopwatch()..start();
   while (!condition()) {
-    if (elapsed.elapsed > budget) fail(reason);
+    if (elapsed.elapsed > budget) fail(reason());
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
 }
