@@ -169,6 +169,28 @@ class RelayAlarmSource implements AlarmSource {
 
   bool _reportedTruncation = false;
 
+  /// Whether `ALARM.active` stopped arriving because the stream **ended**.
+  ///
+  /// This is CR-01's second half and it is not a nicety. `RemoteStateMan`
+  /// closes every stream it handed out when it is disposed
+  /// (`remote_state_man.dart:1219-1222`) — it does not error them — so a source
+  /// left holding a disposed client goes quiet with `onError` never firing.
+  /// The banner then keeps showing whatever it last saw, for as long as the
+  /// panel is up, and "we cannot read the alarm list" is indistinguishable from
+  /// "the plant is fine". That is the exact silence this milestone exists to
+  /// remove, so an ended stream is recorded here, said on `stderr`, and made a
+  /// refusal in [ackAlarm].
+  ///
+  /// False after an ordinary [close]: a source shut down on purpose has not
+  /// failed, and a fault line printed on every rebuild is a fault line nobody
+  /// reads.
+  bool get activeStreamClosed => _activeStreamClosed;
+  bool _activeStreamClosed = false;
+
+  /// Set by [close] before the subscription is cancelled, so a deliberate
+  /// teardown is not reported as a dead gateway.
+  bool _closing = false;
+
   void _listen() {
     _subscription = _transport.activeValues().listen(
       _onValue,
@@ -177,6 +199,17 @@ class RelayAlarmSource implements AlarmSource {
         // the banner: "we cannot read the alarm list" and "there are no
         // alarms" are opposite facts and look identical on a blank screen.
         stderr.writeln('ALARM.active could not be read: $error');
+      },
+      onDone: () {
+        if (_closing) return;
+        _activeStreamClosed = true;
+        stderr.writeln(
+            'ALARM.active ENDED: the relay client behind this alarm source is '
+            'gone, so no further active set will ever arrive and the list on '
+            'screen is frozen at whatever it last showed. This is not an '
+            'empty plant. The client is disposed when the panel reloads its '
+            'key mappings or switches transport; if this line appears without '
+            'one of those, the socket died and the panel needs restarting.');
       },
     );
   }
@@ -299,6 +332,19 @@ class RelayAlarmSource implements AlarmSource {
   /// answer must not be sent twice.
   @override
   Future<void> ackAlarm(AlarmActive alarm) async {
+    if (_activeStreamClosed) {
+      // The alarm the operator is acknowledging is one this source stopped
+      // being told about. Sending it would reach a disposed client and come
+      // back as `RemoteStateMan was asked for "ackAlarm" after it was
+      // disposed` — a sentence about an object, from a package an operator has
+      // never heard of, that does not say the alarm list stopped arriving.
+      throw StateError(
+          'This panel cannot acknowledge "${alarm.notification.uid}": '
+          '${rp.AlarmKeys.active} ended, so the relay client behind this alarm '
+          'source is gone and the list on screen is frozen at whatever it last '
+          'showed. Nothing was sent. Restart the panel, or reload its key '
+          'mappings, to get a live client.');
+    }
     final ruleIndex = alarm.notification.ruleIndex;
     if (ruleIndex == null) {
       // Only reachable with an AlarmActive that did not come from
@@ -445,7 +491,18 @@ class RelayAlarmSource implements AlarmSource {
   }
 
   /// Drops the subscription and the two observation surfaces.
+  ///
+  /// Called from `alarmManProvider`'s `onDispose` (CR-01). Before this it had
+  /// no caller anywhere, so every gateway-mode rebuild left a subscription,
+  /// two [BehaviorSubject]s and a `_reloadHistory` chain behind on a client
+  /// that no longer existed.
+  ///
+  /// [_closing] is set **first**, so the deliberate teardown does not go out
+  /// as [activeStreamClosed]. Cancelling a subscription does not fire `onDone`
+  /// on its own, but the flag makes that a decision rather than a dependency
+  /// on stream ordering.
   Future<void> close() async {
+    _closing = true;
     await _subscription?.cancel();
     await _activeAlarms.close();
     await _historyController.close();
