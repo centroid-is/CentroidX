@@ -253,6 +253,33 @@ void main() {
               'so a type check never fires on a station');
       expect(Database.isConnectionError(StateError('42703')), isFalse);
     });
+
+    test('a socket that died between statements is an outage too', () {
+      // Regression, and the integration lane is what found it: killing the
+      // connection mid-suite and saving again produced "Bad state: StreamSink
+      // is closed" — `dart:io`'s IOSink refusing a write to a socket whose
+      // peer has gone, with nothing in the message to say it was ever a
+      // socket. The operator was shown that sentence. Both arms below are the
+      // shapes a station really meets; neither existed in the classifier.
+      expect(
+          Database.isConnectionError(
+              'DriftRemoteException: Bad state: StreamSink is closed'),
+          isTrue);
+      expect(
+          Database.isConnectionError(StateError('StreamSink is closed')),
+          isTrue);
+      expect(
+          Database.isConnectionError('PgException: Attempting to execute '
+              'query, but connection is not open.'),
+          isTrue);
+      // Still not everything with a stack trace in it: a broken statement is
+      // an engineer's problem and telling an operator to wait for the database
+      // would be a lie.
+      expect(
+          Database.isConnectionError(
+              StateError('column "payload" does not exist')),
+          isFalse);
+    });
   });
 
   group('the blob helper is shared with the boot suite', () {

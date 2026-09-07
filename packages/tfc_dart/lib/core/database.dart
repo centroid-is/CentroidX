@@ -762,7 +762,21 @@ class Database {
         msg.contains('Connection reset by peer') ||
         msg.contains('Connection refused') ||
         msg.contains('Connection closed') ||
-        msg.contains('broken pipe');
+        msg.contains('broken pipe') ||
+        // `StateError('StreamSink is closed')`, thrown by `dart:io`'s
+        // `_Socket.add` when the driver writes to a socket whose peer has gone
+        // away (`io_sink.dart:153`). It arrives with no mention of a socket in
+        // its message, so none of the arms above catch it — and it is the
+        // *first* thing a write meets when a connection dies between
+        // statements rather than during one. Found by
+        // `test/integration/config_store_integration_test.dart`, where an
+        // operator saving key mappings across an outage was told
+        // "Bad state: StreamSink is closed".
+        msg.contains('StreamSink is closed') ||
+        // `postgres`'s own refusal to use a connection it knows is gone
+        // (`v3/connection.dart`: "Attempting to execute query, but connection
+        // is not open."). Same class, one layer up.
+        msg.contains('connection is not open');
   }
 
   /// The private name the existing call sites use, delegating to
