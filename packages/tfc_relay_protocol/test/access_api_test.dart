@@ -457,5 +457,41 @@ void main() {
               'shape is declared here and mapped at both ends for exactly that '
               'reason');
     });
+
+    test('arm 11: the edge stays one-way — tfc_access does not depend back',
+        () {
+      // This arm lives here, in the package that created the edge, because
+      // tfc_access's own package_purity_test.dart forbids `tfc_dart`,
+      // `flutter`, `open62541` and `cryptography_flutter` in its pubspec and
+      // — measured at 17-03 — does NOT forbid `tfc_relay_protocol`. The rule
+      // the CONTEXT calls "the reverse edge stays forbidden and stays tested"
+      // was true of three strings and not of the one this plan introduces.
+      final pubspec = File('../tfc_access/pubspec.yaml');
+      expect(pubspec.existsSync(), isTrue,
+          reason: 'the subject of this scan is not where this arm looks for '
+              'it. A pin that reads a path goes vacuous the moment the content '
+              'moves, silently and staying green, so this half fails loudly '
+              'instead');
+
+      final raw = pubspec.readAsStringSync();
+      expect(raw, contains('name: tfc_access'),
+          reason: 'the live control: the file was found AND is the one meant');
+
+      // Comment lines are stripped before matching, per the house rule and per
+      // the same discipline that file's own suite uses — the explanatory block
+      // in a pubspec names the things it forbids.
+      final code = raw
+          .split('\n')
+          .where((line) => !line.trimLeft().startsWith('#'))
+          .join('\n');
+      expect(code, contains('dependencies:'),
+          reason: 'the second live control: stripping comments left something '
+              'to search. A scan of an empty string passes every isNot below');
+      expect(code, isNot(contains('tfc_relay_protocol')),
+          reason: 'tfc_relay_protocol -> tfc_access is the edge 17-03 adds; '
+              'the reverse would be a cycle, and worse, it would put the wire '
+              'protocol inside the package whose whole argument is that it '
+              'depends on nothing a panel or a gateway has to carry');
+    });
   });
 }

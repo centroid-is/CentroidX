@@ -37,3 +37,4 @@ export 'src/history_view.dart';
 export 'src/ulid.dart';
 export 'src/preferences_api.dart';
 export 'src/state_man_api.dart';
+export 'src/access_api.dart';
