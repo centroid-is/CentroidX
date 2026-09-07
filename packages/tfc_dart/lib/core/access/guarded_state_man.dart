@@ -89,6 +89,42 @@ class GuardedStateMan implements StateMan {
         _logger = logger ?? Logger();
 
   final StateMan _inner;
+
+  /// The object beneath this guard, **if** it is a [T] — and null otherwise.
+  ///
+  /// A read-only escape hatch for facts about the transport, and **never a
+  /// write path.** Every write, every read and every subscribe still goes
+  /// through this class's own members; a caller that reaches through here to
+  /// get at [StateMan.write] has removed the access check and the audit row
+  /// that are the only two things this class adds. That is the fence, and it
+  /// is a doc rather than a compiler rule for the same reason
+  /// [readBaseline]'s and [baselineTimeout]'s scope limits are.
+  ///
+  /// **Why it has to exist.** `implements StateMan` is what makes this
+  /// decorator invisible to its callers, and it is also what makes the object
+  /// underneath unreachable: [_inner] is private and each of the ~20 forwarded
+  /// members hands back the inner's *answer*, never the inner. That is right
+  /// for everything on the interface and impossible for the handful of facts
+  /// that are not on it at all. The one caller is
+  /// `lib/providers/gateway_link.dart` in the Flutter app, which needs
+  /// `RemoteStateMan.linkState` — not a `StateMan` member, and never will be,
+  /// because a local station has no link to have a state.
+  ///
+  /// **Narrow on purpose.** A plain getter handing back [_inner] typed as the
+  /// interface was the obvious alternative and is rejected in writing — and
+  /// the offending spelling is deliberately absent from this file, comments
+  /// included, so a grep for it stays a useful question. It would hand out an
+  /// unguarded write
+  /// path to every caller, not just the one that wanted a link state. Here the
+  /// caller must name the type it wants and is told null when the inner object
+  /// is something else — which is also how a gateway-only surface learns it is
+  /// running on a direct-mode station.
+  ///
+  /// No cast: [_inner] is a private final field, so `is T` promotes it. An
+  /// explicit `as T` beside the test analyses as an unnecessary cast and would
+  /// add a warning to a package that has exactly two and keeps them counted.
+  T? innerAs<T extends StateMan>() => _inner is T ? _inner : null;
+
   final AccessPolicy _policy;
   final AccessSession Function() _session;
   final AuditSink _audit;
