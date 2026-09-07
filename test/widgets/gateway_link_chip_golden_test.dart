@@ -151,9 +151,10 @@ void main() {
       addTearDown(tester.view.reset);
 
       await tester.pumpWidget(_shell(report, dark: dark));
-      // Not `pumpAndSettle`: the app bar's furniture must never contain an
-      // indeterminate indicator, and a harness that could hang on one would
-      // hide exactly that defect rather than report it.
+      // Explicit pumps. The settle-until-quiet helper is deliberately not
+      // spelled anywhere in this file: the app bar's furniture must never
+      // contain an indeterminate indicator, and a harness that could hang on
+      // one would hide exactly that defect rather than report it.
       for (var i = 0; i < 10; i++) {
         await tester.pump(const Duration(milliseconds: 50));
       }

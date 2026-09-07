@@ -175,9 +175,11 @@ void main() {
         ),
         dark: dark,
       ));
-      // Never `pumpAndSettle`: it does not return while an indeterminate
-      // animation is in the tree, and the whole point of the `unreachable`
-      // frame is that it must not be able to hang here.
+      // Explicit pumps, via the same loop `test_helpers.dart`'s `settle` uses.
+      // The settle-until-quiet helper is deliberately not spelled anywhere in
+      // this file: it does not return while an indeterminate animation is in
+      // the tree, and the whole point of the `unreachable` frame is that it
+      // must not be able to hang here.
       for (var i = 0; i < 10; i++) {
         await tester.pump(const Duration(milliseconds: 50));
       }
