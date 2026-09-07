@@ -105,6 +105,31 @@
 /// `onKeyRetired` / `onWorkerDied` off the caller's object without saying so.
 /// The engine reads through the same sweep the adapter serves from, which is
 /// `bin/main.dart`'s arrangement after 14-08.
+///
+/// ## Three more knobs, all additive, all defaulted to what Phase 13 had (14-14)
+///
+/// [composeBackendUnderTest] now also takes `store:`, `alarmHistory:` and
+/// `validator:`. Each defaults to exactly what this file did before it had
+/// them, and 14-11's rule is inherited unchanged: **every existing consumer
+/// passes unedited.**
+///
+///  * **`store:`** — the `Database` + `Preferences` pair to compose over. The
+///    default is [installBackendWsStore]'s shared on-disk SQLite, which is
+///    right for every leg whose subject is framing. An arm whose subject is an
+///    `alarm_history` *column* needs a real Postgres, and the alternative to
+///    this knob was a second copy of the `composeBackendRelay` call — which is
+///    the one thing criterion 4 exists to forbid.
+///  * **`alarmHistory:`** — an `AlarmHistoryWriter` for the engine. Null by
+///    default, which is 14-11's arrangement and the reason `historyId` is null
+///    throughout that file.
+///  * **`validator:`** — a `TokenValidator`, and supplying one flips the
+///    composed `relay` section's credential source to `validator`. That is not
+///    decoration: `composeBackendRelay` refuses a validator alongside any other
+///    source by name, because two sources of truth for the credential check is
+///    what `relay_server.dart:155` refuses. It is also the only way to get a
+///    session that is *not* `operate` — `PermissiveTokenValidator` answers
+///    `operate` for everyone, deliberately and honestly, so a view-role station
+///    does not exist without one.
 library;
 
 import 'dart:async';
@@ -122,6 +147,8 @@ import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_dart/core/relay/backend_alarm_history.dart'
+    show AlarmHistoryWriter;
 import 'package:tfc_dart/core/relay/backend_alarms.dart';
 import 'package:tfc_dart/core/relay/backend_composition.dart';
 import 'package:tfc_dart/core/relay/backend_freshness.dart';
@@ -215,12 +242,29 @@ void installBackendWsStore() {
 /// `port: 0` and no credentials: this is a loopback fixture, and a token file
 /// would be a second thing to get wrong in a leg whose subject is framing.
 /// `RelayServer`'s own credential arms live in `tfc_relay_server`.
-Map<String, dynamic> _relaySection({int port = 0}) => <String, dynamic>{
+///
+/// [ownValidator] flips the credential source to `validator`, which is the one
+/// spelling `composeBackendRelay` will accept a `validator:` argument beside —
+/// it refuses the pair by name otherwise, and the refusal is the point: two
+/// sources of truth for the credential check is what `relay_server.dart:155`
+/// refuses, and the composition root says so first.
+Map<String, dynamic> _relaySection({int port = 0, bool ownValidator = false}) =>
+    <String, dynamic>{
       'relay': <String, dynamic>{
         'port': port,
-        'credentials': <String, dynamic>{'source': 'none'},
+        'credentials': <String, dynamic>{
+          'source': ownValidator ? 'validator' : 'none',
+        },
       },
     };
+
+/// A `Database` and the `Preferences` over it, as one argument.
+///
+/// One record rather than two parameters because half a pair is the mistake
+/// worth making unrepresentable: a composition given a Postgres database and
+/// the shared SQLite preferences would read its `alarm_man_config` out of one
+/// store and write its history into another, and nothing would say so.
+typedef BackendStore = ({Database database, Preferences preferences});
 
 /// The graph, plus the fake plant behind it and the levers that drive it.
 ///
@@ -235,6 +279,7 @@ final class ComposedBackendUnderTest {
     required AlarmManConfig? alarmConfig,
     required this.monotonic,
     required this.alarmPublications,
+    required this.store,
   }) : _alarmConfig = alarmConfig;
 
   /// What [composeBackendRelay] built — the shipping graph, unstarted.
@@ -273,6 +318,14 @@ final class ComposedBackendUnderTest {
   /// fixture rather than the path a panel is served from.
   final List<AlarmPublication> alarmPublications;
 
+  /// The `Database` + `Preferences` this graph was composed over.
+  ///
+  /// The shared SQLite pair unless the caller supplied its own. Surfaced for
+  /// the same reason every other collaborator is: an arm that asserts on a row
+  /// must be reading the store the backend wrote it into, and a fixture that
+  /// hid it would let the two be different objects.
+  final BackendStore store;
+
   /// Seeds `alarm_man_config` and starts the engine, or does nothing.
   ///
   /// Two steps rather than one because the seed is asynchronous and
@@ -292,7 +345,7 @@ final class ComposedBackendUnderTest {
   Future<void> startAlarms() async {
     final engine = this.engine;
     if (engine == null) return;
-    await backendWsPreferences
+    await store.preferences
         .setString(kAlarmManConfigKey, jsonEncode(_alarmConfig!.toJson()));
     await engine.start();
   }
@@ -357,6 +410,9 @@ ComposedBackendUnderTest composeBackendUnderTest({
   DateTime Function()? clock,
   Duration alarmSkewWarnAfter = kAlarmSkewWarnAfter,
   Logger? alarmLogger,
+  BackendStore? store,
+  AlarmHistoryWriter? alarmHistory,
+  TokenValidator? validator,
 }) {
   if ((alarms == null) != (clock == null)) {
     throw ArgumentError('composeBackendUnderTest: `alarms` and `clock` must '
@@ -366,6 +422,18 @@ ComposedBackendUnderTest composeBackendUnderTest({
         'composition root\'s, and this fixture is a composition root), and a '
         'clock with no configuration would be an argument that does nothing');
   }
+  if (alarmHistory != null && alarms == null) {
+    throw ArgumentError('composeBackendUnderTest: `alarmHistory` was passed '
+        'with no `alarms`. There is no engine to hand it to, so it would be an '
+        'argument that does nothing — the same quiet kind of wrong the pair '
+        'above is refused for');
+  }
+
+  // The shared SQLite pair unless the caller brought its own. Read through a
+  // local so the two getters — which THROW when `installBackendWsStore` was
+  // not called — are not touched at all on the injected path.
+  final backing = store ??
+      (database: backendWsDatabase, preferences: backendWsPreferences);
 
   final plant = FakePlantLink('contract-ws');
   final pipe = PipeMainEndpoint(
@@ -414,22 +482,32 @@ ComposedBackendUnderTest composeBackendUnderTest({
       // where `composition.freshness` is handed to the lever wrapper. One
       // value source for one plant is the whole of 14-08's argument.
       values: sweep,
-      preferences: backendWsPreferences,
+      preferences: backing.preferences,
       publisher: _TimingAlarmPublisher(
           PipeStoreAlarmPublisher(pipe), monotonic, alarmPublications),
       clock: clock!,
+      // Null on every leg that did not ask for one, which is 14-11's shape:
+      // `historyId` stays null and no case is dragged into the Docker lane for
+      // a field it does not measure.
+      history: alarmHistory,
       skewWarnAfter: alarmSkewWarnAfter,
       logger: logger,
     );
   }
 
   final composition = composeBackendRelay(
-    config: RelayConfig.fromJson(_relaySection(port: port),
+    config: RelayConfig.fromJson(
+        _relaySection(port: port, ownValidator: validator != null),
         source: 'backend_ws_harness')!,
     pipe: pipe,
     keyMappings: contractKeyMappings(),
-    database: backendWsDatabase,
-    prefs: backendWsPreferences,
+    database: backing.database,
+    prefs: backing.preferences,
+    validator: validator,
+    // The gateway's way back to the engine (14-14). Null when there is none,
+    // and then an `ackAlarm` is refused by name rather than accepted into
+    // nothing — which is the answer every Phase 13 leg has always received.
+    alarms: engine,
     // Both or neither. Null/null on every Phase 13 leg, which is the same call
     // those legs have always made.
     values: liveValues,
@@ -478,6 +556,7 @@ ComposedBackendUnderTest composeBackendUnderTest({
     alarmConfig: alarms,
     monotonic: monotonic,
     alarmPublications: alarmPublications,
+    store: backing,
   );
 }
 
@@ -740,12 +819,18 @@ BackendRelayFixture backendRelayFixture({
   DateTime Function()? clock,
   Duration alarmSkewWarnAfter = kAlarmSkewWarnAfter,
   Logger? alarmLogger,
+  BackendStore? store,
+  AlarmHistoryWriter? alarmHistory,
+  TokenValidator? validator,
 }) {
   final backend = composeBackendUnderTest(
     alarms: alarms,
     clock: clock,
     alarmSkewWarnAfter: alarmSkewWarnAfter,
     alarmLogger: alarmLogger,
+    store: store,
+    alarmHistory: alarmHistory,
+    validator: validator,
   );
   final wiring = _BackendRelayWiring(backend);
   final ready = wiring.connect();
@@ -846,8 +931,7 @@ final class BackendRelayClient {
     if (completer == null || completer.isCompleted) return;
     final error = decoded['error'];
     if (error != null) {
-      completer.completeError(
-          StateError('the server refused client "$name": $error'));
+      completer.completeError(RelayRefusal(name, error));
     } else {
       completer.complete(decoded['result']);
     }
@@ -911,14 +995,21 @@ final class BackendRelayClient {
   /// the client that must match a server config nobody diffs fails silently a
   /// year later. A gateway that advertises nothing usable gets no pump, which
   /// is the same conclusion `HelloResult.heartbeatDeadlineMs` reaches.
+  ///
+  /// [token] rides in `HelloParams.token`, the typed slot 06-02 added so a
+  /// credential never travels in an open map the session logs and copies. Null
+  /// by default, and a tokenless hello is byte-identical to the frame this
+  /// fixture sent before the parameter existed — which is what keeps every
+  /// Phase 13 leg unchanged.
   Future<relay.HelloResult> hello(
-      {Duration budget = const Duration(seconds: 5)}) async {
+      {String? token, Duration budget = const Duration(seconds: 5)}) async {
     final raw = await request(
       relay.Methods.hello,
       params: relay.HelloParams(
         protocol: relay.protocolVersion,
         supported: const [relay.protocolVersion],
         client: relay.PeerInfo('backend-ws-harness/$name', '0.1.0'),
+        token: token,
       ).toJson(),
       what: 'the hello result over a real socket',
       budget: budget,
@@ -944,6 +1035,28 @@ final class BackendRelayClient {
     return result;
   }
 
+  /// Acknowledges one `(alarmUid, ruleIndex)` — one `ackAlarm` frame, no more.
+  ///
+  /// Built through `AckAlarmParams`, never a map literal, and named through
+  /// `Methods.ackAlarm`. That is deliberate rather than convenient: it makes
+  /// the frame this fixture puts on the wire the **same construction**
+  /// `RemoteStateMan.ackAlarm` uses (14-13 builds it the same way and pins the
+  /// literal in its own package's arms), so a field renamed on either side
+  /// fails to compile here rather than becoming a second spelling that drifts.
+  /// A hand-written map would make this fixture's agreement with the gateway
+  /// evidence about a map.
+  ///
+  /// Throws [RelayRefusal] when the gateway refuses, carrying the code.
+  Future<void> ackAlarm(String alarmUid, int ruleIndex,
+          {Duration budget = const Duration(seconds: 5)}) =>
+      request(
+        relay.Methods.ackAlarm,
+        params: relay.AckAlarmParams(alarmUid: alarmUid, ruleIndex: ruleIndex)
+            .toJson(),
+        what: 'the ackAlarm answer for $alarmUid rule $ruleIndex',
+        budget: budget,
+      );
+
   /// Subscribes [keys] under the name [sub] and returns the server's answer.
   Future<relay.SubscribeResult> subscribe(String sub, List<String> keys,
       {Duration budget = const Duration(seconds: 5)}) async {
@@ -965,6 +1078,38 @@ final class BackendRelayClient {
     await _notifications.close();
     await _socket.sink.close().catchError((Object _) {});
   }
+}
+
+/// A JSON-RPC error frame, with its code and message still readable.
+///
+/// Was a bare `StateError` carrying the whole error object inside a sentence.
+/// It still prints that sentence, character for character, so nothing that
+/// merely *reports* a refusal changed — but an arm that has to tell `-32005
+/// forbidden` from `-32011 this gateway serves no alarm engine` can now read
+/// the number instead of matching a substring of a message. Those two answers
+/// are the difference between "your station may not do that" and "this backend
+/// is misconfigured", and a fixture that could not distinguish them would make
+/// a permissions arm pass on a composition mistake.
+final class RelayRefusal implements Exception {
+  RelayRefusal(this.client, this.error);
+
+  /// Which panel was refused.
+  final String client;
+
+  /// The `error` member as it came off the wire.
+  final Object? error;
+
+  Map<String, Object?> get _map =>
+      error is Map ? (error! as Map).cast<String, Object?>() : const {};
+
+  /// The JSON-RPC error code, or null if the frame carried none.
+  int? get code => _map['code'] as int?;
+
+  /// The gateway's own sentence.
+  String get message => '${_map['message']}';
+
+  @override
+  String toString() => 'the server refused client "$client": $error';
 }
 
 /// One server→client frame that carried no id, and when it landed.
