@@ -136,6 +136,18 @@ ALLOW_LIST=(
   # the `shared_preferences` dependency after the compatibility release
   # (phase 4). Sweep §2.4.
   'lib/core/device_local_store.dart|async|read-only source for the one-shot import; nothing is written through it, and it leaves with the shared_preferences dependency after the compatibility release (Phase 4)'
+  # The pre-`runApp` page load (milestone v1.2, phase 3 plan 04). SC-5 asks
+  # for the station's layout to come off its local mirror before the first
+  # frame, and there is no `ref` before `runApp` — `configStoreProvider` does
+  # not exist until the `ProviderScope` is built, which is after the pages are
+  # needed. So this is a SECOND handle beside the provider's, and the four
+  # things that make it safe are all structural rather than promised: it has
+  # no remote attached, so `writeItems` refuses every shared write before it
+  # reaches a diff; it is handed to `PageManager` as `store:`, a field whose
+  # only use is `itemsOf`; `config.sqlite` is WAL (Phase 1 SC-6), so two
+  # handles on one file are fine; and the guard it is missing guards writes,
+  # of which this handle performs none. Sweep §3.12.
+  'centroid-hmi/lib/main.dart|config|read-only pre-runApp handle for PageManager.load; no remote attached, so it cannot write a shared row, and there is no ref before runApp'
 )
 
 allowed() {

@@ -39,8 +39,13 @@ import 'package:tfc/transition_delegate.dart';
 import 'package:tfc/providers/theme.dart';
 import 'package:tfc/core/feature_flags.dart';
 import 'package:tfc/providers/preferences.dart'
-    show createDeviceLocalPreferences, initDeviceLocalPreferences;
+    show
+        createDeviceLocalPreferences,
+        deviceLocalDatabase,
+        initDeviceLocalPreferences;
 import 'package:tfc/page_creator/page.dart';
+import 'package:tfc_dart/core/config/config_item.dart' show ConfigScope;
+import 'package:tfc_dart/core/config/config_store.dart' show ConfigStore;
 
 import 'package:tfc/theme.dart';
 import 'package:tfc/page_creator/assets/registry.dart';
@@ -288,8 +293,57 @@ Future<void> _startApp([bool debugMode = false]) async {
   // point spec §6 asks for, enforced by
   // `scripts/check-preferences-construction.sh`.
   final prefs = createDeviceLocalPreferences();
-  final pageManager = PageManager(pages: {}, prefs: prefs);
+
+  // The pages, before `runApp`, out of the local mirror — no Postgres and no
+  // network in the path (SC-5). `open()` fills the snapshot from
+  // `config.sqlite` and nothing else; it is the ~2 ms read the provider does
+  // later, done once early.
+  //
+  // This is a **second, read-only handle** beside the one
+  // `configStoreProvider` opens inside the scope. Two handles on one file are
+  // safe because `config.sqlite` is WAL — Phase 1 SC-6 — and this one never
+  // writes: it has no remote attached, so it could not write a shared row if
+  // it tried. It is not closed, for the same reason the device-local
+  // preferences handle is not: it lives as long as the process.
+  //
+  // It does not throw. A mirror that will not open is logged and answered
+  // with no store at all, and `load()` then falls back to the
+  // `page_editor_data` blob exactly as it did before rows existed — degraded
+  // and loud, never blank.
+  ConfigStore? configStore;
+  try {
+    // `'unknown'` rather than a throw if the platform will not say, matching
+    // `stationNameProvider` and the preferences file: a nameless station
+    // still has a mirror, and losing the plant's pages over a hostname read
+    // would be absurd.
+    String station;
+    try {
+      station = Platform.localHostname;
+    } on Object catch (e) {
+      logger.w('Could not read the local hostname for the config scope: $e');
+      station = 'unknown';
+    }
+    configStore = ConfigStore(
+      local: deviceLocalDatabase(),
+      stationScope: ConfigScope.forStation(station),
+      station: station,
+    );
+    await configStore.open();
+  } on Object catch (e, st) {
+    logger.e(
+      'The local configuration mirror could not be opened; this station comes '
+      'up on its stored page layout and picks the rows up at the first '
+      'reconcile.',
+      error: e,
+      stackTrace: st,
+    );
+    configStore = null;
+  }
+
+  final pageManager =
+      PageManager(pages: {}, prefs: prefs, store: configStore);
   await pageManager.load();
+  logger.i('Pages: ${pageManager.pages.length} from ${pageManager.source.name}');
 
   // systemd forgets runtime NTP servers on every restart and offers no way
   // to persist them over D-Bus, so the HMI is what carries the operator's

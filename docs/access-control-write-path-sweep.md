@@ -713,6 +713,31 @@ What would settle it either way: decide whether the clock is `administer`
 (most of `/advanced` is) or stays an operator affordance, then either raise
 the route or split the clock section onto a page that is already raised.
 
+### 3.12 `centroid-hmi/lib/main.dart` constructs a second `ConfigStore`
+
+Milestone v1.2 phase 3 plan 04 gave `PageManager.load()` a `ConfigStore` to
+read the station's page rows from, and SC-5 asks for that to happen **before
+`runApp`** — so the first frame is the plant rather than a blank page while
+Postgres is decided. There is no `ref` at that point: `configStoreProvider`
+does not exist until the `ProviderScope` is built, which is after the pages
+are needed. So `main()` opens a second handle, and
+`scripts/check-preferences-construction.sh` carries the only entry in its
+allow list for the `config` pattern.
+
+**Not a hole, and the reasons are structural rather than promised.** The
+handle is constructed with no remote, so `writeItems` refuses every shared
+write at the offline check, before it reaches a diff — it *cannot* write a
+shared row. It is handed to `PageManager` as `store:`, whose documented and
+only use is `itemsOf`; the save path is 03-06's and goes through
+`GuardedConfigStore`. `config.sqlite` is WAL (Phase 1 SC-6), so a second
+handle on the file beside the provider's is safe. And the guard this handle
+does not have is a guard over writes, of which it performs none.
+
+What would settle it: Phase 4, when the blob fallback goes and the pre-`runApp`
+read is the only way a station gets its pages. At that point the handle is
+worth making explicit — a named read-only view over the mirror rather than a
+`ConfigStore` with a convention attached.
+
 ## 4. Is there a fifth?
 
 **Yes.** Spec §6's four are each owned by a plan in this phase. Beyond them the

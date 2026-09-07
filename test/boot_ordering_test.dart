@@ -118,6 +118,61 @@ void main() {
               'default pages with its own pages gone, and persists that');
     });
 
+    test('the mirror is opened before the pages are loaded from it, and both '
+        'before runApp', () {
+      // SC-5, as source order. `PageManager.load()` serves rows out of the
+      // store's in-memory snapshot, and that snapshot is filled by `open()`.
+      // A load that ran first would find an empty store, fall through to the
+      // `page_editor_data` blob, and come up on a layout that may be a save
+      // behind — silently, because a store that has not been opened and a
+      // station with no rows yet are indistinguishable from the outside.
+      final init = code.indexOf('await initDeviceLocalPreferences();');
+      final db = code.indexOf('deviceLocalDatabase()');
+      final open = code.indexOf('await configStore.open();');
+      final load = code.indexOf('pageManager.load()');
+      final menu = code.indexOf('pageManager.getRootMenuItems()');
+      final run = code.indexOf('runApp(');
+
+      for (final (name, at) in [
+        ('deviceLocalDatabase()', db),
+        ('await configStore.open();', open),
+        ('pageManager.getRootMenuItems()', menu),
+        ('runApp(', run),
+      ]) {
+        expect(at, isNot(-1), reason: '$name is gone from main()');
+      }
+
+      expect(init, lessThan(db),
+          reason: 'deviceLocalDatabase() throws a StateError before the '
+              'device-local store is open');
+      expect(db, lessThan(open));
+      expect(open, lessThan(load),
+          reason: 'the pages are read out of the snapshot open() fills; a '
+              'load before it silently serves the blob instead of the rows');
+      expect(load, lessThan(menu),
+          reason: 'the navigation menu and the route table are both built '
+              'from what load() produced');
+      expect(load, lessThan(run),
+          reason: 'the pages are loaded before runApp, so the first frame is '
+              'the plant and not a blank page');
+    });
+
+    test('the mirror open is guarded, so a station with an unreadable one '
+        'still starts', () {
+      // The rule the whole boot sequence is written to: degraded and loud
+      // beats blank. `open()` inside a try means a mirror that will not read
+      // leaves `store` null and `load()` falls back to the blob, which is
+      // exactly the behaviour every station had before rows existed.
+      final open = code.indexOf('await configStore.open();');
+      final tryAt = code.lastIndexOf('try {', open);
+      expect(tryAt, isNot(-1),
+          reason: 'configStore.open() is not inside a try — a mirror that '
+              'will not open would stop the station from booting');
+      expect(code.indexOf('configStore = null;', open), isNot(-1),
+          reason: 'the catch must leave no store at all, so load() takes the '
+              'blob path rather than reading a half-open one');
+    });
+
     test('it is awaited, not fired and forgotten', () {
       // An unawaited init races the import against the first read, which is a
       // bug that appears only on a slow disk on a station that has not
