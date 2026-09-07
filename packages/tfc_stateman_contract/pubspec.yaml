@@ -23,6 +23,16 @@ dependencies:
   test: ^1.25.0
   tfc_relay_protocol:
     path: ../tfc_relay_protocol
+  # The access contract exchanges tfc_access's own vocabulary — AccessSession,
+  # AccessGroup, AccessRole, AccessTemplate, AuthenticatedUser, AuditRecord,
+  # AccessDenied — rather than a wire twin of it, exactly as access_api.dart
+  # does one package down. tfc_relay_protocol already carries this edge (its
+  # first runtime dependency, 17-03); the contract kit needs it directly to
+  # NAME those types in the checks and in the honest fake. Pure Dart, four leaf
+  # deps already in the workspace solve, a path dependency so no registry fetch
+  # and no package-legitimacy question. The reverse edge stays forbidden.
+  tfc_access:
+    path: ../tfc_access
 
 dev_dependencies:
   lints: ^4.0.0
