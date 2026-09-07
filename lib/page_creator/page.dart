@@ -9,6 +9,7 @@ import '../models/menu_item.dart';
 import 'package:tfc_dart/core/fuzzy_match.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/page_rows.dart' show fallbackPagePathFor;
 import 'package:tfc_dart/core/config/config_store.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc/converter/icon.dart';
@@ -786,16 +787,13 @@ class PageManager {
   /// silently overwrite the other. Public because `page_codec.dart`'s
   /// `pagesOf` reassembles the same map from rows and has to reach the same
   /// key for the same page — one implementation, not two that can drift.
-  static String fallbackPathFor(String key) => '/${_slugify(key)}';
-
-  /// Generates a slug path from a label, used for migrating old data.
-  static String _slugify(String text) {
-    return text
-        .trim()
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^a-z0-9\s]'), '')
-        .replaceAll(RegExp(r'\s+'), '-');
-  }
+  ///
+  /// Delegates to `page_rows.dart` rather than slugifying here, because the
+  /// same fallback now decides the key on the other side of the wire too: the
+  /// MCP server reassembles the pages map out of `config_item` rows without
+  /// Flutter, and an app and a server that slugified differently would
+  /// disagree about which page is which for exactly the pages nobody named.
+  static String fallbackPathFor(String key) => fallbackPagePathFor(key);
 
   /// Decodes an encoded page map — the inverse of [toJson]. Public because
   /// the editor keeps its undo history as encoded strings (cheap to snapshot)

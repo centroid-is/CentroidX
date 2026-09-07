@@ -23,6 +23,7 @@ import 'alarm.dart';
 import 'database.dart';
 import 'database_batch_insert.dart';
 import 'database_connections.dart';
+import 'config/config_item_table.dart' show ConfigItemTable;
 import 'mcp_tables.dart';
 import 'mcp_database.dart';
 import 'sqlite_loader.dart';
@@ -284,76 +285,14 @@ class AccessKeyBindingTable extends Table {
   DateTimeColumn get updatedAt => dateTime()();
 }
 
-/// One configuration entity, whatever kind it is. Drift stores it as
-/// `config_item`.
+/// `config_item` is declared in `config/config_item_table.dart`, not here.
 ///
-/// The columns mirror `ConfigItem` in `core/config/config_item.dart`, which is
-/// the source of truth for the list — this table is its storage, not a second
-/// definition of the shape. `updatedAt` and `updatedBy` are nullable *there*
-/// because a `ConfigItem` that has not been stored yet has neither; a row, by
-/// definition, has been stored, so both are `NOT NULL` here.
-///
-/// The payload stays JSON. One generic table rather than a table per kind is
-/// the settled design decision (`docs/relational-config-research.md` §3.1):
-/// the reads this store serves are all "everything of kind K at scope S", and
-/// a column per kind's fields would buy nothing for them while costing a
-/// migration per new kind.
-@DataClassName('ConfigItemRow')
-class ConfigItemTable extends Table {
-  /// See [AccessTemplateTable.tableName] for why this is spelled out: drift
-  /// does not strip a trailing `Table`, and the `Table` suffix on the class
-  /// has to stay because `ConfigItem` is the value type in `core/config/`.
-  @override
-  String get tableName => 'config_item';
-
-  /// `(kind, id, scope)`, so the same entity can exist once per scope: a
-  /// station-scoped override and the shared row it overrides are two rows,
-  /// not a conflict.
-  @override
-  Set<Column> get primaryKey => {kind, id, scope};
-
-  /// `ConfigKind.wireName` — the entity's type.
-  TextColumn get kind => text()();
-
-  /// The entity's own id, unique within its kind and scope.
-  TextColumn get id => text()();
-
-  /// `'shared'` or `'station:<hostname>'`, and the column that carries
-  /// ownership: shared rows are Postgres-owned, station rows never leave the
-  /// machine that wrote them. On Postgres a `CHECK` makes that structural —
-  /// see the `from < 7` arm. Here it deliberately does not, because station
-  /// rows are the only rows a local SQLite file will ever hold.
-  TextColumn get scope => text()();
-
-  /// The entity this one belongs to — an asset's page id — or null when the
-  /// kind has no parent. **No `REFERENCES`**, deliberately: see
-  /// `ConfigItem.parentId`'s doc. An asset outlives its page during a move,
-  /// and a constraint would turn a reorder into a delete and re-insert that
-  /// the change log would report as a destroy and recreate.
-  TextColumn get parentId => text().nullable()();
-
-  /// Position among siblings, for kinds where order is meaning — a page's
-  /// asset list is paint order. Null for kinds that are a set.
-  IntColumn get sortIndex => integer().nullable()();
-
-  /// The entity's own JSON, canonically encoded.
-  TextColumn get payload => text()();
-
-  /// Monotonic write counter, zero for a row written by a migration that had
-  /// no counter to carry.
-  ///
-  /// `integer()`, not `int64()`: drift's postgres dialect already maps
-  /// `integer()` to `bigint`, whereas `BigIntColumn` would change the *Dart*
-  /// type to `BigInt` and break every arithmetic use of a revision number.
-  IntColumn get rev => integer().withDefault(const Constant(0))();
-
-  /// When the row was last written. TEXT on both backends — this database
-  /// sets `storeDateTimeAsText: true`; see the note on [AppDatabase.options].
-  DateTimeColumn get updatedAt => dateTime()();
-
-  /// Username of whoever last wrote it, or `'anonymous'`.
-  TextColumn get updatedBy => text()();
-}
+/// It is the one table this database shares with readers that must not link
+/// open62541 — this library does, through `alarm.dart`. The declaration moved
+/// there so those readers get a generated accessor without it; `AppDatabase`
+/// names the same class below and generates its own exactly as before, so
+/// nothing about the schema, the migrations or [ConfigItemRow] changed.
+/// See that file's header for the full argument (D-3).
 
 /// One append-only entry in the configuration change log. Drift stores it as
 /// `config_change`.

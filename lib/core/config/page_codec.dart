@@ -41,6 +41,8 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/page_rows.dart'
+    show bySortIndexThenId, pagesJsonOf;
 
 import '../../page_creator/assets/common.dart' show Asset;
 import '../../page_creator/page.dart' show AssetPage, PageManager;
@@ -286,7 +288,7 @@ void adoptRowIdentities(
 /// own row.
 void _adoptAssetIdentities(AssetPage page, List<ConfigItem> rows) {
   // Paint order, so "position" means the same thing on both sides.
-  final ordered = [...rows]..sort(_bySortIndexThenId);
+  final ordered = [...rows]..sort(bySortIndexThenId);
   final taken = List<bool>.filled(ordered.length, false);
   for (var i = 0; i < ordered.length; i++) {
     if (page.assets.any((asset) => asset.id == ordered[i].id)) taken[i] = true;
@@ -362,86 +364,22 @@ Map<String, dynamic> pageFieldsOf(AssetPage page) {
 
 /// [items] reassembled into the map the app already uses.
 ///
-/// Assets are attached to the page whose **id** is their [ConfigItem.parentId]
-/// and ordered by [ConfigItem.sortIndex] — paint order is configuration, so
-/// losing it changes what is drawn on top of what. An asset whose parent is
-/// not among the items is dropped rather than attached somewhere arbitrary; a
-/// page whose assets are all missing is still a page, because an empty page is
-/// a real thing (`/baader` and `/diagnostics` are section headers with none).
+/// The reassembly itself is `page_rows.dart`'s [pagesJsonOf] — which page an
+/// asset belongs to, what order its assets paint in, what key a path-less page
+/// lands under. That rule is the wire format and not a Flutter fact, and the
+/// MCP server has to reach the same answer from the same rows or the two
+/// describe different plants; so it lives in `tfc_dart`, reachable from a
+/// `dart compile exe` binary, and this function is that plus
+/// [AssetPage.fromJson].
 ///
-/// The returned map is keyed by the **path in the payload**, not by the item
-/// id, so every navigation reader — the route table, the menu, `pagesOf`'s
-/// callers looking a page up by where it lives — is untouched by pages having
-/// ids at all. A page whose payload path is empty gets the same slug fallback
-/// [PageManager.pagesFromJson] gives it, written back into its menu item:
-/// without it, two path-less pages would both land on `''` and one would
-/// silently overwrite the other.
-///
-/// Items of other kinds are ignored: handing over a whole snapshot and asking
-/// for the pages out of it is the normal case, not a mistake.
-Map<String, AssetPage> pagesOf(Iterable<ConfigItem> items) {
-  final pageItems = <String, ConfigItem>{};
-  final assetsByPage = <String, List<ConfigItem>>{};
-
-  for (final item in items) {
-    switch (item.kind) {
-      case ConfigKind.page:
-        pageItems[item.id] = item;
-      case ConfigKind.asset:
-        final parent = item.parentId;
-        if (parent != null) {
-          (assetsByPage[parent] ??= <ConfigItem>[]).add(item);
-        }
-      case ConfigKind.keyMapping:
-      case ConfigKind.preference:
-      // A page's images are rows beside its assets, not part of the page
-      // object this codec builds: an asset names the image it draws by id.
-      case ConfigKind.pageImage:
-        break;
-    }
-  }
-
-  final pages = <String, AssetPage>{};
-  for (final entry in pageItems.entries) {
-    final assets = assetsByPage[entry.key] ?? const <ConfigItem>[];
-    final ordered = [...assets]..sort(_bySortIndexThenId);
-    final json = Map<String, dynamic>.from(entry.value.decode());
-    json[_assetsField] = [for (final item in ordered) item.decode()];
-
-    final menuItem = json[_menuItemField];
-    final path = menuItem is Map ? menuItem['path'] as String? : null;
-    final key = (path != null && path.isNotEmpty)
-        ? path
-        : PageManager.fallbackPathFor(entry.key);
-    if (path == null || path.isEmpty) {
-      // Same repair `pagesFromJson` makes: the page has to agree with the map
-      // about where it lives, or the next save keys it somewhere else again.
-      json[_menuItemField] = {
-        if (menuItem is Map) ...menuItem.cast<String, dynamic>(),
-        'path': key,
-      };
-    }
-    pages[key] = AssetPage.fromJson(json);
-  }
-  return pages;
-}
-
-/// Paint order, with the id as the tiebreak.
-///
-/// `sort()` is not stable and a null [ConfigItem.sortIndex] would otherwise
-/// float wherever the sort left it, so two reads of one page could paint its
-/// assets in two different orders. Nulls sort last, and equal indices — which
-/// the schema permits and a botched write could produce — fall back to the id
-/// so the answer is at least the same every time.
-int _bySortIndexThenId(ConfigItem a, ConfigItem b) {
-  final ai = a.sortIndex, bi = b.sortIndex;
-  if (ai != bi) {
-    if (ai == null) return 1;
-    if (bi == null) return -1;
-    if (ai != bi) return ai.compareTo(bi);
-  }
-  return a.id.compareTo(b.id);
-}
+/// The map is keyed by the **path in the payload**, not by the item id, so
+/// every navigation reader — the route table, the menu, `pagesOf`'s callers
+/// looking a page up by where it lives — is untouched by pages having ids at
+/// all.
+Map<String, AssetPage> pagesOf(Iterable<ConfigItem> items) => {
+      for (final entry in pagesJsonOf(items).entries)
+        entry.key: AssetPage.fromJson(entry.value),
+    };
 
 /// The blob `flutter_preferences.page_editor_data` holds, parsed into items.
 ///
