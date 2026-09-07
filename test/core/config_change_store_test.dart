@@ -12,12 +12,16 @@ import 'dart:io';
 
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:riverpod/riverpod.dart';
+import 'package:tfc/providers/config_history.dart';
+import 'package:tfc/providers/database.dart';
 import 'package:tfc/core/audit_trail_store.dart';
 import 'package:tfc/core/config_change_store.dart';
 import 'package:tfc_dart/core/config/config_change.dart';
 import 'package:tfc_dart/core/config/config_history_policy.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart' show kSharedConfigKinds;
+import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 
 /// The instant every window assertion is written against.
@@ -69,6 +73,43 @@ Future<int> _seed(
     ),
   );
   return (await statement).id;
+}
+
+
+/// The `Database` wrapper `databaseProvider` yields, over the in-memory Drift
+/// handle. Only `db` is reached by anything under test.
+class _FakeDatabase extends Fake implements Database {
+  _FakeDatabase(this.db);
+
+  @override
+  final AppDatabase db;
+}
+
+/// One `audit_entry` row — the header an action gets when it did not crash
+/// between the store's COMMIT and the audit write.
+Future<void> _seedAudit(
+  AppDatabase db, {
+  required String actionId,
+  DateTime? at,
+  String surface = 'config',
+  String itemKey = '/roe',
+  String who = 'olafur',
+  String groupRequired = 'configure',
+}) async {
+  await db.into(db.auditEntry).insert(
+        AuditEntryCompanion.insert(
+          at: at ?? _now,
+          who: who,
+          station: 'ST101',
+          roleName: 'engineer',
+          surface: surface,
+          itemKey: itemKey,
+          groupRequired: groupRequired,
+          allowed: true,
+          origin: const Value('operator'),
+          actionId: actionId,
+        ),
+      );
 }
 
 void main() {
@@ -509,6 +550,213 @@ void main() {
           scope: ConfigScope.shared);
 
       expect(shared.rows.map((r) => r.change.actionId), ['A']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The providers
+  // -------------------------------------------------------------------------
+
+  group('configHistoryActions', () {
+    ProviderContainer wired() {
+      final container = ProviderContainer(overrides: [
+        databaseProvider.overrideWith((ref) async => _FakeDatabase(db)),
+      ]);
+      addTearDown(container.dispose);
+      return container;
+    }
+
+    ProviderContainer databaseless() {
+      final container = ProviderContainer(overrides: [
+        databaseProvider.overrideWith((ref) async => null),
+      ]);
+      addTearDown(container.dispose);
+      return container;
+    }
+
+    test('answers null with no database — unavailable, not empty', () async {
+      final container = databaseless();
+
+      expect(await container.read(configChangeStoreProvider.future), isNull);
+      expect(
+          await container
+              .read(configHistoryActionsProvider(ConfigChangeQuery()).future),
+          isNull,
+          reason: 'an empty list here would claim nothing has ever been '
+              'configured on this station, which is the one thing an audit of '
+              'the configuration cannot say by mistake.');
+    });
+
+    test('an empty result is a real answer, not the unavailable one', () async {
+      final result = await wired()
+          .read(configHistoryActionsProvider(ConfigChangeQuery()).future);
+
+      expect(result, isNotNull);
+      expect(result!.actions, isEmpty);
+      expect(result.changeRowCount, 0);
+    });
+
+    test('a page save reads as one action with its entities beneath it',
+        () async {
+      await _seedAudit(db, actionId: 'A', surface: 'config', itemKey: '/roe');
+      for (var i = 0; i < 3; i++) {
+        await _seed(db, actionId: 'A', entityId: 'asset-$i');
+      }
+
+      final result = await wired()
+          .read(configHistoryActionsProvider(ConfigChangeQuery()).future);
+
+      expect(result!.actions, hasLength(1));
+      expect(result.actions.single.lead!.itemKey, '/roe');
+      expect(result.actions.single.changes, hasLength(3));
+      expect(result.actions.single.isParentless, isFalse);
+      expect(result.changeRowCount, 3,
+          reason: 'the LIMIT counted rows, not actions.');
+    });
+
+    test('an action whose audit header never landed still reaches the page',
+        () async {
+      // No audit_entry row: the crash window between the store's COMMIT and
+      // the audit write.
+      await _seed(db, actionId: 'orphan', entityId: 'asset-1');
+
+      final result = await wired()
+          .read(configHistoryActionsProvider(ConfigChangeQuery()).future);
+
+      expect(result!.actions, hasLength(1));
+      expect(result.actions.single.isParentless, isTrue);
+      expect(result.parentlessActionCount, 1);
+      expect(result.actions.single.who, 'olafur',
+          reason: 'the change rows carry the author themselves, so an action '
+              'with no header is still attributable.');
+    });
+
+    test('the hidden count comes from the table, not the loaded page',
+        () async {
+      await _seedAudit(db, actionId: 'A', surface: 'config');
+      for (var i = 0; i < 9; i++) {
+        await _seed(db, actionId: 'A', entityId: 'asset-$i');
+      }
+
+      final result = await wired().read(
+          configHistoryActionsProvider(ConfigChangeQuery(entityPrefix: 'asset-1'))
+              .future);
+
+      expect(result!.actions.single.changes, hasLength(1));
+      expect(result.actions.single.hiddenCount, 8);
+      expect(result.actions.single.isPartial, isTrue);
+    });
+
+    test('an action that wrote no change rows at all is not reported as '
+        'partial', () async {
+      // A page-image save: an audit header and, by historyExempt, zero
+      // config_change rows. It is invisible to this view — which is driven by
+      // change rows — and that is a limit of the view, not a partial action.
+      await _seedAudit(db, actionId: 'image', surface: 'config');
+
+      final result = await wired()
+          .read(configHistoryActionsProvider(ConfigChangeQuery()).future);
+
+      expect(result!.actions, isEmpty,
+          reason: 'the read is driven by config_change rows and this action '
+              'wrote none. The page must say the history is silent about '
+              'exempt kinds rather than implying nothing was saved.');
+    });
+
+    test('says out loud that it cannot see station-scoped changes', () async {
+      final result = await wired()
+          .read(configHistoryActionsProvider(ConfigChangeQuery()).future);
+
+      expect(result!.showsStationScopedChanges, isFalse,
+          reason: 'station-scoped rows never leave the machine they were '
+              'written on, so a Postgres-backed view cannot show them. The '
+              'page states the limit rather than letting an operator infer it '
+              'from an absence.');
+    });
+
+    test('the same query resolves from cache rather than re-querying',
+        () async {
+      final container = wired();
+      final query = ConfigChangeQuery(entityPrefix: 'CN04');
+
+      final first =
+          await container.read(configHistoryActionsProvider(query).future);
+      final second = await container
+          .read(configHistoryActionsProvider(ConfigChangeQuery(
+            entityPrefix: 'CN04',
+          )).future);
+
+      expect(identical(first, second), isTrue,
+          reason: 'the family is keyed on the query value. A broken == would '
+              'make every rebuild a cache miss and every miss a round trip.');
+    });
+
+    test('configActionChanges returns the whole action, filters aside',
+        () async {
+      for (var i = 0; i < 4; i++) {
+        await _seed(db, actionId: 'A', entityId: 'asset-$i');
+      }
+
+      final rows = await wired().read(configActionChangesProvider('A').future);
+
+      expect(rows, hasLength(4),
+          reason: 'the expander opens the action the filters showed one row '
+              'of, so this read is by action_id and nothing else.');
+    });
+
+    test('configActionChanges is empty, not an error, with no database',
+        () async {
+      expect(await databaseless().read(configActionChangesProvider('A').future),
+          isEmpty);
+    });
+
+    test('the filter notifier starts at the default and clears back to it',
+        () async {
+      final container = wired();
+      final notifier =
+          container.read(configHistoryFilterStateProvider.notifier);
+
+      expect(container.read(configHistoryFilterStateProvider).isDefault, isTrue);
+      notifier.update(const ConfigHistoryFilters(entityPrefix: 'CN04'));
+      expect(container.read(configHistoryFilterStateProvider).isSearching,
+          isTrue);
+      notifier.clear();
+      expect(container.read(configHistoryFilterStateProvider).isDefault, isTrue);
+    });
+  });
+
+  group('the providers start no timer', () {
+    late String source;
+
+    setUpAll(() {
+      final file = File('lib/providers/config_history.dart');
+      expect(file.existsSync(), isTrue,
+          reason: 'run this suite from the repository root.');
+      final withoutBlockComments = file
+          .readAsStringSync()
+          .replaceAll(RegExp(r'/\*.*?\*/', dotAll: true), '');
+      source = withoutBlockComments
+          .split('\n')
+          .map((line) {
+            final idx = line.indexOf('//');
+            return idx == -1 ? line : line.substring(0, idx);
+          })
+          .join('\n');
+    });
+
+    test('holds no Timer', () {
+      expect(source, isNot(contains('Timer')),
+          reason: 'an always-on Timer.periodic in this repo\'s plumbing has '
+              'broken unrelated widget tests, and a self-scrolling history is '
+              'unreadable while you are trying to read a row. Refresh is '
+              'ref.invalidate. Any future live update must be listener-gated '
+              '- started in onListen, stopped in onCancel - and driven by the '
+              'config_change notification that already exists.');
+    });
+
+    test('holds no sink and no session', () {
+      expect(source, isNot(contains('AuditSink')));
+      expect(source, isNot(contains('AccessSession')));
     });
   });
 
