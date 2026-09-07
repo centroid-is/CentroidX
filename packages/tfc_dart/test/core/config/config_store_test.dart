@@ -88,6 +88,62 @@ Future<void> seedSharedRow(String key, String identifier,
           updatedBy: 'somebody',
         ));
 
+/// A page item, payload-shaped as `AssetPage.toJson()` leaves it — the two
+/// fields the store is asked to carry, not the whole page. These are
+/// store-level tests: the codec lives in the app package and cannot be
+/// imported here, and the store has never looked inside a payload.
+ConfigItem pageItem(String path, {String title = 'Roe'}) => ConfigItem.of(
+      kind: ConfigKind.page,
+      id: path,
+      value: {
+        'menu_item': {'path': path, 'label': title},
+        'assets': <Object>[],
+      },
+    );
+
+/// A top-level asset item under [page], at a stored ordering key.
+ConfigItem assetItem(String id, {required String page, int? sortIndex}) =>
+    ConfigItem.of(
+      kind: ConfigKind.asset,
+      id: id,
+      value: {'type': 'text', 'id': id},
+      parentId: page,
+      sortIndex: sortIndex,
+    );
+
+/// Writes [item] as a stored row — a mirror row as the sync engine would leave
+/// it, or a remote row another station wrote.
+Future<void> seedItemRow(ConfigItem item,
+        {int rev = 3, AppDatabase? db}) =>
+    (db ?? local).into((db ?? local).configItemTable).insert(
+          ConfigItemTableCompanion.insert(
+            kind: item.kind.wireName,
+            id: item.id,
+            scope: item.scope.wireName,
+            parentId: Value(item.parentId),
+            sortIndex: Value(item.sortIndex),
+            payload: item.payload,
+            rev: Value(rev),
+            updatedAt: DateTime.utc(2026, 1, 1),
+            updatedBy: 'somebody',
+          ),
+        );
+
+/// The row a kind's blob→rows migration writes last, which is what tells a
+/// plant with legitimately no rows of that kind from one whose migration has
+/// not run.
+Future<void> seedMigrationMarker(ConfigKind kind, {AppDatabase? db}) =>
+    (db ?? local).into((db ?? local).configItemTable).insert(
+          ConfigItemTableCompanion.insert(
+            kind: ConfigKind.preference.wireName,
+            id: kMigrationMarkerIds[kind]!,
+            scope: ConfigScope.shared.wireName,
+            payload: '{"type":"String","value":"2026-09-07T00:00:00.000Z"}',
+            updatedAt: DateTime.utc(2026, 1, 1),
+            updatedBy: 'migration',
+          ),
+        );
+
 /// The same row on both sides — the ordinary state after a boot that reached
 /// Postgres.
 Future<void> seedBothSides(String key, String identifier, {int rev = 3}) async {
@@ -271,11 +327,11 @@ void main() {
       final observed = <List<ConfigItemRow>>[];
       final sub =
           local.select(local.configItemTable).watch().listen(observed.add);
-      await pumpEventQueue();
+      await Future<void>.delayed(Duration.zero);
       observed.clear();
 
       await store.open();
-      await pumpEventQueue();
+      await Future<void>.delayed(Duration.zero);
       await sub.cancel();
 
       expect(observed, isNotEmpty,
@@ -520,7 +576,7 @@ void main() {
       expect(await remoteChanges(), isEmpty);
       expect((await remoteMappingRows()).single.rev, 2,
           reason: 'Save pressed twice must not bump a revision');
-      await pumpEventQueue();
+      await Future<void>.delayed(Duration.zero);
       expect(events, isEmpty, reason: 'nothing happened, so nothing is said');
     });
 
@@ -534,7 +590,7 @@ void main() {
 
       await store.writeKeyMappings(mappingsOf({'CN04.Belt.Speed': 'new'}),
           actionId: 'action-5', who: 'jon', roleName: 'engineer');
-      await pumpEventQueue();
+      await Future<void>.delayed(Duration.zero);
 
       expect(store.keyMappings.nodes['CN04.Belt.Speed']!.opcuaNode!.identifier,
           'new');
@@ -621,7 +677,7 @@ void main() {
           store.writeKeyMappings(mappingsOf({'CN04.Belt.Speed': 'mine'}),
               actionId: 'action-9', who: 'jon', roleName: 'engineer'),
           throwsA(isA<ConfigConflict>()));
-      await pumpEventQueue();
+      await Future<void>.delayed(Duration.zero);
 
       expect(store.keyMappings.nodes['CN04.Belt.Speed']!.opcuaNode!.identifier,
           'old');
@@ -685,6 +741,212 @@ void main() {
               .identifier,
           'gvl.Odd');
       expect(store.watermark, 41);
+    });
+  });
+
+  group('the store is item-shaped across kinds', () {
+    // Phase 3's premise: one snapshot, one write path, three kinds. Everything
+    // here is the key-mapping behaviour already pinned above, asked of a kind
+    // the store had never heard of until now.
+
+    test('itemsOf returns only the kinds asked for, in canonical order',
+        () async {
+      await seedSharedRow('CN04.Belt.Speed', 'gvl.Speed');
+      await seedItemRow(pageItem('/roe'));
+      await seedItemRow(assetItem('b', page: '/roe', sortIndex: 2048));
+      await seedItemRow(assetItem('a', page: '/roe', sortIndex: 1024));
+      await store.open();
+
+      expect(store.itemsOf({ConfigKind.page, ConfigKind.asset}).map((i) => i.id),
+          ['/roe', 'a', 'b'],
+          reason: 'kind first, then id — the order config_diff writes in');
+      expect(store.itemsOf({ConfigKind.keyMapping}).map((i) => i.id),
+          ['CN04.Belt.Speed']);
+      expect(store.itemsOf({ConfigKind.keyMapping}),
+          store.keyMappingItems,
+          reason: 'the mappings getter is now one call to itemsOf');
+      expect(store.itemsOf(const {}), isEmpty);
+    });
+
+    test('a page and a key mapping with the same id both survive the snapshot',
+        () async {
+      // The collision the composite key exists for, now constructible for
+      // real: `/roe` is a legal mapping key and a legal page path, and an
+      // index keyed by id alone would have one silently evict the other.
+      await seedSharedRow('/roe', 'gvl.Odd');
+      await seedItemRow(pageItem('/roe'));
+      await store.open();
+
+      expect(store.itemsOf({ConfigKind.page}), hasLength(1));
+      expect(store.itemsOf({ConfigKind.keyMapping}), hasLength(1));
+      expect(store.keyMappings.nodes['/roe']!.opcuaNode!.identifier, 'gvl.Odd');
+      expect(store.itemsOf({ConfigKind.page}).single.payload,
+          contains('menu_item'));
+    });
+
+    test('a pages save cannot delete a key mapping row', () async {
+      // T-03-01. `kinds` is the replace set, so the rows outside it are not
+      // "absent from wanted" — they were never in the comparison.
+      await seedBothSides('CN04.Belt.Speed', 'gvl.Speed', rev: 3);
+      await seedItemRow(pageItem('/roe'));
+      await seedItemRow(pageItem('/roe'), db: remote);
+      store.attachRemoteDatabase(remote);
+      await store.open();
+
+      final result = await store.writeItems(
+        kinds: {ConfigKind.page, ConfigKind.asset},
+        wanted: [pageItem('/roe', title: 'Roe line')],
+        actionId: 'action-p',
+        who: 'jon',
+        roleName: 'engineer',
+      );
+
+      expect(result.diff.changed.map((i) => i.id), ['/roe']);
+      expect(result.diff.removed, isEmpty,
+          reason: 'the mapping is outside kinds, so it is not a removal');
+      final mappings = await remoteMappingRows();
+      expect(mappings, hasLength(1));
+      expect(mappings.single.rev, 3, reason: 'untouched, not rewritten');
+      expect(store.keyMappings.nodes.keys, ['CN04.Belt.Speed']);
+      final log = await remoteChanges();
+      expect(log.map((r) => r.kind), ['page']);
+    });
+
+    test('a wanted item outside kinds is a caller error, not a silent insert',
+        () async {
+      store.attachRemoteDatabase(remote);
+      await store.open();
+
+      expect(
+          () => store.writeItems(
+                kinds: {ConfigKind.page},
+                wanted: [pageItem('/roe'), assetItem('a', page: '/roe')],
+                actionId: 'action-x',
+                who: 'jon',
+                roleName: 'engineer',
+              ),
+          throwsArgumentError);
+      expect(await remoteChanges(), isEmpty);
+    });
+
+    test('writeItems with an empty diff writes nothing and emits nothing',
+        () async {
+      await seedItemRow(pageItem('/roe'));
+      await seedItemRow(pageItem('/roe'), db: remote);
+      store.attachRemoteDatabase(remote);
+      await store.open();
+      final events = <ConfigDiff>[];
+      final sub = store.keyMappingChanges.listen(events.add);
+
+      final result = await store.writeItems(
+        kinds: {ConfigKind.page},
+        wanted: [pageItem('/roe')],
+        actionId: 'action-noop',
+        who: 'jon',
+        roleName: 'engineer',
+      );
+
+      expect(result.diff.isEmpty, isTrue);
+      expect(await remoteChanges(), isEmpty);
+      await Future<void>.delayed(Duration.zero);
+      expect(events, isEmpty);
+      await sub.cancel();
+    });
+
+    test('offline is refused before the diff, for pages as for mappings',
+        () async {
+      await seedItemRow(pageItem('/roe'));
+      await store.open();
+
+      await expectLater(
+        () => store.writeItems(
+          kinds: {ConfigKind.page},
+          wanted: [pageItem('/roe')],
+          actionId: 'action-off',
+          who: 'jon',
+          roleName: 'engineer',
+        ),
+        throwsA(isA<ConfigStoreOfflineException>()
+            .having((e) => e.attempted, 'attempted', contains('1 page'))),
+      );
+    });
+
+    test('writeKeyMappings is writeItems, and says so when it refuses',
+        () async {
+      // The delegation, checked where it would show: the refusal message is
+      // built from items now, and it still reads as key mappings.
+      await store.open();
+      await expectLater(
+        () => store.writeKeyMappings(
+          mappingsOf({'CN04.Belt.Speed': 'a', 'CN07.Belt.Speed': 'b'}),
+          actionId: 'action-off',
+          who: 'jon',
+          roleName: 'engineer',
+        ),
+        throwsA(isA<ConfigStoreOfflineException>()
+            .having((e) => e.attempted, 'attempted', contains('2 keys'))
+            .having((e) => e.attempted, 'attempted',
+                contains('CN04.Belt.Speed'))),
+      );
+    });
+
+    test('the sweep brings page and asset rows into the snapshot and the mirror',
+        () async {
+      await seedItemRow(pageItem('/roe'), db: remote, rev: 7);
+      await seedItemRow(assetItem('a', page: '/roe', sortIndex: 1024),
+          db: remote, rev: 2);
+      await seedSharedRow('CN04.Belt.Speed', 'gvl.Speed', db: remote);
+      store.attachRemoteDatabase(remote, startSync: false);
+      await store.open();
+
+      await store.reconcile();
+
+      expect(store.itemsOf({ConfigKind.page}).single.rev, 7);
+      expect(store.itemsOf({ConfigKind.asset}).single.parentId, '/roe');
+      expect(store.keyMappings.nodes.keys, ['CN04.Belt.Speed']);
+      final mirrored = await local.select(local.configItemTable).get();
+      expect(mirrored.map((r) => '${r.kind}:${r.id}').toSet(),
+          {'page:/roe', 'asset:a', 'key_mapping:CN04.Belt.Speed'});
+      expect(mirrored.firstWhere((r) => r.kind == 'asset').sortIndex, 1024);
+    });
+
+    test('a station holding pages the remote has never migrated keeps them',
+        () async {
+      // The cutover boot, per kind. The remote has key mappings and no pages;
+      // reading "no page rows" as "every page was deleted" would empty the
+      // mirror and the station would come up blank. Key mappings still
+      // reconcile in the same sweep — the refusal is one kind's, not the
+      // sweep's.
+      await seedItemRow(pageItem('/roe'));
+      await seedSharedRow('CN04.Belt.Speed', 'gvl.Old');
+      await seedSharedRow('CN04.Belt.Speed', 'gvl.New', db: remote, rev: 9);
+      store.attachRemoteDatabase(remote, startSync: false);
+      await store.open();
+
+      await store.reconcile();
+
+      expect(store.itemsOf({ConfigKind.page}), hasLength(1),
+          reason: 'no page rows and no page migration marker means '
+              'not migrated, not empty');
+      expect(store.keyMappings.nodes['CN04.Belt.Speed']!.opcuaNode!.identifier,
+          'gvl.New',
+          reason: 'the kind that did migrate still reconciles');
+    });
+
+    test('a remote that has migrated its pages and holds none deletes ours',
+        () async {
+      await seedItemRow(pageItem('/roe'));
+      await seedMigrationMarker(ConfigKind.page, db: remote);
+      store.attachRemoteDatabase(remote, startSync: false);
+      await store.open();
+
+      await store.reconcile();
+
+      expect(store.itemsOf({ConfigKind.page}), isEmpty,
+          reason: 'the remote wins outright once the marker says it is the '
+              'truth');
+      expect(await local.select(local.configItemTable).get(),
+          isNot(contains(predicate((ConfigItemRow r) => r.kind == 'page'))));
     });
   });
 }
