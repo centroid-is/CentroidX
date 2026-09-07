@@ -424,10 +424,11 @@ void main() {
       await w.stateMan;
       await w.container.read(pageManagerProvider.future);
       await w.container.read(alarmManProvider.future);
-      // The page-layout seed at `page.dart` is **unawaited**, so a denial
-      // there arrives as an unhandled asynchronous error one microtask later
-      // rather than as a failed provider. Asserting "no throw" alone would
-      // pass while the operator met a prompt on every cold boot.
+      // There is no longer an unawaited write on this path to wait for — the
+      // page-layout seed is deleted — but the pump stays: it is what would
+      // surface a denial arriving a microtask late if one ever came back, and
+      // asserting "no throw" alone would pass while the operator met a prompt
+      // on every cold boot.
       await pumpEventQueue();
 
       expect(w.denials, isEmpty,
@@ -444,8 +445,16 @@ void main() {
       // where that write is proved, trail and all.
       expect(
           await prefs.getString('state_man_config', secret: true), isNotNull);
-      expect(await prefs.getString('page_editor_data'), isNotNull);
       expect(await prefs.getString('alarm_man_config'), isNotNull);
+
+      // And `page_editor_data` deliberately did **not** land. Since 03-04 a
+      // station with no stored layout comes up on the built-in default held
+      // in memory and persists nothing: the seed was a write of the plant's
+      // layout at boot, with nobody signed in, against a `configure` key. The
+      // first Save by a person is what stores a layout now — gated, awaited
+      // and audited.
+      expect(await prefs.getString('page_editor_data'), isNull,
+          reason: 'the boot seed is deleted; a write here is it coming back');
     });
 
     test('every boot default is in the trail, marked origin: system', () async {
@@ -455,13 +464,19 @@ void main() {
       await w.container.read(alarmManProvider.future);
       await pumpEventQueue();
 
+      // 'page_editor_data' is not here either, and for a stronger reason: as
+      // of 03-04 there is no boot write of it at all.
+      expect(w.sink.rows.where((r) => r.itemKey == 'page_editor_data'),
+          isEmpty,
+          reason: 'the page-layout seed is deleted; a trail row for it is the '
+              'seed having come back');
+
       for (final key in const [
         // 'key_mappings' has moved to the configuration store's own seed —
         // see the comment in the test above, and
         // `guarded_config_store_test.dart`'s "writes the example key once, as
         // the system, with a row".
         'state_man_config',
-        'page_editor_data',
         'alarm_man_config',
       ]) {
         final rows = w.sink.rows.where((r) => r.itemKey == key);
