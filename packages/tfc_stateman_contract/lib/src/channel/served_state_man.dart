@@ -55,6 +55,7 @@ import 'dart:async';
 import 'package:json_rpc_2/error_code.dart' as error_code;
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:stream_channel/stream_channel.dart';
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import '../data_services_contract.dart';
@@ -412,8 +413,284 @@ final class ServedStateMan {
 
     _on(HarnessMethods.seedTimeseries, _seedTimeseries);
 
+    _registerAccess();
+
     _watchPreferences();
   }
+
+  // ------------------------------------------------------- the access families
+  //
+  // Twenty-nine handlers, one per method on the four access interfaces, named
+  // individually for the same reason the data services are (T-02-22): the
+  // registration IS the access-control decision, and a loop over a table of
+  // closures would move the list of what this peer answers out of the place a
+  // reviewer reads. The session lever and the recording readout are NOT here —
+  // they are read straight off the served instance by `ChannelStateMan`, the
+  // way `roundTrips` is, because the session is test scaffolding and not wire
+  // traffic.
+
+  void _registerAccess() {
+    _on(HarnessMethods.accessTemplatesList, _tplList);
+    _on(HarnessMethods.accessTemplatesGet, _tplGet);
+    _on(HarnessMethods.accessTemplatesBindings, _tplBindings);
+    _on(HarnessMethods.accessTemplatesKeysBoundTo, _tplKeysBoundTo);
+    _on(HarnessMethods.accessTemplatesCreate, _tplCreate);
+    _on(HarnessMethods.accessTemplatesUpdate, _tplUpdate);
+    _on(HarnessMethods.accessTemplatesRename, _tplRename);
+    _on(HarnessMethods.accessTemplatesDelete, _tplDelete);
+    _on(HarnessMethods.accessTemplatesBind, _tplBind);
+    _on(HarnessMethods.accessTemplatesUnbind, _tplUnbind);
+
+    _on(HarnessMethods.accessAdminRoles, _admRoles);
+    _on(HarnessMethods.accessAdminListUsers, _admListUsers);
+    _on(HarnessMethods.accessAdminCreateRole, _admCreateRole);
+    _on(HarnessMethods.accessAdminUpdateRole, _admUpdateRole);
+    _on(HarnessMethods.accessAdminDeleteRole, _admDeleteRole);
+    _on(HarnessMethods.accessAdminRenameRole, _admRenameRole);
+    _on(HarnessMethods.accessAdminCreateUser, _admCreateUser);
+    _on(HarnessMethods.accessAdminDeleteUser, _admDeleteUser);
+    _on(HarnessMethods.accessAdminSetUserRole, _admSetUserRole);
+    _on(HarnessMethods.accessAdminSetUserStationAccount, _admSetStationAccount);
+    _on(HarnessMethods.accessAdminSetUserPassword, _admSetUserPassword);
+
+    _on(HarnessMethods.auditEntries, _audEntries);
+    _on(HarnessMethods.auditMemberCounts, _audMemberCounts);
+    _on(HarnessMethods.auditDistinctWho, _audDistinctWho);
+
+    _on(HarnessMethods.configRead, _cfgRead);
+    _on(HarnessMethods.configValidate, _cfgValidate);
+    _on(HarnessMethods.configWrite, _cfgWrite);
+    _on(HarnessMethods.configPrevious, _cfgPrevious);
+    _on(HarnessMethods.configRestorePrevious, _cfgRestorePrevious);
+  }
+
+  /// Answers an access method, mapping the refusal shapes as D-09 requires.
+  ///
+  /// An [AccessDenied] — an authorisation verdict — becomes
+  /// [HarnessErrorCodes.accessForbidden] carrying the item key and the required
+  /// group, so the client can re-raise the SAME AccessDenied and a refusal is
+  /// one exception type on both legs. Every other failure — the domain rules
+  /// (a bound template, the last users-holder, a bad config), a decode fault —
+  /// goes through [_answer] to [HarnessErrorCodes.subApiFailed], deliberately a
+  /// different code, so the contract can tell "you may not" from "you cannot
+  /// yet". The harness mints no refusal of its own.
+  Future<Object?> _answerAccess(
+      String method, Future<Object?> Function() work) async {
+    try {
+      return await work();
+    } on AccessDenied catch (denial) {
+      throw rpc.RpcException(
+        HarnessErrorCodes.accessForbidden,
+        '$denial',
+        data: {'itemKey': denial.itemKey, 'group': denial.required.name},
+      );
+    }
+    // Anything else falls to _answer's mapping via the caller's second layer.
+  }
+
+  /// [_answerAccess] then [_answer]: the verdict mapping first, the generic
+  /// substitution-and-subApiFailed mapping for everything else.
+  Future<Object?> _access(String method, Future<Object?> Function() work) =>
+      _answer(method, () => _answerAccess(method, work));
+
+  // templates
+
+  Future<Object?> _tplList(rpc.Parameters _) =>
+      _access(HarnessMethods.accessTemplatesList, () async => [
+            for (final t in await api.accessTemplates.list())
+              accessTemplateToJson(t),
+          ]);
+
+  Future<Object?> _tplGet(rpc.Parameters params) =>
+      _access(HarnessMethods.accessTemplatesGet, () async {
+        final t = await api.accessTemplates.template(params['name'].asString);
+        return t == null ? null : accessTemplateToJson(t);
+      });
+
+  Future<Object?> _tplBindings(rpc.Parameters _) =>
+      _access(HarnessMethods.accessTemplatesBindings,
+          () async => await api.accessTemplates.bindings());
+
+  Future<Object?> _tplKeysBoundTo(rpc.Parameters params) =>
+      _access(HarnessMethods.accessTemplatesKeysBoundTo,
+          () async => await api.accessTemplates
+              .keysBoundTo(params['templateName'].asString));
+
+  Future<Object?> _tplCreate(rpc.Parameters params) =>
+      _access(HarnessMethods.accessTemplatesCreate, () async {
+        await api.accessTemplates.create(
+            accessTemplateFromJson(_object(params['value'].asMap)),
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _tplUpdate(rpc.Parameters params) =>
+      _access(HarnessMethods.accessTemplatesUpdate, () async {
+        await api.accessTemplates.update(
+            accessTemplateFromJson(_object(params['value'].asMap)),
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _tplRename(rpc.Parameters params) =>
+      _access(HarnessMethods.accessTemplatesRename, () async {
+        await api.accessTemplates.rename(
+            params['from'].asString, params['to'].asString,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _tplDelete(rpc.Parameters params) =>
+      _access(HarnessMethods.accessTemplatesDelete, () async {
+        await api.accessTemplates.delete(params['name'].asString,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _tplBind(rpc.Parameters params) =>
+      _access(HarnessMethods.accessTemplatesBind, () async {
+        await api.accessTemplates.bind(
+            params['keyName'].asString, params['templateName'].asString,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _tplUnbind(rpc.Parameters params) =>
+      _access(HarnessMethods.accessTemplatesUnbind, () async {
+        await api.accessTemplates.unbind(params['keyName'].asString,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  // roles and users
+
+  Future<Object?> _admRoles(rpc.Parameters _) =>
+      _access(HarnessMethods.accessAdminRoles, () async => [
+            for (final r in await api.accessAdmin.roles()) accessRoleToJson(r),
+          ]);
+
+  Future<Object?> _admListUsers(rpc.Parameters _) =>
+      _access(HarnessMethods.accessAdminListUsers, () async => [
+            for (final u in await api.accessAdmin.listUsers())
+              authenticatedUserToJson(u),
+          ]);
+
+  Future<Object?> _admCreateRole(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminCreateRole, () async {
+        await api.accessAdmin.createRole(
+            accessRoleFromJson(_object(params['role'].asMap)),
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admUpdateRole(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminUpdateRole, () async {
+        await api.accessAdmin.updateRole(
+            accessRoleFromJson(_object(params['role'].asMap)),
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admDeleteRole(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminDeleteRole, () async {
+        await api.accessAdmin.deleteRole(params['name'].asString,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admRenameRole(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminRenameRole, () async {
+        await api.accessAdmin.renameRole(
+            params['from'].asString, params['to'].asString,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admCreateUser(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminCreateUser, () async {
+        await api.accessAdmin
+            .createUser(NewUserParams.fromJson(_object(params.asMap)));
+        return null;
+      });
+
+  Future<Object?> _admDeleteUser(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminDeleteUser, () async {
+        await api.accessAdmin.deleteUser(params['subject'].asString,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admSetUserRole(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminSetUserRole, () async {
+        await api.accessAdmin.setUserRole(
+            params['subject'].asString, params['newRole'].asString,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admSetStationAccount(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminSetUserStationAccount, () async {
+        await api.accessAdmin.setUserStationAccount(
+            params['subject'].asString, params['value'].asBool,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admSetUserPassword(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminSetUserPassword, () async {
+        await api.accessAdmin
+            .setUserPassword(SetUserPasswordParams.fromJson(_object(params.asMap)));
+        return null;
+      });
+
+  // audit
+
+  Future<Object?> _audEntries(rpc.Parameters params) =>
+      _access(HarnessMethods.auditEntries, () async => [
+            for (final row in await api.audit
+                .entries(AuditQueryParams.fromJson(_object(params['query'].asMap))))
+              auditRecordToJson(row),
+          ]);
+
+  Future<Object?> _audMemberCounts(rpc.Parameters params) =>
+      _access(HarnessMethods.auditMemberCounts, () async {
+        final ids = [for (final id in params['actionIds'].asList) '$id'];
+        return await api.audit.memberCountsByAction(ids);
+      });
+
+  Future<Object?> _audDistinctWho(rpc.Parameters _) =>
+      _access(HarnessMethods.auditDistinctWho,
+          () async => await api.audit.distinctWho());
+
+  // backend config
+
+  Future<Object?> _cfgRead(rpc.Parameters _) => _access(
+      HarnessMethods.configRead, () async => (await api.backendConfig.read()).toJson());
+
+  Future<Object?> _cfgValidate(rpc.Parameters params) =>
+      _access(HarnessMethods.configValidate, () async =>
+          (await api.backendConfig.validate(params['configJson'].asString))
+              .toJson());
+
+  Future<Object?> _cfgWrite(rpc.Parameters params) =>
+      _access(HarnessMethods.configWrite, () async {
+        await api.backendConfig.write(params['configJson'].asString,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _cfgPrevious(rpc.Parameters _) =>
+      _access(HarnessMethods.configPrevious, () async {
+        final doc = await api.backendConfig.previous();
+        return doc?.toJson();
+      });
+
+  Future<Object?> _cfgRestorePrevious(rpc.Parameters params) =>
+      _access(HarnessMethods.configRestorePrevious, () async {
+        await api.backendConfig.restorePrevious(
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
 
   /// One subscription, however many clients are listening on the far side.
   ///

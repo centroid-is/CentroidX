@@ -55,6 +55,10 @@ void main() {
       channelServedFake,
       readOnlyKey: _readOnlyKey,
       browseFixture: defaultBrowseFixture,
+      // ChannelStateMan forwards the four access families over the same peer
+      // (17-05) and reads the session lever off the served instance, so the
+      // whole roster — access included — is judged across the message boundary.
+      supportsAccessControl: true,
     );
   });
   final registered = contractCasesRegistered - before;
