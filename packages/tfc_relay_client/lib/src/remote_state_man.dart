@@ -166,7 +166,7 @@ final class RemoteStateMan implements StateManApi {
       // anyway, with the pump running (07-REVIEW WR-01). It surfaces on the
       // one diagnostic list this client has rather than in the silence that
       // hid the original defect for a phase.
-      onComplaint: (complaint) => _supervisor.resync.complaints.add(complaint),
+      onComplaint: (complaint) => _supervisor.resync.complain(complaint),
     );
 
     // Built here and handed over: `ConnectionSupervisor.dispose` disposes the
@@ -973,8 +973,8 @@ final class RemoteStateMan implements StateManApi {
   /// Never thrown, for [complaints]' own stated reason: a page carries ~1500
   /// hand-edited keys and one bad answer must cost one tag.
   void _declineReadback(String key, String why) {
-    _supervisor.resync.complaints
-        .add('the write readback for "$key" was not put on the page: $why');
+    _supervisor.resync
+        .complain('the write readback for "$key" was not put on the page: $why');
   }
 
   // `_markNonFinite` lived here: it stamped [Quality.badNonFinite] on a key
@@ -1225,7 +1225,7 @@ final class RemoteStateMan implements StateManApi {
         // deviation 4 hardened the *absent* case against. And the verdict
         // that must not survive a shift is `not_received` — the one outcome
         // in this system that licenses a second movement of a machine.
-        _supervisor.resync.complaints.add(
+        _supervisor.resync.complain(
             'a writeStatus entry at the position asked for "$cmd" answered '
             'about "${decoded.cmd}" instead; it was discarded rather than '
             'reported against the wrong command');
@@ -1242,7 +1242,7 @@ final class RemoteStateMan implements StateManApi {
       // once was letting a malformed entry at index 0 discard the settled
       // outcomes of every other command in it, and on a 1500-key panel the
       // batch is not small. One typo costs one tag, here as everywhere.
-      _supervisor.resync.complaints.add(
+      _supervisor.resync.complain(
           'a writeStatus entry could not be read and was answered as unknown '
           'rather than taken as an answer about some other command: $error');
       return WriteUnknown(

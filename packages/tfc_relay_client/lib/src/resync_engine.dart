@@ -62,7 +62,83 @@ final class ResyncEngine {
   /// Configuration problems worth a log line — a rejected key, a snapshot
   /// entry naming a handle nobody announced. Recorded, never thrown: a page
   /// carries ~1500 hand-edited keys and one typo must cost one tag.
-  final List<String> complaints = <String>[];
+  ///
+  /// **Bounded at [complaintCap], and it took until 16-07** (04-REVIEW IN-02).
+  /// `_waits`, `_writeStatusQueries` and `_writeStatusAnswers` were every one
+  /// of them capped citing the same phrase — *"a leak with a diagnostic
+  /// excuse"* — while this one, the only list anybody actually reads, was not.
+  /// One mistyped key plus a flapping link is a couple of entries a minute all
+  /// shift; under S14's undamped rebuild path it was unbounded outright.
+  ///
+  /// **256 rather than the 64 the debug histories use.** Those answer "what has
+  /// this machinery been doing lately" and a screenful is enough. This one is
+  /// the surface an operator and an integrator read to find out what is wrong
+  /// with a page, and a page carries ~1500 keys: 64 entries is a shift's worth
+  /// of nothing, and a page whose key list has drifted fills it in one frame.
+  ///
+  /// **And the truncation is visible.** When entries are shed, the head of the
+  /// list carries a synthetic line naming how many — replaced as more are shed,
+  /// never accumulated, so the marker cannot itself become the leak. A silently
+  /// truncated operator-facing list is a worse lie than a long one: the line
+  /// that explains the incident is gone and nothing says it ever existed, so
+  /// whoever is reading concludes the client had nothing to report. That is the
+  /// whole reason the cap is generous *and* announced rather than merely
+  /// generous.
+  ///
+  /// Read-only, so every writer goes through [complain]. A list that could be
+  /// appended to directly is a bound that holds until the next call site.
+  List<String> get complaints =>
+      _view ??= List<String>.unmodifiable(<String>[
+        if (_dropped > 0)
+          '$_dropped earlier complaint${_dropped == 1 ? ' was' : 's were'} '
+              'dropped: this list is capped at $complaintCap entries and keeps '
+              'the newest. Whatever they said is gone.',
+        ..._entries,
+      ]);
+
+  /// How many entries [complaints] keeps. See that getter for why 256.
+  static const int complaintCap = 256;
+
+  final List<String> _entries = <String>[];
+
+  /// How many entries have been shed. Only ever grows within one connection's
+  /// life, which is the point: the marker is a running total, not a note about
+  /// the most recent trim.
+  int _dropped = 0;
+
+  /// The cached unmodifiable view, dropped on every write.
+  ///
+  /// [complaints] is read by a widget and by the diagnostics page, and building
+  /// a 256-element copy on every read of a list that changes rarely is the kind
+  /// of cost that only shows up on the panel with the slowest CPU.
+  List<String>? _view;
+
+  /// Files one complaint, shedding the oldest if the list is full.
+  ///
+  /// The one write path. See [complaints] for the cap and for why the shedding
+  /// is announced.
+  ///
+  /// The first truncation sheds two entries rather than one, and that is not an
+  /// off-by-one: the marker occupies a slot of the cap as soon as there is
+  /// anything to admit to, so the room for real entries drops by one at the
+  /// moment the first is dropped. The alternative — letting the visible list run
+  /// to `cap + 1` — would mean the number in the doc is not the number on the
+  /// screen.
+  void complain(String line) {
+    _view = null;
+    _entries.add(line);
+    while (_entries.length > (_dropped > 0 ? complaintCap - 1 : complaintCap)) {
+      _entries.removeAt(0);
+      _dropped++;
+    }
+  }
+
+  /// Files several, in order. Same rule, one call site's worth of noise saved.
+  void complainAll(Iterable<String> lines) {
+    for (final line in lines) {
+      complain(line);
+    }
+  }
 
   /// Told when a subscription stops being established, so whoever keeps
   /// per-subscription state elsewhere can drop it. The freshness watchdog's
@@ -205,7 +281,7 @@ final class ResyncEngine {
     try {
       await _resubscribe(sub);
     } catch (error) {
-      complaints.add('"${sub.subId}" could not be re-established and is now '
+      complain('"${sub.subId}" could not be re-established and is now '
           'unestablished: $error. Its values are gone from the cache rather '
           'than left on screen under good quality');
       _unestablish(sub);
@@ -246,10 +322,10 @@ final class ResyncEngine {
     store.applyBatch(result.values, seq: result.seq);
 
     for (final entry in result.rejected.entries) {
-      complaints.add('"${entry.key}" was rejected by the gateway '
+      complain('"${entry.key}" was rejected by the gateway '
           '(${entry.value.kind}): ${entry.value.message ?? 'no detail'}');
     }
-    complaints.addAll(result.complaints);
+    complainAll(result.complaints);
   }
 
   /// Returns a subscription to "not established": no cache, no handles, no

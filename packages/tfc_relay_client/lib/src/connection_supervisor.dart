@@ -797,7 +797,7 @@ final class ConnectionSupervisor {
         // unestablished page this is a line per handle per frame on an
         // unbounded list, for the life of the socket (07-REVIEW WR-07).
         if (established) {
-          _resync.complaints.add('update for "${update.sub}" named handle '
+          _resync.complain('update for "${update.sub}" named handle '
               '${entry.key}, which this session never announced');
         }
         continue;
@@ -829,7 +829,7 @@ final class ConnectionSupervisor {
         // through the same set: one suppression is one operator-facing
         // sentence however many detectors noticed it.
         if (_resyncComplained.add(update.sub)) {
-          _resync.complaints.add('"${update.sub}" was rebuilt less than '
+          _resync.complain('"${update.sub}" was rebuilt less than '
               '${config.freshnessDeadline.inMilliseconds} ms ago and the '
               'gateway is still sending handles this session never announced. '
               'Further rebuilds on this subscription are suppressed to one '
@@ -960,7 +960,7 @@ final class ConnectionSupervisor {
         // "the gateway is wrong" about a round trip that has not landed sends
         // the engineer to the wrong end of the plant.
         if (!unestablished && _resyncComplained.add(entry.key)) {
-          _resync.complaints.add('"${entry.key}" was rebuilt less than '
+          _resync.complain('"${entry.key}" was rebuilt less than '
               '${config.freshnessDeadline.inMilliseconds} ms ago and the '
               'gateway is still advertising a sequence ahead of this client: '
               'it advertises ${entry.value.seq} and this client holds '
@@ -1014,7 +1014,7 @@ final class ConnectionSupervisor {
       // binds to.
       if (!_stallComplained) {
         _stallComplained = true;
-        _resync.complaints.add(asked.stalledMs == null
+        _resync.complain(asked.stalledMs == null
             ? 'the gateway announced its event loop stalled; the plant view '
                 'was frozen and every page on this connection is rebuilding '
                 'from a fresh snapshot'
