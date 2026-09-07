@@ -445,6 +445,87 @@ final class SubTick {
   Map<String, Object?> toJson() => {'seq': seq, 'evaluatedAt': evaluatedAt};
 }
 
+/// Client → server on the app heartbeat: the one frame that says *how far the
+/// panel has actually got*.
+///
+/// ## Why it rides `ping`
+///
+/// `poll` can measure how much this gateway has **produced** for a client and
+/// nothing else — `dart:io` exposes no `bufferedAmount` and no `flush`
+/// (flutter#103306), so nine megabytes can pile into an unread socket while
+/// every `addStream` returns in 0 ms. `16-02-DECISION.md` measured that
+/// directly, refuted the `sink.done` liveness option the source had been
+/// recommending since Phase 3, and chose an application-level ack instead:
+/// **the only party that knows what was delivered is the party that read it.**
+///
+/// It rides `ping` rather than a frame of its own because `ping` already
+/// exists and already crosses on exactly the cadence this question needs
+/// asking on (§7). At a realistic four subscriptions it is 134 bytes and
+/// 544 ns per panel per beat, against a 389 µs per-tick fan-out — and it is
+/// client→server, so it is not on the encode-once path at all (§2.6).
+///
+/// ## It is a claim by the party being judged
+///
+/// Nothing here is verified, and nothing here is meant to be. The trust
+/// boundary is one line in `ConflatingSendBuffer.recordAck`, which clamps the
+/// reported sequence to what was actually sent: over-reporting therefore buys
+/// a stuck client nothing, and under-reporting is left alone on purpose,
+/// because a client that evicts itself is harmless and pays one snapshot for
+/// it. This class must not grow a second opinion about that.
+///
+/// ## Every malformation degrades; none of them throws
+///
+/// A `ping` is what stops the reaper. A decode that threw here would turn a
+/// panel with a cosmetic bug in its ack into a panel that is disconnected
+/// every heartbeat — trading a diagnostic for an outage. So an absent
+/// `params`, an absent `ack`, an `ack` that is not a map, and a sequence that
+/// is not an `int` each degrade to *no ack for that subscription*, which is
+/// the same thing the gateway hears from a panel too old to send one, and
+/// which it already knows how to answer (`send_buffer.dart`: a null
+/// `ackedSeq` is skipped by the verdict).
+final class PingParams {
+  /// Subscription name → the highest sequence the client has **applied**.
+  ///
+  /// Applied, not received: the number a panel may honestly put here is the
+  /// one it has decoded into its own state, because that is the number the
+  /// gateway is trying to learn. On the client this is
+  /// `SubscriptionState.lastSeq` and it is read rather than counted, so the
+  /// pump learns nothing the supervisor did not already know.
+  final Map<String, int> ack;
+
+  const PingParams({this.ack = const {}});
+
+  /// **Tolerant by contract, one entry at a time.**
+  ///
+  /// Bad entries are dropped individually rather than poisoning the frame: a
+  /// panel that mangles one subscription's sequence must not blind the gateway
+  /// to the four beside it.
+  ///
+  /// **`int` and not `num`, deliberately.** A sequence is minted as an `int`,
+  /// so a fractional or non-finite value is not a rounding question but a peer
+  /// that is not speaking this protocol. It also defuses the `1e999` decode
+  /// poison here by construction: `jsonDecode` yields `double.infinity`
+  /// silently, `Infinity.toInt()` throws, and — worse than either — an
+  /// Infinity that got as far as `recordAck` would be *clamped to `sentSeq`*
+  /// and read as a client claiming to be perfectly caught up. Dropping it is
+  /// the only answer that cannot be turned into an ack the client never sent.
+  factory PingParams.fromJson(Map<String, Object?> json) {
+    final raw = json['ack'];
+    if (raw is! Map) return const PingParams();
+    final ack = <String, int>{};
+    for (final entry in raw.entries) {
+      final sub = entry.key;
+      final seq = entry.value;
+      if (sub is String && seq is int) ack[sub] = seq;
+    }
+    return PingParams(ack: ack);
+  }
+
+  /// Omits `ack` when there is nothing to say, so a panel holding no
+  /// subscriptions beats with the same 47-byte frame it always did.
+  Map<String, Object?> toJson() => {if (ack.isNotEmpty) 'ack': ack};
+}
+
 /// Server → client on a fixed cadence even when nothing changed: silence is
 /// never ambiguous (OPC UA keep-alive rule; client death deadline = 3×).
 final class TickParams {

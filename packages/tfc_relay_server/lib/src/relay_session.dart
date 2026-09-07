@@ -1447,8 +1447,62 @@ final class RelaySession {
   /// holding its subscriptions sends none of them: `ping` all shift, and a
   /// `writeStatus` sweep after a reconnect. That is a night shift, not an
   /// untrafficked gateway, so the heartbeat carries the check.
-  Future<Object?> _ping(rpc.Parameters _) async {
+  /// **And it is where the delivery ack is ingested** (16-02-DECISION §5.1).
+  ///
+  /// `poll` can measure how much this gateway has *produced* for a client and
+  /// nothing else: `dart:io` exposes no `bufferedAmount` and no `flush`
+  /// (flutter#103306), so 9.5 MiB piled into an unread socket while every
+  /// `addStream` returned in 0 ms — measured, not assumed, along with the
+  /// refutation of the `sink.done` liveness option this file used to
+  /// recommend. The only party that knows what was *delivered* is the party
+  /// that read it, so it is asked, on the beat it is already sending.
+  ///
+  /// **A malformed ack must never cost a panel its socket.** This is the frame
+  /// that stops the reaper; a decode that threw here would turn a cosmetic
+  /// client bug into a disconnect every heartbeat. `PingParams.fromJson`
+  /// degrades every malformation to "no ack for that subscription", and the
+  /// `is Map` guard below covers the shape json_rpc_2 would otherwise refuse
+  /// on our behalf with `invalidParams`.
+  ///
+  /// **Stamped with [_monotonicNow] and not [_now]** — and *no test can tell*,
+  /// which is worth saying out loud rather than leaving for somebody to
+  /// discover. `ConflatingSendBuffer.recordAck` declares a `nowMs` parameter
+  /// and never reads it: it went dead in 16-08's own `51d6941c`, the fix that
+  /// removed the duplicate window reset so the recovery branch in
+  /// `_deliveryVerdict` would be reachable. Swapping this argument for [_now]
+  /// leaves the whole suite green — measured, not assumed.
+  ///
+  /// It is still [_monotonicNow], because the argument for it does not depend
+  /// on anything observing it. The window this feeds is closed by
+  /// `buffer.poll(nowMs)` under `TickEngine.tickOnce(now())`, and
+  /// `relay_server.dart` injects that same engine clock here as
+  /// `monotonicNow`. Two clocks either side of one subtraction is how a
+  /// wall-clock step becomes an eviction — the failure `clock_offset.dart` and
+  /// `HeartbeatPump._now` are both already about — so the day the parameter
+  /// becomes live (§5.2's `ackedMovedAtMs` is the obvious candidate) this call
+  /// site is already right. Whoever next opens `send_buffer.dart` should
+  /// either implement that field or delete the parameter; a dead argument that
+  /// looks load-bearing is how the wrong clock gets chosen quietly.
+  ///
+  /// No sanitize pass: `PingParams` accepts `int` and nothing else, so the
+  /// `1e999` → `Infinity` poison is dropped at the decode rather than being
+  /// clamped into a client claiming it is perfectly caught up.
+  Future<Object?> _ping(rpc.Parameters params) async {
     _health?.refreshIfDue();
+    final raw = params.value;
+    if (raw is Map) {
+      final ack = PingParams.fromJson(raw.cast<String, Object?>()).ack;
+      if (ack.isNotEmpty) {
+        final at = _monotonicNow();
+        for (final entry in ack.entries) {
+          // Scoping is `recordAck`'s rule 3 and stays there: an ack naming a
+          // subscription this session does not hold creates no entry, so the
+          // map cannot be grown by whatever a peer puts in an ack on a path
+          // that runs every heartbeat.
+          buffer.recordAck(entry.key, entry.value, at);
+        }
+      }
+    }
     return {'serverTime': _now()};
   }
 

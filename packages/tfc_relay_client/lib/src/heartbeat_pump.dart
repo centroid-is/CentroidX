@@ -61,9 +61,11 @@ final class HeartbeatPump {
     required bool Function() isReady,
     required CurrentPeer peer,
     int Function()? elapsed,
+    Map<String, int> Function()? ackSource,
     void Function(String complaint)? onComplaint,
   })  : _isReady = isReady,
         _peer = peer,
+        _ackSource = ackSource,
         _onComplaint = onComplaint,
         _now = elapsed ?? _elapsedClock() {
     _lastOutboundMs = _now();
@@ -90,6 +92,20 @@ final class HeartbeatPump {
   /// call — `deadline.dart`'s seam, so a reconnect landing mid-beat cannot
   /// retarget the ping at the replacement socket.
   final CurrentPeer _peer;
+
+  /// What this panel has actually **applied**, per subscription — the delivery
+  /// ack every beat carries (`16-02-DECISION.md` §5.1).
+  ///
+  /// **Read, never counted.** The supplier is the supervisor's own
+  /// `SubscriptionState.lastSeq`, which it already maintains for resync, so
+  /// this pump learns nothing new and owns no state that could disagree with
+  /// the rest of the client. A pump given no source says nothing, which is
+  /// what a panel too old to send an ack says, and the gateway already knows
+  /// how to answer it: a null `ackedSeq` is skipped by the delivery verdict.
+  ///
+  /// Null is "I have nothing to say", never "do not beat" — every existing
+  /// case in `heartbeat_test.dart` builds a pump without one.
+  final Map<String, int> Function()? _ackSource;
 
   /// Where a word about the gateway's configuration goes — the same list
   /// `RemoteStateMan.complaints` publishes. Null in a harness that wires none.
@@ -119,6 +135,20 @@ final class HeartbeatPump {
 
   /// When this client last put a frame on the wire, in [_now]'s clock.
   late int _lastOutboundMs;
+
+  /// The ack as it stood at the previous tick of the beat timer.
+  ///
+  /// **Updated every tick the link is up, not only on the ticks that send** —
+  /// otherwise the comparison is against the last ack *delivered*, a panel
+  /// whose ack froze after its last beat compares against a different map for
+  /// ever, and the stuck reader is skipped permanently: the exact failure this
+  /// field exists to detect, reached through its own bookkeeping.
+  ///
+  /// Seeded at [_arm] rather than at construction, because "since the last
+  /// beat" has no meaning before the timer exists, and a pump armed on a panel
+  /// that is already holding pages would otherwise spend its first period
+  /// deciding that every subscription had just moved.
+  Map<String, int> _lastAckSent = const {};
 
   var _pings = 0;
 
@@ -285,8 +315,22 @@ final class HeartbeatPump {
   /// question the reaper is asking, asked from this end.
   void noteOutbound() => _lastOutboundMs = _now();
 
+  /// What the panel would acknowledge if it beat right now.
+  Map<String, int> _ackNow() => _ackSource?.call() ?? const {};
+
+  static bool _sameAck(Map<String, int> a, Map<String, int> b) {
+    if (a.length != b.length) return false;
+    for (final entry in a.entries) {
+      if (b[entry.key] != entry.value) return false;
+    }
+    return true;
+  }
+
   void _arm() {
     _beat?.cancel();
+    // "Unchanged since the last beat" starts meaning something here and not
+    // before: see [_lastAckSent].
+    _lastAckSent = _ackNow();
     // The one Timer.periodic in this package's lib/, and the named carve-out
     // in no_retry_test.dart's pin. It schedules a liveness frame and it can
     // schedule nothing else: see this library's doc.
@@ -303,7 +347,7 @@ final class HeartbeatPump {
   ///    is not there is buffered without bound and silently lost;
   ///  * no peer — `callWithDeadline` throws `LinkDown` **synchronously** for a
   ///    null peer, and catching that would be using an exception as a gate;
-  ///  * recent traffic — see [noteOutbound]; the gateway is already satisfied.
+  ///  * recent traffic **and a moving ack** — see [noteOutbound] and below.
   ///
   /// The traffic gate is written as an unsigned window rather than a bare
   /// `< period`: a *negative* elapsed reading is not "traffic within the
@@ -311,11 +355,58 @@ final class HeartbeatPump {
   /// moved is to beat. [_now] is monotonic by default so the branch is unused
   /// in production, but the seam is injectable and a seam that can be handed a
   /// wall clock will be.
+  ///
+  /// ## Why traffic alone stopped being enough (§6)
+  ///
+  /// **A panel busy *writing* has proved nothing about whether it is
+  /// *reading*.** Answering a jog button and decoding `u` frames are different
+  /// code paths, so the skip rule above — correct for every panel that is
+  /// keeping up — silenced precisely the panel the delivery verdict was built
+  /// to catch: it sent no beats, so it sent no ack, so the gateway had nothing
+  /// to judge it by and fell back on a 20–40 s pong timeout.
+  ///
+  /// The rule is now: beat when the wire has been quiet for a period **or**
+  /// when the ack this beat would carry has not moved since the last one.
+  /// Skip only when there was recent traffic **and** the ack has moved.
+  ///
+  /// **`16-CONTEXT.md` says this both ways round in consecutive sentences and
+  /// the other way is wrong.** An *unchanged* ack is the signal that the panel
+  /// may have stopped reading, and therefore the one case where the gateway
+  /// most needs to hear from it; skipping on an unchanged ack would silence
+  /// the stuck reader again by a shorter road. `heartbeat_test.dart`'s
+  /// `_ackMoving` and `_ackFrozen` arms are opposite outcomes on identical
+  /// traffic so that the wrong reading cannot pass.
+  ///
+  /// **No storm is available, structurally.** Both halves are evaluated inside
+  /// the one `Timer.periodic(period)`, so the narrowed gate can only ever
+  /// restore the un-skipped rate — 30 beats/min at shipping numbers, the
+  /// ceiling §2.5 models and `heartbeat_test.dart` measures rather than
+  /// argues.
   void _sendBeat() {
     if (_disposed) return;
     if (!_isReady()) return;
+    final ack = _ackNow();
+    final ackMoved = !_sameAck(ack, _lastAckSent);
+    // Every tick, not only the ones that send. See [_lastAckSent].
+    _lastAckSent = ack;
+    // **An absent ack is not "an ack that has not moved".** §6's rule reads
+    // literally as "beat whenever the ack has not moved", and an empty map
+    // never moves — which would put every busy panel holding no pages back on
+    // a full-rate heartbeat, the cost `noteOutbound` exists to avoid, in
+    // exchange for telling the gateway a number it cannot act on. A panel with
+    // nothing to acknowledge has no delivery to be judged on: `ackedSeq` stays
+    // null for it and the delivery verdict skips it by design. So the frozen
+    // ack only *forces* a beat when there is an ack to carry.
+    //
+    // Caught by `heartbeat_test.dart`'s pre-existing skip arm, which went from
+    // 0 beats to 7 under the literal reading.
+    final ackWorthSending = ack.isNotEmpty && !ackMoved;
     final sinceOutbound = _now() - _lastOutboundMs;
-    if (sinceOutbound >= 0 && sinceOutbound < period.inMilliseconds) return;
+    if (sinceOutbound >= 0 &&
+        sinceOutbound < period.inMilliseconds &&
+        !ackWorthSending) {
+      return;
+    }
     final peer = _peer();
     if (peer == null) return;
 
@@ -339,9 +430,14 @@ final class HeartbeatPump {
     // `_retirePeer` nulls `_peer` before `_enter(down)` in one synchronous
     // statement sequence, so the null check above covers the whole window —
     // but the invariant that makes it unreachable lives in another file.
+    //
+    // `PingParams.toJson` omits the map when there is nothing to acknowledge,
+    // so a panel holding no pages beats with the same 47-byte frame it always
+    // did and a gateway too old to read an ack sees no change at all.
     unawaited(Future.sync(() => callWithDeadline(
           () => peer,
           Methods.ping,
+          params: PingParams(ack: ack).toJson(),
           deadline: config.controlDeadline,
         )).then((_) {}, onError: (Object _) {}));
   }

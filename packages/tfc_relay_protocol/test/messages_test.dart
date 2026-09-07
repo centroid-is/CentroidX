@@ -601,6 +601,92 @@ void main() {
     });
   });
 
+  /// The delivery ack (`16-02-DECISION.md` §5.1). `ping` grows one optional
+  /// params object carrying, per subscription, the highest sequence the client
+  /// has actually **applied** — the numerator of the gap the gateway's
+  /// slow-consumer verdict has been computing against a null since 16-08.
+  ///
+  /// **Every arm here is a tolerance arm, and that is the design.** A `ping`
+  /// is the one frame that must never fail: it is what stops the reaper, so a
+  /// decode that throws on a malformed ack would convert a client with a
+  /// cosmetic bug into a client that is disconnected every heartbeat. The rule
+  /// §5.1 sets is that each malformation degrades to *no ack for that
+  /// subscription* and never to an exception — so the beat still lands, still
+  /// moves the deadline, and the gateway simply learns nothing about delivery
+  /// from it. That is the same answer it gets from a panel too old to send one.
+  group('PingParams — the delivery ack on the wire', () {
+    test('round-trips the applied sequence per subscription', () {
+      const p = PingParams(ack: {'page-1': 10432, 'pane-motor-3': 88});
+      expect(p.toJson(), {
+        'ack': {'page-1': 10432, 'pane-motor-3': 88}
+      });
+      final r = PingParams.fromJson(viaJson(p.toJson()));
+      expect(r.ack, {'page-1': 10432, 'pane-motor-3': 88});
+    });
+
+    test('a ping with no ack at all stays valid, for ever', () {
+      // §5.1's compatibility promise: the gateway and the panels do not ship
+      // together, so a beat from a build that predates this field must remain
+      // an ordinary beat rather than becoming a refusal.
+      expect(const PingParams().ack, isEmpty);
+      expect(PingParams.fromJson(const {}).ack, isEmpty);
+      expect(PingParams.fromJson(const {'futureField': 123}).ack, isEmpty);
+      // And it does not put an empty object on the wire to say nothing with.
+      expect(const PingParams().toJson(), isEmpty);
+    });
+
+    test('a non-map ack degrades to no ack, rather than throwing', () {
+      for (final poison in <Object?>[
+        'page-1',
+        42,
+        <String>['page-1'],
+        null,
+        true,
+      ]) {
+        expect(PingParams.fromJson({'ack': poison}).ack, isEmpty,
+            reason: 'an ack of ${poison.runtimeType} must cost the beat '
+                'nothing: a ping that throws is a panel the reaper collects '
+                'for a malformed optional field');
+      }
+    });
+
+    test('a non-integer sequence drops that subscription and keeps the rest',
+        () {
+      final r = PingParams.fromJson(const {
+        'ack': {
+          'page-1': 'ten thousand',
+          'page-2': null,
+          'page-3': 1.5,
+          'page-4': <String, Object?>{},
+          'page-5': 7,
+        }
+      });
+      expect(r.ack, {'page-5': 7},
+          reason: 'each bad entry degrades on its own — one unparseable '
+              'subscription must not blind the gateway to the four beside it');
+    });
+
+    test('a 1e999 sequence is dropped, not rounded into an ack', () {
+      // The decode poison this codebase defuses at every boundary: jsonDecode
+      // turns 1e999 into Infinity silently, and `Infinity.toInt()` throws
+      // inside whatever `try` the caller did not write. Refusing anything that
+      // is not already an `int` defuses it here by construction — and refusing
+      // rather than clamping matters, because a clamped Infinity is
+      // `sentSeq`, which is an ack the client never sent claiming it is
+      // perfectly caught up.
+      final decoded =
+          jsonDecode('{"ack":{"page-1":1e999}}') as Map<String, Object?>;
+      expect(PingParams.fromJson(decoded).ack, isEmpty);
+    });
+
+    test('a non-string subscription name is dropped', () {
+      final decoded = jsonDecode('{"ack":{"7":3}}') as Map<String, Object?>;
+      // JSON object keys are strings, so this is what an integer-keyed ack
+      // actually arrives as, and it is a legal subscription name to look up.
+      expect(PingParams.fromJson(decoded).ack, {'7': 3});
+    });
+  });
+
   test('Icelandic strings survive every shape they can appear in', () {
     const name = 'Þorskflök í raspi';
     final u = UpdateParams(

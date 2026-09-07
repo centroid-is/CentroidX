@@ -109,22 +109,38 @@
 /// documented as defending against, and it was reliably tripping on panels that
 /// were fine.
 ///
-/// **SRV-04's status, and it is still not "met".** The half that was silently
-/// hurting the plant is closed: no healthy page is evicted for producing, and
-/// no PLC-reconnect burst takes every panel down at once. The half this
-/// paragraph was written about — converting a stuck reader's silent heap growth
-/// into a prompt, visible reconnect — has a detector that is **built, pinned by
-/// `slow_consumer_test.dart`, and not yet fed**. `ping` does not carry an `ack`
-/// map yet: the DTO belongs in `tfc_relay_protocol`'s `messages.dart` and the
-/// ingestion in `RelaySession._ping`, and both files were outside 16-08's
-/// fence. Until they land, `ackedSeq` is null for every session in production,
-/// the delivery verdict skips every session by design (an un-acking client is
-/// an old client, never a stall), and a stuck reader is still detected only by
-/// the heartbeat deadline and the platform's pong timeout — 20–40 s at the
-/// shipping `pingInterval`, median 33 s. That is exactly where it was before,
-/// so nothing regressed; but a reader should not take the presence of the
-/// mechanism for the presence of the defence. See 16-08's SUMMARY for the two
-/// lines that close it.
+/// **SRV-04's status: both halves are now closed, and the wire is connected.**
+/// The half that was silently hurting the plant went first — no healthy page is
+/// evicted for producing, and no PLC-reconnect burst takes every panel down at
+/// once (16-08). The half this paragraph was written about, converting a stuck
+/// reader's silent heap growth into a prompt visible reconnect, was left with a
+/// detector that was **built, pinned, and not fed**: `ping` carried no `ack`
+/// map, so `ackedSeq` was null for every session in production and the verdict
+/// skipped every one of them. 16-08b closed that in three places —
+/// `PingParams` (`tfc_relay_protocol`'s `messages.dart`), ingestion in
+/// `RelaySession._ping`, and the client half that actually sends it
+/// (`HeartbeatPump` + `RemoteStateMan`).
+///
+/// **The client half was not optional, and this is the part worth remembering.**
+/// The pump skips a beat whenever the wire has carried anything recently, so a
+/// *busy* panel sends no pings at all — and a panel busy **writing** has proved
+/// nothing about whether it is **reading**. The detector would have stayed
+/// unfed for exactly the population it was built for. §6's narrowed rule is
+/// what closes it: beat when the wire has been quiet **or** when the ack this
+/// beat would carry has not moved. `delivery_ack_test.dart` evicts a panel that
+/// keeps beating with a frozen ack, over a real socket, and
+/// `heartbeat_test.dart` reads the gap off this server's own buffer with a real
+/// `RemoteStateMan` on the far end.
+///
+/// **What is still true, and must not be read as more than it is.** Nothing
+/// here observes the socket: `dart:io` still has no `bufferedAmount`, and the
+/// gateway can see a backlog only *when the panel tells it*. The ack is a claim
+/// by the party being judged, trusted exactly as far as `recordAck`'s clamp
+/// allows — a client cannot over-report its way out of an eviction, and may
+/// under-report its way into one, which is harmless and deliberate. And an
+/// un-acking client is still never judged (an old panel, never a stall), so a
+/// mixed fleet mid-upgrade is governed by the heartbeat deadline and the pong
+/// timeout exactly as it was: 20–40 s, median 33 s.
 library;
 
 import 'dart:async';
