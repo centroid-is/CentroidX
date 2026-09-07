@@ -325,7 +325,7 @@ class ConfigItemTable extends Table {
   /// rows are the only rows a local SQLite file will ever hold.
   TextColumn get scope => text()();
 
-  /// The entity this one belongs to — an asset's page path — or null when the
+  /// The entity this one belongs to — an asset's page id — or null when the
   /// kind has no parent. **No `REFERENCES`**, deliberately: see
   /// `ConfigItem.parentId`'s doc. An asset outlives its page during a move,
   /// and a constraint would turn a reorder into a delete and re-insert that

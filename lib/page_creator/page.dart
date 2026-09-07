@@ -592,6 +592,15 @@ class PageManager {
     return result;
   }
 
+  /// A path for a page whose payload has none, derived from whatever key it
+  /// arrived under.
+  ///
+  /// Two path-less pages would otherwise both key on `''` and one would
+  /// silently overwrite the other. Public because `page_codec.dart`'s
+  /// `pagesOf` reassembles the same map from rows and has to reach the same
+  /// key for the same page — one implementation, not two that can drift.
+  static String fallbackPathFor(String key) => '/${_slugify(key)}';
+
   /// Generates a slug path from a label, used for migrating old data.
   static String _slugify(String text) {
     return text
@@ -612,8 +621,9 @@ class PageManager {
       final path = page.menuItem.path;
       // Use the path from menu_item as the key.
       // For backward compat: if path is empty (old sections), generate one.
-      final key =
-          (path != null && path.isNotEmpty) ? path : '/${_slugify(entry.key)}';
+      final key = (path != null && path.isNotEmpty)
+          ? path
+          : fallbackPathFor(entry.key);
       // If the page had an empty path, update the menuItem with the generated path
       if (path == null || path.isEmpty) {
         result[key] = page.copyWith(menuItem: page.menuItem.copyWith(path: key));

@@ -117,10 +117,14 @@ bool samePayload(String? a, String? b) {
 /// and are therefore permanent: a change row must still be readable years
 /// after the code that wrote it. Add values; never rename one.
 enum ConfigKind {
-  /// One navigable page. Id is its path (`/roe`).
+  /// One navigable page. Id is a minted handle, not the page's path — the
+  /// path is edited, and a path-named row would lose the page's history and
+  /// restamp every asset on it at every rename. The path lives in the
+  /// payload's `menu_item`.
   page('page'),
 
-  /// One top-level asset on a page. Id is [Asset.id]; parent is the page path.
+  /// One top-level asset on a page. Id is [Asset.id]; parent is the page's
+  /// id.
   asset('asset'),
 
   /// One entry of `KeyMappings.nodes`. Id is the subscription key.
@@ -229,14 +233,14 @@ class ConfigItem {
   /// What this row describes.
   final ConfigKind kind;
 
-  /// The entity's identity within its [kind]: a page path, an `Asset.id`, a
-  /// mapping key, a preference key.
+  /// The entity's identity within its [kind]: an `AssetPage.id`, an
+  /// `Asset.id`, a mapping key, a preference key.
   final String id;
 
   /// Who owns the row.
   final ConfigScope scope;
 
-  /// The entity this one belongs to — an asset's page path — or null when the
+  /// The entity this one belongs to — an asset's page id — or null when the
   /// kind has no parent.
   ///
   /// Deliberately not a foreign key. Assets outlive the page they were on
