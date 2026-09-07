@@ -153,6 +153,25 @@ void main() {
               'it should print when it does');
     });
 
+    test('the data-service names and the access names do not collide', () {
+      // This file is the one that already owns "the wire names do not
+      // collide", so the third sibling's disjointness is asserted from here as
+      // well as from access_api_test.dart. One mutation reddens two suites,
+      // which is what a reviewer wants from a shadowed handler: the gateway
+      // registers both names into one table and json_rpc_2 dispatches one of
+      // them, with nothing anywhere saying which.
+      expect(DataServiceMethods.all, isNotEmpty,
+          reason: 'the anti-vacuity half — an empty set is disjoint from '
+              'everything and asserts nothing');
+      expect(AccessMethods.all, isNotEmpty,
+          reason: 'the other half of the same');
+      expect(DataServiceMethods.all.intersection(AccessMethods.all), isEmpty,
+          reason: 'a name in both tables is a handler registered twice; the '
+              'second registration silently shadows the first and the failure '
+              'surfaces in the plant as a method doing the wrong thing rather '
+              'than as a method that is missing');
+    });
+
     test('the changed notification is named but is not a request', () {
       expect(DataServiceMethods.preferencesChanged, 'preferences.changed',
           reason: 'the notification keeps its wire spelling; the server sends '

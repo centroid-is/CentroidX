@@ -649,6 +649,44 @@ final class RemoteStateMan implements StateManApi {
   late final ClientPreferencesApi preferences =
       ClientPreferencesApi(_dataServiceCall);
 
+  // ------------------------------------------------------- the access families
+  //
+  // Four getters and no proxies. 17-08 adds four to `client_sub_apis.dart`,
+  // following the four above exactly.
+
+  /// The one shape every access refusal on this class takes.
+  ///
+  /// **Not a proxy surfacing `-32601`**, which is what the four data services
+  /// did before Phase 10 and which the doc above calls "the honest answer".
+  /// It was honest then because the proxy existed and the *gateway* lacked the
+  /// handler, so method-not-found was a true report about the far end. Here
+  /// neither exists: there is no `AccessMethods` handler table on the gateway
+  /// and no client proxy to send with, so a round trip would have to be
+  /// invented before it could fail usefully. The member that is missing says so
+  /// where the caller is.
+  ///
+  /// Refusing on the client is safe in the only direction that matters:
+  /// authorisation is enforced server-side, so a client that refuses early can
+  /// remove a capability and never grant one.
+  Never _noAccessProxy(String member) =>
+      throw UnsupportedError('RemoteStateMan.$member is not available: this '
+          'client has no proxy for the $member family and the gateway has no '
+          'handler table for it. Plan 17-08 adds both. An empty answer would '
+          'draw a panel a blank audit trail, or an empty role list, for a '
+          'plant that has plenty of each.');
+
+  @override
+  AccessTemplateApi get accessTemplates => _noAccessProxy('accessTemplates');
+
+  @override
+  AccessAdminApi get accessAdmin => _noAccessProxy('accessAdmin');
+
+  @override
+  AuditApi get audit => _noAccessProxy('audit');
+
+  @override
+  BackendConfigApi get backendConfig => _noAccessProxy('backendConfig');
+
   /// The request the sub-APIs are handed: the same barrier, the same deadline
   /// and the same peer-at-call-time capture as every other call this client
   /// makes.

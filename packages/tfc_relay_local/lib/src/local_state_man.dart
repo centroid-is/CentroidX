@@ -1537,6 +1537,55 @@ final class LocalStateMan implements StateManApi {
 
   final PreferenceStore? _preferences;
 
+  // ------------------------------------------------------- the access families
+  //
+  // The four getters plan 17-03 added to `StateManApi`. **No Phase 17 plan owns
+  // this file** (17-03's Finding F-C), so the decision is recorded here.
+
+  /// The one shape every access refusal on this class takes.
+  ///
+  /// **Unconditional, and that is what makes it different from the three
+  /// refusals above.** [timeseries], [historyViews] and [preferences] refuse
+  /// only when the gateway was composed without a database, and
+  /// `fanin_test.dart` proves each is composable as well — which is what makes
+  /// their absence a *deployment fact*. These four are not like that: this
+  /// package has no access store to compose, no constructor argument that could
+  /// carry one, and nothing in Phase 17 that adds one.
+  ///
+  /// The access stores live in `tfc_dart` (`lib/core/access/`, D-02) and are
+  /// served by `BackendStateMan`, which is the composition the backend actually
+  /// runs. `LocalStateMan` is the **plant leg** — DeviceClients and a
+  /// historian — and administering roles is not on it. So the answer here *is*
+  /// the refusal; nobody owes this file an implementation.
+  ///
+  /// An [UnsupportedError] and **never** an `UnimplementedError`.
+  /// `freeze_test.dart`'s `declaredUnimplementedMembers` is 0 and counts
+  /// members somebody still owes code for; putting these four in it would claim
+  /// a debt that does not exist. And since `UnimplementedError implements
+  /// UnsupportedError` (`dart:core errors.dart:595`), the wrong choice would be
+  /// invisible to every catch clause and visible only to that ledger — which is
+  /// why `access_refusal_test.dart` pins the distinction directly.
+  Never _noAccessStore(String member) =>
+      throw UnsupportedError('LocalStateMan.$member is not available: this '
+          'gateway serves the plant, not the access-control database. The '
+          'access stores live in tfc_dart (lib/core/access/) and are served by '
+          'BackendStateMan; a panel in gateway mode reaches them through the '
+          'backend composition, never through this leg. Nothing is missing '
+          'from this deployment — the answer is that this source does not '
+          'carry the $member family at all.');
+
+  @override
+  AccessTemplateApi get accessTemplates => _noAccessStore('accessTemplates');
+
+  @override
+  AccessAdminApi get accessAdmin => _noAccessStore('accessAdmin');
+
+  @override
+  AuditApi get audit => _noAccessStore('audit');
+
+  @override
+  BackendConfigApi get backendConfig => _noAccessStore('backendConfig');
+
   // ---------------------------------------------------------------- internals
 
   /// Establishes what the gateway can say about [key] before it is read.

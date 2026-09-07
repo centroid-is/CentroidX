@@ -334,6 +334,53 @@ final class PolicyStateMan implements StateManApi {
   PreferencesApi get preferences =>
       _PolicyPreferences(source.preferences, identityOf);
 
+  // ------------------------------------------------------- the access families
+  //
+  // The four getters 17-03 added, and the only four members of this class that
+  // do not delegate. That is the whole decision, so it is stated here rather
+  // than left to be inferred from four `throw`s.
+
+  /// The one shape every access refusal on this class takes.
+  ///
+  /// **Not a delegation, and this is the point.** Every other member here
+  /// forwards to [source] with a filter or a gate in front of it. There is no
+  /// gate for these four yet — 17-07 writes `_requireGroup` and the four
+  /// decorators behind it — and a getter that forwarded meanwhile would put
+  /// twenty-nine administration methods on the wire with nothing between them
+  /// and the store. `canSee`-as-absence and `requireOperate` are this file's
+  /// two existing shapes for "no"; a family that has neither yet gets this
+  /// third one, which is the fail-closed direction.
+  ///
+  /// **An [UnsupportedError] and deliberately not an `RpcException` with
+  /// [ServerErrorCodes.forbidden].** A `forbidden` is an *authorisation
+  /// verdict* — it says the caller's role does not allow this — and under D-05
+  /// every verdict writes an audit row naming a station and a role. That row
+  /// would be false: nothing has been decided about the caller here, and what
+  /// is absent is the gate itself. A false deny row is worse than a missing
+  /// one, because it is the kind a reviewer believes. `UnsupportedError` says
+  /// the composition is incomplete, which is the fact, and
+  /// `data_handlers.dart:216` already treats it as the survivable case.
+  Never _noAccessGate(String member) =>
+      throw UnsupportedError('PolicyStateMan.$member is not available: this '
+          'gateway has no access gate for the $member family, so the '
+          'decorator refuses rather than passing an ungated administration '
+          'surface through to its source. Plan 17-07 wires the group check '
+          '(AccessPolicy.groupForTemplate / groupForAdmin / '
+          'groupForBackendConfig) and replaces this. Not an authorisation '
+          'verdict: nothing was decided about the caller.');
+
+  @override
+  AccessTemplateApi get accessTemplates => _noAccessGate('accessTemplates');
+
+  @override
+  AccessAdminApi get accessAdmin => _noAccessGate('accessAdmin');
+
+  @override
+  AuditApi get audit => _noAccessGate('audit');
+
+  @override
+  BackendConfigApi get backendConfig => _noAccessGate('backendConfig');
+
   /// Delegates, and owns nothing of its own to release.
   ///
   /// The source is **one instance shared by every session** on this gateway

@@ -732,6 +732,22 @@ final class HarnessedBackendStateMan
   @override
   relay.PreferencesApi get preferences => _api.preferences;
 
+  // The four access families are forwarded like everything else, so what a
+  // case sees is whatever `BackendStateMan` decided — a refusal today. A
+  // refusal minted here instead would hide which object actually has nothing
+  // behind it, and would have to be un-minted when 17-06 composes them.
+  @override
+  relay.AccessTemplateApi get accessTemplates => _api.accessTemplates;
+
+  @override
+  relay.AccessAdminApi get accessAdmin => _api.accessAdmin;
+
+  @override
+  relay.AuditApi get audit => _api.audit;
+
+  @override
+  relay.BackendConfigApi get backendConfig => _api.backendConfig;
+
   @override
   Future<void> dispose() => _api.dispose();
 }

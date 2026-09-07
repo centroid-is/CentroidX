@@ -27,13 +27,28 @@
 /// path (design §4.7, HLTH-01) — there is no health method here because there
 /// is none on the wire — and are excluded from the freshness sweep (HLTH-02).
 ///
-/// Every member of `StateManApi` is now genuinely implemented: the four
-/// data-service sub-APIs are the in-memory implementations in
-/// `fake_data_services.dart`, injectable through the constructor so a driver
-/// can seed a browse tree or a recorded series without subclassing. No member
-/// is left throwing to name a plan that has not been written yet, and that
-/// absence is the property saying the interface has been contracted end to
-/// end — every area of the surface now has a case judging it.
+/// Every member of `StateManApi` **except the four access families** is
+/// genuinely implemented: the four data-service sub-APIs are the in-memory
+/// implementations in `fake_data_services.dart`, injectable through the
+/// constructor so a driver can seed a browse tree or a recorded series without
+/// subclassing. For those, no member is left throwing to name a plan that has
+/// not been written yet, and that absence is the property saying that part of
+/// the interface has been contracted end to end — every area of it has a case
+/// judging it.
+///
+/// The exception is stated rather than quietly absorbed. Plan 17-03 added
+/// `accessTemplates`, `accessAdmin`, `audit` and `backendConfig`, and **the
+/// contract suite has no case judging any of them yet** — 17-05 writes those
+/// cases and gives this fake the in-memory stores they judge. Until it does,
+/// the four refuse by name (`test/access_refusal_test.dart`).
+///
+/// Refusing rather than answering emptily is the same call this file's
+/// data-service getters made before plan 02-08, and it matters more here: this
+/// fake is the honest baseline the deliberately damaged variants in
+/// `broken_subscribe.dart` are measured against, so an in-memory access store
+/// invented before any case agreed on its semantics would be a baseline nobody
+/// chose. An `AuditApi` answering "no entries" would be a claim about a trail
+/// this object has never read.
 library;
 
 import 'dart:async';
@@ -1138,6 +1153,37 @@ class FakeStateMan
 
   @override
   PreferencesApi get preferences => _preferences;
+
+  // ------------------------------------------------------- the access families
+  //
+  // Four getters, no stores, and a refusal each. See the library doc for why
+  // this fake — whose whole argument is that it is not a mock — declines to
+  // invent in-memory semantics that no contract case has agreed on yet.
+
+  /// The one shape every access refusal on this class takes.
+  ///
+  /// Names the class, names the member, and says what would have to exist for
+  /// the member to answer. Deliberately not "not implemented": the member IS
+  /// implemented, and what is absent is the store behind it.
+  Never _noAccessStore(String member) =>
+      throw UnsupportedError('FakeStateMan.$member is not available: this fake '
+          'has no in-memory access store behind it. The contract suite has no '
+          'case judging the access families yet; plan 17-05 writes them and '
+          'gives this fake the store they judge. An empty answer now would be '
+          'a baseline no case agreed on, from an object that has never asked '
+          'anything.');
+
+  @override
+  AccessTemplateApi get accessTemplates => _noAccessStore('accessTemplates');
+
+  @override
+  AccessAdminApi get accessAdmin => _noAccessStore('accessAdmin');
+
+  @override
+  AuditApi get audit => _noAccessStore('audit');
+
+  @override
+  BackendConfigApi get backendConfig => _noAccessStore('backendConfig');
 
   /// Records samples, as the gateway's recorder would.
   ///

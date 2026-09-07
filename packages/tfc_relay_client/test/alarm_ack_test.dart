@@ -203,6 +203,14 @@ const Set<String> _expectedStateManApi = {
   'timeseries',
   'historyViews',
   'preferences',
+  // The four access families, added to the interface by plan 17-03. They are
+  // here for the same reason the four data services are: this copy exists to
+  // disagree with `api_surface_test.dart` out loud, and a copy that is merely
+  // stale disagrees for the wrong reason.
+  'accessTemplates',
+  'accessAdmin',
+  'audit',
+  'backendConfig',
   'dispose',
 };
 
@@ -447,16 +455,18 @@ void main() {
       final actual = _declaredMemberNames(StateManApi);
 
       expect(actual, _expectedStateManApi,
-          reason: 'the 49-member surface api_surface_test.dart:213-226 calls '
-              '"the access-control policy" is implemented by LocalStateMan and '
-              'exercised by a shared contract suite against both ends. An '
-              'acknowledge has no LocalStateMan meaning at all — on the backend '
-              'the alarm engine is reached directly — so putting it here would '
-              'oblige every implementation to answer for a capability only one '
-              'of them has');
-      expect(actual, hasLength(14),
+          reason: 'the surface api_surface_test.dart calls "the access-control '
+              'policy" is implemented by LocalStateMan and exercised by a '
+              'shared contract suite against both ends. An acknowledge has no '
+              'LocalStateMan meaning at all — on the backend the alarm engine '
+              'is reached directly — so putting it here would oblige every '
+              'implementation to answer for a capability only one of them has');
+      expect(actual, hasLength(18),
           reason: 'the count is written down so a same-size swap cannot slip '
-              'through as a coincidence');
+              'through as a coincidence. It moved from 14 to 18 when plan '
+              '17-03 added the four access families — and this copy going '
+              'stale is exactly the disagreement it exists to produce, so it '
+              'is updated deliberately rather than deleted');
       expect(actual, isNot(contains('ackAlarm')),
           reason: 'RemoteStateMan.ackAlarm is a public member that is '
               'deliberately off the interface, the way _write\'s hold flag is. '
