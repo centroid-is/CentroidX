@@ -311,10 +311,17 @@ class ConfigStore {
 
   /// Completes when every sync task queued so far has been applied.
   ///
-  /// Tests await it. The app does not have to: the store's stream and its
+  /// The app does not need this to *serve* configuration — the stream and the
   /// snapshot are the interface, and both are only ever updated at the end of
-  /// one of these tasks.
-  @visibleForTesting
+  /// one of these tasks. It needs it to answer one question: **is the shared
+  /// store empty, or has this station simply not read it yet?** The snapshot
+  /// is filled from the local mirror, so a fresh station attached to a fully
+  /// configured plant holds nothing until the first reconcile lands. A boot
+  /// seed that did not wait here would write its example key into a plant with
+  /// four hundred of its own.
+  ///
+  /// A store with no remote settles immediately: there is nothing queued and
+  /// nothing coming.
   Future<void> get syncSettled => _sync?.settled ?? Future<void>.value();
 
   /// Consumes the shared change log from the watermark — the fast path a

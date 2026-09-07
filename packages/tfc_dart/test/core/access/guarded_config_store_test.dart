@@ -207,16 +207,24 @@ void main() {
     });
 
     test('the row is written after the store returns, never before', () async {
+      // The ordering the class doc commits to, asserted rather than asserted
+      // about: the sink counts the shared rows at the instant it is called. A
+      // row written first would see zero — and would be claiming a save that
+      // an offline store or a lost compare-and-swap could still refuse.
       attach();
-      final guard = newGuard();
+      final observed = <int>[];
+      final guard = GuardedConfigStore(
+        inner: store,
+        policy: kPolicy,
+        session: () => session,
+        audit: _ObservingSink(() async => (await remoteMappingRows()).length,
+            observed),
+        station: kStation,
+      );
 
-      // The store's own rows land first; the audit row is written once the
-      // shared write has actually committed. See the class doc for the
-      // consequence this ordering accepts.
       await guard.saveKeyMappings(mappingsOf({'A.Key': 'gvl.A'}));
 
-      expect(await remoteMappingRows(), hasLength(1));
-      expect(sink.rows, hasLength(1));
+      expect(observed, [1]);
     });
   });
 
@@ -461,6 +469,17 @@ void main() {
       }
     });
   });
+}
+
+/// An [AuditSink] that records what the world looked like when it was called.
+class _ObservingSink implements AuditSink {
+  _ObservingSink(this._observe, this.observed);
+
+  final Future<int> Function() _observe;
+  final List<int> observed;
+
+  @override
+  Future<void> record(AuditRecord entry) async => observed.add(await _observe());
 }
 
 /// One recorded call to [GuardedConfigStore.save].
