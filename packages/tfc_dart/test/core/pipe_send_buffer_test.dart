@@ -63,7 +63,8 @@ final class _PipeError {
 final class _NonConflatingSendBuffer {
   final _messages = <(String, relay.DynamicValue)>[];
 
-  void putValue(String key, relay.DynamicValue value) =>
+  void putValue(String key, relay.DynamicValue value,
+          {required bool sourceTimeSubstituted}) =>
       _messages.add((key, value));
 
   List<(String, relay.DynamicValue)> drain() {
@@ -80,7 +81,7 @@ void main() {
       final buffer = PipeSendBuffer();
 
       for (var i = 0; i < 200; i++) {
-        buffer.putValue('a', _sample(i));
+        buffer.putValue('a', _sample(i), sourceTimeSubstituted: false);
       }
 
       final frame = buffer.drain();
@@ -98,9 +99,9 @@ void main() {
 
     test('one value per key across keys; a second drain is empty', () {
       final buffer = PipeSendBuffer();
-      buffer.putValue('a', _sample(1));
-      buffer.putValue('b', _sample(2));
-      buffer.putValue('c', _sample(3));
+      buffer.putValue('a', _sample(1), sourceTimeSubstituted: false);
+      buffer.putValue('b', _sample(2), sourceTimeSubstituted: false);
+      buffer.putValue('c', _sample(3), sourceTimeSubstituted: false);
 
       final first = buffer.drain();
       expect(first.values.keys, unorderedEquals(['a', 'b', 'c']));
@@ -123,8 +124,9 @@ void main() {
       final buffer = PipeSendBuffer();
       // An open-circuit 4-20 mA reading: the sanitizing ctor nulls the payload
       // and flags badNonFinite.
-      buffer.putValue(
-          'a', relay.DynamicValue(value: double.nan, sourceTime: _t0));
+      buffer.putValue('a',
+          relay.DynamicValue(value: double.nan, sourceTime: _t0),
+          sourceTimeSubstituted: false);
       buffer.putQuality('a', relay.Quality.good);
 
       final a = buffer.drain().values['a']!;
@@ -137,7 +139,7 @@ void main() {
 
     test('putQuality replaces when the pending value is finite', () {
       final buffer = PipeSendBuffer();
-      buffer.putValue('a', _sample(7));
+      buffer.putValue('a', _sample(7), sourceTimeSubstituted: false);
       buffer.putQuality('a', relay.Quality.uncertainLastKnown);
 
       final a = buffer.drain().values['a']!;
@@ -149,7 +151,7 @@ void main() {
     test('putValue supersedes a pending quality-only transition', () {
       final buffer = PipeSendBuffer();
       buffer.putQuality('a', relay.Quality.badCommFault);
-      buffer.putValue('a', _sample(4));
+      buffer.putValue('a', _sample(4), sourceTimeSubstituted: false);
 
       final a = buffer.drain().values['a']!;
       expect(a.value, 4);
@@ -159,8 +161,8 @@ void main() {
 
     test('remove retires the key: it is absent from the drained values', () {
       final buffer = PipeSendBuffer();
-      buffer.putValue('a', _sample(1));
-      buffer.putValue('b', _sample(2));
+      buffer.putValue('a', _sample(1), sourceTimeSubstituted: false);
+      buffer.putValue('b', _sample(2), sourceTimeSubstituted: false);
       buffer.remove('a');
 
       final frame = buffer.drain();
@@ -171,9 +173,9 @@ void main() {
 
     test('putValue after remove wins (the key came back in the same tick)', () {
       final buffer = PipeSendBuffer();
-      buffer.putValue('a', _sample(1));
+      buffer.putValue('a', _sample(1), sourceTimeSubstituted: false);
       buffer.remove('a');
-      buffer.putValue('a', _sample(9));
+      buffer.putValue('a', _sample(9), sourceTimeSubstituted: false);
 
       expect(buffer.drain().values['a']!.value, 9);
     });
@@ -185,9 +187,9 @@ void main() {
       final buffer = PipeSendBuffer();
       const boom = _PipeError('k', 'Bad_CommunicationError');
 
-      buffer.putValue('k', _sample(1));
+      buffer.putValue('k', _sample(1), sourceTimeSubstituted: false);
       buffer.putPriority(boom);
-      buffer.putValue('k', _sample(2));
+      buffer.putValue('k', _sample(2), sourceTimeSubstituted: false);
 
       final frame = buffer.drain();
 
@@ -215,7 +217,7 @@ void main() {
         buffer.putPriority(e);
       }
       // Telemetry interleaved between them must not reorder the lane.
-      buffer.putValue('k', _sample(5));
+      buffer.putValue('k', _sample(5), sourceTimeSubstituted: false);
 
       final frame = buffer.drain();
       expect(frame.priority.map((e) => (e as _PipeError).detail),
@@ -245,7 +247,7 @@ void main() {
     test('remove() cancels pending telemetry but not the retirement notice',
         () {
       final buffer = PipeSendBuffer();
-      buffer.putValue('k', _sample(1));
+      buffer.putValue('k', _sample(1), sourceTimeSubstituted: false);
       buffer.putPriority(const _PipeError('k', 'key retired'));
       buffer.remove('k');
 
@@ -267,8 +269,8 @@ void main() {
 
       for (var i = 0; i < 200; i++) {
         final sample = _sample(i);
-        real.putValue('a', sample);
-        sabotage.putValue('a', sample);
+        real.putValue('a', sample, sourceTimeSubstituted: false);
+        sabotage.putValue('a', sample, sourceTimeSubstituted: false);
       }
 
       final realCount = real.drain().values.length;
@@ -295,8 +297,8 @@ void main() {
       for (var i = 0; i < 200; i++) {
         for (final key in ['a', 'b', 'c']) {
           final sample = _sample(i);
-          real.putValue(key, sample);
-          sabotage.putValue(key, sample);
+          real.putValue(key, sample, sourceTimeSubstituted: false);
+          sabotage.putValue(key, sample, sourceTimeSubstituted: false);
         }
       }
 

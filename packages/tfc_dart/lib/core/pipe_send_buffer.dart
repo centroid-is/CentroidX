@@ -56,7 +56,27 @@ final class PipeFrame {
   /// worker edge and never enters this buffer.
   final Map<String, relay.DynamicValue> values;
 
-  const PipeFrame(this.priority, this.values);
+  /// Which of [values]' keys carry a `sourceTime` the **backend** put there,
+  /// not the source.
+  ///
+  /// `relay.DynamicValue.sourceTime` is non-null for every one of them —
+  /// `translateOpcUaSample` substitutes its arrival instant for an unstamped
+  /// sample and must keep doing so, because that field also becomes `t:` on the
+  /// wire and feeds `RemoteStateMan`'s superseded-readback guard. So the
+  /// instant is present and useful, and the *claim* about where it came from
+  /// lives here instead of being guessed at the far end.
+  ///
+  /// **Null means the frame states nothing, and a frame that states nothing is
+  /// read as all-substituted.** That is the safe direction and it is not a
+  /// formality: the alternative default would have an unaware producer silently
+  /// asserting plant provenance for every value it emits. Nothing on the
+  /// production path relies on it — [PipeSendBuffer.drain] always supplies a
+  /// real set, and [PipeSendBuffer.putValue] cannot be called without stating
+  /// the flag — so the null case is for frames minted directly, which are
+  /// either value-less (a write outcome) or a test's.
+  final Set<String>? substitutedStamps;
+
+  const PipeFrame(this.priority, this.values, [this.substitutedStamps]);
 
   /// True when this tick has nothing to send. A worker that drains an empty
   /// frame sends nothing at all, which is what makes an idle pipe silent
@@ -72,6 +92,10 @@ final class PipeSendBuffer {
   final _priority = <Object?>[];
   final _values = <String, relay.DynamicValue>{};
 
+  /// Keys in [_values] whose `sourceTime` the backend supplied. Conflated
+  /// alongside the value it describes — see [PipeFrame.substitutedStamps].
+  final _substituted = <String>{};
+
   /// How many messages the next [drain] would produce. Diagnostics only — no
   /// policy reads this (there is no disconnect verdict here to feed).
   int get pendingCount => _priority.length + _values.length;
@@ -81,8 +105,25 @@ final class PipeSendBuffer {
   /// A whole sample supersedes everything pending for that key — an earlier
   /// value, a pending quality-only transition (the new sample carries its own
   /// quality), and a pending removal (the key came back inside the same tick).
-  void putValue(String key, relay.DynamicValue value) {
+  ///
+  /// [sourceTimeSubstituted] says whether `value.sourceTime` is the source's
+  /// own instant or one this backend put there. It is **required** rather than
+  /// defaulted on purpose: a caller that forgets it would be asserting plant
+  /// provenance by omission, which is the exact failure this parameter exists
+  /// to end. It conflates with the value — the latest put wins for both, so a
+  /// key that was substituted and is then genuinely stamped inside one tick
+  /// does not stay flagged.
+  void putValue(
+    String key,
+    relay.DynamicValue value, {
+    required bool sourceTimeSubstituted,
+  }) {
     _values[key] = value;
+    if (sourceTimeSubstituted) {
+      _substituted.add(key);
+    } else {
+      _substituted.remove(key);
+    }
   }
 
   /// A quality transition with no new reading behind it.
@@ -106,7 +147,13 @@ final class PipeSendBuffer {
   void putQuality(String key, relay.Quality quality) {
     final pending = _values[key];
     if (pending == null) {
+      // The buffer mints this one itself, so nobody sourced it. It carries no
+      // `sourceTime` at all today, but the flag is set regardless: the claim
+      // "the source said when" must never be made by omission, and a later
+      // change that gives this sample an instant must not silently start
+      // making it.
       _values[key] = relay.DynamicValue(value: null, quality: quality);
+      _substituted.add(key);
       return;
     }
     final composed = pending.quality == relay.Quality.badNonFinite
@@ -133,6 +180,9 @@ final class PipeSendBuffer {
   /// pending telemetry.
   void remove(String key) {
     _values.remove(key);
+    // The provenance describes a value that is no longer going anywhere. Left
+    // behind it would name a key the frame does not carry.
+    _substituted.remove(key);
   }
 
   /// Errors, worker death, ready/epoch bumps, write outcomes: appended
@@ -153,6 +203,8 @@ final class PipeSendBuffer {
     _priority.clear();
     final values = Map<String, relay.DynamicValue>.of(_values);
     _values.clear();
-    return PipeFrame(priority, values);
+    final substituted = Set<String>.of(_substituted);
+    _substituted.clear();
+    return PipeFrame(priority, values, substituted);
   }
 }

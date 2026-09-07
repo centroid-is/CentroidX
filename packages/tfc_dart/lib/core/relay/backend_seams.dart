@@ -31,6 +31,7 @@
 /// import here would let a reader believe the wrong one.
 library;
 
+import 'package:tfc_dart/core/alarm_stamp.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
 /// Everything `BackendStateMan` needs in order to answer a read honestly.
@@ -39,6 +40,39 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 /// `ValueStore` (plan 13-03). Reads are served from that cache and are
 /// synchronous by construction — never a reach across the isolate port that
 /// could park the caller, which is the whole point of Phase 12.
+/// A reading and where the instant on it came from, as one object.
+///
+/// **The pairing exists so it cannot be un-paired.** `relay.DynamicValue`
+/// carries a `sourceTime` that is non-null whether the source stamped it or the
+/// backend substituted its own arrival instant, and the two are
+/// indistinguishable by inspection — that is the whole defect ALRM-03 closes.
+/// The provenance therefore travels *with* the value from the pipe to the alarm
+/// writer, rather than being looked up per key at the far end where the answer
+/// could belong to a newer reading than the one in hand.
+final class StampedValue {
+  const StampedValue(this.value, this.stampSource);
+
+  /// The reading, exactly as every other consumer sees it.
+  final relay.DynamicValue value;
+
+  /// Whether [relay.DynamicValue.sourceTime] on [value] is the source's own
+  /// instant or one this backend put there.
+  final AlarmTsSource stampSource;
+
+  /// The instant to hand [resolveAlarmStamp], or **null** when there is no
+  /// source instant to offer.
+  ///
+  /// This is the one place the flag is turned back into D-2's existing
+  /// mechanism: a null in the bound set poisons it and the row is stamped from
+  /// the backend's own clock, labelled honestly. Written here rather than at
+  /// the call site so that "a substitute is not a source time" is stated once.
+  DateTime? get sourceTimeIfSourced =>
+      stampSource == AlarmTsSource.plant ? value.sourceTime : null;
+
+  @override
+  String toString() => 'StampedValue(${value.value}, ${stampSource.wireName})';
+}
+
 abstract interface class BackendValueSource {
   /// A handle for [key] whose value changes in place.
   ///
@@ -52,6 +86,18 @@ abstract interface class BackendValueSource {
   /// cancelling is what releases it — the refcount lives behind this seam, not
   /// in the composer.
   Stream<relay.DynamicValue> subscribe(String key);
+
+  /// The same stream, each emission paired with the provenance of its instant.
+  ///
+  /// For the alarm engine, which is the only consumer that must not confuse a
+  /// substituted instant with a plant one. Everything else keeps using
+  /// [subscribe]: a mimic box renders the same number either way, and widening
+  /// the type every widget sees to carry a fact only one consumer acts on would
+  /// be worse than the duplication.
+  ///
+  /// The pair must be built at EMISSION — inside the store's synchronous
+  /// notification — not read back by the consumer. See [StampedValue].
+  Stream<StampedValue> subscribeStamped(String key);
 
   /// The last known value for [key], or null when none is known yet.
   ///

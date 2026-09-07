@@ -420,7 +420,8 @@ void main() {
       final transitions = <AlarmRuleTransition>[];
       final watcher = AlarmRuleWatcher(
         values: values,
-        expression: ExpressionConfig(value: Expression(formula: 'a > 10 && b')),
+        expression:
+            ExpressionConfig(value: Expression(formula: 'a > 10 AND b > 10')),
         ruleIndex: 0,
         clock: clock.call,
         onTransition: transitions.add,
@@ -434,7 +435,7 @@ void main() {
           AlarmTsSource.plant);
       values.pushStamped(
           'b',
-          relay.DynamicValue(value: true, sourceTime: _arrivedAt),
+          relay.DynamicValue(value: 20.0, sourceTime: _arrivedAt),
           AlarmTsSource.backendReceipt);
       await settle();
 

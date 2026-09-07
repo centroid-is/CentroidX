@@ -280,6 +280,18 @@ final class BackendFreshnessSweep implements BackendValueSource {
 
   // ---------------------------------------------------------- the passthrough
 
+  /// Straight through to the wrapped source.
+  ///
+  /// **Not decorated, and that is deliberate.** This sweep badges a value's
+  /// *quality* stale; it has nothing to say about where the instant on it came
+  /// from, and re-emitting through its own listenable would mean re-deriving
+  /// the provenance at a point that does not know it. Where the stamp came from
+  /// is a fact about the reading, decided at the pipe, and it belongs to the
+  /// object that recorded it.
+  @override
+  Stream<StampedValue> subscribeStamped(String key) =>
+      _values.subscribeStamped(key);
+
   @override
   relay.DynamicValue? read(String key) => _values.read(key);
 

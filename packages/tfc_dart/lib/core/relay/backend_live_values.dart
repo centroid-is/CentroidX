@@ -175,6 +175,11 @@ final class BackendLiveValues implements BackendValueSource {
   final List<StreamController<relay.DynamicValue>> _streams =
       <StreamController<relay.DynamicValue>>[];
 
+  /// The same, for [subscribeStamped]. A separate list because the element
+  /// types differ; closed alongside [_streams] on [dispose].
+  final List<StreamController<StampedValue>> _stampedStreams =
+      <StreamController<StampedValue>>[];
+
   int _statusNotifications = 0;
   bool _disposed = false;
 
@@ -206,6 +211,32 @@ final class BackendLiveValues implements BackendValueSource {
       onCancel: () => watched.removeListener(forward),
     );
     _streams.add(controller);
+    return controller.stream;
+  }
+
+  /// The same stream, each emission carrying the provenance of its instant.
+  ///
+  /// **`forward` runs inside the store's synchronous notification**, which is
+  /// what makes the pair exact: `PipeMainEndpoint._applyFrame` records the
+  /// frame's provenance claims BEFORE `store.applyBatch`, so by the time this
+  /// listener fires, `stampSourceOf` is answering about the very value being
+  /// forwarded. Reading it later — in the alarm engine, off a `CombineLatest`
+  /// emission — would answer about whatever value is current then, which is not
+  /// necessarily this one.
+  @override
+  Stream<StampedValue> subscribeStamped(String key) {
+    final watched = _watch(key);
+    late final StreamController<StampedValue> controller;
+    void forward() {
+      if (controller.isClosed) return;
+      controller.add(StampedValue(watched.value, _pipe.stampSourceOf(key)));
+    }
+
+    controller = StreamController<StampedValue>.broadcast(
+      onListen: () => watched.addListener(forward),
+      onCancel: () => watched.removeListener(forward),
+    );
+    _stampedStreams.add(controller);
     return controller.stream;
   }
 
@@ -556,8 +587,11 @@ final class BackendLiveValues implements BackendValueSource {
     await Future.wait(<Future<void>>[
       for (final controller in _streams)
         if (!controller.isClosed) controller.close(),
+      for (final controller in _stampedStreams)
+        if (!controller.isClosed) controller.close(),
     ]);
     _streams.clear();
+    _stampedStreams.clear();
   }
 }
 
