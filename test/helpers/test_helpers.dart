@@ -19,6 +19,7 @@ import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/config_store.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/pages/key_repository.dart';
 import 'package:tfc/pages/server_config.dart';
@@ -83,6 +84,15 @@ InMemoryPreferences useInMemoryDeviceLocalPreferences() {
 /// The sync engine is left off (`startSync: false`): a test that drives the
 /// write path and asserts what it wrote does not want a background reconcile
 /// answering for it. Both databases are closed at teardown.
+/// A session that holds `configure`, which is the group the policy classes
+/// `pref`/`key_mappings` as.
+///
+/// [createTestConfigStore] defaults to an anonymous operator on purpose — the
+/// guard-wiring tests need a refusal — so every test that drives an editor
+/// save has to say that somebody who may configure is standing at the panel.
+final AccessSession kConfiguringTestSession =
+    AccessSession(groups: const {AccessGroup.configure});
+
 Future<GuardedConfigStore> createTestConfigStore({
   KeyMappings? keyMappings,
   AccessPolicy policy = const AccessPolicy(),
@@ -90,6 +100,17 @@ Future<GuardedConfigStore> createTestConfigStore({
   AuditSink? audit,
   String station = 'test-station',
   void Function(AccessDenied denial)? onDenied,
+  /// Whether to attach the stand-in for Postgres at all.
+  ///
+  /// `false` is a station that booted with the shared database unreachable:
+  /// the store serves its mirror and refuses every shared write with
+  /// `ConfigStoreOfflineException`. That is the arm C-11 is about, and it has
+  /// no other way to be reached in a test.
+  bool withRemote = true,
+  /// Handed the stand-in remote once it is attached, for a test that has to
+  /// go behind the store's back — bumping a row's `rev` the way another
+  /// station would, or reading the `config_change` rows a save wrote.
+  void Function(AppDatabase remote)? onRemote,
 }) async {
   driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
   final local = AppDatabase.inMemoryForTest();
@@ -104,10 +125,13 @@ Future<GuardedConfigStore> createTestConfigStore({
   );
   addTearDown(store.close);
   await store.open();
-  store.attachRemoteDatabase(remote, startSync: false);
+  if (withRemote) {
+    store.attachRemoteDatabase(remote, startSync: false);
+    onRemote?.call(remote);
+  }
 
   final mappings = keyMappings ?? KeyMappings(nodes: {});
-  if (mappings.nodes.isNotEmpty) {
+  if (mappings.nodes.isNotEmpty && withRemote) {
     await store.writeKeyMappings(mappings,
         actionId: 'test-seed', who: 'test', roleName: 'system');
   }
@@ -240,6 +264,8 @@ Widget buildTestableKeyRepository({
   KeyMappings? keyMappings,
   StateManConfig? stateManConfig,
   StateMan? stateMan,
+  GuardedConfigStore? configStore,
+  Future<GuardedConfigStore>? configStoreFuture,
 }) {
   return ProviderScope(
     overrides: [
@@ -248,6 +274,18 @@ Widget buildTestableKeyRepository({
             stateManConfig: stateManConfig,
           )),
       databaseProvider.overrideWith((ref) async => null),
+      // Since v1.2 phase 2 plan 06 the page loads and saves the plant's wiring
+      // through the shared configuration store, not the preference blob. A
+      // caller that wants to read back what a save wrote builds the store
+      // itself with [createTestConfigStore] and passes it here.
+      configStoreProvider.overrideWith((ref) =>
+          configStore != null
+              ? Future<GuardedConfigStore>.value(configStore)
+              : configStoreFuture ??
+                  createTestConfigStore(
+                    keyMappings: keyMappings,
+                    session: kConfiguringTestSession,
+                  )),
       // Override stateManProvider to avoid real network connections.
       // With no [stateMan] given it throws, which the page treats as
       // "nothing to probe".

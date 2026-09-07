@@ -176,3 +176,45 @@ an explicit behaviour change, decided rather than inherited.
 Note the surrounding `on AccessDenied { rethrow; }` arm is correct and
 deliberate — its comment explains that swallowing a guard refusal would let a
 delete proceed as though cleanup succeeded. Keep it.
+
+---
+
+## D-5 — rows do not carry the operator's key order, so a reorder does not survive a reload
+
+**Found 2026-09-07, executing plan 02-06.** The key repository has a
+`ReorderableListView` and a `_reorderKey` handler: an operator can drag a key
+to a new position, and until this phase that position was persisted, because
+the blob was a JSON object and `KeyMappings.nodes` is a `LinkedHashMap` whose
+insertion order round-tripped through `jsonEncode`/`jsonDecode`.
+
+On rows it does not. `keyMappingItems` sorts by key id before writing — the
+whole point of it, since row order out of a query is otherwise arbitrary and an
+unsorted read would report changes nobody made — and `ConfigStore.keyMappingItems`
+sorts again on the way out. So after a save the store serves the keys
+alphabetically, and the operator's arrangement is gone at the next load.
+
+**Effect:** cosmetic, and confined to this one page. Nothing reads mapping
+order: `StateMan`, the collector, every subscription and every mimic look keys
+up by name. The reorder still works within a session — the visual order is the
+page's own map — it simply is not stored.
+
+**Why it was not fixed here.** `config_item` already has a `sort_index` column,
+so the shape of the fix is known: the codec would set it from the map's
+position and order by it on read. But that turns a pure reorder into N changed
+rows, changes what a diff means for every consumer of `ConfigDiff` (including
+`updateKeyMappings`, which would re-point subscriptions for keys whose wiring
+did not move), and has to be taught to the migration and the sync engine at the
+same time. That is item-shaping work, which is Phase 3's, and doing it inside
+the cutover's last plan would have put an unreviewed diff-semantics change
+under the phase gate.
+
+**Fix shape:** carry `sortIndex` through `key_mapping_codec.dart` in both
+directions, exclude it from `samePayload` so a reorder is a `sort_index` update
+rather than a payload change, and decide explicitly whether a reorder should
+emit `config_change` rows at all. Alternatively, decide that mapping order is a
+device-local view preference and store it beside the other ones — which is
+arguably what it always was.
+
+The two tests in `test/pages/key_repository_test.dart`'s "Reorder keys" group
+that asserted the persisted order now assert the behaviour that actually
+ships — the keys survive, the arrangement does not — and name this entry.
