@@ -1877,7 +1877,7 @@ void main() {
       // because a duplicated constant with nothing holding it to its original
       // is a checker that exempts at the wrong threshold the day somebody
       // raises the ring — silently, since no assertion reads the product's
-      // number. Same idiom as the _tickResyncComplained pin in invariant 5.
+      // number. Same idiom as the _resyncComplained pin in invariant 5.
       final client =
           File('../tfc_relay_client/lib/src/remote_state_man.dart');
       expect(client.existsSync(), isTrue,
@@ -2292,11 +2292,12 @@ void main() {
       expect(rendered, contains('+03:20'));
     });
 
-    test('the POSITIVE CONTROL: removing Phase 7\'s _tickResyncComplained '
+    test('the POSITIVE CONTROL: removing Phase 7\'s _resyncComplained '
         'damping trips the ceiling', () {
       // A live regression test on the damping, and it stays one after this
-      // phase closes. The damping is `if (_tickResyncComplained.add(entry.key))`
-      // at `connection_supervisor.dart:771`: once per subscription per
+      // phase closes. The damping is `if (_resyncComplained.add(update.sub))`
+      // in `connection_supervisor.dart` (line numbers deliberately not cited —
+      // 16-07 moved them once already): once per subscription per
       // connection, so a page that keeps mismatching costs ONE complaint no
       // matter how many ticks it mismatches for. Removing the guard costs one
       // complaint per suppressed tick.
@@ -2357,19 +2358,29 @@ void main() {
           reason: 'the pin is worthless if the path rots: ${supervisor.path}');
       final source = supervisor.readAsStringSync();
 
-      expect(source, contains('_tickResyncComplained'),
+      expect(source, contains('_resyncComplained'),
           reason: 'Phase 7 added this suppression set for the G1 fix. Without '
               'it a permanently mismatching page complains once per 1500 ms '
               'tick — 40 a minute against invariant 5\'s ceiling of '
               '$boundedLogsCeilingPerMinute. Deleting it is the regression the '
               'soak\'s positive control describes, and this is the line that '
-              'fails when somebody does');
-      expect(source, contains('if (_tickResyncComplained.add('),
+              'fails when somebody does. Renamed from _tickResyncComplained by '
+              '16-07, which unified the three detectors behind ONE budget; the '
+              'rename silently broke this pin because the file is soak-tagged '
+              'and the default lane excludes it');
+      expect(source, contains('if (_resyncComplained.add('),
           reason: 'the SET is not the damping — the guarded append is. A '
               'suppression set that is still declared, still cleared on '
               'reconnect and no longer consulted is the same flood with a '
               'reassuring name');
-      expect(source, contains('_tickResyncComplained.clear()'),
+      expect(source, contains('bool _mayRebuild('),
+          reason: '16-07 put all three resync detectors — tick mismatch, tick '
+              'unestablished, and _update\'s unannounced-handle branch, which '
+              'had NO rate limit at all — behind one shared rebuild budget. '
+              'The complaint damping above bounds the LOG; this bounds the '
+              'REBUILDS, and a 60-frame storm costs 5 instead of 60. Losing it '
+              'would not trip invariant 5, so nothing else here would notice');
+      expect(source, contains('_resyncComplained.clear()'),
           reason: 'and the clear on reconnect stays, deliberately: a recovered '
               'page must not be refused the rebuild it needs '
               '(11-05\'s objective quotes the reasoning). This invariant exists '
@@ -3170,7 +3181,7 @@ void main() {
       // a real divergence would mean corrupting a frame through a seam the
       // soak does not have (`eventual_resync.dart` explains why the control
       // substitutes an answer instead). So what is pinned is that the call
-      // site exists, in the same idiom as invariant 5's `_tickResyncComplained`
+      // site exists, in the same idiom as invariant 5's `_resyncComplained`
       // pin and invariant 4's `_debugHistory` pin.
       //
       // It is pinned rather than trusted because the whole finding was that

@@ -166,7 +166,7 @@ const Duration boundedLogsMinimumWindowSpan = Duration(seconds: 20);
 /// is 3.3 complaints a minute. Twenty is **6x** that.
 ///
 /// **From above — the rate the regression produces.** Phase 7's
-/// `_tickResyncComplained` damping (`connection_supervisor.dart:771`) turns
+/// `_resyncComplained` damping (`connection_supervisor.dart`) turns
 /// "one complaint per resync tick" into "one per subscription per connection".
 /// The shipping tick is 1500 ms, so removing it costs **40 complaints a minute**
 /// per mismatching page, and the `u`-frame path at `:692-702` is faster still.
