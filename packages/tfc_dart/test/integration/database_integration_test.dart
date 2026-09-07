@@ -10,7 +10,13 @@ import 'package:tfc_dart/core/database_drift.dart';
 import 'docker_compose.dart';
 import 'eventually.dart';
 
-// docker exec -it test-db /bin/ash -c "psql -d testdb --user testuser -c 'select * from test_timeseries;'"
+// To poke at the database of a running suite, find its container first -- the
+// name is per-run now (`tfcdart-it-<pid>-timescaledb-1`), not the fixed
+// `test-db` it used to be, so that two copies of this lane can run at once:
+//
+//   docker ps --filter name=tfcdart-it
+//   docker exec -it <name> /bin/ash -c \
+//     "psql -d testdb --user testuser -c 'select * from test_timeseries;'"
 
 /// One line per row, for the `reason:` of a row-count expectation.
 ///
