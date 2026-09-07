@@ -35,6 +35,15 @@ import 'dart:collection' show LinkedHashMap;
 import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:tfc_access/tfc_access.dart' show AuditRecord;
 
+import '../rendered_value.dart';
+
+// The rendering rules live in `rendered_value.dart` so the config diff can
+// share them without importing this file, which links open62541 (D-3). They
+// are re-exported because they were part of this library's surface first and
+// callers should not have to know the move happened.
+export '../rendered_value.dart'
+    show kMaxRenderedValueLength, kRenderTruncationMarker;
+
 /// One member of a struct write that changed, ready to become one audit row.
 class MemberChange {
   const MemberChange({
@@ -74,20 +83,6 @@ class MemberChange {
       '${oldValue ?? '<none>'} -> ${newValue ?? '<none>'}'
       '${noBaseline ? ', no baseline' : ''})';
 }
-
-/// The cap on a rendered value, in characters.
-///
-/// These strings land in a database column and in log lines, and the value
-/// being rendered is whatever a struct member happened to hold — a pasted blob
-/// is as legitimate an input as a boolean. Spec §10 records that `pg_notify`
-/// has an 8000-byte cap which preference writes already fire, so unbounded
-/// audit strings are not a hypothetical cost on this deployment. 256 characters
-/// is past the length of any real member on this plant.
-const int kMaxRenderedValueLength = 256;
-
-/// Appended to a rendering the cap cut short, so a reader can tell a truncated
-/// row from a short one.
-const String kRenderTruncationMarker = '...[truncated]';
 
 /// The members of [oldValue] that [newValue] changed.
 ///
@@ -302,52 +297,13 @@ bool _sameValue(DynamicValue a, DynamicValue b) {
 /// `toString` padding (`{Freq:   42.5}`), and on a null it answers `''`.
 String? renderDynamicValue(DynamicValue value) {
   if (value.isNull) return null;
-  final out = StringBuffer();
-  _write(out, value.value);
-  final rendered = out.toString();
-  return rendered.length <= kMaxRenderedValueLength
-      ? rendered
-      : rendered.substring(0, kMaxRenderedValueLength) +
-          kRenderTruncationMarker;
+  return renderJsonValue(value.value, unwrap: _unwrap);
 }
 
-/// Writes [value] into [out], stopping once [out] is already past the cap.
+/// One level of `DynamicValue` off a member reached inside a map or a list.
 ///
-/// The early return bounds the intermediate string as well as the returned one:
-/// rendering a large struct does not build a megabyte before truncating it, and
-/// a nested recursion terminates because each nested call returns at this first
-/// line once the buffer is full.
-void _write(StringBuffer out, dynamic value) {
-  if (out.length > kMaxRenderedValueLength) return;
-  if (value == null) {
-    out.write('null');
-    return;
-  }
-  if (value is Map) {
-    out.write('{');
-    var first = true;
-    for (final entry in value.entries) {
-      if (!first) out.write(', ');
-      first = false;
-      out.write('${entry.key}: ');
-      _write(out, entry.value is DynamicValue
-          ? (entry.value as DynamicValue).value
-          : entry.value);
-    }
-    out.write('}');
-    return;
-  }
-  if (value is List) {
-    out.write('[');
-    var first = true;
-    for (final element in value) {
-      if (!first) out.write(', ');
-      first = false;
-      _write(out,
-          element is DynamicValue ? element.value : element);
-    }
-    out.write(']');
-    return;
-  }
-  out.write(value.toString());
-}
+/// The walker in `rendered_value.dart` knows nothing about open62541 on
+/// purpose; this is the whole of what it needed to know, handed to it as a
+/// function.
+Object? _unwrap(Object? value) =>
+    value is DynamicValue ? value.value : value;
