@@ -517,14 +517,23 @@ void main() {
       // no sessions at all — which from the outside looks exactly like a
       // gateway that is fine.
       final after = await gateway.dialAll(_cap);
+      // Watched in parallel and *before* the session count is waited on, so
+      // this arm fails on the sentence that names the property rather than on
+      // a registry that never fills. Serially this would be $_cap survival
+      // budgets end to end — half a minute of a passing test waiting to be
+      // sure nothing happened.
+      final closes = await Future.wait(
+          [for (final panel in after) panel.closeWithin(_survivalBudget)]);
+      expect(closes.where((close) => close != null), isEmpty,
+          reason: 'the gateway refused ${closes.where((c) => c != null).length}'
+              ' of $_cap fresh connections while holding no session at all — '
+              'every one of the $_cap peers before them connected, said '
+              'nothing, and dropped. A budget that is released on hello but '
+              'not on teardown is spent permanently by exactly that peer, and '
+              'a few hundred of them lock out the whole plant while the '
+              'gateway reports itself healthy: sessionCount is zero, which is '
+              'what a quiet night shift looks like');
       await gateway.untilSessions(_cap);
-      for (final panel in after) {
-        expect(await panel.closeWithin(Duration.zero), isNull,
-            reason: 'the gateway refused a fresh connection while holding no '
-                'session from the $_cap peers that connected and dropped '
-                'before it. The budget must be released on teardown as well '
-                'as on hello');
-      }
       expect(gateway.sessionCount, _cap);
     });
   });
