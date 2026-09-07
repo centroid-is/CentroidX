@@ -84,6 +84,7 @@ final class OpenAlarmRow {
     required this.alarmLevel,
     required this.pendingAck,
     required this.tsSource,
+    this.acknowledgedAt,
   });
 
   /// The row id. Also what travels to the panel as `AlarmActiveEntry.historyId`.
@@ -113,9 +114,20 @@ final class OpenAlarmRow {
   /// plant's word in the one field a stop analysis exists to be audited on.
   final String? tsSource;
 
+  /// When an operator acknowledged this activation, or null if nobody has.
+  ///
+  /// Carried so a restart does not put an acknowledged, still-standing alarm
+  /// back on every banner. Before this column was written by anything, adoption
+  /// had nothing to lose; now it does, and the engine restores the mark from
+  /// here at the rule's first post-restart verdict. Without it, a backend
+  /// restart would be indistinguishable from nobody having pressed the button.
+  final DateTime? acknowledgedAt;
+
   @override
   String toString() => 'OpenAlarmRow(#$id $alarmUid rule $ruleIndex, '
-      'opened ${createdAt.toIso8601String()})';
+      'opened ${createdAt.toIso8601String()}'
+      '${acknowledgedAt == null ? '' : ', acknowledged '
+          '${acknowledgedAt!.toIso8601String()}'})';
 }
 
 /// Writes and reconciles `alarm_history`. See the library doc.
@@ -185,6 +197,29 @@ final class AlarmHistoryWriter {
     ) RETURNING id
   ''';
 
+  /// Stamps an acknowledgement on one row, **without closing it**.
+  ///
+  /// Two columns are deliberately absent from the SET list, and their absence
+  /// is the property (T-14-56):
+  ///
+  ///  * `deactivated_at` — an acknowledgement is not a clear. If the condition
+  ///    is still true the stop is still running, and writing an end here would
+  ///    report it as having finished the moment an operator pressed a button.
+  ///    A stop that ran two hours becomes a stop that ran two minutes, in the
+  ///    direction nobody audits. The engine closes the row separately, and
+  ///    only in the case where the condition had already gone false.
+  ///  * `active` — same argument, one column along. A row whose alarm is still
+  ///    standing is still an active row.
+  ///
+  /// `acknowledged_at` had existed on this table since it was created and had
+  /// never been written by anything (14-RESEARCH). This statement is the first
+  /// write it has ever received.
+  static const String acknowledgeStatement = r'''
+    UPDATE alarm_history
+       SET acknowledged_at = $1::timestamp
+     WHERE id = $2
+  ''';
+
   /// Closes one row by id.
   static const String closeStatement = r'''
     UPDATE alarm_history
@@ -199,7 +234,7 @@ final class AlarmHistoryWriter {
   /// See [loadOpenRows] for why this is not `getRecentAlarms`.
   static const String openRowsStatement = '''
     SELECT id, alarm_uid, rule_index, created_at, alarm_level,
-           pending_ack, ts_source
+           pending_ack, ts_source, acknowledged_at
       FROM alarm_history
      WHERE deactivated_at IS NULL
      ORDER BY id
@@ -252,6 +287,42 @@ final class AlarmHistoryWriter {
           'keep a consistent history in.');
     }
     return rows.first.read<int>('id');
+  }
+
+  /// Records that an operator acknowledged the activation in row [id].
+  ///
+  /// [stamp] is the backend's own receipt instant (D-2's `backend_receipt`):
+  /// an acknowledgement is a human act **here**, and there is no plant
+  /// `sourceTime` for it. The row has one `ts_source` column and it belongs to
+  /// the activation, so the provenance of this instant lives in the
+  /// [AlarmStamp] the caller resolved and not in a second column.
+  ///
+  /// **This does not close the row** — see [acknowledgeStatement] for why that
+  /// omission is the whole point. The caller closes it separately, and only
+  /// when the condition had already cleared.
+  ///
+  /// A row that is not there any more is logged and not raised, on
+  /// [closeActivation]'s argument: losing the alarm engine because somebody
+  /// pruned history under a running backend is the wrong trade (T-14-24).
+  Future<void> acknowledgeActivation({
+    required int id,
+    required AlarmStamp stamp,
+  }) async {
+    final db = _require('acknowledgeActivation');
+    final affected = await db.customUpdate(
+      acknowledgeStatement,
+      variables: <Variable>[
+        Variable.withString(_sqlInstant(stamp.at)),
+        Variable.withInt(id),
+      ],
+      updates: {db.alarmHistory},
+    );
+    if (affected == 0) {
+      _logger.w('AlarmHistoryWriter.acknowledgeActivation: alarm_history row '
+          '#$id was not there to stamp. The acknowledgement still took effect '
+          'on the banner — the engine\'s set moved first and deliberately — '
+          'but nothing durable records that anybody saw this alarm.');
+    }
   }
 
   /// Closes the row [id] at [stamp], saying how it was closed.
@@ -317,6 +388,7 @@ final class AlarmHistoryWriter {
           alarmLevel: row.read<String>('alarm_level'),
           pendingAck: row.read<bool>('pending_ack'),
           tsSource: row.read<String?>('ts_source'),
+          acknowledgedAt: _optionalInstant(row.read<String?>('acknowledged_at')),
         ),
     ];
   }
@@ -343,6 +415,10 @@ final class AlarmHistoryWriter {
     }
     return database.db;
   }
+
+  /// A nullable stored instant, read the way [parseStoredInstant] reads one.
+  static DateTime? _optionalInstant(String? raw) =>
+      raw == null ? null : parseStoredInstant(raw);
 
   /// An instant as the `::timestamp` casts want it.
   ///

@@ -391,6 +391,11 @@ void main() async {
       // engine is reading through — silently. Half a pair is refused by name.
       values: liveValues,
       freshness: freshness,
+      // The engine started above, so a panel's Acknowledge has somewhere to
+      // land. Without this argument the gateway refuses every acknowledge by
+      // name — correctly, and uselessly: the operator is told the backend
+      // serves no alarm engine while this process is running one.
+      alarms: alarmEngine,
       log: logger,
     );
     // Visible to the shutdown path from here on. Assigned before `start()`

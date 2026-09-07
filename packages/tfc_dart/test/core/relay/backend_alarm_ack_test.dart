@@ -253,8 +253,11 @@ void main() {
       // alarm path; this is the same pin at the point of the edit, so a
       // `DateTime.now()` smuggled into the acknowledge fails here first with a
       // message that names the reason.
-      final engineSource =
-          File('lib/core/relay/backend_alarms.dart').readAsStringSync();
+      // Comments stripped first, exactly as `alarm_structure_test.dart` does:
+      // the engine's own doc SAYS the words `DateTime.now(` in the paragraph
+      // explaining that it never calls it, and a scan that could not tell the
+      // two apart would be a gate nobody could satisfy.
+      final engineSource = _code('lib/core/relay/backend_alarms.dart');
       expect('DateTime.now('.allMatches(engineSource), isEmpty,
           reason: 'the engine may not read a real clock. The composition root '
               'supplies one, and bin/main.dart is the only place in the '
@@ -298,9 +301,8 @@ void main() {
 
       // Thin by measurement, not by intention. A fat adapter is policy that
       // escaped the gateway.
-      final body = File('lib/core/relay/backend_alarm_ack.dart')
-          .readAsLinesSync()
-          .where((l) => !l.trimLeft().startsWith('//'))
+      final body = _code('lib/core/relay/backend_alarm_ack.dart')
+          .split('\n')
           .where((l) => l.trim().isNotEmpty)
           .length;
       expect(body, lessThan(25),
@@ -377,6 +379,15 @@ void main() {
 }
 
 // ------------------------------------------------------------------ fixtures
+
+/// [path]'s source with `//` and `///` lines removed.
+///
+/// Line comments only, which is all these two files carry above the code the
+/// arms are scanning for. Block comments appear in neither.
+String _code(String path) => File(path)
+    .readAsLinesSync()
+    .where((line) => !line.trimLeft().startsWith('//'))
+    .join('\n');
 
 List<relay.AlarmActiveEntry> _entriesOf(_Record record) =>
     relay.AlarmActiveEntry.decodeList(record.value.toJson(slim: true)).entries;

@@ -174,6 +174,20 @@ final class PipeStoreAlarmPublisher implements AlarmStatePublisher {
       _pipe.store.applyBatch(<String, relay.DynamicValue>{key: value});
 }
 
+/// Something an acknowledgement can be handed to. [AlarmEngine] is the one.
+///
+/// **Why this exists rather than the engine's own type.** `backend_alarm_ack.dart`
+/// adapts an engine to the gateway's `AlarmAckSink`, and the two properties
+/// that adapter has — it passes both values through unchanged, and it does not
+/// swallow a failure — are properties *of the adapter*, measurable only with
+/// something other than the real engine behind it. [AlarmEngine] is a `final
+/// class`, so nothing can stand in for it. One member wide, declared here
+/// because this is the file that owns the acknowledge.
+abstract interface class AlarmAcknowledger {
+  /// See [AlarmEngine.acknowledge].
+  Future<void> acknowledge(String alarmUid, int ruleIndex);
+}
+
 /// One active alarm-rule instance, as the engine holds it.
 ///
 /// Mutable where the wire type is not: [pendingAck] flips in place when an
@@ -195,6 +209,26 @@ final class _ActiveAlarm {
   final AlarmStamp stamp;
   final String? expressionText;
   bool pendingAck = false;
+
+  /// Whether an operator has said they have seen this.
+  ///
+  /// An acknowledged entry stays in `_active` — it is **not** deleted — and is
+  /// filtered out of everything a panel can observe. Keeping it is what makes
+  /// the eventual clear able to close the right `alarm_history` row: the row is
+  /// still open, and this object is the only thing holding its id.
+  bool acknowledged = false;
+
+  /// The backend's receipt instant for that acknowledgement, or null.
+  AlarmStamp? acknowledgedStamp;
+
+  /// The clearing evaluation's stamp, remembered while the entry is held for an
+  /// acknowledgement ([pendingAck]).
+  ///
+  /// The stop ended when the PLANT said it ended. When the acknowledgement
+  /// finally arrives and closes the row, this is the instant it closes at — not
+  /// the acknowledgement's, which would move a completed stop's end forward to
+  /// whenever somebody next looked at a screen.
+  AlarmStamp? clearedStamp;
 
   /// The `alarm_history` row this activation was opened as.
   ///
@@ -240,7 +274,7 @@ final class _RuleBinding {
 
 /// The plant's one alarm evaluator. See the library doc for why each property
 /// is here.
-final class AlarmEngine {
+final class AlarmEngine implements AlarmAcknowledger {
   /// Builds the engine and seeds [relay.AlarmKeys.active] **before anything
   /// can subscribe**.
   ///
@@ -341,8 +375,28 @@ final class AlarmEngine {
   /// The observation surface that makes arm *"evaluates with nobody
   /// listening"* expressible: a reader that never touches [activeAlarms] still
   /// sees the truth.
+  ///
+  /// **Acknowledged entries are not in it**, and they are still being tracked:
+  /// see [_ActiveAlarm.acknowledged]. This getter answers the question a panel
+  /// asks — "what is on the banner" — which is the same question
+  /// [relay.AlarmKeys.active] answers, and the two must never disagree.
   Set<relay.AlarmActiveEntry> get active =>
-      {for (final entry in _active.values) entry.toEntry()};
+      {for (final entry in _published) entry.toEntry()};
+
+  /// The entries a panel is entitled to see: everything active that nobody has
+  /// acknowledged yet.
+  Iterable<_ActiveAlarm> get _published =>
+      _active.values.where((entry) => !entry.acknowledged);
+
+  /// How many acknowledged alarm-rule instances are still standing.
+  ///
+  /// Off the banner, still true, and their `alarm_history` rows still open —
+  /// which is the correct state and the one this plan exists to produce. A
+  /// count rather than a list because what a reader needs to know is that the
+  /// engine has not forgotten them: an acknowledged entry it dropped would be a
+  /// row nothing could ever close.
+  int get acknowledgedStandingCount =>
+      _active.values.where((entry) => entry.acknowledged).length;
 
   /// The active set as a stream, replaying the current value to a late
   /// subscriber.
@@ -705,12 +759,28 @@ final class AlarmEngine {
     } else {
       final existing = _active[identity];
       if (existing != null) {
-        if (rule.acknowledgeRequired) {
+        if (existing.acknowledged) {
+          // **This is the close the acknowledge deliberately did not make.**
+          // The operator silenced it while the condition was still true, so
+          // the row was left open; the plant has now ended the stop, and the
+          // row closes at the plant's instant as `cleared` — a measurement,
+          // not the consequence of somebody pressing a button.
+          _active.remove(identity);
+          _closeRow(
+              existing, transition.stamp, AlarmHistoryWriter.reasonCleared);
+          // `changed` stays FALSE on purpose: this entry left the published
+          // set when it was acknowledged, so nothing a panel can see moves
+          // here and no fan-out is owed.
+        } else if (rule.acknowledgeRequired) {
           // A fault that came and went between two glances at the screen is
           // still a fault somebody must see. It stays in the set, badged, until
           // [acknowledge].
           if (!existing.pendingAck) {
             existing.pendingAck = true;
+            // Remembered now, used later. When the acknowledgement arrives it
+            // closes the row at THIS instant, because this is when the stop
+            // actually ended.
+            existing.clearedStamp = transition.stamp;
             changed = true;
           }
         } else {
@@ -764,6 +834,18 @@ final class AlarmEngine {
         historyId: pending.id,
       );
       adopted.pendingAck = pending.pendingAck;
+      // The acknowledgement survives the restart, because the column now
+      // carries it. Without this an operator who silenced a standing alarm
+      // before a backend restart would find it back on the banner afterwards,
+      // with nothing to distinguish that from nobody having pressed the button
+      // — and the row is open, so it would be silenced again and stamped
+      // again, overwriting the first acknowledgement's instant.
+      final acknowledgedAt = pending.acknowledgedAt;
+      if (acknowledgedAt != null) {
+        adopted.acknowledged = true;
+        adopted.acknowledgedStamp = AlarmStamp(
+            at: acknowledgedAt, source: AlarmTsSource.backendReceipt);
+      }
       _active[identity] = adopted;
       _logger.i('adopted alarm_history row #${pending.id} for '
           '"${alarm.uid}" rule ${transition.ruleIndex}: the condition is still '
@@ -882,17 +964,101 @@ final class AlarmEngine {
     });
   }
 
-  /// Acknowledges one `(uid, ruleIndex)` pair, clearing a [pendingAck] entry.
+  /// Acknowledges one `(alarmUid, ruleIndex)` pair.
   ///
-  /// The identity is `AckAlarmParams`'s, so 14-07's RPC has one call to make
-  /// and no mapping to invent. Returns whether anything was acknowledged — an
-  /// ack for an alarm that already cleared is not an error, it is a race an
-  /// operator cannot avoid.
-  bool acknowledge(String uid, int ruleIndex) {
-    final removed = _active.remove((uid, ruleIndex));
-    if (removed == null) return false;
+  /// **An acknowledgement is the operator saying "I have seen this", not the
+  /// plant saying "this is over".** It silences the alarm and records who-when;
+  /// it does not end a stop.
+  ///
+  /// What that means, column by column:
+  ///
+  ///  * `acknowledged_at` is stamped on the open `alarm_history` row, from the
+  ///    injected clock and labelled `backend_receipt` (D-2) — an acknowledgement
+  ///    is a human act at the backend and there is no plant instant for it.
+  ///  * **If the condition is still true the row stays OPEN.** The stop is
+  ///    still happening. Closing it here would report a stop as having ended
+  ///    the moment somebody pressed a button, which is precisely the
+  ///    under-reporting `alarmHistoryOverlaps` (`alarm.dart:205-211`) exists to
+  ///    prevent — and it is silent, and in the direction nobody audits. The
+  ///    entry is kept in `_active`, marked, and filtered out of everything a
+  ///    panel observes; when the plant finally clears it the row closes as
+  ///    `cleared` at the plant's own instant.
+  ///  * **If the condition had already cleared** — the `pendingAck` case, where
+  ///    the entry was being held on the banner waiting for exactly this — the
+  ///    row closes now, with `deactivated_reason = 'acknowledged'` (D-4) and
+  ///    `deactivated_at` set to the CLEARING evaluation's instant. Never the
+  ///    acknowledgement's: the stop ended when the plant said it ended.
+  ///
+  /// The identity is `AckAlarmParams`'s, so the gateway's RPC has one call to
+  /// make and no mapping to invent.
+  ///
+  /// **Idempotent, and completing on a miss is part of the contract.** A second
+  /// acknowledgement of the same alarm, or one for an alarm that has already
+  /// gone, is logged and returns. Two operators on two panels pressing the same
+  /// button is the ordinary case, not the edge case, and a throw here reaches
+  /// the second one as `handlerFailed` — told something is broken when nothing
+  /// is.
+  @override
+  Future<void> acknowledge(String alarmUid, int ruleIndex) async {
+    final identity = (alarmUid, ruleIndex);
+    final entry = _active[identity];
+    if (entry == null) {
+      _logger.i('acknowledge for "$alarmUid" rule $ruleIndex matched no active '
+          'alarm; nothing to do. Normally a race an operator cannot avoid — '
+          'the alarm cleared while the frame was in flight, or another panel '
+          'got there first — and not an error. A panel sending these steadily '
+          'is a panel whose view of the plant has diverged.');
+      return;
+    }
+    if (entry.acknowledged) {
+      _logger.i('"$alarmUid" rule $ruleIndex was already acknowledged; the '
+          'second acknowledgement is a no-op. The wire carries no idempotency '
+          'key precisely because this is the same operator intent as the '
+          'first.');
+      return;
+    }
+
+    entry.acknowledged = true;
+    final receipt = _receiptStamp();
+    entry.acknowledgedStamp = receipt;
+    _stampAcknowledged(entry, receipt);
+
+    if (entry.pendingAck) {
+      // The condition had already gone false and the entry was being held for
+      // this. Now it can go, and its row closes at the instant the PLANT
+      // cleared it — recorded when that happened, not read from a clock now.
+      _active.remove(identity);
+      _closeRow(entry, entry.clearedStamp ?? receipt,
+          AlarmHistoryWriter.reasonAcknowledged);
+    }
+
     _publishActive();
-    return true;
+  }
+
+  /// Stamps `acknowledged_at` on [entry]'s open row, leaving it open.
+  ///
+  /// On the write chain like every other database operation, and reading
+  /// `historyId` from *inside* the enqueued closure for [_closeRow]'s reason:
+  /// the activation's INSERT may still be in flight when the acknowledgement
+  /// arrives, and the chain is what makes the id present by the time this runs.
+  void _stampAcknowledged(_ActiveAlarm entry, AlarmStamp stamp) {
+    final history = _history;
+    if (history == null) return;
+    _enqueueWrite(
+      'acknowledge ${entry.alarm.uid} rule ${entry.ruleIndex}',
+      () async {
+        final id = entry.historyId;
+        if (id == null) {
+          _logger.w('alarm "${entry.alarm.uid}" rule ${entry.ruleIndex} was '
+              'acknowledged, but no alarm_history row was ever opened for it, '
+              'so there is nothing to stamp. The activation insert failed '
+              'earlier and was logged then; the acknowledgement still took '
+              'effect on the banner.');
+          return;
+        }
+        await history.acknowledgeActivation(id: id, stamp: stamp);
+      },
+    );
   }
 
   /// Rebuilds the payload, applies the cap and publishes at
@@ -904,7 +1070,10 @@ final class AlarmEngine {
   /// list. Ties break on `(uid, ruleIndex)` so the payload is deterministic and
   /// an unchanged set never re-encodes differently.
   void _publishActive() {
-    final all = [for (final entry in _active.values) entry.toEntry()]
+    // `_published`, never `_active.values`: an acknowledged entry is still
+    // tracked — its `alarm_history` row is open and this engine is the only
+    // thing that can close it — and it is deliberately not on any banner.
+    final all = [for (final entry in _published) entry.toEntry()]
       ..sort((a, b) {
         final byOnset = a.activeAtMs.compareTo(b.activeAtMs);
         if (byOnset != 0) return byOnset;

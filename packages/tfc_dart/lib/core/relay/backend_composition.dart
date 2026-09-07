@@ -53,6 +53,8 @@ import '../database.dart';
 import '../pipe_main_endpoint.dart';
 import '../preferences.dart';
 import '../state_man.dart' show KeyMappings;
+import 'backend_alarm_ack.dart';
+import 'backend_alarms.dart' show AlarmAcknowledger;
 import 'backend_browse.dart';
 import 'backend_data_services.dart';
 import 'backend_freshness.dart';
@@ -161,6 +163,13 @@ final class BackendRelayComposition {
 /// deadline — and a disagreement between the two is logged rather than
 /// silently resolved.
 ///
+/// [alarms] is the alarm engine an accepted `ackAlarm` is handed to. Optional,
+/// and null is a real deployment: a gateway composed without one refuses an
+/// acknowledge by name rather than accepting it into nothing (14-12). It is
+/// **not** the same argument as [values]/[freshness] — those exist because the
+/// engine must run whether or not this function is called at all, whereas this
+/// one exists because the *gateway* needs a way back to it.
+///
 /// [validator] is required when — and refused unless — [config] says the
 /// composition root supplies the credential check. See the argument below.
 ///
@@ -178,6 +187,7 @@ BackendRelayComposition composeBackendRelay({
   TimeseriesLimits? limits,
   BackendLiveValues? values,
   BackendFreshnessSweep? freshness,
+  AlarmAcknowledger? alarms,
   Duration staleAfter = kBackendStaleAfter,
   Set<String> methodKeys = const <String>{},
   Logger? log,
@@ -379,6 +389,20 @@ BackendRelayComposition composeBackendRelay({
   // and would put a `validator:` argument in the source of a composition whose
   // whole promise is that it does not pass one alongside an `auth`. A promise
   // a reader can check by looking is worth six duplicated lines.
+  // ------------------------------------------------------------- the acks
+  //
+  // Null when there is no engine, and null is a real deployment rather than a
+  // mistake: `tfc_relay_local`'s harness composes a gateway with none, and so
+  // does every fixture in the server package. The gateway then refuses an
+  // acknowledge **by name** (14-12's null-sink branch: "this gateway serves no
+  // alarm engine") instead of accepting one into nothing and answering an
+  // operator that it worked.
+  //
+  // Typed `AlarmAcknowledger` rather than `AlarmEngine` so this file names the
+  // capability and not the implementation — and so a composition arm can hand
+  // it a recorder and read the wiring off the server.
+  final alarmAcks = alarms == null ? null : BackendAlarmAckSink(alarms);
+
   final RelayServer server;
   if (validator == null) {
     server = RelayServer(
@@ -387,6 +411,7 @@ BackendRelayComposition composeBackendRelay({
       // Named, never defaulted. See [backendRelayPolicy].
       policy: chosenPolicy,
       resolver: resolver,
+      alarmAcks: alarmAcks,
       onError: onError,
     );
   } else {
@@ -396,6 +421,7 @@ BackendRelayComposition composeBackendRelay({
       policy: chosenPolicy,
       resolver: resolver,
       validator: validator,
+      alarmAcks: alarmAcks,
       onError: onError,
     );
   }
