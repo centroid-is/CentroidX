@@ -20,16 +20,20 @@ import 'dart:convert';
 // same names.
 import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:test/test.dart';
+import 'package:tfc_dart/core/config/config_diff.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart';
 import 'package:tfc_dart/core/config/key_mapping_codec.dart';
+import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/sqlite_preferences.dart';
+import 'package:tfc_dart/core/state_man.dart';
 
 const String kStation = 'test-station';
 final ConfigScope kStationScope = ConfigScope.forStation(kStation);
 
 late AppDatabase local;
+late AppDatabase remote;
 late ConfigStore store;
 
 ConfigStore newStore() => ConfigStore(
@@ -37,6 +41,11 @@ ConfigStore newStore() => ConfigStore(
       stationScope: kStationScope,
       station: kStation,
     );
+
+/// The mappings a save hands over.
+KeyMappings mappingsOf(Map<String, String> keysToIdentifiers) =>
+    KeyMappings.fromJson(
+        jsonDecode(blobOf(keysToIdentifiers)) as Map<String, dynamic>);
 
 /// A `key_mappings` blob holding one OPC UA entry per given key.
 String blobOf(Map<String, String> keysToIdentifiers) => jsonEncode({
@@ -59,9 +68,11 @@ Future<void> seedPhase1Cache(String blob) =>
         .setString(kKeyMappingsPrefKey, blob);
 
 /// Writes a shared `key_mapping` row directly — a mirror row as the sync
-/// engine would leave it.
-Future<void> seedSharedRow(String key, String identifier, {int rev = 3}) =>
-    local.into(local.configItemTable).insert(ConfigItemTableCompanion.insert(
+/// engine would leave it. Into [local] unless [db] says otherwise.
+Future<void> seedSharedRow(String key, String identifier,
+        {int rev = 3, AppDatabase? db}) =>
+    (db ?? local).into((db ?? local).configItemTable).insert(
+        ConfigItemTableCompanion.insert(
           kind: ConfigKind.keyMapping.wireName,
           id: key,
           scope: ConfigScope.shared.wireName,
@@ -72,6 +83,40 @@ Future<void> seedSharedRow(String key, String identifier, {int rev = 3}) =>
           updatedAt: DateTime.utc(2026, 1, 1),
           updatedBy: 'somebody',
         ));
+
+/// The same row on both sides — the ordinary state after a boot that reached
+/// Postgres.
+Future<void> seedBothSides(String key, String identifier, {int rev = 3}) async {
+  await seedSharedRow(key, identifier, rev: rev);
+  await seedSharedRow(key, identifier, rev: rev, db: remote);
+}
+
+Future<List<ConfigItemRow>> remoteMappingRows() => (remote
+        .select(remote.configItemTable)
+      ..where((t) => t.kind.equals(ConfigKind.keyMapping.wireName)))
+    .get();
+
+Future<List<ConfigChangeRow>> remoteChanges() =>
+    (remote.select(remote.configChangeTable)
+          ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+        .get();
+
+/// Moves a row on the remote behind the store's back — the other station.
+Future<void> otherStationEdits(String key, String identifier) async {
+  await (remote.update(remote.configItemTable)
+        ..where((t) =>
+            t.kind.equals(ConfigKind.keyMapping.wireName) &
+            t.id.equals(key) &
+            t.scope.equals(ConfigScope.shared.wireName)))
+      .write(ConfigItemTableCompanion(
+    payload: Value(canonicalJson({
+      'opcua_node': {'namespace': 4, 'identifier': identifier},
+    })),
+    rev: const Value(99),
+    updatedAt: Value(DateTime.utc(2026, 2, 2)),
+    updatedBy: const Value('the-other-station'),
+  ));
+}
 
 Future<List<ConfigItemRow>> allRows() => local.select(local.configItemTable).get();
 
@@ -94,12 +139,14 @@ Future<List<ConfigChangeRow>> changes() => local.select(local.configChangeTable)
 void main() {
   setUp(() {
     local = AppDatabase.inMemoryForTest();
+    remote = AppDatabase.inMemoryForTest();
     store = newStore();
   });
 
   tearDown(() async {
     await store.close();
     await local.close();
+    await remote.close();
   });
 
   group('a station serves its mappings from the mirror', () {
@@ -361,6 +408,235 @@ void main() {
           identical(store.keyMappings.nodes['CN04.Belt.Speed'],
               store.keyMappings.nodes['CN04.Belt.Speed']),
           isFalse);
+    });
+  });
+
+  group('editing one key writes one row and one change entry', () {
+    setUp(() => store.attachRemoteDatabase(remote));
+
+    test('one edit is one UPDATE at rev+1 and one update change row', () async {
+      await seedBothSides('CN04.Belt.Speed', 'old', rev: 3);
+      await seedBothSides('CN07.Belt.Speed', 'untouched', rev: 3);
+      await store.open();
+
+      final result = await store.writeKeyMappings(
+        mappingsOf({
+          'CN04.Belt.Speed': 'new',
+          'CN07.Belt.Speed': 'untouched',
+        }),
+        actionId: 'action-1',
+        who: 'jon',
+        roleName: 'engineer',
+        reason: 'rewired the belt',
+      );
+
+      expect(result.diff.changed.map((i) => i.id), ['CN04.Belt.Speed']);
+      expect(result.diff.added, isEmpty);
+      expect(result.diff.removed, isEmpty);
+      expect(result.actionId, 'action-1');
+
+      final rows = await remoteMappingRows();
+      expect(rows, hasLength(2));
+      final edited = rows.firstWhere((r) => r.id == 'CN04.Belt.Speed');
+      expect(edited.rev, 4, reason: 'the compare-and-swap bumps by one');
+      expect(edited.updatedBy, 'jon');
+      expect(edited.payload, contains('new'));
+      expect(rows.firstWhere((r) => r.id == 'CN07.Belt.Speed').rev, 3,
+          reason: 'the key nobody edited is not rewritten');
+
+      final log = await remoteChanges();
+      expect(log, hasLength(1),
+          reason: 'one edited key is one change row, not one per key saved');
+      expect(log.single.op, 'update');
+      expect(log.single.entityId, 'CN04.Belt.Speed');
+      expect(log.single.actionId, 'action-1');
+      expect(log.single.who, 'jon');
+      expect(log.single.station, kStation);
+      expect(log.single.roleName, 'engineer');
+      expect(log.single.reason, 'rewired the belt');
+      expect(log.single.oldValue, contains('old'));
+      expect(log.single.newValue, contains('new'));
+    });
+
+    test('a new key is an INSERT at rev 1 and an insert change row', () async {
+      await store.open();
+
+      await store.writeKeyMappings(mappingsOf({'CN04.Belt.Speed': 'a'}),
+          actionId: 'action-2', who: 'jon', roleName: 'engineer');
+
+      final rows = await remoteMappingRows();
+      expect(rows, hasLength(1));
+      expect(rows.single.rev, 1);
+      expect(rows.single.scope, ConfigScope.shared.wireName);
+
+      final log = await remoteChanges();
+      expect(log, hasLength(1));
+      expect(log.single.op, 'insert');
+      expect(log.single.oldValue, isNull);
+      expect(log.single.newValue, isNotNull);
+    });
+
+    test('a removed key is a DELETE and a delete change row holding what it '
+        'held', () async {
+      await seedBothSides('CN04.Belt.Speed', 'a', rev: 2);
+      await seedBothSides('CN07.Belt.Speed', 'b', rev: 2);
+      await store.open();
+
+      await store.writeKeyMappings(mappingsOf({'CN07.Belt.Speed': 'b'}),
+          actionId: 'action-3', who: 'jon', roleName: 'engineer');
+
+      expect((await remoteMappingRows()).map((r) => r.id), ['CN07.Belt.Speed']);
+      final log = await remoteChanges();
+      expect(log, hasLength(1));
+      expect(log.single.op, 'delete');
+      expect(log.single.entityId, 'CN04.Belt.Speed');
+      expect(log.single.oldValue, contains('a'),
+          reason: 'the row still says what was lost after the thing it '
+              'described no longer exists');
+      expect(log.single.newValue, isNull);
+    });
+
+    test('saving the same configuration again writes nothing at all',
+        () async {
+      await seedBothSides('CN04.Belt.Speed', 'a', rev: 2);
+      await store.open();
+      final events = <ConfigDiff>[];
+      final sub = store.keyMappingChanges.listen(events.add);
+      addTearDown(sub.cancel);
+
+      final result = await store.writeKeyMappings(
+          mappingsOf({'CN04.Belt.Speed': 'a'}),
+          actionId: 'action-4',
+          who: 'jon',
+          roleName: 'engineer');
+
+      expect(result.diff.isEmpty, isTrue);
+      expect(await remoteChanges(), isEmpty);
+      expect((await remoteMappingRows()).single.rev, 2,
+          reason: 'Save pressed twice must not bump a revision');
+      await pumpEventQueue();
+      expect(events, isEmpty, reason: 'nothing happened, so nothing is said');
+    });
+
+    test('a successful save updates the mirror, swaps the snapshot and emits '
+        'exactly one diff', () async {
+      await seedBothSides('CN04.Belt.Speed', 'old', rev: 3);
+      await store.open();
+      final events = <ConfigDiff>[];
+      final sub = store.keyMappingChanges.listen(events.add);
+      addTearDown(sub.cancel);
+
+      await store.writeKeyMappings(mappingsOf({'CN04.Belt.Speed': 'new'}),
+          actionId: 'action-5', who: 'jon', roleName: 'engineer');
+      await pumpEventQueue();
+
+      expect(store.keyMappings.nodes['CN04.Belt.Speed']!.opcuaNode!.identifier,
+          'new');
+      expect(store.keyMappingItems.single.rev, 4,
+          reason: 'the snapshot carries the revision the next CAS guards with');
+
+      final mirrored = (await sharedMappingRows()).single;
+      expect(mirrored.payload, contains('new'));
+      expect(mirrored.rev, 4);
+      expect(await changes(), isEmpty,
+          reason: 'the mirror is a cache; the shared history lives on the '
+              'remote and duplicating it locally would be two histories');
+
+      expect(events, hasLength(1));
+      expect(events.single.changed.map((i) => i.id), ['CN04.Belt.Speed']);
+    });
+
+    test('a removed key leaves the mirror too', () async {
+      await seedBothSides('CN04.Belt.Speed', 'a', rev: 2);
+      await store.open();
+
+      await store.writeKeyMappings(mappingsOf({}),
+          actionId: 'action-6', who: 'jon', roleName: 'engineer');
+
+      expect(await sharedMappingRows(), isEmpty);
+      expect(store.keyMappings.nodes, isEmpty);
+    });
+  });
+
+  group('a lost compare-and-swap rolls the whole save back', () {
+    setUp(() => store.attachRemoteDatabase(remote));
+
+    test('ConfigConflict names the key and the revision it expected',
+        () async {
+      await seedBothSides('CN04.Belt.Speed', 'old', rev: 3);
+      await store.open();
+      await otherStationEdits('CN04.Belt.Speed', 'theirs');
+
+      await expectLater(
+        store.writeKeyMappings(mappingsOf({'CN04.Belt.Speed': 'mine'}),
+            actionId: 'action-7', who: 'jon', roleName: 'engineer'),
+        throwsA(isA<ConfigConflict>()
+            .having((e) => e.key, 'key', 'CN04.Belt.Speed')
+            .having((e) => e.expectedRev, 'expectedRev', 3)),
+      );
+    });
+
+    test('nothing of the losing save survives, not even the keys that won',
+        () async {
+      await seedBothSides('A.Key', 'a', rev: 3);
+      await seedBothSides('Z.Key', 'z', rev: 3);
+      await store.open();
+      // 'Z.Key' sorts last, so 'A.Key' is written first and is the one a
+      // catch-and-continue would leave committed.
+      await otherStationEdits('Z.Key', 'theirs');
+
+      await expectLater(
+        store.writeKeyMappings(
+            mappingsOf({'A.Key': 'mine-a', 'Z.Key': 'mine-z'}),
+            actionId: 'action-8',
+            who: 'jon',
+            roleName: 'engineer'),
+        throwsA(isA<ConfigConflict>()),
+      );
+
+      final rows = await remoteMappingRows();
+      expect(rows.firstWhere((r) => r.id == 'A.Key').payload, contains('a'),
+          reason: 'throwing out of the transaction is what makes drift '
+              'ROLLBACK; a skipped key would have committed this one');
+      expect(rows.firstWhere((r) => r.id == 'A.Key').rev, 3);
+      expect(await remoteChanges(), isEmpty,
+          reason: 'no change rows from the losing save survive');
+    });
+
+    test('the snapshot is not swapped and nothing is emitted', () async {
+      await seedBothSides('CN04.Belt.Speed', 'old', rev: 3);
+      await store.open();
+      await otherStationEdits('CN04.Belt.Speed', 'theirs');
+      final events = <ConfigDiff>[];
+      final sub = store.keyMappingChanges.listen(events.add);
+      addTearDown(sub.cancel);
+
+      await expectLater(
+          store.writeKeyMappings(mappingsOf({'CN04.Belt.Speed': 'mine'}),
+              actionId: 'action-9', who: 'jon', roleName: 'engineer'),
+          throwsA(isA<ConfigConflict>()));
+      await pumpEventQueue();
+
+      expect(store.keyMappings.nodes['CN04.Belt.Speed']!.opcuaNode!.identifier,
+          'old');
+      expect((await sharedMappingRows()).single.payload, contains('old'),
+          reason: 'the mirror is only written after the remote commits');
+      expect(events, isEmpty);
+    });
+
+    test('a delete whose row moved loses the same way', () async {
+      await seedBothSides('CN04.Belt.Speed', 'a', rev: 3);
+      await store.open();
+      await otherStationEdits('CN04.Belt.Speed', 'theirs');
+
+      await expectLater(
+          store.writeKeyMappings(mappingsOf({}),
+              actionId: 'action-10', who: 'jon', roleName: 'engineer'),
+          throwsA(isA<ConfigConflict>()));
+
+      expect(await remoteMappingRows(), hasLength(1),
+          reason: 'an unguarded delete would have thrown away an edit made '
+              'between this station reading and saving');
     });
   });
 }
