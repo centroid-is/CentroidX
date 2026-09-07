@@ -511,33 +511,41 @@ class ConfigActionTile extends StatelessWidget {
           Text(formatTimestamp(action.at), maxLines: 1, style: secondary),
         ],
       ),
-      subtitle: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (group.isNotEmpty)
-            Text(group, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: secondary),
-          if (action.isParentless)
-            Text(
-              kConfigParentlessNote,
-              key: kConfigParentlessNoteKey,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: secondary,
-            ),
-          if (action.isPartial)
-            Text(
-              kConfigHiddenChangesNote(
-                action.hiddenCount,
-                action.totalChangeCount + action.totalAuditRowCount,
+      // Indented to the title's text column rather than to the tile's edge:
+      // the mark slot is 4px plus a gap, and a subtitle that started outside it
+      // would jog left of every line it belongs to.
+      subtitle: Padding(
+        padding: const EdgeInsets.only(
+          left: kConfigMarkWidth + kConfigColumnGap,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (group.isNotEmpty)
+              Text(group, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: secondary),
+            if (action.isParentless)
+              Text(
+                kConfigParentlessNote,
+                key: kConfigParentlessNoteKey,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: secondary,
               ),
-              key: kConfigHiddenChangesKey,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: secondary,
-            ),
-        ],
+            if (action.isPartial)
+              Text(
+                kConfigHiddenChangesNote(
+                  action.hiddenCount,
+                  action.totalChangeCount + action.totalAuditRowCount,
+                ),
+                key: kConfigHiddenChangesKey,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: secondary,
+              ),
+          ],
+        ),
       ),
       children: [
         for (final child in action.children)
