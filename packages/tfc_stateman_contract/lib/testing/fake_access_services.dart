@@ -456,10 +456,17 @@ class FakeAccessServices
 
   /// What is wrong with [configJson], or an empty list when it would be written.
   ///
-  /// Two hazards: it must parse as a JSON object (D-10 first hazard), and its
-  /// `relay` section must equal the live one — the socket the edit arrives on is
-  /// not editable over that socket (D-10 second hazard).
-  List<String> _problemsWith(String configJson) {
+  /// Two hazards, each its own overridable seam so a sabotage can reopen exactly
+  /// one: it must parse as a JSON object ([parseProblems], D-10 first hazard),
+  /// and its `relay` section must equal the live one ([relayProblems] — the
+  /// socket the edit arrives on is not editable over that socket, D-10 second
+  /// hazard).
+  List<String> _problemsWith(String configJson) =>
+      [...parseProblems(configJson), ...relayProblems(configJson)];
+
+  /// The parse hazard, as its own seam. `BrokenAccessServices` overrides this to
+  /// reopen D-10's first hazard.
+  List<String> parseProblems(String configJson) {
     final Object? parsed;
     try {
       parsed = _decode(configJson);
@@ -469,6 +476,20 @@ class FakeAccessServices
     if (parsed is! Map) {
       return ['the configuration is not a JSON object'];
     }
+    return const [];
+  }
+
+  /// The relay-section hazard, as its own seam. `BrokenAccessServices` overrides
+  /// this to reopen D-10's second hazard. Returns nothing when the payload does
+  /// not parse — the parse seam owns that failure.
+  List<String> relayProblems(String configJson) {
+    final Object? parsed;
+    try {
+      parsed = _decode(configJson);
+    } on FormatException {
+      return const [];
+    }
+    if (parsed is! Map) return const [];
     final liveRelay = (_decode(_configJson) as Map)['relay'];
     if (!_deepEquals(parsed['relay'], liveRelay)) {
       return [
@@ -495,5 +516,122 @@ class FakeAccessServices
       return '[${[for (final e in value) _canonical(e)].join(',')}]';
     }
     return jsonEncode(value);
+  }
+}
+
+/// The one thing [BrokenAccessServices] gets wrong, selected by its constructor.
+///
+/// Each mode is correct in every respect except one, in `broken_browse.dart`'s
+/// style, so `sabotage_access_test.dart` can assert the targeted checks fail and
+/// their neighbours still pass. A mode that broke everything would prove nothing
+/// about any individual check.
+enum AccessDamage {
+  /// (a) The gate throws, but only after the store has been touched — the
+  /// pre-effect property broken. The refusal checks stay green (it does refuse);
+  /// the `writes`-empty halves go red.
+  checksAfterWriting,
+
+  /// (b) Every gated member throws regardless of session — D-12's blank-page
+  /// defect. Every permitted twin goes red.
+  refusesEverything,
+
+  /// (c) The gate is never consulted; every session is allowed. Every refusal
+  /// check goes red.
+  ignoresSession,
+
+  /// (d) Decisions are made correctly and no audit row is recorded. The audit
+  /// trail check goes red.
+  auditWritesNothing,
+
+  /// (e) D-10's second hazard reopened: a relay-section edit is accepted.
+  acceptsRelaySectionEdit,
+
+  /// (f) D-10's first hazard reopened: an unparseable payload is written.
+  writesWithoutValidating,
+
+  /// (g) `setUserPassword`'s refusal echoes the value. The no-echo check goes
+  /// red; its anti-vacuity half (the permitted call succeeds) stays green.
+  leaksPassword,
+}
+
+/// An [AccessDenied] whose message leaks a secret — mode (g)'s vehicle.
+///
+/// A subclass so it is still an [AccessDenied] (the paired password check's
+/// refusal arm stays green — the refusal IS an authorisation verdict), while its
+/// `toString` carries the password so only the no-echo check reddens.
+class _LeakyDenied extends AccessDenied {
+  const _LeakyDenied(super.itemKey, super.required, this.leaked);
+
+  final String leaked;
+
+  @override
+  String toString() =>
+      'AccessDenied: "$itemKey" requires the ${required.name} group '
+      '(attempted value: "$leaked").';
+}
+
+/// [FakeAccessServices] with exactly one behaviour damaged, selected by
+/// [damage]. Lives beside the honest fake, and stays in the tree, because — like
+/// `broken_browse.dart` — it is the standing proof the access suite can fail,
+/// re-run in CI by `test/sabotage_access_test.dart` rather than described in a
+/// SUMMARY.
+///
+/// Every mode overrides a single seam of the honest fake and inherits the rest.
+/// The overrides reach the honest fake's private seams because this class is in
+/// the same library — the same arrangement that keeps the damage surgical.
+class BrokenAccessServices extends FakeAccessServices {
+  BrokenAccessServices(this.damage, {super.session, super.backendConfigJson});
+
+  final AccessDamage damage;
+
+  @override
+  void requireGroup(AccessGroup required, String itemKey, String member) {
+    switch (damage) {
+      case AccessDamage.refusesEverything:
+        // Throws for every session, allowed or not — the blank page.
+        throw AccessDenied(itemKey, required);
+      case AccessDamage.checksAfterWriting:
+        // Touch the store first, THEN let the gate refuse: the pre-effect
+        // property broken. On an allowed call this branch does nothing extra
+        // and the real method touches as usual.
+        if (!session.can(required)) _touch('leaked-write:$member');
+        super.requireGroup(required, itemKey, member);
+      default:
+        super.requireGroup(required, itemKey, member);
+    }
+  }
+
+  @override
+  bool _consultSession(AccessGroup required) =>
+      damage == AccessDamage.ignoresSession
+          ? true
+          : super._consultSession(required);
+
+  @override
+  void _recordDecision(
+      String itemKey, String member, AccessGroup required, bool allowed) {
+    if (damage == AccessDamage.auditWritesNothing) return;
+    super._recordDecision(itemKey, member, required, allowed);
+  }
+
+  @override
+  List<String> parseProblems(String configJson) =>
+      damage == AccessDamage.writesWithoutValidating
+          ? const []
+          : super.parseProblems(configJson);
+
+  @override
+  List<String> relayProblems(String configJson) =>
+      damage == AccessDamage.acceptsRelaySectionEdit
+          ? const []
+          : super.relayProblems(configJson);
+
+  @override
+  Future<void> setUserPassword(SetUserPasswordParams params) async {
+    if (damage == AccessDamage.leaksPassword &&
+        !session.can(AccessGroup.users)) {
+      throw _LeakyDenied(params.subject, AccessGroup.users, params.password);
+    }
+    return super.setUserPassword(params);
   }
 }
