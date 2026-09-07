@@ -54,17 +54,10 @@
 library;
 
 import 'dart:async';
-// For `HandshakeException` and nothing else: the one failure this file has to
-// name differently from the rest. `ws_transport.dart` is already `dart:io`-only
-// for the same underlying reason — a pinned dial has no other seam — so this
-// costs nothing that was not already spent.
-import 'dart:io' show HandshakeException;
 
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:stream_channel/stream_channel.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
-import 'package:web_socket_channel/web_socket_channel.dart'
-    show WebSocketChannelException;
 
 import 'backoff.dart';
 import 'client_config.dart';
@@ -245,11 +238,47 @@ final class ConnectionSupervisor {
   /// one correction (the WR-03 shape, in a third file).
   final Stopwatch _elapsed = Stopwatch()..start();
 
-  /// When each subscription was last rebuilt because a tick advertised a
-  /// sequence ahead of it, in [_elapsed]'s clock, and which of them this
-  /// connection has already complained about. Cleared on the way down.
-  final Map<String, int> _tickResyncAtMs = <String, int>{};
-  final Set<String> _tickResyncComplained = <String>{};
+  /// When each subscription was last rebuilt on this client's own initiative,
+  /// in [_elapsed]'s clock, and which of them this connection has already
+  /// complained about suppressing. Cleared on the way down.
+  ///
+  /// **One budget, and three consumers** (16-07, finding S14). A rebuild is a
+  /// rebuild whichever detector asked for it, and 07-REVIEW WR-02's bound is
+  /// one per subscription per [ClientConfig.freshnessDeadline] — so two
+  /// detectors each honouring their own copy of that limit is not that bound,
+  /// it is twice it. The three that consult this pair:
+  ///
+  /// 1. [_tick]'s sequence-mismatch branch, the original (07-07, WR-02);
+  /// 2. [_tick]'s unestablished branch (16-01, S1b) — the way back for a page
+  ///    a snapshot timeout gave up on;
+  /// 3. [_update]'s unannounced-handle branch (16-07, S14), which reached the
+  ///    same `ResyncEngine.onResync` with no rate limit at all. At 10–20 Hz
+  ///    with a handle this session never announced in every frame, that was
+  ///    several full ~1500-key snapshot requests per second against the one
+  ///    process serving every screen in the plant, indefinitely.
+  ///
+  /// The name has no `tick` in it for that reason: anything that adds a fourth
+  /// detector must come through here too, and a field named after one of them
+  /// invites a second map beside it.
+  final Map<String, int> _resyncAtMs = <String, int>{};
+  final Set<String> _resyncComplained = <String>{};
+
+  /// Whether [sub] may be rebuilt now, and books the rebuild if so.
+  ///
+  /// The one gate all three detectors pass through. Stamped **before** the
+  /// caller awaits `onResync`, deliberately: stamping afterwards reopens a
+  /// window in which a second detector starts a second rebuild while the first
+  /// is still in flight, which is the storm this exists to prevent.
+  bool _mayRebuild(String sub) {
+    final sinceLast = _elapsed.elapsedMilliseconds;
+    final rebuiltAt = _resyncAtMs[sub];
+    if (rebuiltAt != null &&
+        sinceLast - rebuiltAt < config.freshnessDeadline.inMilliseconds) {
+      return false;
+    }
+    _resyncAtMs[sub] = sinceLast;
+    return true;
+  }
 
   /// The `gateway_stalled` reason and its absolute duration, carried up from the
   /// last such resync on this connection (09-07). Both null until the gateway
@@ -417,16 +446,53 @@ final class ConnectionSupervisor {
       _down(gen, 'the dial failed: $error');
       return;
     }
-    if (_disposed || gen != _generation) return;
+    if (_disposed || gen != _generation) {
+      // **Both doors of this condition, one answer** (16-07, finding S12).
+      // The dial has already completed: the socket is up and the WebSocket
+      // upgrade has happened. Returning here without closing it dropped it
+      // where nothing else in this file can reach — the only sink close is
+      // `_stopServing`'s `peer.close()`, and the peer is built inside
+      // [_serve], which this path never enters.
+      await _closeAbandonedDial(attempt);
+      return;
+    }
 
     // Sealed, two arms, and no fallthrough: a third outcome added to
     // `ConnectAttempt` is a compile error here rather than a dial whose result
     // nobody looked at.
     switch (attempt) {
-      case ConnectFailed(:final error):
-        _down(gen, _refusalReason(error));
+      case ConnectFailed(:final error, :final certificateUntrusted):
+        _down(gen,
+            _refusalReason(error, certificateUntrusted: certificateUntrusted));
       case ConnectSucceeded(:final channel):
         await _serve(gen, channel);
+    }
+  }
+
+  /// Closes the socket a dial produced for a connection nobody will serve.
+  ///
+  /// **`_pinned?.close(force: true)` does not reap this**, which is the reason
+  /// it is worth three lines rather than none. The WebSocket upgrade detaches
+  /// the socket from the `HttpClient` connection pool, so closing the panel's
+  /// pinned client leaves it open and the gateway carries a session nobody is
+  /// on until its own reaper fires. The window is `connectTimeout` wide — ten
+  /// seconds by default — and a gateway coming back from a reboot is exactly
+  /// what fills it: a panel shutting down mid-restart leaks one session per
+  /// occurrence, and a control room shuts its panels down together.
+  ///
+  /// A [ConnectFailed] has no socket to close: `connect` has already drained
+  /// the second copy of the exception off its stream and attached a handler to
+  /// its `done`, which is the whole of that outcome's cleanup.
+  ///
+  /// Swallowed rather than reported, on [_retirePeer]'s reasoning: a close that
+  /// fails is a socket that was already gone, which is the ordinary shape of a
+  /// teardown after a cut cable.
+  Future<void> _closeAbandonedDial(ConnectAttempt attempt) async {
+    if (attempt is! ConnectSucceeded) return;
+    try {
+      await attempt.channel.sink.close();
+    } catch (_) {
+      // See above.
     }
   }
 
@@ -440,10 +506,19 @@ final class ConnectionSupervisor {
   /// service — three things that are all fine — before anybody thinks of the
   /// leaf that lapsed on Sunday.
   ///
-  /// One level of unwrapping, because that is where the exception is:
-  /// `web_socket_channel` hands the failure over as a
-  /// `WebSocketChannelException` with the real one in `.inner` (06-RESEARCH
-  /// §A.3). The original text is kept whole — the `OS Error` line is what an
+  /// **The classification comes in as a `bool`, from the dial seam** (16-07,
+  /// WSH-14). This method used to ask `error is HandshakeException` itself,
+  /// which cost this file an `import 'dart:io' show HandshakeException` — one
+  /// import, for one exception type, in the state machine a web build reuses
+  /// through its own `dial:` seam. It would not compile there, for that line.
+  /// `ws_transport.dart` is already `dart:io`-only and documents why at
+  /// length — a pinned dial has no other seam — so the platform-specific
+  /// judgement now lives in the platform-specific place and
+  /// `ConnectFailed.certificateUntrusted` carries the answer across. Unlike
+  /// `RemoteStateMan`'s `HttpClient` dependence (S11, deliberate debt with no
+  /// browser equivalent), this one was avoidable today.
+  ///
+  /// The original text is kept whole — the `OS Error` line is what an
   /// integrator pastes into a ticket, and it is the only part of this a
   /// support engineer can act on remotely.
   ///
@@ -474,9 +549,9 @@ final class ConnectionSupervisor {
   /// coverage, which is the argument `suite_integrity_test.dart:104-108`
   /// makes about vacuous checks, applied to an enum. The connect path
   /// produces a link-state reason string, and this is it.
-  static String _refusalReason(Object error) {
-    final inner = error is WebSocketChannelException ? error.inner : null;
-    if (inner is HandshakeException) {
+  static String _refusalReason(Object error,
+      {required bool certificateUntrusted}) {
+    if (certificateUntrusted) {
       return 'the gateway\'s certificate was not trusted by this panel: '
           '$error';
     }
@@ -689,6 +764,24 @@ final class ConnectionSupervisor {
     final state = subscriptions[update.sub];
     if (state == null) return;
 
+    // **The generation gate, resolved here rather than left to `onUpdate`**
+    // (16-07, finding S14). It is the same rule `ResyncEngine.onUpdate`
+    // applies — a frame from an establishment this client has already replaced
+    // is dropped silently, without touching the sequence — moved to the front
+    // of this method because the two things below it used to run *around* the
+    // gate rather than behind it: the handle-resolution loop filed a complaint
+    // per unknown handle, and the rebuild trigger asked for a full page
+    // snapshot, both for a frame nothing was ever going to apply. A peer that
+    // replays retired frames could therefore drive an unbounded rebuild storm
+    // and an unbounded complaint list without a single frame being accepted.
+    //
+    // Resolved first rather than collected-and-appended-afterwards because it
+    // is also cheaper: the handle lookups for a frame that is going nowhere are
+    // skipped with it. `onUpdate` keeps its own copy of the check — this is a
+    // detector shortcut, not a relocation of the rule, and the engine is
+    // driven directly by `resync_test.dart` with no supervisor in front of it.
+    if (update.generation != state.generation) return;
+
     // Whether this client still believes in the page at all. An unestablished
     // one has no handle table, so *every* handle in every frame the gateway
     // goes on pushing is unknown — and none of them is a fault anybody can act
@@ -707,7 +800,7 @@ final class ConnectionSupervisor {
         // unestablished page this is a line per handle per frame on an
         // unbounded list, for the life of the socket (07-REVIEW WR-07).
         if (established) {
-          _resync.complaints.add('update for "${update.sub}" named handle '
+          _resync.complain('update for "${update.sub}" named handle '
               '${entry.key}, which this session never announced');
         }
         continue;
@@ -724,7 +817,32 @@ final class ConnectionSupervisor {
     // that just failed, each with another complaint on an unbounded list.
     // `lastSeq == null` is the same "unestablished" signal `_tick`'s loop
     // skips on two methods down, so the two branches agree.
+    //
+    // **And through the same budget the tick detector uses** (16-07, finding
+    // S14). This branch had no rate limit at all, while the detector two
+    // methods down was capped at one rebuild per subscription per
+    // `freshnessDeadline` because "the F9/G3 resync-storm hazard reached
+    // through this detector" (07-REVIEW WR-02). The hazard reaches through
+    // this one too, and harder: a tick arrives at the gateway's fan-out
+    // cadence, while `u` frames arrive as fast as the plant moves. See
+    // [_resyncAtMs] for why the two share one map rather than owning one each.
     if (sawUnknownHandle && state.lastSeq != null) {
+      if (!_mayRebuild(update.sub)) {
+        // Once per subscription per connection, like the tick path's, and
+        // through the same set: one suppression is one operator-facing
+        // sentence however many detectors noticed it.
+        if (_resyncComplained.add(update.sub)) {
+          _resync.complain('"${update.sub}" was rebuilt less than '
+              '${config.freshnessDeadline.inMilliseconds} ms ago and the '
+              'gateway is still sending handles this session never announced. '
+              'Further rebuilds on this subscription are suppressed to one '
+              'per ${config.freshnessDeadline.inMilliseconds} ms while that '
+              'lasts. The complaints above name the handles; a page whose key '
+              'list the gateway no longer agrees with is fixed by editing the '
+              'page, not by rebuilding it.');
+        }
+        return;
+      }
       await _resync.onResync(update.sub);
     }
   }
@@ -825,32 +943,39 @@ final class ConnectionSupervisor {
       // reason to give up. See this method's doc for the whole of it.
       final unestablished = lastSeq == null;
 
-      final sinceLast = _elapsed.elapsedMilliseconds;
-      final rebuiltAt = _tickResyncAtMs[entry.key];
-      if (rebuiltAt != null &&
-          sinceLast - rebuiltAt < config.freshnessDeadline.inMilliseconds) {
+      if (!_mayRebuild(entry.key)) {
         // Once per subscription per connection, not once per suppressed tick:
         // a line at the tick cadence is the unbounded list WR-07 is about,
         // and every one of them would say the same thing.
         //
         // Only for the mismatch case, because only that one has anything to
-        // report: the sentence below is about a rebuild that *happened and did
-        // not help*, which is a fact about the gateway. A suppressed retry on
-        // an unestablished page is this client pacing itself, and `_recover`
-        // has already said out loud why the page is down.
-        if (!unestablished && _tickResyncComplained.add(entry.key)) {
-          _resync.complaints.add('"${entry.key}" was rebuilt on a '
-              'tick-sequence mismatch and the mismatch survived the rebuild: '
-              'the gateway advertises sequence ${entry.value.seq} and this '
-              'client holds $lastSeq after re-establishing from its snapshot. '
-              'Further rebuilds on this subscription are suppressed to one '
-              'per ${config.freshnessDeadline.inMilliseconds} ms while it '
-              'lasts. The disagreement is at the gateway; this end cannot '
-              'rebuild its way out of it.');
+        // report. A suppressed retry on an unestablished page is this client
+        // pacing itself, and `_recover` has already said out loud why the page
+        // is down.
+        //
+        // **And it says what is true, not what would be tidier** (16-07). This
+        // sentence used to read "the mismatch survived the rebuild… the
+        // disagreement is at the gateway", which is a claim about a rebuild
+        // that has *finished*. The budget is stamped before the await, so on
+        // any link where a rebuild's round trip outlasts one tick period —
+        // which is every slow link, and slow links are what this client is
+        // for — the rebuild it was talking about was still in flight. Saying
+        // "the gateway is wrong" about a round trip that has not landed sends
+        // the engineer to the wrong end of the plant.
+        if (!unestablished && _resyncComplained.add(entry.key)) {
+          _resync.complain('"${entry.key}" was rebuilt less than '
+              '${config.freshnessDeadline.inMilliseconds} ms ago and the '
+              'gateway is still advertising a sequence ahead of this client: '
+              'it advertises ${entry.value.seq} and this client holds '
+              '$lastSeq. Further rebuilds on this subscription are suppressed '
+              'to one per ${config.freshnessDeadline.inMilliseconds} ms while '
+              'that lasts. That rebuild may still be in flight — this line is '
+              'stamped when a rebuild is declined, not when one has been '
+              'proved not to help — so if the two ends agree again on the next '
+              'tick, nothing further is said.');
         }
         continue;
       }
-      _tickResyncAtMs[entry.key] = sinceLast;
       await _resync.onResync(entry.key);
     }
   }
@@ -892,7 +1017,7 @@ final class ConnectionSupervisor {
       // binds to.
       if (!_stallComplained) {
         _stallComplained = true;
-        _resync.complaints.add(asked.stalledMs == null
+        _resync.complain(asked.stalledMs == null
             ? 'the gateway announced its event loop stalled; the plant view '
                 'was frozen and every page on this connection is rebuilding '
                 'from a fresh snapshot'
@@ -1079,8 +1204,8 @@ final class ConnectionSupervisor {
       // divergent tick earns a rebuild and, if it survives one, its own
       // complaint. Carrying the suppression across would let a page that
       // recovered be refused the rebuild it needs.
-      _tickResyncAtMs.clear();
-      _tickResyncComplained.clear();
+      _resyncAtMs.clear();
+      _resyncComplained.clear();
       // The stall surface is a fact about the socket that heard the
       // announcement (09-07): a new connection starts with no stall reason, and
       // the once-per-connection complaint damper re-arms.
