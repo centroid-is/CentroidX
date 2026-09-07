@@ -1950,8 +1950,12 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   /// `ConfigConflict.key` is a 24-hex row id, which means nothing at a panel.
   /// The page or the asset it names is on screen, so name that instead — and
   /// name the page an asset sits on, because "Run" is on eleven pages.
-  String _describeConflicted(String id) {
-    for (final entry in _temporaryPages.entries) {
+  ///
+  /// [saved] is the manager's map, not `_temporaryPages`: the ids are stamped
+  /// onto the copy the save built, so the canvas's own objects do not carry
+  /// them and looking there finds nothing to name.
+  String _describeConflicted(String id, Map<String, AssetPage> saved) {
+    for (final entry in saved.entries) {
       final page = entry.value;
       final where = page.menuItem.label.isNotEmpty
           ? page.menuItem.label
@@ -1980,16 +1984,15 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   /// there is no merge.
   Future<void> _reloadAfterConflict() async {
     final container = _container;
-    if (container != null) {
-      container.invalidate(pageManagerProvider);
-    } else if (mounted) {
-      ref.invalidate(pageManagerProvider);
-    } else {
-      return;
-    }
+    if (container == null && !mounted) return;
     final pageManager = container != null
         ? await container.read(pageManagerProvider.future)
         : await ref.read(pageManagerProvider.future);
+    // `load()` on the manager itself rather than an invalidate-and-re-read:
+    // the store is the authority and it is already holding the other
+    // station's rows, so this is a synchronous snapshot read, and it does not
+    // depend on the provider being rebuilt to happen.
+    await pageManager.load();
     if (!mounted) return;
     setState(() {
       _temporaryPages = pageManager.copyWith().pages;
@@ -2004,6 +2007,12 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       _savedJson = _currentJson;
       _navOrderDirty = false;
     });
+    // And everything else holding the layout follows the reload.
+    if (container != null) {
+      container.invalidate(pageManagerProvider);
+    } else {
+      ref.invalidate(pageManagerProvider);
+    }
   }
 
   Future<void> _saveToPrefs() async {
@@ -2036,7 +2045,8 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       return;
     } on ConfigConflict catch (e) {
       messenger?.showSnackBar(SnackBar(
-        content: Text('${_describeConflicted(e.key)} was changed on another '
+        content: Text('${_describeConflicted(e.key, pageManager.pages)} was '
+            'changed on another '
             'station. Reload to see it, then make your change again.'),
         backgroundColor: errorColour,
         action: SnackBarAction(
