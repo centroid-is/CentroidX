@@ -286,6 +286,127 @@ void main() {
       });
     });
 
+    // `key_mappings` moved out of `flutter_preferences` and into one
+    // `config_item` row per key. This service feeds `access_template_tools`
+    // "the whole key universe", so serving the blob after the cutover is not
+    // an inconvenience: an access template written against a key set that
+    // stopped being updated is a rule that does not cover the wiring it was
+    // meant to cover.
+    //
+    // `config_item` is created by tfc_dart's migration and is deliberately not
+    // part of `ServerDatabase`'s drift schema -- the same arrangement
+    // `flutter_preferences` has, one physical table read through raw SQL. So
+    // these tests create it the way a real database gets it, with DDL.
+    group('listKeyMappings over config_item rows', () {
+      Future<void> createConfigItemTable() => db.customStatement(
+          'CREATE TABLE IF NOT EXISTS config_item (kind TEXT NOT NULL, '
+          'id TEXT NOT NULL, scope TEXT NOT NULL, parent_id TEXT, '
+          'sort_index INTEGER, payload TEXT NOT NULL, '
+          'rev INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, '
+          'updated_by TEXT NOT NULL, PRIMARY KEY (kind, id, scope))');
+
+      Future<void> insertMappingRow(
+        String id,
+        Map<String, dynamic> payload, {
+        String scope = 'shared',
+        String kind = 'key_mapping',
+      }) =>
+          db.customStatement(
+            'INSERT INTO config_item (kind, id, scope, payload, rev, '
+            'updated_at, updated_by) VALUES (?, ?, ?, ?, 0, ?, ?)',
+            [
+              kind,
+              id,
+              scope,
+              jsonEncode(payload),
+              '2026-09-07T00:00:00Z',
+              'tester',
+            ],
+          );
+
+      Map<String, dynamic> opcua(String identifier) => {
+            'opcua_node': {'namespace': 2, 'identifier': identifier},
+          };
+
+      test('serves the key universe from the rows when they exist', () async {
+        // The blob and the rows deliberately share no key, so the assertion
+        // cannot pass by accident on a service that reads both or the wrong
+        // one.
+        await insertPreference('key_mappings', keyMappings);
+        await createConfigItemTable();
+        await insertMappingRow('CN04.MOT01.Run', opcua('CN04.Run'));
+        await insertMappingRow('CN04.MOT01.Stop', opcua('CN04.Stop'));
+
+        final mappings = await service.listKeyMappings();
+
+        final keys = mappings.map((m) => m['key']).toSet();
+        expect(keys, containsAll(['CN04.MOT01.Run', 'CN04.MOT01.Stop']));
+        expect(keys, isNot(contains('pump3.speed')),
+            reason: 'once the rows exist the blob is a frozen copy; serving '
+                'it is how an access template ends up written against wiring '
+                'that no longer exists');
+      });
+
+      test('ignores rows of another scope or another kind', () async {
+        await createConfigItemTable();
+        await insertMappingRow('CN04.MOT01.Run', opcua('CN04.Run'));
+        await insertMappingRow('CN09.MOT01.Run', opcua('CN09.Run'),
+            scope: 'station:svn-nes-ot-cl02');
+        await insertMappingRow('theme_mode', {'t': 's', 'v': 'dark'},
+            kind: 'preference');
+
+        final mappings = await service.listKeyMappings();
+
+        expect(mappings.map((m) => m['key']), ['CN04.MOT01.Run']);
+      });
+
+      test('serves the blob while the migration has not run', () async {
+        // The rollout window: the table is there, the rows are not. This is a
+        // read-side fallback and not a dual-write -- it reads the same blob
+        // this service has always read, and it retires itself the moment a
+        // row exists.
+        await createConfigItemTable();
+        await insertPreference('key_mappings', keyMappings);
+
+        final mappings = await service.listKeyMappings();
+
+        expect(mappings.map((m) => m['key']),
+            containsAll(['pump3.speed', 'conveyor.speed']));
+      });
+
+      test('serves the blob when config_item does not exist at all', () async {
+        // A ServerDatabase opened against a database tfc_dart has not
+        // migrated yet. Failing here would take out `list_key_mappings` and
+        // every access template tool built on it, to report a table that is
+        // about to be created.
+        await insertPreference('key_mappings', keyMappings);
+
+        final mappings = await service.listKeyMappings();
+
+        expect(mappings.map((m) => m['key']), contains('pump3.speed'));
+      });
+
+      test('reads the rows once per cache TTL', () async {
+        await createConfigItemTable();
+        await insertMappingRow('CN04.MOT01.Run', opcua('CN04.Run'));
+
+        expect((await service.listKeyMappings()).map((m) => m['key']),
+            ['CN04.MOT01.Run']);
+
+        await insertMappingRow('CN05.MOT01.Run', opcua('CN05.Run'));
+
+        expect((await service.listKeyMappings()).map((m) => m['key']),
+            ['CN04.MOT01.Run'],
+            reason: 'the 5-minute TtlCache covers the rows read too; a row '
+                'inserted inside the window is not visible until it expires '
+                'or something calls invalidateCache()');
+
+        service.invalidateCache();
+        expect((await service.listKeyMappings()).map((m) => m['key']),
+            ['CN04.MOT01.Run', 'CN05.MOT01.Run']);
+      });
+    });
+
     group('listAlarmDefinitions', () {
       test('returns alarm uid/title/description summaries', () async {
         await insertAlarms([
