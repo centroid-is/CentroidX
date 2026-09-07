@@ -29,11 +29,29 @@ library;
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+import 'package:tfc/core/gateway_config.dart';
+import 'package:tfc/core/gateway_link_status.dart';
+import 'package:tfc/core/gateway_state_man.dart';
+import 'package:tfc/providers/access.dart' show stationNameProvider;
+import 'package:tfc/providers/collector.dart';
+import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/gateway_link.dart';
+import 'package:tfc/providers/preferences.dart';
+import 'package:tfc/providers/state_man.dart';
+import 'package:tfc_dart/core/access/guarded_state_man.dart';
+import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
+import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import '../helpers/scripted_gateway.dart';
+import '../helpers/test_helpers.dart';
 import '../helpers/throwaway_ca.dart';
 
 /// The credential the wire arm drives.
@@ -111,7 +129,142 @@ Future<ScriptedGateway> _healthyGateway() =>
       }
     });
 
+/// How long an arm watches a **stopped** panel before believing it stopped.
+///
+/// A stop is an absence, and the only honest way to assert one is to wait
+/// longer than the event would have taken. `auth_refusal_test.dart:87-114`'s
+/// number, for its reason: several attempt-0 windows and more than one
+/// ceiling, so a refusal that had left a retry scheduled would have redialled
+/// inside it.
+const Duration _quietWindow = Duration(milliseconds: 300);
+
+/// The JSON-RPC code the gateway refuses a credential with.
+///
+/// Driven verbatim from this side of the package boundary the supervisor's own
+/// constant sits on — the same two-literals-that-must-agree discipline
+/// `auth_refusal_test.dart:60-70` uses. There is no shared constant to import:
+/// `grep -rn 32003 packages/tfc_relay_protocol/lib` is empty.
+const int _unauthorized = -32003;
+
+/// The code for a protocol-version refusal, the arm this one sits beside.
+const int _versionMismatch = -32004;
+
+/// The gateway's own refusal text, with a credential spliced into it.
+///
+/// The untrusted peer is the one that writes this string, and the client
+/// carries it into `stopReason` verbatim and on purpose
+/// (`connection_supervisor.dart:596-600`). T-15-18 is what the app does with
+/// it on the last hop to a screen: it may reach the paste-into-a-ticket field
+/// and it may not reach the two lines an operator reads across a room.
+const String _refusalMessage =
+    'the credential $_credential is not in the station map';
+
+/// This station's mapping, in the arms that drive the full provider stack.
+///
+/// It names [kScriptedSeededKey] because `GatewayStateMan` fixes the client's
+/// subscription set from the mapping at construction, so a key absent here is
+/// a key the scripted gateway is never asked for and a value that never lands.
+final KeyMappings _gatewayMappings = KeyMappings(nodes: {
+  kScriptedSeededKey: KeyMappingEntry(
+      opcuaNode: OpcUANodeConfig(namespace: 2, identifier: 'Connected')),
+});
+
+/// The full provider stack a panel runs, with nothing about the transport
+/// faked.
+///
+/// **`gatewayStateManFactoryProvider` is deliberately NOT overridden.** That
+/// is the difference between this harness and every other one in this
+/// directory: the object under observation is the real `GuardedStateMan` the
+/// real `stateManProvider` builds around a real `GatewayStateMan` around a
+/// real `RemoteStateMan` dialling a real socket. An arm that reached for a
+/// hand-built `GatewayStateMan` would pass while `value is GatewayStateMan`
+/// stayed false on every panel in the plant — which is the defect (15-RESEARCH
+/// F-1) this whole plan exists to prevent.
+///
+/// The three things that *are* overridden are the ones with no bearing on the
+/// transport: no Postgres, a fixed station name for the audit rows, and the
+/// direct-mode construction seam left as a tripwire, because a gateway station
+/// reaching it is a defect in itself.
+ProviderContainer _harness({
+  required PreferencesApi local,
+  Duration? patience,
+  List<Override> extra = const <Override>[],
+}) {
+  final container = ProviderContainer(
+    overrides: [
+      preferencesProvider.overrideWith((ref) => createTestPreferences(
+            keyMappings: _gatewayMappings,
+            stateManConfig: StateManConfig(opcua: const []),
+          )),
+      systemPreferencesProvider.overrideWith((ref) => createTestPreferences(
+            keyMappings: _gatewayMappings,
+            stateManConfig: StateManConfig(opcua: const []),
+          )),
+      localPreferencesProvider.overrideWithValue(local),
+      databaseProvider.overrideWith((ref) async => null),
+      stationNameProvider.overrideWithValue('phase15-panel'),
+      collectorProvider.overrideWith((ref) async => null),
+      stateManFactoryProvider.overrideWithValue(({
+        required StateManConfig config,
+        required KeyMappings keyMappings,
+        List<DeviceClient> deviceClients = const [],
+      }) async =>
+          throw StateError('local StateMan construction reached')),
+      if (patience != null)
+        gatewayLinkPatienceProvider.overrideWithValue(patience),
+      ...extra,
+    ],
+  );
+  addTearDown(container.dispose);
+  return container;
+}
+
+/// A device-local store seeded with [row], and the stack reading it.
+Future<ProviderContainer> _panel(
+  GatewayConfig row, {
+  Duration? patience,
+  List<Override> extra = const <Override>[],
+}) async {
+  final local = InMemoryPreferences();
+  await writeGatewayConfig(local, row);
+  return _harness(local: local, patience: patience, extra: extra);
+}
+
+/// The first report [container] publishes that satisfies [predicate].
+///
+/// Listens before it reads, the same no-window ordering [_until] documents:
+/// the provider seeds synchronously on its first listener, and a listener
+/// attached after a read would miss exactly that seed.
+Future<GatewayLinkReport> _report(
+  ProviderContainer container,
+  bool Function(GatewayLinkReport report) predicate, {
+  Duration budget = _recovery,
+}) {
+  final completer = Completer<GatewayLinkReport>();
+  final subscription = container.listen<AsyncValue<GatewayLinkReport?>>(
+    gatewayLinkProvider,
+    (previous, next) {
+      final report = next.valueOrNull;
+      if (report != null && predicate(report) && !completer.isCompleted) {
+        completer.complete(report);
+      }
+    },
+    fireImmediately: true,
+    onError: (Object error, StackTrace _) {
+      if (!completer.isCompleted) completer.completeError(error);
+    },
+  );
+  return completer.future.timeout(budget).whenComplete(subscription.close);
+}
+
 void main() {
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    SharedPreferencesAsyncPlatform.instance =
+        InMemorySharedPreferencesAsync.empty();
+    SecureStorage.setInstance(FakeSecureStorage());
+  });
+
   group('the scaffolding Phase 15 stands on', () {
     // Assumption A2, and it runs first because three later plans are written
     // against it being true. `RemoteStateMan` mounts a pinned root with
@@ -252,6 +405,335 @@ void main() {
           reason: 'the gateway asked for this close itself, so it knows the '
               'sink is gone even though readyState does not — that is the '
               'whole of the _closing flag, and dart:io will not tell you');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Criterion 2, over real sockets. Three refusals, three loopback listeners,
+  // three kinds — and the panel plumbing that carries them, unfaked, from the
+  // socket to something a widget could render.
+  // -------------------------------------------------------------------------
+  group('gatewayLinkProvider', () {
+    test('surfaces a report through the guard on a real panel stack',
+        () async {
+      final gateway = await _healthyGateway();
+      final container = await _panel(GatewayConfig(
+          mode: TransportMode.gateway, url: gateway.uri.toString()));
+
+      final report = await _report(container, (_) => true);
+
+      expect(report, isA<GatewayLinkReport>());
+      expect(report.url, gateway.uri);
+
+      // The claim this arm exists to make, asserted rather than assumed: the
+      // object the provider unwrapped is the one `stateManProvider` really
+      // built, and that object is a `GuardedStateMan`. An arm that constructed
+      // a bare `GatewayStateMan` would prove nothing — `value is
+      // GatewayStateMan` is false on every panel in the plant (15-RESEARCH
+      // F-1) and a test built that way stays green while the panel stays
+      // blank.
+      final stateMan = await container.read(stateManProvider.future);
+      expect(stateMan, isA<GuardedStateMan>(),
+          reason: 'if this is not the guard, the report reached the panel by '
+              'a route no panel has');
+      expect(stateMan, isNot(isA<GatewayStateMan>()),
+          reason: 'the guard hides the adapter — the whole reason innerAs '
+              'exists');
+      expect((stateMan as GuardedStateMan).innerAs<GatewayStateMan>(),
+          isNotNull);
+    });
+
+    test('direct mode publishes no report, and never builds a StateMan',
+        () async {
+      var built = false;
+      final container = await _panel(
+        const GatewayConfig(mode: TransportMode.direct),
+        extra: [
+          // The `test_helpers.dart:322-323` tripwire. A throw here is the only
+          // way to observe a read that should never happen: a provider that
+          // was built and then ignored looks identical to one that was not.
+          stateManProvider.overrideWith((ref) {
+            built = true;
+            throw StateError('stateManProvider was built in direct mode');
+          }),
+        ],
+      );
+
+      expect(await container.read(gatewayLinkProvider.future), isNull,
+          reason: 'the chip and the status row are absent in direct mode, not '
+              'empty');
+      expect(built, isFalse,
+          reason: 'the absence is decided on the config row before anything '
+              'heavier is touched, which is what keeps '
+              'base_scaffold_appbar_golden_test.dart — which overrides only '
+              'alarmManProvider — from having to build a real StateMan');
+    });
+
+    test('a closed port reads as unreachable, and the panel keeps retrying',
+        () async {
+      final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = socket.port;
+      await socket.close();
+
+      final container = await _panel(GatewayConfig(
+          mode: TransportMode.gateway, url: 'ws://127.0.0.1:$port'));
+
+      final report = await _report(
+          container, (r) => r.kind != GatewayLinkKind.connecting);
+
+      expect(report.kind, GatewayLinkKind.unreachable);
+      expect(report.terminal, isFalse,
+          reason: 'a cable and a switch can be fixed under a running panel, '
+              'so the supervisor keeps dialling and the copy must not say it '
+              'has given up');
+      expect(report.raw, contains(GatewayLinkReasons.didNotAnswer));
+      expect(report.sanHint, isNull);
+    });
+
+    test('a wss dial that cannot be verified reads as a certificate refusal',
+        () async {
+      // No TLS server and no leaf: `_refusalReason` maps every
+      // `HandshakeException` to one sentence regardless of cause
+      // (15-RESEARCH F-2), so a `wss://` dial at a plaintext listener reaches
+      // the identical app-visible input as a mis-issued certificate would.
+      final plaintext = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => plaintext.close(force: true));
+      plaintext.listen((request) => request.response.close());
+
+      final container = await _panel(GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://127.0.0.1:${plaintext.port}',
+        caCertPath: throwawayCaPath(),
+      ));
+
+      final report = await _report(
+          container, (r) => r.kind != GatewayLinkKind.connecting);
+
+      expect(report.kind, GatewayLinkKind.untrustedCertificate);
+      expect(report.terminal, isFalse,
+          reason: 'a certificate can be replaced under a running panel');
+      expect(report.raw, contains(GatewayLinkReasons.certificateNotTrusted));
+      expect(report.sanHint, isNull,
+          reason: 'dialled by address, so the name is not a candidate cause '
+              'and a hint that is always shown is a hint nobody reads');
+    });
+
+    test('a hello answered -32003 is terminal, and the panel has stopped',
+        () async {
+      final gateway = await ScriptedGateway.start((link, method, id) {
+        if (method != Methods.hello) return;
+        link.error(id, _unauthorized, _refusalMessage);
+        unawaited(link.close(CloseCodes.authExpired));
+      });
+      final container = await _panel(GatewayConfig(
+          mode: TransportMode.gateway, url: gateway.uri.toString()));
+
+      final report = await _report(
+          container, (r) => r.kind == GatewayLinkKind.credentialRefused);
+
+      expect(report.terminal, isTrue,
+          reason: 'the gateway has already decided about this token and would '
+              'refuse it again; a panel that kept dialling would be a busy '
+              'loop against the one process serving every screen');
+
+      // A stop is an absence. Wait longer than a redial would have taken, then
+      // ask the far end how many times it was dialled.
+      await Future<void>.delayed(_quietWindow);
+      expect(gateway.accepted, 1,
+          reason: 'the far end agrees the panel has genuinely stopped, rather '
+              'than the near end merely saying so');
+
+      // T-15-18. The refusal text is the untrusted peer's, and the client
+      // carries it whole on purpose. `raw` is where it is allowed to land; the
+      // two lines an operator reads across a room are this app's own words.
+      expect(report.raw, contains(_credential));
+      expect(report.headline, isNot(contains(_credential)));
+      expect(report.detail, isNot(contains(_credential)));
+    });
+
+    test('a hello answered -32004 is a version refusal, and terminal',
+        () async {
+      final gateway = await ScriptedGateway.start((link, method, id) {
+        if (method != Methods.hello) return;
+        link.error(id, _versionMismatch,
+            'this gateway speaks protocol 3 and the panel offered 2');
+        unawaited(link.close(CloseCodes.protocolMismatch));
+      });
+      final container = await _panel(GatewayConfig(
+          mode: TransportMode.gateway, url: gateway.uri.toString()));
+
+      final report = await _report(
+          container, (r) => r.kind == GatewayLinkKind.versionRefused);
+
+      expect(report.terminal, isTrue);
+      expect(report.raw, contains(GatewayLinkReasons.versionRefused));
+
+      await Future<void>.delayed(_quietWindow);
+      expect(gateway.accepted, 1);
+    });
+
+    test('values flow: the report reads connected and the value lands definite',
+        () async {
+      final gateway = await _healthyGateway();
+      final container = await _panel(GatewayConfig(
+          mode: TransportMode.gateway, url: gateway.uri.toString()));
+
+      final report = await _report(
+          container, (r) => r.kind == GatewayLinkKind.connected);
+      expect(report.terminal, isFalse);
+      expect(report.raw, isNull);
+
+      // The offline stand-in for the rig's "grey `--- °C` flipped definite the
+      // instant the socket established": the value has to arrive, and it has
+      // to arrive under a quality that renders definite. A bad-quality reading
+      // paints the same grey as no reading at all, and the two must not be
+      // indistinguishable.
+      final stateMan =
+          await container.read(stateManProvider.future) as GuardedStateMan;
+      final remote = stateMan.innerAs<GatewayStateMan>()!.remote;
+
+      final arrived = remote
+          .subscribe(kScriptedSeededKey)
+          .firstWhere((value) => value.value == false)
+          .timeout(_recovery);
+      gateway.links.last.update(1, const {kScriptedSeededHandle: false});
+      final value = await arrived;
+
+      expect(value.value, isFalse);
+      expect(value.quality.isGood, isTrue);
+      expect(remote.read(kScriptedSeededKey)?.value, isFalse);
+    });
+
+    // -----------------------------------------------------------------------
+    // "Never an indefinite spinner" as a measurement, not a phrase.
+    // -----------------------------------------------------------------------
+    test('the panel stops saying connecting even when nothing moves on the '
+        'wire', () async {
+      // Accepts the socket, answers nothing. Below the client's 1 s control
+      // deadline the supervisor has produced no reason at all, so the only
+      // thing that can change what the panel says is a clock.
+      final gateway = await ScriptedGateway.start((link, method, id) {});
+      final container = await _panel(
+        GatewayConfig(
+            mode: TransportMode.gateway, url: gateway.uri.toString()),
+        patience: const Duration(milliseconds: 100),
+      );
+
+      final connecting = await _report(
+          container, (r) => r.kind == GatewayLinkKind.connecting);
+      expect(connecting.raw, isNull);
+      expect(connecting.terminal, isFalse);
+
+      final settled = await _report(
+        container,
+        (r) => r.kind != GatewayLinkKind.connecting,
+        budget: const Duration(milliseconds: 700),
+      );
+
+      expect(settled.kind, GatewayLinkKind.unreachable);
+      expect(settled.terminal, isFalse);
+      expect(settled.raw, isNull,
+          reason: 'no reason was ever reported — the supervisor is still '
+              'inside its own control deadline. If this is non-null the '
+              'client, not the patience window, is what ended the spinner and '
+              'the property is untested');
+      expect(gateway.accepted, 1,
+          reason: 'and the wire did not move either: one socket, still open');
+    });
+
+    test('the patience timer is listener-gated and armed only while connecting',
+        () async {
+      final gateway = await ScriptedGateway.start((link, method, id) {});
+      final container = await _panel(
+        GatewayConfig(
+            mode: TransportMode.gateway, url: gateway.uri.toString()),
+        patience: const Duration(seconds: 30),
+      );
+      // Read before the dispose: a disposed container refuses reads, so the
+      // observation has to be a handle taken while it was alive.
+      final probe = container.read(gatewayLinkTimerProbeProvider);
+
+      final subscription = container.listen<AsyncValue<GatewayLinkReport?>>(
+          gatewayLinkProvider, (_, __) {},
+          fireImmediately: true);
+      await _report(container, (r) => r.kind == GatewayLinkKind.connecting);
+
+      expect(probe.armed, isTrue,
+          reason: 'a first attempt inside the window is the one report whose '
+              'expiry no event announces');
+      expect(probe.armedFor, isNotEmpty);
+      expect(probe.armedFor, everyElement(GatewayLinkKind.connecting),
+          reason: 'every other kind is a conclusion; re-deriving it on a '
+              'timer would be a periodic timer with extra steps');
+
+      subscription.close();
+      container.dispose();
+
+      expect(probe.armed, isFalse,
+          reason: 'project memory timers-must-be-listener-gated: an always-on '
+              'timer in plumbing fails unrelated widget tests with "A Timer '
+              'is still pending"');
+    });
+
+    // -----------------------------------------------------------------------
+    // The coupling. `lib/core/gateway_link_status.dart` sorts the client's
+    // prose by prefix, and those prefixes are copies of literals in another
+    // package. A unit test fed a hand-copied constant cannot tell a copy from
+    // a retype; these compare against strings a real `ConnectionSupervisor`
+    // wrote, over a real socket, in this run.
+    // -----------------------------------------------------------------------
+    test('the app\'s prefixes are prefixes of what a real supervisor wrote — '
+        'the coupling', () async {
+      final dead = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final deadPort = dead.port;
+      await dead.close();
+
+      final plaintext = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => plaintext.close(force: true));
+      plaintext.listen((request) => request.response.close());
+
+      final refusing = await ScriptedGateway.start((link, method, id) {
+        if (method != Methods.hello) return;
+        link.error(id, _unauthorized, _refusalMessage);
+      });
+      final stale = await ScriptedGateway.start((link, method, id) {
+        if (method != Methods.hello) return;
+        link.error(id, _versionMismatch, 'protocol 3, not 2');
+      });
+
+      Future<String> rawFrom(GatewayConfig row) async {
+        final container = await _panel(row);
+        final report = await _report(
+            container, (r) => r.kind != GatewayLinkKind.connecting);
+        return report.raw!;
+      }
+
+      final didNotAnswer = await rawFrom(GatewayConfig(
+          mode: TransportMode.gateway, url: 'ws://127.0.0.1:$deadPort'));
+      final notTrusted = await rawFrom(GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://127.0.0.1:${plaintext.port}',
+        caCertPath: throwawayCaPath(),
+      ));
+      final credential = await rawFrom(GatewayConfig(
+          mode: TransportMode.gateway, url: refusing.uri.toString()));
+      final version = await rawFrom(GatewayConfig(
+          mode: TransportMode.gateway, url: stale.uri.toString()));
+
+      // `startsWith`, not `contains`: every producer builds its string by
+      // prepending a fixed sentence to an interpolated cause, so the prefix is
+      // the part that is ours to match. `contains` would keep passing after a
+      // reword moved our sentence into the middle of theirs, which is exactly
+      // the silent reclassification this arm exists to catch.
+      expect(didNotAnswer, startsWith(GatewayLinkReasons.didNotAnswer),
+          reason: 'the fallback voice\'s evidence: this literal is what the '
+              'unmatched majority of reasons look like');
+      expect(notTrusted, startsWith(GatewayLinkReasons.certificateNotTrusted),
+          reason: 'three of these literals carry an apostrophe. A straightened '
+              'quote silently never matches, and every TLS fault quietly '
+              'becomes a cable fault');
+      expect(credential, startsWith(GatewayLinkReasons.credentialRefused));
+      expect(version, startsWith(GatewayLinkReasons.versionRefused));
     });
   });
 }
