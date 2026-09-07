@@ -156,6 +156,33 @@ Future<void> seedMigrationMarker({AppDatabase? db}) =>
           ),
         );
 
+/// Any row at all, of any kind and any scope — the neighbours a sweep of the
+/// shared key mappings must leave alone.
+Future<void> seedItemRow({
+  required ConfigKind kind,
+  required String id,
+  required ConfigScope scope,
+  String? payload,
+  AppDatabase? db,
+}) =>
+    (db ?? local).into((db ?? local).configItemTable).insert(
+          ConfigItemTableCompanion.insert(
+            kind: kind.wireName,
+            id: id,
+            scope: scope.wireName,
+            payload: payload ?? jsonEncode({'anything': id}),
+            rev: const Value(1),
+            updatedAt: DateTime.utc(2026, 1, 1),
+            updatedBy: 'somebody',
+          ),
+        );
+
+/// Every row in the local file, as `kind|scope|id`.
+Future<List<String>> localRowKeys() async {
+  final rows = await local.select(local.configItemTable).get();
+  return [for (final r in rows) '${r.kind}|${r.scope}|${r.id}']..sort();
+}
+
 Future<List<ConfigItemRow>> mirrorRows({AppDatabase? db}) =>
     ((db ?? local).select((db ?? local).configItemTable)
           ..where((t) =>
@@ -325,6 +352,46 @@ void main() {
       expect(store.keyMappings.nodes, isEmpty);
       expect(await mirrorRows(), isEmpty);
       expect(emitted.single.removed.map((i) => i.id), ['CN04.Belt.Speed']);
+    });
+
+    test('the remote wins outright, and only over shared key mappings',
+        () async {
+      // THE PROPERTY, stated as a test because Phase 3 builds on it: for the
+      // kinds under sync the remote's row set **replaces** this station's, so
+      // a row the remote has never heard of is deleted rather than left
+      // alone. A sweep that merged instead would leave that row surviving
+      // every future sweep — a legitimate-looking id nobody ever wrote, which
+      // nothing downstream can tell from real configuration.
+      //
+      // And the other half of it: "absent from a shared remote" says nothing
+      // whatever about a `station:` row or about another kind. Those are
+      // different row sets, and deleting them here would wipe per-station
+      // settings and, from Phase 3, pages.
+      await seedRow('CN04.Belt.Speed', 'GVL.Conveyors[4].Speed');
+      await seedItemRow(
+          kind: ConfigKind.keyMapping,
+          id: 'CN04.Belt.Speed',
+          scope: kStationScope);
+      await seedItemRow(
+          kind: ConfigKind.page, id: '/roe', scope: ConfigScope.shared);
+      await seedItemRow(
+          kind: ConfigKind.preference,
+          id: kKeyMappingsWatermarkId,
+          scope: kStationScope,
+          payload: jsonEncode({'type': 'int', 'value': 12}));
+      // The marker, so the empty remote is believed rather than read as an
+      // un-migrated plant.
+      await seedMigrationMarker();
+      await store.open();
+
+      store.attachRemoteDatabase(remote);
+      await settled();
+
+      expect(await localRowKeys(), [
+        'key_mapping|${kStationScope.wireName}|CN04.Belt.Speed',
+        'page|shared|/roe',
+        'preference|${kStationScope.wireName}|$kKeyMappingsWatermarkId',
+      ]);
     });
   });
 

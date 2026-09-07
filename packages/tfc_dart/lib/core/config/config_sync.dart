@@ -32,6 +32,46 @@
 /// out-of-order commit by hand and proves the sweep catches what the pull
 /// cannot.
 ///
+/// ## The remote wins outright, and only over what it owns
+///
+/// This is a **replace**, not a merge, and the distinction is the difference
+/// between a reconcile and a slow leak. For the row set under sync — kind
+/// `key_mapping` at `scope='shared'` — the remote's rows replace this
+/// station's: a row present locally and absent remotely is *deleted*, from the
+/// snapshot and from the mirror, not left alone as an unmatched extra. A merge
+/// would let a row the server has never heard of survive every future sweep,
+/// with a legitimate-looking id and nothing downstream able to tell it from
+/// configuration somebody wrote.
+///
+/// The other half is as load-bearing as the first: **"absent from a shared
+/// remote" says nothing about a `station:<hostname>` row, or about a row of
+/// another kind.** Those are different row sets that happen to share a table.
+/// Every read here filters on `kind` *and* `scope`, every snapshot item
+/// carries both (`ConfigStore._itemOf` sets them from what the query filtered
+/// on), and every mirror delete names both — so a sweep of the shared key
+/// mappings structurally cannot reach this station's own settings, the
+/// watermark row sitting beside them, or a page. `the remote wins outright,
+/// and only over shared key mappings` in `config_sync_test.dart` is that
+/// property, asserted over the whole local table rather than over the rows the
+/// sweep was looking at.
+///
+/// The single exception is stated where it lives: an empty remote with no
+/// migration marker is refused rather than applied, because on the cutover
+/// boot it means the migration has not run. See [_reconcile].
+///
+/// ## Widening this past key mappings
+///
+/// Phase 3 makes the store item-shaped across kinds. What that touches here is
+/// small and mechanical: the three reads below that name
+/// `ConfigKind.keyMapping` ([_pull]'s change-log filter, [_readItems] and
+/// [_remoteRevisions]), plus — in `config_store.dart` — the snapshot's id-only
+/// key, which has to become `(kind, scope, id)`, and `_itemOf`, which hardcodes
+/// the kind and scope it was filtered on. The marker guard in [_reconcile] is
+/// the one genuinely key-mapping-specific thing, and a kind-generic sweep
+/// needs the equivalent question per kind rather than a shared answer. The two
+/// paths themselves, the apply, the serialisation chain and the subscription
+/// are already indifferent to what kind of row they are moving.
+///
 /// ## Failures are abandoned, never propagated
 ///
 /// Everything here is remote reads plus local writes — there is no transaction
