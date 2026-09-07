@@ -125,6 +125,26 @@ void main() {
         reason: '2100, past 2^32 ms: a 32-bit-coerced shift cannot reach it');
   });
 
+  test('the top of the 48-bit field round-trips', () {
+    // **This arm exists because sabotage proved the three above cannot fail
+    // for a whole class of defect, and the finding generalises.**
+    //
+    // Every timestamp a plant will ever mint encodes with '0' in position 0:
+    // the first character only becomes non-zero at 32^9 ms, which is the year
+    // 3084. So an implementation that skips position 0 entirely — an off-by-one
+    // in the loop bound — decodes every realistic id *correctly*, and each of
+    // the round-trip cases above stays green while the decoder is broken.
+    //
+    // 2^48-1 encodes as `7ZZZZZZZZZ`, the only value in this file whose leading
+    // character carries information. It is what makes the loop bound testable
+    // at all. An arm written only from realistic examples cannot see a defect
+    // at a position realistic examples never exercise.
+    expect(ulidMs(newUlid(nowMs: 281474976710655)), 281474976710655);
+    expect(newUlid(nowMs: 281474976710655).substring(0, 10), '7ZZZZZZZZZ',
+        reason: 'if this stops being the top of the field, the arm above stops '
+            'covering position 0 and the loop bound goes unguarded again');
+  });
+
   test('the 2023 prefix decodes to exactly 1700000000000', () {
     // **Stated as a value, not as a platform, and that is deliberate.**
     //
