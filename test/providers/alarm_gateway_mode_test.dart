@@ -175,6 +175,13 @@ class _RecordingTransport implements AlarmTransport {
   /// the RPC is in flight.
   Completer<void>? ackGate;
 
+  /// Whether anything is still listening to `ALARM.active` through this port.
+  ///
+  /// The observable half of "the old source was closed": a flag on the source
+  /// would only say that `close()` ran, and what CR-01 is about is whether the
+  /// **subscription** on a dead client was actually let go.
+  bool get hasListener => _values.hasListener;
+
   @override
   Stream<rp.DynamicValue> activeValues() {
     subscribed.add(rp.AlarmKeys.active);
@@ -360,6 +367,38 @@ String _statementAt(String source, String anchor) {
   if (start < 0) return '';
   final end = source.indexOf(';', start);
   return end < 0 ? source.substring(start) : source.substring(start, end + 1);
+}
+
+/// A container wired the way production wires gateway mode, so that
+/// `stateManProvider` can be invalidated and the slot moves with it.
+///
+/// `_container` above fixes one transport for the life of the container, which
+/// is exactly the case CR-01 is NOT about. Here every build of
+/// `stateManProvider` takes the next transport out of [transports] and
+/// publishes it into the slot, and clears the slot on dispose — which is what
+/// `state_man.dart:182` and `:204` do around the real `GatewayStateMan`.
+ProviderContainer _reloadableGatewayContainer({
+  required Preferences preferences,
+  required List<_RecordingTransport> transports,
+}) {
+  final slot = GatewayAlarmSlot();
+  var builds = 0;
+  final container = ProviderContainer(overrides: [
+    gatewayConfigProvider.overrideWith((ref) async => const GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://gateway.svn:9443',
+        caCertPath: '/etc/tfc/ca.pem')),
+    preferencesProvider.overrideWith((ref) async => preferences),
+    gatewayAlarmSlotProvider.overrideWith((ref) => slot),
+    stateManProvider.overrideWith((ref) async {
+      final transport = transports[builds++];
+      slot.transport = transport;
+      ref.onDispose(() => slot.transport = null);
+      return _RecordingStateMan();
+    }),
+  ]);
+  addTearDown(container.dispose);
+  return container;
 }
 
 /// The active set as the widgets would see it, after [pumps] microtask turns.
@@ -884,6 +923,188 @@ void main() {
       expect(construction, contains('subscriptionKeys(keyMappings)'),
           reason: 'the behavioural arm above is only worth something if the '
               'production path goes through the function it tests');
+    });
+  });
+
+  // ------------------------------------------------------- CR-01 (14-REVIEW)
+  //
+  // `GatewayStateMan.updateKeyMappings` returns a non-empty `reloadReasons`
+  // unconditionally, and `requiresReload` is `reloadReasons.isNotEmpty`. So in
+  // gateway mode EVERY `key_mappings` save takes `state_man.dart:139`'s
+  // `ref.invalidateSelf()`, which disposes the `GatewayStateMan` and its
+  // `RemoteStateMan`.
+  //
+  // `alarmManProvider` is `@Riverpod(keepAlive: true)` and read its
+  // dependencies with `ref.read`, so nothing invalidated it: the
+  // `RelayAlarmSource` kept a `RemoteAlarmTransport` over a disposed client for
+  // the life of the process. `RemoteStateMan.dispose` CLOSES its handed-out
+  // streams rather than erroring them (`remote_state_man.dart:1219-1222`), so
+  // `_listen`'s `onError` never fires: the banner freezes at whatever it showed
+  // when the operator saved, a conveyor jams twenty minutes later, and nothing
+  // on the screen or on stderr says a word.
+  //
+  // Two halves, and the second is not optional. Making the source follow the
+  // client's lifetime fixes the path we know about; making a stream that ENDS
+  // loud is what covers the paths we do not.
+  group('the alarm source follows the relay client (CR-01)', () {
+    // ----------------------------------------------------------------- 15
+    test('a key_mappings reload repoints the alarm source at the new client',
+        () async {
+      final first = _RecordingTransport();
+      final second = _RecordingTransport();
+      addTearDown(first.close);
+      addTearDown(second.close);
+
+      final container = _reloadableGatewayContainer(
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transports: [first, second],
+      );
+
+      final before = await container.read(alarmManProvider.future);
+      await _settle(before);
+      expect(first.subscribed, [rp.AlarmKeys.active],
+          reason: 'the premise: the first client is the one being read');
+
+      // Exactly what `state_man.dart:136-140` does on every gateway-mode
+      // key_mappings save. The slot is cleared by the old build's onDispose and
+      // filled by the new one, as production does.
+      container.invalidate(stateManProvider);
+
+      final after = await container.read(alarmManProvider.future);
+      await _settle(after);
+
+      expect(identical(before, after), isFalse,
+          reason: 'the same source object came back after the client behind it '
+              'was disposed. Everything below is a consequence of this one '
+              'fact.');
+      expect(second.subscribed, [rp.AlarmKeys.active],
+          reason: 'the new client was never asked for ALARM.active, so the '
+              'banner is reading a socket that is gone — silently, because a '
+              'disposed RemoteStateMan CLOSES its streams rather than erroring '
+              'them');
+
+      // The operator-visible half: the plant reports a new fault after the
+      // save, and the panel must show it.
+      second.push([entry(uid: 'CN09.JAM01', title: 'Conveyor jam')]);
+      final active = await _settle(after);
+      expect(active.map((a) => a.alarm.config.uid), ['CN09.JAM01'],
+          reason: 'a fault that arrived after a key-mappings save never '
+              'reached the banner. Got: ${active.map((a) => a.alarm.config.uid)}');
+    });
+
+    // ---------------------------------------------------------------- 15b
+    test('and the source it replaces is closed, not leaked', () async {
+      final first = _RecordingTransport();
+      final second = _RecordingTransport();
+      addTearDown(first.close);
+      addTearDown(second.close);
+
+      final container = _reloadableGatewayContainer(
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transports: [first, second],
+      );
+
+      final before = await container.read(alarmManProvider.future);
+      await _settle(before);
+      expect(first.hasListener, isTrue,
+          reason: 'the premise: something is listening through the first port');
+
+      container.invalidate(stateManProvider);
+      await container.read(alarmManProvider.future);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(first.hasListener, isFalse,
+          reason: 'RelayAlarmSource.close() had no caller anywhere '
+              '(relay_alarm_source.dart:448), so every gateway-mode rebuild '
+              'left a subscription, two BehaviorSubjects and a _reloadHistory '
+              'chain behind on a client that no longer exists');
+    });
+
+    // ---------------------------------------------------------------- 15c
+    test('a transport whose stream ENDS is reported, not silent', () async {
+      final transport = _RecordingTransport();
+      final container = _container(
+        gateway: true,
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source =
+          await container.read(alarmManProvider.future) as RelayAlarmSource;
+      transport.push([entry()]);
+      await _settle(source);
+      expect(source.activeStreamClosed, isFalse,
+          reason: 'the premise: nothing is wrong yet');
+
+      // What `RemoteStateMan.dispose` does to every stream it handed out: it
+      // CLOSES them. No error, no exception, no line anywhere.
+      await transport.close();
+      await _settle(source);
+
+      expect(source.activeStreamClosed, isTrue,
+          reason: 'ALARM.active stopped arriving and the source had no opinion '
+              'about it. The banner keeps showing the last set it saw, for as '
+              'long as the panel is up, and "we cannot read the alarm list" is '
+              'indistinguishable from "the plant is fine" — which is the '
+              'failure class this whole milestone exists to remove');
+    });
+
+    // ---------------------------------------------------------------- 15d
+    test('and the acknowledge refuses by name rather than pretending',
+        () async {
+      final transport = _RecordingTransport();
+      final container = _container(
+        gateway: true,
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source =
+          await container.read(alarmManProvider.future) as RelayAlarmSource;
+      transport.push([entry()]);
+      final active = await _settle(source);
+      final alarm = active.single;
+
+      await transport.close();
+      await _settle(source);
+
+      await expectLater(
+        source.ackAlarm(alarm),
+        throwsA(isA<StateError>().having((e) => e.message, 'message',
+            allOf(contains(rp.AlarmKeys.active), contains('acknowledge')))),
+        reason: 'the operator presses Acknowledge on a banner that has been '
+            'frozen for twenty minutes. What they got was '
+            '"RemoteStateMan was asked for \\"ackAlarm\\" after it was '
+            'disposed" — a sentence about an object, from a package they have '
+            'never heard of, that does not say the alarm list stopped arriving',
+      );
+      expect(transport.acks, isEmpty,
+          reason: 'and nothing was sent into a socket that is gone');
+    });
+
+    // ---------------------------------------------------------------- 15e
+    test('an ordinary close() is NOT reported as a dead transport', () async {
+      // The negative half, and it is run in both directions in the sabotage
+      // matrix. A source that reported every teardown would make 15c pass
+      // vacuously — and on a panel it would print a fault line on every
+      // key-mappings save, which is how a real one stops being read.
+      final transport = _RecordingTransport();
+      addTearDown(transport.close);
+      final container = _container(
+        gateway: true,
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source =
+          await container.read(alarmManProvider.future) as RelayAlarmSource;
+      await _settle(source);
+
+      await source.close();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(source.activeStreamClosed, isFalse,
+          reason: 'this source was closed on purpose; nothing failed');
     });
   });
 }
