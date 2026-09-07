@@ -298,13 +298,16 @@ void main() {
       expect(config.bootLogLine, contains('TLS no'));
     });
 
-    test('badCertificateCallback appears nowhere in the implementation', () {
-      final source = _stripComments(
-          File('lib/core/relay/relay_config.dart').readAsStringSync());
-      expect(source, isNot(contains('badCertificateCallback')),
-          reason: 'sdk#39425: a callback that accepts any certificate is a '
-              'TLS deployment with no peer authentication at all');
-    });
+    // The local grep for the callback that turns pinning off used to live
+    // here. It greps one file, `lib/core/relay/relay_config.dart`, which
+    // `tfc_relay_client/test/no_bad_certificate_test.dart` sweeps along with
+    // every other .dart file in the repository — so no coverage was lost by
+    // removing it. What it cost was the sweep itself: that sweep is a plain
+    // substring match by design (an identifier-aware or language-aware rule
+    // would be the one thing it has to get wrong), so the two literals here
+    // counted as occurrences and the repository-wide ban had been red since
+    // dccf0259. A permanently-red test stops being informative, and this one
+    // is the TLS ratchet.
   });
 
   // ---------------------------------------------------------------------
