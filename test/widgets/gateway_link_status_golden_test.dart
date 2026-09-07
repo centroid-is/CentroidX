@@ -161,7 +161,17 @@ void main() {
       await tester.pumpWidget(themedGoldenHost(
         SizedBox(
           width: 560,
-          child: GatewayLinkStatusRow(report: frame.report),
+          // `IntrinsicHeight`, and it is load-bearing rather than tidiness.
+          // The row's inner `Column` is `MainAxisSize.max`, so it fills any
+          // *bounded* height it is handed. On the real card it sits in an
+          // `ExpansionTile`'s children, where the height is unbounded and it
+          // therefore hugs its content. Framed in a plain `Center` it stretched
+          // to the full 440 px surface and every frame recorded a mostly-empty
+          // box — a picture of the harness rather than of the plant, and one
+          // that hides how much vertical space each state actually costs.
+          child: IntrinsicHeight(
+            child: GatewayLinkStatusRow(report: frame.report),
+          ),
         ),
         dark: dark,
       ));

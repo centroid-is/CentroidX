@@ -254,21 +254,30 @@ void main() {
         );
         expectNoSpinner('hidden note');
 
-        // Framed on the note itself rather than on the whole page: the frame's
-        // subject is the *copy*, and a full-page capture of it is the gateway
-        // frame above with one row missing. The sentence being checked is the
-        // second paragraph — the one that stopped claiming this station opens
-        // no connections of its own, because it opens exactly one, to Postgres.
-        final note = find
-            .ancestor(
-              of: find.textContaining('It still opens one Postgres connection'),
-              matching: find.byType(Card),
-            )
-            .first;
-        expect(note, findsOneWidget);
+        // The sentence this frame exists for is the second paragraph — the one
+        // that stopped claiming this station opens no connections of its own,
+        // because it opens exactly one, to Postgres. Named before recording, so
+        // a frame that lost its subject fails here rather than becoming the new
+        // baseline.
+        expect(find.textContaining('It still opens one Postgres connection'),
+            findsOneWidget);
 
+        // Captured whole-page, like every other frame in this file, and
+        // deliberately not with a finder aimed at the note's own `Card`.
+        // `matchesGoldenFile` does not capture the widget a finder names: it
+        // walks up to the nearest enclosing `RepaintBoundary` and captures
+        // that whole layer. Aiming at the note produced an image that silently
+        // also contained the Transport card above it, at an extent no line of
+        // this file controls — so an unrelated change to the page's boundary
+        // structure would re-crop the golden. A fixed 760x1300 surface is the
+        // stable frame.
+        //
+        // What separates this from the gateway frame above is the status row:
+        // there the link is live and green, here the provider is unresolved and
+        // the row is absent, which is what a station renders before the first
+        // report lands.
         await expectLater(
-          note,
+          find.byType(MaterialApp),
           matchesGoldenFile(
               'goldens/server_config_transport_hidden_note$suffix.png'),
         );
@@ -309,12 +318,11 @@ void main() {
             reason: 'advisory is not refusal: a plant that provisions DNS SANs '
                 'is legitimate and must be allowed to save');
 
-        final card = find
-            .ancestor(
-                of: find.text('Transport'), matching: find.byType(Card))
-            .first;
+        // Whole-page, for the reason given on the hidden-note frame above: a
+        // finder aimed at the Transport `Card` does not crop to that card, it
+        // captures whatever repaint boundary happens to enclose it.
         await expectLater(
-          card,
+          find.byType(MaterialApp),
           matchesGoldenFile(
               'goldens/server_config_transport_advisory$suffix.png'),
         );
