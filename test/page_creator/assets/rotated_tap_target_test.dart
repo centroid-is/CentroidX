@@ -27,6 +27,7 @@ import 'package:tfc/page_creator/assets/elevator.dart';
 import 'package:tfc/pages/page_view.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc_dart/core/state_man.dart';
+import '../../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 class _FakeStateMan extends Fake implements StateMan {
   @override
@@ -36,6 +37,7 @@ class _FakeStateMan extends Fake implements StateMan {
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
   });

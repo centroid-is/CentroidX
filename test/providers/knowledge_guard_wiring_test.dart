@@ -38,6 +38,7 @@ import 'package:tfc/providers/tech_doc.dart';
 import 'package:tfc/tech_docs/tech_doc_library_section.dart'
     show guardedPageLayoutPrefsProvider, pageLayoutPrefsProvider;
 import 'package:tfc/tech_docs/tech_doc_upload_service.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 const String _kStation = 'test-panel';
 
@@ -254,6 +255,7 @@ Future<_Wiring> _wiring({bool indexFixture = true}) async {
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();

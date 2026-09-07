@@ -7,6 +7,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/pages/page_editor.dart';
 import 'package:tfc/pages/page_view.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// Reordering the asset list (send to back / bring to front) must MOVE the
 /// existing asset elements, not rebuild every asset at its new index. Asset
@@ -18,6 +19,7 @@ import 'package:tfc/pages/page_view.dart';
 /// `Positioned` on the asset's identity.
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();

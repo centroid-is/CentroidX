@@ -42,7 +42,8 @@ import 'package:tfc_dart/core/database.dart' show DatabaseConfig;
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/route_registry.dart';
 
-import 'test_helpers.dart' show FakeSecureStorage;
+import 'test_helpers.dart'
+    show FakeSecureStorage, useInMemoryDeviceLocalPreferences;
 
 /// Minimal in-memory [PreferencesApi] so the editor can load and save.
 /// Doubles as the read-back channel for [saveAndReadBack].
@@ -192,6 +193,13 @@ void setUpEditorEnvironment() {
   // instance must be set."
   SharedPreferencesAsyncPlatform.instance =
       InMemorySharedPreferencesAsync.empty();
+
+  // And the store the factory answers, which since v1.2 plan 01-05 is the
+  // SQLite one `main()` opens before `runApp` rather than a wrapper over the
+  // platform instance above. Both are needed: the canvas reaches the factory
+  // through `localPreferencesProvider`, and the legacy platform instance is
+  // still what `Preferences` and the import path read.
+  useInMemoryDeviceLocalPreferences();
 
   // IO-module configs kick off stateManProvider, which builds the real
   // Preferences and asks for SecureStorage. Linux and macOS fall back to

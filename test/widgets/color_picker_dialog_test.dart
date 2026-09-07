@@ -15,6 +15,7 @@ import 'package:shared_preferences_platform_interface/in_memory_shared_preferenc
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 
 import 'package:tfc/widgets/panes/color_picker_dialog.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 Widget _app(Widget body) {
   return MaterialApp(home: Scaffold(body: Center(child: body)));
@@ -22,6 +23,7 @@ Widget _app(Widget body) {
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
     RecentColors.resetCache();

@@ -37,6 +37,28 @@ class FakeSecureStorage implements MySecureStorage {
   }
 }
 
+/// Gives this test the device-local store that `main()` opens before
+/// `runApp`.
+///
+/// Since milestone v1.2 plan 01-05, `createDeviceLocalPreferences()` answers a
+/// process-wide SQLite store opened by `initDeviceLocalPreferences()` and
+/// throws a [StateError] when that has not run — deliberately, because a
+/// silently empty store at boot is a station that has lost its pages. A test
+/// that pumps a widget reaching the factory (any `AssetStack`, the colour
+/// picker, the tech-doc library) therefore has to say which store it means,
+/// exactly as it already says which `SharedPreferencesAsyncPlatform` it means.
+///
+/// Call it from `setUp`; the store is cleared again after the test, so no
+/// preference written by one test is visible to the next. The store is
+/// returned for the tests that need to seed a key into it — the ones that used
+/// to hand `InMemorySharedPreferencesAsync.withData(...)` a map.
+InMemoryPreferences useInMemoryDeviceLocalPreferences() {
+  final store = InMemoryPreferences();
+  setDeviceLocalPreferencesForTest(store);
+  addTearDown(() => setDeviceLocalPreferencesForTest(null));
+  return store;
+}
+
 /// Creates a test [Preferences] backed by in-memory storage.
 ///
 /// [database] is null by default, which is what almost every test wants. Pass

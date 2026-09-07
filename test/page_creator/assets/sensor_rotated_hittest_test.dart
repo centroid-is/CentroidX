@@ -16,9 +16,11 @@ import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/sensor.dart';
 import 'package:tfc/pages/page_view.dart';
 import 'package:tfc/widgets/panes/side_pane.dart';
+import '../../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
   });

@@ -35,9 +35,11 @@ import 'package:tfc/providers/collector.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();

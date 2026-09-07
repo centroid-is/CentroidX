@@ -11,6 +11,8 @@ import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/page_creator/page.dart';
 
 import '../helpers/page_editor_harness.dart';
+import 'package:tfc/providers/preferences.dart'
+    show createDeviceLocalPreferences;
 
 /// Home, an ordinary page, and an (empty) section.
 PageManager _manager(FakeEditorPreferences prefs) => PageManager(
@@ -57,10 +59,12 @@ Future<void> _openPages(WidgetTester tester) async {
   expect(find.text('Pages'), findsOneWidget);
 }
 
-/// The device-local store the editor writes into — the same in-memory
-/// platform instance [setUpEditorEnvironment] installs.
+/// The device-local store the editor writes into — the one
+/// [setUpEditorEnvironment] seeds through `setDeviceLocalPreferencesForTest`.
+/// Since v1.2 plan 01-05 that is the store the factory answers, not the
+/// `SharedPreferencesAsync` platform instance beneath it.
 Future<String?> _storedStartupUrl() =>
-    SharedPreferencesAsync().getString(startupUrlPrefsKey);
+    createDeviceLocalPreferences().getString(startupUrlPrefsKey);
 
 void main() {
   setUp(setUpEditorEnvironment);
@@ -115,7 +119,7 @@ void main() {
 
   testWidgets('a stored startup URL lights up when the dialog opens',
       (tester) async {
-    await SharedPreferencesAsync().setString(startupUrlPrefsKey, '/line');
+    await createDeviceLocalPreferences().setString(startupUrlPrefsKey, '/line');
 
     await _pumpEditor(tester);
     await _openPages(tester);

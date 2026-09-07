@@ -37,6 +37,7 @@ import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// Minimal in-memory [PreferencesApi] so the editor can load and save.
 class _FakePreferences implements PreferencesApi {
@@ -175,6 +176,7 @@ void main() {
   setUpAll(_loadMaterialIcons);
 
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     // The asset canvas constructs SharedPreferencesAsync directly.
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();

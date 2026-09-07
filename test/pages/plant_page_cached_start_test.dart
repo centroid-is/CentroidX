@@ -29,6 +29,7 @@ import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc/widgets/zoomable_canvas.dart';
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc_dart/core/preferences.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// Counts how many times a probe asset's subtree was mounted and torn down.
 int _probeMounts = 0;
@@ -121,6 +122,7 @@ Override _dbNeverAnswers() =>
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();

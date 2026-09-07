@@ -20,6 +20,7 @@ import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/routes.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// A container whose database is explicitly absent.
 ProviderContainer _noDatabaseContainer() {
@@ -34,6 +35,7 @@ ProviderContainer _noDatabaseContainer() {
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
