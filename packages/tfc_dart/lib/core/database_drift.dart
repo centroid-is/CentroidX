@@ -285,6 +285,18 @@ class AccessKeyBindingTable extends Table {
   DateTimeColumn get updatedAt => dateTime()();
 }
 
+/// **Do not regenerate `database_drift.g.dart` on this branch without checking
+/// the drift version.** `pubspec.yaml` pins `sqlite3: ^2.9.0` — deliberately,
+/// so `sqlite_loader.dart`'s `DynamicLibrary` path keeps working on the eLinux
+/// stations — and that pin caps drift at 2.31.0. The committed generated file
+/// was produced by drift_dev 2.34.x, and 2.31.0 emits neither the
+/// `constraintIsAlways('REFERENCES ...')` column constraints nor the
+/// `*References` classes: a regeneration under the pin silently drops every
+/// foreign key from the schema `createAll` builds for a fresh database.
+/// `test/core/access_schema_test.dart` is what catches it — `app_user.role_name
+/// is a declared foreign key to app_role` fails — so if that test goes red
+/// after a codegen run, the generated file is the suspect, not the schema.
+///
 /// `config_item` is declared in `config/config_item_table.dart`, not here.
 ///
 /// It is the one table this database shares with readers that must not link

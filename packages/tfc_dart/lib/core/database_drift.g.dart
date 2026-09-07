@@ -223,7 +223,10 @@ class $AlarmHistoryTable extends AlarmHistory
   @override
   late final GeneratedColumn<String> alarmUid = GeneratedColumn<String>(
       'alarm_uid', aliasedName, false,
-      type: DriftSqlType.string, requiredDuringInsert: true);
+      type: DriftSqlType.string,
+      requiredDuringInsert: true,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('REFERENCES alarm (uid)'));
   static const VerificationMeta _alarmTitleMeta =
       const VerificationMeta('alarmTitle');
   @override
@@ -1285,7 +1288,10 @@ class $HistoryViewKeyTable extends HistoryViewKey
   @override
   late final GeneratedColumn<int> viewId = GeneratedColumn<int>(
       'view_id', aliasedName, false,
-      type: DriftSqlType.int, requiredDuringInsert: true);
+      type: DriftSqlType.int,
+      requiredDuringInsert: true,
+      defaultConstraints: GeneratedColumn.constraintIsAlways(
+          'REFERENCES history_view (id) ON DELETE CASCADE'));
   static const VerificationMeta _keyMeta = const VerificationMeta('key');
   @override
   late final GeneratedColumn<String> key = GeneratedColumn<String>(
@@ -1625,7 +1631,10 @@ class $HistoryViewGraphTable extends HistoryViewGraph
   @override
   late final GeneratedColumn<int> viewId = GeneratedColumn<int>(
       'view_id', aliasedName, false,
-      type: DriftSqlType.int, requiredDuringInsert: true);
+      type: DriftSqlType.int,
+      requiredDuringInsert: true,
+      defaultConstraints: GeneratedColumn.constraintIsAlways(
+          'REFERENCES history_view (id) ON DELETE CASCADE'));
   static const VerificationMeta _graphIndexMeta =
       const VerificationMeta('graphIndex');
   @override
@@ -1971,7 +1980,10 @@ class $HistoryViewPeriodTable extends HistoryViewPeriod
   @override
   late final GeneratedColumn<int> viewId = GeneratedColumn<int>(
       'view_id', aliasedName, false,
-      type: DriftSqlType.int, requiredDuringInsert: true);
+      type: DriftSqlType.int,
+      requiredDuringInsert: true,
+      defaultConstraints: GeneratedColumn.constraintIsAlways(
+          'REFERENCES history_view (id) ON DELETE CASCADE'));
   static const VerificationMeta _nameMeta = const VerificationMeta('name');
   @override
   late final GeneratedColumn<String> name = GeneratedColumn<String>(
@@ -3389,7 +3401,10 @@ class $PlcVariableTableTable extends PlcVariableTable
   @override
   late final GeneratedColumn<int> blockId = GeneratedColumn<int>(
       'block_id', aliasedName, false,
-      type: DriftSqlType.int, requiredDuringInsert: true);
+      type: DriftSqlType.int,
+      requiredDuringInsert: true,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('REFERENCES plc_code_block (id)'));
   static const VerificationMeta _variableNameMeta =
       const VerificationMeta('variableName');
   @override
@@ -4170,7 +4185,10 @@ class $DrawingComponentTableTable extends DrawingComponentTable
   @override
   late final GeneratedColumn<int> drawingId = GeneratedColumn<int>(
       'drawing_id', aliasedName, false,
-      type: DriftSqlType.int, requiredDuringInsert: true);
+      type: DriftSqlType.int,
+      requiredDuringInsert: true,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('REFERENCES drawing (id)'));
   static const VerificationMeta _pageNumberMeta =
       const VerificationMeta('pageNumber');
   @override
@@ -4784,7 +4802,10 @@ class $TechDocSectionTableTable extends TechDocSectionTable
   @override
   late final GeneratedColumn<int> docId = GeneratedColumn<int>(
       'doc_id', aliasedName, false,
-      type: DriftSqlType.int, requiredDuringInsert: true);
+      type: DriftSqlType.int,
+      requiredDuringInsert: true,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('REFERENCES tech_doc (id)'));
   static const VerificationMeta _parentIdMeta =
       const VerificationMeta('parentId');
   @override
@@ -5637,7 +5658,10 @@ class $PlcVarRefTableTable extends PlcVarRefTable
   @override
   late final GeneratedColumn<int> blockId = GeneratedColumn<int>(
       'block_id', aliasedName, false,
-      type: DriftSqlType.int, requiredDuringInsert: true);
+      type: DriftSqlType.int,
+      requiredDuringInsert: true,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('REFERENCES plc_code_block (id)'));
   static const VerificationMeta _variablePathMeta =
       const VerificationMeta('variablePath');
   @override
@@ -5986,7 +6010,10 @@ class $PlcFbInstanceTableTable extends PlcFbInstanceTable
   @override
   late final GeneratedColumn<int> declaringBlockId = GeneratedColumn<int>(
       'declaring_block_id', aliasedName, false,
-      type: DriftSqlType.int, requiredDuringInsert: true);
+      type: DriftSqlType.int,
+      requiredDuringInsert: true,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('REFERENCES plc_code_block (id)'));
   static const VerificationMeta _instanceNameMeta =
       const VerificationMeta('instanceName');
   @override
@@ -6263,7 +6290,10 @@ class $PlcBlockCallTableTable extends PlcBlockCallTable
   @override
   late final GeneratedColumn<int> callerBlockId = GeneratedColumn<int>(
       'caller_block_id', aliasedName, false,
-      type: DriftSqlType.int, requiredDuringInsert: true);
+      type: DriftSqlType.int,
+      requiredDuringInsert: true,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('REFERENCES plc_code_block (id)'));
   static const VerificationMeta _calleeBlockNameMeta =
       const VerificationMeta('calleeBlockName');
   @override
@@ -6772,7 +6802,10 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
   @override
   late final GeneratedColumn<String> roleName = GeneratedColumn<String>(
       'role_name', aliasedName, false,
-      type: DriftSqlType.string, requiredDuringInsert: true);
+      type: DriftSqlType.string,
+      requiredDuringInsert: true,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('REFERENCES app_role (name)'));
   static const VerificationMeta _passwordHashMeta =
       const VerificationMeta('passwordHash');
   @override
@@ -8582,7 +8615,7 @@ class ConfigItemRow extends DataClass implements Insertable<ConfigItemRow> {
   /// rows are the only rows a local SQLite file will ever hold.
   final String scope;
 
-  /// The entity this one belongs to — an asset's page id — or null when the
+  /// The entity this one belongs to — an asset's page path — or null when the
   /// kind has no parent. **No `REFERENCES`**, deliberately: see
   /// `ConfigItem.parentId`'s doc. An asset outlives its page during a move,
   /// and a constraint would turn a reorder into a delete and re-insert that
@@ -9608,6 +9641,32 @@ abstract class _$AppDatabase extends GeneratedDatabase {
         configItemTable,
         configChangeTable
       ];
+  @override
+  StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules(
+        [
+          WritePropagation(
+            on: TableUpdateQuery.onTableName('history_view',
+                limitUpdateKind: UpdateKind.delete),
+            result: [
+              TableUpdate('history_view_key', kind: UpdateKind.delete),
+            ],
+          ),
+          WritePropagation(
+            on: TableUpdateQuery.onTableName('history_view',
+                limitUpdateKind: UpdateKind.delete),
+            result: [
+              TableUpdate('history_view_graph', kind: UpdateKind.delete),
+            ],
+          ),
+          WritePropagation(
+            on: TableUpdateQuery.onTableName('history_view',
+                limitUpdateKind: UpdateKind.delete),
+            result: [
+              TableUpdate('history_view_period', kind: UpdateKind.delete),
+            ],
+          ),
+        ],
+      );
 }
 
 typedef $$AlarmTableCreateCompanionBuilder = AlarmCompanion Function({
@@ -9626,6 +9685,25 @@ typedef $$AlarmTableUpdateCompanionBuilder = AlarmCompanion Function({
   Value<String> rules,
   Value<int> rowid,
 });
+
+final class $$AlarmTableReferences
+    extends BaseReferences<_$AppDatabase, $AlarmTable, AlarmConfig> {
+  $$AlarmTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static MultiTypedResultKey<$AlarmHistoryTable, List<AlarmHistoryData>>
+      _alarmHistoryRefsTable(_$AppDatabase db) =>
+          MultiTypedResultKey.fromTable(db.alarmHistory,
+              aliasName: 'alarm__uid__alarm_history__alarm_uid');
+
+  $$AlarmHistoryTableProcessedTableManager get alarmHistoryRefs {
+    final manager = $$AlarmHistoryTableTableManager($_db, $_db.alarmHistory)
+        .filter((f) => f.alarmUid.uid.sqlEquals($_itemColumn<String>('uid')!));
+
+    final cache = $_typedResult.readTableOrNull(_alarmHistoryRefsTable($_db));
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: cache));
+  }
+}
 
 class $$AlarmTableFilterComposer extends Composer<_$AppDatabase, $AlarmTable> {
   $$AlarmTableFilterComposer({
@@ -9649,6 +9727,27 @@ class $$AlarmTableFilterComposer extends Composer<_$AppDatabase, $AlarmTable> {
 
   ColumnFilters<String> get rules => $composableBuilder(
       column: $table.rules, builder: (column) => ColumnFilters(column));
+
+  Expression<bool> alarmHistoryRefs(
+      Expression<bool> Function($$AlarmHistoryTableFilterComposer f) f) {
+    final $$AlarmHistoryTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.uid,
+        referencedTable: $db.alarmHistory,
+        getReferencedColumn: (t) => t.alarmUid,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$AlarmHistoryTableFilterComposer(
+              $db: $db,
+              $table: $db.alarmHistory,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
 }
 
 class $$AlarmTableOrderingComposer
@@ -9699,6 +9798,27 @@ class $$AlarmTableAnnotationComposer
 
   GeneratedColumn<String> get rules =>
       $composableBuilder(column: $table.rules, builder: (column) => column);
+
+  Expression<T> alarmHistoryRefs<T extends Object>(
+      Expression<T> Function($$AlarmHistoryTableAnnotationComposer a) f) {
+    final $$AlarmHistoryTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.uid,
+        referencedTable: $db.alarmHistory,
+        getReferencedColumn: (t) => t.alarmUid,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$AlarmHistoryTableAnnotationComposer(
+              $db: $db,
+              $table: $db.alarmHistory,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
 }
 
 class $$AlarmTableTableManager extends RootTableManager<
@@ -9710,9 +9830,9 @@ class $$AlarmTableTableManager extends RootTableManager<
     $$AlarmTableAnnotationComposer,
     $$AlarmTableCreateCompanionBuilder,
     $$AlarmTableUpdateCompanionBuilder,
-    (AlarmConfig, BaseReferences<_$AppDatabase, $AlarmTable, AlarmConfig>),
+    (AlarmConfig, $$AlarmTableReferences),
     AlarmConfig,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool alarmHistoryRefs})> {
   $$AlarmTableTableManager(_$AppDatabase db, $AlarmTable table)
       : super(TableManagerState(
           db: db,
@@ -9756,9 +9876,33 @@ class $$AlarmTableTableManager extends RootTableManager<
             rowid: rowid,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) =>
+                  (e.readTable(table), $$AlarmTableReferences(db, table, e)))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({alarmHistoryRefs = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [if (alarmHistoryRefs) db.alarmHistory],
+              addJoins: null,
+              getPrefetchedDataCallback: (items) async {
+                return [
+                  if (alarmHistoryRefs)
+                    await $_getPrefetchedData<AlarmConfig, $AlarmTable,
+                            AlarmHistoryData>(
+                        currentTable: table,
+                        referencedTable:
+                            $$AlarmTableReferences._alarmHistoryRefsTable(db),
+                        managerFromTypedResult: (p0) =>
+                            $$AlarmTableReferences(db, table, p0)
+                                .alarmHistoryRefs,
+                        referencedItemsForCurrentItem:
+                            (item, referencedItems) => referencedItems
+                                .where((e) => e.alarmUid == item.uid),
+                        typedResults: items)
+                ];
+              },
+            );
+          },
         ));
 }
 
@@ -9771,9 +9915,9 @@ typedef $$AlarmTableProcessedTableManager = ProcessedTableManager<
     $$AlarmTableAnnotationComposer,
     $$AlarmTableCreateCompanionBuilder,
     $$AlarmTableUpdateCompanionBuilder,
-    (AlarmConfig, BaseReferences<_$AppDatabase, $AlarmTable, AlarmConfig>),
+    (AlarmConfig, $$AlarmTableReferences),
     AlarmConfig,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool alarmHistoryRefs})>;
 typedef $$AlarmHistoryTableCreateCompanionBuilder = AlarmHistoryCompanion
     Function({
   Value<int> id,
@@ -9803,6 +9947,25 @@ typedef $$AlarmHistoryTableUpdateCompanionBuilder = AlarmHistoryCompanion
   Value<DateTime?> acknowledgedAt,
 });
 
+final class $$AlarmHistoryTableReferences extends BaseReferences<_$AppDatabase,
+    $AlarmHistoryTable, AlarmHistoryData> {
+  $$AlarmHistoryTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static $AlarmTable _alarmUidTable(_$AppDatabase db) =>
+      db.alarm.createAlias('alarm_history__alarm_uid__alarm__uid');
+
+  $$AlarmTableProcessedTableManager get alarmUid {
+    final $_column = $_itemColumn<String>('alarm_uid')!;
+
+    final manager = $$AlarmTableTableManager($_db, $_db.alarm)
+        .filter((f) => f.uid.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_alarmUidTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: [item]));
+  }
+}
+
 class $$AlarmHistoryTableFilterComposer
     extends Composer<_$AppDatabase, $AlarmHistoryTable> {
   $$AlarmHistoryTableFilterComposer({
@@ -9814,9 +9977,6 @@ class $$AlarmHistoryTableFilterComposer
   });
   ColumnFilters<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnFilters(column));
-
-  ColumnFilters<String> get alarmUid => $composableBuilder(
-      column: $table.alarmUid, builder: (column) => ColumnFilters(column));
 
   ColumnFilters<String> get alarmTitle => $composableBuilder(
       column: $table.alarmTitle, builder: (column) => ColumnFilters(column));
@@ -9846,6 +10006,26 @@ class $$AlarmHistoryTableFilterComposer
   ColumnFilters<DateTime> get acknowledgedAt => $composableBuilder(
       column: $table.acknowledgedAt,
       builder: (column) => ColumnFilters(column));
+
+  $$AlarmTableFilterComposer get alarmUid {
+    final $$AlarmTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.alarmUid,
+        referencedTable: $db.alarm,
+        getReferencedColumn: (t) => t.uid,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$AlarmTableFilterComposer(
+              $db: $db,
+              $table: $db.alarm,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$AlarmHistoryTableOrderingComposer
@@ -9859,9 +10039,6 @@ class $$AlarmHistoryTableOrderingComposer
   });
   ColumnOrderings<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnOrderings(column));
-
-  ColumnOrderings<String> get alarmUid => $composableBuilder(
-      column: $table.alarmUid, builder: (column) => ColumnOrderings(column));
 
   ColumnOrderings<String> get alarmTitle => $composableBuilder(
       column: $table.alarmTitle, builder: (column) => ColumnOrderings(column));
@@ -9892,6 +10069,26 @@ class $$AlarmHistoryTableOrderingComposer
   ColumnOrderings<DateTime> get acknowledgedAt => $composableBuilder(
       column: $table.acknowledgedAt,
       builder: (column) => ColumnOrderings(column));
+
+  $$AlarmTableOrderingComposer get alarmUid {
+    final $$AlarmTableOrderingComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.alarmUid,
+        referencedTable: $db.alarm,
+        getReferencedColumn: (t) => t.uid,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$AlarmTableOrderingComposer(
+              $db: $db,
+              $table: $db.alarm,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$AlarmHistoryTableAnnotationComposer
@@ -9905,9 +10102,6 @@ class $$AlarmHistoryTableAnnotationComposer
   });
   GeneratedColumn<int> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
-
-  GeneratedColumn<String> get alarmUid =>
-      $composableBuilder(column: $table.alarmUid, builder: (column) => column);
 
   GeneratedColumn<String> get alarmTitle => $composableBuilder(
       column: $table.alarmTitle, builder: (column) => column);
@@ -9935,6 +10129,26 @@ class $$AlarmHistoryTableAnnotationComposer
 
   GeneratedColumn<DateTime> get acknowledgedAt => $composableBuilder(
       column: $table.acknowledgedAt, builder: (column) => column);
+
+  $$AlarmTableAnnotationComposer get alarmUid {
+    final $$AlarmTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.alarmUid,
+        referencedTable: $db.alarm,
+        getReferencedColumn: (t) => t.uid,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$AlarmTableAnnotationComposer(
+              $db: $db,
+              $table: $db.alarm,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$AlarmHistoryTableTableManager extends RootTableManager<
@@ -9946,12 +10160,9 @@ class $$AlarmHistoryTableTableManager extends RootTableManager<
     $$AlarmHistoryTableAnnotationComposer,
     $$AlarmHistoryTableCreateCompanionBuilder,
     $$AlarmHistoryTableUpdateCompanionBuilder,
-    (
-      AlarmHistoryData,
-      BaseReferences<_$AppDatabase, $AlarmHistoryTable, AlarmHistoryData>
-    ),
+    (AlarmHistoryData, $$AlarmHistoryTableReferences),
     AlarmHistoryData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool alarmUid})> {
   $$AlarmHistoryTableTableManager(_$AppDatabase db, $AlarmHistoryTable table)
       : super(TableManagerState(
           db: db,
@@ -10015,9 +10226,46 @@ class $$AlarmHistoryTableTableManager extends RootTableManager<
             acknowledgedAt: acknowledgedAt,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$AlarmHistoryTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({alarmUid = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins: <
+                  T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic>>(state) {
+                if (alarmUid) {
+                  state = state.withJoin(
+                    currentTable: table,
+                    currentColumn: table.alarmUid,
+                    referencedTable:
+                        $$AlarmHistoryTableReferences._alarmUidTable(db),
+                    referencedColumn:
+                        $$AlarmHistoryTableReferences._alarmUidTable(db).uid,
+                  ) as T;
+                }
+
+                return state;
+              },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
         ));
 }
 
@@ -10030,12 +10278,9 @@ typedef $$AlarmHistoryTableProcessedTableManager = ProcessedTableManager<
     $$AlarmHistoryTableAnnotationComposer,
     $$AlarmHistoryTableCreateCompanionBuilder,
     $$AlarmHistoryTableUpdateCompanionBuilder,
-    (
-      AlarmHistoryData,
-      BaseReferences<_$AppDatabase, $AlarmHistoryTable, AlarmHistoryData>
-    ),
+    (AlarmHistoryData, $$AlarmHistoryTableReferences),
     AlarmHistoryData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool alarmUid})>;
 typedef $$FlutterPreferencesTableCreateCompanionBuilder
     = FlutterPreferencesCompanion Function({
   required String key,
@@ -10196,6 +10441,58 @@ typedef $$HistoryViewTableUpdateCompanionBuilder = HistoryViewCompanion
   Value<DateTime?> updatedAt,
 });
 
+final class $$HistoryViewTableReferences
+    extends BaseReferences<_$AppDatabase, $HistoryViewTable, HistoryViewData> {
+  $$HistoryViewTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static MultiTypedResultKey<$HistoryViewKeyTable, List<HistoryViewKeyData>>
+      _historyViewKeyRefsTable(_$AppDatabase db) =>
+          MultiTypedResultKey.fromTable(db.historyViewKey,
+              aliasName: 'history_view__id__history_view_key__view_id');
+
+  $$HistoryViewKeyTableProcessedTableManager get historyViewKeyRefs {
+    final manager = $$HistoryViewKeyTableTableManager($_db, $_db.historyViewKey)
+        .filter((f) => f.viewId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(_historyViewKeyRefsTable($_db));
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: cache));
+  }
+
+  static MultiTypedResultKey<$HistoryViewGraphTable, List<HistoryViewGraphData>>
+      _historyViewGraphRefsTable(_$AppDatabase db) =>
+          MultiTypedResultKey.fromTable(db.historyViewGraph,
+              aliasName: 'history_view__id__history_view_graph__view_id');
+
+  $$HistoryViewGraphTableProcessedTableManager get historyViewGraphRefs {
+    final manager =
+        $$HistoryViewGraphTableTableManager($_db, $_db.historyViewGraph)
+            .filter((f) => f.viewId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache =
+        $_typedResult.readTableOrNull(_historyViewGraphRefsTable($_db));
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: cache));
+  }
+
+  static MultiTypedResultKey<$HistoryViewPeriodTable,
+      List<HistoryViewPeriodData>> _historyViewPeriodRefsTable(
+          _$AppDatabase db) =>
+      MultiTypedResultKey.fromTable(db.historyViewPeriod,
+          aliasName: 'history_view__id__history_view_period__view_id');
+
+  $$HistoryViewPeriodTableProcessedTableManager get historyViewPeriodRefs {
+    final manager =
+        $$HistoryViewPeriodTableTableManager($_db, $_db.historyViewPeriod)
+            .filter((f) => f.viewId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache =
+        $_typedResult.readTableOrNull(_historyViewPeriodRefsTable($_db));
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: cache));
+  }
+}
+
 class $$HistoryViewTableFilterComposer
     extends Composer<_$AppDatabase, $HistoryViewTable> {
   $$HistoryViewTableFilterComposer({
@@ -10216,6 +10513,69 @@ class $$HistoryViewTableFilterComposer
 
   ColumnFilters<DateTime> get updatedAt => $composableBuilder(
       column: $table.updatedAt, builder: (column) => ColumnFilters(column));
+
+  Expression<bool> historyViewKeyRefs(
+      Expression<bool> Function($$HistoryViewKeyTableFilterComposer f) f) {
+    final $$HistoryViewKeyTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.id,
+        referencedTable: $db.historyViewKey,
+        getReferencedColumn: (t) => t.viewId,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewKeyTableFilterComposer(
+              $db: $db,
+              $table: $db.historyViewKey,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
+
+  Expression<bool> historyViewGraphRefs(
+      Expression<bool> Function($$HistoryViewGraphTableFilterComposer f) f) {
+    final $$HistoryViewGraphTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.id,
+        referencedTable: $db.historyViewGraph,
+        getReferencedColumn: (t) => t.viewId,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewGraphTableFilterComposer(
+              $db: $db,
+              $table: $db.historyViewGraph,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
+
+  Expression<bool> historyViewPeriodRefs(
+      Expression<bool> Function($$HistoryViewPeriodTableFilterComposer f) f) {
+    final $$HistoryViewPeriodTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.id,
+        referencedTable: $db.historyViewPeriod,
+        getReferencedColumn: (t) => t.viewId,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewPeriodTableFilterComposer(
+              $db: $db,
+              $table: $db.historyViewPeriod,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
 }
 
 class $$HistoryViewTableOrderingComposer
@@ -10260,6 +10620,70 @@ class $$HistoryViewTableAnnotationComposer
 
   GeneratedColumn<DateTime> get updatedAt =>
       $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  Expression<T> historyViewKeyRefs<T extends Object>(
+      Expression<T> Function($$HistoryViewKeyTableAnnotationComposer a) f) {
+    final $$HistoryViewKeyTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.id,
+        referencedTable: $db.historyViewKey,
+        getReferencedColumn: (t) => t.viewId,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewKeyTableAnnotationComposer(
+              $db: $db,
+              $table: $db.historyViewKey,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
+
+  Expression<T> historyViewGraphRefs<T extends Object>(
+      Expression<T> Function($$HistoryViewGraphTableAnnotationComposer a) f) {
+    final $$HistoryViewGraphTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.id,
+        referencedTable: $db.historyViewGraph,
+        getReferencedColumn: (t) => t.viewId,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewGraphTableAnnotationComposer(
+              $db: $db,
+              $table: $db.historyViewGraph,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
+
+  Expression<T> historyViewPeriodRefs<T extends Object>(
+      Expression<T> Function($$HistoryViewPeriodTableAnnotationComposer a) f) {
+    final $$HistoryViewPeriodTableAnnotationComposer composer =
+        $composerBuilder(
+            composer: this,
+            getCurrentColumn: (t) => t.id,
+            referencedTable: $db.historyViewPeriod,
+            getReferencedColumn: (t) => t.viewId,
+            builder: (joinBuilder,
+                    {$addJoinBuilderToRootComposer,
+                    $removeJoinBuilderFromRootComposer}) =>
+                $$HistoryViewPeriodTableAnnotationComposer(
+                  $db: $db,
+                  $table: $db.historyViewPeriod,
+                  $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                  joinBuilder: joinBuilder,
+                  $removeJoinBuilderFromRootComposer:
+                      $removeJoinBuilderFromRootComposer,
+                ));
+    return f(composer);
+  }
 }
 
 class $$HistoryViewTableTableManager extends RootTableManager<
@@ -10271,12 +10695,12 @@ class $$HistoryViewTableTableManager extends RootTableManager<
     $$HistoryViewTableAnnotationComposer,
     $$HistoryViewTableCreateCompanionBuilder,
     $$HistoryViewTableUpdateCompanionBuilder,
-    (
-      HistoryViewData,
-      BaseReferences<_$AppDatabase, $HistoryViewTable, HistoryViewData>
-    ),
+    (HistoryViewData, $$HistoryViewTableReferences),
     HistoryViewData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function(
+        {bool historyViewKeyRefs,
+        bool historyViewGraphRefs,
+        bool historyViewPeriodRefs})> {
   $$HistoryViewTableTableManager(_$AppDatabase db, $HistoryViewTable table)
       : super(TableManagerState(
           db: db,
@@ -10312,9 +10736,68 @@ class $$HistoryViewTableTableManager extends RootTableManager<
             updatedAt: updatedAt,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$HistoryViewTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: (
+              {historyViewKeyRefs = false,
+              historyViewGraphRefs = false,
+              historyViewPeriodRefs = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [
+                if (historyViewKeyRefs) db.historyViewKey,
+                if (historyViewGraphRefs) db.historyViewGraph,
+                if (historyViewPeriodRefs) db.historyViewPeriod
+              ],
+              addJoins: null,
+              getPrefetchedDataCallback: (items) async {
+                return [
+                  if (historyViewKeyRefs)
+                    await $_getPrefetchedData<HistoryViewData,
+                            $HistoryViewTable, HistoryViewKeyData>(
+                        currentTable: table,
+                        referencedTable: $$HistoryViewTableReferences
+                            ._historyViewKeyRefsTable(db),
+                        managerFromTypedResult: (p0) =>
+                            $$HistoryViewTableReferences(db, table, p0)
+                                .historyViewKeyRefs,
+                        referencedItemsForCurrentItem: (item,
+                                referencedItems) =>
+                            referencedItems.where((e) => e.viewId == item.id),
+                        typedResults: items),
+                  if (historyViewGraphRefs)
+                    await $_getPrefetchedData<HistoryViewData,
+                            $HistoryViewTable, HistoryViewGraphData>(
+                        currentTable: table,
+                        referencedTable: $$HistoryViewTableReferences
+                            ._historyViewGraphRefsTable(db),
+                        managerFromTypedResult: (p0) =>
+                            $$HistoryViewTableReferences(db, table, p0)
+                                .historyViewGraphRefs,
+                        referencedItemsForCurrentItem: (item,
+                                referencedItems) =>
+                            referencedItems.where((e) => e.viewId == item.id),
+                        typedResults: items),
+                  if (historyViewPeriodRefs)
+                    await $_getPrefetchedData<HistoryViewData,
+                            $HistoryViewTable, HistoryViewPeriodData>(
+                        currentTable: table,
+                        referencedTable: $$HistoryViewTableReferences
+                            ._historyViewPeriodRefsTable(db),
+                        managerFromTypedResult: (p0) =>
+                            $$HistoryViewTableReferences(db, table, p0)
+                                .historyViewPeriodRefs,
+                        referencedItemsForCurrentItem: (item,
+                                referencedItems) =>
+                            referencedItems.where((e) => e.viewId == item.id),
+                        typedResults: items)
+                ];
+              },
+            );
+          },
         ));
 }
 
@@ -10327,12 +10810,12 @@ typedef $$HistoryViewTableProcessedTableManager = ProcessedTableManager<
     $$HistoryViewTableAnnotationComposer,
     $$HistoryViewTableCreateCompanionBuilder,
     $$HistoryViewTableUpdateCompanionBuilder,
-    (
-      HistoryViewData,
-      BaseReferences<_$AppDatabase, $HistoryViewTable, HistoryViewData>
-    ),
+    (HistoryViewData, $$HistoryViewTableReferences),
     HistoryViewData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function(
+        {bool historyViewKeyRefs,
+        bool historyViewGraphRefs,
+        bool historyViewPeriodRefs})>;
 typedef $$HistoryViewKeyTableCreateCompanionBuilder = HistoryViewKeyCompanion
     Function({
   Value<int> id,
@@ -10352,6 +10835,26 @@ typedef $$HistoryViewKeyTableUpdateCompanionBuilder = HistoryViewKeyCompanion
   Value<int> graphIndex,
 });
 
+final class $$HistoryViewKeyTableReferences extends BaseReferences<
+    _$AppDatabase, $HistoryViewKeyTable, HistoryViewKeyData> {
+  $$HistoryViewKeyTableReferences(
+      super.$_db, super.$_table, super.$_typedResult);
+
+  static $HistoryViewTable _viewIdTable(_$AppDatabase db) =>
+      db.historyView.createAlias('history_view_key__view_id__history_view__id');
+
+  $$HistoryViewTableProcessedTableManager get viewId {
+    final $_column = $_itemColumn<int>('view_id')!;
+
+    final manager = $$HistoryViewTableTableManager($_db, $_db.historyView)
+        .filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_viewIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: [item]));
+  }
+}
+
 class $$HistoryViewKeyTableFilterComposer
     extends Composer<_$AppDatabase, $HistoryViewKeyTable> {
   $$HistoryViewKeyTableFilterComposer({
@@ -10363,9 +10866,6 @@ class $$HistoryViewKeyTableFilterComposer
   });
   ColumnFilters<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnFilters(column));
-
-  ColumnFilters<int> get viewId => $composableBuilder(
-      column: $table.viewId, builder: (column) => ColumnFilters(column));
 
   ColumnFilters<String> get key => $composableBuilder(
       column: $table.key, builder: (column) => ColumnFilters(column));
@@ -10379,6 +10879,26 @@ class $$HistoryViewKeyTableFilterComposer
 
   ColumnFilters<int> get graphIndex => $composableBuilder(
       column: $table.graphIndex, builder: (column) => ColumnFilters(column));
+
+  $$HistoryViewTableFilterComposer get viewId {
+    final $$HistoryViewTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.viewId,
+        referencedTable: $db.historyView,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewTableFilterComposer(
+              $db: $db,
+              $table: $db.historyView,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$HistoryViewKeyTableOrderingComposer
@@ -10393,9 +10913,6 @@ class $$HistoryViewKeyTableOrderingComposer
   ColumnOrderings<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnOrderings(column));
 
-  ColumnOrderings<int> get viewId => $composableBuilder(
-      column: $table.viewId, builder: (column) => ColumnOrderings(column));
-
   ColumnOrderings<String> get key => $composableBuilder(
       column: $table.key, builder: (column) => ColumnOrderings(column));
 
@@ -10408,6 +10925,26 @@ class $$HistoryViewKeyTableOrderingComposer
 
   ColumnOrderings<int> get graphIndex => $composableBuilder(
       column: $table.graphIndex, builder: (column) => ColumnOrderings(column));
+
+  $$HistoryViewTableOrderingComposer get viewId {
+    final $$HistoryViewTableOrderingComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.viewId,
+        referencedTable: $db.historyView,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewTableOrderingComposer(
+              $db: $db,
+              $table: $db.historyView,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$HistoryViewKeyTableAnnotationComposer
@@ -10422,9 +10959,6 @@ class $$HistoryViewKeyTableAnnotationComposer
   GeneratedColumn<int> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
 
-  GeneratedColumn<int> get viewId =>
-      $composableBuilder(column: $table.viewId, builder: (column) => column);
-
   GeneratedColumn<String> get key =>
       $composableBuilder(column: $table.key, builder: (column) => column);
 
@@ -10436,6 +10970,26 @@ class $$HistoryViewKeyTableAnnotationComposer
 
   GeneratedColumn<int> get graphIndex => $composableBuilder(
       column: $table.graphIndex, builder: (column) => column);
+
+  $$HistoryViewTableAnnotationComposer get viewId {
+    final $$HistoryViewTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.viewId,
+        referencedTable: $db.historyView,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewTableAnnotationComposer(
+              $db: $db,
+              $table: $db.historyView,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$HistoryViewKeyTableTableManager extends RootTableManager<
@@ -10447,12 +11001,9 @@ class $$HistoryViewKeyTableTableManager extends RootTableManager<
     $$HistoryViewKeyTableAnnotationComposer,
     $$HistoryViewKeyTableCreateCompanionBuilder,
     $$HistoryViewKeyTableUpdateCompanionBuilder,
-    (
-      HistoryViewKeyData,
-      BaseReferences<_$AppDatabase, $HistoryViewKeyTable, HistoryViewKeyData>
-    ),
+    (HistoryViewKeyData, $$HistoryViewKeyTableReferences),
     HistoryViewKeyData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool viewId})> {
   $$HistoryViewKeyTableTableManager(
       _$AppDatabase db, $HistoryViewKeyTable table)
       : super(TableManagerState(
@@ -10497,9 +11048,46 @@ class $$HistoryViewKeyTableTableManager extends RootTableManager<
             graphIndex: graphIndex,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$HistoryViewKeyTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({viewId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins: <
+                  T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic>>(state) {
+                if (viewId) {
+                  state = state.withJoin(
+                    currentTable: table,
+                    currentColumn: table.viewId,
+                    referencedTable:
+                        $$HistoryViewKeyTableReferences._viewIdTable(db),
+                    referencedColumn:
+                        $$HistoryViewKeyTableReferences._viewIdTable(db).id,
+                  ) as T;
+                }
+
+                return state;
+              },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
         ));
 }
 
@@ -10512,12 +11100,9 @@ typedef $$HistoryViewKeyTableProcessedTableManager = ProcessedTableManager<
     $$HistoryViewKeyTableAnnotationComposer,
     $$HistoryViewKeyTableCreateCompanionBuilder,
     $$HistoryViewKeyTableUpdateCompanionBuilder,
-    (
-      HistoryViewKeyData,
-      BaseReferences<_$AppDatabase, $HistoryViewKeyTable, HistoryViewKeyData>
-    ),
+    (HistoryViewKeyData, $$HistoryViewKeyTableReferences),
     HistoryViewKeyData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool viewId})>;
 typedef $$HistoryViewGraphTableCreateCompanionBuilder
     = HistoryViewGraphCompanion Function({
   Value<int> id,
@@ -10537,6 +11122,26 @@ typedef $$HistoryViewGraphTableUpdateCompanionBuilder
   Value<String?> yAxis2Unit,
 });
 
+final class $$HistoryViewGraphTableReferences extends BaseReferences<
+    _$AppDatabase, $HistoryViewGraphTable, HistoryViewGraphData> {
+  $$HistoryViewGraphTableReferences(
+      super.$_db, super.$_table, super.$_typedResult);
+
+  static $HistoryViewTable _viewIdTable(_$AppDatabase db) => db.historyView
+      .createAlias('history_view_graph__view_id__history_view__id');
+
+  $$HistoryViewTableProcessedTableManager get viewId {
+    final $_column = $_itemColumn<int>('view_id')!;
+
+    final manager = $$HistoryViewTableTableManager($_db, $_db.historyView)
+        .filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_viewIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: [item]));
+  }
+}
+
 class $$HistoryViewGraphTableFilterComposer
     extends Composer<_$AppDatabase, $HistoryViewGraphTable> {
   $$HistoryViewGraphTableFilterComposer({
@@ -10549,9 +11154,6 @@ class $$HistoryViewGraphTableFilterComposer
   ColumnFilters<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnFilters(column));
 
-  ColumnFilters<int> get viewId => $composableBuilder(
-      column: $table.viewId, builder: (column) => ColumnFilters(column));
-
   ColumnFilters<int> get graphIndex => $composableBuilder(
       column: $table.graphIndex, builder: (column) => ColumnFilters(column));
 
@@ -10563,6 +11165,26 @@ class $$HistoryViewGraphTableFilterComposer
 
   ColumnFilters<String> get yAxis2Unit => $composableBuilder(
       column: $table.yAxis2Unit, builder: (column) => ColumnFilters(column));
+
+  $$HistoryViewTableFilterComposer get viewId {
+    final $$HistoryViewTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.viewId,
+        referencedTable: $db.historyView,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewTableFilterComposer(
+              $db: $db,
+              $table: $db.historyView,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$HistoryViewGraphTableOrderingComposer
@@ -10577,9 +11199,6 @@ class $$HistoryViewGraphTableOrderingComposer
   ColumnOrderings<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnOrderings(column));
 
-  ColumnOrderings<int> get viewId => $composableBuilder(
-      column: $table.viewId, builder: (column) => ColumnOrderings(column));
-
   ColumnOrderings<int> get graphIndex => $composableBuilder(
       column: $table.graphIndex, builder: (column) => ColumnOrderings(column));
 
@@ -10591,6 +11210,26 @@ class $$HistoryViewGraphTableOrderingComposer
 
   ColumnOrderings<String> get yAxis2Unit => $composableBuilder(
       column: $table.yAxis2Unit, builder: (column) => ColumnOrderings(column));
+
+  $$HistoryViewTableOrderingComposer get viewId {
+    final $$HistoryViewTableOrderingComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.viewId,
+        referencedTable: $db.historyView,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewTableOrderingComposer(
+              $db: $db,
+              $table: $db.historyView,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$HistoryViewGraphTableAnnotationComposer
@@ -10605,9 +11244,6 @@ class $$HistoryViewGraphTableAnnotationComposer
   GeneratedColumn<int> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
 
-  GeneratedColumn<int> get viewId =>
-      $composableBuilder(column: $table.viewId, builder: (column) => column);
-
   GeneratedColumn<int> get graphIndex => $composableBuilder(
       column: $table.graphIndex, builder: (column) => column);
 
@@ -10619,6 +11255,26 @@ class $$HistoryViewGraphTableAnnotationComposer
 
   GeneratedColumn<String> get yAxis2Unit => $composableBuilder(
       column: $table.yAxis2Unit, builder: (column) => column);
+
+  $$HistoryViewTableAnnotationComposer get viewId {
+    final $$HistoryViewTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.viewId,
+        referencedTable: $db.historyView,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewTableAnnotationComposer(
+              $db: $db,
+              $table: $db.historyView,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$HistoryViewGraphTableTableManager extends RootTableManager<
@@ -10630,13 +11286,9 @@ class $$HistoryViewGraphTableTableManager extends RootTableManager<
     $$HistoryViewGraphTableAnnotationComposer,
     $$HistoryViewGraphTableCreateCompanionBuilder,
     $$HistoryViewGraphTableUpdateCompanionBuilder,
-    (
-      HistoryViewGraphData,
-      BaseReferences<_$AppDatabase, $HistoryViewGraphTable,
-          HistoryViewGraphData>
-    ),
+    (HistoryViewGraphData, $$HistoryViewGraphTableReferences),
     HistoryViewGraphData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool viewId})> {
   $$HistoryViewGraphTableTableManager(
       _$AppDatabase db, $HistoryViewGraphTable table)
       : super(TableManagerState(
@@ -10681,9 +11333,46 @@ class $$HistoryViewGraphTableTableManager extends RootTableManager<
             yAxis2Unit: yAxis2Unit,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$HistoryViewGraphTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({viewId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins: <
+                  T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic>>(state) {
+                if (viewId) {
+                  state = state.withJoin(
+                    currentTable: table,
+                    currentColumn: table.viewId,
+                    referencedTable:
+                        $$HistoryViewGraphTableReferences._viewIdTable(db),
+                    referencedColumn:
+                        $$HistoryViewGraphTableReferences._viewIdTable(db).id,
+                  ) as T;
+                }
+
+                return state;
+              },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
         ));
 }
 
@@ -10696,13 +11385,9 @@ typedef $$HistoryViewGraphTableProcessedTableManager = ProcessedTableManager<
     $$HistoryViewGraphTableAnnotationComposer,
     $$HistoryViewGraphTableCreateCompanionBuilder,
     $$HistoryViewGraphTableUpdateCompanionBuilder,
-    (
-      HistoryViewGraphData,
-      BaseReferences<_$AppDatabase, $HistoryViewGraphTable,
-          HistoryViewGraphData>
-    ),
+    (HistoryViewGraphData, $$HistoryViewGraphTableReferences),
     HistoryViewGraphData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool viewId})>;
 typedef $$HistoryViewPeriodTableCreateCompanionBuilder
     = HistoryViewPeriodCompanion Function({
   Value<int> id,
@@ -10722,6 +11407,26 @@ typedef $$HistoryViewPeriodTableUpdateCompanionBuilder
   Value<DateTime> createdAt,
 });
 
+final class $$HistoryViewPeriodTableReferences extends BaseReferences<
+    _$AppDatabase, $HistoryViewPeriodTable, HistoryViewPeriodData> {
+  $$HistoryViewPeriodTableReferences(
+      super.$_db, super.$_table, super.$_typedResult);
+
+  static $HistoryViewTable _viewIdTable(_$AppDatabase db) => db.historyView
+      .createAlias('history_view_period__view_id__history_view__id');
+
+  $$HistoryViewTableProcessedTableManager get viewId {
+    final $_column = $_itemColumn<int>('view_id')!;
+
+    final manager = $$HistoryViewTableTableManager($_db, $_db.historyView)
+        .filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_viewIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: [item]));
+  }
+}
+
 class $$HistoryViewPeriodTableFilterComposer
     extends Composer<_$AppDatabase, $HistoryViewPeriodTable> {
   $$HistoryViewPeriodTableFilterComposer({
@@ -10734,9 +11439,6 @@ class $$HistoryViewPeriodTableFilterComposer
   ColumnFilters<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnFilters(column));
 
-  ColumnFilters<int> get viewId => $composableBuilder(
-      column: $table.viewId, builder: (column) => ColumnFilters(column));
-
   ColumnFilters<String> get name => $composableBuilder(
       column: $table.name, builder: (column) => ColumnFilters(column));
 
@@ -10748,6 +11450,26 @@ class $$HistoryViewPeriodTableFilterComposer
 
   ColumnFilters<DateTime> get createdAt => $composableBuilder(
       column: $table.createdAt, builder: (column) => ColumnFilters(column));
+
+  $$HistoryViewTableFilterComposer get viewId {
+    final $$HistoryViewTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.viewId,
+        referencedTable: $db.historyView,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewTableFilterComposer(
+              $db: $db,
+              $table: $db.historyView,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$HistoryViewPeriodTableOrderingComposer
@@ -10762,9 +11484,6 @@ class $$HistoryViewPeriodTableOrderingComposer
   ColumnOrderings<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnOrderings(column));
 
-  ColumnOrderings<int> get viewId => $composableBuilder(
-      column: $table.viewId, builder: (column) => ColumnOrderings(column));
-
   ColumnOrderings<String> get name => $composableBuilder(
       column: $table.name, builder: (column) => ColumnOrderings(column));
 
@@ -10776,6 +11495,26 @@ class $$HistoryViewPeriodTableOrderingComposer
 
   ColumnOrderings<DateTime> get createdAt => $composableBuilder(
       column: $table.createdAt, builder: (column) => ColumnOrderings(column));
+
+  $$HistoryViewTableOrderingComposer get viewId {
+    final $$HistoryViewTableOrderingComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.viewId,
+        referencedTable: $db.historyView,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewTableOrderingComposer(
+              $db: $db,
+              $table: $db.historyView,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$HistoryViewPeriodTableAnnotationComposer
@@ -10790,9 +11529,6 @@ class $$HistoryViewPeriodTableAnnotationComposer
   GeneratedColumn<int> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
 
-  GeneratedColumn<int> get viewId =>
-      $composableBuilder(column: $table.viewId, builder: (column) => column);
-
   GeneratedColumn<String> get name =>
       $composableBuilder(column: $table.name, builder: (column) => column);
 
@@ -10804,6 +11540,26 @@ class $$HistoryViewPeriodTableAnnotationComposer
 
   GeneratedColumn<DateTime> get createdAt =>
       $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  $$HistoryViewTableAnnotationComposer get viewId {
+    final $$HistoryViewTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.viewId,
+        referencedTable: $db.historyView,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$HistoryViewTableAnnotationComposer(
+              $db: $db,
+              $table: $db.historyView,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$HistoryViewPeriodTableTableManager extends RootTableManager<
@@ -10815,13 +11571,9 @@ class $$HistoryViewPeriodTableTableManager extends RootTableManager<
     $$HistoryViewPeriodTableAnnotationComposer,
     $$HistoryViewPeriodTableCreateCompanionBuilder,
     $$HistoryViewPeriodTableUpdateCompanionBuilder,
-    (
-      HistoryViewPeriodData,
-      BaseReferences<_$AppDatabase, $HistoryViewPeriodTable,
-          HistoryViewPeriodData>
-    ),
+    (HistoryViewPeriodData, $$HistoryViewPeriodTableReferences),
     HistoryViewPeriodData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool viewId})> {
   $$HistoryViewPeriodTableTableManager(
       _$AppDatabase db, $HistoryViewPeriodTable table)
       : super(TableManagerState(
@@ -10867,9 +11619,46 @@ class $$HistoryViewPeriodTableTableManager extends RootTableManager<
             createdAt: createdAt,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$HistoryViewPeriodTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({viewId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins: <
+                  T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic>>(state) {
+                if (viewId) {
+                  state = state.withJoin(
+                    currentTable: table,
+                    currentColumn: table.viewId,
+                    referencedTable:
+                        $$HistoryViewPeriodTableReferences._viewIdTable(db),
+                    referencedColumn:
+                        $$HistoryViewPeriodTableReferences._viewIdTable(db).id,
+                  ) as T;
+                }
+
+                return state;
+              },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
         ));
 }
 
@@ -10882,13 +11671,9 @@ typedef $$HistoryViewPeriodTableProcessedTableManager = ProcessedTableManager<
     $$HistoryViewPeriodTableAnnotationComposer,
     $$HistoryViewPeriodTableCreateCompanionBuilder,
     $$HistoryViewPeriodTableUpdateCompanionBuilder,
-    (
-      HistoryViewPeriodData,
-      BaseReferences<_$AppDatabase, $HistoryViewPeriodTable,
-          HistoryViewPeriodData>
-    ),
+    (HistoryViewPeriodData, $$HistoryViewPeriodTableReferences),
     HistoryViewPeriodData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool viewId})>;
 typedef $$AuditLogTableCreateCompanionBuilder = AuditLogCompanion Function({
   Value<int> id,
   required String operatorId,
@@ -11139,6 +11924,77 @@ typedef $$PlcCodeBlockTableTableUpdateCompanionBuilder
   Value<String?> serverAlias,
 });
 
+final class $$PlcCodeBlockTableTableReferences extends BaseReferences<
+    _$AppDatabase, $PlcCodeBlockTableTable, PlcCodeBlockTableData> {
+  $$PlcCodeBlockTableTableReferences(
+      super.$_db, super.$_table, super.$_typedResult);
+
+  static MultiTypedResultKey<$PlcVariableTableTable, List<PlcVariableTableData>>
+      _plcVariableTableRefsTable(_$AppDatabase db) =>
+          MultiTypedResultKey.fromTable(db.plcVariableTable,
+              aliasName: 'plc_code_block__id__plc_variable__block_id');
+
+  $$PlcVariableTableTableProcessedTableManager get plcVariableTableRefs {
+    final manager =
+        $$PlcVariableTableTableTableManager($_db, $_db.plcVariableTable)
+            .filter((f) => f.blockId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache =
+        $_typedResult.readTableOrNull(_plcVariableTableRefsTable($_db));
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: cache));
+  }
+
+  static MultiTypedResultKey<$PlcVarRefTableTable, List<PlcVarRefTableData>>
+      _plcVarRefTableRefsTable(_$AppDatabase db) =>
+          MultiTypedResultKey.fromTable(db.plcVarRefTable,
+              aliasName: 'plc_code_block__id__plc_var_ref__block_id');
+
+  $$PlcVarRefTableTableProcessedTableManager get plcVarRefTableRefs {
+    final manager = $$PlcVarRefTableTableTableManager($_db, $_db.plcVarRefTable)
+        .filter((f) => f.blockId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(_plcVarRefTableRefsTable($_db));
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: cache));
+  }
+
+  static MultiTypedResultKey<$PlcFbInstanceTableTable,
+      List<PlcFbInstanceTableData>> _plcFbInstanceTableRefsTable(
+          _$AppDatabase db) =>
+      MultiTypedResultKey.fromTable(db.plcFbInstanceTable,
+          aliasName: 'plc_code_block__id__plc_fb_instance__declaring_block_id');
+
+  $$PlcFbInstanceTableTableProcessedTableManager get plcFbInstanceTableRefs {
+    final manager = $$PlcFbInstanceTableTableTableManager(
+            $_db, $_db.plcFbInstanceTable)
+        .filter(
+            (f) => f.declaringBlockId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache =
+        $_typedResult.readTableOrNull(_plcFbInstanceTableRefsTable($_db));
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: cache));
+  }
+
+  static MultiTypedResultKey<$PlcBlockCallTableTable,
+      List<PlcBlockCallTableData>> _plcBlockCallTableRefsTable(
+          _$AppDatabase db) =>
+      MultiTypedResultKey.fromTable(db.plcBlockCallTable,
+          aliasName: 'plc_code_block__id__plc_block_call__caller_block_id');
+
+  $$PlcBlockCallTableTableProcessedTableManager get plcBlockCallTableRefs {
+    final manager = $$PlcBlockCallTableTableTableManager(
+            $_db, $_db.plcBlockCallTable)
+        .filter((f) => f.callerBlockId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache =
+        $_typedResult.readTableOrNull(_plcBlockCallTableRefsTable($_db));
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: cache));
+  }
+}
+
 class $$PlcCodeBlockTableTableFilterComposer
     extends Composer<_$AppDatabase, $PlcCodeBlockTableTable> {
   $$PlcCodeBlockTableTableFilterComposer({
@@ -11184,6 +12040,90 @@ class $$PlcCodeBlockTableTableFilterComposer
 
   ColumnFilters<String> get serverAlias => $composableBuilder(
       column: $table.serverAlias, builder: (column) => ColumnFilters(column));
+
+  Expression<bool> plcVariableTableRefs(
+      Expression<bool> Function($$PlcVariableTableTableFilterComposer f) f) {
+    final $$PlcVariableTableTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.id,
+        referencedTable: $db.plcVariableTable,
+        getReferencedColumn: (t) => t.blockId,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcVariableTableTableFilterComposer(
+              $db: $db,
+              $table: $db.plcVariableTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
+
+  Expression<bool> plcVarRefTableRefs(
+      Expression<bool> Function($$PlcVarRefTableTableFilterComposer f) f) {
+    final $$PlcVarRefTableTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.id,
+        referencedTable: $db.plcVarRefTable,
+        getReferencedColumn: (t) => t.blockId,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcVarRefTableTableFilterComposer(
+              $db: $db,
+              $table: $db.plcVarRefTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
+
+  Expression<bool> plcFbInstanceTableRefs(
+      Expression<bool> Function($$PlcFbInstanceTableTableFilterComposer f) f) {
+    final $$PlcFbInstanceTableTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.id,
+        referencedTable: $db.plcFbInstanceTable,
+        getReferencedColumn: (t) => t.declaringBlockId,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcFbInstanceTableTableFilterComposer(
+              $db: $db,
+              $table: $db.plcFbInstanceTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
+
+  Expression<bool> plcBlockCallTableRefs(
+      Expression<bool> Function($$PlcBlockCallTableTableFilterComposer f) f) {
+    final $$PlcBlockCallTableTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.id,
+        referencedTable: $db.plcBlockCallTable,
+        getReferencedColumn: (t) => t.callerBlockId,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcBlockCallTableTableFilterComposer(
+              $db: $db,
+              $table: $db.plcBlockCallTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
 }
 
 class $$PlcCodeBlockTableTableOrderingComposer
@@ -11278,6 +12218,92 @@ class $$PlcCodeBlockTableTableAnnotationComposer
 
   GeneratedColumn<String> get serverAlias => $composableBuilder(
       column: $table.serverAlias, builder: (column) => column);
+
+  Expression<T> plcVariableTableRefs<T extends Object>(
+      Expression<T> Function($$PlcVariableTableTableAnnotationComposer a) f) {
+    final $$PlcVariableTableTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.id,
+        referencedTable: $db.plcVariableTable,
+        getReferencedColumn: (t) => t.blockId,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcVariableTableTableAnnotationComposer(
+              $db: $db,
+              $table: $db.plcVariableTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
+
+  Expression<T> plcVarRefTableRefs<T extends Object>(
+      Expression<T> Function($$PlcVarRefTableTableAnnotationComposer a) f) {
+    final $$PlcVarRefTableTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.id,
+        referencedTable: $db.plcVarRefTable,
+        getReferencedColumn: (t) => t.blockId,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcVarRefTableTableAnnotationComposer(
+              $db: $db,
+              $table: $db.plcVarRefTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
+
+  Expression<T> plcFbInstanceTableRefs<T extends Object>(
+      Expression<T> Function($$PlcFbInstanceTableTableAnnotationComposer a) f) {
+    final $$PlcFbInstanceTableTableAnnotationComposer composer =
+        $composerBuilder(
+            composer: this,
+            getCurrentColumn: (t) => t.id,
+            referencedTable: $db.plcFbInstanceTable,
+            getReferencedColumn: (t) => t.declaringBlockId,
+            builder: (joinBuilder,
+                    {$addJoinBuilderToRootComposer,
+                    $removeJoinBuilderFromRootComposer}) =>
+                $$PlcFbInstanceTableTableAnnotationComposer(
+                  $db: $db,
+                  $table: $db.plcFbInstanceTable,
+                  $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                  joinBuilder: joinBuilder,
+                  $removeJoinBuilderFromRootComposer:
+                      $removeJoinBuilderFromRootComposer,
+                ));
+    return f(composer);
+  }
+
+  Expression<T> plcBlockCallTableRefs<T extends Object>(
+      Expression<T> Function($$PlcBlockCallTableTableAnnotationComposer a) f) {
+    final $$PlcBlockCallTableTableAnnotationComposer composer =
+        $composerBuilder(
+            composer: this,
+            getCurrentColumn: (t) => t.id,
+            referencedTable: $db.plcBlockCallTable,
+            getReferencedColumn: (t) => t.callerBlockId,
+            builder: (joinBuilder,
+                    {$addJoinBuilderToRootComposer,
+                    $removeJoinBuilderFromRootComposer}) =>
+                $$PlcBlockCallTableTableAnnotationComposer(
+                  $db: $db,
+                  $table: $db.plcBlockCallTable,
+                  $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                  joinBuilder: joinBuilder,
+                  $removeJoinBuilderFromRootComposer:
+                      $removeJoinBuilderFromRootComposer,
+                ));
+    return f(composer);
+  }
 }
 
 class $$PlcCodeBlockTableTableTableManager extends RootTableManager<
@@ -11289,13 +12315,13 @@ class $$PlcCodeBlockTableTableTableManager extends RootTableManager<
     $$PlcCodeBlockTableTableAnnotationComposer,
     $$PlcCodeBlockTableTableCreateCompanionBuilder,
     $$PlcCodeBlockTableTableUpdateCompanionBuilder,
-    (
-      PlcCodeBlockTableData,
-      BaseReferences<_$AppDatabase, $PlcCodeBlockTableTable,
-          PlcCodeBlockTableData>
-    ),
+    (PlcCodeBlockTableData, $$PlcCodeBlockTableTableReferences),
     PlcCodeBlockTableData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function(
+        {bool plcVariableTableRefs,
+        bool plcVarRefTableRefs,
+        bool plcFbInstanceTableRefs,
+        bool plcBlockCallTableRefs})> {
   $$PlcCodeBlockTableTableTableManager(
       _$AppDatabase db, $PlcCodeBlockTableTable table)
       : super(TableManagerState(
@@ -11365,9 +12391,83 @@ class $$PlcCodeBlockTableTableTableManager extends RootTableManager<
             serverAlias: serverAlias,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$PlcCodeBlockTableTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: (
+              {plcVariableTableRefs = false,
+              plcVarRefTableRefs = false,
+              plcFbInstanceTableRefs = false,
+              plcBlockCallTableRefs = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [
+                if (plcVariableTableRefs) db.plcVariableTable,
+                if (plcVarRefTableRefs) db.plcVarRefTable,
+                if (plcFbInstanceTableRefs) db.plcFbInstanceTable,
+                if (plcBlockCallTableRefs) db.plcBlockCallTable
+              ],
+              addJoins: null,
+              getPrefetchedDataCallback: (items) async {
+                return [
+                  if (plcVariableTableRefs)
+                    await $_getPrefetchedData<PlcCodeBlockTableData,
+                            $PlcCodeBlockTableTable, PlcVariableTableData>(
+                        currentTable: table,
+                        referencedTable: $$PlcCodeBlockTableTableReferences
+                            ._plcVariableTableRefsTable(db),
+                        managerFromTypedResult: (p0) =>
+                            $$PlcCodeBlockTableTableReferences(db, table, p0)
+                                .plcVariableTableRefs,
+                        referencedItemsForCurrentItem: (item,
+                                referencedItems) =>
+                            referencedItems.where((e) => e.blockId == item.id),
+                        typedResults: items),
+                  if (plcVarRefTableRefs)
+                    await $_getPrefetchedData<PlcCodeBlockTableData,
+                            $PlcCodeBlockTableTable, PlcVarRefTableData>(
+                        currentTable: table,
+                        referencedTable: $$PlcCodeBlockTableTableReferences
+                            ._plcVarRefTableRefsTable(db),
+                        managerFromTypedResult: (p0) =>
+                            $$PlcCodeBlockTableTableReferences(db, table, p0)
+                                .plcVarRefTableRefs,
+                        referencedItemsForCurrentItem: (item,
+                                referencedItems) =>
+                            referencedItems.where((e) => e.blockId == item.id),
+                        typedResults: items),
+                  if (plcFbInstanceTableRefs)
+                    await $_getPrefetchedData<PlcCodeBlockTableData,
+                            $PlcCodeBlockTableTable, PlcFbInstanceTableData>(
+                        currentTable: table,
+                        referencedTable: $$PlcCodeBlockTableTableReferences
+                            ._plcFbInstanceTableRefsTable(db),
+                        managerFromTypedResult: (p0) =>
+                            $$PlcCodeBlockTableTableReferences(db, table, p0)
+                                .plcFbInstanceTableRefs,
+                        referencedItemsForCurrentItem:
+                            (item, referencedItems) => referencedItems
+                                .where((e) => e.declaringBlockId == item.id),
+                        typedResults: items),
+                  if (plcBlockCallTableRefs)
+                    await $_getPrefetchedData<PlcCodeBlockTableData,
+                            $PlcCodeBlockTableTable, PlcBlockCallTableData>(
+                        currentTable: table,
+                        referencedTable: $$PlcCodeBlockTableTableReferences
+                            ._plcBlockCallTableRefsTable(db),
+                        managerFromTypedResult: (p0) =>
+                            $$PlcCodeBlockTableTableReferences(db, table, p0)
+                                .plcBlockCallTableRefs,
+                        referencedItemsForCurrentItem:
+                            (item, referencedItems) => referencedItems
+                                .where((e) => e.callerBlockId == item.id),
+                        typedResults: items)
+                ];
+              },
+            );
+          },
         ));
 }
 
@@ -11380,13 +12480,13 @@ typedef $$PlcCodeBlockTableTableProcessedTableManager = ProcessedTableManager<
     $$PlcCodeBlockTableTableAnnotationComposer,
     $$PlcCodeBlockTableTableCreateCompanionBuilder,
     $$PlcCodeBlockTableTableUpdateCompanionBuilder,
-    (
-      PlcCodeBlockTableData,
-      BaseReferences<_$AppDatabase, $PlcCodeBlockTableTable,
-          PlcCodeBlockTableData>
-    ),
+    (PlcCodeBlockTableData, $$PlcCodeBlockTableTableReferences),
     PlcCodeBlockTableData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function(
+        {bool plcVariableTableRefs,
+        bool plcVarRefTableRefs,
+        bool plcFbInstanceTableRefs,
+        bool plcBlockCallTableRefs})>;
 typedef $$PlcVariableTableTableCreateCompanionBuilder
     = PlcVariableTableCompanion Function({
   Value<int> id,
@@ -11408,6 +12508,28 @@ typedef $$PlcVariableTableTableUpdateCompanionBuilder
   Value<String?> comment,
 });
 
+final class $$PlcVariableTableTableReferences extends BaseReferences<
+    _$AppDatabase, $PlcVariableTableTable, PlcVariableTableData> {
+  $$PlcVariableTableTableReferences(
+      super.$_db, super.$_table, super.$_typedResult);
+
+  static $PlcCodeBlockTableTable _blockIdTable(_$AppDatabase db) =>
+      db.plcCodeBlockTable
+          .createAlias('plc_variable__block_id__plc_code_block__id');
+
+  $$PlcCodeBlockTableTableProcessedTableManager get blockId {
+    final $_column = $_itemColumn<int>('block_id')!;
+
+    final manager =
+        $$PlcCodeBlockTableTableTableManager($_db, $_db.plcCodeBlockTable)
+            .filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_blockIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: [item]));
+  }
+}
+
 class $$PlcVariableTableTableFilterComposer
     extends Composer<_$AppDatabase, $PlcVariableTableTable> {
   $$PlcVariableTableTableFilterComposer({
@@ -11419,9 +12541,6 @@ class $$PlcVariableTableTableFilterComposer
   });
   ColumnFilters<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnFilters(column));
-
-  ColumnFilters<int> get blockId => $composableBuilder(
-      column: $table.blockId, builder: (column) => ColumnFilters(column));
 
   ColumnFilters<String> get variableName => $composableBuilder(
       column: $table.variableName, builder: (column) => ColumnFilters(column));
@@ -11437,6 +12556,26 @@ class $$PlcVariableTableTableFilterComposer
 
   ColumnFilters<String> get comment => $composableBuilder(
       column: $table.comment, builder: (column) => ColumnFilters(column));
+
+  $$PlcCodeBlockTableTableFilterComposer get blockId {
+    final $$PlcCodeBlockTableTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.blockId,
+        referencedTable: $db.plcCodeBlockTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcCodeBlockTableTableFilterComposer(
+              $db: $db,
+              $table: $db.plcCodeBlockTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$PlcVariableTableTableOrderingComposer
@@ -11450,9 +12589,6 @@ class $$PlcVariableTableTableOrderingComposer
   });
   ColumnOrderings<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnOrderings(column));
-
-  ColumnOrderings<int> get blockId => $composableBuilder(
-      column: $table.blockId, builder: (column) => ColumnOrderings(column));
 
   ColumnOrderings<String> get variableName => $composableBuilder(
       column: $table.variableName,
@@ -11471,6 +12607,26 @@ class $$PlcVariableTableTableOrderingComposer
 
   ColumnOrderings<String> get comment => $composableBuilder(
       column: $table.comment, builder: (column) => ColumnOrderings(column));
+
+  $$PlcCodeBlockTableTableOrderingComposer get blockId {
+    final $$PlcCodeBlockTableTableOrderingComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.blockId,
+        referencedTable: $db.plcCodeBlockTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcCodeBlockTableTableOrderingComposer(
+              $db: $db,
+              $table: $db.plcCodeBlockTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$PlcVariableTableTableAnnotationComposer
@@ -11484,9 +12640,6 @@ class $$PlcVariableTableTableAnnotationComposer
   });
   GeneratedColumn<int> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
-
-  GeneratedColumn<int> get blockId =>
-      $composableBuilder(column: $table.blockId, builder: (column) => column);
 
   GeneratedColumn<String> get variableName => $composableBuilder(
       column: $table.variableName, builder: (column) => column);
@@ -11502,6 +12655,27 @@ class $$PlcVariableTableTableAnnotationComposer
 
   GeneratedColumn<String> get comment =>
       $composableBuilder(column: $table.comment, builder: (column) => column);
+
+  $$PlcCodeBlockTableTableAnnotationComposer get blockId {
+    final $$PlcCodeBlockTableTableAnnotationComposer composer =
+        $composerBuilder(
+            composer: this,
+            getCurrentColumn: (t) => t.blockId,
+            referencedTable: $db.plcCodeBlockTable,
+            getReferencedColumn: (t) => t.id,
+            builder: (joinBuilder,
+                    {$addJoinBuilderToRootComposer,
+                    $removeJoinBuilderFromRootComposer}) =>
+                $$PlcCodeBlockTableTableAnnotationComposer(
+                  $db: $db,
+                  $table: $db.plcCodeBlockTable,
+                  $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                  joinBuilder: joinBuilder,
+                  $removeJoinBuilderFromRootComposer:
+                      $removeJoinBuilderFromRootComposer,
+                ));
+    return composer;
+  }
 }
 
 class $$PlcVariableTableTableTableManager extends RootTableManager<
@@ -11513,13 +12687,9 @@ class $$PlcVariableTableTableTableManager extends RootTableManager<
     $$PlcVariableTableTableAnnotationComposer,
     $$PlcVariableTableTableCreateCompanionBuilder,
     $$PlcVariableTableTableUpdateCompanionBuilder,
-    (
-      PlcVariableTableData,
-      BaseReferences<_$AppDatabase, $PlcVariableTableTable,
-          PlcVariableTableData>
-    ),
+    (PlcVariableTableData, $$PlcVariableTableTableReferences),
     PlcVariableTableData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool blockId})> {
   $$PlcVariableTableTableTableManager(
       _$AppDatabase db, $PlcVariableTableTable table)
       : super(TableManagerState(
@@ -11568,9 +12738,46 @@ class $$PlcVariableTableTableTableManager extends RootTableManager<
             comment: comment,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$PlcVariableTableTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({blockId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins: <
+                  T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic>>(state) {
+                if (blockId) {
+                  state = state.withJoin(
+                    currentTable: table,
+                    currentColumn: table.blockId,
+                    referencedTable:
+                        $$PlcVariableTableTableReferences._blockIdTable(db),
+                    referencedColumn:
+                        $$PlcVariableTableTableReferences._blockIdTable(db).id,
+                  ) as T;
+                }
+
+                return state;
+              },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
         ));
 }
 
@@ -11583,13 +12790,9 @@ typedef $$PlcVariableTableTableProcessedTableManager = ProcessedTableManager<
     $$PlcVariableTableTableAnnotationComposer,
     $$PlcVariableTableTableCreateCompanionBuilder,
     $$PlcVariableTableTableUpdateCompanionBuilder,
-    (
-      PlcVariableTableData,
-      BaseReferences<_$AppDatabase, $PlcVariableTableTable,
-          PlcVariableTableData>
-    ),
+    (PlcVariableTableData, $$PlcVariableTableTableReferences),
     PlcVariableTableData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool blockId})>;
 typedef $$DrawingTableTableCreateCompanionBuilder = DrawingTableCompanion
     Function({
   Value<int> id,
@@ -11610,6 +12813,29 @@ typedef $$DrawingTableTableUpdateCompanionBuilder = DrawingTableCompanion
   Value<DateTime> uploadedAt,
   Value<Uint8List?> pdfBytes,
 });
+
+final class $$DrawingTableTableReferences extends BaseReferences<_$AppDatabase,
+    $DrawingTableTable, DrawingTableData> {
+  $$DrawingTableTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static MultiTypedResultKey<$DrawingComponentTableTable,
+      List<DrawingComponentTableData>> _drawingComponentTableRefsTable(
+          _$AppDatabase db) =>
+      MultiTypedResultKey.fromTable(db.drawingComponentTable,
+          aliasName: 'drawing__id__drawing_component__drawing_id');
+
+  $$DrawingComponentTableTableProcessedTableManager
+      get drawingComponentTableRefs {
+    final manager = $$DrawingComponentTableTableTableManager(
+            $_db, $_db.drawingComponentTable)
+        .filter((f) => f.drawingId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache =
+        $_typedResult.readTableOrNull(_drawingComponentTableRefsTable($_db));
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: cache));
+  }
+}
 
 class $$DrawingTableTableFilterComposer
     extends Composer<_$AppDatabase, $DrawingTableTable> {
@@ -11640,6 +12866,29 @@ class $$DrawingTableTableFilterComposer
 
   ColumnFilters<Uint8List> get pdfBytes => $composableBuilder(
       column: $table.pdfBytes, builder: (column) => ColumnFilters(column));
+
+  Expression<bool> drawingComponentTableRefs(
+      Expression<bool> Function($$DrawingComponentTableTableFilterComposer f)
+          f) {
+    final $$DrawingComponentTableTableFilterComposer composer =
+        $composerBuilder(
+            composer: this,
+            getCurrentColumn: (t) => t.id,
+            referencedTable: $db.drawingComponentTable,
+            getReferencedColumn: (t) => t.drawingId,
+            builder: (joinBuilder,
+                    {$addJoinBuilderToRootComposer,
+                    $removeJoinBuilderFromRootComposer}) =>
+                $$DrawingComponentTableTableFilterComposer(
+                  $db: $db,
+                  $table: $db.drawingComponentTable,
+                  $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                  joinBuilder: joinBuilder,
+                  $removeJoinBuilderFromRootComposer:
+                      $removeJoinBuilderFromRootComposer,
+                ));
+    return f(composer);
+  }
 }
 
 class $$DrawingTableTableOrderingComposer
@@ -11702,6 +12951,29 @@ class $$DrawingTableTableAnnotationComposer
 
   GeneratedColumn<Uint8List> get pdfBytes =>
       $composableBuilder(column: $table.pdfBytes, builder: (column) => column);
+
+  Expression<T> drawingComponentTableRefs<T extends Object>(
+      Expression<T> Function($$DrawingComponentTableTableAnnotationComposer a)
+          f) {
+    final $$DrawingComponentTableTableAnnotationComposer composer =
+        $composerBuilder(
+            composer: this,
+            getCurrentColumn: (t) => t.id,
+            referencedTable: $db.drawingComponentTable,
+            getReferencedColumn: (t) => t.drawingId,
+            builder: (joinBuilder,
+                    {$addJoinBuilderToRootComposer,
+                    $removeJoinBuilderFromRootComposer}) =>
+                $$DrawingComponentTableTableAnnotationComposer(
+                  $db: $db,
+                  $table: $db.drawingComponentTable,
+                  $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                  joinBuilder: joinBuilder,
+                  $removeJoinBuilderFromRootComposer:
+                      $removeJoinBuilderFromRootComposer,
+                ));
+    return f(composer);
+  }
 }
 
 class $$DrawingTableTableTableManager extends RootTableManager<
@@ -11713,12 +12985,9 @@ class $$DrawingTableTableTableManager extends RootTableManager<
     $$DrawingTableTableAnnotationComposer,
     $$DrawingTableTableCreateCompanionBuilder,
     $$DrawingTableTableUpdateCompanionBuilder,
-    (
-      DrawingTableData,
-      BaseReferences<_$AppDatabase, $DrawingTableTable, DrawingTableData>
-    ),
+    (DrawingTableData, $$DrawingTableTableReferences),
     DrawingTableData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool drawingComponentTableRefs})> {
   $$DrawingTableTableTableManager(_$AppDatabase db, $DrawingTableTable table)
       : super(TableManagerState(
           db: db,
@@ -11766,9 +13035,37 @@ class $$DrawingTableTableTableManager extends RootTableManager<
             pdfBytes: pdfBytes,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$DrawingTableTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({drawingComponentTableRefs = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [
+                if (drawingComponentTableRefs) db.drawingComponentTable
+              ],
+              addJoins: null,
+              getPrefetchedDataCallback: (items) async {
+                return [
+                  if (drawingComponentTableRefs)
+                    await $_getPrefetchedData<DrawingTableData,
+                            $DrawingTableTable, DrawingComponentTableData>(
+                        currentTable: table,
+                        referencedTable: $$DrawingTableTableReferences
+                            ._drawingComponentTableRefsTable(db),
+                        managerFromTypedResult: (p0) =>
+                            $$DrawingTableTableReferences(db, table, p0)
+                                .drawingComponentTableRefs,
+                        referencedItemsForCurrentItem:
+                            (item, referencedItems) => referencedItems
+                                .where((e) => e.drawingId == item.id),
+                        typedResults: items)
+                ];
+              },
+            );
+          },
         ));
 }
 
@@ -11781,12 +13078,9 @@ typedef $$DrawingTableTableProcessedTableManager = ProcessedTableManager<
     $$DrawingTableTableAnnotationComposer,
     $$DrawingTableTableCreateCompanionBuilder,
     $$DrawingTableTableUpdateCompanionBuilder,
-    (
-      DrawingTableData,
-      BaseReferences<_$AppDatabase, $DrawingTableTable, DrawingTableData>
-    ),
+    (DrawingTableData, $$DrawingTableTableReferences),
     DrawingTableData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool drawingComponentTableRefs})>;
 typedef $$DrawingComponentTableTableCreateCompanionBuilder
     = DrawingComponentTableCompanion Function({
   Value<int> id,
@@ -11802,6 +13096,26 @@ typedef $$DrawingComponentTableTableUpdateCompanionBuilder
   Value<String> fullPageText,
 });
 
+final class $$DrawingComponentTableTableReferences extends BaseReferences<
+    _$AppDatabase, $DrawingComponentTableTable, DrawingComponentTableData> {
+  $$DrawingComponentTableTableReferences(
+      super.$_db, super.$_table, super.$_typedResult);
+
+  static $DrawingTableTable _drawingIdTable(_$AppDatabase db) =>
+      db.drawingTable.createAlias('drawing_component__drawing_id__drawing__id');
+
+  $$DrawingTableTableProcessedTableManager get drawingId {
+    final $_column = $_itemColumn<int>('drawing_id')!;
+
+    final manager = $$DrawingTableTableTableManager($_db, $_db.drawingTable)
+        .filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_drawingIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: [item]));
+  }
+}
+
 class $$DrawingComponentTableTableFilterComposer
     extends Composer<_$AppDatabase, $DrawingComponentTableTable> {
   $$DrawingComponentTableTableFilterComposer({
@@ -11814,14 +13128,31 @@ class $$DrawingComponentTableTableFilterComposer
   ColumnFilters<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnFilters(column));
 
-  ColumnFilters<int> get drawingId => $composableBuilder(
-      column: $table.drawingId, builder: (column) => ColumnFilters(column));
-
   ColumnFilters<int> get pageNumber => $composableBuilder(
       column: $table.pageNumber, builder: (column) => ColumnFilters(column));
 
   ColumnFilters<String> get fullPageText => $composableBuilder(
       column: $table.fullPageText, builder: (column) => ColumnFilters(column));
+
+  $$DrawingTableTableFilterComposer get drawingId {
+    final $$DrawingTableTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.drawingId,
+        referencedTable: $db.drawingTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$DrawingTableTableFilterComposer(
+              $db: $db,
+              $table: $db.drawingTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$DrawingComponentTableTableOrderingComposer
@@ -11836,15 +13167,32 @@ class $$DrawingComponentTableTableOrderingComposer
   ColumnOrderings<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnOrderings(column));
 
-  ColumnOrderings<int> get drawingId => $composableBuilder(
-      column: $table.drawingId, builder: (column) => ColumnOrderings(column));
-
   ColumnOrderings<int> get pageNumber => $composableBuilder(
       column: $table.pageNumber, builder: (column) => ColumnOrderings(column));
 
   ColumnOrderings<String> get fullPageText => $composableBuilder(
       column: $table.fullPageText,
       builder: (column) => ColumnOrderings(column));
+
+  $$DrawingTableTableOrderingComposer get drawingId {
+    final $$DrawingTableTableOrderingComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.drawingId,
+        referencedTable: $db.drawingTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$DrawingTableTableOrderingComposer(
+              $db: $db,
+              $table: $db.drawingTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$DrawingComponentTableTableAnnotationComposer
@@ -11859,14 +13207,31 @@ class $$DrawingComponentTableTableAnnotationComposer
   GeneratedColumn<int> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
 
-  GeneratedColumn<int> get drawingId =>
-      $composableBuilder(column: $table.drawingId, builder: (column) => column);
-
   GeneratedColumn<int> get pageNumber => $composableBuilder(
       column: $table.pageNumber, builder: (column) => column);
 
   GeneratedColumn<String> get fullPageText => $composableBuilder(
       column: $table.fullPageText, builder: (column) => column);
+
+  $$DrawingTableTableAnnotationComposer get drawingId {
+    final $$DrawingTableTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.drawingId,
+        referencedTable: $db.drawingTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$DrawingTableTableAnnotationComposer(
+              $db: $db,
+              $table: $db.drawingTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$DrawingComponentTableTableTableManager extends RootTableManager<
@@ -11878,13 +13243,9 @@ class $$DrawingComponentTableTableTableManager extends RootTableManager<
     $$DrawingComponentTableTableAnnotationComposer,
     $$DrawingComponentTableTableCreateCompanionBuilder,
     $$DrawingComponentTableTableUpdateCompanionBuilder,
-    (
-      DrawingComponentTableData,
-      BaseReferences<_$AppDatabase, $DrawingComponentTableTable,
-          DrawingComponentTableData>
-    ),
+    (DrawingComponentTableData, $$DrawingComponentTableTableReferences),
     DrawingComponentTableData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool drawingId})> {
   $$DrawingComponentTableTableTableManager(
       _$AppDatabase db, $DrawingComponentTableTable table)
       : super(TableManagerState(
@@ -11924,9 +13285,47 @@ class $$DrawingComponentTableTableTableManager extends RootTableManager<
             fullPageText: fullPageText,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$DrawingComponentTableTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({drawingId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins: <
+                  T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic>>(state) {
+                if (drawingId) {
+                  state = state.withJoin(
+                    currentTable: table,
+                    currentColumn: table.drawingId,
+                    referencedTable: $$DrawingComponentTableTableReferences
+                        ._drawingIdTable(db),
+                    referencedColumn: $$DrawingComponentTableTableReferences
+                        ._drawingIdTable(db)
+                        .id,
+                  ) as T;
+                }
+
+                return state;
+              },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
         ));
 }
 
@@ -11940,13 +13339,9 @@ typedef $$DrawingComponentTableTableProcessedTableManager
         $$DrawingComponentTableTableAnnotationComposer,
         $$DrawingComponentTableTableCreateCompanionBuilder,
         $$DrawingComponentTableTableUpdateCompanionBuilder,
-        (
-          DrawingComponentTableData,
-          BaseReferences<_$AppDatabase, $DrawingComponentTableTable,
-              DrawingComponentTableData>
-        ),
+        (DrawingComponentTableData, $$DrawingComponentTableTableReferences),
         DrawingComponentTableData,
-        PrefetchHooks Function()>;
+        PrefetchHooks Function({bool drawingId})>;
 typedef $$TechDocTableTableCreateCompanionBuilder = TechDocTableCompanion
     Function({
   Value<int> id,
@@ -11965,6 +13360,28 @@ typedef $$TechDocTableTableUpdateCompanionBuilder = TechDocTableCompanion
   Value<int> sectionCount,
   Value<DateTime> uploadedAt,
 });
+
+final class $$TechDocTableTableReferences extends BaseReferences<_$AppDatabase,
+    $TechDocTableTable, TechDocTableData> {
+  $$TechDocTableTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static MultiTypedResultKey<$TechDocSectionTableTable,
+      List<TechDocSectionTableData>> _techDocSectionTableRefsTable(
+          _$AppDatabase db) =>
+      MultiTypedResultKey.fromTable(db.techDocSectionTable,
+          aliasName: 'tech_doc__id__tech_doc_section__doc_id');
+
+  $$TechDocSectionTableTableProcessedTableManager get techDocSectionTableRefs {
+    final manager =
+        $$TechDocSectionTableTableTableManager($_db, $_db.techDocSectionTable)
+            .filter((f) => f.docId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache =
+        $_typedResult.readTableOrNull(_techDocSectionTableRefsTable($_db));
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: cache));
+  }
+}
 
 class $$TechDocTableTableFilterComposer
     extends Composer<_$AppDatabase, $TechDocTableTable> {
@@ -11992,6 +13409,27 @@ class $$TechDocTableTableFilterComposer
 
   ColumnFilters<DateTime> get uploadedAt => $composableBuilder(
       column: $table.uploadedAt, builder: (column) => ColumnFilters(column));
+
+  Expression<bool> techDocSectionTableRefs(
+      Expression<bool> Function($$TechDocSectionTableTableFilterComposer f) f) {
+    final $$TechDocSectionTableTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.id,
+        referencedTable: $db.techDocSectionTable,
+        getReferencedColumn: (t) => t.docId,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$TechDocSectionTableTableFilterComposer(
+              $db: $db,
+              $table: $db.techDocSectionTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
 }
 
 class $$TechDocTableTableOrderingComposer
@@ -12049,6 +13487,29 @@ class $$TechDocTableTableAnnotationComposer
 
   GeneratedColumn<DateTime> get uploadedAt => $composableBuilder(
       column: $table.uploadedAt, builder: (column) => column);
+
+  Expression<T> techDocSectionTableRefs<T extends Object>(
+      Expression<T> Function($$TechDocSectionTableTableAnnotationComposer a)
+          f) {
+    final $$TechDocSectionTableTableAnnotationComposer composer =
+        $composerBuilder(
+            composer: this,
+            getCurrentColumn: (t) => t.id,
+            referencedTable: $db.techDocSectionTable,
+            getReferencedColumn: (t) => t.docId,
+            builder: (joinBuilder,
+                    {$addJoinBuilderToRootComposer,
+                    $removeJoinBuilderFromRootComposer}) =>
+                $$TechDocSectionTableTableAnnotationComposer(
+                  $db: $db,
+                  $table: $db.techDocSectionTable,
+                  $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                  joinBuilder: joinBuilder,
+                  $removeJoinBuilderFromRootComposer:
+                      $removeJoinBuilderFromRootComposer,
+                ));
+    return f(composer);
+  }
 }
 
 class $$TechDocTableTableTableManager extends RootTableManager<
@@ -12060,12 +13521,9 @@ class $$TechDocTableTableTableManager extends RootTableManager<
     $$TechDocTableTableAnnotationComposer,
     $$TechDocTableTableCreateCompanionBuilder,
     $$TechDocTableTableUpdateCompanionBuilder,
-    (
-      TechDocTableData,
-      BaseReferences<_$AppDatabase, $TechDocTableTable, TechDocTableData>
-    ),
+    (TechDocTableData, $$TechDocTableTableReferences),
     TechDocTableData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool techDocSectionTableRefs})> {
   $$TechDocTableTableTableManager(_$AppDatabase db, $TechDocTableTable table)
       : super(TableManagerState(
           db: db,
@@ -12109,9 +13567,37 @@ class $$TechDocTableTableTableManager extends RootTableManager<
             uploadedAt: uploadedAt,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$TechDocTableTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({techDocSectionTableRefs = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [
+                if (techDocSectionTableRefs) db.techDocSectionTable
+              ],
+              addJoins: null,
+              getPrefetchedDataCallback: (items) async {
+                return [
+                  if (techDocSectionTableRefs)
+                    await $_getPrefetchedData<TechDocTableData,
+                            $TechDocTableTable, TechDocSectionTableData>(
+                        currentTable: table,
+                        referencedTable: $$TechDocTableTableReferences
+                            ._techDocSectionTableRefsTable(db),
+                        managerFromTypedResult: (p0) =>
+                            $$TechDocTableTableReferences(db, table, p0)
+                                .techDocSectionTableRefs,
+                        referencedItemsForCurrentItem: (item,
+                                referencedItems) =>
+                            referencedItems.where((e) => e.docId == item.id),
+                        typedResults: items)
+                ];
+              },
+            );
+          },
         ));
 }
 
@@ -12124,12 +13610,9 @@ typedef $$TechDocTableTableProcessedTableManager = ProcessedTableManager<
     $$TechDocTableTableAnnotationComposer,
     $$TechDocTableTableCreateCompanionBuilder,
     $$TechDocTableTableUpdateCompanionBuilder,
-    (
-      TechDocTableData,
-      BaseReferences<_$AppDatabase, $TechDocTableTable, TechDocTableData>
-    ),
+    (TechDocTableData, $$TechDocTableTableReferences),
     TechDocTableData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool techDocSectionTableRefs})>;
 typedef $$TechDocSectionTableTableCreateCompanionBuilder
     = TechDocSectionTableCompanion Function({
   Value<int> id,
@@ -12155,6 +13638,26 @@ typedef $$TechDocSectionTableTableUpdateCompanionBuilder
   Value<int> sortOrder,
 });
 
+final class $$TechDocSectionTableTableReferences extends BaseReferences<
+    _$AppDatabase, $TechDocSectionTableTable, TechDocSectionTableData> {
+  $$TechDocSectionTableTableReferences(
+      super.$_db, super.$_table, super.$_typedResult);
+
+  static $TechDocTableTable _docIdTable(_$AppDatabase db) =>
+      db.techDocTable.createAlias('tech_doc_section__doc_id__tech_doc__id');
+
+  $$TechDocTableTableProcessedTableManager get docId {
+    final $_column = $_itemColumn<int>('doc_id')!;
+
+    final manager = $$TechDocTableTableTableManager($_db, $_db.techDocTable)
+        .filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_docIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: [item]));
+  }
+}
+
 class $$TechDocSectionTableTableFilterComposer
     extends Composer<_$AppDatabase, $TechDocSectionTableTable> {
   $$TechDocSectionTableTableFilterComposer({
@@ -12166,9 +13669,6 @@ class $$TechDocSectionTableTableFilterComposer
   });
   ColumnFilters<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnFilters(column));
-
-  ColumnFilters<int> get docId => $composableBuilder(
-      column: $table.docId, builder: (column) => ColumnFilters(column));
 
   ColumnFilters<int> get parentId => $composableBuilder(
       column: $table.parentId, builder: (column) => ColumnFilters(column));
@@ -12190,6 +13690,26 @@ class $$TechDocSectionTableTableFilterComposer
 
   ColumnFilters<int> get sortOrder => $composableBuilder(
       column: $table.sortOrder, builder: (column) => ColumnFilters(column));
+
+  $$TechDocTableTableFilterComposer get docId {
+    final $$TechDocTableTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.docId,
+        referencedTable: $db.techDocTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$TechDocTableTableFilterComposer(
+              $db: $db,
+              $table: $db.techDocTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$TechDocSectionTableTableOrderingComposer
@@ -12203,9 +13723,6 @@ class $$TechDocSectionTableTableOrderingComposer
   });
   ColumnOrderings<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnOrderings(column));
-
-  ColumnOrderings<int> get docId => $composableBuilder(
-      column: $table.docId, builder: (column) => ColumnOrderings(column));
 
   ColumnOrderings<int> get parentId => $composableBuilder(
       column: $table.parentId, builder: (column) => ColumnOrderings(column));
@@ -12227,6 +13744,26 @@ class $$TechDocSectionTableTableOrderingComposer
 
   ColumnOrderings<int> get sortOrder => $composableBuilder(
       column: $table.sortOrder, builder: (column) => ColumnOrderings(column));
+
+  $$TechDocTableTableOrderingComposer get docId {
+    final $$TechDocTableTableOrderingComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.docId,
+        referencedTable: $db.techDocTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$TechDocTableTableOrderingComposer(
+              $db: $db,
+              $table: $db.techDocTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$TechDocSectionTableTableAnnotationComposer
@@ -12240,9 +13777,6 @@ class $$TechDocSectionTableTableAnnotationComposer
   });
   GeneratedColumn<int> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
-
-  GeneratedColumn<int> get docId =>
-      $composableBuilder(column: $table.docId, builder: (column) => column);
 
   GeneratedColumn<int> get parentId =>
       $composableBuilder(column: $table.parentId, builder: (column) => column);
@@ -12264,6 +13798,26 @@ class $$TechDocSectionTableTableAnnotationComposer
 
   GeneratedColumn<int> get sortOrder =>
       $composableBuilder(column: $table.sortOrder, builder: (column) => column);
+
+  $$TechDocTableTableAnnotationComposer get docId {
+    final $$TechDocTableTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.docId,
+        referencedTable: $db.techDocTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$TechDocTableTableAnnotationComposer(
+              $db: $db,
+              $table: $db.techDocTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$TechDocSectionTableTableTableManager extends RootTableManager<
@@ -12275,13 +13829,9 @@ class $$TechDocSectionTableTableTableManager extends RootTableManager<
     $$TechDocSectionTableTableAnnotationComposer,
     $$TechDocSectionTableTableCreateCompanionBuilder,
     $$TechDocSectionTableTableUpdateCompanionBuilder,
-    (
-      TechDocSectionTableData,
-      BaseReferences<_$AppDatabase, $TechDocSectionTableTable,
-          TechDocSectionTableData>
-    ),
+    (TechDocSectionTableData, $$TechDocSectionTableTableReferences),
     TechDocSectionTableData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool docId})> {
   $$TechDocSectionTableTableTableManager(
       _$AppDatabase db, $TechDocSectionTableTable table)
       : super(TableManagerState(
@@ -12340,9 +13890,46 @@ class $$TechDocSectionTableTableTableManager extends RootTableManager<
             sortOrder: sortOrder,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$TechDocSectionTableTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({docId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins: <
+                  T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic>>(state) {
+                if (docId) {
+                  state = state.withJoin(
+                    currentTable: table,
+                    currentColumn: table.docId,
+                    referencedTable:
+                        $$TechDocSectionTableTableReferences._docIdTable(db),
+                    referencedColumn:
+                        $$TechDocSectionTableTableReferences._docIdTable(db).id,
+                  ) as T;
+                }
+
+                return state;
+              },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
         ));
 }
 
@@ -12355,13 +13942,9 @@ typedef $$TechDocSectionTableTableProcessedTableManager = ProcessedTableManager<
     $$TechDocSectionTableTableAnnotationComposer,
     $$TechDocSectionTableTableCreateCompanionBuilder,
     $$TechDocSectionTableTableUpdateCompanionBuilder,
-    (
-      TechDocSectionTableData,
-      BaseReferences<_$AppDatabase, $TechDocSectionTableTable,
-          TechDocSectionTableData>
-    ),
+    (TechDocSectionTableData, $$TechDocSectionTableTableReferences),
     TechDocSectionTableData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool docId})>;
 typedef $$McpProposalTableTableCreateCompanionBuilder
     = McpProposalTableCompanion Function({
   Value<int> id,
@@ -12583,6 +14166,28 @@ typedef $$PlcVarRefTableTableUpdateCompanionBuilder = PlcVarRefTableCompanion
   Value<String?> sourceLine,
 });
 
+final class $$PlcVarRefTableTableReferences extends BaseReferences<
+    _$AppDatabase, $PlcVarRefTableTable, PlcVarRefTableData> {
+  $$PlcVarRefTableTableReferences(
+      super.$_db, super.$_table, super.$_typedResult);
+
+  static $PlcCodeBlockTableTable _blockIdTable(_$AppDatabase db) =>
+      db.plcCodeBlockTable
+          .createAlias('plc_var_ref__block_id__plc_code_block__id');
+
+  $$PlcCodeBlockTableTableProcessedTableManager get blockId {
+    final $_column = $_itemColumn<int>('block_id')!;
+
+    final manager =
+        $$PlcCodeBlockTableTableTableManager($_db, $_db.plcCodeBlockTable)
+            .filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_blockIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: [item]));
+  }
+}
+
 class $$PlcVarRefTableTableFilterComposer
     extends Composer<_$AppDatabase, $PlcVarRefTableTable> {
   $$PlcVarRefTableTableFilterComposer({
@@ -12595,9 +14200,6 @@ class $$PlcVarRefTableTableFilterComposer
   ColumnFilters<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnFilters(column));
 
-  ColumnFilters<int> get blockId => $composableBuilder(
-      column: $table.blockId, builder: (column) => ColumnFilters(column));
-
   ColumnFilters<String> get variablePath => $composableBuilder(
       column: $table.variablePath, builder: (column) => ColumnFilters(column));
 
@@ -12609,6 +14211,26 @@ class $$PlcVarRefTableTableFilterComposer
 
   ColumnFilters<String> get sourceLine => $composableBuilder(
       column: $table.sourceLine, builder: (column) => ColumnFilters(column));
+
+  $$PlcCodeBlockTableTableFilterComposer get blockId {
+    final $$PlcCodeBlockTableTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.blockId,
+        referencedTable: $db.plcCodeBlockTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcCodeBlockTableTableFilterComposer(
+              $db: $db,
+              $table: $db.plcCodeBlockTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$PlcVarRefTableTableOrderingComposer
@@ -12623,9 +14245,6 @@ class $$PlcVarRefTableTableOrderingComposer
   ColumnOrderings<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnOrderings(column));
 
-  ColumnOrderings<int> get blockId => $composableBuilder(
-      column: $table.blockId, builder: (column) => ColumnOrderings(column));
-
   ColumnOrderings<String> get variablePath => $composableBuilder(
       column: $table.variablePath,
       builder: (column) => ColumnOrderings(column));
@@ -12638,6 +14257,26 @@ class $$PlcVarRefTableTableOrderingComposer
 
   ColumnOrderings<String> get sourceLine => $composableBuilder(
       column: $table.sourceLine, builder: (column) => ColumnOrderings(column));
+
+  $$PlcCodeBlockTableTableOrderingComposer get blockId {
+    final $$PlcCodeBlockTableTableOrderingComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.blockId,
+        referencedTable: $db.plcCodeBlockTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcCodeBlockTableTableOrderingComposer(
+              $db: $db,
+              $table: $db.plcCodeBlockTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$PlcVarRefTableTableAnnotationComposer
@@ -12652,9 +14291,6 @@ class $$PlcVarRefTableTableAnnotationComposer
   GeneratedColumn<int> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
 
-  GeneratedColumn<int> get blockId =>
-      $composableBuilder(column: $table.blockId, builder: (column) => column);
-
   GeneratedColumn<String> get variablePath => $composableBuilder(
       column: $table.variablePath, builder: (column) => column);
 
@@ -12666,6 +14302,27 @@ class $$PlcVarRefTableTableAnnotationComposer
 
   GeneratedColumn<String> get sourceLine => $composableBuilder(
       column: $table.sourceLine, builder: (column) => column);
+
+  $$PlcCodeBlockTableTableAnnotationComposer get blockId {
+    final $$PlcCodeBlockTableTableAnnotationComposer composer =
+        $composerBuilder(
+            composer: this,
+            getCurrentColumn: (t) => t.blockId,
+            referencedTable: $db.plcCodeBlockTable,
+            getReferencedColumn: (t) => t.id,
+            builder: (joinBuilder,
+                    {$addJoinBuilderToRootComposer,
+                    $removeJoinBuilderFromRootComposer}) =>
+                $$PlcCodeBlockTableTableAnnotationComposer(
+                  $db: $db,
+                  $table: $db.plcCodeBlockTable,
+                  $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                  joinBuilder: joinBuilder,
+                  $removeJoinBuilderFromRootComposer:
+                      $removeJoinBuilderFromRootComposer,
+                ));
+    return composer;
+  }
 }
 
 class $$PlcVarRefTableTableTableManager extends RootTableManager<
@@ -12677,12 +14334,9 @@ class $$PlcVarRefTableTableTableManager extends RootTableManager<
     $$PlcVarRefTableTableAnnotationComposer,
     $$PlcVarRefTableTableCreateCompanionBuilder,
     $$PlcVarRefTableTableUpdateCompanionBuilder,
-    (
-      PlcVarRefTableData,
-      BaseReferences<_$AppDatabase, $PlcVarRefTableTable, PlcVarRefTableData>
-    ),
+    (PlcVarRefTableData, $$PlcVarRefTableTableReferences),
     PlcVarRefTableData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool blockId})> {
   $$PlcVarRefTableTableTableManager(
       _$AppDatabase db, $PlcVarRefTableTable table)
       : super(TableManagerState(
@@ -12727,9 +14381,46 @@ class $$PlcVarRefTableTableTableManager extends RootTableManager<
             sourceLine: sourceLine,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$PlcVarRefTableTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({blockId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins: <
+                  T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic>>(state) {
+                if (blockId) {
+                  state = state.withJoin(
+                    currentTable: table,
+                    currentColumn: table.blockId,
+                    referencedTable:
+                        $$PlcVarRefTableTableReferences._blockIdTable(db),
+                    referencedColumn:
+                        $$PlcVarRefTableTableReferences._blockIdTable(db).id,
+                  ) as T;
+                }
+
+                return state;
+              },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
         ));
 }
 
@@ -12742,12 +14433,9 @@ typedef $$PlcVarRefTableTableProcessedTableManager = ProcessedTableManager<
     $$PlcVarRefTableTableAnnotationComposer,
     $$PlcVarRefTableTableCreateCompanionBuilder,
     $$PlcVarRefTableTableUpdateCompanionBuilder,
-    (
-      PlcVarRefTableData,
-      BaseReferences<_$AppDatabase, $PlcVarRefTableTable, PlcVarRefTableData>
-    ),
+    (PlcVarRefTableData, $$PlcVarRefTableTableReferences),
     PlcVarRefTableData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool blockId})>;
 typedef $$PlcFbInstanceTableTableCreateCompanionBuilder
     = PlcFbInstanceTableCompanion Function({
   Value<int> id,
@@ -12763,6 +14451,28 @@ typedef $$PlcFbInstanceTableTableUpdateCompanionBuilder
   Value<String> fbTypeName,
 });
 
+final class $$PlcFbInstanceTableTableReferences extends BaseReferences<
+    _$AppDatabase, $PlcFbInstanceTableTable, PlcFbInstanceTableData> {
+  $$PlcFbInstanceTableTableReferences(
+      super.$_db, super.$_table, super.$_typedResult);
+
+  static $PlcCodeBlockTableTable _declaringBlockIdTable(_$AppDatabase db) => db
+      .plcCodeBlockTable
+      .createAlias('plc_fb_instance__declaring_block_id__plc_code_block__id');
+
+  $$PlcCodeBlockTableTableProcessedTableManager get declaringBlockId {
+    final $_column = $_itemColumn<int>('declaring_block_id')!;
+
+    final manager =
+        $$PlcCodeBlockTableTableTableManager($_db, $_db.plcCodeBlockTable)
+            .filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_declaringBlockIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: [item]));
+  }
+}
+
 class $$PlcFbInstanceTableTableFilterComposer
     extends Composer<_$AppDatabase, $PlcFbInstanceTableTable> {
   $$PlcFbInstanceTableTableFilterComposer({
@@ -12775,15 +14485,31 @@ class $$PlcFbInstanceTableTableFilterComposer
   ColumnFilters<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnFilters(column));
 
-  ColumnFilters<int> get declaringBlockId => $composableBuilder(
-      column: $table.declaringBlockId,
-      builder: (column) => ColumnFilters(column));
-
   ColumnFilters<String> get instanceName => $composableBuilder(
       column: $table.instanceName, builder: (column) => ColumnFilters(column));
 
   ColumnFilters<String> get fbTypeName => $composableBuilder(
       column: $table.fbTypeName, builder: (column) => ColumnFilters(column));
+
+  $$PlcCodeBlockTableTableFilterComposer get declaringBlockId {
+    final $$PlcCodeBlockTableTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.declaringBlockId,
+        referencedTable: $db.plcCodeBlockTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcCodeBlockTableTableFilterComposer(
+              $db: $db,
+              $table: $db.plcCodeBlockTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$PlcFbInstanceTableTableOrderingComposer
@@ -12798,16 +14524,32 @@ class $$PlcFbInstanceTableTableOrderingComposer
   ColumnOrderings<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnOrderings(column));
 
-  ColumnOrderings<int> get declaringBlockId => $composableBuilder(
-      column: $table.declaringBlockId,
-      builder: (column) => ColumnOrderings(column));
-
   ColumnOrderings<String> get instanceName => $composableBuilder(
       column: $table.instanceName,
       builder: (column) => ColumnOrderings(column));
 
   ColumnOrderings<String> get fbTypeName => $composableBuilder(
       column: $table.fbTypeName, builder: (column) => ColumnOrderings(column));
+
+  $$PlcCodeBlockTableTableOrderingComposer get declaringBlockId {
+    final $$PlcCodeBlockTableTableOrderingComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.declaringBlockId,
+        referencedTable: $db.plcCodeBlockTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcCodeBlockTableTableOrderingComposer(
+              $db: $db,
+              $table: $db.plcCodeBlockTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$PlcFbInstanceTableTableAnnotationComposer
@@ -12822,14 +14564,32 @@ class $$PlcFbInstanceTableTableAnnotationComposer
   GeneratedColumn<int> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
 
-  GeneratedColumn<int> get declaringBlockId => $composableBuilder(
-      column: $table.declaringBlockId, builder: (column) => column);
-
   GeneratedColumn<String> get instanceName => $composableBuilder(
       column: $table.instanceName, builder: (column) => column);
 
   GeneratedColumn<String> get fbTypeName => $composableBuilder(
       column: $table.fbTypeName, builder: (column) => column);
+
+  $$PlcCodeBlockTableTableAnnotationComposer get declaringBlockId {
+    final $$PlcCodeBlockTableTableAnnotationComposer composer =
+        $composerBuilder(
+            composer: this,
+            getCurrentColumn: (t) => t.declaringBlockId,
+            referencedTable: $db.plcCodeBlockTable,
+            getReferencedColumn: (t) => t.id,
+            builder: (joinBuilder,
+                    {$addJoinBuilderToRootComposer,
+                    $removeJoinBuilderFromRootComposer}) =>
+                $$PlcCodeBlockTableTableAnnotationComposer(
+                  $db: $db,
+                  $table: $db.plcCodeBlockTable,
+                  $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                  joinBuilder: joinBuilder,
+                  $removeJoinBuilderFromRootComposer:
+                      $removeJoinBuilderFromRootComposer,
+                ));
+    return composer;
+  }
 }
 
 class $$PlcFbInstanceTableTableTableManager extends RootTableManager<
@@ -12841,13 +14601,9 @@ class $$PlcFbInstanceTableTableTableManager extends RootTableManager<
     $$PlcFbInstanceTableTableAnnotationComposer,
     $$PlcFbInstanceTableTableCreateCompanionBuilder,
     $$PlcFbInstanceTableTableUpdateCompanionBuilder,
-    (
-      PlcFbInstanceTableData,
-      BaseReferences<_$AppDatabase, $PlcFbInstanceTableTable,
-          PlcFbInstanceTableData>
-    ),
+    (PlcFbInstanceTableData, $$PlcFbInstanceTableTableReferences),
     PlcFbInstanceTableData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool declaringBlockId})> {
   $$PlcFbInstanceTableTableTableManager(
       _$AppDatabase db, $PlcFbInstanceTableTable table)
       : super(TableManagerState(
@@ -12885,9 +14641,47 @@ class $$PlcFbInstanceTableTableTableManager extends RootTableManager<
             fbTypeName: fbTypeName,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$PlcFbInstanceTableTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({declaringBlockId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins: <
+                  T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic>>(state) {
+                if (declaringBlockId) {
+                  state = state.withJoin(
+                    currentTable: table,
+                    currentColumn: table.declaringBlockId,
+                    referencedTable: $$PlcFbInstanceTableTableReferences
+                        ._declaringBlockIdTable(db),
+                    referencedColumn: $$PlcFbInstanceTableTableReferences
+                        ._declaringBlockIdTable(db)
+                        .id,
+                  ) as T;
+                }
+
+                return state;
+              },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
         ));
 }
 
@@ -12900,13 +14694,9 @@ typedef $$PlcFbInstanceTableTableProcessedTableManager = ProcessedTableManager<
     $$PlcFbInstanceTableTableAnnotationComposer,
     $$PlcFbInstanceTableTableCreateCompanionBuilder,
     $$PlcFbInstanceTableTableUpdateCompanionBuilder,
-    (
-      PlcFbInstanceTableData,
-      BaseReferences<_$AppDatabase, $PlcFbInstanceTableTable,
-          PlcFbInstanceTableData>
-    ),
+    (PlcFbInstanceTableData, $$PlcFbInstanceTableTableReferences),
     PlcFbInstanceTableData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool declaringBlockId})>;
 typedef $$PlcBlockCallTableTableCreateCompanionBuilder
     = PlcBlockCallTableCompanion Function({
   Value<int> id,
@@ -12922,6 +14712,28 @@ typedef $$PlcBlockCallTableTableUpdateCompanionBuilder
   Value<int?> lineNumber,
 });
 
+final class $$PlcBlockCallTableTableReferences extends BaseReferences<
+    _$AppDatabase, $PlcBlockCallTableTable, PlcBlockCallTableData> {
+  $$PlcBlockCallTableTableReferences(
+      super.$_db, super.$_table, super.$_typedResult);
+
+  static $PlcCodeBlockTableTable _callerBlockIdTable(_$AppDatabase db) =>
+      db.plcCodeBlockTable
+          .createAlias('plc_block_call__caller_block_id__plc_code_block__id');
+
+  $$PlcCodeBlockTableTableProcessedTableManager get callerBlockId {
+    final $_column = $_itemColumn<int>('caller_block_id')!;
+
+    final manager =
+        $$PlcCodeBlockTableTableTableManager($_db, $_db.plcCodeBlockTable)
+            .filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_callerBlockIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: [item]));
+  }
+}
+
 class $$PlcBlockCallTableTableFilterComposer
     extends Composer<_$AppDatabase, $PlcBlockCallTableTable> {
   $$PlcBlockCallTableTableFilterComposer({
@@ -12934,15 +14746,32 @@ class $$PlcBlockCallTableTableFilterComposer
   ColumnFilters<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnFilters(column));
 
-  ColumnFilters<int> get callerBlockId => $composableBuilder(
-      column: $table.callerBlockId, builder: (column) => ColumnFilters(column));
-
   ColumnFilters<String> get calleeBlockName => $composableBuilder(
       column: $table.calleeBlockName,
       builder: (column) => ColumnFilters(column));
 
   ColumnFilters<int> get lineNumber => $composableBuilder(
       column: $table.lineNumber, builder: (column) => ColumnFilters(column));
+
+  $$PlcCodeBlockTableTableFilterComposer get callerBlockId {
+    final $$PlcCodeBlockTableTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.callerBlockId,
+        referencedTable: $db.plcCodeBlockTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcCodeBlockTableTableFilterComposer(
+              $db: $db,
+              $table: $db.plcCodeBlockTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$PlcBlockCallTableTableOrderingComposer
@@ -12957,16 +14786,32 @@ class $$PlcBlockCallTableTableOrderingComposer
   ColumnOrderings<int> get id => $composableBuilder(
       column: $table.id, builder: (column) => ColumnOrderings(column));
 
-  ColumnOrderings<int> get callerBlockId => $composableBuilder(
-      column: $table.callerBlockId,
-      builder: (column) => ColumnOrderings(column));
-
   ColumnOrderings<String> get calleeBlockName => $composableBuilder(
       column: $table.calleeBlockName,
       builder: (column) => ColumnOrderings(column));
 
   ColumnOrderings<int> get lineNumber => $composableBuilder(
       column: $table.lineNumber, builder: (column) => ColumnOrderings(column));
+
+  $$PlcCodeBlockTableTableOrderingComposer get callerBlockId {
+    final $$PlcCodeBlockTableTableOrderingComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.callerBlockId,
+        referencedTable: $db.plcCodeBlockTable,
+        getReferencedColumn: (t) => t.id,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$PlcCodeBlockTableTableOrderingComposer(
+              $db: $db,
+              $table: $db.plcCodeBlockTable,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$PlcBlockCallTableTableAnnotationComposer
@@ -12981,14 +14826,32 @@ class $$PlcBlockCallTableTableAnnotationComposer
   GeneratedColumn<int> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
 
-  GeneratedColumn<int> get callerBlockId => $composableBuilder(
-      column: $table.callerBlockId, builder: (column) => column);
-
   GeneratedColumn<String> get calleeBlockName => $composableBuilder(
       column: $table.calleeBlockName, builder: (column) => column);
 
   GeneratedColumn<int> get lineNumber => $composableBuilder(
       column: $table.lineNumber, builder: (column) => column);
+
+  $$PlcCodeBlockTableTableAnnotationComposer get callerBlockId {
+    final $$PlcCodeBlockTableTableAnnotationComposer composer =
+        $composerBuilder(
+            composer: this,
+            getCurrentColumn: (t) => t.callerBlockId,
+            referencedTable: $db.plcCodeBlockTable,
+            getReferencedColumn: (t) => t.id,
+            builder: (joinBuilder,
+                    {$addJoinBuilderToRootComposer,
+                    $removeJoinBuilderFromRootComposer}) =>
+                $$PlcCodeBlockTableTableAnnotationComposer(
+                  $db: $db,
+                  $table: $db.plcCodeBlockTable,
+                  $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                  joinBuilder: joinBuilder,
+                  $removeJoinBuilderFromRootComposer:
+                      $removeJoinBuilderFromRootComposer,
+                ));
+    return composer;
+  }
 }
 
 class $$PlcBlockCallTableTableTableManager extends RootTableManager<
@@ -13000,13 +14863,9 @@ class $$PlcBlockCallTableTableTableManager extends RootTableManager<
     $$PlcBlockCallTableTableAnnotationComposer,
     $$PlcBlockCallTableTableCreateCompanionBuilder,
     $$PlcBlockCallTableTableUpdateCompanionBuilder,
-    (
-      PlcBlockCallTableData,
-      BaseReferences<_$AppDatabase, $PlcBlockCallTableTable,
-          PlcBlockCallTableData>
-    ),
+    (PlcBlockCallTableData, $$PlcBlockCallTableTableReferences),
     PlcBlockCallTableData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool callerBlockId})> {
   $$PlcBlockCallTableTableTableManager(
       _$AppDatabase db, $PlcBlockCallTableTable table)
       : super(TableManagerState(
@@ -13044,9 +14903,47 @@ class $$PlcBlockCallTableTableTableManager extends RootTableManager<
             lineNumber: lineNumber,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) => (
+                    e.readTable(table),
+                    $$PlcBlockCallTableTableReferences(db, table, e)
+                  ))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({callerBlockId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins: <
+                  T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic>>(state) {
+                if (callerBlockId) {
+                  state = state.withJoin(
+                    currentTable: table,
+                    currentColumn: table.callerBlockId,
+                    referencedTable: $$PlcBlockCallTableTableReferences
+                        ._callerBlockIdTable(db),
+                    referencedColumn: $$PlcBlockCallTableTableReferences
+                        ._callerBlockIdTable(db)
+                        .id,
+                  ) as T;
+                }
+
+                return state;
+              },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
         ));
 }
 
@@ -13059,13 +14956,9 @@ typedef $$PlcBlockCallTableTableProcessedTableManager = ProcessedTableManager<
     $$PlcBlockCallTableTableAnnotationComposer,
     $$PlcBlockCallTableTableCreateCompanionBuilder,
     $$PlcBlockCallTableTableUpdateCompanionBuilder,
-    (
-      PlcBlockCallTableData,
-      BaseReferences<_$AppDatabase, $PlcBlockCallTableTable,
-          PlcBlockCallTableData>
-    ),
+    (PlcBlockCallTableData, $$PlcBlockCallTableTableReferences),
     PlcBlockCallTableData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool callerBlockId})>;
 typedef $$AppRoleTableCreateCompanionBuilder = AppRoleCompanion Function({
   required String name,
   required String groups,
@@ -13078,6 +14971,25 @@ typedef $$AppRoleTableUpdateCompanionBuilder = AppRoleCompanion Function({
   Value<bool> seeded,
   Value<int> rowid,
 });
+
+final class $$AppRoleTableReferences
+    extends BaseReferences<_$AppDatabase, $AppRoleTable, AppRoleData> {
+  $$AppRoleTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static MultiTypedResultKey<$AppUserTable, List<AppUserData>>
+      _appUserRefsTable(_$AppDatabase db) =>
+          MultiTypedResultKey.fromTable(db.appUser,
+              aliasName: 'app_role__name__app_user__role_name');
+
+  $$AppUserTableProcessedTableManager get appUserRefs {
+    final manager = $$AppUserTableTableManager($_db, $_db.appUser).filter(
+        (f) => f.roleName.name.sqlEquals($_itemColumn<String>('name')!));
+
+    final cache = $_typedResult.readTableOrNull(_appUserRefsTable($_db));
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: cache));
+  }
+}
 
 class $$AppRoleTableFilterComposer
     extends Composer<_$AppDatabase, $AppRoleTable> {
@@ -13096,6 +15008,27 @@ class $$AppRoleTableFilterComposer
 
   ColumnFilters<bool> get seeded => $composableBuilder(
       column: $table.seeded, builder: (column) => ColumnFilters(column));
+
+  Expression<bool> appUserRefs(
+      Expression<bool> Function($$AppUserTableFilterComposer f) f) {
+    final $$AppUserTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.name,
+        referencedTable: $db.appUser,
+        getReferencedColumn: (t) => t.roleName,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$AppUserTableFilterComposer(
+              $db: $db,
+              $table: $db.appUser,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
 }
 
 class $$AppRoleTableOrderingComposer
@@ -13134,6 +15067,27 @@ class $$AppRoleTableAnnotationComposer
 
   GeneratedColumn<bool> get seeded =>
       $composableBuilder(column: $table.seeded, builder: (column) => column);
+
+  Expression<T> appUserRefs<T extends Object>(
+      Expression<T> Function($$AppUserTableAnnotationComposer a) f) {
+    final $$AppUserTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.name,
+        referencedTable: $db.appUser,
+        getReferencedColumn: (t) => t.roleName,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$AppUserTableAnnotationComposer(
+              $db: $db,
+              $table: $db.appUser,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return f(composer);
+  }
 }
 
 class $$AppRoleTableTableManager extends RootTableManager<
@@ -13145,9 +15099,9 @@ class $$AppRoleTableTableManager extends RootTableManager<
     $$AppRoleTableAnnotationComposer,
     $$AppRoleTableCreateCompanionBuilder,
     $$AppRoleTableUpdateCompanionBuilder,
-    (AppRoleData, BaseReferences<_$AppDatabase, $AppRoleTable, AppRoleData>),
+    (AppRoleData, $$AppRoleTableReferences),
     AppRoleData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool appUserRefs})> {
   $$AppRoleTableTableManager(_$AppDatabase db, $AppRoleTable table)
       : super(TableManagerState(
           db: db,
@@ -13183,9 +15137,32 @@ class $$AppRoleTableTableManager extends RootTableManager<
             rowid: rowid,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) =>
+                  (e.readTable(table), $$AppRoleTableReferences(db, table, e)))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({appUserRefs = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [if (appUserRefs) db.appUser],
+              addJoins: null,
+              getPrefetchedDataCallback: (items) async {
+                return [
+                  if (appUserRefs)
+                    await $_getPrefetchedData<AppRoleData, $AppRoleTable,
+                            AppUserData>(
+                        currentTable: table,
+                        referencedTable:
+                            $$AppRoleTableReferences._appUserRefsTable(db),
+                        managerFromTypedResult: (p0) =>
+                            $$AppRoleTableReferences(db, table, p0).appUserRefs,
+                        referencedItemsForCurrentItem:
+                            (item, referencedItems) => referencedItems
+                                .where((e) => e.roleName == item.name),
+                        typedResults: items)
+                ];
+              },
+            );
+          },
         ));
 }
 
@@ -13198,9 +15175,9 @@ typedef $$AppRoleTableProcessedTableManager = ProcessedTableManager<
     $$AppRoleTableAnnotationComposer,
     $$AppRoleTableCreateCompanionBuilder,
     $$AppRoleTableUpdateCompanionBuilder,
-    (AppRoleData, BaseReferences<_$AppDatabase, $AppRoleTable, AppRoleData>),
+    (AppRoleData, $$AppRoleTableReferences),
     AppRoleData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool appUserRefs})>;
 typedef $$AppUserTableCreateCompanionBuilder = AppUserCompanion Function({
   required String username,
   required String roleName,
@@ -13222,6 +15199,25 @@ typedef $$AppUserTableUpdateCompanionBuilder = AppUserCompanion Function({
   Value<int> rowid,
 });
 
+final class $$AppUserTableReferences
+    extends BaseReferences<_$AppDatabase, $AppUserTable, AppUserData> {
+  $$AppUserTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static $AppRoleTable _roleNameTable(_$AppDatabase db) =>
+      db.appRole.createAlias('app_user__role_name__app_role__name');
+
+  $$AppRoleTableProcessedTableManager get roleName {
+    final $_column = $_itemColumn<String>('role_name')!;
+
+    final manager = $$AppRoleTableTableManager($_db, $_db.appRole)
+        .filter((f) => f.name.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_roleNameTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+        manager.$state.copyWith(prefetchedData: [item]));
+  }
+}
+
 class $$AppUserTableFilterComposer
     extends Composer<_$AppDatabase, $AppUserTable> {
   $$AppUserTableFilterComposer({
@@ -13233,9 +15229,6 @@ class $$AppUserTableFilterComposer
   });
   ColumnFilters<String> get username => $composableBuilder(
       column: $table.username, builder: (column) => ColumnFilters(column));
-
-  ColumnFilters<String> get roleName => $composableBuilder(
-      column: $table.roleName, builder: (column) => ColumnFilters(column));
 
   ColumnFilters<String> get passwordHash => $composableBuilder(
       column: $table.passwordHash, builder: (column) => ColumnFilters(column));
@@ -13252,6 +15245,26 @@ class $$AppUserTableFilterComposer
   ColumnFilters<bool> get stationAccount => $composableBuilder(
       column: $table.stationAccount,
       builder: (column) => ColumnFilters(column));
+
+  $$AppRoleTableFilterComposer get roleName {
+    final $$AppRoleTableFilterComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.roleName,
+        referencedTable: $db.appRole,
+        getReferencedColumn: (t) => t.name,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$AppRoleTableFilterComposer(
+              $db: $db,
+              $table: $db.appRole,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$AppUserTableOrderingComposer
@@ -13265,9 +15278,6 @@ class $$AppUserTableOrderingComposer
   });
   ColumnOrderings<String> get username => $composableBuilder(
       column: $table.username, builder: (column) => ColumnOrderings(column));
-
-  ColumnOrderings<String> get roleName => $composableBuilder(
-      column: $table.roleName, builder: (column) => ColumnOrderings(column));
 
   ColumnOrderings<String> get passwordHash => $composableBuilder(
       column: $table.passwordHash,
@@ -13285,6 +15295,26 @@ class $$AppUserTableOrderingComposer
   ColumnOrderings<bool> get stationAccount => $composableBuilder(
       column: $table.stationAccount,
       builder: (column) => ColumnOrderings(column));
+
+  $$AppRoleTableOrderingComposer get roleName {
+    final $$AppRoleTableOrderingComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.roleName,
+        referencedTable: $db.appRole,
+        getReferencedColumn: (t) => t.name,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$AppRoleTableOrderingComposer(
+              $db: $db,
+              $table: $db.appRole,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$AppUserTableAnnotationComposer
@@ -13298,9 +15328,6 @@ class $$AppUserTableAnnotationComposer
   });
   GeneratedColumn<String> get username =>
       $composableBuilder(column: $table.username, builder: (column) => column);
-
-  GeneratedColumn<String> get roleName =>
-      $composableBuilder(column: $table.roleName, builder: (column) => column);
 
   GeneratedColumn<String> get passwordHash => $composableBuilder(
       column: $table.passwordHash, builder: (column) => column);
@@ -13316,6 +15343,26 @@ class $$AppUserTableAnnotationComposer
 
   GeneratedColumn<bool> get stationAccount => $composableBuilder(
       column: $table.stationAccount, builder: (column) => column);
+
+  $$AppRoleTableAnnotationComposer get roleName {
+    final $$AppRoleTableAnnotationComposer composer = $composerBuilder(
+        composer: this,
+        getCurrentColumn: (t) => t.roleName,
+        referencedTable: $db.appRole,
+        getReferencedColumn: (t) => t.name,
+        builder: (joinBuilder,
+                {$addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer}) =>
+            $$AppRoleTableAnnotationComposer(
+              $db: $db,
+              $table: $db.appRole,
+              $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+              joinBuilder: joinBuilder,
+              $removeJoinBuilderFromRootComposer:
+                  $removeJoinBuilderFromRootComposer,
+            ));
+    return composer;
+  }
 }
 
 class $$AppUserTableTableManager extends RootTableManager<
@@ -13327,9 +15374,9 @@ class $$AppUserTableTableManager extends RootTableManager<
     $$AppUserTableAnnotationComposer,
     $$AppUserTableCreateCompanionBuilder,
     $$AppUserTableUpdateCompanionBuilder,
-    (AppUserData, BaseReferences<_$AppDatabase, $AppUserTable, AppUserData>),
+    (AppUserData, $$AppUserTableReferences),
     AppUserData,
-    PrefetchHooks Function()> {
+    PrefetchHooks Function({bool roleName})> {
   $$AppUserTableTableManager(_$AppDatabase db, $AppUserTable table)
       : super(TableManagerState(
           db: db,
@@ -13381,9 +15428,44 @@ class $$AppUserTableTableManager extends RootTableManager<
             rowid: rowid,
           ),
           withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .map((e) =>
+                  (e.readTable(table), $$AppUserTableReferences(db, table, e)))
               .toList(),
-          prefetchHooksCallback: null,
+          prefetchHooksCallback: ({roleName = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins: <
+                  T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic>>(state) {
+                if (roleName) {
+                  state = state.withJoin(
+                    currentTable: table,
+                    currentColumn: table.roleName,
+                    referencedTable:
+                        $$AppUserTableReferences._roleNameTable(db),
+                    referencedColumn:
+                        $$AppUserTableReferences._roleNameTable(db).name,
+                  ) as T;
+                }
+
+                return state;
+              },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
         ));
 }
 
@@ -13396,9 +15478,9 @@ typedef $$AppUserTableProcessedTableManager = ProcessedTableManager<
     $$AppUserTableAnnotationComposer,
     $$AppUserTableCreateCompanionBuilder,
     $$AppUserTableUpdateCompanionBuilder,
-    (AppUserData, BaseReferences<_$AppDatabase, $AppUserTable, AppUserData>),
+    (AppUserData, $$AppUserTableReferences),
     AppUserData,
-    PrefetchHooks Function()>;
+    PrefetchHooks Function({bool roleName})>;
 typedef $$AuditEntryTableCreateCompanionBuilder = AuditEntryCompanion Function({
   Value<int> id,
   required DateTime at,
