@@ -99,6 +99,16 @@ ALLOW_LIST=(
   # form is not being changed in this phase. Sweep document §3.7. Two
   # `SharedPreferences.getInstance()` calls writing five bare keys.
   'lib/pages/dbus_login.dart|legacy|spec §2 excludes this file from the milestone (sweep §3.7)'
+
+  # The one-shot import from `shared_preferences` into the relational config
+  # store (milestone v1.2, phase 1). It READS the legacy store once, at boot,
+  # and writes nothing through it — every write goes to `SqlitePreferences`.
+  # There is no `ref` at that point in boot and the factory returns the new
+  # store, which is the thing being imported *into*, so neither of the two
+  # standard fixes applies. Time-limited by construction: the entry leaves with
+  # the `shared_preferences` dependency after the compatibility release
+  # (phase 4). Sweep §2.4.
+  'lib/core/device_local_store.dart|async|read-only source for the one-shot import; nothing is written through it, and it leaves with the shared_preferences dependency after the compatibility release (Phase 4)'
 )
 
 allowed() {
