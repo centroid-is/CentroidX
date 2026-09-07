@@ -1144,6 +1144,32 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
     // comment on the save button below and `GatewayConfig.advisory`'s own doc.
     final advisory = _edited.advisory;
 
+    // The save button is this card's ONE indicator of unsaved state — the
+    // trailing `Unsaved` pill it used to duplicate is gone by owner ruling
+    // (a second spelling of one fact). That promotion comes with the pill's
+    // legibility obligation: with `backgroundColor: null` the M3 defaults
+    // resolve the unsaved label to `primary` on `surfaceContainerLow`, which
+    // in solarized light is green #859900 on cream base2 — 2.62:1, under
+    // WCAG 1.4.11's 3:1 floor for UI components. So the unsaved face wears
+    // the pill's ratified treatment instead: [HmiStateColors.yellow] —
+    // attention, not alarm; only fault red may be saturated — as a 30-alpha
+    // tint over the card, with the label split on brightness for the reason
+    // `AlarmColors.onSignal` exists: both schemes' yellows are mid-luminance,
+    // readable as ink on a dark card and far too dim on a cream one, where
+    // `onSurface` carries the label and the tint carries the colour. The
+    // tint is pre-blended over the card so the button's `Material` stays
+    // opaque under its elevation. Ratios are pinned per theme by
+    // `server_config_save_button_unsaved_state_test.dart`.
+    final theme = Theme.of(context);
+    final canSave = _hasUnsavedChanges && refusal == null;
+    final attention = HmiStateColors.of(context).yellow;
+    final unsavedInk = theme.brightness == Brightness.dark
+        ? attention
+        : theme.colorScheme.onSurface;
+    final unsavedFill = Color.alphaBlend(
+        attention.withAlpha(30),
+        theme.cardTheme.color ?? theme.colorScheme.surfaceContainerLow);
+
     // Collapsed by default in direct mode — the shape `McpServerSection`
     // already uses for a device-local setting, and the reason is not only
     // consistency: an expanded card here pushes the four sections down the
@@ -1156,7 +1182,6 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
         subtitle: Text(saved.isGateway
             ? 'Relay gateway — ${saved.url}'
             : 'Direct to PLCs'),
-        trailing: _hasUnsavedChanges ? const _UnsavedPill() : null,
         // A gateway station opens on its own settings; a direct one does not
         // have any to show.
         initiallyExpanded: saved.isGateway,
@@ -1304,13 +1329,9 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
             children: [
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed:
-                      _hasUnsavedChanges && refusal == null ? _save : null,
+                  onPressed: canSave ? _save : null,
                   icon: FaIcon(FontAwesomeIcons.floppyDisk,
-                      size: 16,
-                      color: _hasUnsavedChanges && refusal == null
-                          ? null
-                          : Colors.grey),
+                      size: 16, color: canSave ? unsavedInk : Colors.grey),
                   label: Text(switch ((_hasUnsavedChanges, refusal)) {
                     (false, _) => 'All Changes Saved',
                     (true, final String _) => 'Cannot save yet',
@@ -1318,9 +1339,8 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
                   }),
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 16),
-                    backgroundColor: _hasUnsavedChanges && refusal == null
-                        ? null
-                        : Colors.grey,
+                    foregroundColor: canSave ? unsavedInk : null,
+                    backgroundColor: canSave ? unsavedFill : Colors.grey,
                   ),
                 ),
               ),
@@ -1332,63 +1352,6 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// The Transport card's "Unsaved" marker.
-///
-/// [HmiStateColors.yellow] — attention, not alarm. Unsaved changes are the
-/// normal state of a keyboard mid-edit, and yellow is already what this
-/// feature's surfaces use for "needs attention, still recoverable"
-/// (`gateway_link_chip.dart`, `gateway_link_status_row.dart`, and the
-/// hostname advisory on this very card). Not red: only fault red may be
-/// saturated in this repo, and the old `errorContainer` chip fell back to
-/// exactly that — 15-07's golden review measured it as "the lowest-contrast
-/// element in any of the 26 images" (dark-red-on-red at 1.15:1). Not orange
-/// either: orange means forced/override and, since plan 01-08, an elevated
-/// session (`access_status_action.dart`).
-///
-/// The geometry is `gateway_link_chip.dart`'s pill — tinted fill, 47%-alpha
-/// border in the same colour — so the two badges an operator sees on this
-/// page read as one vocabulary.
-///
-/// The label colour splits on brightness for the same reason
-/// [AlarmColors.onSignal] exists: both schemes' yellows are mid-luminance,
-/// bright enough to read on a dark card (3.8:1 on solarized base02) and far
-/// too dim to read on a cream one (2.2:1 on base2). On light surfaces the
-/// tint and border carry the colour and the label falls back to `onSurface`.
-/// Measured label-on-fill contrast: 3.8:1 solarized dark, 3.3:1 solarized
-/// light, 4.2:1 muted dark, 7.5:1 muted light — every one of them above the
-/// scheme's own body text, where the old chip was below everything.
-/// `server_config_unsaved_chip_contrast_test.dart` pins all four at >= 3.0:1
-/// (WCAG 1.4.11).
-class _UnsavedPill extends StatelessWidget {
-  const _UnsavedPill();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colour = HmiStateColors.of(context).yellow;
-    final label = theme.brightness == Brightness.dark
-        ? colour
-        : theme.colorScheme.onSurface;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: colour.withAlpha(30),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: colour.withAlpha(120)),
-      ),
-      child: Text(
-        'Unsaved',
-        maxLines: 1,
-        style: TextStyle(
-          color: label,
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-        ),
       ),
     );
   }
