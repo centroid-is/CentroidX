@@ -465,6 +465,46 @@ void main() {
               'button with a hundred pings a second');
     });
 
+    test('a panel that was keeping up and then wedges starts beating',
+        () async {
+      // **The realistic stuck reader, and the arm the other two could not
+      // be.** `_ackFrozen` freezes its ack from the very first tick, so the
+      // seed taken at `_arm` already matches it and the per-tick bookkeeping
+      // in `_lastAckSent` is never exercised. A real panel wedges *after* a
+      // healthy minute.
+      //
+      // Found by sabotage: updating `_lastAckSent` only on the ticks that
+      // actually send left the whole suite green. Under that version this
+      // panel compares against its arm-time ack for ever, `ackMoved` is true
+      // for ever, and the beat is skipped for ever — the mechanism defeated
+      // through its own bookkeeping, silently.
+      var applied = 0;
+      var wedged = false;
+      final rig = _Rig(
+          ackSource: () => {'page-1': wedged ? applied : ++applied});
+      rig.pump.start();
+      final chatter = Timer.periodic(
+          const Duration(milliseconds: 10), (_) => rig.pump.noteOutbound());
+      addTearDown(chatter.cancel);
+
+      await Future<void>.delayed(_floor * 5);
+      final whileHealthy = rig.pump.debugHeartbeatsSent;
+      expect(whileHealthy, 0,
+          reason: 'this panel is busy and reading, so it must be silent — if '
+              'it is already beating here the second half of this arm proves '
+              'nothing');
+
+      wedged = true;
+      await Future<void>.delayed(window);
+      chatter.cancel();
+
+      expect(rig.pump.debugHeartbeatsSent, greaterThan(whileHealthy),
+          reason: 'the panel stopped applying frames and the pump never '
+              'noticed, because it was still comparing against an ack from '
+              'before it went quiet. The gateway hears nothing from the one '
+              'panel it needs to hear from');
+    });
+
     test('a busy panel with nothing to acknowledge still skips', () async {
       // An **absent** ack is not "an ack that has not moved". Read literally,
       // §6's rule says beat whenever the ack is unchanged — and an empty map
