@@ -30,7 +30,16 @@ enum TransportMode {
   /// pool. What the plant runs today.
   direct,
 
-  /// This station holds one WebSocket to the relay gateway and nothing else.
+  /// This station holds one WebSocket to the relay gateway for its **values**:
+  /// no OPC UA session, no Modbus socket, no collector.
+  ///
+  /// It also holds **one Postgres connection**, for sign-in, preferences and
+  /// the audit trail — shared with the rest of the plant and configured
+  /// elsewhere on this page. That is measured, not assumed: the rig ran a panel
+  /// in gateway mode and found the connection open (13-RIG-E2E-EVIDENCE
+  /// FIND-C), and `lib/providers/database.dart` has no transport branch to
+  /// close it with. Phase 17 moves access, preferences and audit onto the relay
+  /// too; until then this doc says what the panel actually opens.
   gateway;
 
   /// The name persisted in preferences. Parsing is by this string, so renaming
@@ -143,6 +152,45 @@ final class GatewayConfig {
           'the clear on every reconnect';
     }
     return null;
+  }
+
+  /// A warning about this configuration that is **not** a reason to refuse it.
+  ///
+  /// Fires when a `wss` address names a host rather than an address. The
+  /// gateway's certificate has to carry a subject-alternative name for exactly
+  /// that host, and when it does not, TLS reports the mismatch as a *trust*
+  /// failure — which sends the operator to the CA file, the wrong end of the
+  /// wire. The rig measured the trap: its probe leaf is `CN=10.50.10.11` with
+  /// `SAN: IP Address:10.50.10.11` and no DNS name at all, so the panel had to
+  /// be pointed at `wss://10.50.10.11:9444` for hostname verification to pass
+  /// (13-RIG-E2E-EVIDENCE FIND-B). Said here, it costs the operator a glance;
+  /// discovered at the next restart, it costs an afternoon.
+  ///
+  /// **It must never enter the Save button's enable condition.** That switch is
+  /// `_hasUnsavedChanges && refusal == null` where `refusal` is
+  /// [validationError] alone (`lib/pages/server_config.dart:1147-1179`), and
+  /// this getter stays out of it. A plant that provisions DNS SANs is
+  /// perfectly legitimate — it is only *this* deployment's certificate that
+  /// cannot serve a name — and a configuration the operator is not allowed to
+  /// save is worse than one they save and then correct.
+  ///
+  /// Null whenever [validationError] is not: one complaint at a time about a
+  /// string somebody is halfway through typing.
+  String? get advisory {
+    if (!isGateway) return null;
+    if (validationError != null) return null;
+    if (uri.scheme != 'wss') return null;
+    // The one is-this-a-name-or-an-address test in the phase. Anything else
+    // that needs the distinction — `lib/core/gateway_link_status.dart`'s SAN
+    // hint, which must stay quiet on an IP-literal dial — calls this getter
+    // rather than growing a second spelling. A `host.contains('.')` shortcut
+    // reads 10.50.10.11 as a name and an IPv6 literal as an address, both
+    // backwards.
+    if (InternetAddress.tryParse(uri.host) != null) return null;
+    return 'The gateway certificate must carry a subject-alternative name for '
+        'exactly "${uri.host}". A certificate issued for an IP address instead '
+        'fails the handshake with a message about trust rather than about the '
+        'name, so check the certificate before you touch the CA root path.';
   }
 
   /// The dial target, once [validationError] is null.
