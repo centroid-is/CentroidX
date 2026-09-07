@@ -1,6 +1,10 @@
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
+import 'package:tfc_dart/core/config/config_item.dart'
+    show ConfigItem, ConfigKind, ConfigScope;
+import 'package:tfc_dart/core/config/key_mapping_codec.dart'
+    show keyMappingBlobOf;
 import 'package:tfc_dart/tfc_dart_core.dart' show McpDatabase, fuzzyFilter;
 
 import '../cache/ttl_cache.dart';
@@ -94,6 +98,65 @@ class ConfigService implements KeyMappingLookup {
     });
   }
 
+  /// The key mappings, from `config_item` rows when there are any and from
+  /// the legacy `flutter_preferences.key_mappings` blob until then.
+  ///
+  /// Shaped exactly like [_getPreferenceJson]'s result for that key —
+  /// `{'nodes': {key: entry}}` — so [listKeyMappings] does not care which side
+  /// it came from.
+  ///
+  /// **The shape is produced by [keyMappingBlobOf], not assembled here.** A
+  /// map built by hand would be a second definition of the blob, and the way
+  /// two definitions diverge is quietly: this one feeds `access_template_tools`
+  /// "the whole key universe", so a malformed or subtly different key set
+  /// becomes access rules written against wiring that does not match the
+  /// plant. Going through the codec also round-trips every payload through
+  /// `KeyMappingEntry.fromJson`, which validates them for free.
+  ///
+  /// **Why raw SQL rather than the drift builder** `readSharedKeyMappingItems`
+  /// uses: this service holds an [McpDatabase], which is `ServerDatabase` in
+  /// the standalone binary, and `config_item` is not in that schema — the same
+  /// arrangement `flutter_preferences` has. Every query in this file is raw
+  /// SQL through [_sql] for that reason, and this one follows it. The codec
+  /// import is a value-layer import and not a drift-table one, so it does not
+  /// cross that boundary.
+  ///
+  /// A missing `config_item` is the fallback case too, not an error: a
+  /// standalone server can open a database tfc_dart has not migrated yet, and
+  /// failing here would take out `list_key_mappings` and every access template
+  /// tool built on it in order to report a table that is about to exist.
+  ///
+  /// The fallback retires itself the moment one row exists, and it is deleted
+  /// with the blob in Phase 4.
+  Future<Map<String, dynamic>?> _getKeyMappingsJson() {
+    return _prefCache.getOrCompute('key_mappings#rows', () async {
+      final List<QueryRow> rows;
+      try {
+        rows = await _db.customSelect(
+          _sql('SELECT id, payload FROM config_item '
+              'WHERE kind = ? AND scope = ? ORDER BY id'),
+          variables: [
+            Variable.withString(ConfigKind.keyMapping.wireName),
+            Variable.withString(ConfigScope.shared.wireName),
+          ],
+        ).get();
+      } catch (_) {
+        return _getPreferenceJson('key_mappings');
+      }
+      if (rows.isEmpty) return _getPreferenceJson('key_mappings');
+
+      final items = [
+        for (final row in rows)
+          ConfigItem(
+            kind: ConfigKind.keyMapping,
+            id: row.read<String>('id'),
+            payload: row.read<String>('payload'),
+          ),
+      ];
+      return jsonDecode(keyMappingBlobOf(items)) as Map<String, dynamic>;
+    });
+  }
+
   /// Returns a summary list of pages from page_editor_data.
   ///
   /// Each entry contains `key` and `title` fields. Results are limited
@@ -168,7 +231,7 @@ class ConfigService implements KeyMappingLookup {
     String? filter,
     int limit = 50,
   }) async {
-    final data = await _getPreferenceJson('key_mappings');
+    final data = await _getKeyMappingsJson();
     if (data == null) return [];
 
     final nodes = data['nodes'] as Map<String, dynamic>?;
