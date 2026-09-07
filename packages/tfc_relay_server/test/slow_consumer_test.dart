@@ -156,15 +156,30 @@ void main() {
               'catches up — a page change, a GC pause, a switch with a busy '
               'minute — must not be evicted for it');
 
-      // Recovery. §5.3 calls the reset branch load-bearing and says why: a
-      // window that accumulates with no recovery signal evicts every panel
-      // eventually, which is the mistake `send_buffer.dart:255-265` already
-      // records once.
+      // Recovery, and then a SECOND excursion — which is the only shape that
+      // actually tests the reset.
+      //
+      // §5.3 calls the reset branch load-bearing and says why: a window that
+      // accumulates with no recovery signal evicts every panel eventually,
+      // the mistake `send_buffer.dart`'s peak window already records once.
+      // **But a case that stops at "it caught up and was not evicted" does not
+      // pin it**, and this one did until sabotage (f) said so: while the
+      // client is acking the gap is zero, so the verdict never reaches its
+      // eviction check and a stale `gapSinceMs` sits there doing nothing
+      // visible. It only bites on the *next* bad minute — which is exactly
+      // when an operator would experience it, as a disconnect with no
+      // proportion to what just happened.
       run(400, acking: true);
       expect(panel.session.sentCloseCode, isNull,
-          reason: 'the client caught up, so the window reopened. Carrying the '
-              'old one forward would evict a panel for a bad minute two shifts '
-              'ago, which reads to an operator as a random disconnect');
+          reason: 'the client caught up');
+
+      run(160, acking: false);
+      expect(panel.session.sentCloseCode, isNull,
+          reason: 'a second short stall, long after the first one ended, is '
+              'judged on its own window. Carrying the old one forward would '
+              'evict this panel on the first tick of its second bad minute — '
+              'and every panel in the plant eventually, each on whatever tick '
+              'it happened to have its second bad minute on');
     });
   });
 
