@@ -30,6 +30,19 @@ library;
 
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
+/// The redactor moved down to `tfc_relay_protocol` in 18-02 (see the comment
+/// where it used to be declared, further down this file).
+///
+/// Re-exported rather than merely imported so that `redactUpstreamError` and
+/// `maxRedactedErrorLength` stay on this library's surface — and so on
+/// `tfc_relay_local.dart`'s, which exports this file. Every existing import in
+/// the gateway and its tests therefore keeps working unchanged. Dropping the
+/// re-export would have meant editing ten call sites to prove a point about
+/// where a function lives, and would have silently narrowed this package's
+/// public API.
+export 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
+    show redactUpstreamError, maxRedactedErrorLength;
+
 /// The five link states, which are exactly the five `StatusParams.state`
 /// already accepts on the wire.
 ///
@@ -378,101 +391,16 @@ abstract interface class UpstreamLink {
   int get upstreamSubscriptionsCreated;
 }
 
-/// Strips credentials, endpoints and filesystem paths out of an upstream error
-/// before it can become a subscribable value.
-///
-/// The threat is not an attacker inside the error string; it is the ordinary
-/// case (T-08-08). open62541, the Modbus stack and `dart:io` all put the thing
-/// they were talking to into the message — `opc.tcp://svc:hunter2@10.104.29.11:
-/// 4840/`, `/etc/centroid/certs/client.pem`, `SocketException: … address =
-/// 10.104.29.71` — and 08-09 turns `lastError` into
-/// `PIPE.upstream.<alias>.last_error`, which any panel may subscribe to. The
-/// alias is already public; the credential, the certificate path and the plant
-/// topology are not.
-///
-/// Deliberately over-broad. Redacting a version string that looks like an IPv4
-/// address costs a diagnostic detail; missing a password costs a credential,
-/// and the redacted forms still say *what kind* of thing was removed. The
-/// unredacted string stays available to the gateway's own log, which is not a
-/// key.
-///
-/// **Over-broad still has an edge, and it is written down.** 08-REVIEW WR-11
-/// added IPv6 literals and the `address = <token>` shapes — the latter being
-/// the only rule that can catch a DNS hostname, which names a PLC and a site
-/// as plainly as an address does and which no literal pattern will ever match.
-/// The IPv6 rules stop short of two-colon runs on purpose: `09:49:57` is a
-/// timestamp, and a redactor that ate every clock time would make this key
-/// unreadable in exchange for nothing.
-String? redactUpstreamError(String? raw) {
-  if (raw == null) return null;
-  var out = raw;
-
-  // Any scheme://… — this is the one that carries userinfo, so it goes first
-  // and takes the credentials with it.
-  out = out.replaceAll(
-      RegExp(r'\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s,;)"' "'" r']+'), '<endpoint>');
-
-  // Windows paths (certificate stores, key files).
-  out = out.replaceAll(
-      RegExp(r'[a-zA-Z]:\\[^\s,;)"' "'" r']*'), '<path>');
-
-  // Absolute POSIX paths. Two segments minimum, so ordinary prose containing
-  // "and/or" survives and "/etc/ssl/private/client.pem" does not.
-  out = out.replaceAll(
-      RegExp(r'/(?:[A-Za-z0-9._@\-]+/)+[A-Za-z0-9._@\-]*'), '<path>');
-
-  // key=value credentials that never had a scheme in front of them.
-  out = out.replaceAllMapped(
-      RegExp(
-          r'\b(user|username|uid|login|password|passwd|pwd|token|secret|api[_-]?key)'
-          r'\s*[=:]\s*\S+',
-          caseSensitive: false),
-      (m) => '${m[1]}=<redacted>');
-
-  // The shapes `dart:io` writes a peer in: `address = <token>`,
-  // `host = <token>`. This one comes BEFORE the literal patterns below because
-  // it is the only one that can catch a **DNS hostname** — `st101.svn.local`
-  // names the PLC and the site as plainly as an address does, and no literal
-  // pattern will ever match it (08-REVIEW WR-11). The label is kept so the
-  // message still reads.
-  out = out.replaceAllMapped(
-      RegExp(r'\b(address|host|hostname|remoteAddress|peer)\s*[=:]\s*([^\s,;)]+)',
-          caseSensitive: false),
-      (m) => '${m[1]} = <host>');
-
-  // Bare hosts: an IPv4 literal with an optional port.
-  out = out.replaceAll(
-      RegExp(r'\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b'), '<host>');
-
-  // IPv6 literals, in the two shapes that actually occur (08-REVIEW WR-11).
-  //
-  // **The bracketed form first**, because it carries the port inside a
-  // structure the bare patterns would only half-eat.
-  out = out.replaceAll(
-      RegExp(r'\[[0-9A-Fa-f:]{2,}\](?::\d+)?'), '<host>');
-
-  // Then the two bare forms. The threshold is not arbitrary and it is where
-  // "deliberately over-broad" has to stop: a compressed address is recognised
-  // by its `::`, and an uncompressed one by having **at least three** colons.
-  // Two colons is `09:49:57`, and redacting every timestamp in every message
-  // would make `last_error` unreadable for the sake of nothing.
-  out = out.replaceAll(
-      RegExp(r'(?<![\w:])[0-9A-Fa-f]{0,4}::[0-9A-Fa-f:]*[0-9A-Fa-f](?::\d+)?'),
-      '<host>');
-  out = out.replaceAll(
-      RegExp(r'(?<![\w:])[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){3,}(?![\w:])'),
-      '<host>');
-
-  // A key value is read on a screen. An unbounded error string is also an
-  // unbounded thing to fan out to every subscriber of that key.
-  return out.length <= maxRedactedErrorLength
-      ? out
-      : '${out.substring(0, maxRedactedErrorLength)}…';
-}
-
-/// How much of an upstream error survives redaction.
-///
-/// Long enough to name the failure, short enough that a link flapping under a
-/// verbose stack trace cannot push kilobytes per event at every subscriber of
-/// `PIPE.upstream.<alias>.last_error`.
-const int maxRedactedErrorLength = 200;
+// `redactUpstreamError` and `maxRedactedErrorLength` used to be declared here.
+//
+// They moved DOWN to `tfc_relay_protocol/lib/src/redact.dart` in 18-02. This
+// ran as one of two byte-identical copies — the other inlined privately into
+// `tfc_dart`'s `write_translation.dart`, under a comment promising the two
+// would "stay in step". They did, but nothing was checking: this side had nine
+// direct arms and that side had one incidental assertion covering one rule of
+// eight, so drift would have been invisible in the direction it was most likely
+// to happen. Both copies are gone and there is one redactor.
+//
+// The names are still on this library's surface, and therefore on
+// `tfc_relay_local.dart`'s, via the re-export at the top of this file — see
+// there for why.

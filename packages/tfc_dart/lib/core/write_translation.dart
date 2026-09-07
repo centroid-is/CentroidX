@@ -53,15 +53,19 @@
 /// link, so a retry cannot be written inside them, and the package's single
 /// upstream write call site is pinned by `freeze_test.dart`'s freeze 4.
 ///
-/// ## The redaction helper is inlined (Phase 12 move)
+/// ## The redaction helper lives below both of us (18-02)
 ///
 /// The classifier redacts upstream error prose before it becomes a plant-
-/// visible `WriteReason.message` (threat T-08-08). The relay_local original
-/// imported `redactUpstreamError` from its `upstream_link.dart`; importing that
-/// here would be an illegal UPWARD edge (tfc_dart must not depend on
-/// tfc_relay_local). It is therefore inlined below as [_redactUpstreamError].
-/// relay_local keeps its own copy for its link/lastError paths; the two must
-/// stay in step (see the SUMMARY's deviation note).
+/// visible `WriteReason.message` (threat T-08-33). Phase 12 inlined a private
+/// copy here, because the relay_local original lived in that package's
+/// `upstream_link.dart` and importing it would have been an illegal UPWARD edge
+/// — leaving two byte-identical copies and a comment promising they would "stay
+/// in step", which is a promise with no mechanism.
+///
+/// 18-02 moved the one redactor down to `tfc_relay_protocol`, which both
+/// packages already depend on and which has no dependencies of its own. There
+/// is no upward edge and there is no second copy: [redactUpstreamError] arrives
+/// with the protocol import below.
 library;
 
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
@@ -237,7 +241,7 @@ WriteResult translateWriteAnswer({
       return WriteUnknown(
         cmd,
         WriteReason('link_lost',
-            message: _redactUpstreamError(error.toString()),
+            message: redactUpstreamError(error.toString()),
             status: null),
       );
   }
@@ -249,7 +253,7 @@ WriteResult _fromCode({
   required int code,
   required String? text,
 }) {
-  final message = _redactUpstreamError(text);
+  final message = redactUpstreamError(text);
   switch (protocol) {
     case UpstreamProtocol.opcUa:
       if (code == opcUaStatusGood) {
@@ -327,7 +331,7 @@ WriteResult _fromText({
   required String cmd,
   required String text,
 }) {
-  final message = _redactUpstreamError(text);
+  final message = redactUpstreamError(text);
   for (final entry in _textualRefusals.entries) {
     if (entry.key.hasMatch(text)) {
       return WriteRejected(
@@ -411,75 +415,8 @@ WriteResult? guardArrayElementWrite({
   );
 }
 
-// --------------------------------------------------------------- redaction
-//
-// Inlined from tfc_relay_local's `upstream_link.dart` during the Phase 12 move
-// (see the library doc). Kept behaviour-verbatim with that copy; the two must
-// stay in step. It strips credentials, endpoints and filesystem paths out of an
-// upstream error before it can become a plant-visible `WriteReason.message`
-// (threat T-08-08). Deliberately over-broad: redacting a version string that
-// looks like an address costs a diagnostic detail; missing a password costs a
-// credential.
-
-/// How much of an upstream error survives redaction.
-const int _maxRedactedErrorLength = 200;
-
-String? _redactUpstreamError(String? raw) {
-  if (raw == null) return null;
-  var out = raw;
-
-  // Any scheme://… — this is the one that carries userinfo, so it goes first
-  // and takes the credentials with it.
-  out = out.replaceAll(
-      RegExp(r'\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s,;)"' "'" r']+'), '<endpoint>');
-
-  // Windows paths (certificate stores, key files).
-  out = out.replaceAll(
-      RegExp(r'[a-zA-Z]:\\[^\s,;)"' "'" r']*'), '<path>');
-
-  // Absolute POSIX paths. Two segments minimum, so ordinary prose containing
-  // "and/or" survives and "/etc/ssl/private/client.pem" does not.
-  out = out.replaceAll(
-      RegExp(r'/(?:[A-Za-z0-9._@\-]+/)+[A-Za-z0-9._@\-]*'), '<path>');
-
-  // key=value credentials that never had a scheme in front of them.
-  out = out.replaceAllMapped(
-      RegExp(
-          r'\b(user|username|uid|login|password|passwd|pwd|token|secret|api[_-]?key)'
-          r'\s*[=:]\s*\S+',
-          caseSensitive: false),
-      (m) => '${m[1]}=<redacted>');
-
-  // The shapes `dart:io` writes a peer in: `address = <token>`,
-  // `host = <token>`. This one comes BEFORE the literal patterns below because
-  // it is the only one that can catch a DNS hostname.
-  out = out.replaceAllMapped(
-      RegExp(r'\b(address|host|hostname|remoteAddress|peer)\s*[=:]\s*([^\s,;)]+)',
-          caseSensitive: false),
-      (m) => '${m[1]} = <host>');
-
-  // Bare hosts: an IPv4 literal with an optional port.
-  out = out.replaceAll(
-      RegExp(r'\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b'), '<host>');
-
-  // IPv6 literals, bracketed form first (it carries the port inside a
-  // structure the bare patterns would only half-eat).
-  out = out.replaceAll(
-      RegExp(r'\[[0-9A-Fa-f:]{2,}\](?::\d+)?'), '<host>');
-
-  // Then the two bare forms. A compressed address is recognised by its `::`,
-  // an uncompressed one by having at least three colons (two colons is a
-  // timestamp `09:49:57`, which must survive).
-  out = out.replaceAll(
-      RegExp(r'(?<![\w:])[0-9A-Fa-f]{0,4}::[0-9A-Fa-f:]*[0-9A-Fa-f](?::\d+)?'),
-      '<host>');
-  out = out.replaceAll(
-      RegExp(r'(?<![\w:])[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){3,}(?![\w:])'),
-      '<host>');
-
-  // A key value is read on a screen. An unbounded error string is also an
-  // unbounded thing to fan out to every subscriber of that key.
-  return out.length <= _maxRedactedErrorLength
-      ? out
-      : '${out.substring(0, _maxRedactedErrorLength)}…';
-}
+// The redaction helper that used to be inlined here moved to
+// `tfc_relay_protocol`'s `src/redact.dart` in 18-02, along with the comment
+// promising this copy would stay in step with relay_local's. The promise is
+// gone because the mechanism replaced it: there is one redactor now, and both
+// packages reach it through the protocol import at the top of this file.
