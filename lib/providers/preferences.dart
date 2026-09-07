@@ -1,16 +1,93 @@
-import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:io' show Platform;
+
+import 'package:logger/logger.dart';
+import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:tfc_dart/core/access/guarded_preferences.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_dart/core/sqlite_preferences.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../core/preferences.dart';
+import '../core/device_local_store.dart';
 import '../core/startup_url.dart';
 import 'access.dart';
 import 'access_policy.dart';
 import 'database.dart';
 
 part 'preferences.g.dart';
+
+/// Only ever used off the happy path: the boot open and its fallback.
+final Logger _logger = Logger();
+
+/// The one device-local database handle, and the store over it.
+///
+/// Module-private and process-wide. [initDeviceLocalPreferences] assigns both;
+/// nothing else may. `_deviceLocalDb` is null when the fallback store is in
+/// force, which is also why the two are separate fields rather than one.
+AppDatabase? _deviceLocalDb;
+PreferencesApi? _deviceLocalStore;
+
+/// Opens this station's device-local configuration store and, once ever,
+/// imports whatever `shared_preferences` still holds into it.
+///
+/// **Call this from `main()` before anything reads a preference.** The earliest
+/// read is `PageManager.load()` in `centroid-hmi/lib/main.dart`, before
+/// `runApp`; a station that gets there with an unopened or unimported store
+/// comes up on the built-in default pages with its own pages gone — and then
+/// persists that as its page set.
+///
+/// Idempotent: a second call is a no-op, so a test that inits twice and a
+/// future second entrypoint both behave.
+///
+/// **It never throws.** A corrupt `config.sqlite`, a read-only data directory
+/// or an import that dies halfway is caught here, logged at error level with
+/// the directory and the exception named, and answered with an
+/// [InMemoryPreferences] singleton. That station comes up on default pages,
+/// signed out, and forgets its settings when it closes — which is worse than
+/// working and far better than a panel in a fish factory that does not start.
+/// The log line is the difference between "degraded" and "haunted": it is the
+/// only place the operator's missing pages are explained. Threat T-01-14.
+Future<void> initDeviceLocalPreferences() async {
+  if (_deviceLocalStore != null) return;
+
+  var directory = '<unresolved>';
+  try {
+    final dir = await deviceLocalStoreDirectory();
+    directory = dir.path;
+    final db = AppDatabase.createLocal(dir);
+    final store = SqlitePreferences(
+      db,
+      scope: ConfigScope.forStation(_localHostname()),
+    );
+    // One shot, marked by a row inside the same transaction as the values it
+    // describes. A station that has already imported does no work here.
+    final imported = await store.importAll(
+      normalizeLegacyKeys(
+        await readLegacySharedPreferences(dir, logger: _logger),
+        logger: _logger,
+      ),
+      markerId: sharedPreferencesImportMarkerId,
+    );
+    if (imported) {
+      _logger.i('Imported the legacy shared_preferences store into '
+          '${dir.path}/config.sqlite. This happens once per station.');
+    }
+    _deviceLocalDb = db;
+    _deviceLocalStore = store;
+  } catch (e, stack) {
+    _logger.e(
+      'Could not open the device-local configuration store in $directory. '
+      'This station is starting with an IN-MEMORY store: it will show the '
+      'built-in default pages, nobody is signed in, and nothing it changes '
+      'will survive a restart. Fix the store rather than the symptoms.',
+      error: e,
+      stackTrace: stack,
+    );
+    _deviceLocalStore = InMemoryPreferences();
+  }
+}
 
 /// The one place a device-local preferences store is constructed.
 ///
@@ -22,10 +99,67 @@ part 'preferences.g.dart';
 /// same physical store, but the provider is overridable in a test and this is
 /// not.
 ///
-/// Returns a fresh wrapper each call. That is safe because the wrapper holds
-/// no state of its own; the values live on the platform channel behind it.
-PreferencesApi createDeviceLocalPreferences() =>
-    SharedPreferencesWrapper(SharedPreferencesAsync());
+/// Returns **the one store** [initDeviceLocalPreferences] opened, not a fresh
+/// one. It used to hand back a new wrapper each call, which was free because
+/// the wrapper held no state and the values lived on a platform channel behind
+/// it. Behind the wrapper there is now an `AppDatabase`, and a fresh one of
+/// those is a background isolate and a file handle — per colour pick, at
+/// `color_picker_dialog.dart:46,70`. The wrapper is still free; the handle is
+/// not, so there is exactly one.
+///
+/// Throws a [StateError] when init has not run. Not a lazy open — that would
+/// need this to be async, and every caller reaches it from a synchronous
+/// context — and not a silent empty store, which is precisely the failure
+/// ("the station lost its pages") the boot ordering exists to prevent.
+PreferencesApi createDeviceLocalPreferences() {
+  final store = _deviceLocalStore;
+  if (store == null) {
+    throw StateError(
+      'initDeviceLocalPreferences() must run before '
+      'createDeviceLocalPreferences(). In the app it is awaited in main() '
+      'before runApp; in a test, call setDeviceLocalPreferencesForTest() in '
+      'setUp (and resetDeviceLocalPreferencesForTest() in tearDown).',
+    );
+  }
+  return store;
+}
+
+/// This station's hostname, for the scope every row is written at.
+///
+/// `'unknown'` rather than a throw if the platform will not say, matching
+/// `stationNameProvider`: a nameless station still has preferences, and a
+/// store under a vague scope beats no store at all.
+String _localHostname() {
+  try {
+    return Platform.localHostname;
+  } on Object catch (e) {
+    _logger.w('Could not read the local hostname for the config scope: $e');
+    return 'unknown';
+  }
+}
+
+/// Seeds the process-wide store without opening a database.
+///
+/// For tests that build widgets reaching [createDeviceLocalPreferences] — a
+/// colour picker, the tech-doc library section — without running boot. Pass
+/// null to clear.
+@visibleForTesting
+void setDeviceLocalPreferencesForTest(PreferencesApi? store) {
+  _deviceLocalStore = store;
+}
+
+/// Closes the handle, if there is one, and clears the singleton.
+///
+/// Production never calls this: a process-wide store has no natural owner to
+/// close it and lives as long as the app. Tests do, so that a suite does not
+/// leak one drift background isolate per test file.
+@visibleForTesting
+Future<void> resetDeviceLocalPreferencesForTest() async {
+  final db = _deviceLocalDb;
+  _deviceLocalDb = null;
+  _deviceLocalStore = null;
+  await db?.close();
+}
 
 /// The shared configuration store, **guarded**.
 ///
