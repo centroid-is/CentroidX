@@ -358,6 +358,65 @@ void main() {
     });
   });
 
+  group('the two windows a socket arm cannot reach', () {
+    // Both of these are about values MOVING while the badge is set, which a
+    // dead loopback socket cannot produce: nothing arrives from a gateway that
+    // has stopped answering. Driven through the same provider with the verdict
+    // supplied directly, which is what `ValueFreshness` being a plain bool and
+    // a plain stream is for.
+
+    test('a page opened during an outage says so before any value arrives',
+        () async {
+      // An operator navigating to another page mid-outage builds a brand-new
+      // key stream whose subject is empty — and an empty subject renders as
+      // "waiting for a first reading", the same thing a healthy panel shows for
+      // one frame at boot. On a link that has gone quiet that is the wrong
+      // sentence: nothing is coming.
+      final container = ProviderContainer(overrides: [
+        stateManProvider.overrideWith((ref) async => _NeverStateMan()),
+        valueFreshnessProvider.overrideWithValue(_staleGate()),
+      ]);
+      addTearDown(container.dispose);
+
+      final presented = _Presented(container, 'CN01.Temp');
+      addTearDown(presented.dispose);
+
+      await presented.until((latest) => latest is StaleValues,
+          budget: const Duration(seconds: 2),
+          reason: 'a key stream built while the panel was already stale waited '
+              'for a transition that had already happened');
+    });
+
+    test('a value that arrives while the badge is set is not shown as current',
+        () async {
+      // 16-10 / S9's window, from the widget side. `viewBecameFresh` is called
+      // only once every page's snapshot has been adopted, so values DO keep
+      // landing while the verdict still reads stale — the store answers, and a
+      // resync pushes snapshots for seconds beforehand. Publishing those would
+      // put a mid-resync reading on the glass under a badge that says the panel
+      // cannot vouch for it.
+      final stateMan = _SilentStateMan();
+      final container = ProviderContainer(overrides: [
+        stateManProvider.overrideWith((ref) async => stateMan),
+        valueFreshnessProvider.overrideWithValue(_staleGate()),
+      ]);
+      addTearDown(container.dispose);
+
+      final presented = _Presented(container, 'CN01.Temp');
+      addTearDown(presented.dispose);
+      await presented.until((latest) => latest is StaleValues,
+          budget: const Duration(seconds: 2));
+
+      stateMan.controller.add(DynamicValue(value: 7.5));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(presented.isDefinite, isFalse,
+          reason: 'a reading that arrived while the panel could not vouch for '
+              'its view was published as though it could');
+      expect(presented.latest, isA<StaleValues>());
+    });
+  });
+
   group('a direct station', () {
     test('never grows a staleness verdict, and never builds a StateMan to be '
         'told so', () async {
@@ -420,6 +479,29 @@ void main() {
           reason: 'not one withheld value on a station with no link');
     });
   });
+}
+
+/// A panel that has gone a whole freshness deadline without a frame.
+///
+/// Registered for teardown at construction: the object holds a subscription to
+/// the transitions stream, and an arm that failed before disposing it would
+/// leave one behind.
+ValueFreshness _staleGate() {
+  final transitions = StreamController<bool>.broadcast();
+  final gate =
+      ValueFreshness.watching(stale: true, transitions: transitions.stream);
+  addTearDown(() async {
+    await gate.dispose();
+    await transitions.close();
+  });
+  return gate;
+}
+
+/// A StateMan whose subscription never yields anything at all.
+class _NeverStateMan extends Fake implements StateMan {
+  @override
+  Future<Stream<DynamicValue>> subscribe(String key) async =>
+      StreamController<DynamicValue>.broadcast().stream;
 }
 
 /// A direct-mode StateMan that yields one value and then goes quiet for ever.

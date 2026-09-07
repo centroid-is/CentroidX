@@ -116,7 +116,23 @@ final class ValueFreshness {
   /// [changes] is a stream that never fires rather than `null`, so every reader
   /// is written once. It costs a direct station one closed-over controller and
   /// no timer, no subscription and no listener.
-  ValueFreshness.fresh()
+  ///
+  /// **One shared instance, because identity is load-bearing.**
+  /// `keyStreamProvider` watches `valueFreshnessProvider`, and Riverpod rebuilds
+  /// a dependent when the value changes by `==`. That provider is rebuilt
+  /// whenever the transport row or `stateManProvider` resolves, so a fresh
+  /// object per build would hand out a new identity on a station whose answer
+  /// had not moved — and every key on the panel would drop and re-open its
+  /// subscription behind it. That is precisely the ~130 KiB/s churn
+  /// `keyStreamProvider`'s own doc exists to prevent, re-introduced by the back
+  /// door. It is not theoretical: wiring the gate with a per-build object
+  /// doubled every subscribe count in `key_stream_provider_test.dart`, which is
+  /// how this constructor became a factory.
+  factory ValueFreshness.fresh() => _fresh;
+
+  static final ValueFreshness _fresh = ValueFreshness._direct();
+
+  ValueFreshness._direct()
       : _isStale = false,
         _watching = false;
 
@@ -182,9 +198,14 @@ final class ValueFreshness {
 
   /// Drops the client subscription and closes [changes].
   ///
-  /// Called from the provider's `onDispose`. A direct station's object has
-  /// nothing to cancel and this is still safe to call on it.
+  /// Called from the provider's `onDispose`, and a **no-op on the shared
+  /// direct-station verdict** — that one is process-wide by construction (see
+  /// [ValueFreshness.fresh]), so closing its stream on behalf of one container
+  /// would leave every later container listening to a closed controller.
+  /// Nothing is leaked by declining: it holds no subscription, no timer and no
+  /// listener, and its controller is never fed.
   Future<void> dispose() async {
+    if (!_watching) return;
     final source = _source;
     _source = null;
     await source?.cancel();
