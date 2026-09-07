@@ -232,17 +232,18 @@ Future<int> seedOpenRow({
   String level = 'error',
   String tsSource = 'plant',
   bool pendingAck = false,
+  DateTime? acknowledgedAt,
 }) async {
   final rows = await conn.execute(
     pg.Sql.named('''
       INSERT INTO alarm_history (
         alarm_uid, alarm_title, alarm_description, alarm_level,
         expression, active, pending_ack, created_at, deactivated_at,
-        rule_index, ts_source
+        acknowledged_at, rule_index, ts_source
       ) VALUES (
         @uid, @title, @description, @level,
         @expression, TRUE, @ack, @created, NULL,
-        @ruleIndex, @tsSource
+        @acknowledged, @ruleIndex, @tsSource
       ) RETURNING id
     '''),
     parameters: <String, Object?>{
@@ -253,6 +254,8 @@ Future<int> seedOpenRow({
       'expression': pg.TypedValue(pg.Type.text, 'a > 10'),
       'ack': pg.TypedValue(pg.Type.boolean, pendingAck),
       'created': pg.TypedValue(pg.Type.text, zonelessInstant(createdAt)),
+      'acknowledged': pg.TypedValue(pg.Type.text,
+          acknowledgedAt == null ? null : zonelessInstant(acknowledgedAt)),
       // bigInteger: drift's Postgres dialect makes `rule_index` a bigint, and
       // binding an int4 against it fails with SQLSTATE 08P01 rather than with
       // anything that names a type (14-01).
@@ -778,6 +781,328 @@ void main() {
       expect(rows.single['alarm_title'], payload,
           reason: 'intact, character for character — bound, never interpolated');
       expect(rows.single['alarm_description'], payload);
+
+      await h.dispose();
+    });
+
+    // ----------------------------------------------------- CR-02 (14-REVIEW)
+    //
+    // `pending_ack` was write-once-false. The INSERT bound
+    // `Variable.withBool(false)` and NO statement in `backend_alarm_history`
+    // ever updated the column, so the engine's `existing.pendingAck = true`
+    // lived in memory and nowhere else.
+    //
+    // What that costs is not theoretical, because this backend restarts on
+    // **every** `alarm_man_config` or `key_mappings` save (`main.dart:436-458`).
+    // An `acknowledgeRequired` rule that fires at 08:00 and clears at 08:01
+    // with nobody at the screen is, at 08:05, an open row whose rule evaluates
+    // false — so `_resolveAdoption` closed it as `inferred_restart`. The fault
+    // never reached any banner, and the history said "reconstructed after a
+    // restart" rather than "an unacknowledged fault occurred". The whole
+    // `acknowledgeRequired` feature did not survive a restart.
+    //
+    // **The related hazard the fix must not open**, named by the reviewer:
+    // persisting the column alone makes `backend_alarms.dart:836`
+    // (`adopted.pendingAck = pending.pendingAck`) live, and then a row that is
+    // `pending_ack = TRUE` while its rule is TRUE AGAIN at restart is adopted
+    // pending-ack — after which `acknowledge()` takes the `entry.pendingAck`
+    // branch and CLOSES a standing alarm's row at the receipt instant. That is
+    // T-14-56, the exact invariant 14-14 exists for. Arm 15 is that arm.
+
+    // ----------------------------------------------------------------- 12 --
+    test(
+        'arm 12: an acknowledgeRequired rule that clears writes pending_ack on '
+        'its OPEN row', () async {
+      final h = await Harness.create([
+        alarmConfig('CN04.MOT01', ['a > 10'], acknowledgeRequired: true),
+      ]);
+      await h.engine.start();
+
+      h.values.push('a', good(20.0, at: plantOnset));
+      await h.settleAll();
+      h.values.push('a', good(1.0, at: plantClear));
+      await h.settleAll();
+
+      // The engine's own view: held on the banner, badged, row still open.
+      expect(h.lastPayload.entries.single.pendingAck, isTrue,
+          reason: 'the premise: the engine is holding this one for an '
+              'acknowledgement');
+
+      final rows = await historyRows();
+      expect(rows, hasLength(1));
+      expect(rows.single['deactivated_at'], isNull,
+          reason: 'an acknowledgeRequired rule that cleared is still on the '
+              'banner and its row is still open — 14-14\'s shape, unchanged');
+      expect(rows.single['pending_ack'], isTrue,
+          reason: 'the row must say that a fault is waiting to be seen. It '
+              'said FALSE, always, because the INSERT bound the literal false '
+              'and nothing ever updated the column — so the only record of an '
+              'unacknowledged fault was a boolean in this process\'s memory, '
+              'and this backend restarts on every alarm_man_config or '
+              'key_mappings save.');
+
+      await h.dispose();
+    });
+
+    // ----------------------------------------------------------------- 13 --
+    test(
+        'arm 13: a restart does NOT erase an unacknowledged fault — the row '
+        'stays open and the alarm is back on the banner, badged', () async {
+      // Exactly what the previous process left behind: fired, cleared, nobody
+      // saw it, backend restarted.
+      final seededId = await seedOpenRow(
+        uid: 'CN04.MOT01',
+        ruleIndex: 0,
+        createdAt: plantOnset,
+        pendingAck: true,
+      );
+
+      final h = await Harness.create([
+        alarmConfig('CN04.MOT01', ['a > 10'], acknowledgeRequired: true),
+      ]);
+      await h.engine.start();
+
+      // The rule's first post-restart evaluation, and it is false — because
+      // the condition really did clear before the restart.
+      h.values.push('a', good(1.0, at: plantClear));
+      await h.settleAll();
+
+      final rows = await historyRows();
+      expect(rows, hasLength(1));
+      expect(rows.single['id'], seededId);
+      expect(rows.single['deactivated_at'], isNull,
+          reason: 'the row was closed as inferred_restart and the fault '
+              'vanished. An acknowledgeRequired rule that fires and clears '
+              'between two glances at the screen is exactly the fault that '
+              'feature exists for, and a restart erased it.');
+      expect(rows.single['deactivated_reason'], isNull);
+
+      final entries = h.lastPayload.entries;
+      expect(entries, hasLength(1),
+          reason: 'and nobody was ever told. Got: $entries');
+      expect(entries.single.uid, 'CN04.MOT01');
+      expect(entries.single.pendingAck, isTrue,
+          reason: 'held, badged, waiting to be seen — the state the previous '
+              'process was in when it went down');
+      expect(entries.single.activeAt, plantOnset,
+          reason: 'and it keeps the plant\'s own onset, as every adoption does');
+      expect(h.engine.pendingAdoptionCount, 0);
+
+      await h.dispose();
+    });
+
+    // ----------------------------------------------------------------- 14 --
+    test(
+        'arm 14: acknowledging that adopted fault closes the row, and says the '
+        'end instant is a reconstruction', () async {
+      final seededId = await seedOpenRow(
+        uid: 'CN04.MOT01',
+        ruleIndex: 0,
+        createdAt: plantOnset,
+        pendingAck: true,
+      );
+
+      final h = await Harness.create([
+        alarmConfig('CN04.MOT01', ['a > 10'], acknowledgeRequired: true),
+      ]);
+      await h.engine.start();
+      h.values.push('a', good(1.0, at: plantClear));
+      await h.settleAll();
+
+      await h.engine.acknowledge('CN04.MOT01', 0);
+      await h.settleAll();
+
+      final rows = await historyRows();
+      expect(rows, hasLength(1));
+      expect(rows.single['id'], seededId);
+      expect(rows.single['active'], isFalse);
+      expect(parseStored(rows.single['acknowledged_at']), machineNow,
+          reason: 'somebody saw it, and that is a durable fact');
+      expect(parseStored(rows.single['deactivated_at']), plantClear,
+          reason: 'the first post-restart evaluation that found the rule '
+              'false is the best-known bound on when it really cleared. This '
+              'process never watched the clear happen — the previous one did '
+              'and did not record when.');
+      expect(rows.single['deactivated_reason'],
+          AlarmHistoryWriter.reasonInferredRestart,
+          reason: 'NOT "acknowledged". That reason means the row closed at the '
+              'clearing evaluation this engine MEASURED; here the instant is '
+              'reconstructed, and a stop analysis must be able to tell those '
+              'apart (T-14-23). The acknowledgement is still recorded — in '
+              'acknowledged_at, which is where it belongs.');
+      expect(h.engine.active, isEmpty);
+      expect(h.engine.acknowledgedStandingCount, 0);
+
+      await h.dispose();
+    });
+
+    // ----------------------------------------------------------------- 15 --
+    test(
+        'arm 15: THE TRAP — a pending_ack row whose rule is TRUE again is '
+        'adopted STANDING, and acknowledging it leaves the row OPEN', () async {
+      final seededId = await seedOpenRow(
+        uid: 'CN04.MOT01',
+        ruleIndex: 0,
+        createdAt: plantOnset,
+        pendingAck: true,
+      );
+
+      final h = await Harness.create([
+        alarmConfig('CN04.MOT01', ['a > 10'], acknowledgeRequired: true),
+      ]);
+      await h.engine.start();
+
+      // The condition is true at the first post-restart evaluation. Whatever
+      // the row says about a previous clear, this alarm is HAPPENING.
+      h.values.push('a', good(20.0, at: plantClear));
+      await h.settleAll();
+
+      expect(h.lastPayload.entries.single.pendingAck, isFalse,
+          reason: 'a rule that is true is standing, not waiting to be seen. '
+              'Adopting the row\'s pending_ack here is what makes the '
+              'acknowledge below close a stop that is still running.');
+
+      await h.engine.acknowledge('CN04.MOT01', 0);
+      await h.settleAll();
+
+      final rows = await historyRows();
+      expect(rows, hasLength(1));
+      expect(rows.single['id'], seededId);
+      expect(rows.single['deactivated_at'], isNull,
+          reason: 'T-14-56, and it is the headline of 14-14: acknowledging is '
+              'NOT clearing. The condition is still true, so the stop is still '
+              'happening. A row closed here reports a two-hour stop as having '
+              'lasted as long as it took an operator to press a button — '
+              'silently, in the direction nobody audits.');
+      expect(rows.single['deactivated_reason'], isNull);
+      expect(rows.single['active'], isTrue);
+      expect(parseStored(rows.single['acknowledged_at']), machineNow,
+          reason: 'silenced and recorded, which is all an acknowledgement is');
+      expect(h.engine.acknowledgedStandingCount, 1,
+          reason: 'the engine still holds it — its row is open and this object '
+              'is the only thing that can close it when the plant finally does');
+      expect(h.engine.active, isEmpty, reason: 'and it is off the banner');
+
+      await h.dispose();
+    });
+
+    // ---------------------------------------------------------------- 15b --
+    test(
+        'arm 15b: a pending_ack row that was ALREADY acknowledged is closed, '
+        'not put back on the banner', () async {
+      // The only way this row exists is that the close after the
+      // acknowledgement did not land — a database outage between the two
+      // writes. Re-badging it would ask an operator to acknowledge something
+      // they already have, and would overwrite the instant they first saw it.
+      final seededId = await seedOpenRow(
+        uid: 'CN04.MOT01',
+        ruleIndex: 0,
+        createdAt: plantOnset,
+        pendingAck: true,
+        acknowledgedAt: machineNow,
+      );
+
+      final h = await Harness.create([
+        alarmConfig('CN04.MOT01', ['a > 10'], acknowledgeRequired: true),
+      ]);
+      await h.engine.start();
+      h.values.push('a', good(1.0, at: plantClear));
+      await h.settleAll();
+
+      final rows = await historyRows();
+      expect(rows.single['id'], seededId);
+      expect(rows.single['deactivated_at'], isNotNull,
+          reason: 'it cleared, somebody saw it, and the row had no reason to '
+              'stay open');
+      expect(rows.single['deactivated_reason'],
+          AlarmHistoryWriter.reasonInferredRestart);
+      expect(parseStored(rows.single['acknowledged_at']), machineNow,
+          reason: 'and the original acknowledgement stands, unre-stamped');
+      expect(h.lastPayload.entries, isEmpty);
+
+      await h.dispose();
+    });
+
+    // ----------------------------------------------------------------- 16 --
+    test(
+        'arm 16: a STANDING acknowledged alarm survives a restart still OPEN '
+        'and still off the banner', () async {
+      // The property the CR-02 fix is judged against as much as on the ones it
+      // repairs: nothing here may regress. 14-14 pinned it end to end over a
+      // socket; this is the same claim in the engine lane, where it can be run
+      // in seconds against every mutation below.
+      final seededId = await seedOpenRow(
+        uid: 'CN04.MOT01',
+        ruleIndex: 0,
+        createdAt: plantOnset,
+        acknowledgedAt: machineNow,
+      );
+
+      final h = await Harness.create([alarmConfig('CN04.MOT01', ['a > 10'])]);
+      await h.engine.start();
+      h.values.push('a', good(20.0, at: plantClear));
+      await h.settleAll();
+
+      final rows = await historyRows();
+      expect(rows, hasLength(1));
+      expect(rows.single['id'], seededId);
+      expect(rows.single['deactivated_at'], isNull,
+          reason: 'the stop is still running');
+      expect(parseStored(rows.single['acknowledged_at']), machineNow,
+          reason: 'the acknowledgement the previous process recorded is the '
+              'one that stands');
+      expect(h.engine.acknowledgedStandingCount, 1);
+      expect(h.lastPayload.entries, isEmpty,
+          reason: 'an alarm an operator had already silenced came back on the '
+              'banner after a restart, indistinguishable from nobody having '
+              'pressed the button');
+
+      await h.dispose();
+    });
+
+    // ----------------------------------------------------------------- 17 --
+    test(
+        'arm 17: a held alarm whose condition COMES BACK gets its own row, and '
+        'the held one is closed rather than orphaned', () async {
+      // Reachable with no restart at all, and reachable more often with one:
+      // an intermittent acknowledgeRequired fault. The held entry's row is
+      // still open, so the second activation's INSERT meets the v7 partial
+      // unique index (23505) — which `_enqueueWrite` swallows. The new stop
+      // then has no row at all and the old one stays open forever, growing.
+      final h = await Harness.create([
+        alarmConfig('CN04.MOT01', ['a > 10'], acknowledgeRequired: true),
+      ]);
+      await h.engine.start();
+
+      h.values.push('a', good(20.0, at: plantOnset));
+      await h.settleAll();
+      h.values.push('a', good(1.0, at: plantClear));
+      await h.settleAll();
+
+      final second = plantClear.add(const Duration(hours: 1));
+      h.values.push('a', good(20.0, at: second));
+      await h.settleAll();
+
+      final rows = await historyRows();
+      expect(rows, hasLength(2),
+          reason: 'two activations are two stops. Got: $rows');
+
+      final first = rows.first;
+      expect(parseStored(first['created_at']), plantOnset);
+      expect(parseStored(first['deactivated_at']), plantClear,
+          reason: 'the completed stop keeps the end the plant gave it');
+      expect(first['deactivated_reason'], AlarmHistoryWriter.reasonCleared);
+
+      final latest = rows.last;
+      expect(parseStored(latest['created_at']), second);
+      expect(latest['deactivated_at'], isNull);
+      expect(
+        h.logs.where((l) => l.contains('23505')),
+        isEmpty,
+        reason: 'and the database was never asked for a second open row for '
+            'one alarm-rule — the refusal is swallowed by design (T-14-24), so '
+            'this is the only place it would show',
+      );
 
       await h.dispose();
     });
