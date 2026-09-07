@@ -285,22 +285,36 @@ void main() {
 
       await _until(
         'the panel to reach ready',
-        () => panel.state == LinkState.ready,
-        diagnose: () => 'state is ${panel.state}, after ${gateway.dials} '
-            'dials and ${gateway.subscribes} subscribes — a snapshot that is '
-            'fatal on one attempt is fatal on all of them',
+        () => panel.supervisor.state == LinkState.ready,
+        diagnose: () => 'state is ${panel.supervisor.state}, after '
+            '${gateway.dials} dials and ${gateway.subscribes} subscribes — a '
+            'snapshot that is fatal on one attempt is fatal on all of them',
       );
 
       // And it stays there: a loop that merely took longer would show up as a
       // drop back to connecting during the settle window.
       final dialsAtReady = gateway.dials;
       await Future<void>.delayed(_settle);
-      expect(panel.state, LinkState.ready);
+      expect(panel.supervisor.state, LinkState.ready);
       expect(gateway.dials, dialsAtReady,
           reason: 'the link is not being torn down and rebuilt behind ready');
       expect(dialsAtReady, lessThan(3),
           reason: 'one poisoned entry must not cost a redial at all, let '
               'alone a redial per backoff period forever');
+
+      // **Anti-vacuity, and it is not optional.** "Reaches ready" is satisfied
+      // by any collapse that stops the throw — including one that discards the
+      // whole snapshot and establishes an empty page. Sabotage (a) proved it:
+      // widening the per-entry try to wrap the loop left this arm GREEN until
+      // these three lines existed. A page that is ready and blank is the
+      // failure mode this product exists to prevent, wearing the fix's hat.
+      for (var index = 0; index < _pageKeys; index++) {
+        if (index + 1 == _poisonedPageHandle) continue;
+        expect(panel.store.peek(_keyAt(index))?.value, index,
+            reason: 'reaching ready is worthless if the page is empty');
+      }
+      expect(panel.store.peek(_keyOfHandle(_poisonedPageHandle)), isNull,
+          reason: 'the poisoned entry, and only it, is missing');
     });
   });
 }
@@ -435,7 +449,11 @@ ClientConfig _socketConfig() => ClientConfig(
       deadlineFloor: const Duration(milliseconds: 50),
     );
 
-ConnectionSupervisor _connect(_PoisonGateway gateway) {
+/// What the socket arm holds: the supervisor for the link state and the store
+/// for the anti-vacuity check that the page is not merely ready but populated.
+typedef _Panel = ({ConnectionSupervisor supervisor, ValueStore store});
+
+_Panel _connect(_PoisonGateway gateway) {
   final subscriptions = <String, SubscriptionState>{
     _page: SubscriptionState(subId: _page, keys: _keySet(_pageKeys)),
   };
@@ -456,7 +474,7 @@ ConnectionSupervisor _connect(_PoisonGateway gateway) {
   );
   addTearDown(supervisor.dispose);
   supervisor.start();
-  return supervisor;
+  return (supervisor: supervisor, store: store);
 }
 
 /// Polls [done] until it holds or [_budget] runs out, reporting [diagnose] —
