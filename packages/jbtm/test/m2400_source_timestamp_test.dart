@@ -50,11 +50,15 @@ void main() {
       expect(dv.sourceTimestamp, isNot(_backendClock));
     });
 
-    test('a record with NO device timestamp falls back to receivedAt', () {
+    // Superseded 2026-09-07 (afternoon ruling): this used to assert the
+    // `?? receivedAt` fallback. `receivedAt` is a backend clock and this field
+    // is read as a plant instant, so the fallback is gone. The full argument
+    // and its arms live in `m2400_stamp_substitution_test.dart`; the arm is
+    // kept here, inverted, so the pair of branches is still stated together.
+    test('a record with NO device timestamp is left unstamped', () {
       final dv = convertRecordToDynamicValue(_record());
 
-      expect(dv.sourceTimestamp, _backendClock);
-      expect(dv.sourceTimestamp, isNot(_deviceClock));
+      expect(dv.sourceTimestamp, isNull);
     });
 
     test('every child carries the parent instant -- dotted keys are stamped too',
@@ -74,11 +78,11 @@ void main() {
       expect(dv['deviceTimestamp'].sourceTimestamp, _deviceClock);
     });
 
-    test('the unstamped-device fallback reaches the children too', () {
+    test('the unstamped-device case reaches the children too', () {
       final dv = convertRecordToDynamicValue(_record());
 
-      expect(dv['weight'].sourceTimestamp, _backendClock);
-      expect(dv['unit'].sourceTimestamp, _backendClock);
+      expect(dv['weight'].sourceTimestamp, isNull);
+      expect(dv['unit'].sourceTimestamp, isNull);
     });
 
     test('stamping does not disturb the payload the converter already built',

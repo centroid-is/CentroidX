@@ -1189,10 +1189,11 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   /// contract without a second-level walk.
   ///
   /// [readAt] is the instant the batched read that produced [members]
-  /// completed, and the parent and EVERY member get that one instant. A struct
-  /// is one read: members must not each invent their own stamp (they would
-  /// disagree by microseconds about a fact they share), and none may be left
-  /// null — the pipe reads the parent's stamp, the FB widgets read the members'.
+  /// completed. It is **not** stamped as a source timestamp on the parent or on
+  /// any member — see [_toDynamicValue] for the whole argument. It stays in the
+  /// signature because it is the one instant a caller could legitimately want
+  /// for this struct, and because the parameter is what stops a future member
+  /// converter inventing a per-member instant for a fact they share.
   @visibleForTesting
   static DynamicValue fbMembersToDynamicValue(
       Map<String, TypedVariableValue> members, DateTime readAt) {
@@ -1200,7 +1201,7 @@ class ModbusDeviceClientAdapter implements DeviceClient {
     for (final entry in members.entries) {
       map[entry.key] = typedVariableToDynamicValue(entry.value, readAt);
     }
-    return DynamicValue(value: map)..sourceTimestamp = readAt;
+    return DynamicValue(value: map);
   }
 
   /// Write a single UMAS-by-name key. Same UX contract as
@@ -1243,9 +1244,10 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   /// non-null typeId; the raw value stays untouched so the consumer
   /// can still inspect it.
   ///
-  /// [readAt] is stamped as the value's source timestamp. UMAS carries no
-  /// device instant either, so this is the moment the read returned on this
-  /// host — see [_toDynamicValue] for what that label does and does not claim.
+  /// [readAt] is the instant the UMAS read returned on this host. It is **not**
+  /// stamped as a source timestamp: UMAS carries no device instant either, and
+  /// a clock on this host in that field is read downstream as a plant instant.
+  /// See [_toDynamicValue].
   @visibleForTesting
   static DynamicValue typedVariableToDynamicValue(
       TypedVariableValue t, DateTime readAt) {
@@ -1264,8 +1266,7 @@ class ModbusDeviceClientAdapter implements DeviceClient {
       'STRING' || 'WSTRING' || 'BYTE_STRING' => NodeId.uastring,
       _ => NodeId.byte,
     };
-    return DynamicValue(value: t.value, typeId: typeId)
-      ..sourceTimestamp = readAt;
+    return DynamicValue(value: t.value, typeId: typeId);
   }
 
   @override
@@ -1365,28 +1366,38 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   // ---------------------------------------------------------------------------
 
   /// Wraps a raw Modbus value in a [DynamicValue] with the correct [typeId]
-  /// derived from the register spec's declared data type, applies optional bit
-  /// masking, and stamps [readAt] as the value's source timestamp.
+  /// derived from the register spec's declared data type and applies optional
+  /// bit masking.
   ///
-  /// **What `sourceTimestamp` means for Modbus, exactly.** Modbus has no
-  /// device-supplied timestamp: nothing in the protocol tells us when the PLC
-  /// produced the number. [readAt] is the instant this driver's read round trip
-  /// completed — still a clock on the backend, not on the plant, but the
-  /// closest estimate the protocol admits, and one poll interval tighter than
-  /// the pipe's arrival instant it replaces. Downstream this rides under
-  /// `ts_source='plant'`; that label is claiming "the best the source can give",
-  /// not "the PLC said so", and nothing here should be read as promising more.
+  /// **Modbus offers no `sourceTimestamp`, and that is the honest answer.**
+  /// Nothing in the protocol says when the PLC produced the number. [readAt] —
+  /// the instant this driver's read round trip completed — is a clock on *this
+  /// host*, and `package:open62541` documents the field it would go in as *"the
+  /// instant the SOURCE (the PLC, not this process) says the value was
+  /// produced"*, with null meaning *"a consumer that needs an instant must
+  /// substitute its own arrival time knowingly, and record that it did"*.
   ///
-  /// The stamp goes on AFTER the mask. `applyBitMask` builds a fresh
-  /// [DynamicValue] for a masked read, and carrying provenance across it is its
-  /// job — but the order here means a regression there cannot silently unstamp
-  /// the Modbus fleet.
+  /// It was briefly stamped here (2026-09-07, morning) and the measured result
+  /// was that `alarm_history.ts_source` then said `plant` over a backend clock
+  /// for the whole Modbus fleet — in direct mode as well as through the pipe,
+  /// because `AlarmMan.onChange` reads this field straight off the value. A
+  /// bare `DateTime` has no room to say which clock it came from, so the only
+  /// way to stop the claim being made is not to make it.
+  ///
+  /// [readAt] is still threaded here, and to [typedVariableToDynamicValue] and
+  /// [fbMembersToDynamicValue], because it is a real fact about the read that
+  /// [ModbusSample] exposes to callers who want it; it simply may not enter the
+  /// value as a provenance claim.
+  ///
+  /// `applyBitMask` carries `statusCode` and `sourceTimestamp` across the fresh
+  /// [DynamicValue] it builds. That stays load-bearing for masked **OPC UA**
+  /// keys, which do have a real server stamp to lose; here there is nothing for
+  /// it to carry.
   static DynamicValue _toDynamicValue(
       Object? value, ModbusRegisterSpec spec, DateTime readAt) {
     final dv =
         DynamicValue(value: value, typeId: _typeIdFromDataType(spec.dataType));
-    return StateMan.applyBitMask(dv, spec.bitMask, spec.bitShift)
-      ..sourceTimestamp = readAt;
+    return StateMan.applyBitMask(dv, spec.bitMask, spec.bitShift);
   }
 
   /// Maps [ModbusDataType] to the corresponding OPC UA [NodeId] type identifier.

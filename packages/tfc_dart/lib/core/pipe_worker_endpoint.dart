@@ -290,6 +290,15 @@ class PipeWorkerEndpoint {
   /// it cannot outgrow the set of keys main is actually watching.
   final Map<String, relay.DynamicValue> _last = <String, relay.DynamicValue>{};
 
+  /// Which keys in [_last] carry a `sourceTime` this backend substituted.
+  ///
+  /// Kept beside [_last] rather than derived from it, because it cannot be
+  /// derived: the substituted instant is a real, non-null `DateTime` that looks
+  /// exactly like a source one. Without this a resnapshot would replay every
+  /// reading with no claim attached, and `PipeFrame`'s absence-means-substituted
+  /// rule would demote a genuine OPC UA stamp on every reconnect.
+  final Set<String> _lastSubstituted = <String>{};
+
   Timer? _tick;
   bool _disposed = false;
 
@@ -414,13 +423,15 @@ class PipeWorkerEndpoint {
       if (!_subscribed.contains(key)) continue;
       final reading = _last[key];
       if (reading == null) continue;
-      _buffer.putValue(key, reading);
+      _buffer.putValue(key, reading,
+          sourceTimeSubstituted: _lastSubstituted.contains(key));
     }
   }
 
   void _unsubscribe(String key) {
     _subscribed.remove(key);
     _last.remove(key);
+    _lastSubstituted.remove(key);
     // Cancel the stream we own for this key. Synchronous dispatch: this can
     // never queue behind another key's hung subscribe.
     final stream = _streams.remove(key);
@@ -431,10 +442,19 @@ class PipeWorkerEndpoint {
   }
 
   void _onSample(String key, DynamicValue sample) {
+    // `onSourceTimeFallback` fires SYNCHRONOUSLY inside the call, so this local
+    // belongs to this sample and no other. That is the whole mechanism: the one
+    // place that knows whether the instant was substituted already says so, and
+    // this captures the fact instead of re-deriving it downstream from an
+    // instant that carries no evidence either way.
+    var sourceTimeSubstituted = false;
     var value = translateOpcUaSample(
       sample,
       arrivedAt: _now(),
-      onSourceTimeFallback: () => _sourceTimeFallbacks++,
+      onSourceTimeFallback: () {
+        sourceTimeSubstituted = true;
+        _sourceTimeFallbacks++;
+      },
     );
     // Carry the node's own data type across with the reading.
     //
@@ -461,7 +481,13 @@ class PipeWorkerEndpoint {
     // empty every tick, so it cannot answer "what does this key read right
     // now" a moment later. See [_last].
     _last[key] = value;
-    _buffer.putValue(key, value);
+    if (sourceTimeSubstituted) {
+      _lastSubstituted.add(key);
+    } else {
+      _lastSubstituted.remove(key);
+    }
+    _buffer.putValue(key, value,
+        sourceTimeSubstituted: sourceTimeSubstituted);
   }
 
   void _onStreamError(String key, Object error) {
@@ -530,6 +556,7 @@ class PipeWorkerEndpoint {
     // a resnapshot must not resurrect it between the retirement and main's
     // retraction.
     _last.remove(key);
+    _lastSubstituted.remove(key);
     _logger.w('pipe endpoint: "$key" was retired by the upstream');
     _emitPriority(PipeKeyRetired(key));
   }
@@ -629,6 +656,7 @@ class PipeWorkerEndpoint {
     _streams.clear();
     _subscribed.clear();
     _last.clear();
+    _lastSubstituted.clear();
   }
 }
 

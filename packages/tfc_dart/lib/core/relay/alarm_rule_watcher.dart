@@ -78,7 +78,6 @@ import 'package:tfc_dart/core/alarm_stamp.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
 import 'package:tfc_dart/core/relay/backend_seams.dart';
 import 'package:tfc_dart/core/relay/relay_to_ua_value.dart';
-import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
 /// A change in whether one alarm rule holds.
 ///
@@ -163,7 +162,7 @@ final class AlarmRuleWatcher {
 
   List<String> _variables = const [];
   List<String> _subscribedKeys = const [];
-  StreamSubscription<List<relay.DynamicValue>>? _subscription;
+  StreamSubscription<List<StampedValue>>? _subscription;
   bool _started = false;
   bool _suspended = false;
   int _suspensions = 0;
@@ -258,10 +257,10 @@ final class AlarmRuleWatcher {
     }
 
     final streams = [
-      for (final key in _subscribedKeys) _values.subscribe(key),
+      for (final key in _subscribedKeys) _values.subscribeStamped(key),
     ];
 
-    _subscription = CombineLatestStream.list<relay.DynamicValue>(streams).listen(
+    _subscription = CombineLatestStream.list<StampedValue>(streams).listen(
       _onValues,
       onError: (Object error, StackTrace stack) {
         // A value source that errors is not a rule that is false. Report and
@@ -284,11 +283,11 @@ final class AlarmRuleWatcher {
   /// which is where "nothing is evaluated before every variable has a value"
   /// comes from. That is free here and pinned by an arm anyway, so a later
   /// rewrite onto something else cannot lose it silently.
-  void _onValues(List<relay.DynamicValue> bound) {
+  void _onValues(List<StampedValue> bound) {
     // ---- 1. the quality gate (D-3). State is held; nothing is emitted.
     final refusedBy = <String>[];
     for (var i = 0; i < bound.length; i++) {
-      if (!bound[i].quality.isGood) refusedBy.add(_variables[i]);
+      if (!bound[i].value.quality.isGood) refusedBy.add(_variables[i]);
     }
     if (refusedBy.isNotEmpty) {
       if (!_suspended) {
@@ -310,7 +309,8 @@ final class AlarmRuleWatcher {
     // ---- 3. convert for the boolean math (DI-7) and evaluate.
     final bindings = <String, DynamicValue>{};
     for (var i = 0; i < bound.length; i++) {
-      bindings[_variables[i]] = relayToUaValue(bound[i], name: _variables[i]);
+      bindings[_variables[i]] =
+          relayToUaValue(bound[i].value, name: _variables[i]);
     }
 
     final bool satisfied;
@@ -329,7 +329,11 @@ final class AlarmRuleWatcher {
 
     // ---- 5. stamp from the plant (D-1/D-2), over the injected clock.
     final stamp = resolveAlarmStamp(
-      sourceTimes: [for (final value in bound) value.sourceTime],
+      // `sourceTimeIfSourced`, NOT `value.sourceTime`. Both are non-null for a
+      // substituted instant and look identical; only the flag that rode the
+      // pipe tells them apart, and a null here is what makes D-2 label the row
+      // `backend_receipt` instead of vouching for a clock the plant never saw.
+      sourceTimes: [for (final value in bound) value.sourceTimeIfSourced],
       clock: _clock,
       skewWarnAfter: _skewWarnAfter,
       onSkew: (skew, sourceTime) => _logger.w(

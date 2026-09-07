@@ -41,6 +41,7 @@ import 'dart:isolate';
 
 import 'package:logger/logger.dart';
 import 'package:meta/meta.dart' show visibleForTesting;
+import 'package:tfc_dart/core/alarm_stamp.dart';
 import 'package:tfc_dart/core/data_acquisition_isolate.dart';
 import 'package:tfc_dart/core/pipe_send_buffer.dart';
 import 'package:tfc_dart/core/pipe_worker_endpoint.dart';
@@ -137,6 +138,22 @@ class PipeMainEndpoint {
 
   /// The per-key value cache every consumer on main reads.
   final relay.ValueStore store = relay.ValueStore();
+
+  /// Keys whose cached `sourceTime` a worker frame affirmatively claimed came
+  /// from the source.
+  ///
+  /// **An allow-list, not a deny-list**, and that is the safety property: every
+  /// key not named here reads [AlarmTsSource.backendReceipt], so a value that
+  /// arrives by a route nobody taught this class about cannot acquire a plant
+  /// claim by default.
+  ///
+  /// **Beside the store rather than in it**, because `relay.ValueStore` and
+  /// `relay.DynamicValue` live in the protocol package and this is not a wire
+  /// fact — it never leaves the process. It is maintained in [_applyFrame]
+  /// strictly BEFORE `store.applyBatch`, so a listener the batch notifies
+  /// synchronously already reads the provenance belonging to the value it was
+  /// woken for.
+  final Set<String> _sourceStamped = <String>{};
 
   final List<PipeWorkerLink> _workers = <PipeWorkerLink>[];
   final List<StreamSubscription<Object?>> _listens =
@@ -277,6 +294,27 @@ class PipeMainEndpoint {
   /// [key]'s node, to hand a widget. Always the same instance for the same key.
   relay.ValueListenable<relay.DynamicValue> listen(String key) =>
       store.node(key);
+
+  /// Where the instant on [key]'s cached value came from.
+  ///
+  /// [AlarmTsSource.plant] only for a key a worker frame has affirmatively
+  /// claimed a source stamp for. **Everything else is
+  /// [AlarmTsSource.backendReceipt]**, and the list of "everything else" is why
+  /// the default is the one it is:
+  ///
+  ///  * a key that arrived in a frame flagged substituted — the Modbus fleet,
+  ///    an M2400 with no device clock, a server that omits the timestamp;
+  ///  * a key main has never seen in a frame at all — every backend-minted
+  ///    `PIPE.*` and `ALARM.*` value goes straight through `applyBatch`, and
+  ///    those instants are backend receipts;
+  ///  * a key from a frame that stated nothing (`substitutedStamps == null`).
+  ///
+  /// A `sourceTime` cannot answer this question: the substituted one is a real,
+  /// non-null `DateTime` and looks exactly like a source one. That is precisely
+  /// why the claim has to travel rather than be inferred here.
+  AlarmTsSource stampSourceOf(String key) => _sourceStamped.contains(key)
+      ? AlarmTsSource.plant
+      : AlarmTsSource.backendReceipt;
 
   // ----------------------------------------------------------- the subscribe
 
@@ -459,6 +497,11 @@ class PipeMainEndpoint {
   /// mode this project exists to remove.
   void _applyFrame(int index, PipeFrame frame) {
     if (frame.values.isNotEmpty) {
+      // BEFORE applyBatch. The batch notifies its listeners synchronously, and
+      // `BackendLiveValues.subscribeStamped` reads the provenance inside that
+      // notification to pair it with the value. Recording it afterwards would
+      // hand every one of those listeners the previous frame's claim.
+      _recordStampProvenance(frame);
       // seq omitted: the pipe is process-internal and has no gap chain to
       // reason about — a lost frame is a dead isolate, which arrives as its
       // own event.
@@ -471,6 +514,24 @@ class PipeMainEndpoint {
     // stop waiting. Last, so a caller that resumes here reads a cache with this
     // whole frame already in it.
     _settleFrameWaiters(index);
+  }
+
+  /// Folds one frame's provenance claims into [_substitutedStamps]/[_claimed].
+  ///
+  /// A frame that states nothing (`substitutedStamps == null`) has every value
+  /// in it treated as substituted. That is the safe direction and the one the
+  /// milestone requires: an unknown provenance must never be read as a plant
+  /// instant, because the cost of that mistake is an alarm row an operator is
+  /// judged on saying the plant vouched for a number it never saw.
+  void _recordStampProvenance(PipeFrame frame) {
+    final substituted = frame.substitutedStamps;
+    for (final key in frame.values.keys) {
+      if (substituted == null || substituted.contains(key)) {
+        _sourceStamped.remove(key);
+      } else {
+        _sourceStamped.add(key);
+      }
+    }
   }
 
   void _applyEvent(int index, Object? event) {
@@ -550,6 +611,10 @@ class PipeMainEndpoint {
   /// changes on this call and not one drain later.
   void _markBad(Iterable<String> keys, relay.Quality quality) {
     if (keys.isEmpty) return;
+    // This class mints these values, so whatever the source last vouched for is
+    // superseded by something it never said. Dropping the claim first keeps the
+    // rule exact: only a value a frame arrived with may be called a plant one.
+    _sourceStamped.removeAll(keys);
     store.applyBatch(<String, relay.DynamicValue>{
       for (final key in keys)
         key: relay.DynamicValue(value: null, quality: quality),

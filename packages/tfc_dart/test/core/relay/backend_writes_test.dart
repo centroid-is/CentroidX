@@ -336,6 +336,10 @@ class _ExplodingValues implements BackendValueSource {
   }
 
   @override
+  Stream<StampedValue> subscribeStamped(String key) =>
+      _inner.subscribeStamped(key);
+
+  @override
   void announceLinkLoss(String reason) => _inner.announceLinkLoss(reason);
 
   @override
