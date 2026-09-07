@@ -158,24 +158,58 @@ void main() {
     // will change. These arms fail if the rules are reordered even though
     // every individual rule still works.
 
-    test('the scheme rule runs BEFORE the host rules, or the credential '
-        'survives in a different shape', () {
-      // Were the bare-IPv4 rule to run first it would eat 10.0.0.5 on its own,
-      // leaving `opc.tcp://svc:hunter2@<host>:4840/` — the host gone, the
-      // PASSWORD still standing, and every per-rule arm above still green.
+    test('a credentialled URL collapses to ONE endpoint, whole', () {
+      // NOTE ON WHAT THIS ARM DOES AND DOES NOT CATCH.
+      //
+      // It was written expecting to detect the scheme rule being moved below
+      // the host rules. It does NOT, and that was established by mutation
+      // rather than assumed: hoisting the bare-IPv4 rule above the scheme rule
+      // leaves this output byte-identical, because the scheme pattern's
+      // character class excludes only whitespace and `,;)"'` — not `<` or `>`
+      // — so it re-consumes the `<host>` placeholder and still collapses the
+      // whole URL, credential included.
+      //
+      // Scheme-before-host is therefore NOT a load-bearing ordering, and no
+      // arm should claim to pin it. The ordering that IS load-bearing is
+      // paths-before-IPv4, which the next arm pins.
+      //
+      // What this arm still earns its place for: the URL must collapse as one
+      // unit, so a future rule that fragments it would be caught here.
       final out = redactUpstreamError(
           'closed talking to opc.tcp://svc:hunter2@10.0.0.5:4840/')!;
 
-      expect(out, isNot(contains('hunter2')),
-          reason: 'if a host rule ran ahead of the scheme rule the URL would '
-              'be broken up before the userinfo rule ever saw it, and the '
-              'credential would leak under a shape no other arm inspects');
+      expect(out, isNot(contains('hunter2')));
       expect(out, contains('<endpoint>'),
           reason: 'the whole URL must be replaced as ONE endpoint, not left '
               'as a half-eaten URL with a <host> inside it');
-      expect(out, isNot(contains('opc.tcp://')),
-          reason: 'a surviving scheme prefix is the signature of a host rule '
-              'having run first');
+      expect(out, isNot(contains('opc.tcp://')));
+    });
+
+    test('the PATH rules run BEFORE the bare-IPv4 rule, or a certificate '
+        'filename survives inside an address-named directory', () {
+      // This plant names per-PLC certificate directories after the PLC's
+      // address, so this is an ordinary path here and not a contrived one.
+      //
+      // Correct order: the POSIX-path rule sees the whole path — digits and
+      // dots are ordinary segment characters to it — and replaces all of it.
+      //
+      // Hoist the bare-IPv4 rule above it and the address becomes `<host>`
+      // FIRST. `<` and `>` are not segment characters, so the path rule can no
+      // longer span the whole path: it eats the prefix, stops dead at the
+      // placeholder, and `/client.pem` is left behind because the trailing
+      // segment has no slash after it to match on. The filename leaks.
+      //
+      // Every per-rule arm above stays green through that reorder, which is
+      // the point: rule ORDER is load-bearing and only an arm like this one
+      // can see it.
+      final out = redactUpstreamError(
+          'cannot read /etc/centroid/certs/10.104.29.71/client.pem')!;
+
+      expect(out, isNot(contains('client.pem')),
+          reason: 'the certificate filename is the secret here, and it '
+              'survives if a host rule fragments the path before the path '
+              'rule has seen it');
+      expect(out, isNot(contains('10.104.29.71')));
     });
 
     test('the labelled-host rule runs BEFORE the literal patterns, or a DNS '

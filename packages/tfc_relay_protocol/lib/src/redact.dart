@@ -53,13 +53,29 @@ library;
 /// timestamp, and a redactor that ate every clock time would make this key
 /// unreadable in exchange for nothing.
 ///
-/// **Rule order is load-bearing**, not incidental. The scheme-URL rule runs
-/// first because it is the one that carries userinfo; were a host rule to run
-/// ahead of it, the host inside `opc.tcp://svc:hunter2@10.0.0.5:4840/` would be
-/// eaten on its own and leave the credential standing in a different shape.
-/// The labelled-host rule runs ahead of the literal patterns for the mirror of
-/// that reason — it is the only one that can catch a DNS name. Pinned by
-/// `test/redact_test.dart`'s ordering arm.
+/// **Rule order is load-bearing, and 18-02 measured exactly where.** The
+/// interesting dependency is not the obvious one:
+///
+///  * **The path rules must run before the bare-IPv4 rule.** This one is real
+///    and it leaks. `/etc/centroid/certs/10.104.29.71/client.pem` is redacted
+///    whole by the POSIX-path rule, because digits and dots are ordinary
+///    segment characters to it. Let the IPv4 rule go first and the address
+///    becomes `<host>`; `<` and `>` are not segment characters, so the path
+///    rule can no longer span the path — it stops at the placeholder and
+///    leaves `/client.pem` standing. The certificate filename survives while
+///    every per-rule arm stays green.
+///  * **The labelled-host rule must run before the literal patterns**, because
+///    it is the only one that can catch a DNS name.
+///  * **Scheme-before-host is NOT observable**, and the comment that used to
+///    claim it was wrong. Hoisting the IPv4 rule above the scheme rule changes
+///    nothing: the scheme pattern's character class does not exclude `<` or
+///    `>`, so it re-consumes the `<host>` placeholder and still collapses the
+///    whole URL — credential included — to `<endpoint>`. Verified by mutation,
+///    not assumed.
+///
+/// The two that are load-bearing are pinned by `test/redact_test.dart`'s
+/// `rule ORDER is load-bearing` group. Reordering without running it is how a
+/// tidy-up leaks a filename.
 String? redactUpstreamError(String? raw) {
   if (raw == null) return null;
   var out = raw;

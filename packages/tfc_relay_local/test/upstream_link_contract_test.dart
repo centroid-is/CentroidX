@@ -159,7 +159,14 @@ void main() {
     test('bounds the length, because this becomes a fanned-out key value', () {
       final out = redactUpstreamError('x' * 5000)!;
 
-      expect(out.length, lessThanOrEqualTo(maxRedactedErrorLength + 1),
+      // 201, as a LITERAL, and deliberately not `maxRedactedErrorLength + 1`.
+      //
+      // It was written against the constant until 18-02, and 18-02's sabotage
+      // pass caught it: raising the cap to 20000 left this arm GREEN, because
+      // the assertion moved with the constant and asserted the mutation
+      // against itself. An arm that cannot fail when the thing it names gets
+      // worse is not pinning that thing. The number being pinned is 200.
+      expect(out.length, lessThanOrEqualTo(201),
           reason: 'a link flapping under a verbose stack trace would otherwise '
               'push kilobytes per event at every subscriber of '
               'PIPE.upstream.<alias>.last_error');
