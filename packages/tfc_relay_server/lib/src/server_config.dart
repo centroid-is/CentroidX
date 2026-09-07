@@ -302,6 +302,98 @@ final class ServerConfig {
   /// deliberately not the deployment.
   final String? publisherId;
 
+  // -------------------------------------------------------------------------
+  // The pre-hello budget (16-09, WSH-13). Two knobs, one purpose.
+  //
+  // The token file gates `hello`, not the upgrade: `RelayServer._onConnect`
+  // consults no credential, so anything that completes TLS gets a session
+  // built for it — a `ConflatingSendBuffer`, a `SessionSink`, a per-session
+  // health overlay and a `Peer` — before it has said who it is. These two
+  // bound how long that costs and how many of them there may be at once.
+  // What they cannot bound is the size of one assembled frame; that residual
+  // is documented where it bites, at `RelaySession._underCeiling`.
+  // -------------------------------------------------------------------------
+
+  /// How long a connection may sit upgraded without saying `hello` before the
+  /// gateway takes it back.
+  ///
+  /// **Strictly shorter than [heartbeatDeadline], and refused otherwise.** A
+  /// pre-hello deadline at or above the heartbeat one is incoherent: the
+  /// heartbeat reaper already closes an un-helloed socket at
+  /// [heartbeatDeadline] — `RelaySession`'s `_LastSeen.touch` will not move
+  /// until the session has helloed, so an un-helloed peer's silence is simply
+  /// its age — and a second deadline that fires no earlier is a knob with no
+  /// effect, which is worse than no knob.
+  ///
+  /// **The default is derived, not a number typed beside another number.**
+  /// Absent an explicit value it is [heartbeatDeadline] divided by
+  /// [preHelloShareOfHeartbeat], which at the 6 s shipping default is **2 s**.
+  /// Deriving rather than fixing it buys the property that matters: every
+  /// configuration that was coherent before this field existed is still
+  /// coherent, including the deliberately fast ones a test runs
+  /// (`liveness_test.dart` runs a 400 ms heartbeat deadline and now gets a
+  /// 133 ms pre-hello one) — a fixed 2 s default would have refused those at
+  /// construction, which is a config field breaking configurations it has
+  /// nothing to say about.
+  ///
+  /// **The number, at the shipping defaults, is 2 s, and it is sized from the
+  /// client end.** What has to fit between the upgrade completing and the
+  /// `hello` arriving is the frame on the wire (about 300 bytes, so 24 ms even
+  /// on the hundred-kilobit link `slow_link_gate_test.dart` measures a panel
+  /// over — bandwidth is not the term that matters), the panel's own
+  /// scheduling while it builds its first page, and a retransmit round trip.
+  /// `ClientConfig.connectTimeout` sizes its own 10 s as "a generous hang
+  /// guard rather than a tight bound" against the same client behaviour. 2 s
+  /// is far past all three, and it lands below
+  /// [defaultMinHeartbeatDeadline] — so the pre-hello deadline is shorter than
+  /// *any* heartbeat deadline a real gateway is permitted to run, not merely
+  /// shorter than the default one.
+  ///
+  /// `pre_hello_budget_test.dart`'s arm 3 is what keeps this honest from the
+  /// other direction: a deadline of one millisecond satisfies every arm about
+  /// the deadline biting, while disconnecting every panel in the plant before
+  /// it can speak.
+  final Duration preHelloDeadline;
+
+  /// Ceiling on how many sessions may be un-helloed **at once**.
+  ///
+  /// Consulted by `RelayServer._onConnect` before the connection is
+  /// registered, so a connection over the budget is refused rather than
+  /// registered and then closed — one that is registered has already paid for
+  /// everything the cap exists to avoid.
+  ///
+  /// **It counts un-helloed sessions, never sessions.** A cap on sessions
+  /// would cap the plant: the twenty-first panel switched on in the morning
+  /// would be refused by a defence aimed at an attacker. The count is derived
+  /// from the connection table rather than kept as a counter, which is why
+  /// there is no "decrement on hello" and no "decrement on teardown" to get
+  /// wrong — see `RelayServer.unhelloedCount` for that argument in full.
+  ///
+  /// **Sized against the plant, and the product is the residual.** SVN runs
+  /// tens of panels, and the worst legitimate burst is all of them
+  /// reconnecting at once after a gateway restart — every one of them
+  /// un-helloed for the same instant. 64 is several times that. It is also
+  /// the number that makes the exposure sayable: 64 concurrent un-helloed
+  /// peers times [maxFrameBytes] is **64 MiB** of assembled frames that this
+  /// gateway can be made to hold by peers that have presented no credential,
+  /// and that product — not either number alone — is what
+  /// `RelaySession._underCeiling` documents as accepted.
+  final int maxUnhelloedSessions;
+
+  /// What fraction of [heartbeatDeadline] a peer gets to say `hello` in, when
+  /// [preHelloDeadline] is not set explicitly.
+  ///
+  /// A third: it leaves the remaining two thirds of the silence budget to the
+  /// thing that budget is actually about, and at the 6 s default it lands the
+  /// pre-hello deadline at 2 s — below [defaultMinHeartbeatDeadline], which is
+  /// the property worth having (see [preHelloDeadline]).
+  static const int preHelloShareOfHeartbeat = 3;
+
+  /// The default [maxUnhelloedSessions]. See it for the sizing.
+  static const int defaultMaxUnhelloedSessions = 64;
+
+  // ------------------------- end of the pre-hello budget -------------------
+
   /// The tick band's lower bound (SRV-03).
   static const Duration minTick = Duration(milliseconds: 50);
 
@@ -338,9 +430,17 @@ final class ServerConfig {
     this.tls,
     this.auth,
     this.publisherId,
+    // The pre-hello budget (16-09). `preHelloDeadline` is nullable in and
+    // non-null out: null means "derive it from heartbeatDeadline", which is
+    // not the same request as any particular duration and so cannot be
+    // spelled as a default value here.
+    Duration? preHelloDeadline,
+    this.maxUnhelloedSessions = defaultMaxUnhelloedSessions,
     InternetAddress? address,
     this.port = 0,
-  }) : address = address ?? InternetAddress.loopbackIPv4 {
+  })  : address = address ?? InternetAddress.loopbackIPv4,
+        preHelloDeadline = preHelloDeadline ??
+            heartbeatDeadline ~/ preHelloShareOfHeartbeat {
     if (tick < minTick || tick > maxTick) {
       throw ArgumentError('tick (${_ms(tick)}) is outside the supported band '
           '${_ms(minTick)}–${_ms(maxTick)}: below it the server burns a core '
@@ -396,6 +496,29 @@ final class ServerConfig {
     _positive('maxFrameBytes', maxFrameBytes);
     _positive('maxPendingBytes', maxPendingBytes);
     _positive('maxSubscriptionsPerSession', maxSubscriptionsPerSession);
+    // --- the pre-hello budget (16-09) ---
+    if (this.preHelloDeadline <= Duration.zero) {
+      throw ArgumentError(
+          'preHelloDeadline (${_ms(this.preHelloDeadline)}) must be positive: '
+          'a non-positive deadline closes every connection at the instant it '
+          'is upgraded, so no panel in the plant can ever say hello and the '
+          'gateway serves nobody while looking perfectly healthy from the '
+          'outside — sessionCount simply keeps coming back to zero');
+    }
+    if (this.preHelloDeadline >= heartbeatDeadline) {
+      throw ArgumentError(
+          'preHelloDeadline (${_ms(this.preHelloDeadline)}) must be shorter '
+          'than heartbeatDeadline (${_ms(heartbeatDeadline)}): an un-helloed '
+          'socket is already closed at the heartbeat deadline, because '
+          'RelaySession\'s _LastSeen refuses to move until the handshake '
+          'lands — so a pre-hello deadline that is not strictly shorter fires '
+          'no earlier than the reaper that already existed and bounds '
+          'nothing. Leave it unset to take heartbeatDeadline / '
+          '$preHelloShareOfHeartbeat, or set it deliberately below the '
+          'deadline it is supposed to beat');
+    }
+    _positive('maxUnhelloedSessions', maxUnhelloedSessions);
+    // --- end of the pre-hello budget ---
     final peak = peakThreshold;
     if (peak != null && peak <= 0) {
       _positive('peakThreshold', peak);

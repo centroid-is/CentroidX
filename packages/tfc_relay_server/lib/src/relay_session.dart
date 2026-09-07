@@ -264,6 +264,57 @@ final class RelaySession {
   /// full of Icelandic þ/ð/æ the UTF-8 encoding is larger, so this is the
   /// slightly permissive direction, which is the right one for a limit whose
   /// job is to refuse an order of magnitude rather than a byte.
+  ///
+  /// ## What this ceiling cannot bound, and why (16-09, WSH-13 / S10)
+  ///
+  /// The paragraph above concedes the *unit*. This one concedes the thing that
+  /// matters more, and that the paragraph above does not mention at all: the
+  /// **assembly point**.
+  ///
+  /// This runs on the decoded `String`, which means it runs **after** `dart:io`
+  /// has already read every fragment of the WebSocket message off the socket,
+  /// assembled them into one buffer in heap, and UTF-8-decoded the result. By
+  /// the time `frame.length` is compared against anything, the megabytes are
+  /// already allocated. The refusal below stops the *amplification* — the echo,
+  /// the priority-lane growth, json_rpc_2's parse-error responder quoting back
+  /// the very thing it is refusing — and it does not, and cannot, stop the
+  /// allocation.
+  ///
+  /// **There is no earlier place to put it on this platform.** Neither
+  /// `dart:io`'s `WebSocket` nor `shelf_web_socket` 3.0.0 exposes an incoming
+  /// frame-size or message-size cap. `shelf_web_socket`'s `WebSocketHandler`
+  /// takes exactly three arguments — `_protocols`, `_allowedOrigins`,
+  /// `_pingInterval` — and there is no fourth to pass a limit through. Both
+  /// were **read in those packages' own source**, not inferred from their
+  /// documentation, and `server_config.dart`'s `maxFrameBytes` records the
+  /// same finding from the configuration side.
+  ///
+  /// **So what bounds the exposure is volume, not size.** Three things, none
+  /// of which is this ceiling:
+  ///
+  ///  * `ServerConfig.preHelloDeadline` — how long a peer that has not
+  ///    authenticated may hold a session at all: 2 s at the shipping defaults,
+  ///    where before 16-09 it was the 6 s heartbeat deadline;
+  ///  * `ServerConfig.maxUnhelloedSessions` — how many such peers there may be
+  ///    at once (64), enforced in `RelayServer._onConnect` before a session is
+  ///    built rather than after;
+  ///  * `ServerConfig.allowedOrigins` — which browsers may open one at all.
+  ///
+  /// **The residual, stated as a number and accepted.** One assembled frame
+  /// per un-helloed connection, up to `maxFrameBytes`: at the shipping
+  /// defaults, 64 × 1 MiB = **64 MiB** that peers presenting no credential can
+  /// make this gateway hold, for up to two seconds each. That is **accepted**,
+  /// not closed, because the platform offers nowhere earlier to refuse it and
+  /// both alternatives — hand-rolling the WebSocket framing layer, or putting
+  /// a reverse proxy in front of every gateway in the plant — are larger than
+  /// the exposure they would remove. "Bounded" is a weaker claim than "fixed"
+  /// and this paragraph is worth nothing if a later reader can mistake one for
+  /// the other.
+  ///
+  /// **If the transport ever gains a pre-assembly cap, this is the site that
+  /// changes**: the ceiling moves off the decoded string and onto the frame,
+  /// `maxFrameBytes` starts measuring the unit its own name claims, and the
+  /// UTF-16 concession above retires with it.
   static String _underCeiling(String frame, int maxFrameBytes) {
     if (frame.length <= maxFrameBytes) return frame;
     throw FormatException('frame of ${frame.length} bytes exceeds the '
@@ -611,6 +662,23 @@ final class RelaySession {
   String? get sessionId => _sessionId;
   String? _sessionId;
 
+  /// Whether the handshake has landed on this session.
+  ///
+  /// **One spelling of "helloed", used by everything that asks.** Three
+  /// separate mechanisms depend on this predicate and they must not be able to
+  /// disagree about it: [_LastSeen]'s gate (an inbound frame is evidence of a
+  /// panel only after the handshake, 05-REVIEW WR-03), the pre-hello deadline
+  /// `RelayServer` arms per connection, and the un-helloed budget the same
+  /// class consults before it registers a new one. Two of those would close a
+  /// session and the third would refuse one, so a version that drifted would
+  /// disconnect panels the others considered established.
+  ///
+  /// [sessionId] rather than [identity], deliberately: the id is minted at the
+  /// end of `_hello`, after the credential has been accepted and the gate has
+  /// been spent, so it is the moment the session became a panel rather than
+  /// the moment a token was recognised.
+  bool get helloed => _sessionId != null;
+
   String? get epoch => _epoch;
   String? _epoch;
 
@@ -791,7 +859,7 @@ final class RelaySession {
   }
 
   void _start() {
-    _lastSeen.gateOn(() => _sessionId != null);
+    _lastSeen.gateOn(() => helloed);
     // Every one of these goes through `_on`, and there is no second path.
     //
     // The table is forty-four names. Phase 3 registered four; 04-02 added

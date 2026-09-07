@@ -39,6 +39,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'alarm_ack_sink.dart';
 import 'auth/file_token_validator.dart';
+import 'close_codes.dart';
 import 'error_reporter.dart';
 import 'handle_table.dart';
 import 'health/cert_health_state_man.dart';
@@ -375,6 +376,32 @@ final class RelayServer {
 
   static const _ledgerLimit = 64;
 
+  /// How many connections are upgraded but have not yet said `hello`.
+  ///
+  /// **Derived from the connection table, never kept as a counter, and that is
+  /// the decision.** A counter here has one obvious bug and one subtle one,
+  /// and both are permanent: increment on connect and decrement only on
+  /// `hello`, and every peer that connects and drops without speaking spends a
+  /// slot of the budget for ever — a few hundred of those and the gateway
+  /// refuses the entire plant while holding no sessions at all, which from
+  /// outside is indistinguishable from a gateway that is fine. Decrement in
+  /// both places and the two paths can still race: a session that hellos and
+  /// is torn down in the same turn is decremented twice, and the budget grows
+  /// past its own ceiling. A count read off [_connections] cannot drift from
+  /// the table it describes, because it *is* the table.
+  ///
+  /// The cost is a linear scan per accepted connection, over a list bounded by
+  /// the plant's panel count. Connections are rare — a panel dials once and
+  /// stays for a shift — so this is microseconds on an event that happens
+  /// tens of times a day, paid to remove a class of bug that would only ever
+  /// be found in production.
+  ///
+  /// A connection whose session is still null counts as un-helloed, which is
+  /// correct: it is mid-wiring or its wiring failed, and either way nothing on
+  /// it has authenticated.
+  int get unhelloedCount =>
+      _connections.where((c) => !(c.session?.helloed ?? false)).length;
+
   /// The bound port. Throws before [start] has completed, because a caller
   /// that reads it early wants to be told that rather than shown a 0.
   int get port {
@@ -651,6 +678,28 @@ final class RelayServer {
       // event: this gateway is going away, reconnect rather than alarm.
       unawaited(ws.sink
           .close(CloseCodes.serverDraining, 'server draining')
+          .catchError((Object _) {}));
+      return;
+    }
+    // **Before anything is built, and before [_connections] grows** (16-09,
+    // WSH-13, threat T-16-09a). The token file gates `hello` and not the
+    // upgrade, so every line below this one is server memory allocated for a
+    // peer that has presented no credential. A connection refused here has
+    // cost a socket; one refused three statements lower would already have
+    // cost a send buffer, a sink, a health overlay and a `Peer`, which is
+    // everything the budget exists to avoid.
+    //
+    // Refused **loudly**, with the number in the reason. Naming a budget tells
+    // an unauthenticated peer nothing it could not measure by trying, and the
+    // alternative — a silent drop — is the "silence, not success" failure this
+    // project has already paid for once: it costs an engineer a packet capture
+    // to discover that the gateway is refusing anybody at all.
+    if (unhelloedCount >= config.maxUnhelloedSessions) {
+      unawaited(ws.sink
+          .close(
+              GatewayCloseCodes.unhelloedBudget,
+              'the gateway is already holding ${config.maxUnhelloedSessions} '
+                  'connections that have not said hello; try again shortly')
           .catchError((Object _) {}));
       return;
     }
