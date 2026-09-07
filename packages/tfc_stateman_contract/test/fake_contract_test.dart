@@ -181,6 +181,11 @@ void main() {
         seeds++;
         (api as FakeStateMan).seedTimeseries(tableName, points);
       },
+      // FakeStateMan serves the four access families (FakeAccessServices) and
+      // implements the session lever, so the fully-capable run judges them too
+      // — 17-05. Without this the roster would grow but this "runs everything"
+      // arm would stop being true.
+      supportsAccessControl: true,
     );
   });
   final full = contractCasesRegistered - beforeFull;
@@ -193,6 +198,10 @@ void main() {
       supportsWrites: false,
       supportsDataServices: false,
       browseFixture: _alternateFixture,
+      // Still an access-serving FakeStateMan, so this run declines exactly
+      // writes and data services and nothing else — which is what the
+      // arithmetic arm below asserts.
+      supportsAccessControl: true,
     );
   });
   final reduced = contractCasesRegistered - beforeReduced;

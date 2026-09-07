@@ -27,38 +27,38 @@
 /// path (design §4.7, HLTH-01) — there is no health method here because there
 /// is none on the wire — and are excluded from the freshness sweep (HLTH-02).
 ///
-/// Every member of `StateManApi` **except the four access families** is
-/// genuinely implemented: the four data-service sub-APIs are the in-memory
-/// implementations in `fake_data_services.dart`, injectable through the
-/// constructor so a driver can seed a browse tree or a recorded series without
-/// subclassing. For those, no member is left throwing to name a plan that has
-/// not been written yet, and that absence is the property saying that part of
-/// the interface has been contracted end to end — every area of it has a case
+/// Every member of `StateManApi` is genuinely implemented: the four
+/// data-service sub-APIs are the in-memory implementations in
+/// `fake_data_services.dart`, and the four access families are
+/// [FakeAccessServices] in `fake_access_services.dart` — both injectable
+/// through the constructor so a driver can seed a browse tree, a recorded series
+/// or a session without subclassing. No member is left throwing to name a plan
+/// that has not been written yet, and that absence is the property saying the
+/// interface has been contracted end to end — every area of it has a case
 /// judging it.
 ///
-/// The exception is stated rather than quietly absorbed. Plan 17-03 added
-/// `accessTemplates`, `accessAdmin`, `audit` and `backendConfig`, and **the
-/// contract suite has no case judging any of them yet** — 17-05 writes those
-/// cases and gives this fake the in-memory stores they judge. Until it does,
-/// the four refuse by name (`test/access_refusal_test.dart`).
-///
-/// Refusing rather than answering emptily is the same call this file's
-/// data-service getters made before plan 02-08, and it matters more here: this
-/// fake is the honest baseline the deliberately damaged variants in
-/// `broken_subscribe.dart` are measured against, so an in-memory access store
-/// invented before any case agreed on its semantics would be a baseline nobody
-/// chose. An `AuditApi` answering "no entries" would be a claim about a trail
-/// this object has never read.
+/// Plan 17-03 added `accessTemplates`, `accessAdmin`, `audit` and
+/// `backendConfig`; 17-03b left them refusing by name until a contract case
+/// existed to judge them; plan 17-05 wrote those cases and gave this fake the
+/// in-memory reference implementation they judge. The session those families
+/// consult is swapped through the test-only [actAs] lever (declared by
+/// [StateManAccessHarness]), in the same one-way lane the value levers travel —
+/// because the property the access contract judges is "the same implementation
+/// answers differently to different sessions", and a lever, not a constructor
+/// argument, is how one live instance shows both a refusal and its twin.
 library;
 
 import 'dart:async';
 
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
+import '../src/access_contract.dart';
 import '../src/data_services_contract.dart';
 import '../src/harness.dart';
 import '../src/hold_harness.dart';
 import '../src/write_contract.dart';
+import 'fake_access_services.dart';
 import 'fake_data_services.dart';
 
 /// An in-memory state source with a lever for everything the plant would do.
@@ -68,7 +68,8 @@ class FakeStateMan
         StateManHarness,
         StateManWriteHarness,
         StateManHoldHarness,
-        StateManDataHarness {
+        StateManDataHarness,
+        StateManAccessHarness {
   FakeStateMan({
     this.staleAfter = const Duration(milliseconds: 300),
     Set<String> readOnlyKeys = const {},
@@ -77,11 +78,19 @@ class FakeStateMan
     FakeTimeseries? timeseries,
     FakeHistoryViews? historyViews,
     FakePreferences? preferences,
+    FakeAccessServices? access,
   })  : _readOnlyKeys = {...readOnlyKeys},
         _browse = browse ?? FakeBrowse(),
         _timeseries = timeseries ?? FakeTimeseries(),
         _historyViews = historyViews ?? FakeHistoryViews(),
-        _preferences = preferences ?? FakePreferences() {
+        _preferences = preferences ?? FakePreferences(),
+        // Starts holding every group, so out of the box the fake hides nothing;
+        // an access case narrows it through actAs. That default is the honest
+        // baseline — a fake that refused by construction would make the suite's
+        // negative arms pass against an implementation with no gate at all.
+        _access = access ??
+            FakeAccessServices(
+                session: AccessSession(groups: AccessGroup.values.toSet())) {
     _seedHealthKeys();
     _watchdog = Timer.periodic(_sweepInterval, (_) => sweepFreshness());
   }
@@ -1156,34 +1165,36 @@ class FakeStateMan
 
   // ------------------------------------------------------- the access families
   //
-  // Four getters, no stores, and a refusal each. See the library doc for why
-  // this fake — whose whole argument is that it is not a mock — declines to
-  // invent in-memory semantics that no contract case has agreed on yet.
+  // A real in-memory reference implementation of all four families, added by
+  // plan 17-05 (17-03b left these refusing until a contract case existed to
+  // judge them). The session it consults is swapped through the test-only
+  // [actAs] lever below, exactly as the value levers swap the plant's readings.
 
-  /// The one shape every access refusal on this class takes.
-  ///
-  /// Names the class, names the member, and says what would have to exist for
-  /// the member to answer. Deliberately not "not implemented": the member IS
-  /// implemented, and what is absent is the store behind it.
-  Never _noAccessStore(String member) =>
-      throw UnsupportedError('FakeStateMan.$member is not available: this fake '
-          'has no in-memory access store behind it. The contract suite has no '
-          'case judging the access families yet; plan 17-05 writes them and '
-          'gives this fake the store they judge. An empty answer now would be '
-          'a baseline no case agreed on, from an object that has never asked '
-          'anything.');
+  final FakeAccessServices _access;
 
   @override
-  AccessTemplateApi get accessTemplates => _noAccessStore('accessTemplates');
+  AccessTemplateApi get accessTemplates => _access;
 
   @override
-  AccessAdminApi get accessAdmin => _noAccessStore('accessAdmin');
+  AccessAdminApi get accessAdmin => _access;
 
   @override
-  AuditApi get audit => _noAccessStore('audit');
+  AuditApi get audit => _access;
 
   @override
-  BackendConfigApi get backendConfig => _noAccessStore('backendConfig');
+  BackendConfigApi get backendConfig => _access;
+
+  // -------------------------------------------------- the access control lever
+
+  @override
+  void actAs(AccessSession session) => _access.actAs(session);
+
+  @override
+  List<String> get accessStoreWrites => _access.writes;
+
+  @override
+  String? storedPasswordFor(String subject) =>
+      _access.storedPasswordFor(subject);
 
   /// Records samples, as the gateway's recorder would.
   ///
