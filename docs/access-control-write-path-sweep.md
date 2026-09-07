@@ -144,7 +144,7 @@ here are therefore grouped by what the handle is used for.
 | `lib/page_creator/assets/graph.dart:823-824`, `lib/providers/timeseries.dart:205, 208` | `db.db.enableNotificationChannel(...)`, `listenToChannel(...)` | LISTEN/NOTIFY | graph assets, the shared timeseries stream | `not widget-reachable` as a write — `enableNotificationChannel` issues DDL for a notify channel, not a data write; noted here rather than left silent |
 | `lib/widgets/panes/database_stats_pane.dart:74, 86` | `db.db.config`, `db.db.customSelect(...)` | reads | the database stats pane | `left open: read permissions are deferred` |
 | `packages/tfc_dart/lib/core/preferences.dart:250, 465, 556`, `packages/tfc_dart/lib/core/preferences_watch.dart:59, 75, 77`, `packages/tfc_dart/lib/core/alarm.dart:338, 362`, `packages/tfc_dart/lib/core/database.dart:512-580`, `packages/tfc_dart/lib/core/access/access_repository.dart:98-100`, `packages/tfc_dart/lib/core/access/drift_audit_sink.dart:53` | `final db = ...!.db`, `AppDatabase db` fields | handles | core machinery | `correct as-is` — the stores holding their own handle |
-| `packages/tfc_dart/lib/core/sqlite_preferences.dart:112`, `lib/providers/preferences.dart:29, 67` | `final AppDatabase _db`, `AppDatabase? _deviceLocalDb`, `AppDatabase.createLocal(dir)` | the device-local `config.sqlite` | `SqlitePreferences`, and the process-wide handle `initDeviceLocalPreferences()` opens before `runApp` (v1.2 plan 01-05) | `correct as-is` — the store holding its own handle, and the one place the local database is opened. `_db` is the spelling `HistoryViewStore`, `AccessTemplateStore` and `AuditTrailStore` already use, so no ninth accessor; `_deviceLocalDb` is a **second `AppDatabase` instance** rather than a new accessor onto the shared one — the Postgres connection is still `databaseProvider`'s alone, and pointing the collector at this instance is refused by the factory's own doc |
+| `packages/tfc_dart/lib/core/sqlite_preferences.dart:112`, `lib/providers/preferences.dart:29, 67, 156` | `final AppDatabase _db`, `AppDatabase? _deviceLocalDb`, `AppDatabase.createLocal(dir)`, `deviceLocalDatabase()` | the device-local `config.sqlite` | `SqlitePreferences`, and the process-wide handle `initDeviceLocalPreferences()` opens before `runApp` (v1.2 plan 01-05) | `correct as-is` — the store holding its own handle, and the one place the local database is opened. `_db` is the spelling `HistoryViewStore`, `AccessTemplateStore` and `AuditTrailStore` already use, so no ninth accessor; `_deviceLocalDb` is a **second `AppDatabase` instance** rather than a new accessor onto the shared one — the Postgres connection is still `databaseProvider`'s alone, and pointing the collector at this instance is refused by the factory's own doc. `deviceLocalDatabase()` (v1.2 plan 02-05) hands that same instance to `ConfigStore`, which needs Drift itself rather than the preference view of it; it constructs nothing new except on the degraded path where `config.sqlite` would not open at all, where it answers an in-memory database so the panel still boots |
 | `packages/tfc_dart/lib/core/config/config_store.dart` | `required AppDatabase local`, `final AppDatabase _local`, `AppDatabase? _remote`, `_attach(remote.db)`, `attachRemote(Database)`, `attachRemoteDatabase(AppDatabase)` | two `AppDatabase` handles at once — the local `config.sqlite` and the Postgres connection | `ConfigStore` (v1.2 plan 02-01); the remote is attached rather than constructed, so a station that boots with Postgres unreachable holds a store with `_remote == null` | `correct as-is` — the handle the store of 2.2 writes through, and the same `_db`-family spelling `SqlitePreferences`, `HistoryViewStore` and `AccessTemplateStore` already use, so no new accessor. Two handles rather than one is the design: the local file is a **mirror** of the shared rows and the owner of this station's own, and the asymmetry in the two types is forced — `Database` carries the pool configuration and the connection-error classifier the write path needs, and cannot wrap a SQLite config at all. `attachRemoteDatabase` is `@visibleForTesting`: without it the compare-and-swap could only be exercised against a real Postgres |
 | `packages/tfc_dart/lib/core/config/config_sync.dart` | `final AppDatabase _remote` | the Postgres handle, **read-only** | `_KeyMappingSync`, the sync engine added by milestone v1.2 plan 02-04. A `part` of `config_store.dart`, so it is the same library and the same store object; its life is one attachment and `detachRemote` throws it away | `correct as-is` — this file issues no write of any kind against the remote: it reads `config_change` from a watermark, reads `config_item` revisions and payloads, and hands what it read to the store. Every row it causes to be written is a **local** one and appears in this document already — the mirror and the watermark row, in the `config_store.dart` rows of 2.2. The reader must not conclude that a station pushes anything during a reconcile: the shared rows are Postgres-owned and the only path to them is the compare-and-swap in 2.2, which is why a station whose mirror disagrees with the server adopts the server's row rather than re-asserting its own |
 | `lib/core/guarded_history_views.dart:85, 98` | `required AppDatabase db`, `final AppDatabase _db` | `AppDatabase` | `historyViewStoreProvider` | `correct as-is` — the handle 2.1's guard delegates through; the check happens above it |
@@ -258,7 +258,6 @@ in §5.
 | `lib/core/startup_url.dart:24, 26` | `prefs.remove/setString(startupUrlPrefsKey)` | preferences | the startup-page control | `guarded by 03-06` |
 | `lib/core/update_channel.dart:42` | `p.setString(updateChannelPrefsKey, ...)` | preferences | the update-channel control | construction `enforced by 03-11`; the write itself is `guarded by 03-06` |
 | `lib/chat/chat_widget.dart:189, 361, 392, 394` | `prefs.setString/remove(...)` | preferences | the chat provider-settings dialog | `guarded by 03-06` |
-| `lib/providers/state_man.dart:26` | `prefs.setString('key_mappings', ...)` | preferences | `stateManProvider` at boot | `guarded by 03-06` — routed through `systemWrites` |
 | `lib/providers/collector.dart:27` | `prefs.setString(Collector.configLocation, ...)` | preferences | `collectorProvider` at boot | `guarded by 03-09` |
 | `lib/providers/access.dart:694` | `local.setString(kAccessSessionPrefKey, ...)` | device-local preferences | every `poke()`, i.e. every pointer-down | `guarded by 03-06` |
 | `lib/providers/chat.dart:340, 370, 405, 449, 453, 494, 505, 525, 529, 532, 535, 538, 548, 558, 905` | `prefs.setString/remove(chat.*)` | preferences | chat conversation management | `guarded by 03-06` |
@@ -604,7 +603,6 @@ writes fire at boot with nobody signed in, on keys that are not `operate`:
 | Write | Key | Group | Owner |
 |---|---|---|---|
 | `lib/page_creator/page.dart:247` (unawaited, from `PageManager.load()`) | `page_editor_data` | `configure` | 03-06 |
-| `lib/providers/state_man.dart:26` (`fetchKeyMappings`) | `key_mappings` | `configure` | 03-06 |
 | `packages/tfc_dart/lib/core/state_man.dart:442` (`StateManConfig.fromPrefs`) | `state_man_config` | `administer` | 03-06 |
 | `packages/tfc_dart/lib/core/alarm.dart:220` (`AlarmMan.create`) | `alarm_man_config` | `configure` | 03-06 |
 | `lib/providers/collector.dart:27` (`collectorProvider`) | `collector_config` | `administer` | 03-09 |
@@ -612,6 +610,19 @@ writes fire at boot with nobody signed in, on keys that are not `operate`:
 Without `systemWrites` each of these is denied on a fresh station and the
 station is broken in a way no screen shows — the page editor case takes the
 pages away entirely.
+
+**One of them has left.** `stateManProvider`'s `key_mappings` default —
+`fetchKeyMappings`, which wrote a one-key example blob through `systemWrites`
+whenever the preference was absent — was deleted by milestone v1.2 plan 02-05.
+Key mappings are `config_item` rows now, and the boot default is
+`GuardedConfigStore.seedDefaultIfEmpty`: no session check, `origin: 'system'`,
+one audit row, and it writes **only** against a shared database that is
+reachable and, once the first reconcile has landed, genuinely empty. That is
+strictly narrower than the write it replaces, which fired on any station whose
+local store happened not to hold the key — including one that simply could not
+reach Postgres. `lib/providers/state_man.dart` therefore no longer appears in
+§2.2 or in the table above; it is still on `kSystemWriteCallSites`, for
+`StateManConfig.fromPrefs`.
 
 **The residual risk.** It is a bypass by construction. Anything holding a
 `GuardedPreferences` can reach it. The controls are that it is a distinct object
@@ -844,7 +855,6 @@ from one behind a Save button.
 | `chat_widget.dart:189` | `kSelectedProvider` | `llm.selected_provider` | prefix `llm.` | `administer` | behind a control |
 | `chat_widget.dart:361` | `prefKey` (switch on provider) | `llm.claude.api_key`, `llm.openai.api_key`, `llm.gemini.api_key` | prefix `llm.` | `administer` | behind a control |
 | `chat_widget.dart:392, 394` | `urlPrefKey` (ternary) | `llm.claude.base_url`, `llm.openai.base_url` | prefix `llm.` | `administer` | behind a control |
-| `providers/state_man.dart:26` | `'key_mappings'` | `key_mappings` | exact `key_mappings` | `configure` | **boot-time** — `fetchKeyMappings` writes a default when absent |
 | `providers/collector.dart:27` | `Collector.configLocation` | `collector_config` | exact `collector_config` | `administer` | **boot-time** — default written when absent |
 | `providers/access.dart:694` | `kAccessSessionPrefKey` | `access.session` | exact `access.session` | `operate` | **read-path** — every `poke()`, i.e. every pointer-down |
 | `providers/chat.dart:340, 370, 405, 449, 525, 905` | `'$kConversationPrefix$id'` | `chat.conversation.<id>` | prefix `chat.` | `operate` | behind a control |

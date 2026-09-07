@@ -4,6 +4,12 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc_access/tfc_access.dart';
+import 'package:tfc_dart/core/access/guarded_config_store.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_store.dart';
+import 'package:drift/drift.dart' show driftRuntimeOptions;
+import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/secure_storage/interface.dart';
 import 'package:tfc_dart/core/state_man.dart';
@@ -55,8 +61,71 @@ class FakeSecureStorage implements MySecureStorage {
 InMemoryPreferences useInMemoryDeviceLocalPreferences() {
   final store = InMemoryPreferences();
   setDeviceLocalPreferencesForTest(store);
-  addTearDown(() => setDeviceLocalPreferencesForTest(null));
+  // The full reset rather than `setDeviceLocalPreferencesForTest(null)`:
+  // `deviceLocalDatabase()` lazily opens an in-memory `AppDatabase` beside
+  // this store (that is what a station whose `config.sqlite` will not open
+  // gets), and clearing the pointer without closing the handle leaks one
+  // drift background isolate per test file that reads the config store.
+  addTearDown(resetDeviceLocalPreferencesForTest);
   return store;
+}
+
+/// A [GuardedConfigStore] over two in-memory databases — the station's mirror
+/// and a stand-in for the shared Postgres — for tests that need the shared
+/// configuration store without a Postgres.
+///
+/// Override `configStoreProvider` with it. The key mappings are seeded
+/// **through the store's own write path**, so every payload is codec output:
+/// a hand-assembled `{"opcua_node": …}` is structurally a different payload
+/// (every model class emits its unset optionals as explicit nulls) and the
+/// next diff would report the whole plant as rewired.
+///
+/// The sync engine is left off (`startSync: false`): a test that drives the
+/// write path and asserts what it wrote does not want a background reconcile
+/// answering for it. Both databases are closed at teardown.
+Future<GuardedConfigStore> createTestConfigStore({
+  KeyMappings? keyMappings,
+  AccessPolicy policy = const AccessPolicy(),
+  AccessSession? session,
+  AuditSink? audit,
+  String station = 'test-station',
+  void Function(AccessDenied denial)? onDenied,
+}) async {
+  driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+  final local = AppDatabase.inMemoryForTest();
+  final remote = AppDatabase.inMemoryForTest();
+  addTearDown(local.close);
+  addTearDown(remote.close);
+
+  final store = ConfigStore(
+    local: local,
+    stationScope: ConfigScope.forStation(station),
+    station: station,
+  );
+  addTearDown(store.close);
+  await store.open();
+  store.attachRemoteDatabase(remote, startSync: false);
+
+  final mappings = keyMappings ?? KeyMappings(nodes: {});
+  if (mappings.nodes.isNotEmpty) {
+    await store.writeKeyMappings(mappings,
+        actionId: 'test-seed', who: 'test', roleName: 'system');
+  }
+
+  return GuardedConfigStore(
+    inner: store,
+    policy: policy,
+    session: () =>
+        session ?? AccessSession.anonymous(const {AccessGroup.operate}),
+    audit: audit ?? _DiscardingAuditSink(),
+    station: station,
+    onDenied: onDenied,
+  );
+}
+
+class _DiscardingAuditSink implements AuditSink {
+  @override
+  Future<void> record(AuditRecord entry) async {}
 }
 
 /// Creates a test [Preferences] backed by in-memory storage.

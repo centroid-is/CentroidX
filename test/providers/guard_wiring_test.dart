@@ -16,8 +16,10 @@ import 'package:shared_preferences_platform_interface/in_memory_shared_preferenc
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
+import 'package:tfc_dart/core/access/guarded_config_store.dart';
 import 'package:tfc_dart/core/access/guarded_preferences.dart';
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
+import 'package:tfc_dart/core/config/config_diff.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
@@ -32,10 +34,12 @@ import 'package:tfc/route_registry.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/access_policy.dart';
 import 'package:tfc/providers/collector.dart';
+import 'package:tfc/providers/config_store.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
-import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
+import '../helpers/test_helpers.dart'
+    show createTestConfigStore, useInMemoryDeviceLocalPreferences;
 
 void main() {
   setUp(() {
@@ -431,7 +435,13 @@ void main() {
 
       // And every default actually landed, so the test cannot pass by nothing
       // having been written at all.
-      expect(await prefs.getString('key_mappings'), isNotNull);
+      //
+      // `key_mappings` is deliberately not here any more. Since 02-05 the boot
+      // default is `GuardedConfigStore.seedDefaultIfEmpty`, which writes one
+      // `config_item` row against a **reachable and genuinely empty** shared
+      // database and does nothing at all offline — and this container has no
+      // database. `guarded_config_store_test.dart`'s "the boot seed" group is
+      // where that write is proved, trail and all.
       expect(
           await prefs.getString('state_man_config', secret: true), isNotNull);
       expect(await prefs.getString('page_editor_data'), isNotNull);
@@ -446,7 +456,10 @@ void main() {
       await pumpEventQueue();
 
       for (final key in const [
-        'key_mappings',
+        // 'key_mappings' has moved to the configuration store's own seed —
+        // see the comment in the test above, and
+        // `guarded_config_store_test.dart`'s "writes the example key once, as
+        // the system, with a row".
         'state_man_config',
         'page_editor_data',
         'alarm_man_config',
@@ -475,14 +488,110 @@ void main() {
         'key is still refused', () async {
       final w = await _wiring();
       final prefs = await w.prefs;
+      final store = await w.configStore;
       await w.stateMan;
 
-      // `key_mappings` was just seeded through `systemWrites`. An ordinary
-      // write of the very same key, by a session, is a different thing.
-      await expectLater(prefs.setString('key_mappings', '{"nodes":{}}'),
+      // The boot default for these keys went through the unchecked path. An
+      // ordinary write of the very same key, by a session, is a different
+      // thing — and for key mappings it is now the guarded *store* that has to
+      // say so, since that is where the write goes.
+      await expectLater(store.saveKeyMappings(KeyMappings(nodes: {})),
           throwsA(isA<AccessDenied>()));
       await expectLater(prefs.setString('alarm_man_config', '{"alarms":[]}'),
           throwsA(isA<AccessDenied>()));
+    });
+
+    test('a refused key-mapping save is in the trail, and reaches the denial '
+        'stream', () async {
+      final w = await _wiring();
+      final store = await w.configStore;
+
+      await expectLater(store.saveKeyMappings(KeyMappings(nodes: {})),
+          throwsA(isA<AccessDenied>()));
+      await pumpEventQueue();
+
+      final rows = w.sink.rows.where((r) => r.itemKey == 'key_mappings');
+      expect(rows, hasLength(1));
+      expect(rows.single.allowed, isFalse);
+      expect(rows.single.surface, 'pref');
+      expect(rows.single.station, _kStation);
+      expect(w.denials.map((d) => d.itemKey), contains('key_mappings'));
+    });
+  });
+
+  group('the key-mapping live apply survives a reconnect (C-1)', () {
+    test('an edit applies before and after preferencesProvider is rebuilt',
+        () async {
+      // The regression this milestone exists to close. `stateManProvider`
+      // reads preferences with `ref.read` on purpose — a watch would drop
+      // every OPC UA connection on the panel each time the database
+      // reconnected — so the old listener was attached to the `Preferences`
+      // instance that existed at boot. `preferencesProvider` builds a NEW one
+      // on every reconnect, and from that moment the listener was watching an
+      // object nobody wrote to again: key-mapping edits silently stopped
+      // applying, forever, after the first database blip.
+      //
+      // The store outlives every provider rebuild, so the listener now hangs
+      // off it. Rebuilding `preferencesProvider` between two edits is what
+      // tells the two designs apart: the old one applies the first and misses
+      // the second.
+      final w = await _wiring(withConfigStore: true);
+      final store = await w.configStore;
+      await w.stateMan;
+
+      await store.inner.writeKeyMappings(
+          _mappingsOf({'CN04.Belt.Speed': 'GVL.Conveyors[4].Speed'}),
+          actionId: 'a1',
+          who: 'jon',
+          roleName: 'Engineering');
+      await pumpEventQueue();
+      expect(w.inner.appliedDiffs.map((d) => d.added.single.id),
+          ['CN04.Belt.Speed']);
+
+      // The reconnect, as the app performs it.
+      final before = await w.prefs;
+      w.container.invalidate(preferencesProvider);
+      final after = await w.prefs;
+      expect(identical(before, after), isFalse,
+          reason: 'the premise: a rebuild really does replace the object the '
+              'old listener was holding');
+      // And the store did not go with it.
+      expect(identical(store, await w.configStore), isTrue);
+
+      await store.inner.writeKeyMappings(
+          _mappingsOf({
+            'CN04.Belt.Speed': 'GVL.Conveyors[4].Speed',
+            'CN07.Belt.Speed': 'GVL.Conveyors[7].Speed',
+          }),
+          actionId: 'a2',
+          who: 'jon',
+          roleName: 'Engineering');
+      await pumpEventQueue();
+
+      expect(w.inner.appliedDiffs, hasLength(2),
+          reason: 'the second edit never reached StateMan — the listener went '
+              'deaf when preferencesProvider was rebuilt');
+      expect(w.inner.appliedDiffs.last.added.single.id, 'CN07.Belt.Speed');
+      expect(w.inner.appliedMappings.last.nodes.keys,
+          containsAll(['CN04.Belt.Speed', 'CN07.Belt.Speed']));
+    });
+
+    test('the store\'s diff reaches StateMan, not a recomputed one', () async {
+      // SC-3's other half, from the app side: the object handed to
+      // `updateKeyMappings` is the one the store computed while deciding which
+      // rows to write.
+      final w = await _wiring(withConfigStore: true);
+      final store = await w.configStore;
+      await w.stateMan;
+
+      final result = await store.inner.writeKeyMappings(
+          _mappingsOf({'CN04.Belt.Speed': 'GVL.Conveyors[4].Speed'}),
+          actionId: 'a1',
+          who: 'jon',
+          roleName: 'Engineering');
+      await pumpEventQueue();
+
+      expect(identical(w.inner.appliedDiffs.single, result.diff), isTrue);
     });
   });
 
@@ -656,6 +765,30 @@ class _FakeStateMan implements StateMan {
   final List<(String, DynamicValue)> writes = [];
   final Map<String, DynamicValue> values = {};
 
+  /// Every diff the live-apply listener handed over, in order. The C-1
+  /// regression is counted here.
+  final List<ConfigDiff> appliedDiffs = [];
+
+  /// The mappings that came with each of them.
+  final List<KeyMappings> appliedMappings = [];
+
+  @override
+  KeyMappingsUpdateResult updateKeyMappings(KeyMappings newKeyMappings,
+      {ConfigDiff? diff}) {
+    appliedMappings.add(newKeyMappings);
+    // Not defaulted to an empty diff: the point of this fake is to see what
+    // the provider passed, and a null here is a provider that stopped passing
+    // the store's own diff.
+    appliedDiffs.add(diff!);
+    return const KeyMappingsUpdateResult(
+      added: {},
+      removed: {},
+      changed: {},
+      resubscribed: {},
+      reloadReasons: [],
+    );
+  }
+
   @override
   Future<void> close() async => closeCalls++;
 
@@ -735,12 +868,27 @@ class _Wiring {
 
   Future<Preferences> get prefs => container.read(preferencesProvider.future);
   Future<StateMan> get stateMan => container.read(stateManProvider.future);
+  Future<GuardedConfigStore> get configStore =>
+      container.read(configStoreProvider.future);
 }
+
+/// One OPC UA entry per key, built through the model so every payload is codec
+/// output — a hand-written one is structurally different and would make the
+/// diff report keys nobody touched.
+KeyMappings _mappingsOf(Map<String, String> keysToIdentifiers) => KeyMappings(
+      nodes: {
+        for (final entry in keysToIdentifiers.entries)
+          entry.key: KeyMappingEntry(
+            opcuaNode: OpcUANodeConfig(namespace: 4, identifier: entry.value),
+          ),
+      },
+    );
 
 /// A container with the real `preferencesProvider` and `stateManProvider`,
 /// their inner construction faked, and nothing pointed at a real database or a
 /// real PLC.
-Future<_Wiring> _wiring({bool withDatabase = false}) async {
+Future<_Wiring> _wiring(
+    {bool withDatabase = false, bool withConfigStore = false}) async {
   AccessRepository? repository;
   if (withDatabase) {
     final db = AppDatabase.inMemoryForTest();
@@ -779,6 +927,14 @@ Future<_Wiring> _wiring({bool withDatabase = false}) async {
       // `collectorProvider` watches `stateManProvider`, so leaving it real
       // would have this test reaching for a database it does not have.
       collectorProvider.overrideWith((ref) async => null),
+      // The real provider builds over the device-local database and attaches
+      // nothing, which is a station with no Postgres — right for every test
+      // here except the ones that need a shared write to land somewhere.
+      if (withConfigStore)
+        configStoreProvider.overrideWith((ref) => createTestConfigStore(
+              station: _kStation,
+              audit: sink,
+            )),
     ],
   );
   addTearDown(container.dispose);

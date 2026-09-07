@@ -132,6 +132,43 @@ PreferencesApi createDeviceLocalPreferences() {
   return store;
 }
 
+/// The one device-local `AppDatabase`, for the stores that need Drift itself.
+///
+/// [createDeviceLocalPreferences] answers the *preference* view of this file;
+/// `ConfigStore` needs the handle, because it writes `config_item` rows that
+/// are not preferences. Same store, same file, same process-wide instance.
+///
+/// Throws a [StateError] when init has not run, exactly as the factory beside
+/// it does and for the same reason: a lazy open would have to be async and
+/// every caller reaches this from a synchronous context, and a silently empty
+/// store is the failure ("the station lost its wiring") the boot ordering
+/// exists to prevent.
+///
+/// **The degraded station still gets one.** When `config.sqlite` could not be
+/// opened at all, [initDeviceLocalPreferences] falls back to an
+/// [InMemoryPreferences] and leaves `_deviceLocalDb` null. That station is
+/// already showing default pages and forgetting its settings — but it must
+/// still *boot*, and everything downstream of the configuration store
+/// (StateMan, and therefore every mimic on the panel) is between it and the
+/// screen. So it gets an in-memory database: the mirror is empty, the remote
+/// path still works, and a station that reaches Postgres comes up with the
+/// plant's real wiring even though its local cache is gone.
+AppDatabase deviceLocalDatabase() {
+  if (_deviceLocalStore == null) {
+    throw StateError(
+      'initDeviceLocalPreferences() must run before deviceLocalDatabase(). '
+      'In the app it is awaited in main() before runApp; in a test, call '
+      'setDeviceLocalPreferencesForTest() in setUp (and '
+      'resetDeviceLocalPreferencesForTest() in tearDown).',
+    );
+  }
+  // The in-memory factory is marked for tests because nothing in production
+  // wanted a throwaway database — until the fallback above, where the choice
+  // is between one and refusing to start the panel.
+  // ignore: invalid_use_of_visible_for_testing_member
+  return _deviceLocalDb ??= AppDatabase.inMemoryForTest();
+}
+
 /// This station's hostname, for the scope every row is written at.
 ///
 /// `'unknown'` rather than a throw if the platform will not say, matching
