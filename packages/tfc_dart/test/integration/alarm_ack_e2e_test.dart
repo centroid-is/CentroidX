@@ -277,6 +277,61 @@ DateTime parseStored(Object? raw) {
   return DateTime.parse('${value}Z').toUtc();
 }
 
+/// An instant as `alarm_history` really holds one after a `::timestamp` cast:
+/// UTC, space-separated, and carrying no zone.
+String zonelessInstant(DateTime at) {
+  final iso = at.toUtc().toIso8601String();
+  return iso.substring(0, iso.length - 1).replaceFirst('T', ' ');
+}
+
+/// Writes an open row the way a previous process would have left one.
+///
+/// Through the raw driver rather than through [AlarmHistoryWriter], on 14-06's
+/// argument: the restart arm is about what THIS process does with a row it did
+/// not write, and seeding through the subject would make it an assertion about
+/// the writer agreeing with itself.
+///
+/// The instants are bound as the **zoneless text** a real row carries, not
+/// through a `::timestamp` cast: a bound parameter inside one makes the server
+/// infer `timestamp` while the driver has already declared `text`, and the
+/// answer is `22P03: incorrect binary data format in bind parameter`.
+Future<int> seedOpenRow({
+  required String uid,
+  required int ruleIndex,
+  required DateTime createdAt,
+  DateTime? acknowledgedAt,
+}) async {
+  final rows = await conn.execute(
+    pg.Sql.named('''
+      INSERT INTO alarm_history (
+        alarm_uid, alarm_title, alarm_description, alarm_level,
+        expression, active, pending_ack, created_at, deactivated_at,
+        acknowledged_at, rule_index, ts_source
+      ) VALUES (
+        @uid, @title, @description, @level,
+        @expression, TRUE, FALSE, @created, NULL,
+        @acknowledged, @ruleIndex, @tsSource
+      ) RETURNING id
+    '''),
+    parameters: <String, Object?>{
+      'uid': pg.TypedValue(pg.Type.text, uid),
+      'title': pg.TypedValue(pg.Type.text, 'left open by a previous process'),
+      'description': pg.TypedValue(pg.Type.text, 'seeded'),
+      'level': pg.TypedValue(pg.Type.text, 'error'),
+      'expression': pg.TypedValue(pg.Type.text, '$kInputKey > 10'),
+      'created': pg.TypedValue(pg.Type.text, zonelessInstant(createdAt)),
+      'acknowledged': pg.TypedValue(pg.Type.text,
+          acknowledgedAt == null ? null : zonelessInstant(acknowledgedAt)),
+      // bigInteger: drift's Postgres dialect makes `rule_index` a bigint, and
+      // binding an int4 against it fails with SQLSTATE 08P01 rather than with
+      // anything that names a type (14-01).
+      'ruleIndex': pg.TypedValue(pg.Type.bigInteger, ruleIndex),
+      'tsSource': pg.TypedValue(pg.Type.text, 'plant'),
+    },
+  );
+  return rows.first.first! as int;
+}
+
 /// Names which of the three clocks an unexpected instant came from.
 String diagnose(Object? raw) {
   if (raw == null) return 'It is NULL.';
@@ -621,6 +676,53 @@ void main() {
               'engine would show up exactly here.'
               '\nA saw: ${rig.a.observed}'
               '\nB saw: ${rig.b.observed}');
+    });
+
+    // ------------------------------------------------------------------ 8 --
+    test('arm 8: a backend RESTART does not put an acknowledged standing alarm '
+        'back on every banner', () async {
+      // A row a previous process left open, already acknowledged. Before this
+      // plan the column was never written, so adoption had nothing to lose;
+      // now it does.
+      final seededId = await seedOpenRow(
+        uid: kAlarmUid,
+        ruleIndex: 0,
+        createdAt: plantOnset,
+        acknowledgedAt: backendNow,
+      );
+
+      // A "restart" here is a fresh composition — a fresh engine, a fresh
+      // writer, a fresh gateway — over the SAME database. What the
+      // reconciliation actually depends on is the state of the table and each
+      // rule's first post-restart evaluation, and both are reproducible in one
+      // process (14-06's argument, unchanged).
+      final rig = await _Rig.standUp();
+      rig.raise();
+      await _waitUntil(
+        () => rig.backend.engine!.acknowledgedStandingCount == 1,
+        reason: () => 'the open row was never adopted as acknowledged. '
+            '${rig.evidence()}',
+      );
+      await rig.backend.engine!.persistenceIdle();
+
+      rig.requireAttached();
+      expect(rig.a.uids, isEmpty,
+          reason: 'the alarm an operator had already silenced came back on the '
+              'banner after a restart, indistinguishable from nobody having '
+              'pressed the button. ${rig.evidence()}');
+      expect(rig.b.uids, isEmpty, reason: rig.evidence());
+
+      final rows = await historyRows();
+      expect(rows, hasLength(1),
+          reason: 'adopting means inserting NOTHING — a second row is a plant '
+              'that appears to have stopped twice for one fault. Got: $rows');
+      expect(rows.single['id'], seededId);
+      expect(rows.single['deactivated_at'], isNull,
+          reason: 'and the stop is still running');
+      expect(parseStored(rows.single['acknowledged_at']), backendNow,
+          reason: 'the acknowledgement the previous process recorded is the '
+              'one that stands; re-stamping it would overwrite the instant '
+              'somebody actually saw the alarm with the restart\'s');
     });
   });
 }
