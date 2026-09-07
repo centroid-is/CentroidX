@@ -221,6 +221,108 @@ void main() {
               'about ${config.maxKeysPerSubscribe} keys');
     });
 
+    // --- the pre-hello budget (16-09, WSH-13) ---
+
+    test('the pre-hello budget\'s defaults are the shipping numbers', () {
+      final c = ServerConfig();
+
+      expect(c.preHelloDeadline, const Duration(seconds: 2),
+          reason: 'the number `pre_hello_budget_test.dart` is written against '
+              'as a literal — the two are pinned to each other here so they '
+              'cannot drift silently — and the number a slow but legitimate '
+              'panel has to get its hello out in');
+      expect(c.maxUnhelloedSessions, 64,
+          reason: 'several times the plant\'s panel count, so the worst '
+              'legitimate burst — every screen reconnecting at once after a '
+              'gateway restart, all of them un-helloed for the same instant — '
+              'fits with room to spare');
+    });
+
+    test('the pre-hello deadline is shorter than any heartbeat deadline a '
+        'real gateway may run', () {
+      expect(ServerConfig().preHelloDeadline,
+          lessThan(ServerConfig.defaultMinHeartbeatDeadline),
+          reason: 'not merely shorter than the 6 s default: below the floor, '
+              'so no legal reconfiguration of heartbeatDeadline can make the '
+              'pre-hello deadline the later of the two and quietly turn it '
+              'into a knob with no effect');
+    });
+
+    test('the default is derived from heartbeatDeadline, not typed beside it',
+        () {
+      // The property that keeps every previously-coherent configuration
+      // coherent. `liveness_test.dart` runs a 400 ms heartbeat deadline
+      // deliberately; a fixed 2 s pre-hello default would have refused it at
+      // construction — a new field breaking configurations it has nothing to
+      // say about.
+      final fast = ServerConfig(
+        heartbeatDeadline: const Duration(milliseconds: 400),
+        minHeartbeatDeadline: const Duration(milliseconds: 100),
+      );
+      expect(
+          fast.preHelloDeadline,
+          const Duration(milliseconds: 400) ~/
+              ServerConfig.preHelloShareOfHeartbeat);
+      expect(fast.preHelloDeadline, lessThan(fast.heartbeatDeadline));
+    });
+
+    test('a pre-hello deadline at or above the heartbeat deadline is refused',
+        () {
+      expect(
+          () => ServerConfig(preHelloDeadline: const Duration(seconds: 6)),
+          throwsA(argumentErrorNaming(
+              ['preHelloDeadline', '6000 ms', 'heartbeatDeadline'])),
+          reason: 'an un-helloed socket is already closed at the heartbeat '
+              'deadline — _LastSeen refuses to move until the handshake lands '
+              '— so a pre-hello deadline that is not strictly shorter fires no '
+              'earlier than the reaper that already existed. A knob that '
+              'cannot change the outcome is worse than no knob: it reads in a '
+              'config diff as a defence that is switched on');
+      expect(
+          () => ServerConfig(preHelloDeadline: const Duration(seconds: 30)),
+          throwsA(argumentErrorNaming(['preHelloDeadline', '30000 ms'])));
+    });
+
+    test('a non-positive pre-hello deadline is refused', () {
+      expect(() => ServerConfig(preHelloDeadline: Duration.zero),
+          throwsA(argumentErrorNaming(['preHelloDeadline', '0 ms'])),
+          reason: 'zero closes every connection at the instant it is upgraded, '
+              'so no panel can ever say hello — and the only symptom from '
+              'outside is a sessionCount that keeps coming back to zero, '
+              'which looks exactly like a plant that is switched off');
+      expect(
+          () => ServerConfig(
+              preHelloDeadline: const Duration(milliseconds: -1)),
+          throwsA(argumentErrorNaming(['preHelloDeadline'])));
+    });
+
+    test('a non-positive maxUnhelloedSessions is refused', () {
+      expect(() => ServerConfig(maxUnhelloedSessions: 0),
+          throwsA(argumentErrorNaming(['maxUnhelloedSessions', '0'])),
+          reason: 'zero refuses every connection before it can authenticate, '
+              'which is a gateway that binds a port and then serves nobody');
+      expect(() => ServerConfig(maxUnhelloedSessions: -1),
+          throwsA(argumentErrorNaming(['maxUnhelloedSessions'])));
+    });
+
+    test('the un-helloed budget has room for the whole plant reconnecting',
+        () {
+      final c = ServerConfig();
+      // A panel carries about 1500 keys and subscribes in one call, so
+      // `maxKeysPerSubscribe / 1500` is this config's own idea of how many
+      // pages a screen is — not a count of panels. The sizing that matters is
+      // simpler and is asserted directly: the budget must exceed the number of
+      // screens that can be switched on at once, and the plant is tens.
+      expect(c.maxUnhelloedSessions, greaterThan(32),
+          reason: 'the cap is aimed at an attacker and must never be reachable '
+              'by the plant. Every panel reconnecting at once after a gateway '
+              'restart is un-helloed for the same instant, and a cap under '
+              'that count would refuse half the screens in the factory every '
+              'time the gateway was updated');
+    });
+
+    // --- end of the pre-hello budget ---
+
     test('a non-positive maxPending is refused', () {
       expect(() => ServerConfig(maxPending: 0),
           throwsA(argumentErrorNaming(['maxPending'])),

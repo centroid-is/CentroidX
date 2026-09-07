@@ -611,6 +611,23 @@ final class RelaySession {
   String? get sessionId => _sessionId;
   String? _sessionId;
 
+  /// Whether the handshake has landed on this session.
+  ///
+  /// **One spelling of "helloed", used by everything that asks.** Three
+  /// separate mechanisms depend on this predicate and they must not be able to
+  /// disagree about it: [_LastSeen]'s gate (an inbound frame is evidence of a
+  /// panel only after the handshake, 05-REVIEW WR-03), the pre-hello deadline
+  /// `RelayServer` arms per connection, and the un-helloed budget the same
+  /// class consults before it registers a new one. Two of those would close a
+  /// session and the third would refuse one, so a version that drifted would
+  /// disconnect panels the others considered established.
+  ///
+  /// [sessionId] rather than [identity], deliberately: the id is minted at the
+  /// end of `_hello`, after the credential has been accepted and the gate has
+  /// been spent, so it is the moment the session became a panel rather than
+  /// the moment a token was recognised.
+  bool get helloed => _sessionId != null;
+
   String? get epoch => _epoch;
   String? _epoch;
 
@@ -791,7 +808,7 @@ final class RelaySession {
   }
 
   void _start() {
-    _lastSeen.gateOn(() => _sessionId != null);
+    _lastSeen.gateOn(() => helloed);
     // Every one of these goes through `_on`, and there is no second path.
     //
     // The table is forty-four names. Phase 3 registered four; 04-02 added
