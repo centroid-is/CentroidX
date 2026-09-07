@@ -182,6 +182,16 @@ class ConfigStore {
   bool get hasRemote => _remote != null;
 
   /// Points the write path at [remote].
+  ///
+  /// **A reconnect must call this again.** The store's object identity is
+  /// stable for the life of the process on purpose — that is what lets a
+  /// provider publish it without anything downstream rebuilding the plant
+  /// connection every time a key changes — but `databaseProvider` builds a
+  /// *new* [Database] when Postgres comes back, and the handle taken here is
+  /// the old one. Nothing detects that: a write through a closed handle fails
+  /// with a driver error rather than reporting itself as offline. Re-attaching
+  /// on every rebuild of the database provider is the app layer's job, and is
+  /// why this is a method rather than a constructor argument.
   void attachRemote(Database remote) => _remote = remote.db;
 
   /// Forgets the remote. The snapshot and the mirror are untouched.
