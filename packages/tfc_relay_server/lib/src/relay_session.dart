@@ -167,7 +167,7 @@ final class RelaySession {
     required HandleTable handles,
     required ConflatingSendBuffer buffer,
     TokenValidator validator = const PermissiveTokenValidator(),
-    KeyPolicy policy = const AllVisibleOperatorWrites(),
+    KeyPolicy policy = const AccessPolicyKeyPolicy(),
     AlarmAckSink? alarmAcks,
     required SeriesResolver resolver,
     List<String> serverSupported = const [protocolVersion],

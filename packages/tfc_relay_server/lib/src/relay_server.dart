@@ -145,7 +145,7 @@ final class RelayServer {
     ServerConfig? config,
     HandleTable? handles,
     TokenValidator validator = permissiveDefault,
-    this.policy = const AllVisibleOperatorWrites(),
+    this.policy = const AccessPolicyKeyPolicy(),
     this.alarmAcks,
     required this.resolver,
     this.serverSupported = const [protocolVersion],
