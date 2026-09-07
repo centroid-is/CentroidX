@@ -46,16 +46,53 @@ List<({String path, List<String> lines})> _readLib() {
       .toList(growable: false);
 }
 
-/// Every occurrence of [needle] in `lib/`, case-insensitively.
+/// Three consecutive source lines, read as prose rather than as Dart.
+///
+/// **This is the part that makes the scan hard to defeat by accident.** Both
+/// places the false claim lived were wrapped — a doc comment across two `///`
+/// lines and a `Text` built from four adjacent string literals — so a literal
+/// line-by-line grep for "no OPC UA session" finds neither, and an author
+/// re-wrapping a paragraph would silently un-pin every phrase below. So each
+/// window strips the comment marker, joins the seam between adjacent Dart
+/// string literals, collapses whitespace and lower-cases. Three lines is
+/// enough for every sentence this file is about; the line reported is the
+/// window's first, which is where a reader should start looking.
+String _window(List<String> lines, int i) => lines
+    .skip(i)
+    .take(3)
+    .map((l) => l.replaceFirst(RegExp(r'^\s*///?\s?'), ''))
+    .join(' ')
+    // `'a ' 'b'` and `"a " "b"` are one string to a reader and two to a grep.
+    .replaceAll(RegExp(r"'\s*'"), '')
+    .replaceAll(RegExp(r'"\s*"'), '')
+    .replaceAll(RegExp(r'\s+'), ' ')
+    .toLowerCase();
+
+/// Every occurrence of [needle] in `lib/`, case-insensitively and across
+/// wrapping.
 List<_Hit> _scan(String needle) {
   final lowered = needle.toLowerCase();
-  return [
-    for (final file in _libFiles)
-      for (var i = 0; i < file.lines.length; i++)
-        if (file.lines[i].toLowerCase().contains(lowered))
-          (path: file.path, line: i + 1, text: file.lines[i].trim()),
-  ];
+  final hits = <_Hit>[];
+  for (final file in _libFiles) {
+    for (var i = 0; i < file.lines.length; i++) {
+      final window = _window(file.lines, i);
+      if (!window.contains(lowered)) continue;
+      // One hit per phrase per place: a three-line window slides, so the same
+      // sentence would otherwise be reported up to three times.
+      if (hits.isNotEmpty &&
+          hits.last.path == file.path &&
+          i - hits.last.line < 3) {
+        continue;
+      }
+      hits.add((path: file.path, line: i + 1, text: window));
+    }
+  }
+  return hits;
 }
+
+/// Whether [path] contains [needle], across wrapping.
+bool _says(String path, String needle) => _scan(needle)
+    .any((h) => h.path == path);
 
 String _describe(List<_Hit> hits) =>
     hits.map((h) => '${h.path}:${h.line}: ${h.text}').join('\n');
@@ -99,7 +136,6 @@ void main() {
   group('nothing else', () {
     test('no file in lib/ claims the panel opens one WebSocket and nothing '
         'else', () {
-      final hits = _scan('and nothing else');
       // Scoped to the claim, not to the two English words. `nothing else` is
       // ordinary prose and appears ~50 times in `lib/` in doc comments that
       // have nothing to do with transports ("Reads of `audit_entry`, and
@@ -107,11 +143,22 @@ void main() {
       // both correct and load-bearing ("this panel trusts that file and
       // nothing else"). Banning the bare phrase would mean rewriting forty
       // unrelated files, and a rule that broad stops being read.
-      final offenders = hits
+      //
+      // What is banned is the *claim*: the socket named beside the phrase, or
+      // the phrase attached to what this panel **opens**. Both of the two
+      // original spellings are caught — `state_man.dart`'s bare "One WebSocket
+      // and nothing else" by the first arm, and "this panel opens … one
+      // WebSocket and nothing else" by either.
+      // `opens` alone is still too wide across a three-line window — one
+      // `proposal_banner.dart` paragraph opens an editor three lines above an
+      // unrelated "and nothing else" — so the window must also name something
+      // this panel could open.
+      const transport = ['websocket', 'socket', 'connection', 'postgres'];
+      final offenders = _scan('and nothing else')
           .where((h) =>
-              h.text.toLowerCase().contains('websocket') ||
-              h.text.toLowerCase().contains('connection') ||
-              h.text.toLowerCase().contains('postgres'))
+              h.text.contains('websocket and nothing else') ||
+              (h.text.contains('opens') &&
+                  transport.any((t) => h.text.contains(t))))
           .toList();
 
       expect(offenders, isEmpty,
@@ -131,10 +178,17 @@ void main() {
 
     test('and none of them says the database settings belong to the gateway',
         () {
-      final offenders = _scan('settings belong to the gateway');
+      // Two terms in one window rather than one long sentence: the OPC UA,
+      // JBTM and Modbus settings genuinely DO belong to the gateway and this
+      // page says so, so the claim to catch is specifically the one that drags
+      // the database in with them.
+      final offenders = _scan('belong to the gateway')
+          .where((h) => h.text.contains('database'))
+          .toList();
       expect(offenders, isEmpty,
-          reason: 'the OPC UA, JBTM and Modbus settings do; the database '
-              'settings are still this station\'s own. '
+          reason: 'the OPC UA, JBTM and Modbus settings do; the database is '
+              'still this station\'s own, at an address that differs per '
+              'station (project memory svn-db-ip-per-station). '
               'Offending lines:\n${_describe(offenders)}');
     });
 
@@ -164,9 +218,12 @@ void main() {
     }
 
     test('server_config.dart says what gateway mode does NOT open, too', () {
-      final source = _read('lib/pages/server_config.dart');
-      expect(source, contains('no OPC UA session'));
-      expect(source, contains('no Modbus socket'));
+      const path = 'lib/pages/server_config.dart';
+      expect(_says(path, 'no OPC UA session'), isTrue,
+          reason: 'the honest sentence names both halves: what is not opened '
+              'and what still is');
+      expect(_says(path, 'no Modbus socket'), isTrue);
+      expect(_says(path, 'no collector'), isTrue);
     });
   });
 

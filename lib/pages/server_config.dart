@@ -20,15 +20,18 @@ import 'package:tfc_access/tfc_access.dart';
 
 import '../core/gateway_config.dart';
 import '../core/server_config_db.dart';
+import '../theme.dart';
 import '../widgets/base_scaffold.dart';
 import '../widgets/connection_status_chip.dart';
 import '../widgets/duration_field.dart';
+import '../widgets/gateway_link_status_row.dart';
 import '../widgets/preferences.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:modbus_client/modbus_client.dart' show ModbusEndianness;
 import 'package:tfc_dart/core/database.dart';
 import '../providers/gateway.dart';
+import '../providers/gateway_link.dart';
 import '../providers/state_man.dart';
 import '../providers/preferences.dart';
 import '../providers/database.dart';
@@ -952,9 +955,21 @@ class _EmptyServersPlaceholder extends StatelessWidget {
 /// Which pipe this station runs on, and where the far end is.
 ///
 /// **A mode switch, not a fifth section.** In gateway mode this panel opens no
-/// OPC UA session, no Modbus socket and no Postgres pool, so the four sections
-/// below it are not another thing to configure — they are inert. This card
-/// therefore sits above them and `ServerConfigBody` hides them behind it.
+/// OPC UA session, no Modbus socket and no collector, so three of the four
+/// sections below it are not another thing to configure — they are inert. This
+/// card therefore sits above them and `ServerConfigBody` hides them behind it.
+///
+/// **The fourth is Postgres, and it is still open.** A gateway-mode panel holds
+/// one Postgres connection, for sign-in, preferences and the audit trail. That
+/// is measured rather than assumed: the rig ran a panel in gateway mode and
+/// found the connection to `172.18.0.6:5432` live throughout
+/// (13-RIG-E2E-EVIDENCE FIND-C), and `lib/providers/database.dart` has no
+/// transport branch that could close it. The database section is hidden anyway
+/// because the address it configures is a *plant* setting an operator standing
+/// at a gateway panel is not the person to change — not because nothing uses
+/// it. Moving access, preferences and audit onto the relay is Phase 17; until
+/// then this doc says what the panel actually opens, and
+/// `test/core/gateway_copy_test.dart` keeps the old wording from coming back.
 ///
 /// **Device-local, and that is why it does not save where its neighbours do.**
 /// Every other section on this page writes through `preferencesProvider`, the
@@ -981,9 +996,28 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
   /// What the operator has typed. Diffed against [_saved] for the save button.
   GatewayConfig _edited = GatewayConfig.defaults;
 
+  /// A read is in flight. Bounded by [_load]'s `finally`, which is the whole
+  /// difference between a spinner and a permanent spinner.
+  bool _isLoading = true;
+
+  /// Why the device-local row could not be read, or null.
+  String? _error;
+
   final _urlController = TextEditingController();
   final _caController = TextEditingController();
   final _tokenController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    // Started once, here, and never from `build`. It used to be called from
+    // inside `build` with its future discarded (15-RESEARCH P-7): a throw out
+    // of `prefs.getString` — a device-local store that will not answer, which
+    // is a real station condition — left `_saved` null, so the card rebuilt to
+    // the spinner, called `_load` again, and spun forever while the rejection
+    // went to the ambient error handler. Nothing on screen ever said anything.
+    _load();
+  }
 
   @override
   void dispose() {
@@ -993,16 +1027,38 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
     super.dispose();
   }
 
-  Future<void> _load() async {
-    final loaded = await ref.read(gatewayConfigProvider.future);
-    if (!mounted) return;
-    _urlController.text = loaded.url;
-    _caController.text = loaded.caCertPath ?? '';
-    _tokenController.text = loaded.tokenPath ?? '';
+  /// Reads the device-local transport row.
+  ///
+  /// The shape is `_JbtmServersSectionState._loadConfig`'s, deliberately: set
+  /// loading, `try`, catch into [_error], and clear the flag in a `finally` so
+  /// there is no path out of this method that leaves the card claiming a read
+  /// is still in flight.
+  ///
+  /// [refresh] invalidates the provider first. Without it a Retry re-reads the
+  /// *cached rejection* — `FutureProvider` holds its error — and the button
+  /// would be a refusal with a dead retry on it, which is a spinner with extra
+  /// steps.
+  Future<void> _load({bool refresh = false}) async {
+    if (refresh) ref.invalidate(gatewayConfigProvider);
     setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      final loaded = await ref.read(gatewayConfigProvider.future);
+      if (!mounted) return;
+      _urlController.text = loaded.url;
+      _caController.text = loaded.caCertPath ?? '';
+      _tokenController.text = loaded.tokenPath ?? '';
       _saved = loaded;
       _edited = loaded;
-    });
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
   }
 
   bool get _hasUnsavedChanges => _saved != null && _edited != _saved;
@@ -1024,10 +1080,57 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
 
   @override
   Widget build(BuildContext context) {
+    // The live link, or null. Watched here rather than through a nested
+    // `Consumer` because `package:basic_utils` — imported by this file for
+    // certificate parsing — also exports a `Consumer`, and an `as prefix` on
+    // one of two whole-library imports to place one builder is a worse trade
+    // than one extra rebuild of a card that already calls `setState` on every
+    // keystroke.
+    //
+    // The provider consults the *saved* transport first and short-circuits to
+    // null in direct mode before it ever reads `stateManProvider`, so a direct
+    // station cannot grow a status row by accident. Null renders as absence.
+    final linkReport = ref.watch(gatewayLinkProvider).valueOrNull;
+
+    // The refusal frame, copied from `_JbtmServersSectionState.build`. A card
+    // that cannot read its own settings has to say so: the operator can act on
+    // "the store did not answer" and can act on nothing at all when the same
+    // condition is drawn as a spinner.
+    final error = _error;
+    if (error != null) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              FaIcon(FontAwesomeIcons.triangleExclamation,
+                  size: 48, color: Theme.of(context).colorScheme.error),
+              const SizedBox(height: 16),
+              Text('Could not read this station\'s transport setting: $error'),
+              const SizedBox(height: 8),
+              Text(
+                'The panel is running on whatever transport it read at boot. '
+                'Until this row can be read, it cannot be changed here.',
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () => _load(refresh: true),
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     final saved = _saved;
-    if (saved == null) {
-      // Load once, then rebuild — the same shape `McpServerSection` uses.
-      _load();
+    if (saved == null || _isLoading) {
+      // Genuinely still reading, and bounded: `_load`'s `finally` clears the
+      // flag on every path, including the throwing one, which lands on the
+      // frame above rather than here.
       return const Card(
         child: Padding(
           padding: EdgeInsets.all(16),
@@ -1037,6 +1140,9 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
     }
 
     final refusal = _edited.validationError;
+    // Deliberately NOT `refusal`, and deliberately not folded into it. See the
+    // comment on the save button below and `GatewayConfig.advisory`'s own doc.
+    final advisory = _edited.advisory;
 
     // Collapsed by default in direct mode — the shape `McpServerSection`
     // already uses for a device-local setting, and the reason is not only
@@ -1126,6 +1232,28 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
               )),
             ),
             const SizedBox(height: 12),
+            // A warning, in a warning's voice, and visibly not the refusal
+            // below it. `HmiStateColors.yellow` is the repo's manual/attention
+            // colour; `colorScheme.error` is what a refusal wears, and wearing
+            // it here would tell the operator the configuration is rejected
+            // when it is about to be saved.
+            if (advisory != null)
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.warning_amber_rounded,
+                      size: 18, color: HmiStateColors.of(context).yellow),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      advisory,
+                      style:
+                          TextStyle(color: HmiStateColors.of(context).yellow),
+                    ),
+                  ),
+                ],
+              ),
+            if (advisory != null) const SizedBox(height: 12),
             if (refusal != null)
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1144,6 +1272,32 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
               ),
             if (refusal != null) const SizedBox(height: 12),
           ],
+          // The live link, under the three fields, where an operator who has
+          // just typed the address is standing.
+          //
+          // Outside the `_edited.isGateway` block on purpose: a link that is
+          // live right now must not vanish because a radio button moved and has
+          // not been saved yet. The guard is the provider's null and nothing
+          // else — see the note at the top of `build`.
+          //
+          // Nothing is rendered while the provider is still resolving. Not a
+          // spinner: `access_status_action.dart:44-51` gives the reason, and
+          // this surface rebuilds on every keystroke in the three fields above.
+          if (linkReport != null) ...[
+            GatewayLinkStatusRow(report: linkReport),
+            const SizedBox(height: 12),
+          ],
+          // **`advisory` is not in this condition and must never be added to
+          // it, nor to the label switch below.** The two states are
+          // `_hasUnsavedChanges` and `refusal`, where `refusal` is
+          // `validationError` alone. A hostname advisory says the certificate
+          // *may* not carry a SAN for the name that was typed; a plant that
+          // provisions DNS SANs is perfectly legitimate, and refusing to save
+          // its configuration would make this card wrong for that whole plant.
+          // `test/pages/server_config_transport_mode_test.dart`'s "a wss dial
+          // by name shows the advisory and Save stays enabled" is the arm that
+          // notices if somebody folds it in.
+          //
           // Not `_SaveConfigButton`: that one has two states and this has
           // three. A configuration that cannot be dialled is not saveable —
           // the panel would construct nothing at the next boot and show a
@@ -1192,6 +1346,20 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
 ///
 /// An empty space would read as a page that failed to load. This says which
 /// decision removed them and how to get them back.
+///
+/// **It used to claim the station held nothing but the relay socket, and that
+/// its database settings were the gateway's. Both were false**, and the exact
+/// sentences are not quoted here because the scan in
+/// `test/core/gateway_copy_test.dart` is literal and a quotation would make it
+/// a question nobody could answer. Read them out of this file's history. The rig
+/// ran a panel in gateway mode and measured one Postgres connection to
+/// `172.18.0.6:5432` live for the whole run, carrying sign-in, preferences and
+/// the audit trail (13-RIG-E2E-EVIDENCE FIND-C); `lib/providers/database.dart`
+/// has no transport branch that could close it, and the database address is
+/// this station's own, not the gateway's. An operator who read the old note and
+/// then found a Postgres session on the panel would have had no reason to trust
+/// anything else this page said. Closing the dependency for real — access,
+/// preferences and audit over the relay — is Phase 17.
 class _DirectSectionsHiddenNote extends StatelessWidget {
   const _DirectSectionsHiddenNote();
 
@@ -1207,10 +1375,14 @@ class _DirectSectionsHiddenNote extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
               child: Text(
-                'This station talks to the relay gateway, so it opens no '
-                'connections of its own. The database, OPC UA, JBTM and '
-                'Modbus settings belong to the gateway and are configured '
-                'there. Switch back to Direct to PLCs to edit them here.',
+                'This station takes its values from the relay gateway: no '
+                'OPC UA session, no Modbus socket, no collector. Those '
+                'settings belong to the gateway and are configured there.\n\n'
+                'It still opens one Postgres connection, for sign-in, '
+                'preferences and the audit trail. That database is shared '
+                'with the rest of the plant and its address is configured '
+                'elsewhere, so the section is hidden here rather than gone.\n\n'
+                'Switch back to Direct to PLCs to edit them all here.',
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
             ),
