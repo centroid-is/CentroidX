@@ -387,5 +387,86 @@ void main() {
               'let this assertion pass on a complaint about something else '
               'entirely');
     }, timeout: const Timeout(Duration(seconds: 60)));
+
+    test('a readback sharing an instant with the page is still adopted',
+        () async {
+      // **The other side of the boundary, and it was found by sabotage.**
+      // Widening the refusal from `stamp.isBefore(cached)` to
+      // `!stamp.isAfter(cached)` — one character of difference, and the
+      // obvious way to write the guard — turned nothing red anywhere in this
+      // package, including the full 44-check contract suite. The reason is
+      // structural rather than an oversight in some case: `FakeStateMan`
+      // applies a write's readback with `sourceTime` null
+      // (`fake_state_man.dart:936`), so the ordinary write path in every
+      // harness here leaves the store holding values with no stamp at all, and
+      // a comparison against null short-circuits. Nothing in the package had
+      // ever put a *stamped* value on the page and then written to it.
+      //
+      // The equality case is not a curiosity. It is the ordinary race this
+      // whole method exists for: the gateway answers the write on the RPC path
+      // and pushes the same reading on the subscription path, and on a source
+      // that stamps its readings both carry the instant the device reported.
+      // Refusing an equal stamp would leave the pending badge on screen for a
+      // whole tick after every confirmed write — the exact symptom
+      // `_adoptReadback`'s doc opens by describing.
+      final seededAt = DateTime.now().toUtc();
+      // To the millisecond the wire actually carries, so "the same instant" is
+      // the same instant on both sides of the comparison rather than a
+      // microsecond apart.
+      final onTheWire = DateTime.fromMillisecondsSinceEpoch(
+          seededAt.millisecondsSinceEpoch,
+          isUtc: true);
+      final fixture = await faultFixture(
+        keys: const {_key},
+        corrupt:
+            restampAppliedWriteAnswer('${seededAt.millisecondsSinceEpoch}'),
+        seed: (plant) =>
+            plant.setValue(_key, _movedDuringOutage, sourceTime: seededAt),
+      );
+      await until('the link', () => fixture.client.isReady);
+      await until('the page to carry the plant\'s seeded value',
+          () => fixture.client.read(_key)?.value == _movedDuringOutage,
+          budget: recovery);
+      expect(fixture.client.read(_key)?.sourceTime, onTheWire,
+          reason: 'the page carries ${fixture.client.read(_key)?.sourceTime} '
+              'rather than the seeded $onTheWire, so the readback below will '
+              'not be sharing an instant with anything and this arm is testing '
+              'the ordinary newer-than case the others already cover');
+
+      final outcome = await fixture.client
+          .write(_key, _commanded, cmd: newUlid())
+          .timeout(recovery);
+      final pageOnResolution = fixture.client.read(_key);
+      print('S3 equal stamps: outcome $outcome, page on resolution '
+          '${pageOnResolution?.value} at ${pageOnResolution?.sourceTime}; '
+          'complaints ${fixture.client.complaints}');
+
+      expect(outcome, isA<WriteApplied>(),
+          reason: 'the write came back $outcome on a healthy link, so this arm '
+              'never reached the adopt site at all');
+      expect(pageOnResolution?.value, _commanded,
+          reason: 'the page still shows ${pageOnResolution?.value} the instant '
+              'the write resolved. The readback shares its instant with the '
+              'reading it replaces, which is what an RPC answer and a '
+              'tick-quantised push carrying the same device reading look like '
+              '— the ordinary case. A guard that refuses it leaves the '
+              'operator looking at the number they typed over, still wearing '
+              'the pending badge, until the next tick corrects it — and if '
+              'that tick is the one lost to a reconnect, until the tag next '
+              'moves');
+      expect(pageOnResolution?.sourceTime, onTheWire,
+          reason: 'the page carries ${pageOnResolution?.sourceTime}, so the '
+              'value on it did not come from the adopt: the plant\'s own push '
+              'of an applied readback carries no source time at all '
+              '(`fake_state_man.dart:936`), and a null here means the '
+              'subscription beat the answer and this arm measured the push '
+              'rather than the guard');
+      expect(fixture.client.complaints, isEmpty,
+          reason: 'the client complained about a readback it had every reason '
+              'to take: ${fixture.client.complaints}. Equality is not a step '
+              'backwards, and a guard that treats it as one turns the '
+              'complaint list into noise at the rate an operator presses '
+              'buttons');
+    }, timeout: const Timeout(Duration(seconds: 60)));
   });
 }
