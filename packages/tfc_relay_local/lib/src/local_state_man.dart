@@ -933,14 +933,32 @@ final class LocalStateMan implements StateManApi {
   /// runs for months: [writeOutcomeTtl] expiry and cap eviction. Both answer
   /// **unknown**, never `not_received`.
   ///
-  /// ### This log answers about the PLANT, and the server's answers about the WIRE
+  /// ### This log answers about the PLANT, and the shared one about the WIRE
   ///
-  /// `tfc_relay_server`'s `WriteOutcomeLog` is one per `RelayServer` and
-  /// survives session churn; it knows whether a *frame* arrived. This one
-  /// knows whether a *plant* was asked. They are deliberately not merged: a
-  /// gateway restart resets this one and not that one, and pretending
-  /// otherwise would let a `writeStatus` claim knowledge of a write that never
-  /// reached a PLC.
+  /// `WriteOutcomeLog` — since 18-04 in `tfc_relay_protocol`
+  /// (`lib/src/write_outcome_log.dart`), and until then duplicated between
+  /// `tfc_relay_server` and `tfc_dart` — is one per server or per backend and
+  /// survives session churn; it knows whether a *frame* arrived. This one knows
+  /// whether a *plant* was asked. They are deliberately not merged: a gateway
+  /// restart resets this one and not that one, and pretending otherwise would
+  /// let a `writeStatus` claim knowledge of a write that never reached a PLC.
+  ///
+  /// **This log is a third design, and 18-04 ruled that it stays one.** It is
+  /// not a stale copy of the shared class, and the differences are the reason:
+  ///
+  ///  * **five answers, not four.** It adds `outcome_forgotten`, driven by the
+  ///    [_forgottenBeforeMs] watermark that both cap eviction and TTL prune
+  ///    move, so a command from an evicted era is never told `not_received`.
+  ///    The shared log needs no such answer because it never evicts;
+  ///  * **it is capped** at [maxWriteOutcomes] (4096) with LRU eviction, where
+  ///    the shared log is unbounded in count and bounded only in time;
+  ///  * **its TTL is 10 minutes**, against the shared log's 60 seconds, because
+  ///    a plant-side log answers about a machine an operator may come back to,
+  ///    not about a frame.
+  ///
+  /// Merging them would therefore be a behaviour change in both directions, not
+  /// a de-duplication. The mirror of this paragraph is in the shared file's
+  /// library doc.
   @override
   Future<List<WriteResult>> writeStatus(List<String> cmds) async {
     _pruneWriteOutcomes();
