@@ -32,7 +32,7 @@ void main() {
         'pref',
         'route',
         'history_view',
-        'access_admin',
+        'admin',
         'config',
       ]);
     });
@@ -43,9 +43,35 @@ void main() {
       expect(AccessSurface.byWireName('route'), AccessSurface.route);
       expect(
           AccessSurface.byWireName('history_view'), AccessSurface.historyView);
-      expect(
-          AccessSurface.byWireName('access_admin'), AccessSurface.accessAdmin);
+      expect(AccessSurface.byWireName('admin'), AccessSurface.accessAdmin);
       expect(AccessSurface.byWireName('config'), AccessSurface.backendConfig);
+    });
+
+    test("the admin surface uses the wire name Phase 6's rows already carry",
+        () {
+      // Plan 17-01 was written to add this as 'access_admin'. That would have
+      // been a second name for rows that already exist: every AuditRecord
+      // admin factory records surface 'admin', and a caller asking
+      // groupForWireSurface with a real row's surface would have fallen down
+      // the unmapped branch to `administer` while the row beside it said
+      // `groupRequired: users`. The name in the data wins.
+      final row = AuditRecord.roleCreate(
+        who: 'jon',
+        station: 'st101',
+        roleName: 'Engineer',
+        subject: 'Shift Leader',
+        groups: '["operate"]',
+        allowed: true,
+        actionId: newActionId(),
+      );
+      expect(row.surface, AccessSurface.accessAdmin.wireName,
+          reason: 'one string, not two that happen to match');
+      expect(const AccessPolicy().groupForWireSurface(row.surface, 'createRole'),
+          AccessGroup.users,
+          reason: 'the policy answers for the surface the row was recorded '
+              'under; before 17-01 this fell through to administer');
+      expect(row.groupRequired, AccessGroup.users.name,
+          reason: 'and it agrees with what the row itself recorded');
     });
 
     test('byWireName returns null for anything outside the vocabulary', () {
@@ -267,7 +293,7 @@ void main() {
           AccessGroup.configure);
       expect(policy.groupForWireSurface('history_view', 'deleteHistoryView'),
           AccessGroup.configure);
-      expect(policy.groupForWireSurface('access_admin', 'createRole'),
+      expect(policy.groupForWireSurface('admin', 'createRole'),
           AccessGroup.users);
       expect(policy.groupForWireSurface('config', 'opcua'),
           AccessGroup.administer);
@@ -495,7 +521,7 @@ void main() {
 
     test('only the history-view surface can answer open', () {
       const policy = AccessPolicy();
-      for (final surface in ['tag', 'pref', 'route', 'access_admin', 'config']) {
+      for (final surface in ['tag', 'pref', 'route', 'admin', 'config']) {
         expect(
           policy.groupForWireSurfaceOrOpen(surface, 'createHistoryView'),
           isNotNull,
