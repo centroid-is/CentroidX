@@ -182,6 +182,165 @@ List<ConfigItem> pageItems(
   return items;
 }
 
+/// Copies onto [pages] the identities the stored rows already carry, so a
+/// save from a blob fallback does not mint a second set.
+///
+/// ## The day this exists for
+///
+/// Page rows cannot pre-exist the migration that mints them, so on cutover day
+/// every station loads its layout from the `page_editor_data` blob before its
+/// mirror holds a single row — and the pages it holds have no id at all. The
+/// rows arrive minutes later at the reconcile. Without this, the first Ctrl+S
+/// runs [pageItems] over those id-less pages, mints ~410 fresh random ids,
+/// diffs them against the migration's derived-id rows and writes ~410 removes
+/// plus ~410 adds. That save **commits cleanly** — no rev moved, so no
+/// conflict arm fires and nothing downstream reports anything — and every
+/// identity the migration minted is severed. The next station does it again.
+///
+/// `providers/page_manager.dart` closes the same window from the read side, by
+/// re-loading off the rows when the first diff carrying pages arrives. This is
+/// the other half: the session that was already open, saving.
+///
+/// ## Copied, never derived
+///
+/// Adoption only ever assigns an id that is **already on a stored row**. It
+/// must never call [derivedPageId] or [derivedAssetId]: deriving an id at save
+/// time is the collision this codec warns about twice — two editors each
+/// adding an identical asset at the same index of the same page compute the
+/// *same* id and collapse into one row. Those two functions are the
+/// migration's, and stay the migration's.
+///
+/// ## What is matched, and what is left alone
+///
+/// Nothing happens unless some page in [pages] has no id **and** [stored]
+/// holds page rows: this is the rollout-day repair, not a general re-pairing
+/// pass. A page that already carries an id is the steady state, and its assets
+/// are not touched — otherwise an operator who deletes one asset and adds
+/// another would have the new one silently take the deleted one's row.
+///
+/// For a page with no id:
+///
+/// 1. it adopts the id of the stored page row whose payload `menu_item.path`
+///    is the key it lives under;
+/// 2. each of its id-less assets adopts a stored row of that page whose
+///    payload is byte-identical once the `id` field is set aside, position
+///    breaking the tie — a row of genuinely identical drives is legitimate and
+///    payload equality cannot tell those apart;
+/// 3. whatever is left over on both sides is paired positionally;
+/// 4. anything still unmatched keeps its null id, and [pageItems] mints a
+///    random one — which is exactly right for an asset the rows have never
+///    seen.
+void adoptRowIdentities(
+    Map<String, AssetPage> pages, Iterable<ConfigItem> stored) {
+  final storedPages = <ConfigItem>[];
+  final storedAssets = <String, List<ConfigItem>>{};
+  for (final item in stored) {
+    switch (item.kind) {
+      case ConfigKind.page:
+        storedPages.add(item);
+      case ConfigKind.asset:
+        final parent = item.parentId;
+        if (parent != null) {
+          (storedAssets[parent] ??= <ConfigItem>[]).add(item);
+        }
+      case ConfigKind.keyMapping:
+      case ConfigKind.preference:
+        break;
+    }
+  }
+  if (storedPages.isEmpty) return;
+  if (!pages.values.any((page) => page.id == null)) return;
+
+  // An id another page in memory already holds is not available to adopt:
+  // two pages on one row is one page, whichever way round it happened.
+  final claimedPages = {
+    for (final page in pages.values)
+      if (page.id != null) page.id!,
+  };
+  final byPath = <String, List<ConfigItem>>{};
+  for (final item in storedPages) {
+    if (claimedPages.contains(item.id)) continue;
+    final menuItem = item.decode()[_menuItemField];
+    final path = menuItem is Map ? menuItem['path'] as String? : null;
+    final key = (path != null && path.isNotEmpty)
+        ? path
+        : PageManager.fallbackPathFor(item.id);
+    (byPath[key] ??= <ConfigItem>[]).add(item);
+  }
+
+  for (final entry in pages.entries) {
+    final page = entry.value;
+    if (page.id != null) continue;
+    final candidates = byPath[entry.key];
+    if (candidates == null || candidates.isEmpty) continue;
+    final row = candidates.removeAt(0);
+    page.id = row.id;
+    _adoptAssetIdentities(page, storedAssets[row.id] ?? const <ConfigItem>[]);
+  }
+}
+
+/// The asset half of [adoptRowIdentities], for one page that just adopted its
+/// own row.
+void _adoptAssetIdentities(AssetPage page, List<ConfigItem> rows) {
+  // Paint order, so "position" means the same thing on both sides.
+  final ordered = [...rows]..sort(_bySortIndexThenId);
+  final taken = List<bool>.filled(ordered.length, false);
+  for (var i = 0; i < ordered.length; i++) {
+    if (page.assets.any((asset) => asset.id == ordered[i].id)) taken[i] = true;
+  }
+  final payloads = [
+    for (final row in ordered) _identityBlindPayload(row.decode()),
+  ];
+
+  // Pass 1: the same asset, byte for byte. Position only breaks ties between
+  // rows that are already indistinguishable.
+  final unmatched = <int>[];
+  for (var index = 0; index < page.assets.length; index++) {
+    final asset = page.assets[index];
+    if (asset.id != null) continue;
+    final wanted = _identityBlindPayload(asset.toJson());
+    var pick = -1;
+    for (var i = 0; i < ordered.length; i++) {
+      if (taken[i] || payloads[i] != wanted) continue;
+      if (i == index) {
+        pick = i;
+        break;
+      }
+      if (pick < 0) pick = i;
+    }
+    if (pick < 0) {
+      unmatched.add(index);
+      continue;
+    }
+    taken[pick] = true;
+    asset.id = ordered[pick].id;
+  }
+
+  // Pass 2: whatever is left, in position order. An asset edited between the
+  // migration and this save no longer matches its own row's payload, and
+  // pairing it back onto that row is what keeps its history in one piece.
+  var next = 0;
+  for (final index in unmatched) {
+    while (next < ordered.length && taken[next]) {
+      next++;
+    }
+    if (next >= ordered.length) return; // Pass 3: minted by `pageItems`.
+    taken[next] = true;
+    page.assets[index].id = ordered[next].id;
+  }
+}
+
+/// [payload] with its `id` set aside, canonically encoded.
+///
+/// The stored row's payload carries the id the migration put on it; the
+/// in-memory asset that *is* that row has none yet. Comparing them with the id
+/// in place would find nothing equal and send every asset down the positional
+/// pass.
+String _identityBlindPayload(Map<String, dynamic> payload) => canonicalJson({
+      for (final entry in payload.entries)
+        if (entry.key != 'id') entry.key: entry.value,
+    });
+
 /// A page's own JSON, without its assets.
 ///
 /// Carries [AssetPage.id], so the page item's payload names the same row the

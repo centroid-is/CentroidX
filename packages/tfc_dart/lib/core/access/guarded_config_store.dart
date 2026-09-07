@@ -67,6 +67,11 @@ const Map<ConfigKind, String> kConfigWriteKeys = <ConfigKind, String>{
   // needs Flutter to parse a page and lives app-side, where this package
   // cannot import from.
   ConfigKind.asset: 'page_editor_data',
+  // The page editor's own save, added when that save landed (03-06): one
+  // gesture over `{page, asset}`, checked and recorded once under the key
+  // above. Until this entry existed `write(checkKind: page)` threw, which is
+  // what kept the save from routing around the check.
+  ConfigKind.page: 'page_editor_data',
 };
 
 /// The example mapping a fresh plant is seeded with.

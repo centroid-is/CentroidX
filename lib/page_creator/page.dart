@@ -187,6 +187,20 @@ class PageManager {
   /// audited, by a person.
   final ConfigStore? store;
 
+  /// The one route a page save takes to the shared rows, or null for the
+  /// legacy blob write.
+  ///
+  /// Bound by `providers/page_manager.dart` to **`GuardedConfigStore.write`**
+  /// over `{page, asset}`, checked and audited as `page_editor_data` — never
+  /// to [store], which is the raw object and has an ungated `writeItems` on
+  /// it. Editing pages is a person changing the plant's mimic and is exactly
+  /// what `configure` is for, so the check is not optional and the binding is
+  /// the only thing that supplies it. A [PageManager] built without one — the
+  /// pre-`runApp` manager, and legacy tests — keeps today's blob write and
+  /// therefore cannot reach a shared row at all.
+  final Future<ConfigWriteResult> Function(List<ConfigItem> wanted,
+      {String? reason})? writeItems;
+
   /// Where the pages in memory came from — see [PageSource].
   PageSource get source => _source;
   PageSource _source = PageSource.notLoaded;
@@ -204,6 +218,7 @@ class PageManager {
     required this.pages,
     required this.prefs,
     this.store,
+    this.writeItems,
   });
 
   /// Fills [pages] and [topLevelOrder] from the best source this station has.
@@ -414,13 +429,63 @@ class PageManager {
         }
       ''';
 
-  Future<void> save() async {
-    await prefs.setString(storageKey, toJson());
-    // An empty order is never worth writing: it only arises on a manager that
-    // was constructed without load(), and writing it would wipe an order some
-    // other session already stored.
-    if (topLevelOrder.isNotEmpty) {
-      await prefs.setString(orderStorageKey, jsonEncode(topLevelOrder));
+  /// Persists [pages] and [topLevelOrder] — rows when [writeItems] is bound,
+  /// the `page_editor_data` blob when it is not.
+  ///
+  /// Returns what the write actually did, or null on the legacy blob path.
+  /// The caller must treat a return as the only evidence of success and an
+  /// exception as the only evidence of failure: `ConfigStoreOfflineException`,
+  /// `ConfigConflict` and `AccessDenied` all propagate unwrapped, and the
+  /// editor's three arms are those three types. A green snackbar over a write
+  /// that reached nothing is C-11, and it is what this shape prevents.
+  ///
+  /// **[topLevelOrder] is written first, and deliberately.** It is a
+  /// device-local preference and the rows are the plant's shared truth: if
+  /// only one of the two lands, a menu in yesterday's order is a cosmetic
+  /// complaint and a page set in yesterday's shape is the wrong plant on the
+  /// screen. The empty-order guard below is unchanged.
+  ///
+  /// The blob is **not** dual-written on the rows path. Two records of one
+  /// layout are two records that can disagree, and the blob's readers go
+  /// through the compatibility view instead.
+  Future<ConfigWriteResult?> save({String? reason}) async {
+    final writeItems = this.writeItems;
+    if (writeItems == null) {
+      await prefs.setString(storageKey, toJson());
+      await _saveTopLevelOrder();
+      return null;
+    }
+
+    await _saveTopLevelOrder();
+    _adoptStoredIdentities();
+    return writeItems(pageItems(pages), reason: reason);
+  }
+
+  /// An empty order is never worth writing: it only arises on a manager that
+  /// was constructed without load(), and writing it would wipe an order some
+  /// other session already stored.
+  Future<void> _saveTopLevelOrder() async {
+    if (topLevelOrder.isEmpty) return;
+    await prefs.setString(orderStorageKey, jsonEncode(topLevelOrder));
+  }
+
+  /// Rollout day, at the save: takes the ids off the rows before building the
+  /// items, so a layout loaded from the blob does not mint a second set of
+  /// identities over the ones the migration just wrote.
+  ///
+  /// See [adoptRowIdentities] for what it matches and why it copies rather
+  /// than derives. A no-op in every other state, including a store this
+  /// station cannot read: the fallback there is a save that mints, which is
+  /// the behaviour without this and no worse for having tried.
+  void _adoptStoredIdentities() {
+    final store = this.store;
+    if (store == null) return;
+    try {
+      adoptRowIdentities(
+          pages, store.itemsOf(const {ConfigKind.page, ConfigKind.asset}));
+    } catch (e) {
+      _logger.e('The stored page identities could not be read before saving; '
+          'this save mints ids for any page that has none: $e');
     }
   }
 
@@ -471,6 +536,9 @@ class PageManager {
       // — the field-by-field rebuild trap [AssetPage.copyWith] documents,
       // one level up.
       store: store,
+      // Same reason, and sharper: a copy that dropped this would write the
+      // blob instead of the rows and nothing would say so.
+      writeItems: writeItems,
     );
     final json = manager.toJson();
     manager.fromJson(json);

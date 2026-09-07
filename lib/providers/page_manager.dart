@@ -43,12 +43,28 @@ Future<PageManager> pageManager(Ref ref) async {
   // attached across every reconnect. Writes are not this field's business:
   // `save()` stays on the guarded object, because the page editor's save is a
   // person editing pages and is exactly what `configure` is for.
-  final store = (await ref.watch(configStoreProvider.future)).inner;
+  final guarded = await ref.watch(configStoreProvider.future);
+  final store = guarded.inner;
 
   final pageManager = PageManager(
     pages: {},
     prefs: prefs,
     store: store,
+    // The save, and the only route pages take to the shared rows. Both kinds
+    // are in the replace set because a page and its assets move together —
+    // leave `asset` out and an asset the operator deleted would be inserted
+    // and never removed — while `checkKind` names the single
+    // `kConfigWriteKeys` row that decides who may do it. One gesture, one
+    // check, one audit row under `page_editor_data`: 02-05's C-8 is explicit
+    // that a new surface or a per-entity item key falls closed to
+    // `administer` and locks every operator and shift leader out of the page
+    // editor, and the failure reads as a permissions bug rather than a typo.
+    writeItems: (wanted, {reason}) => guarded.write(
+      wanted,
+      kinds: _pageKinds,
+      checkKind: ConfigKind.page,
+      reason: reason,
+    ),
   );
 
   await pageManager.load();

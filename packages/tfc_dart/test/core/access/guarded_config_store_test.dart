@@ -290,8 +290,13 @@ void main() {
       attach();
       final guard = newGuard();
 
+      // `preference` is the kind the table does not name — and cannot, since
+      // a preference row belongs to one station. Pages joined the table when
+      // the page editor's save landed (03-06).
       await expectLater(
-        guard.save(const <ConfigItem>[], kind: ConfigKind.page),
+        guard.write(const <ConfigItem>[],
+            kinds: const {ConfigKind.keyMapping},
+            checkKind: ConfigKind.preference),
         throwsA(isA<ArgumentError>()),
       );
 
@@ -325,22 +330,25 @@ void main() {
       expect(await remoteChanges(), isEmpty);
     });
 
-    test('a check kind the table does not name refuses the whole save',
-        () async {
-      // The gate stays `kConfigWriteKeys`. A later plan adding pages must add
-      // the entry — this is what stops it routing around the check instead.
+    test('a page save is checked and recorded as page_editor_data', () async {
+      // The gate is `kConfigWriteKeys`, and until 03-06 added the `page` entry
+      // this call threw — which is what stopped the page editor's save routing
+      // around the check. Both kinds resolve to the one key the policy already
+      // classes as `configure` and the trail already uses for a layout change.
+      expect(kConfigWriteKeys[ConfigKind.page], 'page_editor_data');
+      expect(kConfigWriteKeys[ConfigKind.asset],
+          kConfigWriteKeys[ConfigKind.page],
+          reason: 'an asset is not separately permissioned from its page');
+
       attach();
       final guard = newGuard();
 
-      await expectLater(
-        guard.write(const <ConfigItem>[],
-            kinds: const {ConfigKind.page, ConfigKind.asset},
-            checkKind: ConfigKind.page),
-        throwsA(isA<ArgumentError>()),
-      );
+      await guard.write(const <ConfigItem>[],
+          kinds: const {ConfigKind.page, ConfigKind.asset},
+          checkKind: ConfigKind.page);
 
-      expect(sink.rows, isEmpty);
-      expect(await remoteChanges(), isEmpty);
+      expect(await remoteChanges(), isEmpty,
+          reason: 'an empty wanted over an empty store is a no-op write');
     });
 
     test('save is write over exactly one kind', () async {

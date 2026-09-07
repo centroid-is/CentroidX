@@ -105,7 +105,8 @@ MenuItem _menuRef(String label, String path) {
 /// The remote is only there because a write has to go somewhere: `writeItems`
 /// refuses offline. Once the rows are in, `load()` reads them out of the
 /// snapshot with nothing attached — which is the point of SC-5.
-Future<ConfigStore> _storeHolding(Map<String, AssetPage> pages) async {
+Future<ConfigStore> _storeHolding(Map<String, AssetPage> pages,
+    {bool attachRemote = false}) async {
   driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
   final local = AppDatabase.inMemoryForTest();
   final remote = AppDatabase.inMemoryForTest();
@@ -119,8 +120,11 @@ Future<ConfigStore> _storeHolding(Map<String, AssetPage> pages) async {
   );
   addTearDown(store.close);
   await store.open();
+  // A save needs somewhere to write, and `writeItems` refuses offline —
+  // that is the only reason the stand-in remote is ever attached here.
+  if (attachRemote) store.attachRemoteDatabase(remote, startSync: false);
   if (pages.isNotEmpty) {
-    store.attachRemoteDatabase(remote, startSync: false);
+    if (!attachRemote) store.attachRemoteDatabase(remote, startSync: false);
     await store.writeItems(
       kinds: const {ConfigKind.page, ConfigKind.asset},
       wanted: pageItems(pages),
@@ -1036,7 +1040,7 @@ void main() {
     }
 
     test('the rows are written and the page blob is not', () async {
-      final store = await _storeHolding({});
+      final store = await _storeHolding({}, attachRemote: true);
       final prefs = FakePreferences();
       final mgr = _managerOn(store, {'/': _page('Home', '/')}, prefs);
 
@@ -1052,7 +1056,7 @@ void main() {
     });
 
     test('the top-level order lands before the rows do', () async {
-      final store = await _storeHolding({});
+      final store = await _storeHolding({}, attachRemote: true);
       final prefs = FakePreferences();
       String? orderAtWriteTime;
       final mgr = _managerOn(
@@ -1072,7 +1076,7 @@ void main() {
     });
 
     test('an empty order is still never written', () async {
-      final store = await _storeHolding({});
+      final store = await _storeHolding({}, attachRemote: true);
       final prefs = FakePreferences();
       final mgr = _managerOn(store, {'/': _page('Home', '/')}, prefs);
 

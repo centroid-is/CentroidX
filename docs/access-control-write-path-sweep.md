@@ -638,7 +638,7 @@ writes fire at boot with nobody signed in, on keys that are not `operate`:
 
 | Write | Key | Group | Owner |
 |---|---|---|---|
-| `lib/page_creator/page.dart:247` (unawaited, from `PageManager.load()`) | `page_editor_data` | `configure` | 03-06 |
+| ~~`lib/page_creator/page.dart` (unawaited, from `PageManager.load()`)~~ **deleted by 03-04** | `page_editor_data` | `configure` | — |
 | `packages/tfc_dart/lib/core/state_man.dart:442` (`StateManConfig.fromPrefs`) | `state_man_config` | `administer` | 03-06 |
 | `packages/tfc_dart/lib/core/alarm.dart:220` (`AlarmMan.create`) | `alarm_man_config` | `configure` | 03-06 |
 | `lib/providers/collector.dart:27` (`collectorProvider`) | `collector_config` | `administer` | 03-09 |
@@ -743,6 +743,33 @@ What would settle it: Phase 4, when the blob fallback goes and the pre-`runApp`
 read is the only way a station gets its pages. At that point the handle is
 worth making explicit — a named read-only view over the mirror rather than a
 `ConfigStore` with a convention attached.
+
+### 3.13 `lib/page_creator/page.dart` — the page editor's save
+
+**Verdict: guarded, and the guard is the only route to a shared row.**
+
+`PageManager.save()` has two arms and they are told apart by one field.
+`writeItems` — bound in `lib/providers/page_manager.dart` and nowhere else —
+is `GuardedConfigStore.write` over `{page, asset}` with
+`checkKind: ConfigKind.page`, so every save the app performs is checked
+against `kConfigWriteKeys[ConfigKind.page]` = `page_editor_data` (the key the
+policy already classes as `configure`, and the `item_key` the trail already
+used for a layout change) and recorded as one `audit_entry` over N
+`config_change` rows. Until milestone v1.2 plan 03-06 added that table entry,
+`write(checkKind: page)` threw `ArgumentError` — the gate was deliberately in
+the way, so the save had to add the entry rather than route around the check.
+
+With no binding, `save()` writes the `page_editor_data` preference exactly as
+it did before rows existed. That arm belongs to the pre-`runApp` manager and to
+tests, and it **structurally cannot reach a shared row**: it never touches a
+`ConfigStore`. `PageManager.store` is the raw store and is reads-only by
+convention (§3.12); nothing in the class writes through it. The one thing the
+save does read from it is the stored identities, before it builds its items —
+`adoptRowIdentities`, a copy of ids that already exist as rows, never a
+derivation.
+
+What would settle it: Phase 4, when the blob arm goes entirely and the binding
+is not optional.
 
 ## 4. Is there a fifth?
 
@@ -928,9 +955,9 @@ from one behind a Save button.
 | `key_repository.dart:882, 2417` | `kConfigWriteKeys[ConfigKind.keyMapping]` | `key_mappings` | exact `key_mappings` | `configure` | behind a control, on a `configure`-gated route — through the configuration store since 02-06 |
 | `page_view.dart:264` | `'asset_stack_config'` | `asset_stack_config` | exact `asset_stack_config` | `operate` | **read-path** — written when the key is absent, on mount of any asset page |
 | `dbus_login.dart:127-131` | five literals | `connectionType`, `host`, `username`, `autoLogin`, `sshPrivateKeyPath` | five exact rules | `administer` | behind a control — device-local store since v1.2 plan 01-06; **still never reaches the guard**, §3.7 |
-| `page_creator/page.dart:247` | `storageKey` | `page_editor_data` | exact `page_editor_data` | `configure` | **boot-time, unawaited** — a denial here surfaces as an unhandled async error and a default that never persists |
-| `page_creator/page.dart:252` | `storageKey` | `page_editor_data` | exact | `configure` | behind a control |
-| `page_creator/page.dart:257` | `orderStorageKey` | `page_editor_top_level_order` | exact `page_editor_top_level_order` | `configure` | behind a control |
+| ~~`page_creator/page.dart` boot seed~~ | `storageKey` | `page_editor_data` | exact `page_editor_data` | `configure` | **deleted by 03-04** — it was boot-time and unawaited, so a denial surfaced as an unhandled async error and a default that never persisted |
+| `page_creator/page.dart:454` | `storageKey` | `page_editor_data` | exact | `configure` | behind a control — and **only on a manager with no `writeItems` binding**; the app's manager writes rows instead (§3.13) |
+| `page_creator/page.dart:469` | `orderStorageKey` | `page_editor_top_level_order` | exact `page_editor_top_level_order` | `configure` | behind a control; device-local, and written *before* the rows so the half that can be stale is the cosmetic half |
 | `image_store.dart:96, 129` | `'$keyPrefix$id'` | `page_editor_image:<id>` | prefix `page_editor_image:` | `configure` | behind a control |
 | `page_creator/assets/common.dart:846` | `kConfigWriteKeys[ConfigKind.keyMapping]` | `key_mappings` | exact | `configure` | behind a control — through the configuration store since 02-06, not through preferences |
 | `recipes.dart:269` | `'${widget.config.recipesBucket}.recipes'` | `<bucket>.recipes` | suffix `.recipes` | `setpoints` | **read-path** — `_getRecipes` writes an empty default, so an anonymous operator merely opening a recipes asset triggers it |
