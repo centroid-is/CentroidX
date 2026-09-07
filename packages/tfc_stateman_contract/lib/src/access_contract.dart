@@ -263,9 +263,14 @@ Future<void> checkTemplateUnbindRefusesConfigurePermitsUsers(
       action: () => api.accessTemplates.unbind('ST101.CN02.MOT01'));
 }
 
-/// The four template reads are ungated (spec §11) — they succeed for a session
+/// The three template reads are ungated (spec §11) — they succeed for a session
 /// holding nothing about templates, and the check SAYS so rather than leaving a
 /// reader to infer it from an absence.
+///
+/// There were four: `template(name)` was cut from the wire by the access audit
+/// (no caller anywhere, including its own store). A remote that wants one
+/// template derives it from `list()` — the capability's shape survives as a
+/// derivation, not as a wire member, so there is nothing here to judge.
 Future<void> checkTemplateReadsAreUngated(StateManApi api) async {
   final h = accessHarnessOf(api);
   // Seed one template with a users session so the reads have something to find.
@@ -277,8 +282,6 @@ Future<void> checkTemplateReadsAreUngated(StateManApi api) async {
     h.actAs(reader);
     await within(_expectNoThrow(() => api.accessTemplates.list()),
         'list() for ${reader.roleName}');
-    await within(_expectNoThrow(() => api.accessTemplates.template('conveyor-r')),
-        'template() for ${reader.roleName}');
     await within(_expectNoThrow(() => api.accessTemplates.bindings()),
         'bindings() for ${reader.roleName}');
     await within(

@@ -383,7 +383,9 @@ abstract final class HarnessMethods {
 
   // -------------------------------------------------------- the access families
   //
-  // Twenty-nine request names, one per method on the four access interfaces,
+  // Twenty-eight request names, one per method on the four access interfaces
+  // (twenty-nine until the access audit cut `accessTemplates.template` — no
+  // caller anywhere; a remote derives one template from `list()`),
   // and — like the data services — not one generic `call(method, args)` among
   // them (T-02-22). `test/channel/channel_sub_apis_test.dart` counts these
   // against the interfaces by mirrors, in both directions, so the table cannot
@@ -397,7 +399,6 @@ abstract final class HarnessMethods {
 
   // templates
   static const accessTemplatesList = '${prefix}access.templates.list';
-  static const accessTemplatesGet = '${prefix}access.templates.template';
   static const accessTemplatesBindings = '${prefix}access.templates.bindings';
   static const accessTemplatesKeysBoundTo =
       '${prefix}access.templates.keysBoundTo';
@@ -410,7 +411,6 @@ abstract final class HarnessMethods {
 
   static const templateMethods = <String>{
     accessTemplatesList,
-    accessTemplatesGet,
     accessTemplatesBindings,
     accessTemplatesKeysBoundTo,
     accessTemplatesCreate,

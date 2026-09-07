@@ -420,7 +420,8 @@ final class ServedStateMan {
 
   // ------------------------------------------------------- the access families
   //
-  // Twenty-nine handlers, one per method on the four access interfaces, named
+  // Twenty-eight handlers, one per method on the four access interfaces
+  // (twenty-nine until the access audit cut `accessTemplates.template`), named
   // individually for the same reason the data services are (T-02-22): the
   // registration IS the access-control decision, and a loop over a table of
   // closures would move the list of what this peer answers out of the place a
@@ -431,7 +432,6 @@ final class ServedStateMan {
 
   void _registerAccess() {
     _on(HarnessMethods.accessTemplatesList, _tplList);
-    _on(HarnessMethods.accessTemplatesGet, _tplGet);
     _on(HarnessMethods.accessTemplatesBindings, _tplBindings);
     _on(HarnessMethods.accessTemplatesKeysBoundTo, _tplKeysBoundTo);
     _on(HarnessMethods.accessTemplatesCreate, _tplCreate);
@@ -501,11 +501,8 @@ final class ServedStateMan {
               accessTemplateToJson(t),
           ]);
 
-  Future<Object?> _tplGet(rpc.Parameters params) =>
-      _access(HarnessMethods.accessTemplatesGet, () async {
-        final t = await api.accessTemplates.template(params['name'].asString);
-        return t == null ? null : accessTemplateToJson(t);
-      });
+  // No `template(name)` handler: the access audit cut the member from the
+  // wire. A remote derives one template from `list()`.
 
   Future<Object?> _tplBindings(rpc.Parameters _) =>
       _access(HarnessMethods.accessTemplatesBindings,

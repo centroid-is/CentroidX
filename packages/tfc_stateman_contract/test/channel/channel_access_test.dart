@@ -108,7 +108,11 @@ void main() {
       (served.api as StateManAccessHarness)
           .actAs(AccessSession(groups: {AccessGroup.users}));
       await served.api.accessTemplates.create(_tpl('ok'));
-      final back = await served.api.accessTemplates.template('ok');
+      // Read back via list(): the access audit cut `template(name)` from the
+      // wire, and deriving the row from list() is exactly what a remote does.
+      final back = (await served.api.accessTemplates.list())
+          .where((t) => t.name == 'ok')
+          .firstOrNull;
       expect(back?.name, 'ok',
           reason: 'a permitted create did not survive the channel round trip');
     });

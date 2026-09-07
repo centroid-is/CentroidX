@@ -25,6 +25,11 @@ import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
 /// without updating this number fails here rather than drifting. The number is
 /// the count nobody can read off a test-runner API from inside the file that
 /// registers it.
+///
+/// Still 27 after the access audit cut `accessTemplates.template` from the
+/// wire: the cut removed a *read* inside `checkTemplateReadsAreUngated` (four
+/// ungated reads became three), not a check. Written down here so the next
+/// reader knows the non-shift was a decision, not an oversight.
 const _declaredAccessCheckCount = 27;
 
 /// Tokens that mark a check name as asserting a refusal, and the tokens that
@@ -110,10 +115,12 @@ void main() {
       final tpl = AccessTemplate(
           name: 't1', rules: const {kWholeKeyMember: AccessGroup.setpoints});
       await fake.create(tpl);
-      final back = await fake.template('t1');
+      // Read back the way a remote must since the access audit cut
+      // `template(name)` from the wire: derive the one row from list().
+      final back =
+          (await fake.list()).where((t) => t.name == 't1').firstOrNull;
       expect(back?.name, 't1',
           reason: 'the template was created and does not read back');
-      expect((await fake.list()).map((t) => t.name), contains('t1'));
     });
 
     test('a binding is stored and read back', () async {

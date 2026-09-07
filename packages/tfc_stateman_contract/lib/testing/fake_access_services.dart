@@ -190,8 +190,9 @@ class FakeAccessServices
   @override
   Future<List<AccessTemplate>> list() async => _templates.values.toList();
 
-  @override
-  Future<AccessTemplate?> template(String name) async => _templates[name];
+  // No `template(name)` member: the access audit cut it from the wire (no
+  // caller anywhere, including its own store). A caller that wants one
+  // template derives it from [list] — as the meta test now does.
 
   @override
   Future<Map<String, String>> bindings() async => Map.of(_bindings);

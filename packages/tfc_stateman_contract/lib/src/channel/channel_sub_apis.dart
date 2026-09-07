@@ -526,11 +526,9 @@ final class ChannelAccessTemplateApi implements AccessTemplateApi {
           accessTemplateFromJson(jsonObject(row)),
       ];
 
-  @override
-  Future<AccessTemplate?> template(String name) async {
-    final raw = await _send(HarnessMethods.accessTemplatesGet, {'name': name});
-    return raw == null ? null : accessTemplateFromJson(jsonObject(raw));
-  }
+  // No `template(name)` forwarder: the access audit cut the member from the
+  // wire. A remote that wants one template derives it from [list] — same
+  // snapshot semantics, zero wire names.
 
   @override
   Future<Map<String, String>> bindings() async {
