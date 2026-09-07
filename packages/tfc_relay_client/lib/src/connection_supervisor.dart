@@ -1355,6 +1355,15 @@ final class ConnectionSupervisor {
       // **Here and nowhere else.** See the library doc: a link earns its
       // forgiveness by delivering a snapshot, not by answering the phone.
       backoff.reset();
+      // And the badge clears on the same principle, for the same reason
+      // (16-10, finding S9). Reaching `ready` is the only moment this client
+      // knows every page has cleared its store and adopted a snapshot from
+      // *this* connection; a frame arriving somewhere upstream of that proves
+      // the link is alive and nothing at all about what is on the screen. The
+      // link deadline is still fed by every inbound frame, including the hello
+      // and subscribe responses — that is the half-open detector and it is a
+      // different signal. See [FreshnessWatchdog.viewBecameFresh].
+      watchdog.viewBecameFresh();
     }
     if (!_states.isClosed) _states.add(next);
   }
