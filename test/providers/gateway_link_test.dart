@@ -48,7 +48,11 @@ import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
-import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
+// `PreferencesApi` is spelled in both packages: the protocol's is the wire
+// surface the gateway serves, and `tfc_dart`'s is the store this station reads
+// its transport row out of. This file wants the second one.
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
+    hide PreferencesApi;
 
 import '../helpers/scripted_gateway.dart';
 import '../helpers/test_helpers.dart';
@@ -247,6 +251,36 @@ Future<GatewayLinkReport> _report(
       final report = next.valueOrNull;
       if (report != null && predicate(report) && !completer.isCompleted) {
         completer.complete(report);
+      }
+    },
+    fireImmediately: true,
+    onError: (Object error, StackTrace _) {
+      if (!completer.isCompleted) completer.completeError(error);
+    },
+  );
+  return completer.future.timeout(budget).whenComplete(subscription.close);
+}
+
+/// The first settled value [container] publishes, report or `null`.
+///
+/// **A bare `container.read(gatewayLinkProvider.future)` hangs here, and the
+/// reason is worth knowing.** `gatewayConfigProvider` is a `FutureProvider`, so
+/// the first build of `gatewayLinkProvider` runs while the device-local row is
+/// still being read and publishes nothing. Riverpod rebuilds a dirty provider
+/// **lazily**, and a `read` establishes no listener — so with nobody watching,
+/// the rebuild that would have carried the answer never happens and the future
+/// stays pending until the container is torn down. Every real consumer of this
+/// provider is a widget that `watch`es it, which is what this helper models.
+Future<GatewayLinkReport?> _settled(
+  ProviderContainer container, {
+  Duration budget = _recovery,
+}) {
+  final completer = Completer<GatewayLinkReport?>();
+  final subscription = container.listen<AsyncValue<GatewayLinkReport?>>(
+    gatewayLinkProvider,
+    (previous, next) {
+      if (next is AsyncData<GatewayLinkReport?> && !completer.isCompleted) {
+        completer.complete(next.value);
       }
     },
     fireImmediately: true,
@@ -459,7 +493,7 @@ void main() {
         ],
       );
 
-      expect(await container.read(gatewayLinkProvider.future), isNull,
+      expect(await _settled(container), isNull,
           reason: 'the chip and the status row are absent in direct mode, not '
               'empty');
       expect(built, isFalse,
