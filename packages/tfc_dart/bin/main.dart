@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:tfc_dart/core/config/key_mapping_codec.dart' show keyMappingsOf;
+import 'package:tfc_dart/core/config/key_mapping_rows.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/preferences_watch.dart';
@@ -29,7 +31,28 @@ void main() async {
   }
   final smConfig = await StateManConfig.fromFile(statemanConfigFilePath);
 
-  final keyMappings = await KeyMappings.fromPrefs(prefs, createDefault: false);
+  // Key mappings come from `config_item` rows, and from the old
+  // `flutter_preferences.key_mappings` blob only while there are no rows to
+  // read. The fallback is a read, not a dual-write: it reads the same physical
+  // blob this line read before, and it exists because the backend container
+  // can restart before any station has run the one-shot migration. It retires
+  // itself the moment the rows are there, and goes with the blob in Phase 4.
+  //
+  // Post-cutover, the warning below appearing in the log means the migration
+  // has not run — which is worth a line an engineer can grep for, because the
+  // symptom otherwise is a backend quietly acquiring from an old key set.
+  final mappingItems = await readSharedKeyMappingItems(db.db);
+  final KeyMappings keyMappings;
+  if (mappingItems.isNotEmpty) {
+    keyMappings = keyMappingsOf(mappingItems);
+    logger.i('Loaded ${keyMappings.nodes.length} key mappings from '
+        'config_item rows');
+  } else {
+    logger.w('No config_item key_mapping rows found; falling back to the '
+        'flutter_preferences.key_mappings blob. After the cutover this line '
+        'means the blob → rows migration has not run.');
+    keyMappings = await KeyMappings.fromPrefs(prefs, createDefault: false);
+  }
 
   // Disable SSL for alarm StateMan to test if the issue is specific to
   // encrypted secure channel renewal
@@ -139,30 +162,89 @@ void main() async {
 
   // Key mappings and alarm definitions were loaded above and then baked into
   // the spawned isolates; an HMI station editing them would otherwise need a
-  // manual backend restart to take effect. Watch the two preference rows
-  // (LISTEN/NOTIFY, with a slow digest poll as safety net) and restart the
-  // whole process on a real change — the container runs with
-  // `restart: unless-stopped`, so exiting cleanly relaunches with the fresh
-  // config. Idle cost: one tiny server-side md5 query per poll interval.
+  // manual backend restart to take effect. Restarting is the apply mechanism
+  // here rather than an incremental re-point: the isolates hold their own
+  // copies, the container runs with `restart: unless-stopped`, so exiting
+  // cleanly relaunches with the fresh config, and that is the behaviour the
+  // operators already know.
+  //
+  // The two configurations are watched by different machinery now, because
+  // they live in different places. `alarm_man_config` is still a
+  // `flutter_preferences` blob and keeps the digest watcher exactly as it was
+  // until Phase 4. `key_mappings` is `config_item` rows, and rows are watched
+  // by the `config_change` NOTIFY plus a two-integer poll — a digest over the
+  // blob would only ever report that the row nobody writes any more has not
+  // changed.
   final pollSeconds = int.tryParse(
           Platform.environment['CENTROID_CONFIG_POLL_SECONDS'] ?? '') ??
       300;
+
+  // Quiet period so a burst of saves (an operator editing several things in a
+  // row) causes one restart, not one per save. Each further change re-arms it.
+  // One timer, armed in one place: two of them would mean a change seen by
+  // both paths restarts the process twice, the second time mid-restart.
+  const restartQuiet = Duration(seconds: 10);
+  Timer? restartTimer;
+  void restartSoon(String why) {
+    logger.w('$why; restarting backend in ${restartQuiet.inSeconds}s to '
+        'apply it');
+    restartTimer?.cancel();
+    restartTimer = Timer(restartQuiet, () => exit(0));
+  }
+
   final configWatcher = PreferencesWatcher.forDatabase(
     db,
-    keys: const {'key_mappings', 'alarm_man_config'},
+    keys: const {'alarm_man_config'},
     pollInterval: Duration(seconds: pollSeconds),
   );
   await configWatcher.start();
-  // Quiet period so a burst of saves (an operator editing several things in a
-  // row) causes one restart, not one per save. Each further change re-arms it.
-  const restartQuiet = Duration(seconds: 10);
-  Timer? restartTimer;
-  configWatcher.changes.listen((key) {
-    logger.w('Configuration "$key" changed in database; restarting backend '
-        'in ${restartQuiet.inSeconds}s to apply it');
-    restartTimer?.cancel();
-    restartTimer = Timer(restartQuiet, () => exit(0));
-  });
+  configWatcher.changes.listen(
+      (key) => restartSoon('Configuration "$key" changed in database'));
+
+  // The rows half. Both paths answer a signal with the same cheap read and
+  // restart only if the answer moved, so the notification is the fast path to
+  // one check and the poll is the slow one — and a `config_change` row written
+  // by something that is not a key mapping (pages, from Phase 3 on) does not
+  // restart an acquisition backend that would boot to exactly the same state.
+  var mappingFingerprint = await readSharedKeyMappingFingerprint(db.db);
+  Future<void> checkMappings(String why) async {
+    try {
+      final now = await readSharedKeyMappingFingerprint(db.db);
+      if (now == mappingFingerprint) return;
+      mappingFingerprint = now;
+      restartSoon('$why (${now.count} shared key mappings)');
+    } catch (e) {
+      // A failed read is not a change. Postgres being briefly unreachable is
+      // the normal case on this path, and restarting on it would turn a
+      // network blip into a restart loop.
+      logger.w('Key-mapping check failed: $e');
+    }
+  }
+
+  // `listenToChannel`'s stream *ends* when the connection carrying it dies —
+  // no error, just `onDone` — so a subscriber that does not re-listen goes
+  // silent for the life of the process after the first reconnect. Re-listening
+  // is followed by an immediate check, so an edit made while the connection
+  // was down is not waited out until the next poll.
+  const relistenBackoff = Duration(seconds: 5);
+  void listenForConfigChanges() {
+    db.db.listenToChannel('config_change').listen(
+      (_) => checkMappings('Shared configuration changed'),
+      onError: (Object e) => logger.w('config_change channel error: $e'),
+      onDone: () {
+        logger.i('config_change channel ended; re-listening in '
+            '${relistenBackoff.inSeconds}s');
+        Timer(relistenBackoff, () {
+          listenForConfigChanges();
+          checkMappings('Shared configuration changed while disconnected');
+        });
+      },
+    );
+  }
+
+  listenForConfigChanges();
+  Timer.periodic(Duration(seconds: pollSeconds),
+      (_) => checkMappings('Key mappings changed in database'));
 
   // Keep main alive indefinitely
   await Completer<void>().future;
