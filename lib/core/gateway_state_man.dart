@@ -89,18 +89,57 @@ class GatewayStateMan implements StateMan {
   /// preferences in gateway mode: the gateway owns which upstreams are live,
   /// but the panel still needs the mapping to draw a key picker, a history
   /// tree and the `collect` flags on a sensor.
+  /// [buildRemote] is a test seam, and production never supplies it.
+  ///
+  /// It exists so a test can assert **what the client was pointed at** —
+  /// the address, the pinned root and the credential — without a live dial at
+  /// the configured URL. Reading those off a *constructed* `RemoteStateMan` is
+  /// possible (`uri` and `config` are public) and is the wrong way round:
+  /// its constructor starts dialling immediately
+  /// (`remote_state_man.dart:213`), so the observation would leave a dial loop
+  /// running at the plant's real gateway address inside a unit test, and an
+  /// undisposed dial loop is what makes unrelated widget tests flaky. This
+  /// seam records the arguments before anything is allocated.
+  ///
+  /// The property has no other honest observation point.
+  /// `state_man_transport_test.dart`'s original three arms prove only which
+  /// class was built, and `stateManProvider` hands back a `GuardedStateMan`
+  /// that cannot be unwrapped — so Phase 15 criterion 1, "the configured
+  /// transport is the one the client actually dials", would otherwise rest on
+  /// the one manual rig run that measured it (13-RIG-E2E-EVIDENCE) and on
+  /// nothing thereafter.
   static Future<GatewayStateMan> create({
     required Uri uri,
     required ClientConfig clientConfig,
     required StateManConfig config,
     required KeyMappings keyMappings,
     String alias = '',
+    RemoteStateMan Function({
+      required Uri uri,
+      required ClientConfig config,
+      required Set<String> keys,
+    })? buildRemote,
   }) async {
-    final remote = RemoteStateMan(
-      uri: uri,
-      config: clientConfig,
-      keys: subscriptionKeys(keyMappings),
-    );
+    // Spelled as a ternary with `subscriptionKeys(keyMappings)` written out on
+    // both arms rather than hoisted into a local or hidden behind a
+    // `buildRemote ?? _default` closure. `alarm_gateway_mode_test.dart:914`
+    // reads this file's source, takes the statement containing the first
+    // literal `RemoteStateMan(` and requires `subscriptionKeys(keyMappings)`
+    // inside it — because its behavioural arm about `ALARM.active` is worth
+    // nothing if the production path stops going through that function. Either
+    // of the tidier spellings moves the construction out of that statement and
+    // the guard passes on a file it can no longer see.
+    final remote = buildRemote == null
+        ? RemoteStateMan(
+            uri: uri,
+            config: clientConfig,
+            keys: subscriptionKeys(keyMappings),
+          )
+        : buildRemote(
+            uri: uri,
+            config: clientConfig,
+            keys: subscriptionKeys(keyMappings),
+          );
     return GatewayStateMan(
       remote: remote,
       config: config,
@@ -123,8 +162,17 @@ class GatewayStateMan implements StateMan {
   final RemoteStateMan _remote;
 
   /// The live client, for a health line that wants `LinkState` or the clock
-  /// offset. Not part of `StateMan`; read it by type-testing the provider's
-  /// value, exactly as a gateway-only widget would.
+  /// offset. Not part of `StateMan`.
+  ///
+  /// **A bare type test on `stateManProvider`'s value does not reach this, and
+  /// is false on every real panel.** That provider returns a
+  /// `GuardedStateMan`, whose inner object is private with no getter, so
+  /// `value is GatewayStateMan` is true only in a hand-built test — a guard
+  /// that passes and observes nothing. Reach it through
+  /// `GuardedStateMan.innerAs<GatewayStateMan>()` (the read-only unwrap plan
+  /// 15-04 adds), or through the slot the construction site publishes
+  /// (`GatewayAlarmSlot` in `lib/providers/state_man.dart`, which exists for
+  /// exactly this reason).
   RemoteStateMan get remote => _remote;
 
   @override

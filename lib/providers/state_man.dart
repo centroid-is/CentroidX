@@ -11,6 +11,8 @@ import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_relay_client/tfc_relay_client.dart'
+    show ClientConfig, RemoteStateMan;
 import '../core/gateway_state_man.dart';
 import '../core/relay_alarm_source.dart';
 import 'access.dart';
@@ -82,7 +84,7 @@ typedef StateManFactory = Future<StateMan> Function({
 
 /// The seam through which [stateManProvider] constructs its inner [StateMan].
 ///
-/// Production reads the default and nothing else overrides it. It exists so
+/// Production reads the default and never overrides it. It exists so
 /// that `guard_wiring_test.dart` can prove the properties this provider is
 /// judged on — that a sign-in does not rebuild it, and that `close()` reaches
 /// the inner instance exactly once — without opening an OPC UA connection in a
@@ -90,6 +92,39 @@ typedef StateManFactory = Future<StateMan> Function({
 /// of them failing looks like nothing at all until it is a plant.
 final stateManFactoryProvider =
     Provider<StateManFactory>((ref) => StateMan.create);
+
+/// How the gateway-mode [StateMan] is built.
+///
+/// The signature is the one [GatewayStateMan]'s static factory takes,
+/// `buildRemote` included: that optional parameter is the whole point of
+/// routing the gateway branch through a provider at all, because the
+/// production call site never passes one and a test has no other way to
+/// supply it.
+typedef GatewayStateManFactory = Future<GatewayStateMan> Function({
+  required Uri uri,
+  required ClientConfig clientConfig,
+  required StateManConfig config,
+  required KeyMappings keyMappings,
+  String alias,
+  RemoteStateMan Function({
+    required Uri uri,
+    required ClientConfig config,
+    required Set<String> keys,
+  })? buildRemote,
+});
+
+/// The seam through which [stateManProvider] constructs its gateway client.
+///
+/// Symmetric with [stateManFactoryProvider], and for the same reason:
+/// production reads the default and never overrides it. It exists so
+/// that `state_man_transport_test.dart` can prove the property criterion 1 is
+/// judged on — that the address, the pinned root and the credential handed to
+/// the client are verbatim this station's own preferences row — without a
+/// panel in a unit test opening a socket to the plant's real gateway. The rig
+/// measured that property once by hand from both ends' `/proc/net/tcp`
+/// (13-RIG-E2E-EVIDENCE); a manual run is evidence, not a guard.
+final gatewayStateManFactoryProvider =
+    Provider<GatewayStateManFactory>((ref) => GatewayStateMan.create);
 
 @Riverpod(keepAlive: true)
 Future<StateMan> stateMan(Ref ref) async {
@@ -161,15 +196,24 @@ Future<StateMan> stateMan(Ref ref) async {
   try {
     final StateMan stateMan;
     if (gateway.isGateway) {
-      // One WebSocket and nothing else: no device clients, no collector. The
+      // One WebSocket for VALUES: no device clients, no collector. The
       // gateway owns the upstream sessions and does the historising; a panel
       // that also collected would write a second copy of every sample.
+      //
+      // **And one Postgres connection**, which is not optional and is not
+      // closed by this branch. `lib/providers/database.dart` has no transport
+      // branch at all, so sign-in, preferences and the audit trail still go
+      // over the station's own database link in gateway mode — measured on the
+      // rig, 13-RIG-E2E-EVIDENCE FIND-C. Closing that dependency (access,
+      // preferences and audit over the relay) is Phase 17; until then, any
+      // copy claiming this panel opens only a WebSocket is false, and a
+      // source-scan test keeps the old wording from coming back.
       final refusal = gateway.validationError;
       if (refusal != null) {
         throw StateError('Gateway mode is selected but the configuration '
             'cannot be dialled: $refusal');
       }
-      final gatewayStateMan = await GatewayStateMan.create(
+      final gatewayStateMan = await ref.read(gatewayStateManFactoryProvider)(
         uri: gateway.uri,
         clientConfig: await gateway.toClientConfig(),
         config: config,
