@@ -461,3 +461,49 @@ hazard found one level up in the same change: `static const allEnabled =
 McpToolToggles();` would have become **all-false** the moment the constructor
 defaults flipped, turning every "all tools on" call site off while compiling
 cleanly.
+
+## D-11 — the MCP server binary could never start on Windows (FIXED, `940786da`)
+
+**Found** 2026-09-08 by CI, on the first test that ever spawned the binary.
+**Fixed in the same session**; recorded because how it hid matters more than
+the one-line fix.
+
+`bin/tfc_mcp_server.dart` called `ProcessSignal.sigterm.watch()`
+unconditionally. Windows has no SIGTERM, and Dart does not hand back an empty
+stream there — it throws:
+
+```
+Unhandled exception:
+SignalException: Failed to listen for SIGTERM, osError: OS Error:
+The request is not supported, errno = 50
+```
+
+Unhandled, at startup, before the server answers `initialize`. **The binary
+has never been able to run on Windows**, and this repository ships a Windows
+MSIX. It would bite a station that fell back to the subprocess path, or an
+engineer pointing an MCP client at a Windows install; the in-process path the
+HMI normally uses does not go through this binary, which is why nobody hit it.
+
+**Why it hid.** Nothing in the repository ran the binary. The other ~1360
+tests in that package import the library. `compile_test` does build the
+executable and run it — but only as `--version`, which returns from `main`
+long before the signal handlers are installed. So the one test that executed
+it never reached the crash. A smoke test that spawns the binary and speaks MCP
+to it found the defect on its first run.
+
+Two lessons, both earned twice today:
+
+- **Exit code 255 is Dart's unhandled-exception code.** It was the informative
+  signal from the first CI log and was reasoned past in favour of a
+  file-locking hypothesis that fit the timestamps and was wrong.
+- **A test that spawns a process and does not drain its stderr can only ever
+  tell you *that* it failed.** The binary printed the exception every time;
+  nothing was listening until the drain was added.
+
+### Open consequence — graceful shutdown on Windows
+
+With the guard in place, Windows has no graceful-shutdown path at all: the
+Flutter side's SIGTERM maps to `TerminateProcess`, so the process dies without
+closing its database or flushing its log. Inherent to the platform rather than
+to the fix, minor, and closing it would need a different shutdown channel
+(a control message over stdio, or a named event). **Not fixed. Jón's call.**
