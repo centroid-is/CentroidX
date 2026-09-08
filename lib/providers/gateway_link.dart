@@ -1,9 +1,11 @@
 /// What the gateway link is doing, as one provider two surfaces read.
 ///
 /// [gatewayLinkProvider] publishes a [GatewayLinkReport] — the status row
-/// inside the Transport card and the chip in the app bar both watch this and
-/// **neither computes its own message.** In direct mode it publishes `null`,
-/// which those surfaces render as absence rather than as an empty pill.
+/// inside the Transport card and the panel's local gateway alarm
+/// (`local_gateway_alarm.dart`, which feeds the app bar's alarm banner and
+/// the Alarm View) both derive from this and **neither computes its own
+/// message.** In direct mode it publishes `null`, which those surfaces
+/// render as absence rather than as a standing alarm.
 ///
 /// ## Five properties, and none of them is decoration
 ///
@@ -241,8 +243,9 @@ final gatewayLinkProvider = StreamProvider<GatewayLinkReport?>((ref) {
         // `stateManProvider` does.
         //
         // `buildFailure == null` is still the honest silence: gateway mode with
-        // `stateManProvider` merely *building*. That is the unresolved state
-        // `gateway_link_chip.dart:101-105` renders as zero width on purpose.
+        // `stateManProvider` merely *building*. The consumers render that
+        // unresolved state as absence on purpose — no status row, and no
+        // local gateway alarm (`local_gateway_alarm.dart` maps it to null).
         if (buildFailure == null) {
           controller.add(null);
           return;

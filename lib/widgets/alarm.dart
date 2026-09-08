@@ -10,6 +10,7 @@ import '../chat/asset_context_menu.dart' show buildAlarmContextBlock;
 import '../chat/chat_overlay.dart' show ChatContextType;
 import '../core/feature_flags.dart';
 import '../providers/alarm.dart';
+import '../providers/local_gateway_alarm.dart';
 import '../theme.dart';
 import 'base_scaffold.dart';
 import 'boolean_expression.dart';
@@ -843,16 +844,35 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
 
   @override
   Widget build(BuildContext context) {
+    // The panel's own gateway alarm, or null on every direct station and on
+    // a healthy link. It is merged HERE, as a value beside whatever the
+    // AlarmSource says — never into the source itself, which is what keeps
+    // it out of ackAlarm, out of the history buffer and out of TimescaleDB
+    // (lib/core/local_gateway_alarm.dart owns that argument). It rides above
+    // the search and level filters on purpose: while the gateway is down
+    // every plant row on this page may be stale, and the row that says so
+    // must not be filterable away. It is NOT in the history list — history
+    // is the persisted record, and this alarm is deliberately not a record.
+    final localAlarm = ref.watch(localGatewayAlarmProvider);
     return StreamBuilder<(AlarmSource, List<(AlarmActive, DateTime?)>)>(
       stream: _streamFor(_showHistory),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) {
+        if (!snapshot.hasData && localAlarm == null) {
           return const Center(child: CircularProgressIndicator());
         }
 
-        var (alarmMan, alarms) = snapshot.data!;
+        // No data with a standing local alarm is not a loading state worth a
+        // spinner: in gateway mode the alarm source itself rides the
+        // transport, so the one condition that takes the source away is the
+        // condition the local alarm reports. Render what the panel knows.
+        final alarmMan = snapshot.data?.$1;
+        var alarms =
+            snapshot.data?.$2 ?? const <(AlarmActive, DateTime?)>[];
         if (!_showHistory && widget.onActiveAlarms != null) {
-          final active = [for (final a in alarms) a.$1];
+          final active = [
+            if (localAlarm != null) localAlarm,
+            for (final a in alarms) a.$1,
+          ];
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) widget.onActiveAlarms!(active);
           });
@@ -862,11 +882,21 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
             (e) => e.$1.alarm.config.title,
             (e) => e.$1.alarm.config.description,
           ]);
-        } else {
+        } else if (alarmMan != null) {
           alarms = alarmMan
               .filterAlarms(alarms.map((a) => a.$1).toList(), _searchQuery)
               .map((a) => (a, null as DateTime?))
               .toList();
+        }
+
+        // Prepended AFTER the search filter (a query must not be able to
+        // hide the reason its own results may be stale) and BEFORE the
+        // counts (a red error card beside an "Error 0" chip would read as a
+        // broken counter). The level filter below exempts it for the same
+        // reason the search does. Active view only — see the comment on
+        // localAlarm above.
+        if (!_showHistory && localAlarm != null) {
+          alarms = [(localAlarm, null), ...alarms];
         }
 
         // Counted before the level filter is applied, so a chip states what
@@ -879,7 +909,9 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
         };
         if (_levelFilter.isNotEmpty) {
           alarms = alarms
-              .where((a) => _levelFilter.contains(a.$1.notification.rule.level))
+              .where((a) =>
+                  identical(a.$1, localAlarm) ||
+                  _levelFilter.contains(a.$1.notification.rule.level))
               .toList();
         }
 
