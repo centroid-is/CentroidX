@@ -132,6 +132,13 @@ void main() {
       await seedLegacy('page_editor_image:9f86d081884c', 'aGVsbG8gd29ybGQ=');
       // Abandoned: device-local by design.
       await seedLegacy('update_channel', 'stable');
+      // Abandoned, and the key whose verdict has flipped twice — the reason
+      // it is seeded here at all. A plant really does carry this row, and
+      // what has to hold end to end is that it neither becomes a `preference`
+      // row (an editable shared setting no consumer reads) nor lands in
+      // `unknown` (which would block the drop over a key everybody has
+      // already decided about).
+      await seedLegacy('mcp.config', '{"servers":[]}');
       // The blob rows Phases 2 and 3 already migrated, still there as
       // rollback insurance.
       await seedLegacy('key_mappings', '{"nodes":{}}');
@@ -164,6 +171,12 @@ void main() {
       // Not promoted. A dev box on a prerelease channel must not take the
       // plant with it.
       expect(prefs.keys, isNot(contains('update_channel')));
+      // Not promoted either, for a different reason: nothing reads the shared
+      // copy since 04-12 (`d47f7633` deleted the MCP binary's reader,
+      // `b1b60726` the table class under it), and the raw preferences editor
+      // merges shared keys over device-local ones — so a row here would mask
+      // this station's real value behind an edit that changes nothing.
+      expect(prefs.keys, isNot(contains('mcp.config')));
 
       final images = await rowsOf('page_image');
       expect(images, hasLength(1));
@@ -227,7 +240,10 @@ void main() {
 
       final result = await migratePreferencesIntoRows(database);
 
-      expect(result.unknown, ['svn.weigher.calibration']);
+      expect(result.unknown, ['svn.weigher.calibration'],
+          reason: 'mcp.config must NOT be here: an abandoned key waves the '
+              'drop through, and blocking the drop over a key three people '
+              'have already decided about is the other way to be wrong');
       // Untouched in the old table: this migration reads, it never deletes.
       final legacy = await other.execute(
           pg.Sql.named('SELECT value FROM flutter_preferences WHERE key = @k'),
@@ -243,8 +259,18 @@ void main() {
       expect(line, startsWith('Preference migration: 7 migrated'));
       expect(line, contains('images: 1'));
       expect(line, contains('recipes: 1'));
-      expect(line, contains('2 abandoned'),
-          reason: 'update_channel and key_mappings');
+      expect(line, contains('3 abandoned'),
+          reason: 'update_channel, key_mappings and mcp.config');
+      // Left where it was, and no row invented for it: the whole content of
+      // "abandoned" for a key the old table still holds.
+      final mcp = await other.execute(
+          pg.Sql.named('SELECT value FROM flutter_preferences WHERE key = @k'),
+          parameters: {'k': 'mcp.config'});
+      expect(mcp.single.first, '{"servers":[]}');
+      expect(
+          await scalar(
+              "SELECT count(*) FROM config_item WHERE id = 'mcp.config'"),
+          0);
       expect(line, contains('1 unknown [svn.weigher.calibration]'),
           reason: '04-12 refuses to drop the table while this is non-empty, '
               'and an operator has to know which key is holding it');

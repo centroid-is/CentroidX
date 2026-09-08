@@ -279,14 +279,22 @@ class PreferenceMigrationResult {
 /// This is written here because the list got it wrong once, and the shape of
 /// the mistake is worth more than the entry that caused it. `mcp.config` was
 /// abandoned on the grounds that it is device-local for the app and the shared
-/// row is a stale copy — both true, and both about the key's *owner*.
-/// `tfc_mcp_server.dart` reads that shared row at every server start and reads
-/// nothing else, so after 04-12 drops the table it would have found no
-/// toggles, and its documented default is that missing keys mean **enabled**:
-/// an operator's deliberately disabled tools would have switched themselves
-/// back on, on a surface that reaches the plant.
+/// row is a stale copy — both true, and both about the key's *owner*. At the
+/// time, `tfc_mcp_server.dart` read that shared row at every server start and
+/// read nothing else, and its documented default was that missing keys mean
+/// **enabled**: after 04-12 dropped the table an operator's deliberately
+/// disabled tools would have switched themselves back on, on a surface that
+/// reaches the plant.
 ///
-/// The reason it would not have been caught is the part to remember. An
+/// **The verdict has since flipped twice, and only ever on a consumer grep.**
+/// That reader is gone — `d47f7633` deleted `_readTogglesFromDb`, `b1b60726`
+/// deleted the table class under it — so the key is abandoned again, for a
+/// reason that names the readers rather than the owner (see its entry below).
+/// Nothing about the rule changed across either flip: the first verdict was
+/// right by luck and wrong by argument, and what settled it both times was
+/// enumerating who reads the row, not reasoning about whose key it is.
+///
+/// The reason a bad entry would not be caught is the part to remember. An
 /// **unknown** key blocks 04-12's drop by design and forces somebody to
 /// resolve it. An **abandoned** key waves the drop through. So this list is
 /// not bookkeeping — every entry asserts *nothing will miss this*, and being
@@ -304,6 +312,32 @@ const Map<String, String> kAbandonedPreferenceKeys = <String, String>{
           'Phase 1 SC-2 already imported it',
   'access.session':
       'device-local: a session belongs to the machine somebody signed in on',
+  // Enumerated, not inferred — the rule above is what this entry is held to.
+  // Every reader of this key, as of 04-12:
+  //   * `tfc_mcp_server.dart`'s `_readTogglesFromDb`, which read the shared
+  //     row at every server start: DELETED in `d47f7633`, and the drift table
+  //     class it read through in `b1b60726`. It was the only consumer of the
+  //     shared copy, and its replacement takes the toggles from the spawner
+  //     (`CENTROIDX_MCP_TOGGLES`), which is the deciding device handing the
+  //     decision down.
+  //   * `lib/providers/mcp_bridge.dart`'s `mcpConfigProvider`, which reads
+  //     `localPreferencesProvider` — device-local, per research C-1: whether
+  //     this station runs an MCP server is that station's own.
+  //   * `migrateMcpConfigToDeviceLocal`, which does not read the shared row
+  //     as a setting; it copies it down once and DELETES it.
+  // So migrating it would be worse than useless. The raw preferences editor
+  // merges the shared keys OVER the device-local ones
+  // (`widgets/preferences.dart`, `_loadData`), so a migrated row would mask
+  // this station's real value in the list and offer an operator an
+  // `administer`-gated edit that changes nothing anywhere — a write that
+  // quietly does nothing, arriving through the front door.
+  'mcp.config':
+      'device-local per research C-1, and since 04-12 nothing reads the shared '
+          'copy at all: the MCP binary\'s _readTogglesFromDb went in d47f7633 '
+          'and its table class in b1b60726, the app reads '
+          'localPreferencesProvider, and migrateMcpConfigToDeviceLocal only '
+          'deletes this row. Migrating it would put an editable shared row in '
+          'front of an operator that no consumer would ever read',
   'update_channel':
       'device-local by design (update_channel.dart builds device-local '
           'preferences) so a development box on a prerelease channel does not '
@@ -368,14 +402,6 @@ const Set<String> kMigratedPreferenceKeys = <String>{
   'collector_config',
   'page_editor_top_level_order',
   'server_config_envelope',
-  // **Corrects a classification this file shipped as abandoned.** The reason
-  // given was "device-local since Phase 1 — the shared row is the stale copy
-  // `mcpConfigMigrationProvider` deletes". That is true of the *app* and false
-  // of the *server*: `tfc_mcp_server.dart`'s `_readTogglesFromDb` reads
-  // `mcp.config` (`McpConfig.kPrefKey`) out of the **shared**
-  // `flutter_preferences` table and nothing else, at every server start. See
-  // [kAbandonedPreferenceKeys] for the rule that failure produced.
-  'mcp.config',
 };
 
 /// Copies every remaining known key out of `flutter_preferences` into rows,

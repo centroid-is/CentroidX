@@ -146,27 +146,44 @@ void main() {
               'the plant onto it');
     });
 
-    test('mcp.config migrates, because the MCP server reads the shared row',
-        () {
-      // **A correction to a classification this suite once asserted.** It was
-      // abandoned on the grounds that it is device-local for the app and the
-      // shared row is the stale copy `mcpConfigMigrationProvider` deletes —
-      // true of the key's *owner*, false of its *consumer*.
-      // `tfc_mcp_server.dart`'s `_readTogglesFromDb` reads `mcp.config`
-      // (`McpConfig.kPrefKey`) from the shared `flutter_preferences` table at
-      // every server start and reads nothing else, and its documented default
-      // for a missing key is **enabled**. Abandoned, the drop would have left
-      // an operator's deliberately disabled MCP tools switched back on — and
-      // abandoning it is also what would have kept the drop gate quiet, since
-      // an unknown key refuses the drop and an abandoned one does not.
+    test('mcp.config is abandoned, because nothing reads the shared row', () {
+      // **This verdict has flipped twice, and only ever on a consumer grep.**
+      // It was abandoned first on owner-reasoning (device-local for the app,
+      // the shared row is the stale copy `mcpConfigMigrationProvider`
+      // deletes) — right by luck, wrong by argument, because
+      // `tfc_mcp_server.dart`'s `_readTogglesFromDb` read that shared row at
+      // every server start and defaulted a missing key to **enabled**. So it
+      // was corrected to migrate.
+      //
+      // That reader no longer exists. `d47f7633` deleted `_readTogglesFromDb`
+      // — the binary now takes its toggles from the spawner, which is the
+      // deciding device handing the decision down — and `b1b60726` deleted
+      // the drift table class it read through. The remaining two mentions of
+      // the key are the app's `mcpConfigProvider`, which reads
+      // `localPreferencesProvider`, and `migrateMcpConfigToDeviceLocal`,
+      // which does not read the shared row as a setting: it copies it down
+      // once and deletes it.
+      //
+      // Migrating it now would be worse than useless. The raw preferences
+      // editor merges shared keys OVER device-local ones, so the row would
+      // mask this station's real value and offer an `administer`-gated edit
+      // that changes nothing anywhere.
       final c = classifyPreferenceKey('mcp.config');
 
-      expect(c.disposition, PreferenceDisposition.migrate);
-      expect(c.kind, ConfigKind.preference);
-      expect(c.id, 'mcp.config');
-      expect(kAbandonedPreferenceKeys.keys, isNot(contains('mcp.config')),
-          reason: 'abandoning a key waves the drop through; it may only be '
-              'abandoned when every consumer has been checked');
+      expect(c.disposition, PreferenceDisposition.abandon);
+      expect(kMigratedPreferenceKeys, isNot(contains('mcp.config')),
+          reason: 'a migrated row with no consumer is an editable setting '
+              'that does nothing');
+      expect(kAbandonedPreferenceKeys['mcp.config'], isNotNull,
+          reason: 'abandoning a key waves the drop through, so the entry has '
+              'to carry the reason it may be');
+      // The entry must name its readers, not its owner — the rule the doc on
+      // `kAbandonedPreferenceKeys` states. Both deletions are cited by hash
+      // so the claim stays checkable against the history rather than being
+      // taken on trust.
+      final reason = kAbandonedPreferenceKeys['mcp.config']!;
+      expect(reason, contains('d47f7633'));
+      expect(reason, contains('b1b60726'));
     });
 
     test('the legacy MCP toggle keys still land in unknown, and that is what '
