@@ -25,6 +25,7 @@ library;
 
 import 'dart:io';
 
+import 'package:drift/drift.dart' show driftRuntimeOptions;
 import 'package:postgres/postgres.dart' as pg;
 import 'package:test/test.dart';
 import 'package:tfc_access/tfc_access.dart';
@@ -55,6 +56,10 @@ ConfigItem pageItem(String path) => ConfigItem.of(
     );
 
 void main() {
+  // Each station is its own local SQLite file behind its own executor, which
+  // is the shape a plant runs in rather than the race the warning is about.
+  driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+
   group('undo against Postgres', () {
     late Database remote;
 
@@ -127,9 +132,25 @@ void main() {
           roleName: 'Engineering',
         );
 
+    /// Every column that is *configuration* — `rev` deliberately excluded.
+    ///
+    /// A restore is itself a write, so `rev` advances across an undo and does
+    /// not come back to what it was. It is a monotonic write counter and the
+    /// thing the next compare-and-swap guards on; rewinding it would make an
+    /// undone row look untouched to another station holding the old number.
+    /// So the content is compared here and the counter is asserted separately,
+    /// where its going *up* is the point.
     Future<List<pg.ResultRow>> sharedRows() => other.execute(
-        'SELECT kind, id, parent_id, sort_index, payload, rev FROM '
+        'SELECT kind, id, parent_id, sort_index, payload FROM '
         "config_item WHERE scope = 'shared' ORDER BY kind, id");
+
+    Future<int> revOf(String kind, String id) async {
+      final rows = await other.execute(
+          pg.Sql.named('SELECT rev FROM config_item WHERE kind = @kind AND '
+              "id = @id AND scope = 'shared'"),
+          parameters: {'kind': kind, 'id': id});
+      return (rows.single.first! as num).toInt();
+    }
 
     Future<List<pg.ResultRow>> changeRows() => other.execute(
         'SELECT id, action_id, kind, entity_id, op, reason FROM config_change '
@@ -171,9 +192,17 @@ void main() {
         roleName: 'Engineering',
       );
 
-      // Every column, through real rows: the payload, the parent and the
-      // position are what they were before the edit.
+      // Every column that is configuration, through real rows: the payload,
+      // the parent and the position are what they were before the edit.
       expect(await sharedRows(), before);
+      // And the one column that must *not* come back. Three writes have
+      // touched a1 — the save, the edit, the undo — and the counter says so.
+      // A restore that rewound it would leave another station's stale rev
+      // matching, which is the collision `rev` exists to catch.
+      expect(await revOf('asset', 'a1'), 3);
+      expect(await revOf('asset', 'a2'), 1,
+          reason: 'the sibling was never written; an undo that bumped it '
+              'would be rewriting rows it was not asked to');
 
       final log = await changeRows();
       expect(log.map((r) => r[1]).toSet(),
@@ -220,6 +249,9 @@ void main() {
       expect(await sharedRows(), before,
           reason: 'a restore writes old_value, which is the entity and not '
               'the payload: parent_id and sort_index come back with it');
+      expect(await revOf('asset', 'a2'), 1,
+          reason: 'the re-insert is an insert, so the row starts its count '
+              'again — there is no revision of a deleted row to continue');
     });
 
     test('an entity another station moved is named in the refusal', () async {
