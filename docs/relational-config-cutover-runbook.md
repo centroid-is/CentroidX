@@ -719,3 +719,36 @@ it is section 2, at the plant, by whoever runs this.
 
 **The drop has never been run against a plant.** It is written, gated, and
 proved against a throwaway Postgres. Section 6 is its first real execution.
+
+---
+
+## Verified at phase close — 2026-09-08
+
+The window should start from a tree somebody has just watched go green. This
+is that observation, recorded so the next person does not have to take it on
+trust. All runs on macOS under the pinned Flutter SDK **3.44.9**
+(`.flutter-version`), commit `d99c5f8b` on `relational-config`.
+
+| Suite | Command | Result |
+|---|---|---|
+| App | `flutter test test/` (repo root) | **6592 passed / 3 skipped / 0 failed** |
+| tfc_dart core | `dart test test/core/` (in `packages/tfc_dart`) | **1461 passed / 8 skipped / 0 failed** |
+| MCP server | `dart test` (in `packages/tfc_mcp_server`) | **1365 passed / 1 skipped / 0 failed** |
+| tfc_dart integration | `dart test test/integration/` | **not run at phase close** — needs the exclusive Docker lane described in section 2 |
+
+Both code-side gates exit 0 and were proven able to fail:
+`check-flutter-preferences-retired.sh --self-test` detects a planted violation
+in a `lib/` root **and** in a `packages/*/bin` root and stops reporting both
+once removed; `check-preferences-construction.sh` has no self-test flag, so it
+was proven by hand — a planted `SqlitePreferences()` construction took it to
+exit 1, and removing the file took it back to exit 0.
+
+Zero golden churn: `git status -- '*.png'` was empty after the full app run.
+
+**Use the pinned SDK.** `flutter` on `PATH` may be an older install — on the
+machine this was verified on, it was 3.41.9. Under it the app suite reports
+**6592 − 174 = 6418 passed and 174 failed**, which reads like a precise
+regression and is not one: `build/unit_test_assets` holds a shader compiled by
+3.44.9, and the older engine cannot decode it (*"Unsupported runtime stages
+format version. Expected 1, got 2"*), so every test that pumps a frame dies.
+Check `flutter --version` before believing any large failure count.
