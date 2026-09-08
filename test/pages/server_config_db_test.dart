@@ -61,6 +61,7 @@ Future<StoredServerConfig?> _storedRow(AppDatabase db) =>
 Future<Preferences> _rowPrefs(
   AppDatabase db, {
   AccessSession? session,
+  AccessSession Function()? sessionOf,
   AuditSink? audit,
   StateManConfig? stateManConfig,
 }) async {
@@ -72,6 +73,7 @@ Future<Preferences> _rowPrefs(
   final guarded = await createTestConfigStore(
     remoteDatabase: db,
     session: session ?? _administer(),
+    sessionOf: sessionOf,
     audit: audit,
   );
   final prefs =
@@ -376,11 +378,13 @@ void main() {
     late AppDatabase db;
     late Database wrapper;
     late _RecordingAuditSink audit;
+    late AccessSession session;
 
     setUp(() {
       db = AppDatabase.inMemoryForTest();
       wrapper = Database(db);
       audit = _RecordingAuditSink();
+      session = _administer();
     });
 
     tearDown(() async {
@@ -390,14 +394,22 @@ void main() {
 
     /// The store the page gets from `preferencesProvider`: the row-backed
     /// shared store, whose one guard resolves the group from the key.
-    Future<Preferences> guarded(AccessSession session) =>
-        _rowPrefs(db, session: session, audit: audit);
+    ///
+    /// **One store per test, with the session read at each write** — the shape
+    /// `configStoreProvider` uses. Two stores would be two stations with two
+    /// snapshots, and a `remove` whose snapshot has never seen the row is a
+    /// documented no-op that never reaches the guard at all
+    /// (`shared_row_preferences.dart`), so the refusal below would pass for
+    /// entirely the wrong reason.
+    Future<Preferences> guardedPrefs() =>
+        _rowPrefs(db, sessionOf: () => session, audit: audit);
 
     test('an anonymous session cannot publish the shared server config',
         () async {
+      session = _anonymous();
       await expectLater(
-        ServerConfigDb.publish(await guarded(_anonymous()),
-            StoredServerConfig(envelope: {'version': 1})),
+        ServerConfigDb.publish(
+            await guardedPrefs(), StoredServerConfig(envelope: {'version': 1})),
         throwsA(isA<AccessDenied>()),
       );
 
@@ -411,12 +423,16 @@ void main() {
     });
 
     test('an anonymous session cannot remove it either', () async {
-      await ServerConfigDb.publish(await guarded(_administer()),
-          StoredServerConfig(savedBy: 'a', envelope: {'version': 1}));
+      session = _administer();
+      final prefs = await guardedPrefs();
+      await ServerConfigDb.publish(
+          prefs, StoredServerConfig(savedBy: 'a', envelope: {'version': 1}));
       audit.rows.clear();
 
+      // Somebody signed out; the same store is asked to delete it.
+      session = _anonymous();
       await expectLater(
-        ServerConfigDb.remove(await guarded(_anonymous())),
+        ServerConfigDb.remove(prefs),
         throwsA(isA<AccessDenied>()),
       );
 
@@ -430,8 +446,9 @@ void main() {
 
     test('an administer session publishes, and the write is in the trail',
         () async {
+      session = _administer();
       await ServerConfigDb.publish(
-        await guarded(_administer()),
+        await guardedPrefs(),
         StoredServerConfig(
           savedAt: DateTime(2026, 4, 4),
           savedBy: 'station-9',
