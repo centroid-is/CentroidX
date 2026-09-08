@@ -5,7 +5,6 @@ library;
 
 import 'dart:async';
 
-import 'package:logger/logger.dart';
 import 'package:meta/meta.dart' show visibleForTesting;
 
 import '../access/guarded_config_store.dart';
@@ -23,11 +22,6 @@ import 'preference_payload.dart';
 /// answers `administer` — which is the right answer for "delete every shared
 /// setting in the plant", and the same string `GuardedPreferences` used.
 const String kWholeStoreItemKey = '*';
-
-/// Only ever used off the happy path — a caller naming a bookkeeping row.
-/// Nothing here logs per read or per write, the same rule
-/// `sqlite_preferences.dart` states for its own logger.
-final Logger _logger = Logger();
 
 /// Ids beginning with this are bookkeeping and are not preferences.
 ///
@@ -397,17 +391,27 @@ class SharedRowPreferences extends Preferences {
   /// mistaking a migrated store for an unmigrated one, so the same reasoning
   /// lands on the opposite answer.
   ///
-  /// **Refused with a word, not silently** — the one decision here that could
-  /// have gone either way. [clear]'s silence is right for [clear]: it names no
-  /// key, and "everything" never meant the bookkeeping. A caller here named
-  /// *this* key, and being ignored without explanation is its own trap. A log
-  /// line rather than a throw because no legitimate caller can reach it
-  /// ([getKeys] and [getAll] never surface an internal id, so the preferences
-  /// editor cannot offer one), and a throw out of a preference removal is a
-  /// panel that stops rather than one that keeps working. This is not a second
-  /// convention: `sqlite_preferences.dart` keeps a logger for exactly this
-  /// class of off-happy-path event, and this file simply had no such case
-  /// until now.
+  /// **Refused silently, and the silence is load-bearing rather than lazy.**
+  /// The general worry about a silent no-op — that a caller who named one
+  /// specific key is ignored without a word — does not apply here, because
+  /// **no caller can name this key**: an internal id is `_`-prefixed and
+  /// [getKeys] and [getAll] never surface one, so the preferences editor
+  /// cannot offer it and nothing builds one. Reaching this line at all is a
+  /// programming error, not an operator's mistake, and matching [clear] is
+  /// worth more than a log line nobody will read. A throw was the other
+  /// candidate and is worse: a panel that stops beats nothing, and nothing is
+  /// what is at stake.
+  ///
+  /// **There are two silent returns in this method and only this one is
+  /// right.** The other — `if (!rows.containsKey(key)) return;` below —
+  /// answers "the snapshot does not hold that key", which on a station whose
+  /// sync is lagging is *not* the same as "the plant does not hold that key":
+  /// an operator's delete is then neither performed, nor checked, nor
+  /// recorded, and they are told nothing. **That is a real defect, flagged
+  /// for 04-12/04-13, and it is not this one.** They are written down together
+  /// so that whoever eventually fixes it does not "tidy up" the guard above
+  /// on the way past, and so that whoever tidies the guard does not conclude
+  /// the one below is equally deliberate.
   ///
   /// Reads are **not** filtered, and that is not a half-applied rule.
   /// [containsKey] still answers for a marker, because asking whether a
@@ -425,17 +429,22 @@ class SharedRowPreferences extends Preferences {
       _events.add(key);
       return;
     }
-    if (_isInternal(key)) {
-      _logger.w('refusing to remove the shared configuration row "$key": it '
-          'is bookkeeping, not a preference. Deleting a migration marker '
-          'makes a migrated shared store read as un-migrated on every '
-          'station. Nothing was written.');
-      return;
-    }
+    // Bookkeeping is not a preference, and this is the guard [clear] already
+    // has. Silent on purpose — see the doc: the id is unreachable to callers,
+    // so there is nobody to tell. NOT the same as the silent return below it.
+    if (_isInternal(key)) return;
     final rows = _rows();
-    // Removing what was never there is not a change. Said here as well as in
-    // the store because the store would refuse it when offline, and a
+    // "Removing what was never there is not a change" — said here as well as
+    // in the store, because the store would refuse it when offline and a
     // no-op that fails is a confusing thing to explain to an operator.
+    //
+    // **Suspect, and deliberately left alone here.** This reads the local
+    // snapshot, so on a station whose sync is lagging it answers "not there"
+    // about a row the plant does have; the operator's delete is then silently
+    // dropped rather than attempted, checked or recorded. Flagged for
+    // 04-12/04-13 rather than changed in a plan about bookkeeping rows,
+    // because the fix is a decision about what an unsynced delete should do
+    // and not a line edit.
     if (!rows.containsKey(key)) return;
     final wanted = [
       for (final entry in rows.entries)

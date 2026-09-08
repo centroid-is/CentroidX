@@ -467,7 +467,7 @@ void main() {
           kPreferencesMigratedMarkerId: (kPrefStringType, '2026-09-08'),
         });
 
-    test('remove refuses to delete one, and says so', () async {
+    test('remove refuses to delete one', () async {
       await seedMarker();
       await seedShared({'update_channel': (kPrefStringType, 'stable')});
 
@@ -483,6 +483,9 @@ void main() {
           reason: 'nothing was written, so there is nothing to historise');
       expect(sink.rows, isEmpty,
           reason: 'a refusal that never reached the guard is not a denial');
+      // Silently, and that is the ruling: an internal id is `_`-prefixed and
+      // never surfaced by getKeys, so no caller can name one and there is
+      // nobody to tell. The assertion that matters is that the row survives.
     });
 
     test('the sibling beside it is still removable', () async {
