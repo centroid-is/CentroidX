@@ -546,4 +546,85 @@ void main() {
         reason: 'the existing route gate, unchanged — the page grew a second '
             'target, not a second audience');
   });
+
+  // -------------------------------------------------------------------------
+  // Arm 12 — placement and height: the owner's complaint, encoded. The target
+  // is a card-header affordance, not a page banner. It used to sit above the
+  // Transport card — labelling the one card that is device-local in BOTH
+  // modes — and spent a full band of height on one sentence. These arms are
+  // geometric on purpose: a golden of the affordance being present cannot
+  // guard the rule that the old band is absent.
+  // -------------------------------------------------------------------------
+  testWidgets(
+      'arm 12: in gateway mode the target lives inside the Backend '
+      'Configuration card, below Transport, one line tall', (tester) async {
+    await _pumpGateway(tester);
+
+    expect(
+        find.descendant(
+            of: find.byType(BackendConfigSection),
+            matching: find.byKey(_banner)),
+        findsOneWidget,
+        reason: 'the target is a fact about the Backend Configuration card — '
+            'the card whose editor reads and writes that machine — so it '
+            'lives on that card\'s own header, not above the Transport card '
+            'it used to mislabel');
+    expect(find.byKey(_banner), findsOneWidget,
+        reason: 'and there is exactly one: a second copy above the page '
+            'would be the old band back');
+
+    final transportTop = tester.getRect(find.byType(TransportModeCard)).top;
+    final bannerTop = tester.getRect(find.byKey(_banner)).top;
+    expect(bannerTop, greaterThan(transportTop),
+        reason: 'nothing about the target sits above the Transport card');
+
+    final height = tester.getSize(find.byKey(_banner)).height;
+    expect(height, lessThanOrEqualTo(32),
+        reason: 'one line, not a band: the JSON editor is what the operator '
+            'needs the vertical space for (measured ${height}px)');
+  });
+
+  testWidgets(
+      'arm 12: in direct mode the caption sits below Transport, above the '
+      'sections it describes, one line tall', (tester) async {
+    await _pumpDirect(tester);
+
+    final transportBottom =
+        tester.getRect(find.byType(TransportModeCard)).bottom;
+    final banner = tester.getRect(find.byKey(_banner));
+    expect(banner.top, greaterThanOrEqualTo(transportBottom),
+        reason: 'the caption describes the station sections below it; the '
+            'Transport card is device-local in both modes and is not part '
+            'of that claim');
+
+    final dbTop = tester.getRect(find.text('Database Configuration')).top;
+    expect(banner.bottom, lessThanOrEqualTo(dbTop),
+        reason: 'above the first section it describes');
+
+    expect(banner.height, lessThanOrEqualTo(26),
+        reason: 'a caption line, not a band (measured ${banner.height}px)');
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 13 — the deleted narration stays deleted. The transport toggle
+  // already states the mode; prose that narrates a control beside it is
+  // noise, and the owner removed it by name. Functional absence assertions,
+  // because a golden cannot guard an absence.
+  // -------------------------------------------------------------------------
+  testWidgets(
+      'arm 13: no prose narrates the transport mode in gateway mode',
+      (tester) async {
+    await _pumpGateway(tester);
+
+    expect(find.textContaining('read and saved over'), findsNothing,
+        reason: 'the Backend Configuration description paragraph is gone — '
+            'the header names the target, the toggle above states the mode');
+    expect(find.textContaining('takes its values from the relay'),
+        findsNothing,
+        reason: 'the hidden-sections note is gone: it restated what the '
+            'transport toggle already shows');
+    expect(find.textContaining('It still opens one Postgres connection'),
+        findsNothing,
+        reason: 'the note went whole, not sentence by sentence');
+  });
 }

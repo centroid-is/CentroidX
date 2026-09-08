@@ -190,8 +190,8 @@ void main() {
       _expectDirectSections(findsOneWidget);
     });
 
-    testWidgets('a saved gateway station hides the four sections and says why',
-        (tester) async {
+    testWidgets('a saved gateway station hides the four sections, without a '
+        'note narrating the toggle', (tester) async {
       await pumpAndLoad(
         tester,
         buildTestableServerConfig(localPreferences: await _gatewayStation()),
@@ -199,16 +199,22 @@ void main() {
 
       _expectDirectSections(findsNothing);
       expect(find.text('Database Configuration'), findsNothing);
-      // Changed in 15-05, deliberately, and it is the only line of the file's
-      // original eight arms this plan touched. It used to assert the note said
-      // the station "opens no connections of its own" — which the rig measured
-      // as false (13-RIG-E2E-EVIDENCE FIND-C: one Postgres connection to
-      // 172.18.0.6:5432 live throughout gateway mode). An arm pinning a false
-      // sentence keeps it false, so it now pins the honest one instead; the
-      // absence half is `test/core/gateway_copy_test.dart`'s.
+      // Changed twice, deliberately, and each change is the owner's. 15-05
+      // re-pointed this line at the corrected Postgres copy after the rig
+      // measured the original claim false (13-RIG-E2E-EVIDENCE FIND-C). The
+      // note itself is now GONE — "it is implied by the toggle switch in
+      // Transport" — so the arm pins its absence: prose that narrates the
+      // state of a control beside it is noise, and on a panel it costs the
+      // vertical space the JSON editor needs. The honest Postgres sentence
+      // still lives in `server_config.dart`'s comments, where
+      // `test/core/gateway_copy_test.dart` keeps holding it present.
       expect(
         find.textContaining('no OPC UA session'),
-        findsOneWidget,
+        findsNothing,
+      );
+      expect(
+        find.textContaining('takes its values from the relay'),
+        findsNothing,
       );
     });
   });
@@ -424,17 +430,24 @@ void main() {
   // The honest copy — rig FIND-C
   // ---------------------------------------------------------------------
 
-  group('the hidden-sections note tells the truth about Postgres', () {
-    testWidgets('it names the Postgres connection and claims no more than that',
+  group('the page claims nothing about Postgres either way', () {
+    // The hidden-sections note is gone (the toggle above already states the
+    // mode), and with it went the page's only rendered Postgres sentence.
+    // Silence is honest here; the honest sentence itself still lives in
+    // `server_config.dart`'s comments, and `test/core/gateway_copy_test.dart`
+    // holds it present at source level — the arm that matters is that the
+    // FALSE claims never come back as rendered text.
+    testWidgets('no rendered text claims or denies the Postgres connection',
         (tester) async {
       await pumpAndLoad(
         tester,
         buildTestableServerConfig(localPreferences: await _gatewayStation()),
       );
 
-      expect(find.textContaining('Postgres'), findsOneWidget,
-          reason: 'the rig measured one Postgres connection live throughout '
-              'gateway mode, for sign-in, preferences and the audit trail');
+      expect(find.textContaining('Postgres'), findsNothing,
+          reason: 'the note that carried the corrected copy was deleted '
+              'whole — a page that renders no claim cannot render a false '
+              'one');
       expect(find.textContaining('no connections of its own'), findsNothing);
       expect(
           find.textContaining('The database, OPC UA, JBTM and Modbus settings '
