@@ -70,6 +70,141 @@ McpToolToggles? togglesFromEnvJson(String? json) {
   }
 }
 
+/// Where a server process's tool toggles came from.
+enum StartupToggleSource {
+  /// Handed down in [kMcpTogglesEnvVar] by whatever spawned the process.
+  environment,
+
+  /// Given explicitly on the command line with `--toggles`.
+  commandLine,
+
+  /// Nothing was handed down at all.
+  absent,
+
+  /// Something was handed down and could not be read as toggle JSON.
+  unreadable,
+}
+
+/// The outcome of resolving a server process's tool toggles at startup.
+class StartupToggles {
+  const StartupToggles({required this.toggles, required this.source});
+
+  /// The toggles the process should run with.
+  final McpToolToggles toggles;
+
+  /// Where [toggles] came from.
+  final StartupToggleSource source;
+
+  /// Whether somebody actually decided what this process should serve.
+  ///
+  /// False means [toggles] is [McpToolToggles.allDisabled] because the
+  /// decision is missing, not because anybody chose to disable everything.
+  bool get decided =>
+      source == StartupToggleSource.environment ||
+      source == StartupToggleSource.commandLine;
+
+  /// The line to put on stderr when [decided] is false, or null when it is.
+  String? get explanation => switch (source) {
+        StartupToggleSource.environment => null,
+        StartupToggleSource.commandLine => null,
+        StartupToggleSource.absent => kNoTogglesMessage,
+        StartupToggleSource.unreadable => kUnreadableTogglesMessage,
+      };
+}
+
+/// Why a server that was told nothing serves nothing.
+///
+/// Printed straight to stderr rather than through the logger, because
+/// `CENTROID_LOG_LEVEL` must not be able to hide the one line that explains
+/// an empty tool list.
+const kNoTogglesMessage =
+    'tfc_mcp_server: no tool toggles were handed down, so every tool group '
+    'is disabled and this server is serving an empty tool list.\n'
+    '  The MCP config is device-local: the HMI that spawns this server '
+    'passes its own decision in $kMcpTogglesEnvVar.\n'
+    '  A standalone launch has no station to inherit from and must say so '
+    'itself, in that variable or in --toggles. See --help.\n'
+    '  This is not a database problem. An absent decision is not a decision '
+    'to enable.';
+
+/// Why a server that was told something unreadable serves nothing.
+const kUnreadableTogglesMessage =
+    'tfc_mcp_server: the tool toggles handed down could not be read as JSON, '
+    'so every tool group is disabled and this server is serving an empty '
+    'tool list.\n'
+    '  Check the value of $kMcpTogglesEnvVar, or of --toggles, in whatever '
+    'launched this process. See --help for the expected shape.';
+
+/// The `--help` section explaining how a server process is told what to
+/// serve, so a standalone launch is an explicit opt-in rather than something
+/// inherited from a table.
+final kTogglesHelpText = '''
+Tool groups:
+  This server serves no tools until it is told which tool groups to serve.
+  The HMI that spawns it passes its own device-local decision in
+  $kMcpTogglesEnvVar. A standalone launch -- Claude Desktop on a laptop --
+  has no station to inherit that from, and has to say so itself.
+
+  The value is a JSON object mapping group names to booleans. Groups named
+  in it are as named; groups left out of a supplied object are enabled.
+  Group names: ${McpToolToggles.allJsonKeys.join(', ')}
+
+  Example: --toggles '{"tags":true,"proposals":false}'
+
+  The environment variable wins over --toggles, so a spawning app is never
+  overridden by a stale shell alias.''';
+
+/// Decides which tool groups a server process serves.
+///
+/// [envJson] is the raw [kMcpTogglesEnvVar] value and [cliJson] the raw
+/// `--toggles` option; the environment wins, so an app spawn is never
+/// overridden by a stale shell alias.
+///
+/// There is deliberately no database fallback. The MCP config is
+/// device-local — the deciding device owns it — so the only source that
+/// respects that is the decider handing the decision down. A server process
+/// cannot read a device-local preference it has no station identity for, and
+/// the shared row it used to read is the stale copy the migration deletes.
+///
+/// With nothing readable, the result is [McpToolToggles.allDisabled] and
+/// [StartupToggles.decided] is false. Closed, still running, and able to say
+/// why: a stdio server that appears and lists nothing is diagnosable in the
+/// client, where a refused start is a connection error and a stack trace.
+StartupToggles resolveStartupToggles({String? envJson, String? cliJson}) {
+  // Each source in turn, most authoritative first. A source that spoke and
+  // was not understood ends the search: reading past it to a lesser source
+  // would serve tools the spawner never asked for, which is the fail-open
+  // this function exists to close.
+  final supplied = <(String, StartupToggleSource)>[
+    if (envJson != null && envJson.isNotEmpty)
+      (envJson, StartupToggleSource.environment),
+    if (cliJson != null && cliJson.isNotEmpty)
+      (cliJson, StartupToggleSource.commandLine),
+  ];
+
+  if (supplied.isEmpty) {
+    return const StartupToggles(
+      toggles: McpToolToggles.allDisabled,
+      source: StartupToggleSource.absent,
+    );
+  }
+
+  final (json, source) = supplied.first;
+  final toggles = togglesFromEnvJson(json);
+
+  if (toggles == null) {
+    // Its own message on purpose: a typo in a client config is a different
+    // errand from a variable nobody set, and the reader has to be sent to
+    // the right one.
+    return const StartupToggles(
+      toggles: McpToolToggles.allDisabled,
+      source: StartupToggleSource.unreadable,
+    );
+  }
+
+  return StartupToggles(toggles: toggles, source: source);
+}
+
 /// One-time migration of the MCP config from the [shared]
 /// (database-backed) preference store to the [local] (device-only) store.
 ///

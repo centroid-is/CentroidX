@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/args.dart';
@@ -28,7 +27,11 @@ Future<void> main(List<String> arguments) async {
         defaultsTo: 'postgres')
     ..addOption('db-password',
         help: 'PostgreSQL password (or CENTROID_PGPASSWORD env var)',
-        defaultsTo: '');
+        defaultsTo: '')
+    ..addOption('toggles',
+        help: 'Tool groups to serve, as JSON. Without this and without '
+            '$kMcpTogglesEnvVar,\nevery tool group starts disabled -- see '
+            '"Tool groups" below.');
 
   final ArgResults results;
   try {
@@ -46,6 +49,8 @@ Future<void> main(List<String> arguments) async {
     stderr.writeln('Usage: tfc_mcp_server [options]');
     stderr.writeln('');
     stderr.writeln(parser.usage);
+    stderr.writeln('');
+    stderr.writeln(kTogglesHelpText);
     exit(0);
   }
 
@@ -56,6 +61,36 @@ Future<void> main(List<String> arguments) async {
 
   final logger = createServerLogger();
   logger.i('Starting TFC MCP Server v$_version');
+
+  // Decide what this process serves before anything else, so the line
+  // explaining an empty tool list is the first thing in the log rather than
+  // something buried under database chatter.
+  //
+  // The source is whoever spawned this process, never a table: the MCP
+  // config is device-local, so the deciding device owns it and hands it
+  // down. Absent, it is not "not loaded yet" -- it is "not decided", and
+  // undecided on a capability surface is closed.
+  final startup = resolveStartupToggles(
+    envJson: Platform.environment[kMcpTogglesEnvVar],
+    cliJson: results.option('toggles'),
+  );
+  final toggles = startup.toggles;
+
+  // Straight to stderr, not through the logger: CENTROID_LOG_LEVEL must not
+  // be able to hide the one line that explains why nothing is on offer.
+  final explanation = startup.explanation;
+  if (explanation != null) {
+    stderr.writeln(explanation);
+  }
+
+  logger.i('Tool toggles from ${startup.source.name}: '
+      'tags=${toggles.tagsEnabled}, '
+      'alarms=${toggles.alarmsEnabled}, config=${toggles.configEnabled}, '
+      'drawings=${toggles.drawingsEnabled}, trends=${toggles.trendsEnabled}, '
+      'plcCode=${toggles.plcCodeEnabled}, '
+      'proposals=${toggles.proposalsEnabled}, '
+      'techDocs=${toggles.techDocsEnabled}, '
+      'screenshots=${toggles.screenshotsEnabled}');
 
   // Build database config from env vars + CLI arg fallbacks.
   // Env vars (CENTROID_PG*) take precedence over CLI args, which take
@@ -90,19 +125,6 @@ Future<void> main(List<String> arguments) async {
   final stateReader = EmptyStateReader();
   final alarmReader = EmptyAlarmReader();
 
-  // Read tool toggle state. The HMI stores the MCP config device-locally
-  // and passes the toggles to spawned subprocesses via kMcpTogglesEnvVar;
-  // the flutter_preferences table is only a fallback for pre-migration
-  // databases (standalone launches otherwise default to all-enabled).
-  final envToggles =
-      togglesFromEnvJson(Platform.environment[kMcpTogglesEnvVar]);
-  final toggles = envToggles ?? await _readTogglesFromDb(db);
-  logger.i('Tool toggles from ${envToggles != null ? 'environment' : 'database'}: '
-      'tags=${toggles.tagsEnabled}, '
-      'alarms=${toggles.alarmsEnabled}, config=${toggles.configEnabled}, '
-      'drawings=${toggles.drawingsEnabled}, trends=${toggles.trendsEnabled}, '
-      'plcCode=${toggles.plcCodeEnabled}, proposals=${toggles.proposalsEnabled}');
-
   final server = TfcMcpServer(
     database: db,
     stateReader: stateReader,
@@ -133,43 +155,4 @@ Future<void> main(List<String> arguments) async {
   await server.connect(transport);
 
   logger.i('TFC MCP Server is running on stdio transport.');
-}
-
-/// Read tool toggle state from the `flutter_preferences` table.
-///
-/// First tries the consolidated [McpConfig.kPrefKey] JSON blob. If not
-/// found, falls back to reading legacy individual `mcp_tools_*_enabled`
-/// keys. Missing keys default to `true` (enabled) so that a fresh
-/// database with no toggle preferences has all tools available.
-Future<McpToolToggles> _readTogglesFromDb(ServerDatabase db) async {
-  // Try consolidated config first.
-  final configRows = await (db.select(db.serverFlutterPreferences)
-        ..where((t) => t.key.equals(McpConfig.kPrefKey)))
-      .get();
-
-  if (configRows.isNotEmpty &&
-      configRows.first.type == 'String' &&
-      configRows.first.value != null) {
-    try {
-      final json =
-          jsonDecode(configRows.first.value!) as Map<String, dynamic>;
-      return McpConfig.fromJson(json).toggles;
-    } catch (_) {
-      // Corrupted JSON -- fall through to legacy keys.
-    }
-  }
-
-  // Fall back to legacy individual keys.
-  final rows = await (db.select(db.serverFlutterPreferences)
-        ..where((t) => t.key.isIn(McpToolToggles.legacyKeys)))
-      .get();
-
-  final toggleMap = <String, bool>{};
-  for (final row in rows) {
-    if (row.type == 'bool') {
-      toggleMap[row.key] = row.value == 'true';
-    }
-  }
-
-  return McpToolToggles.fromLegacyMap(toggleMap);
 }

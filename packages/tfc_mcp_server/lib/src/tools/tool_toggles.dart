@@ -132,6 +132,26 @@ class McpToolToggles {
   /// All groups enabled (default for new installations).
   static const allEnabled = McpToolToggles();
 
+  /// All groups disabled: what a server process runs as when nobody
+  /// decided what it should serve.
+  ///
+  /// Not a value anyone configures — every `fromJson` field defaults to
+  /// `true`, so no blob deserializes to this by omission. It exists for the
+  /// one case that is not a preference at all: a server process started
+  /// without the spawner handing its toggles down. An absent decision on a
+  /// capability surface is undecided, not yes.
+  static const allDisabled = McpToolToggles(
+    tagsEnabled: false,
+    alarmsEnabled: false,
+    configEnabled: false,
+    drawingsEnabled: false,
+    trendsEnabled: false,
+    plcCodeEnabled: false,
+    proposalsEnabled: false,
+    techDocsEnabled: false,
+    screenshotsEnabled: false,
+  );
+
   @override
   bool operator ==(Object other) =>
       other is McpToolToggles &&
