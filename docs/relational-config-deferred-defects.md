@@ -426,3 +426,38 @@ happens at approval, in the app).
 
 It is recorded because "the trail is complete" is a claim this milestone
 makes elsewhere, and an outage is the one window where it is not true.
+
+## D-10 — four API defaults still mean "every tool group enabled"
+
+**Found** 2026-09-08 while flipping the *stored* toggle defaults to false
+(`d2c91ea5`). **Not fixed**, deliberately — see below.
+
+`McpToolToggles.allEnabled` remains the Dart parameter default at four sites:
+
+- `packages/tfc_mcp_server/lib/src/server.dart:87`
+- `lib/mcp/mcp_bridge_notifier.dart:283` and `:578`
+- `lib/mcp/mcp_sse_server.dart:40`
+
+These are function parameter defaults, not stored settings, so they sit
+outside the ruling that produced `d2c91ea5`. But they are the same shape as
+the defect that ruling fixed: **an omitted capability argument means "all
+on"**, on the surface SAFE-03/SAFE-04 exist to gate.
+
+**Not live today**, verified: both `connectInProcess` calls in `chat.dart`
+(`:1001`, `:1185`) pass `toggles:` explicitly, and the subprocess path takes
+`CENTROIDX_MCP_TOGGLES`. Nothing currently reaches these defaults. It is a
+latent trap, not an open hole.
+
+**Why deferred rather than flipped:** it would re-baseline roughly 24 test
+constructions that presently get all-enabled implicitly, and it was found
+while a 180-commit branch was being compiled by CI for the first time. Two
+signals at once is how a real failure gets attributed to the wrong change.
+
+**Recommended fix, which is not "flip the default":** make the parameter
+**required**. A required argument removes the question instead of answering
+it, and the compiler names every call site. Flipping the default instead
+changes behaviour silently at sites nobody revisits — which is exactly the
+hazard found one level up in the same change: `static const allEnabled =
+McpToolToggles();` would have become **all-false** the moment the constructor
+defaults flipped, turning every "all tools on" call site off while compiling
+cleanly.
