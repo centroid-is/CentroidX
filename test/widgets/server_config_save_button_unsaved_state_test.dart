@@ -116,12 +116,12 @@ void main() {
     await tester.tap(find.text('Relay gateway'));
     await settle(tester);
     // A gateway with no address is a refusal ('Cannot save yet'), which is a
-    // different face of the button. Type a dialable address and a CA path so
-    // the state under test really is unsaved-and-valid.
+    // different face of the button. Type a dialable address so the state
+    // under test really is unsaved-and-valid. No CA anything: since the
+    // one-field flow, trust is fetched and approved at Save, so an unpinned
+    // wss address is exactly the unsaved-and-valid state.
     await tester.enterText(
         find.byType(TextField).first, 'wss://10.50.10.11:9443');
-    await settle(tester);
-    await tester.enterText(find.byType(TextField).at(1), '/pki/ca.pem');
     await settle(tester);
 
     // Anti-vacuity: everything below is only a statement about the unsaved
