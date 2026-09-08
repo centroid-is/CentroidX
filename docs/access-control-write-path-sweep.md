@@ -82,6 +82,20 @@ policy object, same fail-closed answer; the §2.2 row for
 `backend_alarm_history.dart:335` spells out why that is a property and not a
 gap.
 
+**Same-day addendum (2026-09-07):** plan 17-06 landed
+`packages/tfc_dart/lib/core/relay/backend_access.dart` — the backend's three
+access families over the very store classes 17-02 moved — after that re-run's
+tables were written, and the gate went red exactly as designed: six hits, no
+row, plus a new hit in the already-rowed `backend_composition.dart` (`:369`,
+the audit family's construction). The rows are in §2.2 and §2.3, and the
+finding compresses to one sentence: **nothing in that file is reachable from a
+connected client today**, because `PolicyStateMan` refuses all four access
+families wholesale (`_noAccessGate`) until 17-07 grades them, only the
+sessionless read-only audit family is even constructed until 17-09 mints
+templates and admin per verified identity, and the gates the file must not
+duplicate — `users` plus an audit row — live inside the stores it delegates
+to, exactly where the panel's direct mode already exercises them.
+
 **The answer to "is there a fifth?" is yes**, and it is in §4. The largest new
 finding is a family the spec never mentions: three raw-Drift index classes in
 `packages/tfc_mcp_server`, called directly from the Knowledge Base page, which
@@ -177,7 +191,7 @@ two of these five; all five were here, and plan 03-10 moved all five onto
 runs and none of the calls did. **This is the reason the reconciliation is by
 file and call rather than by line.**
 
-### 2.2 Raw Drift statement API (script §2 — 116 hits at the 2026-08-29 run, 113 at the 2026-08-30 re-run, 144 at the 2026-09-05 re-run, 152 at the 2026-09-07 re-run)
+### 2.2 Raw Drift statement API (script §2 — 116 hits at the 2026-08-29 run, 113 at the 2026-08-30 re-run, 144 at the 2026-09-05 re-run, 152 at the 2026-09-07 re-run, 154 after 17-06 landed later the same day)
 
 | File and line | Call | Store | Reached from | Verdict |
 |---|---|---|---|---|
@@ -213,6 +227,7 @@ file and call rather than by line.**
 | `packages/tfc_dart/lib/core/relay/backend_alarm_history.dart:359` | `db.customUpdate(pendingAckStatement)` | `alarm_history` | the alarm engine, when an `acknowledgeRequired` rule clears unseen (`backend_alarms.dart:1185`) | `not widget-reachable` — driven by a rule evaluation, the same claim and the same reason as `alarm.dart:341`'s row above; no wire method reaches it |
 | `packages/tfc_dart/lib/core/relay/backend_alarm_history.dart:396` | `db.customUpdate(closeStatement)` | `alarm_history` | the engine's clear and restart-reconciliation paths (`backend_alarms.dart:589, 978, 1054`) | `not widget-reachable` — driven by rule transitions and boot reconciliation. One leg is wire-adjacent and the row says so rather than rounding it off: acknowledging an already-cleared alarm closes its row (`backend_alarms.dart:1152`), and that leg sits behind the same gated `ackAlarm` as the `:335` row — so every path to this statement is either a plant transition or a gated operator action |
 | `packages/tfc_dart/lib/core/relay/backend_data_services.dart:991` | `database.db.customUpdate('DELETE FROM flutter_preferences WHERE key IN (…)', updateKind: UpdateKind.delete)` | `flutter_preferences` | `PreferencesSource.deletePreferenceRows` ← `BackendPreferences.clear(allowList:)` ← `_PolicyPreferences.clear` | `session-gated (relay policy)` — the centroidx-backend's twin of `preference_store.dart:517`, and the same three controls hold: every key is a bound `Variable.withString` placeholder, the key list comes from `getKeys(allowList:)` rather than from the client, and the *unrestricted* clear is refused outright above it (`policy_state_man.dart:1075`, 10-REVIEW CR-02). The allow-listed form still takes `operate` for every key alike — §3.12's disagreement with `kPrefAccessRules`, over the same table |
+| `packages/tfc_dart/lib/core/relay/backend_access.dart:152, 162` | `_require('update').update(value, origin: kRelayOrigin, reason: reason)` and `_require('delete').delete(name, origin: kRelayOrigin, reason: reason)` on `BackendAccessTemplates` | `access_template`, `access_key_binding` | nothing in the shipped graph today: `composeBackendRelay` constructs only the audit family (`backend_composition.dart:369`), `BackendStateMan` refuses `accessTemplates` **by name** until 17-09 constructs this class per minted identity, and `PolicyStateMan.accessTemplates` refuses wholesale (`_noAccessGate`, `policy_state_man.dart:373`) until 17-07 grades it | `correct as-is` — these are calls **on `AccessTemplateStore`**, the same claim as `access_templates_section.dart:635, 1130` above and true for the same reason: the `users` gate (`kAccessTemplateGroup`) and the audit row are inside the store, whose own §2.2 row carries the writes. This file maps and delegates and decides nothing — `backend_access_test.dart`'s arm 10 greps its source for permission-check tokens and requires zero, because a second gate here is what the phase's constitution forbids. The verdict is deliberately **not** `session-gated (relay policy)`: 17-07's wire grading is not written yet, and a row banking it early is the decorative outcome §6 forbids. What holds today is duller and stronger — no wire frame reaches this class at all, and when 17-09 does construct it, the gate that answers is the panel's own store gate, with `origin: 'relay'` on every row |
 
 **Nothing further found** in this section beyond `server_config_db.dart`, the
 three MCP index classes and the audit stores: every other hit is either the
@@ -226,9 +241,13 @@ temp-directory cleanup. **The 2026-09-07 re-run adds two more names**:
 `alarm_history` from anywhere but `AlarmMan`, one gated and two engine-driven —
 and `backend_data_services.dart:991`, the second spelling of the parameterised
 preference delete. `gateway_link_status.dart:419` joins the false-positive
-family from a grep pattern that had never fired before.
+family from a grep pattern that had never fired before. **17-06 adds one name
+after that re-run's tables were written**: `backend_access.dart`, two hits,
+both calls on the moved `AccessTemplateStore` rather than on a database — the
+gate is the store's own, and the row above says why the relay vocabulary is
+deliberately not claimed for it yet.
 
-### 2.3 `AppDatabase` handles and the `.db` accessor (script §3 — 60 hits at the 2026-08-29 run, 55 at the 2026-08-30 re-run, 67 at the 2026-09-05 re-run, 74 at the 2026-09-07 re-run; plus 176 collapsed in `database_drift.g.dart` at the first two runs and 192 since)
+### 2.3 `AppDatabase` handles and the `.db` accessor (script §3 — 60 hits at the 2026-08-29 run, 55 at the 2026-08-30 re-run, 67 at the 2026-09-05 re-run, 74 at the 2026-09-07 re-run, 79 after 17-06 landed later the same day; plus 176 collapsed in `database_drift.g.dart` at the first two runs and 192 since)
 
 This section exists to catch a *new accessor spelling* the first time it
 appears. It found no handle that is not already covered by 2.1 or 2.2. Rows
@@ -256,7 +275,10 @@ here are therefore grouped by what the handle is used for.
 | `lib/core/relay_alarm_source.dart:444` | `final db = preferences.database!.db` | reads | `RelayAlarmSource.getRecentAlarms` — the gateway-mode panel reading its own `alarm_history` (D-11), from the alarm history surface | `left open: read permissions are deferred` — spec §11, the same verdict as `history_view.dart`'s read rows above. The file issues one `select` and calls no write member on the handle; its one write is `:400`, rowed in 2.9. The receiver is `preferences.database!.db`, the seventh of the eight spellings — nothing new |
 | `packages/tfc_dart/lib/core/relay/backend_alarm_history.dart:72, 450, 461` | the `AppDatabase` import, and `_require(member)` returning `database.db` | `alarm_history` | `AlarmHistoryWriter` — the store the three `customUpdate` rows in 2.2 execute through | `correct as-is` — the store holding its own handle, the same claim as the core-machinery row above; the write verdicts live on the 2.2 rows. `_require` is itself worth the sentence: composed without a database it refuses **by name** (P-12), where `alarm.dart:472` silently `return`s — so this write path cannot no-op into silence |
 | `packages/tfc_dart/lib/core/relay/backend_data_services.dart:592, 674, 991` | `drift.AppDatabase` fields on `DatabaseHistoryViewSource` and `BackendHistoryViews.overDatabase`, and `:991`'s `database.db` receiver | `AppDatabase` | the backend's data services — 2.1 and 2.2 carry their writes | `correct as-is` — the stores holding their own handle; every write through them is rowed above, and the check stands in the per-session `PolicyStateMan`, above all of them |
-| `packages/tfc_dart/lib/core/relay/backend_composition.dart:347` | `BackendHistoryViews.overDatabase(database: database.db)` | `AppDatabase` | `composeBackendRelay` — the one function that assembles the centroidx-backend's graph, whose only production caller is `bin/main.dart` (asserted structurally by `backend_composition_test.dart`) | `correct as-is` — a composition root handing a store its handle, one line, no statement of its own: the same claim as `accessTemplateStoreProvider`'s row above, made in the second server-side program. What it builds is served only through the per-session `PolicyStateMan` (`relay_session.dart:367`), and the policy it serves under is **named** rather than defaulted — `backendRelayPolicy`, `AllVisibleOperatorWrites`, deliberately non-const so a test can assert somebody chose it |
+| `packages/tfc_dart/lib/core/relay/backend_composition.dart:348` | `BackendHistoryViews.overDatabase(database: database.db)` | `AppDatabase` | `composeBackendRelay` — the one function that assembles the centroidx-backend's graph, whose only production caller is `bin/main.dart` (asserted structurally by `backend_composition_test.dart`) | `correct as-is` — a composition root handing a store its handle, one line, no statement of its own: the same claim as `accessTemplateStoreProvider`'s row above, made in the second server-side program. What it builds is served only through the per-session `PolicyStateMan` (`relay_session.dart:367`), and the policy it serves under is **named** rather than defaulted — `backendRelayPolicy`, `AllVisibleOperatorWrites`, deliberately non-const so a test can assert somebody chose it |
+| `packages/tfc_dart/lib/core/relay/backend_composition.dart:369` | `BackendAudit(database: database.db)` | `AppDatabase` | `composeBackendRelay` — the same composition root one row above; new at 17-06 | `correct as-is` — the root handing the **read-only** audit family its handle, and the asymmetry beside it is the finding worth its own row: only the audit family is wired here, because `BackendAccessTemplates` and `BackendAccessAdmin` attribute their rows to a session and a station, and at composition time there is no identity to attribute to — an invented one is the false attribution D-11 forbids, so those two wait for 17-09 to construct them where the relay identity is minted. Wiring the source does **not** put the trail on the wire ahead of its gate: every handler reads through the per-session `PolicyStateMan`, whose `audit` getter refuses wholesale (`_noAccessGate`, `policy_state_man.dart:379`) until 17-07 grades it — so this line changes what stands *behind* the gate, so 17-07 has something real to grade |
+| `packages/tfc_dart/lib/core/relay/backend_access.dart:95, 191, 312` | `required AppDatabase? database` on the three family constructors (`BackendAccessTemplates`, `BackendAccessAdmin`, `BackendAudit`) | `AppDatabase` | `composeBackendRelay` for `BackendAudit` alone (`backend_composition.dart:369`, one row up); the template and admin families have **no production caller** until 17-09 | `correct as-is` — the seam handing the moved stores (`packages/tfc_dart/lib/core/access/*`, 17-02) their handle: this file maps and delegates and decides nothing, which `backend_access_test.dart`'s arm 10 asserts on its source rather than leaving as a doc claim, because the gates it must not duplicate are the stores' own — `AccessTemplateStore` and `AccessAdminStore` check `users` and write audit rows above every write (their §2.2 rows), and `AuditTrailStore` is read-only ungated by design (its row above). Nullable on purpose: composed without a database, each family refuses **by name** (P-12), the same shape as `backend_alarm_history.dart:450`'s `_require`, so "no templates configured" and "nobody wired a database" cannot look the same from a screen. No tenth accessor spelling — the handle arrives as a constructor argument spelled `database`, and the `.db` that feeds it is the composition root's |
+| `packages/tfc_dart/lib/core/relay/backend_access.dart:80` | the word `AppDatabase` inside `_missingDatabase`'s diagnostic string | — | — | `not widget-reachable` — not a handle; the type grep matching a string literal, this section's first false positive of that kind, recorded rather than filtered away exactly as §2.2 records its own. The string is the refusal text the row above describes, naming the missing collaborator as P-12 requires |
 | `packages/tfc_dart/lib/core/database_drift.g.dart` (176 occurrences at the first two runs, 192 at the third) | generated `_$AppDatabase` boilerplate | — | drift codegen | `not widget-reachable` — regenerated from `database_drift.dart`, which is searched above; collapsed by the script and counted |
 
 **Seven accessor spellings at the 2026-08-29 run — `adb`, `dbWrap.db`,
@@ -274,7 +296,8 @@ kind it is.
 field.
 
 **A ninth at the 2026-09-07 re-run: `database.db`** —
-`backend_composition.dart:347`, `backend_data_services.dart:991` and
+`backend_composition.dart:348` (and `:369` since 17-06),
+`backend_data_services.dart:991` and
 `backend_alarm_history.dart:461`, the bare-named sibling of `database!.db`
 where `database` is the backend's own `Database` held non-nullably (or checked
 by `_require` first). Reported under this section's standing rule — a new
