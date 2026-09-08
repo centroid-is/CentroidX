@@ -50,7 +50,7 @@ import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart'
     show AccessGroup, AccessPolicy, AccessRole, AuditSink, AuthenticatedUser;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
-    show AccessAdminApi, AccessTemplateApi;
+    show AccessAdminApi, AccessTemplateApi, BackendConfigApi;
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 
 import '../access/access_repository.dart';
@@ -61,6 +61,7 @@ import '../preferences.dart';
 import '../state_man.dart' show KeyMappings;
 import 'backend_access.dart';
 import 'backend_alarm_ack.dart';
+import 'backend_config_store.dart';
 import 'backend_alarms.dart' show AlarmAcknowledger;
 import 'backend_browse.dart';
 import 'backend_data_services.dart';
@@ -304,6 +305,7 @@ BackendRelayComposition composeBackendRelay({
   AlarmAcknowledger? alarms,
   Duration staleAfter = kBackendStaleAfter,
   Set<String> methodKeys = const <String>{},
+  String? statemanFilePath,
   Logger? log,
 }) {
   final logger = log ?? Logger();
@@ -518,17 +520,29 @@ BackendRelayComposition composeBackendRelay({
           : null;
   final UserResolver? accounts = accountCache?.resolve;
 
-  // The per-identity template and admin families (D-11): built once per
-  // verified station at `hello`, never at compose time — a family constructed
-  // here with an invented session would write rows naming somebody the server
-  // never verified. `RelayServer` invokes this with the resolver-verified
-  // identity and swaps the two families UNDER its policy decorator
-  // (`_IdentityScopedSource`), so a scoped family is graded exactly as a shared
-  // one. The return is `relay_session`'s `IdentityAccessFamilies` record; it is
-  // written structurally because that typedef is not on the server's barrel.
-  ({AccessTemplateApi accessTemplates, AccessAdminApi accessAdmin}) scopeFactory(
-          StationIdentity identity) =>
-      (
+  // The per-identity template, admin and config families (D-11): built once
+  // per verified station at `hello`, never at compose time — a family
+  // constructed here with an invented session would write rows naming somebody
+  // the server never verified. `RelayServer` invokes this with the
+  // resolver-verified identity and swaps the families UNDER its policy
+  // decorator (`_IdentityScopedSource`), so a scoped family is graded exactly
+  // as a shared one. The return is `relay_session`'s `IdentityAccessFamilies`
+  // record; it is written structurally because that typedef is not on the
+  // server's barrel.
+  //
+  // `backendConfig` is the third slot, the Phase 17 gate's one named
+  // carry-forward (17-11 dev 3): the store attributes accepted AND refused
+  // config writes to the session (17-10), so it could not be wired
+  // sessionlessly without forging D-11 attribution. It serves the file at
+  // `statemanFilePath` — the boot file `bin/main.dart` already reads
+  // (CENTROID_STATEMAN_FILE_PATH). A composition handed no path still mints
+  // the store, and the store refuses every member by name (its own
+  // `_require`): fail closed, and the refusal says what to wire.
+  ({
+    AccessTemplateApi accessTemplates,
+    AccessAdminApi accessAdmin,
+    BackendConfigApi? backendConfig,
+  }) scopeFactory(StationIdentity identity) => (
         accessTemplates: BackendAccessTemplates(
           database: database.db,
           session: () => identity.session,
@@ -538,6 +552,13 @@ BackendRelayComposition composeBackendRelay({
         ),
         accessAdmin: BackendAccessAdmin(
           database: database.db,
+          session: () => identity.session,
+          station: identity.station,
+          audit: auditSink,
+          logger: logger,
+        ),
+        backendConfig: BackendConfigStore(
+          path: statemanFilePath,
           session: () => identity.session,
           station: identity.station,
           audit: auditSink,

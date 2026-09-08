@@ -29,13 +29,15 @@
 /// end-to-end revocation the whole phase turns on. Every number — row counts,
 /// the close code, the poll — is quoted in 17-14-SUMMARY.md.
 ///
-/// **The backendConfig honesty (ACCESS-04/06).** 17-11 deviation 3 recorded a
-/// standing gap: `composeBackendRelay` wires templates and admin per identity
-/// but serves `backendConfig` sessionlessly from the shared source, so
-/// over-the-wire config editing is 17-13's to complete. This test *probes* the
-/// config surface of the shipped graph and asserts whatever it honestly finds,
-/// rather than asserting a behaviour the graph does not yet have — a named gap
-/// with its reason, never a fudge.
+/// **The backendConfig leg (ACCESS-04/06).** 17-11 deviation 3 recorded a
+/// standing gap — `composeBackendRelay` served `backendConfig` sessionlessly,
+/// refusing -32011 on the wire — and the Phase 17 gate carried it forward by
+/// name. That gap is now closed: the composition mints a per-identity
+/// `BackendConfigStore` over the boot file (`statemanFilePath`), and the arm-4
+/// group here measures BOTH polarities over the real socket: an
+/// administer-holding station reads/validates/writes (edit lands in the file,
+/// secrets redacted on the wire, relay section refused by name — D-10), an
+/// unauthorised one is refused server-side with deny rows.
 @Tags(['db'])
 @Timeout(Duration(minutes: 6))
 library;
@@ -387,11 +389,9 @@ void main() {
       keyMappings: _mappings(),
       database: database,
       prefs: prefs,
-      // RED: [statemanPath] stops here — `composeBackendRelay` has no
-      // parameter to receive the backend's own boot file, which is exactly
-      // the bug (17-11 dev 3): the config family cannot reach the shipped
-      // graph, so `backendConfig.*` refuses -32011 on the wire. GREEN threads
-      // it through as `statemanFilePath:`.
+      // The backend's own boot file, exactly as bin/main.dart passes it —
+      // the slot whose absence was the gate's measured -32011.
+      statemanFilePath: statemanPath,
       log: Logger(level: Level.off),
     );
   }
