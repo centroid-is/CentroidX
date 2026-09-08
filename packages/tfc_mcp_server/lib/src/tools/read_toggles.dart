@@ -160,7 +160,7 @@ Tool groups:
   set to false, so name every group you want.
   Group names: ${McpToolToggles.allJsonKeys.join(', ')}
 
-  Example: --toggles '{"tags":true,"proposals":false}'
+  Example: --toggles '{"tags":true,"alarms":true}' -- those two, nothing else.
 
   The environment variable wins over --toggles, so a spawning app is never
   overridden by a stale shell alias.''';
