@@ -333,6 +333,41 @@ void main() {
   });
 
   group('writes', () {
+    test('remove() cannot delete the migration marker', () async {
+      // `clear()` keeps internal rows and `remove()` did not, so
+      // `remove('_migrated.preferences')` dropped the marker from the replace
+      // set and deleted it plant-wide. The marker is what tells an empty
+      // shared store from an unmigrated one: without it the next sweep reads
+      // a fully migrated plant as needing migration. Administer-gated and the
+      // id is hidden from getKeys, so this is a guard rather than a live bug —
+      // but it is one line, and the row it protects cannot be reconstructed.
+      await seedShared({
+        kPreferencesMigratedMarkerId: (kPrefBoolType, 'true'),
+        'alarm_man_config': (kPrefStringType, 'a'),
+      });
+      await store.open();
+
+      await prefs.remove(kPreferencesMigratedMarkerId);
+
+      final rows = await remote.select(remote.configItemTable).get();
+      expect(rows.map((r) => r.id), contains(kPreferencesMigratedMarkerId),
+          reason: 'bookkeeping is not a preference anybody may remove');
+    });
+
+    test('remove() still removes an ordinary preference', () async {
+      // The control: the guard must not have turned remove() off.
+      await seedShared({
+        'alarm_man_config': (kPrefStringType, 'a'),
+        'collector_config': (kPrefStringType, 'b'),
+      });
+      await store.open();
+
+      await prefs.remove('alarm_man_config');
+
+      final rows = await remote.select(remote.configItemTable).get();
+      expect(rows.map((r) => r.id), ['collector_config']);
+    });
+
     test('one preference write leaves its siblings alone', () async {
       await seedShared({
         'alarm_man_config': (kPrefStringType, 'a'),
