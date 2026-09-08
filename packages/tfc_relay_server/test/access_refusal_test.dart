@@ -149,21 +149,18 @@ void main() {
   group('SessionHealthStateMan delegates the four access families', () {
     for (final member in accessFamilies) {
       test('$member is forwarded, not answered locally', () {
-        // The overlay over a source that refuses by name (FakeStateMan's own
-        // four getters, until 17-05 gives it stores). If the overlay
-        // forwards, the message names FakeStateMan; a refusal it minted
-        // itself would name itself — and would hide which layer actually has
-        // nothing behind it.
+        // 17-05 gave FakeStateMan real stores behind all four getters, so
+        // "forwarded" is now provable at its strongest: the overlay must hand
+        // back the very instance the source holds. An overlay that minted its
+        // own store — or threw — fails the identity. (All four families are
+        // backed by ONE FakeAccessServices, so a member-crossing overlay is
+        // not distinguishable here; the handler-table tests own that.)
         final plant = FakeStateMan();
         addTearDown(plant.dispose);
         final health = SessionHealthStateMan(source: plant);
         expect(
-          () => reachFamily(health, member),
-          throwsA(isA<UnsupportedError>().having(
-              (e) => e.message.toString(),
-              'the message comes from the source, not the overlay',
-              allOf(contains('FakeStateMan.$member'),
-                  isNot(contains('SessionHealthStateMan'))))),
+          reachFamily(health, member),
+          same(reachFamily(plant, member)),
           reason: 'the overlay adds health keys and no authority',
         );
       });
