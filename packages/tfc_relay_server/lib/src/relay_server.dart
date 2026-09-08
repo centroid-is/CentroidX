@@ -31,6 +31,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:shelf/shelf.dart' as shelf;
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:stream_channel/stream_channel.dart';
@@ -53,6 +54,7 @@ import 'relay_session.dart';
 import 'server_config.dart';
 import 'session_sink.dart';
 import 'tick_engine.dart';
+import 'tls/trust.dart';
 import 'token_validator.dart';
 import 'write_outcome_log.dart';
 import 'ws_channel.dart';
@@ -365,6 +367,11 @@ final class RelayServer {
   final _closeLedger = <ConnectionClose>[];
 
   HttpServer? _http;
+
+  /// The plaintext trust listener on port + 1, or null when
+  /// [ServerConfig.trust] is. See `tls/trust.dart`.
+  HttpServer? _trustHttp;
+
   var _closed = false;
 
   /// Whether [announceDraining] has been called. See it for why this is not
@@ -540,6 +547,15 @@ final class RelayServer {
             chainPath: tls.chainPath,
             nowMs: _now,
           )..refresh());
+    // The trust document is read before either bind, so a gateway told to
+    // serve a root it cannot open refuses to start with the file named — the
+    // exact posture a misspelled chainPath already has, and for the same
+    // reason: a 500 at the first commissioning fetch names nothing.
+    final trust = config.trust;
+    final TrustDocument? trustDoc = trust == null
+        ? null
+        : TrustDocument(caPem: await File(trust.caPath).readAsString());
+
     _http = await shelf_io.serve(
       webSocketHandler(
         _onConnect,
@@ -559,6 +575,24 @@ final class RelayServer {
       config.port,
       securityContext: security,
     );
+    if (trustDoc != null) {
+      // After the main bind, so the derived port is the *bound* one — the
+      // convention is wss port + 1 and nothing else, because the client has
+      // only the URL the operator typed to derive it from. Plaintext by
+      // argument (`tls/trust.dart`): the served root is public material and
+      // the trust step is the fingerprint approval, never this transport.
+      // One path, one method, everything else 404: nothing may quietly grow
+      // on an unauthenticated listener.
+      _trustHttp = await shelf_io.serve(
+        (request) => request.method == 'GET' &&
+                '/${request.url.path}' == relayTrustPath
+            ? shelf.Response.ok(trustDoc.toJsonString(),
+                headers: const {'content-type': 'application/json'})
+            : shelf.Response.notFound('nothing here but $relayTrustPath'),
+        config.address,
+        _http!.port + relayTrustPortOffset,
+      );
+    }
     // After the bind, so a server that failed to bind has no timer running
     // against an empty registry, and one engine for the whole process — see
     // `tick_engine.dart` on why this is never per session.
@@ -1117,6 +1151,8 @@ final class RelayServer {
 
     await _http?.close(force: true);
     _http = null;
+    await _trustHttp?.close(force: true);
+    _trustHttp = null;
 
     await _engine?.stop();
     _engine = null;

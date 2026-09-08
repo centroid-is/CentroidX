@@ -34,6 +34,7 @@ import 'dart:io' show InternetAddress;
 
 import 'auth/auth_config.dart';
 import 'tls/tls_config.dart';
+import 'tls/trust.dart';
 
 /// The knobs a gateway is started with.
 ///
@@ -274,6 +275,22 @@ final class ServerConfig {
   /// configuration nobody can reason about.
   final AuthConfig? auth;
 
+  /// Where the CA root this gateway serves for pinning is mounted, or `null`
+  /// for a gateway that serves none.
+  ///
+  /// Non-null binds one extra plaintext listener at **[port] + 1** answering
+  /// `GET /relay-trust` with the root and its fingerprint — the acquisition
+  /// half of the one-URL configuration flow (`tls/trust.dart` argues why
+  /// plaintext is correct there and nowhere else). `null` is the default for
+  /// [tls]'s reason: every existing fixture and deployment constructs without
+  /// it and must not grow a listener it did not ask for.
+  ///
+  /// Refused when [tls] is null: a plaintext gateway has no certificate for
+  /// the served root to vouch for, so the endpoint would offer panels an
+  /// anchor that anchors nothing — and the panel would then refuse the
+  /// `ws://` dial for carrying it.
+  final TrustConfig? trust;
+
   /// The interface the gateway binds.
   ///
   /// Loopback by default (threat T-03-11), and the default is deliberately
@@ -432,6 +449,7 @@ final class ServerConfig {
     this.writeOutcomeTtl = const Duration(seconds: 60),
     this.tls,
     this.auth,
+    this.trust,
     this.publisherId,
     // The pre-hello budget (16-09). `preHelloDeadline` is nullable in and
     // non-null out: null means "derive it from heartbeatDeadline", which is
@@ -492,6 +510,14 @@ final class ServerConfig {
           'operating system for an ephemeral port and anything else must be '
           'a real one, or the gateway fails to bind at boot on a plant '
           'machine nobody is standing next to');
+    }
+    if (trust != null && tls == null) {
+      throw ArgumentError('trust is configured on a plaintext gateway: the '
+          'trust endpoint serves the CA root a pinned panel verifies this '
+          'gateway under, and with no TlsConfig there is no certificate for '
+          'that root to vouch for. Panels that fetched it would then refuse '
+          'their own ws:// dial for carrying a root that is never consulted. '
+          'Configure tls as well, or drop trust deliberately');
     }
     _positive('maxPending', maxPending);
     _positive('peakWindowMs', peakWindowMs);
