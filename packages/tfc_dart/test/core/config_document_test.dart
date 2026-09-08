@@ -262,6 +262,14 @@ void main() {
           reason: 'preserving unknown keys must not preserve DELETED known '
               'ones');
       expect(entry['x_marker'], 'kept');
+      // Sabotage finding (mutation e): an EDITED entry must not have its
+      // absent defaults materialised either — arm 7 only covered the
+      // untouched path, and a mutant that wrote every default on edit
+      // stayed green until this assertion existed.
+      expect(entry.containsKey('enabled'), isFalse,
+          reason: 'editing one field must not rewrite the entry into this '
+              'build\'s dialect');
+      expect(entry.containsKey('publishing_interval_ms'), isFalse);
       // And the round trip agrees.
       expect(StateManConfig.fromJson(out).opcua.single.serverAlias, isNull);
     });
