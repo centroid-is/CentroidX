@@ -35,13 +35,15 @@ enum TransportMode {
   /// This station holds one WebSocket to the relay gateway for its **values**:
   /// no OPC UA session, no Modbus socket, no collector.
   ///
-  /// It also holds **one Postgres connection**, for sign-in, preferences and
-  /// the audit trail — shared with the rest of the plant and configured
-  /// elsewhere on this page. That is measured, not assumed: the rig ran a panel
-  /// in gateway mode and found the connection open (13-RIG-E2E-EVIDENCE
-  /// FIND-C), and `lib/providers/database.dart` has no transport branch to
-  /// close it with. Phase 17 moves access, preferences and audit onto the relay
-  /// too; until then this doc says what the panel actually opens.
+  /// It holds **no direct database connection**. It once did — the rig
+  /// measured a panel in gateway mode with the connection open
+  /// (13-RIG-E2E-EVIDENCE FIND-C) because `lib/providers/database.dart` had no
+  /// transport branch, and `preferencesProvider` is keepAlive and watched it
+  /// unconditionally, so the pool came up at boot with no screen asking for it.
+  /// Phase 17 moved access, preferences and the audit trail onto the relay, and
+  /// `databaseProvider` now branches on the transport before it reads the
+  /// configuration row, spawns a pool or arms the retry probe. The backend owns
+  /// the database; this station reaches it only through the socket.
   gateway;
 
   /// The name persisted in preferences. Parsing is by this string, so renaming
