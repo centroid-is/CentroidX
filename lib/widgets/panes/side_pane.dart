@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
+import '../onscreen_keyboard.dart';
 import 'pane_chrome.dart';
 import 'standard_dialog.dart';
 
@@ -771,6 +772,9 @@ class _SidePaneShellState extends State<_SidePaneShell>
         event.logicalKey != LogicalKeyboardKey.escape) {
       return false;
     }
+    // A field in the pane has the on-screen keyboard up: this Escape takes
+    // the keyboard down and nothing else. The pane closes on the next one.
+    if (escapeDismissesKeyboard(event)) return false;
     // A floating dialog opened from this pane sits on top of it, so it gets
     // the Escape first and the pane only closes once they are all gone.
     if (!FloatingDialogs.isEmpty) return false;
