@@ -80,8 +80,8 @@ void main() {
       var value = 0;
       for (var t = 0; t < 20; t++) {
         plant.api.setValues({for (final key in keys) key: ++value});
-        final now = plant.tick();
-        panel.buffer.recordAck('page-1', state.seq, now);
+        plant.tick();
+        panel.buffer.recordAck('page-1', state.seq);
       }
 
       expect(panel.session.sentCloseCode, isNull,
@@ -142,8 +142,8 @@ void main() {
       void run(int ticks, {required bool acking}) {
         for (var t = 0; t < ticks; t++) {
           plant.api.setValues({for (final key in keys) key: ++value});
-          final now = plant.tick();
-          if (acking) panel.buffer.recordAck('page-1', state.seq, now);
+          plant.tick();
+          if (acking) panel.buffer.recordAck('page-1', state.seq);
         }
       }
 
@@ -361,7 +361,8 @@ void main() {
       var value = 0;
       for (var t = 0; t < 10; t++) {
         plant.api.setValues({for (final key in keys) key: ++value});
-        panel.buffer.recordAck('page-1', 1_000_000_000, plant.tick());
+        plant.tick();
+        panel.buffer.recordAck('page-1', 1_000_000_000);
       }
 
       // Nothing further is acknowledged, truthfully or otherwise. A client
@@ -392,7 +393,7 @@ void main() {
       // Silently, and without creating an entry: a map keyed by whatever a
       // peer puts in an ack is a peer-controlled allocation on a path that
       // runs every heartbeat (§5.2 rule 3).
-      panel.buffer.recordAck('a-page-nobody-subscribed', 42, plant.clock.nowMs);
+      panel.buffer.recordAck('a-page-nobody-subscribed', 42);
       expect(panel.buffer.deliveryGapOf('a-page-nobody-subscribed'), isNull);
 
       var value = 0;
@@ -417,13 +418,12 @@ void main() {
         plant.api.setValues({for (final key in keys) key: ++value});
         plant.tick();
       }
-      final now = plant.clock.nowMs;
-      panel.buffer.recordAck('page-1', state.seq, now);
+      panel.buffer.recordAck('page-1', state.seq);
       expect(panel.buffer.deliveryGapOf('page-1'), 0);
 
       // Beats can be reordered on the wire and a client can restart its own
       // counter; neither is evidence that a frame was un-applied.
-      panel.buffer.recordAck('page-1', 1, now);
+      panel.buffer.recordAck('page-1', 1);
       expect(panel.buffer.deliveryGapOf('page-1'), 0,
           reason: 'a late beat carrying an older ack is stale news, not a '
               'regression, and treating it as one would open a window against '
