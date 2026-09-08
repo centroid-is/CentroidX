@@ -36,10 +36,16 @@ import 'dart:mirrors';
 import 'package:logger/logger.dart';
 import 'package:test/test.dart';
 
+import 'package:tfc_access/tfc_access.dart'
+    show AccessGroup, AccessPolicy, AccessSession, AuthenticatedUser;
+import 'package:tfc_dart/core/access/access_repository.dart';
+import 'package:tfc_dart/core/access/drift_audit_sink.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_dart/core/relay/backend_access.dart'
+    show BackendAccessAdmin, BackendAccessTemplates;
 import 'package:tfc_dart/core/relay/backend_browse.dart';
 import 'package:tfc_dart/core/relay/backend_composition.dart';
 import 'package:tfc_dart/core/relay/backend_data_services.dart';
@@ -222,7 +228,10 @@ void main() {
         'historyViews': BackendHistoryViews,
         'preferences': BackendPreferences,
         'resolver': KeyMappingSeriesResolver,
-        'policy': AllVisibleOperatorWrites,
+        // 17-11: the policy is now the AccessPolicy-backed adapter, not the
+        // deleted `AllVisibleOperatorWrites` — the write rule is stated once, in
+        // the master `AccessPolicy`, and this class asks (17-07's overhaul).
+        'policy': AccessPolicyKeyPolicy,
         'timeseries source': DatabaseTimeseriesSource,
         'historyViews source': DatabaseHistoryViewSource,
         'preferences source': PreferencesSource,
@@ -241,7 +250,7 @@ void main() {
         BackendHistoryViews,
         BackendPreferences,
         KeyMappingSeriesResolver,
-        AllVisibleOperatorWrites,
+        AccessPolicyKeyPolicy,
         DatabaseTimeseriesSource,
         DatabaseHistoryViewSource,
         PreferencesSource,
@@ -306,14 +315,21 @@ void main() {
           reason: 'a default that ships is a decision nobody made. The policy '
               'must be the instance backend_composition.dart names, with its '
               'reason written beside it');
-      expect(identical(composed.server.policy, const AllVisibleOperatorWrites()),
+      expect(identical(composed.server.policy, const AccessPolicyKeyPolicy()),
           isFalse,
-          reason: 'if this is the canonicalised const, the composition let '
-              'RelayServer default and the arm above is vacuous');
+          reason: 'if this is the canonicalised const `AccessPolicyKeyPolicy` '
+              'that RelayServer defaults to (relay_server.dart:152), the '
+              'composition let RelayServer default and the arm above is '
+              'vacuous. `backendRelayPolicy` is a deliberately non-const '
+              'instance so "somebody chose it" is a fact a test can read by '
+              'identity');
+      expect(composed.server.policy, isA<AccessPolicyKeyPolicy>(),
+          reason: '17-11: the shipped policy is the AccessPolicy-backed adapter '
+              '(17-07), not the deleted AllVisibleOperatorWrites');
     });
 
     test('a deployment may hand its own policy in, and it is the one used', () {
-      final mine = AllVisibleOperatorWrites();
+      final mine = AccessPolicyKeyPolicy(policy: const AccessPolicy());
       final composed = compose(policy: mine);
 
       expect(identical(composed.server.policy, mine), isTrue);
@@ -402,6 +418,136 @@ void main() {
     });
   });
 
+  // ------------------------------------------------ the RBAC access surface
+  //
+  // 17-11: the shipping graph carries the real audit SINK, the real database
+  // group resolver and the per-identity family factory — assembled by this
+  // test, not by fakes behind decorators (CR-01). Every arm reads a runtime
+  // type or a live answer off the graph `bin/main.dart` builds.
+  //
+  // **Deviation forced by the merged 17-09 surface, recorded here so the next
+  // reader is not surprised:** the plan (written before 17-09) wanted the four
+  // access families wired into the shared `BackendStateMan` and reachable
+  // through `composed.api.accessTemplates` etc. 17-09 landed a different seam:
+  // `accessTemplates`/`accessAdmin` are built PER IDENTITY at `hello` through
+  // `RelayServer.accessFor` (a callback the shared source cannot hold, because
+  // a compose-time family would forge attribution — D-11), and only the
+  // sessionless `audit` family lives on the shared source. So "reachable" is
+  // asserted where each family actually lives: the audit family and sink on the
+  // shared graph, the two scoped families through the factory.
+
+  /// A token file locked to the owner — the only mode the loader accepts.
+  String _tokenFile(String username, String station) {
+    final path = '${tmp.path}/relay-tokens.json';
+    File(path).writeAsStringSync(jsonEncode(<String, dynamic>{
+      'tokens': <String, dynamic>{
+        // 24+ chars: FileTokenValidator.minTokenLength.
+        'tok-${station.toLowerCase()}-000000000000000': <String, dynamic>{
+          'username': username,
+          'station': station,
+        },
+      },
+    }));
+    if (!Platform.isWindows) Process.runSync('chmod', ['600', path]);
+    return path;
+  }
+
+  /// Creates a station account holding [roleName] and returns its username.
+  Future<String> _seedStation(String username, String roleName) async {
+    final repo = AccessRepository(database.db);
+    await repo.createUser(
+        username: username, password: 'a-long-enough-password', roleName: roleName);
+    await repo.setStationAccount(username, true);
+    return username;
+  }
+
+  group('the shipping graph carries the real sink, resolver and factory', () {
+    test('the audit SINK RelayServer writes verdicts to is a DriftAuditSink '
+        'over the backend own database', () {
+      final composed = compose(
+        stateman: _relaySection(
+            source: 'token_file',
+            tokenFile: _tokenFile('ST101-panel', 'ST101')),
+      );
+
+      expect(composed.server.audit, isA<DriftAuditSink>(),
+          reason: 'a wire authorization verdict must land in the same '
+              'audit_entry table the panel writes to — NullAuditSink would '
+              'degrade the trail to nothing (CR-01, sabotage a)');
+    });
+
+    test('a token file requires — and the composition wires — an account '
+        'resolver over app_role', () async {
+      final user = await _seedStation('ST101-panel', 'Shift Leader');
+      final composed = compose(
+        stateman: _relaySection(
+            source: 'token_file', tokenFile: _tokenFile(user, 'ST101')),
+      );
+      // The resolver cache is populated by the poll before the first hello;
+      // the composition exposes the same refresh the embedder drives.
+      await composed.refreshAccounts();
+
+      final resolver = composed.server.accounts;
+      expect(resolver, isNotNull,
+          reason: 'RelayServer.start() REFUSES a token file with no resolver '
+              '(relay_server.dart:496); a composition that shipped one would '
+              'not start');
+
+      final resolved = resolver!(user);
+      expect(resolved, isNotNull,
+          reason: 'the station account seeded above must resolve');
+      expect(resolved!.groups, contains(AccessGroup.setpoints),
+          reason: 'Shift Leader carries operate+setpoints; the groups come '
+              'from app_role, read through AccessRepository, not from the file');
+      expect(resolver('nobody-at-all'), isNull,
+          reason: 'an unknown username resolves to null, never to an empty '
+              'group set — D-06 fail-closed');
+    });
+
+    test('the per-identity template and admin families are built by the '
+        'factory, as the real backend classes', () {
+      final composed = compose(
+        stateman: _relaySection(
+            source: 'token_file',
+            tokenFile: _tokenFile('ST101-panel', 'ST101')),
+      );
+
+      final factory = composed.server.accessFor;
+      expect(factory, isNotNull,
+          reason: 'templates/admin are minted per verified identity (D-11); '
+              'the factory is the seam 17-09 built and 17-11 fills');
+
+      const user = AuthenticatedUser(
+          username: 'ST101-panel',
+          roleName: 'Shift Leader',
+          stationAccount: true);
+      const identity = StationIdentity(
+        user: user,
+        station: 'ST101',
+        session: AccessSession(
+            user: user, groups: {AccessGroup.operate, AccessGroup.setpoints}),
+      );
+      final families = factory!(identity);
+
+      expect(families.accessTemplates, isA<BackendAccessTemplates>(),
+          reason: 'the real store-backed family, not a fake behind a decorator');
+      expect(families.accessAdmin, isA<BackendAccessAdmin>(),
+          reason: 'and the admin family with it');
+    });
+
+    test('an off-by-default composition (no token file) wires no resolver and '
+        'no factory, and still carries the real sink', () {
+      final composed = compose();
+
+      expect(composed.server.accounts, isNull,
+          reason: 'a `none` credential source names no accounts to resolve; a '
+              'resolver here would be answering a question nobody asked');
+      // The audit sink is real whether or not credentials are configured: the
+      // trail is not a function of who authenticated.
+      expect(composed.server.audit, isA<DriftAuditSink>());
+    });
+  });
+
   group('the resolver is built from the keys the workers were registered with',
       () {
     test('it is a KeyMappingSeriesResolver over the same mappings', () {
@@ -439,8 +585,8 @@ void main() {
     // the finding written as executable statements rather than as prose in a
     // SUMMARY nobody re-reads. Neither changes behaviour; see 13-10-SUMMARY.
 
-    test('KeyPolicy has exactly two members, and neither is about a preference '
-        'key', () {
+    test('KeyPolicy now carries canWritePreference — the narrowing found its '
+        'home in 17-07, not in this composition', () {
       final declared = reflectClass(KeyPolicy)
           .declarations
           .values
@@ -449,18 +595,20 @@ void main() {
           .map((m) => MirrorSystem.getName(m.simpleName))
           .toSet();
 
-      expect(declared, <String>{'canSee', 'canWrite'},
-          reason: 'The BackendPreferences.clear() allow-list narrowing was '
-              'handed to this composition\'s `policy:` argument by 13-06. It '
-              'cannot land there: KeyPolicy answers about PLANT TAGS, and '
-              '_PolicyPreferences — the class that gates every preference '
-              'mutator — is constructed with (source, identityOf) and never '
-              'consults a KeyPolicy at all (policy_state_man.dart:945-947). '
-              'policy_state_man.dart:892-899 rejects a canWritePreference '
-              'member deliberately, as a second policy surface to keep in '
-              'step with the first. If this arm is red because somebody added '
-              'that member, the narrowing finally HAS a home and this '
-              'composition must pass one — see 13-10-SUMMARY.');
+      // UPDATED FOR 17-07 (was `{canSee, canWrite}`). The prior arm pinned the
+      // ABSENCE of a preference member and pointed here: "If this arm is red
+      // because somebody added that member, the narrowing finally HAS a home."
+      // 17-07 added `canWritePreference`, graded by key from the app's own
+      // `kPrefAccessRules` (key_policy.dart:149-172), so the finding 13-05/13-06
+      // flagged is answered in the MASTER policy layer — exactly where Phase
+      // 17's constitution says one access-control system lives — rather than in
+      // this composition's `policy:` argument. The residual `clear(allowList:)`
+      // exposure the second arm measures is a separate, still-open hole in
+      // tfc_relay_server's `_PolicyPreferences`, not this member's concern.
+      expect(declared, <String>{'canSee', 'canWrite', 'canWritePreference'},
+          reason: 'KeyPolicy is the AccessPolicy-backed adapter now; a fourth '
+              'member appearing here is a new policy surface somebody must '
+              'decide the composition passes data for');
     });
 
     test('an allow-listed clear naming key_mappings still deletes it — the '

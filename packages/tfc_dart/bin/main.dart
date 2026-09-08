@@ -27,6 +27,31 @@ import 'data_acquisition_isolate.dart';
 /// could deliver.
 bool _shuttingDown = false;
 
+/// The credential-and-role revocation poll (17-11, D-08), or null when the
+/// relay is off or checks no token file.
+///
+/// Top-level so [_shutdown] can cancel it: a timer that outlives the process's
+/// shutdown is a process that will not exit, and this file already learned that
+/// lesson once with the config-watch restart timer. See the relay block in
+/// [main] for what it does and why the interval is what it is.
+Timer? _revocationTimer;
+
+/// How often the backend re-reads the credential file and the role database and
+/// closes any session whose access has been revoked (17-11).
+///
+/// **A named constant rather than a config knob, and ten seconds is honest.**
+/// The relay section carries no poll interval and adding one would be a value
+/// nobody diffs; a credential pulled off the disk should stop working in the
+/// time it takes an operator to walk to the panel, and a file-digest comparison
+/// plus a handful-of-rows database read at 0.1 Hz costs nothing. An env override
+/// exists only so a test can drive the tick without waiting ten seconds of wall
+/// clock.
+Duration _revocationPollInterval() {
+  final override =
+      int.tryParse(Platform.environment['CENTROID_RELAY_REVOCATION_SECONDS'] ?? '');
+  return Duration(seconds: override ?? 10);
+}
+
 /// The one way this process stops (PIPE-13).
 ///
 /// Both exit paths reach it: the SIGTERM handler below and the config-watch
@@ -88,6 +113,10 @@ void _shutdown(PipeMainEndpoint pipe, Logger logger, String reason,
   // whoever is watching; this is the part that stops the plant being driven by
   // a process that is going away.
   pipe.shutdown();
+  // Sync, no await, follows the config-watch restart timer's discipline: a
+  // revocation poll still ticking after this would be a periodic task on a
+  // process that is trying to exit. Cancelling is cheap and idempotent.
+  _revocationTimer?.cancel();
   if (relay == null || _shuttingDown) exit(0);
   _shuttingDown = true;
   // Best effort by construction: the frames are queued, not flushed, and a
@@ -405,8 +434,55 @@ void main() async {
     // than a null that skips the drain for the rest of the process's life.
     relay = composed;
     try {
+      // Populate the account cache the sweep resolves against BEFORE the bind,
+      // so the very first hello can be graded. A no-op when the relay checks no
+      // token file. See composeBackendRelay's refreshAccounts.
+      await composed.refreshAccounts();
       await composed.server.start();
       logger.i('relay WebSocket bound on port ${composed.server.port}');
+
+      // ------------------------------------------------- the revocation poll
+      //
+      // D-08, the hole nobody wrote down: the gateway's credential reload
+      // deliberately does not own its own poll — the embedder owns
+      // configuration watching — and until this call existed the embedder never
+      // made it. So pulling a station's token off the disk changed nothing about
+      // the session it already had, and a role demotion (which after Phase 17
+      // also decides `configure` and `administer`) took effect only on the next
+      // reconnect, which an operator can postpone by not reconnecting.
+      //
+      // Only for a token-file deployment: the digest-guarded reload throws on a
+      // validator that does not read a file (a `validator`/`none` source), and
+      // there is nothing to revoke there anyway.
+      if (relayConfig.credentials is RelayTokenFileCredentials) {
+        final interval = _revocationPollInterval();
+        // Announced once, like the boot line: revocation being live is exactly
+        // the kind of fact an operator must be able to read off a log, and its
+        // absence has been invisible until now.
+        logger.i('relay credential + role revocation poll live, every '
+            '${interval.inSeconds}s (digest-guarded reload + account refresh)');
+        _revocationTimer = Timer.periodic(interval, (_) async {
+          // Every tick guarded: a rotation that produced a broken file — or a
+          // database that blinked — must not disconnect the plant
+          // (reload()'s own rule). The previously loaded credential set and the
+          // previously cached accounts are both KEPT on a throw, so a later
+          // good tick still revokes. Awaited inside the try rather than
+          // fired-and-forgotten, because unawaited() attaches no handler.
+          try {
+            // The account cache first: a database-only demotion is invisible to
+            // the file digest, so the resolver the sweep consults must be
+            // refreshed on the same tick or the demotion never takes effect.
+            await composed.refreshAccounts();
+            await composed.server.reloadTokensIfChanged();
+          } catch (error, stack) {
+            logger.w(
+                'relay revocation poll tick failed; keeping the previously '
+                'loaded credentials and continuing',
+                error: error,
+                stackTrace: stack);
+          }
+        });
+      }
     } catch (error, stack) {
       // **Not fatal, and this is the decision.** The plant is the job; the
       // WebSocket is a service on top of it. A backend that refuses to acquire

@@ -47,8 +47,14 @@
 library;
 
 import 'package:logger/logger.dart';
+import 'package:tfc_access/tfc_access.dart'
+    show AccessGroup, AccessPolicy, AccessRole, AuditSink, AuthenticatedUser;
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
+    show AccessAdminApi, AccessTemplateApi;
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 
+import '../access/access_repository.dart';
+import '../access/drift_audit_sink.dart';
 import '../database.dart';
 import '../pipe_main_endpoint.dart';
 import '../preferences.dart';
@@ -68,25 +74,36 @@ import 'relay_config.dart';
 /// The access-control rule this backend ships with, **chosen here**.
 ///
 /// `RelayServer`'s `policy` parameter has a default
-/// (`relay_server.dart:146`), and a default that ships is a decision nobody
+/// (`relay_server.dart:152`), and a default that ships is a decision nobody
 /// made. Naming it here makes changing it an edit somebody has to write down,
 /// in a file a reviewer reads, rather than the silent consequence of an
 /// argument nobody typed.
 ///
-/// **The rule:** every tag is visible, and the `operate` role is what a write
-/// takes — `AllVisibleOperatorWrites`, named for what it does rather than for
-/// what it lacks (`key_policy.dart:120-135`). It is the right rule for SVN
-/// today because there is no per-station policy data at the plant to hide
-/// anything with, and a seam that hid a tag nobody configured would be policy
-/// invented by the plumbing. When SVN grows a canteen wall display that must
-/// not start a conveyor, this constant is where that becomes true.
+/// **The rule is not stated here.** The value is an [AccessPolicyKeyPolicy] —
+/// an adapter over the master access system (17-07), which forwards every write
+/// question to `AccessPolicy` and answers `canSee` true for everything, there
+/// being no hiding data in the tree. Choosing it is therefore choosing to
+/// **defer** to the one master system rather than choosing a rule: Phase 17's
+/// constitution is that there is one access-control system and the WebSocket
+/// builds on top of it, so a second rule spelled here would be the duplication
+/// that 17-07 deleted: the old key policy compared a role against a two-valued
+/// enum this package declared itself, and disagreed with the app in both
+/// directions (`key_policy.dart:186` records what it replaced).
+///
+/// The bare `const AccessPolicy()` — no tag bindings, no route table — is the
+/// shipped answer, and it is deliberate: the backend grades no *routes*
+/// (`kRaisedRoutes` is an app concern), and an unbound tag floors at
+/// `AccessGroup.operate` by `groupForTag`'s own ruling, so this is fail-closed
+/// rather than fail-open. When per-tag policy data arrives, it is injected
+/// here.
 ///
 /// **Deliberately NOT `const`.** Dart canonicalises const instances, so
-/// `policy: const AllVisibleOperatorWrites()` and no argument at all are the
-/// same object — indistinguishable by any assertion, which would make the
+/// `policy: const AccessPolicyKeyPolicy()` and no argument at all are the same
+/// object — indistinguishable by any assertion, which would make the
 /// composition test's policy arm vacuous. A distinct instance is what lets
 /// "somebody chose this" be a fact a test can read by identity.
-final KeyPolicy backendRelayPolicy = AllVisibleOperatorWrites();
+final KeyPolicy backendRelayPolicy =
+    AccessPolicyKeyPolicy(policy: const AccessPolicy());
 
 /// The assembled graph: everything [composeBackendRelay] built, still unstarted.
 ///
@@ -102,7 +119,13 @@ final class BackendRelayComposition {
     required this.resolver,
     required this.policy,
     required this.server,
-  });
+    _AccountCache? accounts,
+  }) : _accounts = accounts;
+
+  /// The in-memory account cache the synchronous [UserResolver] answers from,
+  /// or null when this deployment configured no credential source and so has
+  /// no accounts to resolve. Refreshed by [refreshAccounts].
+  final _AccountCache? _accounts;
 
   /// The `StateManApi` the server serves every session from.
   final BackendStateMan api;
@@ -135,6 +158,96 @@ final class BackendRelayComposition {
   Future<void> dispose() async {
     await server.close();
     await api.dispose();
+  }
+
+  /// Re-reads the account → role → groups chain from the database into the
+  /// synchronous resolver's cache, so the next sweep grades against the current
+  /// state of `app_user`/`app_role`.
+  ///
+  /// **The embedder's poll calls this immediately before
+  /// `server.reloadTokensIfChanged()`** (bin/main.dart). The two halves are
+  /// deliberately separate: `reloadTokensIfChanged`'s file digest guards the
+  /// re-PARSE of the token file, but a role demotion or a deleted account never
+  /// touches that file (17-04b's user model), so the resolver the sweep
+  /// consults through `stillValid` must be refreshed from the database on the
+  /// same tick or a database-only revocation would never take effect. This is
+  /// the honest adaptation of the plan's "refreshed by reloadTokensIfChanged":
+  /// that method lives in `tfc_relay_server` and cannot reach this cache, so
+  /// the embedder drives both.
+  ///
+  /// A no-op — and cheap — when this composition has no account source. Never
+  /// throws out of a failed database read into the caller's tick; a stale cache
+  /// is the safe answer (it revokes nobody it should not), the same trade
+  /// `FileTokenValidator.stillValid`'s unreachable-source swallow makes.
+  Future<void> refreshAccounts() async => _accounts?.refresh();
+}
+
+/// The synchronous [UserResolver]'s backing store: one username → account map,
+/// read from `app_user`/`app_role` and refreshed on the embedder's tick.
+///
+/// **Synchronous at the point of use is the whole reason this exists.**
+/// `FileTokenValidator.validate` (at hello) and `stillValid` (per session, per
+/// sweep tick) both call the resolver, and neither may `await`: an `await` on
+/// the hello path opens the subscription-race `key_policy.dart` documents, and
+/// `stillValid` running `N` Postgres round trips for `N` sessions on every tick
+/// would make revocation a load test. So the chain is chased once, into memory,
+/// by [refresh], and the resolver reads the map.
+///
+/// The accounts and roles are a handful of rows and cache trivially — this is
+/// `UserResolver`'s own stated expectation.
+final class _AccountCache {
+  _AccountCache(this._repository, {Logger? logger})
+      : _logger = logger ?? Logger();
+
+  final AccessRepository _repository;
+  final Logger _logger;
+
+  Map<String, ResolvedUser> _byUsername = const <String, ResolvedUser>{};
+
+  /// The synchronous seam handed to `RelayServer.accounts`. Answers null for an
+  /// unknown username — never an empty group set, which would be
+  /// indistinguishable in the trail from an account deliberately granted
+  /// nothing (D-06, fail-closed).
+  ResolvedUser? resolve(String username) => _byUsername[username];
+
+  /// Re-reads every account and its role's groups into the map.
+  ///
+  /// A read failure keeps the previous map rather than emptying it: an empty
+  /// map answers null for every station, which the sweep reads as "revoked" and
+  /// would close every screen in the plant for the length of a database
+  /// hiccup — the exact asymmetry `stillValid` refuses. The lost refresh is
+  /// logged, because a cache that silently stopped updating is the one defect
+  /// nobody notices.
+  Future<void> refresh() async {
+    try {
+      final roles = await _repository.roles();
+      final groupsByRole = <String, Set<AccessGroup>>{
+        for (final AccessRole role in roles) role.name: role.groups,
+      };
+      final users = await _repository.listUsers();
+      final next = <String, ResolvedUser>{};
+      for (final row in users) {
+        final groups = groupsByRole[row.roleName];
+        // An account whose role was deleted resolves to null (absent from the
+        // map) rather than to a phantom empty grant — same fail-closed rule as
+        // an unknown username.
+        if (groups == null) continue;
+        next[row.username] = ResolvedUser(
+          user: AuthenticatedUser(
+            username: row.username,
+            roleName: row.roleName,
+            stationAccount: row.stationAccount,
+          ),
+          groups: groups,
+        );
+      }
+      _byUsername = next;
+    } on Object catch (error, stack) {
+      _logger.e('backend relay: account cache refresh failed; keeping the '
+          'previously loaded ${_byUsername.length} account(s) rather than '
+          'revoking the plant on a database hiccup',
+          error: error, stackTrace: stack);
+    }
   }
 }
 
@@ -368,6 +481,70 @@ BackendRelayComposition composeBackendRelay({
   // gate, so 17-07 has something real to grade.
   final audit = BackendAudit(database: database.db);
 
+  // ------------------------------------------------------------- the audit SINK
+  //
+  // Where every per-session `PolicyStateMan` WRITES its authorization verdicts
+  // (D-05, 17-09). A `DriftAuditSink` over the backend's own `AppDatabase` — the
+  // same `audit_entry` table, the same rows and the same `origin` a panel writes
+  // in direct mode, so one SELECT answers for panel and wire alike. This is a
+  // different object from the `audit` FAMILY above: the family READS the trail
+  // over the wire, this SINK writes it. A backend always has a database here
+  // (`composeBackendRelay` requires one), so the sink is always real; the
+  // `NullAuditSink` degrade `RelayServer` defaults to is for the fixtures that
+  // pass no sink, never for the shipped graph — a wire verdict with no row is a
+  // decision nobody can answer for, and CR-01's arm pins the type.
+  final AuditSink auditSink = DriftAuditSink(database.db);
+
+  // ------------------------------------------------- accounts + scoped families
+  //
+  // A token file names usernames and grants nothing (D-06); who each one is and
+  // what its role may do is the database's answer. `RelayServer.start()` refuses
+  // a token file with no resolver (relay_server.dart:496), so a token-file
+  // deployment MUST wire one — and there is no permissive fallback, on
+  // `FileTokenValidator`'s own reasoning about a misspelled PEM. The resolver is
+  // synchronous (it is called at hello and per-session per-sweep-tick), so it
+  // reads an in-memory cache the embedder's poll refreshes; see [_AccountCache]
+  // and [BackendRelayComposition.refreshAccounts].
+  //
+  // Built only when the config actually names a token file: a `none` or
+  // `validator` deployment has no usernames to resolve, and a resolver there
+  // would be answering a question nobody asked. `database` is always present, so
+  // "a token file and no database to resolve roles from" — the compose-time
+  // refusal the plan asked for — is not a reachable state through this
+  // signature; the refusal it maps onto is `start()`'s own, one layer down.
+  final _AccountCache? accountCache =
+      config.credentials is RelayTokenFileCredentials
+          ? _AccountCache(AccessRepository(database.db), logger: logger)
+          : null;
+  final UserResolver? accounts = accountCache?.resolve;
+
+  // The per-identity template and admin families (D-11): built once per
+  // verified station at `hello`, never at compose time — a family constructed
+  // here with an invented session would write rows naming somebody the server
+  // never verified. `RelayServer` invokes this with the resolver-verified
+  // identity and swaps the two families UNDER its policy decorator
+  // (`_IdentityScopedSource`), so a scoped family is graded exactly as a shared
+  // one. The return is `relay_session`'s `IdentityAccessFamilies` record; it is
+  // written structurally because that typedef is not on the server's barrel.
+  ({AccessTemplateApi accessTemplates, AccessAdminApi accessAdmin}) scopeFactory(
+          StationIdentity identity) =>
+      (
+        accessTemplates: BackendAccessTemplates(
+          database: database.db,
+          session: () => identity.session,
+          station: identity.station,
+          audit: auditSink,
+          logger: logger,
+        ),
+        accessAdmin: BackendAccessAdmin(
+          database: database.db,
+          session: () => identity.session,
+          station: identity.station,
+          audit: auditSink,
+          logger: logger,
+        ),
+      );
+
   // ------------------------------------------------------------------ writes
   //
   // Down the pipe, three-state, never auto-retried, and badging the value the
@@ -434,6 +611,9 @@ BackendRelayComposition composeBackendRelay({
       policy: chosenPolicy,
       resolver: resolver,
       alarmAcks: alarmAcks,
+      audit: auditSink,
+      accounts: accounts,
+      accessFor: scopeFactory,
       onError: onError,
     );
   } else {
@@ -444,6 +624,9 @@ BackendRelayComposition composeBackendRelay({
       resolver: resolver,
       validator: validator,
       alarmAcks: alarmAcks,
+      audit: auditSink,
+      accounts: accounts,
+      accessFor: scopeFactory,
       onError: onError,
     );
   }
@@ -455,5 +638,6 @@ BackendRelayComposition composeBackendRelay({
     resolver: resolver,
     policy: chosenPolicy,
     server: server,
+    accounts: accountCache,
   );
 }
