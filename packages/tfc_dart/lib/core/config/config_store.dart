@@ -102,10 +102,18 @@ const String kKeyMappingsWatermarkId = '_sync.key_mappings.watermark';
 /// **What keeps a station's own rows out is the scope filter, not this set.**
 /// Every read here and in the sync engine is `kind IN (…) AND scope='shared'`
 /// — the boot fill, the rev sweep, the remote revision read and the change-log
-/// pull alike. The bookkeeping rows that worried an earlier draft of this doc
-/// — the watermark and the migration markers — are `preference` rows at
-/// `station:<hostname>`, so no sweep can see them and no station's position
-/// can overwrite another's, whatever this set says.
+/// pull alike. The **watermark** is a `preference` row at
+/// `station:<hostname>`, so no sweep can see it and no station's position can
+/// overwrite another's, whatever this set says.
+///
+/// The **migration markers are not**, and an earlier draft of this paragraph
+/// said they were. [kPreferencesMigratedMarkerId] and its siblings are
+/// `scope='shared'` rows and have to be: `_remoteIsMigrated` reads them off
+/// the remote to tell an empty shared store from an unmigrated one, which is a
+/// question about the plant and not about this machine. They are in the sweep
+/// and in the change log like any shared row — which is why `config_undo.dart`
+/// refuses to restore an underscore-prefixed preference by name, rather than
+/// relying on a scope that does not separate them.
 ///
 /// [ConfigKind.preference] joined the set in 04-05, when the shared
 /// `PreferencesApi` moved off `flutter_preferences` onto rows. Two reasons,
@@ -423,6 +431,32 @@ class ConfigStore {
     sync._swallow(sync.reconcile());
   }
 
+  /// Runs [task] on the sync engine's serialisation chain, so a notification
+  /// apply cannot land in the middle of a caller's check-then-write.
+  ///
+  /// [writeItems] deliberately does **not** join this chain: an operator's
+  /// save must not wait behind a five-minute sweep, and the compare-and-swap
+  /// is what protects it. A caller that has already decided something about
+  /// the snapshot is a different case — `config_undo.dart` asserts the state
+  /// its verdict was reached against and then writes, and an apply between
+  /// those two would invalidate the assert it just passed.
+  ///
+  /// The chain is idle between notifications, so in the ordinary case this
+  /// costs one microtask.
+  ///
+  /// A store with no engine runs [task] directly, and so does one whose engine
+  /// was stopped between the queue and the run — a detach mid-flight. That is
+  /// deliberate: after a detach the store has no remote, so the task refuses
+  /// with the ordinary [ConfigStoreOfflineException] rather than returning a
+  /// success nobody made.
+  Future<T> serialiseWrite<T>(Future<T> Function() task) async {
+    final sync = _sync;
+    if (sync == null) return task();
+    final done = <T>[];
+    await sync.serialise(() async => done.add(await task()));
+    return done.isEmpty ? await task() : done.single;
+  }
+
   /// Completes when every sync task queued so far has been applied.
   ///
   /// The app does not need this to *serve* configuration — the stream and the
@@ -568,6 +602,22 @@ class ConfigStore {
   }) async {
     final attempted = _describeItems(kinds, wanted);
     for (final item in wanted) {
+      // Scope, before kind. The snapshot this diff compares against is keyed
+      // by (kind, id) and holds shared rows only, while `config_diff` keys by
+      // (kind, id, **scope**) — so a station-scoped item smuggled in here
+      // would be diffed as an insert *and* leave its shared namesake reading
+      // as removed: one save that writes a `station:` row into Postgres and
+      // deletes the shared one. No caller can do that today, but `preference`
+      // is the first kind that legitimately exists at both scopes, so the
+      // accident now has material to work with.
+      if (!item.scope.isShared) {
+        throw ArgumentError.value(
+            item.scope,
+            'wanted',
+            'holds ${item.kind.wireName} "${item.id}" at ${item.scope}, which '
+                'is this station\'s own row. Only shared rows are written '
+                'here; a station row belongs to its own store.');
+      }
       if (!kinds.contains(item.kind)) {
         throw ArgumentError.value(
             item.kind,

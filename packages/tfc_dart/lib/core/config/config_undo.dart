@@ -98,6 +98,7 @@ import 'config_change.dart';
 import 'config_item.dart';
 import 'config_item_table.dart';
 import 'config_store.dart';
+import 'config_store_errors.dart';
 
 /// The `reason` every row of an undo carries.
 ///
@@ -131,6 +132,23 @@ enum UndoBlockReason {
 
   /// A kind this build has never heard of — a row written by a newer station.
   unknownKind,
+
+  /// A bookkeeping row, not a preference anybody set.
+  ///
+  /// Underscore-prefixed shared ids are the store's own account of itself —
+  /// today [kPreferencesMigratedMarkerId], which the sync engine reads to tell
+  /// an empty shared store from an unmigrated one. They are shared rows and
+  /// they are historised, so nothing else here refuses them: an operator
+  /// undoing the preferences migration would delete every migrated row **and**
+  /// the marker in one save, and the next empty-remote sweep would then read
+  /// as "unmigrated" — the exact confusion the marker exists to prevent. After
+  /// the old table is dropped the change rows are the only copy of those
+  /// values.
+  ///
+  /// Restoring bookkeeping is not a thing an operator does. It is refused by
+  /// name rather than made history-exempt, because the marker's own history is
+  /// worth keeping — it is only worth keeping *unrestorable*.
+  internalRow,
 }
 
 /// One entity that stops an undo, and enough about it to act on.
@@ -179,6 +197,7 @@ class UndoStep {
     required this.scope,
     required this.originalOp,
     this.item,
+    this.observedRev,
   });
 
   final ConfigKind kind;
@@ -192,6 +211,35 @@ class UndoStep {
   /// position included. Null when undoing means removing the entity, which is
   /// the inverse of an insert.
   final ConfigItem? item;
+
+  /// The `rev` the entity held **when the verdict was reached**, or null when
+  /// it had no row at all.
+  ///
+  /// This is what closes the window between [planUndo] and [executeUndo], and
+  /// it is not the same guard as the store's compare-and-swap. The CAS swaps
+  /// on the revision in *this station's snapshot*, and the snapshot is kept
+  /// level by a notification-driven pull that lands in milliseconds — while a
+  /// confirmation dialog is open for seconds. So the sequence that matters is:
+  /// the verdict says nobody has touched the entity; another station edits it;
+  /// this station's sync applies that edit; the CAS now matches the *new*
+  /// revision and commits straight over it. The refusal
+  /// [UndoBlockReason.newerChange] exists for is defeated precisely because
+  /// the store caught up.
+  ///
+  /// Carrying the observed revision makes the check say what it means: not
+  /// "does the snapshot agree with itself" but "is the world still what the
+  /// verdict was reached against". It refuses in both directions —
+  ///
+  ///  * **higher, or a row where the plan saw none:** somebody wrote after the
+  ///    verdict (F1);
+  ///  * **lower, or no row where the plan saw one:** this station's mirror has
+  ///    not caught up with the action being undone, which would otherwise make
+  ///    the inverse diff to nothing and report a restore that never happened
+  ///    (F2).
+  ///
+  /// Null is a real value here and not "unknown": [planUndo] reads the live
+  /// row for every touched entity, so an absent row is an observation.
+  final int? observedRev;
 
   /// True when this step removes the entity rather than writing it.
   bool get isRemoval => item == null;
@@ -259,6 +307,14 @@ class UndoPlan {
   String toString() => 'UndoPlan($originalActionId, ${steps.length} steps, '
       '${blockers.length} blockers)';
 }
+
+/// The prefix that marks a shared row as the store's own bookkeeping.
+///
+/// A deliberate copy of `shared_row_preferences.dart`'s `_internalIdPrefix`,
+/// which is private to that library. `config_undo_test.dart` pins it against
+/// [kPreferencesMigratedMarkerId], the one row that qualifies today, so the
+/// two cannot drift apart without a test failing.
+const String kUndoInternalIdPrefix = '_';
 
 /// The `pref` surface every configuration write is checked on — the same
 /// string `GuardedConfigStore` passes to the policy and writes into the audit
@@ -396,6 +452,19 @@ Future<UndoPlan> planUndo(GeneratedDatabase db, String actionId) async {
       ));
       continue;
     }
+    if (kind == ConfigKind.preference &&
+        key.id.startsWith(kUndoInternalIdPrefix)) {
+      blockers.add(UndoBlocker(
+        reason: UndoBlockReason.internalRow,
+        kindName: key.kind,
+        entityId: key.id,
+        scopeName: key.scope,
+        summary: '"${key.id}" is bookkeeping the configuration store keeps '
+            'about itself, not a setting anybody chose. Restoring it would '
+            'change what this plant believes about its own migration.',
+      ));
+      continue;
+    }
     final scope = ConfigScope.byWireName(key.scope);
     if (scope == null || !scope.isShared) {
       blockers.add(UndoBlocker(
@@ -441,6 +510,10 @@ Future<UndoPlan> planUndo(GeneratedDatabase db, String actionId) async {
       entityId: key.id,
       scope: scope,
       originalOp: _netOp(first.oldValue, recorded),
+      // What the world looked like at the moment the verdict was reached.
+      // `stored` is the live row this check just compared against, so this is
+      // an observation and not a guess. See [UndoStep.observedRev].
+      observedRev: stored?.rev,
       item: first.oldValue == null
           ? null
           : ConfigItem.fromEntityJson(
@@ -492,11 +565,26 @@ Future<UndoPlan> planUndo(GeneratedDatabase db, String actionId) async {
 ///
 /// ## What re-checks the verdict
 ///
-/// Nothing here re-reads the log. The window between [planUndo] and this write
-/// is closed by the store's own compare-and-swap: an entity somebody moved in
-/// between fails its `rev` guard, and an entity somebody re-created fails the
-/// insert guard (04-01), so the whole undo rolls back with [ConfigConflict]
-/// rather than committing half of itself.
+/// **The compare-and-swap is not enough, and believing it was is the defect
+/// this paragraph replaces.** The CAS swaps on the revision in this station's
+/// *snapshot*; a notification-driven pull keeps that snapshot level within
+/// milliseconds, while the dialog above it is open for seconds. So an edit
+/// that arrives and is applied between the verdict and the write leaves the
+/// CAS matching — and the undo commits over it, which is exactly what
+/// [UndoBlockReason.newerChange] refuses when the same edit arrives a moment
+/// later. The mirror lagging is the same bug in the quiet direction: the
+/// inverse diffs to nothing, writes nothing, and reports a restore.
+///
+/// So the verdict is re-asserted here against what [planUndo] actually
+/// observed — [UndoStep.observedRev] per entity, presence included — before
+/// anything is built, and any disagreement is a [ConfigConflict]. The store's
+/// own guards stay underneath as the last line: the CAS for an update or a
+/// delete, and 04-01's insert guard for a re-creation.
+///
+/// The assert and the write run **on the sync engine's serialisation chain**
+/// ([ConfigStore.serialiseWrite]), so an apply cannot land between them. The
+/// chain is idle between notifications, so this costs nothing in the ordinary
+/// case and closes the last machine-scale gap in the unusual one.
 ///
 /// Throws [ArgumentError] for a plan that is not ready — a refusal the caller
 /// was given in full and chose to ignore is a programming error, not an
@@ -531,27 +619,44 @@ Future<ConfigWriteResult> executeUndo(
     throw AccessDenied(gate.itemKey, gate.group);
   }
 
-  final wanted = <String, ConfigItem>{
-    for (final item in store.itemsOf(plan.kinds))
-      configSnapshotKey(item.kind, item.id): item,
-  };
-  for (final step in plan.steps) {
-    final key = configSnapshotKey(step.kind, step.entityId);
-    if (step.item case final item?) {
-      wanted[key] = item;
-    } else {
-      wanted.remove(key);
-    }
-  }
+  return store.serialiseWrite(() {
+    final stored = <String, ConfigItem>{
+      for (final item in store.itemsOf(plan.kinds))
+        configSnapshotKey(item.kind, item.id): item,
+    };
 
-  return store.writeItems(
-    kinds: plan.kinds,
-    wanted: wanted.values.toList(),
-    actionId: actionId,
-    who: who,
-    roleName: roleName,
-    reason: undoReason(plan.originalActionId),
-  );
+    // The verdict, re-asserted against what it was reached against. Before
+    // anything is built, so a refusal costs nothing and writes nothing.
+    for (final step in plan.steps) {
+      final key = configSnapshotKey(step.kind, step.entityId);
+      final now = stored[key];
+      if (now?.rev == step.observedRev) continue;
+      throw step.observedRev == null
+          // The plan saw no row and there is one: somebody created it after
+          // the verdict, which is the case `ConfigConflict.created` words.
+          ? ConfigConflict.created(step.entityId)
+          : ConfigConflict(step.entityId, expectedRev: step.observedRev!);
+    }
+
+    final wanted = Map<String, ConfigItem>.of(stored);
+    for (final step in plan.steps) {
+      final key = configSnapshotKey(step.kind, step.entityId);
+      if (step.item case final item?) {
+        wanted[key] = item;
+      } else {
+        wanted.remove(key);
+      }
+    }
+
+    return store.writeItems(
+      kinds: plan.kinds,
+      wanted: wanted.values.toList(),
+      actionId: actionId,
+      who: who,
+      roleName: roleName,
+      reason: undoReason(plan.originalActionId),
+    );
+  });
 }
 
 /// The net effect of an action on one entity, from the first row's old side

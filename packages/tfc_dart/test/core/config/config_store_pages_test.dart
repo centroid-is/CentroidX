@@ -339,4 +339,40 @@ void main() {
       expect((await assetRows(remote)).every((r) => r.rev == 1), isTrue);
     });
   });
+  group('what may not be handed to a write', () {
+    setUp(() => store.attachRemoteDatabase(remote, startSync: false));
+
+    test('a station-scoped item is refused, whatever its kind', () async {
+      await store.open();
+
+      // The snapshot is keyed by (kind, id) and holds shared rows only, while
+      // the diff keys by (kind, id, scope). A station row reaching the diff
+      // would be inserted *and* would make its shared namesake read as
+      // removed: one save that writes a `station:` row into Postgres and
+      // deletes the shared one. `preference` is the first kind that
+      // legitimately exists at both scopes, so this is now reachable by
+      // accident rather than only by misuse.
+      final stationRow = ConfigItem.of(
+        kind: ConfigKind.preference,
+        id: 'startup_url',
+        value: {'type': 'String', 'value': '/lines'},
+        scope: ConfigScope.forStation(kStation),
+      );
+
+      await expectLater(
+        store.writeItems(
+          kinds: const {ConfigKind.preference},
+          wanted: [stationRow],
+          actionId: 'act-1',
+          who: 'tester',
+          roleName: 'Engineer',
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+
+      expect(await remote.select(remote.configItemTable).get(), isEmpty,
+          reason: 'refused before anything is written');
+    });
+  });
+
 }

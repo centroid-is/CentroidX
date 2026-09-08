@@ -24,6 +24,7 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/guarded_config_store.dart';
 import 'package:tfc_dart/core/config/config_change.dart';
 import 'package:tfc_dart/core/config/config_consistency.dart';
+import 'package:tfc_dart/core/config/config_history_policy.dart';
 import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart';
@@ -456,6 +457,60 @@ void main() {
       expect(plan.isReady, isFalse);
       expect(plan.blockers.single.reason, UndoBlockReason.unknownKind);
       expect(plan.blockers.single.kindName, 'recipe');
+    });
+
+    test('a bookkeeping row is refused by name', () async {
+      final marker = ConfigItem.of(
+        kind: ConfigKind.preference,
+        id: kPreferencesMigratedMarkerId,
+        value: {'type': 'bool', 'value': true},
+      );
+      await seed(marker, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'act-1', after: marker));
+
+      final plan = await planUndo(remote, 'act-1');
+
+      expect(plan.isReady, isFalse);
+      expect(plan.blockers.single.reason, UndoBlockReason.internalRow);
+    });
+
+    test('the marker really is one of the ids that refusal catches', () {
+      // The pin under the literal prefix. `_internalIdPrefix` is private to
+      // shared_row_preferences.dart, so undo carries its own copy; this is
+      // what stops the copy drifting away from the row it exists to protect.
+      expect(kPreferencesMigratedMarkerId.startsWith(kUndoInternalIdPrefix),
+          isTrue);
+      expect(kKeyMappingsWatermarkId.startsWith(kUndoInternalIdPrefix), isTrue);
+    });
+
+    test('a migration that wrote its marker and its values under one action '
+        'cannot be undone at all', () async {
+      // The 04-11 shape, and the reason this refusal is not merely tidy: one
+      // administer click would otherwise delete every migrated preference row
+      // *and* the marker, and after the old table is dropped the change rows
+      // are the only copy.
+      final marker = ConfigItem.of(
+        kind: ConfigKind.preference,
+        id: kPreferencesMigratedMarkerId,
+        value: {'type': 'bool', 'value': true},
+      );
+      final value = ConfigItem.of(
+        kind: ConfigKind.preference,
+        id: 'alarm_man_config',
+        value: {'type': 'String', 'value': '{}'},
+      );
+      await seed(marker, into: [local, remote]);
+      await seed(value, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'migrate', after: marker));
+      await seedChange(changeOf(actionId: 'migrate', after: value));
+
+      final plan = await planUndo(remote, 'migrate');
+
+      expect(plan.isReady, isFalse,
+          reason: 'all-or-nothing: the marker blocks the whole action, so the '
+              'values it migrated cannot be deleted either');
+      expect(plan.blockers.map((b) => b.reason),
+          [UndoBlockReason.internalRow]);
     });
 
     test('every kind this build knows is one writeItems can replace', () {
@@ -940,14 +995,33 @@ void main() {
     });
 
     test('the check keys are the guard\'s own, spelled out', () {
+      // Value agreement, entry by entry. A copy that drifted would gate an
+      // undo on a different permission from the write it inverts.
       for (final entry in kUndoCheckKeys.entries) {
         expect(kConfigWriteKeys[entry.key], entry.value,
             reason: 'this map is a deliberate copy, made because the guard\'s '
-                'own reaches open62541 through the key-mapping codec. A copy '
-                'that drifts would gate an undo on a different permission '
-                'from the write it inverts.');
+                'own reaches open62541 through the key-mapping codec');
       }
-      expect(kUndoCheckKeys.keys.toSet(), kConfigWriteKeys.keys.toSet());
+    });
+
+    test('every kind an undo plan can hold has a check key', () {
+      // **Coverage, not set equality.** The two maps answer different
+      // questions and 04-09 is what made the difference visible: it added
+      // `pageImage` to the guard's map, because an image *write* is gated
+      // there. An image can never appear in an undo plan — it writes no
+      // change rows at all — so undo's map does not carry it, and the
+      // `administer` fail-closed answer above stays the one an unmapped kind
+      // gets. Asserting the two maps were identical was asserting something
+      // that happened to be true rather than something that had to be.
+      final undoable = kSharedConfigKinds
+          .difference(kHistoryExemptKinds)
+          // A preference is keyed per key, not per kind — the same ruling
+          // `GuardedConfigStore.writePreference` is built on.
+          .difference({ConfigKind.preference});
+      expect(kUndoCheckKeys.keys.toSet(), undoable,
+          reason: 'a kind that can be planned and has no check key would fall '
+              'to the policy default and lock an operator out of undoing '
+              'something they were allowed to do');
     });
 
     test('a plan spanning two permissions is gated on the stricter', () async {

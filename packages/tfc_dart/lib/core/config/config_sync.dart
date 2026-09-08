@@ -61,11 +61,16 @@
 ///
 /// ## What "the row set under sync" means now
 ///
-/// [kSharedConfigKinds] — key mappings, pages, assets and page images. Every
-/// read here filters on that set and on `scope='shared'`, so the row a station
-/// owns, the watermark beside it and the migration markers are all
-/// structurally out of reach: they are `preference` rows, and `preference` is
-/// not in the set.
+/// [kSharedConfigKinds] — key mappings, pages, assets, page images **and
+/// preferences**, the last since 04-05 moved the shared `PreferencesApi` onto
+/// rows. So the kind set is no longer what holds a station's own rows back;
+/// every read here filters on `scope='shared'` as well, and that filter is
+/// what does the work. The row a station owns and the watermark beside it are
+/// `station:<hostname>` preferences and are structurally out of reach.
+///
+/// The migration markers are **not** out of reach and must not be: they are
+/// shared rows, because [_remoteIsMigrated] asks the remote whether the
+/// *plant* has been migrated. They sweep and log like anything else.
 ///
 /// Page images are in the set for a reason worth stating where the sweep is
 /// described: they write no `config_change` rows at all
