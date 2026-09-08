@@ -15,8 +15,20 @@
 ///
 ///     CENTROIDX_PAGE_EDITOR_BLOB=/path/to/page_editor_data.json flutter test
 ///
-/// and the same assertions run over it. `tools/svn_apply_config.py
-/// --backup-only` produces a file of the right shape.
+/// and the same assertions run over it.
+///
+/// **The dump must be the raw blob and nothing else.** This test hands the
+/// file straight to `PageManager.pagesFromJson`, so what it needs is a single
+/// JSON value:
+///
+///     psql -Atc "SELECT value FROM flutter_preferences WHERE key='page_editor_data'"
+///
+/// `-A` and `-t` are what make that true -- unaligned, no header, no row
+/// count. `tools/svn_apply_config.py --backup-only` does **not** produce this:
+/// it writes a three-column `key,value,type` CSV of the whole table, with a
+/// header line, and `pagesFromJson` throws on that header. The full form,
+/// with the ssh hop and the container lookup, is in
+/// `docs/relational-config-cutover-runbook.md` section 1.
 library;
 
 import 'dart:convert';
