@@ -9,6 +9,8 @@
 /// of any of them.
 library;
 
+import 'dart:convert';
+
 import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:test/test.dart';
 import 'package:tfc_access/tfc_access.dart';
@@ -42,6 +44,14 @@ AccessSession administerSession() => const AccessSession(
         AccessGroup.setpoints,
         AccessGroup.administer,
       },
+    );
+
+/// A Shift Leader: recipes and nothing else above `operate`. The `.recipes`
+/// suffix rule is the only one that resolves to `setpoints`, so this session
+/// is what tells that group apart from `configure` and `administer`.
+AccessSession setpointsSession() => const AccessSession(
+      user: AuthenticatedUser(username: 'sigga', roleName: 'Shift Leader'),
+      groups: {AccessGroup.operate, AccessGroup.setpoints},
     );
 
 AccessSession anonymous() =>
@@ -614,6 +624,126 @@ void main() {
 
       expect(seen, ['update_channel']);
       await sub.cancel();
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // The families that ride the swap unchanged (04-09 Task 3). Proved rather
+  // than assumed: all three keep their old call sites, and what changed under
+  // them is where the value lives.
+  // -------------------------------------------------------------------
+
+  group('the recipe buckets', () {
+    test('one row per bucket, and a second bucket leaves the first alone',
+        () async {
+      // `recipes.dart:132` builds the key as `'$bucket.recipes'` — the bucket
+      // is a runtime value, so this is N keys and not one.
+      await prefs.setString('mince.recipes', '[{"label":"80/20"}]');
+      await prefs.setString('brine.recipes', '[{"label":"3%"}]');
+
+      final rows = await remotePreferenceRows();
+      expect(rows.map((r) => r.id), ['brine.recipes', 'mince.recipes']);
+      // Replace-within-kind: the second bucket's write carries the first in
+      // its wanted set, so writing it must not have moved it.
+      expect(await prefs.getString('mince.recipes'), '[{"label":"80/20"}]');
+      expect(await prefs.getString('brine.recipes'), '[{"label":"3%"}]');
+    });
+
+    test('a recipe change is checked at setpoints and gets its history',
+        () async {
+      session = setpointsSession();
+
+      await prefs.setString('mince.recipes', '[{"label":"80/20"}]');
+
+      expect(sink.rows.single.allowed, isTrue);
+      expect(sink.rows.single.itemKey, 'mince.recipes');
+      expect(sink.rows.single.groupRequired, 'setpoints');
+      expect(sink.rows.single.who, 'sigga');
+      // Not exempt, and deliberately so: which recipe the plant ran on a given
+      // shift is exactly the trail this milestone exists for.
+      final changes = await remoteChanges();
+      expect(changes.map((c) => c.entityId), ['mince.recipes']);
+      expect(changes.single.newValue, contains('80/20'));
+    });
+
+    test('an operator who may not set them is refused, and nothing is written',
+        () async {
+      session = configureSession();
+
+      await expectLater(prefs.setString('mince.recipes', '[]'),
+          throwsA(isA<AccessDenied>()));
+
+      expect(await remotePreferenceRows(), isEmpty);
+      expect(denials.single.required, AccessGroup.setpoints);
+    });
+  });
+
+  group('page_editor_top_level_order', () {
+    test('round-trips in order, and the order is what is stored', () async {
+      // `page.dart:470` writes `jsonEncode(topLevelOrder)`, so the value is a
+      // JSON list inside a string preference. Lists are meaning here — this is
+      // the order the menu is drawn in — so the assertion is on the sequence
+      // and not on the set.
+      const order = ['/packing', '/freezer', '/baader', '/diagnostics'];
+      await prefs.setString(
+          'page_editor_top_level_order', jsonEncode(order));
+
+      expect(
+          jsonDecode(
+              (await prefs.getString('page_editor_top_level_order'))!),
+          order);
+
+      // And off the row itself, not only off the snapshot this station wrote.
+      final row = (await remotePreferenceRows()).single;
+      expect(row.id, 'page_editor_top_level_order');
+      expect(jsonDecode(decodePreferencePayload(row.payload)! as String),
+          order);
+
+      expect(sink.rows.single.groupRequired, 'configure');
+      expect((await remoteChanges()).map((c) => c.entityId),
+          ['page_editor_top_level_order']);
+    });
+
+    test('a reorder is one change row, not one per page', () async {
+      const first = ['/a', '/b', '/c'];
+      await prefs.setString('page_editor_top_level_order', jsonEncode(first));
+      await prefs.setString(
+          'page_editor_top_level_order', jsonEncode(['/c', '/b', '/a']));
+
+      final changes = await remoteChanges();
+      expect(changes, hasLength(2),
+          reason: 'the order is one entity, so a reorder is one row');
+      // Both sides of the change hold the whole ordering, which is what makes
+      // an undo of a reorder writable without reconstructing anything.
+      String orderIn(String? entity) =>
+          (jsonDecode(jsonDecode(entity!)['payload']['value'] as String)
+                  as List)
+              .join(',');
+      expect(orderIn(changes.last.oldValue), '/a,/b,/c');
+      expect(orderIn(changes.last.newValue), '/c,/b,/a');
+    });
+  });
+
+  group('update_channel', () {
+    test('reads and writes at administer, and lands in the trail', () async {
+      await prefs.setString('update_channel', 'latest');
+
+      expect(await prefs.getString('update_channel'), 'latest');
+      expect((await remotePreferenceRows()).single.id, 'update_channel');
+      expect(sink.rows.single.allowed, isTrue);
+      expect(sink.rows.single.groupRequired, 'administer');
+      expect((await remoteChanges()).map((c) => c.entityId),
+          ['update_channel']);
+    });
+
+    test('a Shift Leader cannot move the plant onto a prerelease', () async {
+      session = setpointsSession();
+
+      await expectLater(prefs.setString('update_channel', 'latest'),
+          throwsA(isA<AccessDenied>()));
+
+      expect(await remotePreferenceRows(), isEmpty);
+      expect(denials.single.required, AccessGroup.administer);
     });
   });
 
