@@ -27,11 +27,16 @@ library;
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:tfc_access/tfc_access.dart';
+import 'package:tfc_dart/core/access/guarded_state_man.dart';
 import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 
 import '../core/access_admin_store.dart';
+import '../core/gateway_state_man.dart';
+import '../core/relayed_access_stores.dart';
 import 'access.dart';
 import 'access_policy.dart';
+import 'gateway.dart';
+import 'state_man.dart';
 
 part 'access_admin.g.dart';
 
@@ -57,6 +62,35 @@ part 'access_admin.g.dart';
 /// re-derive that handle for nothing.
 @Riverpod(keepAlive: true)
 Future<AccessAdminStore?> accessAdminStore(Ref ref) async {
+  // `ref.watch`, never `ref.read`, on the config AND the StateMan:
+  // `alarm.dart:45` records what `ref.read` behind a `keepAlive` cost — a
+  // stale transport over a disposed client whose streams CLOSE rather than
+  // error, so nothing reported it (the Phase 14 blocker).
+  final gateway = await ref.watch(gatewayConfigProvider.future);
+  if (gateway.isGateway) {
+    // The relayed route, through the one client the panel holds
+    // (`innerAs`, 15-04's read-only unwrap). The `users` gate and the audit
+    // row live server-side, above the backend's own store — enforcement
+    // does not move here, only the wire to reach it.
+    final stateMan = await ref.watch(stateManProvider.future);
+    final remote = stateMan is GuardedStateMan
+        ? stateMan.innerAs<GatewayStateMan>()?.remote
+        : null;
+    if (remote == null) {
+      // Refuse by name rather than fall back to the repository — a route
+      // that exists will be taken, and the local one must not exist here.
+      throw UnsupportedError(
+          'accessAdminStoreProvider is not available in gateway mode: this '
+          'station resolved a StateMan with no relay client behind it. Fix '
+          'the gateway branch of lib/providers/state_man.dart — do not fall '
+          'back to the database here.');
+    }
+    return RelayedAccessAdminStore(
+      api: remote.accessAdmin,
+      onDenied: (denial) => reportAccessDenial(ref, denial),
+    );
+  }
+
   final repository = await ref.watch(accessRepositoryProvider.future);
   if (repository == null) return null;
   return AccessAdminStore(

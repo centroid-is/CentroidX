@@ -25,9 +25,11 @@ import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/access_policy.dart';
 import 'package:tfc/providers/access_templates.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 
 class _FakeDatabase extends Fake implements Database {
   _FakeDatabase(this.db);
@@ -110,6 +112,9 @@ void main() {
     final container = ProviderContainer(overrides: [
       databaseProvider.overrideWith((ref) async => _FakeDatabase(db)),
       accessSessionProvider.overrideWith(() => _FixedSession(_withUsers())),
+      // 17-12: the store provider consults the transport row before choosing
+      // its route; an empty device-local store reads as direct mode.
+      localPreferencesProvider.overrideWithValue(InMemoryPreferences()),
       ...extra,
     ]);
     addTearDown(container.dispose);
@@ -220,6 +225,7 @@ void main() {
       final container = ProviderContainer(overrides: [
         databaseProvider.overrideWith((ref) async => null),
         accessSessionProvider.overrideWith(() => _FixedSession(_withUsers())),
+        localPreferencesProvider.overrideWithValue(InMemoryPreferences()),
       ]);
       addTearDown(container.dispose);
 

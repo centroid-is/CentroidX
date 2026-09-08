@@ -81,6 +81,13 @@ dependencies:
   # import.
   tfc_relay_protocol:
     path: packages/tfc_relay_protocol
+  # Named directly for the same reason tfc_relay_protocol is above: 17-12's
+  # `lib/core/relayed_access_stores.dart` catches `RpcException` to map a
+  # domain-coded protocol error back onto tfc_dart's exception types, and the
+  # type is json_rpc_2's own — nothing re-exports it. Already in this solve
+  # transitively through tfc_relay_client; declaring it keeps
+  # depend_on_referenced_packages honest.
+  json_rpc_2: ^4.1.0
   # Pinned: newer mcp_dart (2.4.0 observed, 2026-08) removes server-initiated
   # elicitation ("elicitation/create is a legacy server-initiated
   # interaction"), which ElicitationRiskGate depends on. Migrate to stateless

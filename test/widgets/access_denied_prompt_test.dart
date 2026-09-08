@@ -30,6 +30,7 @@ import 'package:tfc/page_creator/assets/start_stop_button.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/access_policy.dart';
 import 'package:tfc/providers/access_templates.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/access_denied_prompt.dart';
@@ -40,6 +41,7 @@ import 'package:tfc/widgets/panes/side_pane.dart' show closeSidePane;
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 
 import '../helpers/test_helpers.dart';
@@ -104,6 +106,12 @@ List<Override> _accessOverrides({AccessSession? session}) => [
       accessSessionProvider
           .overrideWith(() => _FixedSession(session ?? _anonymous())),
       accessRepositoryProvider.overrideWith((ref) async => _StubRepository()),
+      // 17-12: `auditSinkProvider` now consults the transport row
+      // (`gatewayConfigProvider` → `localPreferencesProvider`) before it
+      // decides which sink to hand back, so the deny-row path these tests
+      // exercise would otherwise reach an unmocked SharedPreferences. An
+      // in-memory device-local store reads as direct mode.
+      localPreferencesProvider.overrideWithValue(InMemoryPreferences()),
     ];
 
 /// What plan 04-10's converted call sites decide from: one key bound to a
