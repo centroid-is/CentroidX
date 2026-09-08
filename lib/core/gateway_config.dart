@@ -272,7 +272,7 @@ final class GatewayConfig {
     return 'The gateway certificate must carry a subject-alternative name for '
         'exactly "${uri.host}". A certificate issued for an IP address instead '
         'fails the handshake with a message about trust rather than about the '
-        'name, so check the certificate before you touch the CA root path.';
+        'name, so check the certificate before you distrust the pinned CA.';
   }
 
   /// The dial target, once [validationError] is null.
