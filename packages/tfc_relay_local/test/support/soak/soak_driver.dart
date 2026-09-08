@@ -770,12 +770,12 @@ final class SoakDriver
   /// `SubscriptionState.generation`, the reading `divergence_gate_test.dart`
   /// takes as `_rebuildsServed` — one generation is minted per subscribe from a
   /// gateway-wide counter, so it rises on every re-establishment and never
-  /// falls. Sessions are matched by `Identity.stationId`, which the soak's own
-  /// token file sets to the panel's name (`_writeTokenFile`).
+  /// falls. Sessions are matched by `StationIdentity.station`, which the soak's
+  /// own token file sets to the panel's name (`_writeTokenFile`).
   int _pageRebuildsFor(String panel) {
     if (_fixture == null) return 0;
     for (final session in fixture.server.sessions.sessions) {
-      if (session.identity?.stationId != panel) continue;
+      if (session.identity?.station != panel) continue;
       final state = session.subscriptions.get(defaultPageSubscription);
       if (state == null) continue;
       return _lastRebuilds[panel] = state.generation;
@@ -1377,9 +1377,14 @@ final class SoakDriver
       'tokens': <String, Object?>{
         for (var i = 0; i < herdSize; i++)
           if (!_revoked.contains(i))
+            // 17-04b's user model: the file names a USER and a STATION and has
+            // structurally nowhere to put a grant — a `role` key here is
+            // refused at load. What the station may do comes from the account
+            // the resolver answers with (`soakAccounts` in
+            // `gate_b_fixture.dart`), not from this file.
             _tokenForPanel(i): <String, Object?>{
-              'stationId': soakPanelName(i),
-              'role': 'operate',
+              'username': soakPanelName(i),
+              'station': soakPanelName(i),
             },
       },
     }));

@@ -138,6 +138,13 @@ dev_dependencies:
   # hand-rolled client would be this package asserting against its own idea of
   # what a panel does. Same shape as tfc_relay_client holding tfc_relay_server.
   tfc_relay_client: {path: ../tfc_relay_client}
+  # The account vocabulary (`AuthenticatedUser`, `AccessGroup`) the soak's
+  # token file now needs. **Dev-only, deliberately**: 17-04b split the
+  # credential from the grant, so a token file names a user and the resolver
+  # answers what that user may do — the soak has to supply that resolver to
+  # stand a gateway up at all. The gateway itself does not depend on the
+  # access package; the embedder wires the resolver in.
+  tfc_access: {path: ../tfc_access}
   # The shared StateManApi contract suite, run against LocalStateMan over real
   # DeviceClients. It binds ports and pulls package:test into whatever solve
   # names it, so dev-only is not negotiable.

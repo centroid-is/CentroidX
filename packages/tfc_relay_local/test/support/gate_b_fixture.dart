@@ -46,6 +46,8 @@ library;
 import 'dart:async';
 
 import 'package:test/test.dart';
+import 'package:tfc_access/tfc_access.dart'
+    show AccessGroup, AuthenticatedUser;
 import 'package:tfc_dart/core/state_man.dart' show KeyMappings;
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 import 'package:tfc_relay_local/tfc_relay_local.dart';
@@ -670,6 +672,10 @@ final class GateBFixture {
     while (deadline.elapsed < rebindBudget) {
       final replacement = RelayServer(
         resolver: const PermissiveSeriesResolver(),
+        // The restarted gateway must be built exactly like the original —
+        // a replacement that could not resolve accounts would refuse to
+        // start and read as "the port never came back".
+        accounts: soakAccounts,
         api: plant,
         config: config,
         onError: (error, _, where) => gatewayComplaints.add('$where: $error'),
@@ -777,6 +783,25 @@ Future<int> untilSocketsSettle(
 /// [tokenFor] gives panel *i* its credential, for a [serverConfig] that names
 /// an `AuthConfig`. Null — the default — is a gateway with no token file, and
 /// every gate-B row stays on that path.
+///
+/// The soak's account source, standing in for the plant's `app_user` table.
+///
+/// 17-04b split the credential from the grant: the token file says which USER
+/// a station authenticates as, and this answers what that user may do. The
+/// soak's panels are all plain operators — it measures transport resilience,
+/// not authorisation — so every soak panel resolves to the operate group and
+/// **anything else resolves to null**, which is a refusal. A resolver that
+/// answered for every name would be the permissive fallback
+/// `RelayServer.start` explicitly refuses to have.
+ResolvedUser? soakAccounts(String username) {
+  if (!RegExp(r'^panel-\d+$').hasMatch(username)) return null;
+  return ResolvedUser(
+    user: AuthenticatedUser(
+        username: username, roleName: 'Operator', stationAccount: true),
+    groups: const {AccessGroup.operate},
+  );
+}
+
 Future<GateBFixture> gateBFixture({
   int panels = 1,
   List<String> aliases = const <String>['ST101', 'ST201'],
@@ -856,6 +881,7 @@ Future<GateBFixture> gateBFixture({
   final gatewayComplaints = <String>[];
   final server = RelayServer(
     resolver: const PermissiveSeriesResolver(),
+    accounts: soakAccounts,
     api: plant,
     config: config,
     // Collected rather than printed, and collected rather than discarded —
