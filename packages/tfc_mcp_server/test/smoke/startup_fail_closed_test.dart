@@ -3,7 +3,8 @@
 /// The unit tests in `test/tools/startup_toggles_test.dart` prove the
 /// resolver. This one proves the wiring: that the binary actually asks the
 /// resolver, actually hands the answer to [TfcMcpServer], and actually says
-/// on stderr why a client is looking at an empty tool list. A resolver that
+/// on stderr why a client is looking at a tool list with no domain tools in
+/// it (only `ping` -- see [_Launch.domainTools]). A resolver that
 /// returns `allDisabled` into a variable nobody reads would pass every test
 /// in that file.
 ///

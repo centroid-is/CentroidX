@@ -63,8 +63,8 @@ Future<void> main(List<String> arguments) async {
   logger.i('Starting TFC MCP Server v$_version');
 
   // Decide what this process serves before anything else, so the line
-  // explaining an empty tool list is the first thing in the log rather than
-  // something buried under database chatter.
+  // explaining a tool list with no domain tools in it is the first thing in
+  // the log rather than something buried under database chatter.
   //
   // The source is whoever spawned this process, never a table: the MCP
   // config is device-local, so the deciding device owns it and hands it

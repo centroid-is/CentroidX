@@ -71,6 +71,17 @@ void main() {
       expect(explanation, contains('disabled'));
     });
 
+    test('the explanation promises no tools but ping, not an empty list', () {
+      // The one detail the surrounding prose gets wrong, pinned here because
+      // it is what an operator reads while looking at a client that lists
+      // exactly one tool. Promised an empty list, they conclude the closed
+      // start failed and go hunting a bug that is not there.
+      for (final message in [kNoTogglesMessage, kUnreadableTogglesMessage]) {
+        expect(message, contains('ping'));
+        expect(message, isNot(contains('empty tool list')));
+      }
+    });
+
     test('environment toggles are taken as given', () {
       final json = jsonEncode(
         const McpToolToggles(tagsEnabled: true, proposalsEnabled: false)
@@ -179,6 +190,9 @@ void main() {
 
     test('says the server serves nothing until it is told otherwise', () {
       expect(kTogglesHelpText, contains('no tools'));
+      // And is honest about the one exception, for the same reason the
+      // stderr messages are.
+      expect(kTogglesHelpText, contains('ping'));
     });
   });
 }

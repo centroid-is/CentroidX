@@ -116,10 +116,17 @@ class StartupToggles {
 ///
 /// Printed straight to stderr rather than through the logger, because
 /// `CENTROID_LOG_LEVEL` must not be able to hide the one line that explains
-/// an empty tool list.
+/// a tool list with nothing in it.
+///
+/// Says "no tools but `ping`" rather than "no tools", and the precision is
+/// the point: somebody reading this is looking at a client that lists one
+/// tool. Told to expect an empty list, they would conclude the closed start
+/// had failed and go looking for a bug. [resolveStartupToggles] carries the
+/// full note.
 const kNoTogglesMessage =
     'tfc_mcp_server: no tool toggles were handed down, so every tool group '
-    'is disabled and this server is serving an empty tool list.\n'
+    'is disabled and this server offers no tools but the ping health '
+    'check.\n'
     '  The MCP config is device-local: the HMI that spawns this server '
     'passes its own decision in $kMcpTogglesEnvVar.\n'
     '  A standalone launch has no station to inherit from and must say so '
@@ -130,8 +137,8 @@ const kNoTogglesMessage =
 /// Why a server that was told something unreadable serves nothing.
 const kUnreadableTogglesMessage =
     'tfc_mcp_server: the tool toggles handed down could not be read as JSON, '
-    'so every tool group is disabled and this server is serving an empty '
-    'tool list.\n'
+    'so every tool group is disabled and this server offers no tools but '
+    'the ping health check.\n'
     '  Check the value of $kMcpTogglesEnvVar, or of --toggles, in whatever '
     'launched this process. See --help for the expected shape.';
 
@@ -140,10 +147,11 @@ const kUnreadableTogglesMessage =
 /// inherited from a table.
 final kTogglesHelpText = '''
 Tool groups:
-  This server serves no tools until it is told which tool groups to serve.
-  The HMI that spawns it passes its own device-local decision in
-  $kMcpTogglesEnvVar. A standalone launch -- Claude Desktop on a laptop --
-  has no station to inherit that from, and has to say so itself.
+  Until it is told which tool groups to serve, this server registers none of
+  them and offers no tools but its ping health check. The HMI that spawns it
+  passes its own device-local decision in $kMcpTogglesEnvVar. A standalone
+  launch -- Claude Desktop on a laptop -- has no station to inherit that
+  from, and has to say so itself.
 
   The value is a JSON object mapping group names to booleans. Groups named
   in it are as named; groups left out of a supplied object are enabled.
@@ -168,8 +176,28 @@ Tool groups:
 ///
 /// With nothing readable, the result is [McpToolToggles.allDisabled] and
 /// [StartupToggles.decided] is false. Closed, still running, and able to say
-/// why: a stdio server that appears and lists nothing is diagnosable in the
+/// why: a stdio server that appears and explains itself is diagnosable in the
 /// client, where a refused start is a connection error and a stack trace.
+///
+/// ## What a closed start looks like from a client
+///
+/// None of the nine tool groups register, so the server offers **zero domain
+/// tools** — the whole SAFE-03/04 surface. It is not a literally empty list:
+/// `ping` is registered outside every toggle branch (`server.dart`, "health
+/// check, not a domain tool group") and a closed server still answers it.
+///
+/// That is deliberate, and it is the same argument that chose fail-closed
+/// over refuse-to-start. On the security axis those two are tied — both are
+/// shut — so what decided it was legibility: a process that starts and says
+/// why is diagnosable where a refused connection is a stack trace. A server
+/// answering `ping` while listing no domain tools separates "closed on
+/// purpose" from "wedged". One answering nothing at all collapses those two
+/// states back together and gives back part of what the ruling bought.
+///
+/// Prose elsewhere — the phase brief, addendum 2 of the core review — says
+/// "serves the empty tool list". Read that as zero domain tools. An operator
+/// told to expect a literally empty list will see one entry and conclude the
+/// fix failed.
 StartupToggles resolveStartupToggles({String? envJson, String? cliJson}) {
   // Each source in turn, most authoritative first. A source that spoke and
   // was not understood ends the search: reading past it to a lesser source
