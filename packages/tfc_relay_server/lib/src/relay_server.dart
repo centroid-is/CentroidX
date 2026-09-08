@@ -34,6 +34,10 @@ import 'dart:io';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:stream_channel/stream_channel.dart';
+// Narrowed to the sink names, `relay_session.dart`'s discipline: the server
+// wires the trail, the decorator writes it, and the master system's wider
+// vocabulary stays out of this file.
+import 'package:tfc_access/tfc_access.dart' show AuditSink, NullAuditSink;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -147,6 +151,9 @@ final class RelayServer {
     TokenValidator validator = permissiveDefault,
     this.policy = const AccessPolicyKeyPolicy(),
     this.alarmAcks,
+    this.audit = const NullAuditSink(),
+    this.accounts,
+    this.accessFor,
     required this.resolver,
     this.serverSupported = const [protocolVersion],
     this.onError = reportToStderr,
@@ -289,6 +296,40 @@ final class RelayServer {
   /// name, which is what keeps "this gateway serves no alarm engine"
   /// distinguishable from "this gateway is too old to know the word".
   final AlarmAckSink? alarmAcks;
+
+  /// Where every session's authorization verdicts become rows (D-05, 17-09).
+  ///
+  /// [NullAuditSink] by default, so every existing composition in the
+  /// workspace is unaffected — the trail is an account of decisions, never a
+  /// precondition for making them. `composeBackendRelay` (17-11) injects the
+  /// same `DriftAuditSink` shape the app's provider builds, writing the same
+  /// `audit_entry` table, so one SELECT answers for panel and wire alike.
+  /// Threaded to every session's `PolicyStateMan` in [_onConnect]; the arm
+  /// that proves the threading measures rows through *this* class rather
+  /// than through a directly-built decorator, because "a composition nothing
+  /// assembles is a composition nothing tests" (Phase 10, CR-01).
+  final AuditSink audit;
+
+  /// Where a token file's usernames become accounts and groups (D-06,
+  /// 17-04b's `UserResolver`).
+  ///
+  /// Nullable at construction and **required the moment [config] names a
+  /// token file** — [start] refuses the combination, because a token file
+  /// with no resolver behind it is a list of usernames nobody can grade.
+  /// There is deliberately no permissive fallback, on
+  /// `FileTokenValidator`'s own reasoning about a misspelled PEM: a gateway
+  /// that admitted every panel because somebody forgot this argument would
+  /// look perfectly healthy from every screen in the plant. 17-11 fills it
+  /// from `AccessRepository`, cached in memory on the same cadence the
+  /// token reload uses.
+  final UserResolver? accounts;
+
+  /// Builds each session's per-identity template/admin families at `hello`
+  /// (D-11) — see [AccessScopeFactory]. Forwarded to every session exactly
+  /// as [validator] and [policy] are; null leaves the shared source's own
+  /// families answering, which on the shipped backend is 17-03b's
+  /// refuse-by-name. 17-11 fills it from the moved stores.
+  final AccessScopeFactory? accessFor;
 
   /// How a browse node id and a database table name become a plant key.
   ///
@@ -447,7 +488,26 @@ final class RelayServer {
     // file is cheaper to get wrong.
     final auth = config.auth;
     if (auth != null) {
-      _loaded = await FileTokenValidator.load(auth.tokenFilePath);
+      // The resolver check comes even before the file read: both are
+      // fail-closed refusals, and this is the one whose remedy is a
+      // constructor argument rather than a mount. Named twice over —
+      // the parameter and its type — because the operator reading this is
+      // standing at a gateway that will not start (D-06's third leg).
+      if (accounts == null) {
+        throw ArgumentError.value(
+            null,
+            'accounts',
+            'this RelayServer was given a token file '
+                '(${auth.tokenFilePath}) and no UserResolver. The file names '
+                'usernames; without the resolver this gateway cannot learn '
+                'who any of them is or what its role may do, and there is no '
+                'permissive fallback — a gateway that admitted every panel '
+                'because nobody wired the user source would look perfectly '
+                'healthy from every screen in the plant. Pass accounts:, the '
+                'way composeBackendRelay fills it from AccessRepository');
+      }
+      _loaded =
+          await FileTokenValidator.load(auth.tokenFilePath, accounts: accounts);
     }
     // Before the bind, so it is the first thing in the log rather than a line
     // after the port is already open. `StackTrace.empty` is this package's
@@ -579,17 +639,36 @@ final class RelayServer {
     _sweepRevoked(live);
   }
 
-  /// [reloadTokens]' cheaper sibling: one read of the file, and a sweep only
-  /// when the bytes changed. Answers whether they did.
+  /// [reloadTokens]' cheaper sibling: one read of the file, a re-parse only
+  /// when the bytes changed — and a sweep **either way**. Answers whether
+  /// the bytes did change.
   ///
-  /// **The call an embedder's poll should make.** [reloadTokens]' own doc, and
-  /// design §7.4, tell the embedder to call
+  /// **The call an embedder's poll should make** — and, since 17-09, the
+  /// call that makes a *database* revocation take effect too. [reloadTokens]'
+  /// own doc, and design §7.4, tell the embedder to call
   /// [FileTokenValidator.reloadIfChanged] first — and then [reloadTokens]
   /// re-reads the file anyway, so the intended production sequence parses it
   /// twice per change. The two reads can disagree: a file edited between them,
   /// or half-written by an editor that does not write atomically, leaves the
   /// sweep running against a credential set the `reloadIfChanged` caller never
   /// saw.
+  ///
+  /// **The digest guards the parse, not the sweep.** Under the user model
+  /// (17-04b) most revocations never visit the file: an account deleted,
+  /// re-roled, unmarked as a station, or a group unticked on its role are
+  /// all `app_user`/`app_role` edits, invisible to the file digest — and
+  /// after Phase 17 that role also decides `configure` and `administer`. So
+  /// the sweep runs on every call, consulting the live [accounts] resolver
+  /// through `stillValid`; what the unchanged digest skips is the re-parse.
+  /// The sweep is a synchronous walk over tens of sessions and closes
+  /// nothing whose credential still means what it meant (D-08; the arm is
+  /// `session_identity_test.dart`'s "an unchanged credential closes
+  /// nothing").
+  ///
+  /// **No production poll exists yet.** Nothing in `centroidx-backend` calls
+  /// this — 17-11 wires it onto the backend's config-watch tick *and* the
+  /// LISTEN/NOTIFY tick, and until it lands revocation does not happen in
+  /// production. Named here so the next reader does not assume it is wired.
   ///
   /// Narrower than [reloadTokens] by necessity: `reloadIfChanged` is on
   /// [FileTokenValidator] and deliberately not on [RevocableTokenValidator]
@@ -605,9 +684,9 @@ final class RelayServer {
           'changed. Configure ServerConfig.auth, or drive the reload yourself '
           'through reloadTokens()');
     }
-    if (!await live.reloadIfChanged()) return false;
+    final changed = await live.reloadIfChanged();
     _sweepRevoked(live);
-    return true;
+    return changed;
   }
 
   /// Closes every session whose credential [live] no longer honours.
@@ -656,9 +735,16 @@ final class RelayServer {
       if (config.auth == null) 'a token file',
     ];
     if (missing.isEmpty) return null;
+    // "every access group" and not the old "operate rights": since Phase 17
+    // the permissive validator mints the FULL group set — administer and
+    // users included, seven groups where there used to be one of two roles —
+    // and a warning that made the smaller claim would be underselling the
+    // exposure by exactly the amount this phase added (token_validator.dart's
+    // "larger claim than it used to make").
     return 'binding ${config.address.address}:${config.port} with no '
         '${missing.join(' and no ')}. Every peer that can reach this port is '
-        'a panel with ${config.auth == null ? 'operate rights' : 'a credential'}'
+        'a panel ${config.auth == null ? 'holding every access group' : 'with '
+            'a credential'}'
         '${config.tls == null ? ', and every value and every write crosses '
             'the network in cleartext' : ''}. That is a legitimate deployment '
         'behind a firewall on a segmented network and this gateway cannot '
@@ -779,6 +865,14 @@ final class RelayServer {
         // rather than an omission: the session registers `ackAlarm` either way
         // and refuses it by name when there is no engine behind it.
         alarmAcks: alarmAcks,
+        // One sink for the gateway, threaded to every session's decorator —
+        // a reconnecting panel's rows and its predecessor's land in one
+        // trail (D-05). The seam 17-07 built; this line is what makes it
+        // survive composition (CR-01).
+        audit: audit,
+        // The per-identity family factory, consulted by the session at
+        // `hello` — see `AccessScopeFactory` (D-11).
+        accessFor: accessFor,
         // Forwarded the same way, and required at both ends: a session built
         // without a mapping is a session whose browse filter has nothing to
         // ask, and 10-03's timeseries handlers would have no table to resolve.
