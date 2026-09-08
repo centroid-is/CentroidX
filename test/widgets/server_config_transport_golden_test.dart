@@ -258,68 +258,13 @@ void main() {
         );
       });
 
-      testWidgets('the hidden-sections note, corrected copy, $label',
-          (tester) async {
-        await pumpPage(
-          tester,
-          dark: dark,
-          localPreferences: await _savedGatewayStation(),
-          // **This frame used to depend on the machine's filesystem, and 15-08
-          // found out by accident.** It is the only frame that saves a gateway
-          // row and then leaves the REAL `gatewayLinkProvider` running, and the
-          // row it saves names `/home/centroid/relay_config/pki/ca.pem` — a
-          // path that exists on a panel and on nobody's laptop. While a CA that
-          // could not be opened was being swallowed as `null`, the absence
-          // below was indistinguishable from the unresolved state this frame's
-          // subject needs, so the image looked right for the wrong reason.
-          // With 15-08 the same station reports `notBuilt`, the status row
-          // appears, and 25.98% of these pixels move — on a laptop, and not on
-          // the rig, which is a golden that disagrees with itself by machine.
-          //
-          // Pinned rather than re-baselined: the subject of this image is the
-          // corrected Postgres copy in `_DirectSectionsHiddenNote`, not the
-          // link, and a frame whose subject is one paragraph must not be
-          // hostage to whether a certificate happens to be mounted.
-          pinLinkUnresolved: true,
-        );
-        expectNoSpinner('hidden note');
-
-        // Anti-vacuity for the pin above: this frame is only the unresolved
-        // frame if the row really is absent. Without this, a change that made
-        // the provider resolve here would silently re-shoot the image.
-        expect(find.byKey(kGatewayLinkStatusRowKey), findsNothing,
-            reason: 'the device-local row has been read but the transport has '
-                'not been built yet — the state a gateway panel is in for the '
-                'first moment of every boot, and the one this image records');
-
-        // The sentence this frame exists for is the second paragraph — the one
-        // that stopped claiming this station opens no connections of its own,
-        // because it opens exactly one, to Postgres. Named before recording, so
-        // a frame that lost its subject fails here rather than becoming the new
-        // baseline.
-        expect(find.textContaining('It still opens one Postgres connection'),
-            findsOneWidget);
-
-        // Captured whole-page, like every other frame in this file, and
-        // deliberately not with a finder aimed at the note's own `Card`.
-        // `matchesGoldenFile` does not capture the widget a finder names: it
-        // walks up to the nearest enclosing `RepaintBoundary` and captures
-        // that whole layer. Aiming at the note produced an image that silently
-        // also contained the Transport card above it, at an extent no line of
-        // this file controls — so an unrelated change to the page's boundary
-        // structure would re-crop the golden. A fixed 760x1300 surface is the
-        // stable frame.
-        //
-        // What separates this from the gateway frame above is the status row:
-        // there the link is live and green, here the provider is unresolved and
-        // the row is absent, which is what a station renders before the first
-        // report lands.
-        await expectLater(
-          find.byType(MaterialApp),
-          matchesGoldenFile(
-              'goldens/server_config_transport_hidden_note$suffix.png'),
-        );
-      });
+      // The hidden-sections-note frame is gone with its subject: the owner
+      // deleted the note itself ("it is implied by the toggle switch in
+      // Transport"), so a frame whose stated subject was that note's
+      // corrected Postgres paragraph has nothing left to photograph. The
+      // rule that the note stays absent is functional, in
+      // `server_config_transport_mode_test.dart` — a golden of presence
+      // cannot guard an absence, and a golden of absence guards nothing.
 
       testWidgets('the hostname advisory, with Save still enabled, $label',
           (tester) async {
