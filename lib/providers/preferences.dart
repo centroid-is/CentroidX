@@ -4,11 +4,13 @@ import 'package:tfc_dart/core/preferences.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../core/gateway_config.dart';
 import '../core/preferences.dart';
 import '../core/startup_url.dart';
 import 'access.dart';
 import 'access_policy.dart';
 import 'database.dart';
+import 'gateway.dart';
 
 part 'preferences.g.dart';
 
@@ -34,7 +36,28 @@ PreferencesApi createDeviceLocalPreferences() =>
 /// the app without changing a single call site.
 @Riverpod(keepAlive: true)
 Future<Preferences> preferences(Ref ref) async {
-  final db = await ref.watch(databaseProvider.future);
+  // The transport branch, and it must sit HERE, not merely inside
+  // `databaseProvider`: this provider is `keepAlive` and watched by
+  // everything, so a watch on `databaseProvider` is what used to pull the
+  // station's Postgres pool up at boot in gateway mode with no screen asking.
+  // In gateway mode the dependency does not exist — not "exists but answers
+  // null" — which is what `database_transport_test.dart` pins by overriding
+  // `databaseProvider` to throw and building this provider anyway (17-12's
+  // technique). The shared store then runs on the device-local mirror the
+  // sync path already maintains.
+  //
+  // `ref.read` on the transport for the reason `database.dart` gives at its
+  // own branch: restart-to-apply, and a save on the server-config page
+  // invalidates `gatewayConfigProvider` without meaning to rebuild the world.
+  // The catch is `readGatewayConfig`'s own policy — direct in every direction.
+  GatewayConfig gateway;
+  try {
+    gateway = await ref.read(gatewayConfigProvider.future);
+  } catch (_) {
+    gateway = GatewayConfig.defaults;
+  }
+  final db =
+      gateway.isGateway ? null : await ref.watch(databaseProvider.future);
   final localCache = createDeviceLocalPreferences();
 
   final inner = await Preferences.create(db: db, localCache: localCache);
