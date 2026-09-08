@@ -26,10 +26,11 @@
 /// `AlarmHandlers` is handed the session's own `PolicyStateMan.canWrite` — the
 /// same expression `ValueHandlers` is handed at `relay_session.dart:832`, not a
 /// copy of it — so the ack and the write cannot drift apart about what an
-/// operator is. Under the shipped `AllVisibleOperatorWrites` that is
-/// `role == operate` today; when the policy changes it changes for both at
-/// once. Arm 7 pins that the question is asked about `AlarmKeys.active` and not
-/// about whatever string the frame carried.
+/// operator is. Under the shipped `AccessPolicyKeyPolicy` that is "the group
+/// the master policy names for a tag write", `operate` at the floor; when the
+/// policy changes it changes for both at once. Arm 7 pins that the question is
+/// asked about `AlarmKeys.active` and not about whatever string the frame
+/// carried.
 library;
 
 import 'dart:async';
@@ -37,6 +38,7 @@ import 'dart:async';
 import 'package:json_rpc_2/error_code.dart' as rpc_errors;
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:test/test.dart';
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_relay_server/src/alarm_ack_sink.dart';
 import 'package:tfc_relay_server/src/auth/identity.dart';
@@ -54,8 +56,24 @@ import 'support/permissive_resolver.dart';
 
 /// A panel next to a machine, and a display on a wall. `policy_test.dart`'s
 /// two stations, in the same spelling, because they model the same two things.
-const _panel = Identity(stationId: 'ST101', role: Role.operate);
-const _display = Identity(stationId: 'HALL-DISPLAY', role: Role.view);
+/// `StationIdentity` on the user model (17-04b): the panel's session holds
+/// `operate`, the display's holds nothing — the same two authorities the old
+/// two-valued enum spelled, now in the master system's vocabulary.
+const _panelUser = AuthenticatedUser(
+    username: 'ST101-panel', roleName: 'Panel Operator', stationAccount: true);
+const _displayUser = AuthenticatedUser(
+    username: 'HALL-DISPLAY-panel',
+    roleName: 'Hall Display',
+    stationAccount: true);
+
+const _panel = StationIdentity(
+    user: _panelUser,
+    station: 'ST101',
+    session: AccessSession(user: _panelUser, groups: {AccessGroup.operate}));
+const _display = StationIdentity(
+    user: _displayUser,
+    station: 'HALL-DISPLAY',
+    session: AccessSession(user: _displayUser, groups: {}));
 
 /// An alarm engine that writes down what it was asked to acknowledge.
 ///
@@ -92,7 +110,7 @@ final class _SpyPolicy implements KeyPolicy {
   final asked = <String>[];
 
   @override
-  bool canSee(String key, Identity identity) => !hidden.contains(key);
+  bool canSee(String key, StationIdentity identity) => !hidden.contains(key);
 
   /// The shipped rule, **and** a refusal for anything hidden.
   ///
@@ -111,11 +129,17 @@ final class _SpyPolicy implements KeyPolicy {
   /// the only honest answer: a station that may not know a tag exists cannot
   /// meaningfully be permitted to actuate it.
   @override
-  bool canWrite(String key, Identity identity) {
+  bool canWrite(String key, StationIdentity identity) {
     asked.add(key);
     if (hidden.contains(key)) return false;
-    return identity.role == Role.operate;
+    return identity.session.can(AccessGroup.operate);
   }
+
+  /// Same judgement as [canWrite], unrecorded: nothing in this file writes a
+  /// preference, and the arm pinning [asked] is about the ack's one key.
+  @override
+  bool canWritePreference(String key, StationIdentity identity) =>
+      !hidden.contains(key) && identity.session.can(AccessGroup.operate);
 }
 
 /// A validator that hands every session one fixed identity.
@@ -127,7 +151,7 @@ final class _SpyPolicy implements KeyPolicy {
 final class _AlwaysStation implements TokenValidator {
   const _AlwaysStation(this.identity);
 
-  final Identity identity;
+  final StationIdentity identity;
 
   @override
   Future<TokenVerdict> validate(HelloParams params) async =>
@@ -176,7 +200,7 @@ final class _Link {
 }
 
 _Link _link({
-  Identity identity = _panel,
+  StationIdentity identity = _panel,
   KeyPolicy? policy,
   AlarmAckSink? alarmAcks,
   bool seedActive = true,
@@ -197,7 +221,11 @@ _Link _link({
     handles: HandleTable(),
     buffer: ConflatingSendBuffer(maxPending: 4096),
     validator: _AlwaysStation(identity),
-    policy: policy ?? const AllVisibleOperatorWrites(),
+    // The shipped adapter since 17-07 deleted AllVisibleOperatorWrites: same
+    // verdicts for this file's two stations — a tag write takes `operate`
+    // (AccessPolicy.groupForTag's floor), which _panel holds and _display
+    // does not.
+    policy: policy ?? const AccessPolicyKeyPolicy(),
     alarmAcks: alarmAcks,
     serverSupported: const [protocolVersion],
     // Several arms provoke refusals on purpose, and a suite printing a stack
@@ -325,7 +353,7 @@ void main() {
 
     expect(policy.asked, [AlarmKeys.active],
         reason: 'gating on the uid type-checks, reads sensibly, and under '
-            'AllVisibleOperatorWrites — whose canWrite ignores the key — '
+            'AccessPolicyKeyPolicy — whose tag floor ignores the key — '
             'passes every other arm in this file');
   });
 

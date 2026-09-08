@@ -5,11 +5,13 @@
 ///
 /// Three properties, in the order they are built:
 ///
-///  1. **The token file is read, and four classes of bad file are refused at
-///     load** — a duplicate `stationId`, an unknown role, a token below the
-///     length floor, and a file any other account on the plant machine can
-///     read. A load failure fails `RelayServer.start()`; there is no
-///     permissive fallback, for the same reason a misspelled PEM has none.
+///  1. **The token file is read, and a bad file is refused at load** — a
+///     duplicate `station`, an entry that still carries a `role` key
+///     (whatever its value — the file names WHICH USER a station is and
+///     grants nothing, D-06 as ruled), a token below the length floor, and a
+///     file any other account on the plant machine can read. A load failure
+///     fails `RelayServer.start()`; there is no permissive fallback, for the
+///     same reason a misspelled PEM has none.
 ///  2. **A session knows which station it is**, and the credential appears in
 ///     nothing that leaves the process — not the `-32003` message, not the
 ///     close reason, not a `status` frame, not the error sink.
@@ -29,6 +31,7 @@ import 'dart:io';
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:stream_channel/stream_channel.dart';
 import 'package:test/test.dart';
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_relay_server/src/auth/auth_config.dart';
 import 'package:tfc_relay_server/src/auth/file_token_validator.dart';
@@ -65,6 +68,38 @@ HelloParams _helloWith(String? token) => HelloParams(
       token: token,
     );
 
+/// The accounts behind the usernames the token files below name — 17-04b's
+/// `UserResolver` seam, filled from a switch the way 17-11 fills it from
+/// `AccessRepository`. ST101 is the operating panel, ST201 the view-only
+/// display: the same two authorities the old `operate`/`view` file values
+/// spelled, now as group sets on database rows.
+const _userOne = AuthenticatedUser(
+    username: 'ST101-panel', roleName: 'Panel Operator', stationAccount: true);
+const _userTwo = AuthenticatedUser(
+    username: 'ST201-panel', roleName: 'Hall Display', stationAccount: true);
+const _userLong = AuthenticatedUser(
+    username: 'BAADER3E-panel',
+    roleName: 'Panel Operator',
+    stationAccount: true);
+
+const _identityOne = StationIdentity(
+    user: _userOne,
+    station: 'ST101',
+    session: AccessSession(user: _userOne, groups: {AccessGroup.operate}));
+const _identityTwo = StationIdentity(
+    user: _userTwo,
+    station: 'ST201',
+    session: AccessSession(user: _userTwo, groups: {}));
+
+ResolvedUser? _accounts(String username) => switch (username) {
+      'ST101-panel' =>
+        const ResolvedUser(user: _userOne, groups: {AccessGroup.operate}),
+      'ST201-panel' => const ResolvedUser(user: _userTwo, groups: {}),
+      'BAADER3E-panel' =>
+        const ResolvedUser(user: _userLong, groups: {AccessGroup.operate}),
+      _ => null,
+    };
+
 /// A production fixture whose gateway checks [tokens], written to a temp file
 /// this case owns.
 ///
@@ -84,6 +119,7 @@ RelayFixture _gatewayAt(String tokenFilePath, {RelayErrorHandler? onError}) =>
         tick: ServerConfig.minTick,
         auth: AuthConfig(tokenFilePath: tokenFilePath),
       ),
+      accounts: _accounts,
       onError: onError,
     );
 
@@ -173,17 +209,19 @@ String _writeTokenFile(Directory dir, Object? contents, {String mode = '600'}) {
 
 String _json(Object? value) => jsonEncode(value);
 
-/// The one-station file every accept-path case starts from.
+/// The one-station file every accept-path case starts from. The entry names
+/// WHICH USER the station is and grants nothing (D-06 as ruled): the groups
+/// live on the account row, behind [_accounts].
 Map<String, Object?> _oneStation() => {
       'tokens': {
-        _stationOneToken: {'stationId': 'ST101', 'role': 'operate'},
+        _stationOneToken: {'username': 'ST101-panel', 'station': 'ST101'},
       },
     };
 
 Map<String, Object?> _twoStations() => {
       'tokens': {
-        _stationOneToken: {'stationId': 'ST101', 'role': 'operate'},
-        _stationTwoToken: {'stationId': 'ST201', 'role': 'view'},
+        _stationOneToken: {'username': 'ST101-panel', 'station': 'ST101'},
+        _stationTwoToken: {'username': 'ST201-panel', 'station': 'ST201'},
       },
     };
 
@@ -192,13 +230,13 @@ void main() {
     test('a token file with two stations sharing an id is refused', () async {
       final path = _writeTokenFile(_tempDir(), {
         'tokens': {
-          _stationOneToken: {'stationId': 'ST101', 'role': 'operate'},
-          _stationTwoToken: {'stationId': 'ST101', 'role': 'view'},
+          _stationOneToken: {'username': 'ST101-panel', 'station': 'ST101'},
+          _stationTwoToken: {'username': 'ST101-other', 'station': 'ST101'},
         },
       });
 
       await expectLater(
-          FileTokenValidator.load(path),
+          FileTokenValidator.load(path, accounts: _accounts),
           throwsA(isA<FormatException>().having(
               (e) => e.message, 'message', allOf(contains('ST101'), contains(path)))),
           reason: 'two tokens answering to one station makes a revocation '
@@ -210,12 +248,12 @@ void main() {
     test('a token shorter than the floor is refused', () async {
       final path = _writeTokenFile(_tempDir(), {
         'tokens': {
-          'short-token': {'stationId': 'ST101', 'role': 'operate'},
+          'short-token': {'username': 'ST101-panel', 'station': 'ST101'},
         },
       });
 
       await expectLater(
-          FileTokenValidator.load(path),
+          FileTokenValidator.load(path, accounts: _accounts),
           throwsA(isA<FormatException>().having((e) => e.message, 'message',
               allOf(contains('ST101'), contains('${FileTokenValidator.minTokenLength}'), contains(path)))),
           reason: 'a short credential is a guessable one, and the message must '
@@ -223,30 +261,41 @@ void main() {
               'pastes it does not paste a credential');
     });
 
-    test('an unknown role string is refused', () async {
+    test('an entry that still carries a role key is refused, whatever the '
+        'value', () async {
+      // The judgement the old "unknown role string" arm carried, sharpened
+      // by D-06 as ruled: the offence is the file having somewhere to put an
+      // answer to "and therefore may do X", so the KEY is refused — a role
+      // nobody implements, a legacy grant and 17-04's interim role name all
+      // alike — and never silently translated or dropped.
       final path = _writeTokenFile(_tempDir(), {
         'tokens': {
-          _stationOneToken: {'stationId': 'ST101', 'role': 'supervisor'},
+          _stationOneToken: {
+            'username': 'ST101-panel',
+            'station': 'ST101',
+            'role': 'supervisor',
+          },
         },
       });
 
       await expectLater(
-          FileTokenValidator.load(path),
+          FileTokenValidator.load(path, accounts: _accounts),
           throwsA(isA<FormatException>().having(
               (e) => e.message,
               'message',
-              allOf(contains('supervisor'), contains('view'),
-                  contains('operate'), contains(path)))),
-          reason: 'a role nobody implements must not silently become the '
-              'narrower one: the operator who wrote it believes the station '
-              'has the access it names');
+              allOf(contains('supervisor'), contains('"role"'),
+                  contains('ST101'), contains(path)))),
+          reason: 'the message names the offending value and the station, so '
+              'the operator who wrote it is told the grant they believe in '
+              'was refused rather than narrowed — and told where the role '
+              'now lives (on the account row)');
     });
 
     test('a group- or world-readable token file is refused', () async {
       final path = _writeTokenFile(_tempDir(), _oneStation(), mode: '644');
 
       await expectLater(
-          FileTokenValidator.load(path),
+          FileTokenValidator.load(path, accounts: _accounts),
           throwsA(isA<FileSystemException>()
               .having((e) => e.message, 'message', contains('readable'))),
           reason: 'the credential set is the plant\'s keys; a file every '
@@ -258,7 +307,8 @@ void main() {
       final dir = _tempDir();
 
       await expectLater(
-          FileTokenValidator.load('${dir.path}/absent.json'),
+          FileTokenValidator.load('${dir.path}/absent.json',
+              accounts: _accounts),
           throwsA(isA<FileSystemException>()),
           reason: 'there is no permissive fallback: a gateway that accepted '
               'every panel because somebody misspelled a path would look '
@@ -268,21 +318,26 @@ void main() {
 
   group('a good file produces identities', () {
     test('a valid token maps to its station identity', () async {
-      final validator =
-          await FileTokenValidator.load(_writeTokenFile(_tempDir(), _twoStations()));
+      final validator = await FileTokenValidator.load(
+          _writeTokenFile(_tempDir(), _twoStations()),
+          accounts: _accounts);
 
       final accepted = await validator.validate(_helloWith(_stationTwoToken));
 
       expect(
           accepted,
-          isA<TokenAccepted>().having((a) => a.identity, 'identity',
-              const Identity(stationId: 'ST201', role: Role.view)));
+          isA<TokenAccepted>()
+              .having((a) => a.identity, 'identity', _identityTwo),
+          reason: 'the resolved row, whole — username, station, and the '
+              'group set the account\'s role holds — never the file\'s '
+              'claim (ACCESS-06)');
     });
 
     test('an unknown or absent credential is refused, and the refusal never '
         'repeats it', () async {
-      final validator =
-          await FileTokenValidator.load(_writeTokenFile(_tempDir(), _oneStation()));
+      final validator = await FileTokenValidator.load(
+          _writeTokenFile(_tempDir(), _oneStation()),
+          accounts: _accounts);
 
       const impostor = 'IMPOSTOR-4d2f8e1c6b9a3057fe4d2c8b';
       final unknown = await validator.validate(_helloWith(impostor));
@@ -300,7 +355,8 @@ void main() {
     test('stillValid follows the file, not the session', () async {
       final dir = _tempDir();
       final path = _writeTokenFile(dir, _twoStations());
-      final validator = await FileTokenValidator.load(path);
+      final validator =
+          await FileTokenValidator.load(path, accounts: _accounts);
 
       // Through `validate`, because that is how a live session comes by the
       // pair the sweep asks about: an identity and the digest of the
@@ -327,39 +383,44 @@ void main() {
 
     test('a station whose role was narrowed is no longer the identity it '
         'holds', () async {
-      final dir = _tempDir();
-      final path = _writeTokenFile(dir, _oneStation());
-      final validator = await FileTokenValidator.load(path);
+      // Database-driven since 17-04b: the file cannot say anything about a
+      // role any more, so the demotion is an edit to the account source —
+      // and the digest, the file, and reload() are all untouched. The
+      // resolver is consulted live on every stillValid call.
+      final accounts = <String, ResolvedUser>{
+        'ST101-panel':
+            const ResolvedUser(user: _userOne, groups: {AccessGroup.operate}),
+      };
+      final validator = await FileTokenValidator.load(
+          _writeTokenFile(_tempDir(), _oneStation()),
+          accounts: (username) => accounts[username]);
 
       final operating = await validator.validate(_helloWith(_stationOneToken))
           as TokenAccepted;
-      expect(operating.identity.role, Role.operate);
+      expect(operating.identity.session.can(AccessGroup.operate), isTrue);
       expect(
           validator.stillValid(operating.identity, operating.credentialDigest),
           isTrue);
 
-      // Same token, narrower role: the digest still resolves, and what it
-      // resolves to is no longer the identity the session is carrying.
-      _writeTokenFile(dir, {
-        'tokens': {
-          _stationOneToken: {'stationId': 'ST101', 'role': 'view'},
-        },
-      });
-      await validator.reload();
+      // Same token, same file, narrower groups behind the account's role.
+      accounts['ST101-panel'] =
+          const ResolvedUser(user: _userOne, groups: {});
 
       expect(
           validator.stillValid(operating.identity, operating.credentialDigest),
           isFalse,
           reason: 'a session minted before the demotion is still carrying '
-              'Role.operate. Leaving it live is the demotion not taking '
-              'effect until the panel happens to reconnect');
+              'operate. Leaving it live is the demotion not taking effect '
+              'until the panel happens to reconnect — and after Phase 17 the '
+              'role also decides configure and administer');
     });
 
     test('a replaced token is no longer the credential the session holds',
         () async {
       final dir = _tempDir();
       final path = _writeTokenFile(dir, _oneStation());
-      final validator = await FileTokenValidator.load(path);
+      final validator =
+          await FileTokenValidator.load(path, accounts: _accounts);
 
       final accepted = await validator.validate(_helloWith(_stationOneToken))
           as TokenAccepted;
@@ -368,10 +429,13 @@ void main() {
           isTrue);
 
       // The remediation a leaked credential actually gets: mint a new secret,
-      // same station, same role, edit the file, push it to the panel.
+      // same station, same account, edit the file, push it to the panel.
       _writeTokenFile(dir, {
         'tokens': {
-          _stationOneReplacement: {'stationId': 'ST101', 'role': 'operate'},
+          _stationOneReplacement: {
+            'username': 'ST101-panel',
+            'station': 'ST101'
+          },
         },
       });
       await validator.reload();
@@ -401,7 +465,8 @@ void main() {
     test('reloadIfChanged re-reads only when the file changed', () async {
       final dir = _tempDir();
       final path = _writeTokenFile(dir, _twoStations());
-      final validator = await FileTokenValidator.load(path);
+      final validator =
+          await FileTokenValidator.load(path, accounts: _accounts);
 
       expect(await validator.reloadIfChanged(), isFalse,
           reason: 'the digest is unchanged, so a config-watch loop that fires '
@@ -410,25 +475,25 @@ void main() {
 
       _writeTokenFile(dir, _oneStation());
       expect(await validator.reloadIfChanged(), isTrue);
-      expect(
-          validator.stillValid(
-              const Identity(stationId: 'ST201', role: Role.view), null),
-          isFalse);
+      expect(validator.stillValid(_identityTwo, null), isFalse);
     });
   });
 
   group('the permissive default is honestly labelled', () {
-    test('the permissive validator grants operate, and names itself', () async {
+    test('the permissive validator grants every group, and names itself',
+        () async {
       final verdict =
           await const PermissiveTokenValidator().validate(_helloWith(null));
 
       expect(
           verdict,
-          isA<TokenAccepted>().having((a) => a.identity.role, 'role', Role.operate),
-          reason: 'its semantics today are "everyone may do everything"; '
-              'Role.operate is that written down, and a deployment still '
-              'running one stays legible in a config diff');
-      expect((verdict as TokenAccepted).identity.stationId,
+          isA<TokenAccepted>().having((a) => a.identity.session.groups,
+              'groups', AccessGroup.values.toSet()),
+          reason: 'its semantics today are "everyone may do everything"; the '
+              'full group set is that written down — a larger claim than the '
+              'old Role.operate made, and the honest one — and a deployment '
+              'still running one stays legible in a config diff');
+      expect((verdict as TokenAccepted).identity.station,
           PermissiveTokenValidator.stationId);
       expect(PermissiveTokenValidator.stationId, contains('permissive'),
           reason: 'the station id a permissive gateway hands out must say what '
@@ -436,10 +501,12 @@ void main() {
     });
 
     test('an identity carries no credential and cannot be made to', () {
-      const identity = Identity(stationId: 'ST101', role: Role.operate);
-
-      expect(identity.toString(), contains('ST101'));
-      expect(identity.toString(), isNot(contains(_stationOneToken)));
+      expect(_identityOne.toString(), contains('ST101'));
+      expect(_identityOne.toString(), isNot(contains(_stationOneToken)));
+      expect(_identityOne.toString(), isNot(contains('operate')),
+          reason: 'and no group set either: a close reason that enumerated '
+              'what a station may do would publish the plant\'s grading to '
+              'whoever is watching the socket');
     });
   });
 
@@ -460,8 +527,7 @@ void main() {
 
       expect(HelloResult.fromJson((raw as Map).cast<String, Object?>()).protocol,
           protocolVersion);
-      expect(fixture.server.sessions.sessions.single.identity,
-          const Identity(stationId: 'ST201', role: Role.view),
+      expect(fixture.server.sessions.sessions.single.identity, _identityTwo,
           reason: 'every surface downstream of the handshake asks the session '
               'which station it is; a session that carries a protocol and no '
               'identity is one the policy seam cannot answer about');
@@ -495,8 +561,11 @@ void main() {
       final result = await fixture.hello();
 
       expect(result.protocol, protocolVersion);
-      expect(fixture.server.sessions.sessions.single.identity?.role,
-          Role.operate);
+      expect(
+          fixture.server.sessions.sessions.single.identity?.session.groups,
+          AccessGroup.values.toSet(),
+          reason: 'the permissive identity, full group set — see "honestly '
+              'labelled" above');
     }, tags: 'ws');
 
     test('a second hello cannot change the session\'s identity', () async {
@@ -512,7 +581,7 @@ void main() {
           what: 'a second hello on a session that already has one');
 
       expect(second.code, ServerErrorCodes.alreadyHelloed);
-      expect(session.identity?.stationId, 'ST101',
+      expect(session.identity?.station, 'ST101',
           reason: 'the credential is checked before the gate, so a second '
               'hello carrying another station\'s token reaches the validator. '
               'If it could overwrite the identity, a view station could talk '
@@ -543,7 +612,7 @@ void main() {
               'disconnect by a client with a state bug, and the credential '
               'check has nothing left to decide on a session that already '
               'has an identity');
-      expect(session.identity?.stationId, 'ST101');
+      expect(session.identity?.station, 'ST101');
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(fixture.server.sessions.sessionCount, 1,
           reason: 'a 4001 would have been scheduled by now; the socket is '
@@ -595,7 +664,7 @@ void main() {
       await fixture.request(Methods.hello,
           params: _helloWith(_stationOneToken).toJson(),
           what: 'ST101\'s hello');
-      expect(fixture.server.sessions.sessions.single.identity?.stationId,
+      expect(fixture.server.sessions.sessions.single.identity?.station,
           'ST101');
 
       // The apply is in-process and the case drives it directly: no timer, no
@@ -604,7 +673,7 @@ void main() {
       // would be measuring a poll interval.
       _writeTokenFile(dir, {
         'tokens': {
-          _stationTwoToken: {'stationId': 'ST201', 'role': 'view'},
+          _stationTwoToken: {'username': 'ST201-panel', 'station': 'ST201'},
         },
       });
       await fixture.server.reloadTokens();
@@ -641,8 +710,8 @@ void main() {
       // path the sweep could not see.
       _writeTokenFile(dir, {
         'tokens': {
-          _stationOneReplacement: {'stationId': 'ST101', 'role': 'operate'},
-          _stationTwoToken: {'stationId': 'ST201', 'role': 'view'},
+          _stationOneReplacement: {'username': 'ST101-panel', 'station': 'ST101'},
+          _stationTwoToken: {'username': 'ST201-panel', 'station': 'ST201'},
         },
       });
       await fixture.server.reloadTokens();
@@ -683,7 +752,7 @@ void main() {
 
       _writeTokenFile(dir, {
         'tokens': {
-          _stationTwoToken: {'stationId': 'ST201', 'role': 'view'},
+          _stationTwoToken: {'username': 'ST201-panel', 'station': 'ST201'},
         },
       });
       await fixture.server.reloadTokens();
@@ -719,8 +788,8 @@ void main() {
               'credential nobody had presented yet');
     }, tags: 'ws');
 
-    test('reloadTokensIfChanged reads the file once, and sweeps only on a '
-        'change', () async {
+    test('reloadTokensIfChanged reads the file once, and a no-op call closes '
+        'nobody', () async {
       final dir = _tempDir();
       final path = _writeTokenFile(dir, _twoStations());
       final fixture = _gatewayAt(path);
@@ -736,11 +805,14 @@ void main() {
               'half-written by an editor that does not write atomically, '
               'leaves the sweep running against a set the caller never saw');
       expect(fixture.server.sessions.sessionCount, 1,
-          reason: 'nothing changed, so nothing is swept');
+          reason: 'the sweep RUNS on every call since 17-09 — the digest '
+              'guards the parse, not the credential, because most user-model '
+              'revocations never touch the file — and a sweep over unchanged '
+              'credentials closes nothing');
 
       _writeTokenFile(dir, {
         'tokens': {
-          _stationTwoToken: {'stationId': 'ST201', 'role': 'view'},
+          _stationTwoToken: {'username': 'ST201-panel', 'station': 'ST201'},
         },
       });
 
@@ -766,7 +838,7 @@ void main() {
       final dir = _tempDir();
       final path = _writeTokenFile(dir, {
         'tokens': {
-          token: {'stationId': long, 'role': 'operate'},
+          token: {'username': 'BAADER3E-panel', 'station': long},
         },
       });
       final fixture = _gatewayAt(path);
@@ -776,7 +848,7 @@ void main() {
 
       _writeTokenFile(dir, {
         'tokens': {
-          _stationTwoToken: {'stationId': 'ST201', 'role': 'view'},
+          _stationTwoToken: {'username': 'ST201-panel', 'station': 'ST201'},
         },
       });
       await fixture.server.reloadTokens();
