@@ -432,11 +432,19 @@ void main() {
     // the whole file: `TransportMode.direct`'s doc has always said "Postgres
     // pool", so a file-wide `contains('Postgres')` is satisfied before this
     // plan changes anything, and would prove nothing.
-    test('TransportMode.gateway no longer claims the panel opens nothing else',
+    test('TransportMode.gateway says the panel opens no database connection',
         () {
+      // RETARGETED, not weakened. This arm was written when the rig had
+      // MEASURED a live Postgres connection in gateway mode (13-RIG-E2E
+      // FIND-C), and it pinned the doc to admit it rather than claim the
+      // panel opened "nothing else". That connection is now gone —
+      // `databaseProvider` branches on the transport before it reads the
+      // configuration row, spawns a pool or arms the retry probe — so the
+      // claim the arm defended has become the false one. The pin survives
+      // with its polarity flipped: the doc must still NAME Postgres (so a
+      // reader learns what this mode does about the database at all) and must
+      // now say the panel opens none of its own.
       final source = File('lib/core/gateway_config.dart').readAsStringSync();
-      expect(source, isNot(contains('nothing else')),
-          reason: 'the rig measured a live Postgres connection in gateway mode');
 
       final lines = source.split('\n');
       final declaration = lines.indexWhere((l) => l.trim() == 'gateway;');
@@ -448,9 +456,20 @@ void main() {
         doc.insert(0, lines[i]);
       }
       expect(doc, isNotEmpty, reason: 'gateway must carry a doc comment');
-      expect(doc.join('\n'), contains('Postgres'),
-          reason: "gateway's own doc must name the connection it still opens, "
-              "not lean on direct's");
+      // Normalised before matching: the doc is hand-wrapped prose, so a
+      // phrase can straddle two `///` lines. A pin that only matches an
+      // unwrapped sentence is a pin that goes red when somebody reflows a
+      // paragraph, which teaches people to delete it.
+      final text = doc
+          .map((l) => l.trim().replaceFirst('///', ''))
+          .join(' ')
+          .replaceAll(RegExp(r'\s+'), ' ');
+      expect(text, contains('no direct database connection'),
+          reason: 'the doc must state the panel opens none of its own — a doc '
+              'that goes quiet about the database reads as an oversight');
+      expect(text, contains('backend owns the database'),
+          reason: 'and must say who does own it, or the reader is left to '
+              'guess where preferences and sign-in come from');
     });
   });
 }
