@@ -136,6 +136,45 @@ final selectedTechDocProvider = StateProvider<int?>((ref) => null);
 /// evaluation, preventing stale PDF bytes from a previous selection.
 final techDocSelectionGenProvider = StateProvider<int>((ref) => 0);
 
+/// PDF bytes for the currently selected document.
+///
+/// Unlike [techDocPdfBytesProvider] (a family provider that caches per-docId),
+/// this provider fetches bytes only for the single currently-selected doc.
+/// It watches [techDocSelectionGenProvider] so that every click — even back
+/// to the same docId — forces a fresh async evaluation. This eliminates
+/// the race condition where cached bytes from a previous selection could
+/// appear while a different doc is loading.
+///
+/// Returns null when no document is selected.
+final selectedDocPdfBytesProvider =
+    FutureProvider<Uint8List?>((ref) async {
+  final docId = ref.watch(selectedTechDocProvider);
+  // Watch the generation counter to force re-evaluation on every click.
+  ref.watch(techDocSelectionGenProvider);
+  if (docId == null) return null;
+
+  // Check local cache first — instant if populated during upload.
+  final cached = ref.read(pdfBytesCacheProvider).get(docId);
+  if (cached != null) return cached;
+
+  // Fall back to DB fetch.
+  final index = ref.watch(techDocIndexProvider);
+  if (index == null) return null;
+
+  final bytes = await index.getPdfBytes(docId);
+
+  // Before caching, verify the selection hasn't changed during the await.
+  // If it has, the result is stale — return null and let the new
+  // provider evaluation handle the current selection.
+  if (ref.read(selectedTechDocProvider) != docId) return null;
+
+  // Cache for next access.
+  if (bytes != null) {
+    ref.read(pdfBytesCacheProvider).put(docId, bytes);
+  }
+  return bytes;
+});
+
 /// In-memory PDF bytes cache — avoids re-fetching 10MB+ blobs from remote DB.
 ///
 /// Populated during upload (bytes already in memory), evicted on delete.

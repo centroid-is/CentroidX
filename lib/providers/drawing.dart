@@ -49,3 +49,10 @@ final drawingIndexProvider = Provider<DrawingIndex?>((ref) {
   if (db == null) return null;
   return _guarded(ref, db);
 });
+
+/// Provider for the list of uploaded drawings.
+final drawingListProvider = FutureProvider<List<DrawingSummary>>((ref) async {
+  final service = ref.watch(drawingUploadServiceProvider);
+  if (service == null) return [];
+  return service.getDrawings();
+});
