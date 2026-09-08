@@ -166,13 +166,13 @@ Future<PreferencesApi> _gatewayStation() async {
   return prefs;
 }
 
-/// The wiring seam this file shares with the GREEN task. At RED the page has
-/// no seam to override, so this answers nothing and every gateway arm fails
-/// by "found nothing" — the honest RED for UI that does not exist, while
-/// arms 1 and 11 (today's behaviour, which must not move) stay green. The
-/// GREEN task flips this ONE function to
-/// `[backendConfigApiProvider.overrideWith((ref) async => api)]`.
-List<Override> _scriptedBackend(ScriptedBackendConfig api) => const [];
+/// The wiring seam this file shares with the GREEN task. At RED it answered
+/// `const []` (the page had no seam to override), so every gateway arm failed
+/// by "found nothing" while arms 1 and 11 stayed green; GREEN flipped this
+/// one function to override the page's provider with the scripted far end.
+List<Override> _scriptedBackend(ScriptedBackendConfig api) => [
+      backendConfigApiProvider.overrideWith((ref) async => api),
+    ];
 
 /// The page, in gateway mode, over a scripted backend.
 Future<
@@ -397,7 +397,14 @@ void main() {
     await _editAndSave(tester, _editedOpcuaOnly());
 
     expect(find.byKey(_refusal), findsOneWidget);
-    expect(find.textContaining('publishing_interval_ms'), findsOneWidget,
+    // Scoped to the refusal row: the editor's own text also carries the
+    // field name, which is not the claim — the claim is that the REFUSAL
+    // names it.
+    expect(
+        find.descendant(
+            of: find.byKey(_refusal),
+            matching: find.textContaining('publishing_interval_ms')),
+        findsOneWidget,
         reason: 'the operator-facing text must contain the field the parser '
             'named — "Save failed" is a refusal nobody can act on');
   });

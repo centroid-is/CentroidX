@@ -81,6 +81,11 @@ void main() {
         (tester) async {
       await pumpExpandedCard(tester);
 
+      // 17-13's config-target banner sits above the sections, and on the
+      // default 800x600 test surface it pushed this button just below the
+      // fold — scroll it back into the hit-testable area before tapping.
+      await tester.ensureVisible(find.byTooltip('Remove password'));
+      await settle(tester);
       await tester.tap(find.byTooltip('Remove password'));
       await settle(tester);
 
