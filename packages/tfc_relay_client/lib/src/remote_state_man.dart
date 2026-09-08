@@ -651,41 +651,47 @@ final class RemoteStateMan implements StateManApi {
 
   // ------------------------------------------------------- the access families
   //
-  // Four getters and no proxies. 17-08 adds four to `client_sub_apis.dart`,
-  // following the four above exactly.
-
-  /// The one shape every access refusal on this class takes.
-  ///
-  /// **Not a proxy surfacing `-32601`**, which is what the four data services
-  /// did before Phase 10 and which the doc above calls "the honest answer".
-  /// It was honest then because the proxy existed and the *gateway* lacked the
-  /// handler, so method-not-found was a true report about the far end. Here
-  /// neither exists: there is no `AccessMethods` handler table on the gateway
-  /// and no client proxy to send with, so a round trip would have to be
-  /// invented before it could fail usefully. The member that is missing says so
-  /// where the caller is.
-  ///
-  /// Refusing on the client is safe in the only direction that matters:
-  /// authorisation is enforced server-side, so a client that refuses early can
-  /// remove a capability and never grant one.
-  Never _noAccessProxy(String member) =>
-      throw UnsupportedError('RemoteStateMan.$member is not available: this '
-          'client has no proxy for the $member family and the gateway has no '
-          'handler table for it. Plan 17-08 adds both. An empty answer would '
-          'draw a panel a blank audit trail, or an empty role list, for a '
-          'plant that has plenty of each.');
-
-  @override
-  AccessTemplateApi get accessTemplates => _noAccessProxy('accessTemplates');
-
-  @override
-  AccessAdminApi get accessAdmin => _noAccessProxy('accessAdmin');
+  // Four proxies in `client_sub_apis.dart`, following the four above exactly:
+  // built once and kept, one request and one answer per member, no state, no
+  // retry, no queue. Until 17-08 these getters refused with an
+  // `UnsupportedError` naming the missing proxy; now the proxy exists and the
+  // honest answer moved back to the far end, where the enforcement is — the
+  // check sits above the store on the gateway, and a `forbidden` comes back
+  // as the same `AccessDenied` a direct-mode refusal throws
+  // (`withAccessErrors` in `client_sub_apis.dart`, one code wide like
+  // `withTypedErrors` beside it).
+  //
+  // **Why the refusal mapping is not `failure_taxonomy.dart`'s.** That seam is
+  // the write path's, and it answers a different question in a different
+  // shape: `writeOutcomeFor` turns every failure into a `WriteResult` — a
+  // value, never a throw — because `write` promises an outcome and an
+  // operator deciding whether to re-actuate machinery needs "rejected" and
+  // "unknown" kept apart. An access refusal has no three-state outcome to
+  // report and no machinery behind it; what it needs is the direct path's
+  // exception type, thrown. Routing it through the taxonomy would mean
+  // teaching a WriteResult factory to throw AccessDenied for one code, which
+  // is a second behavior inside one seam — so the sub-API translation pattern
+  // (`withTypedErrors`) grew a sibling instead, and the taxonomy still sees
+  // every access failure a caller lets escape to a write path.
+  //
+  // The client sends no identity on any of these frames — the gateway
+  // attributes every write to the identity it verified at `hello` — and the
+  // payload pin in `test/access_proxies_test.dart` is what keeps that true.
 
   @override
-  AuditApi get audit => _noAccessProxy('audit');
+  late final AccessTemplateApi accessTemplates =
+      ClientAccessTemplateApi(_dataServiceCall);
 
   @override
-  BackendConfigApi get backendConfig => _noAccessProxy('backendConfig');
+  late final AccessAdminApi accessAdmin =
+      ClientAccessAdminApi(_dataServiceCall);
+
+  @override
+  late final AuditApi audit = ClientAuditApi(_dataServiceCall);
+
+  @override
+  late final BackendConfigApi backendConfig =
+      ClientBackendConfigApi(_dataServiceCall);
 
   /// The request the sub-APIs are handed: the same barrier, the same deadline
   /// and the same peer-at-call-time capture as every other call this client

@@ -40,6 +40,7 @@ library;
 import 'dart:async';
 
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 /// The wire names of the data services.
@@ -502,4 +503,309 @@ final class ClientPreferencesApi implements PreferencesApi {
 
   Future<void> _set(String method, String key, Object? value) async =>
       await _call(method, {'key': key, 'value': value});
+}
+
+// -----------------------------------------------------------------------------
+// The four access families (Phase 17)
+// -----------------------------------------------------------------------------
+//
+// Templates, roles-and-users, the audit trail and the backend's config, in the
+// history-view proxies' exact shape: one `sendRequest`, one decode, no state,
+// no retry, no queue. **The far end is the enforcement.** A client-side method
+// call cannot write what the gateway's policy refuses — the check sits above
+// the store on the gateway, and what these proxies add is only the wire to
+// reach it. The refusal comes back as something the caller must handle: the
+// same [AccessDenied] a direct-mode refusal throws, so no screen can tell
+// which transport refused it (D-09).
+//
+// **The sentence that is new in this phase: the client sends no identity.**
+// No encoded payload here carries a `who`, a `username`, a `station` or any
+// other name for the caller — the gateway attributes every write to the
+// identity it verified at `hello`, and a client that could name the user
+// could forge one (ACCESS-06). 17-03 made an identity parameter
+// unrepresentable in the interface; the payload pin in
+// `test/access_proxies_test.dart` is what keeps the *encoded frames* true to
+// that, because a proxy is free to invent a field the interface never
+// mentioned.
+//
+// **The domain exceptions do not cross as types, and that is not forgotten.**
+// `TemplateInUseException`, `TemplateNotFoundException` and their siblings
+// live in `tfc_dart`, which this package may not import — so a domain refusal
+// (a bound template, the last users-holder, a bad config) travels as a typed
+// protocol error: an [rpc.RpcException] under a non-`forbidden` code whose
+// `data` carries an error-code string plus the fields the message needs (the
+// template name, the bound key list). These proxies pass it through with the
+// payload intact, and the APP maps it back to the concrete exception type in
+// 17-12, where `tfc_dart` is available.
+
+/// The JSON-RPC error code a gateway policy refusal comes back under.
+///
+/// The gateway's `ServerErrorCodes.forbidden` (`error_codes.dart:88`).
+/// Declared here rather than imported, for [_typeMismatch]'s reason: the
+/// number is the contract, and a production file may not reach into a package
+/// this one depends on only for its tests. `access_proxies_test.dart` drives
+/// it verbatim from the far side of the same boundary.
+const int _forbidden = -32005;
+
+/// An [AccessDenied] that was refused on the far side, re-raised with the
+/// gateway's own sentence intact.
+///
+/// **The type is the contract** ([AccessDenied], so `on AccessDenied` in
+/// ported screens catches a gateway refusal exactly as it catches a direct
+/// one), and **the message is the operator's half**: the gateway's `forbidden`
+/// says the call definitively had no effect and must not be retried, and a
+/// re-raise that rebuilt the sentence from `itemKey` + `required` alone would
+/// drop that wording on exactly the transport where a retry is most tempting.
+/// The same narrowing-without-loss shape as [RemoteTypeError] and
+/// `AlarmAckUnsupported`: a caller that only knows the supertype keeps
+/// working; nothing is flattened.
+final class RemoteAccessDenied extends AccessDenied {
+  const RemoteAccessDenied(super.itemKey, super.required, this.message);
+
+  /// The gateway's own words, carried because they are the useful half — they
+  /// name what was refused and say the call had no effect.
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// Runs [send], re-raising a gateway `forbidden` as the [AccessDenied] a
+/// direct-mode refusal throws.
+///
+/// One code wide, like [withTypedErrors] beside it — the write path's
+/// translation (`failure_taxonomy.dart`) answers a different question ("did
+/// the machinery move?") in a different shape (a [WriteResult], never a
+/// throw), so this seam extends the sub-API pattern rather than that one; see
+/// `remote_state_man.dart`'s access block for the reasoning. Every other
+/// [rpc.RpcException] — the domain refusals under other codes, a
+/// `helloRequired`, a `handlerFailed` — propagates unchanged, which is what
+/// keeps "you may not" distinguishable from "you cannot yet".
+Future<Object?> withAccessErrors(Future<Object?> Function() send) async {
+  try {
+    return await send();
+  } on rpc.RpcException catch (error) {
+    if (error.code != _forbidden) rethrow;
+    final data = error.data;
+    final itemKey =
+        (data is Map ? data['itemKey'] : null)?.toString() ?? 'unknown';
+    final groupName = data is Map ? data['group']?.toString() : null;
+    // The fallback mirrors the contract kit's channel re-raise
+    // (`channel_sub_apis.dart:498-511`): a refusal whose group this build
+    // cannot decode is still a refusal, and `users` is the group most of the
+    // surface is graded at.
+    final group = (groupName == null ? null : AccessGroup.byName(groupName)) ??
+        AccessGroup.users;
+    throw RemoteAccessDenied(itemKey, group, error.message);
+  }
+}
+
+/// [AccessTemplateApi] over the pipe.
+///
+/// The store's `template(name)` single-row read is deliberately absent — the
+/// access audit cut it from the wire (no caller anywhere). A caller that wants
+/// one template derives it from [list]: same snapshot semantics, zero extra
+/// wire names.
+final class ClientAccessTemplateApi implements AccessTemplateApi {
+  ClientAccessTemplateApi(this._call);
+
+  final RemoteCall _call;
+
+  Future<Object?> _send(String method, Map<String, Object?> params) =>
+      withAccessErrors(() => _call(method, params));
+
+  @override
+  Future<List<AccessTemplate>> list() async => [
+        for (final row
+            in jsonArray(await _send(AccessMethods.templateList, const {})))
+          accessTemplateFromJson(jsonObject(row)),
+      ];
+
+  @override
+  Future<Map<String, String>> bindings() async {
+    final raw =
+        jsonObject(await _send(AccessMethods.templateBindings, const {}));
+    return {for (final entry in raw.entries) entry.key: '${entry.value}'};
+  }
+
+  @override
+  Future<List<String>> keysBoundTo(String templateName) async => [
+        for (final key in jsonArray(await _send(
+            AccessMethods.templateKeysBoundTo, {'templateName': templateName})))
+          '$key',
+      ];
+
+  @override
+  Future<void> create(AccessTemplate value, {String? reason}) async =>
+      await _send(AccessMethods.templateCreate,
+          {'value': accessTemplateToJson(value), 'reason': reason});
+
+  @override
+  Future<void> update(AccessTemplate value, {String? reason}) async =>
+      await _send(AccessMethods.templateUpdate,
+          {'value': accessTemplateToJson(value), 'reason': reason});
+
+  @override
+  Future<void> rename(String from, String to, {String? reason}) async =>
+      await _send(AccessMethods.templateRename,
+          {'from': from, 'to': to, 'reason': reason});
+
+  @override
+  Future<void> delete(String name, {String? reason}) async => await _send(
+      AccessMethods.templateDelete, {'name': name, 'reason': reason});
+
+  @override
+  Future<void> bind(String keyName, String templateName,
+          {String? reason}) async =>
+      await _send(AccessMethods.templateBind, {
+        'keyName': keyName,
+        'templateName': templateName,
+        'reason': reason,
+      });
+
+  @override
+  Future<void> unbind(String keyName, {String? reason}) async => await _send(
+      AccessMethods.templateUnbind, {'keyName': keyName, 'reason': reason});
+}
+
+/// [AccessAdminApi] over the pipe.
+///
+/// The two credential-carrying members ([createUser], [setUserPassword]) send
+/// their params objects whole: the withholding `toString` lives on the params
+/// class (17-03 F-B), and the value crosses inside the `wss://` frame to be
+/// hashed server-side.
+final class ClientAccessAdminApi implements AccessAdminApi {
+  ClientAccessAdminApi(this._call);
+
+  final RemoteCall _call;
+
+  Future<Object?> _send(String method, Map<String, Object?> params) =>
+      withAccessErrors(() => _call(method, params));
+
+  @override
+  Future<List<AccessRole>> roles() async => [
+        for (final row
+            in jsonArray(await _send(AccessMethods.adminRoles, const {})))
+          accessRoleFromJson(jsonObject(row)),
+      ];
+
+  @override
+  Future<List<AuthenticatedUser>> listUsers() async => [
+        for (final row
+            in jsonArray(await _send(AccessMethods.adminListUsers, const {})))
+          authenticatedUserFromJson(jsonObject(row)),
+      ];
+
+  @override
+  Future<void> createRole(AccessRole role, {String? reason}) async =>
+      await _send(AccessMethods.adminCreateRole,
+          {'role': accessRoleToJson(role), 'reason': reason});
+
+  @override
+  Future<void> updateRole(AccessRole role, {String? reason}) async =>
+      await _send(AccessMethods.adminUpdateRole,
+          {'role': accessRoleToJson(role), 'reason': reason});
+
+  @override
+  Future<void> deleteRole(String name, {String? reason}) async => await _send(
+      AccessMethods.adminDeleteRole, {'name': name, 'reason': reason});
+
+  @override
+  Future<void> renameRole(String from, String to, {String? reason}) async =>
+      await _send(AccessMethods.adminRenameRole,
+          {'from': from, 'to': to, 'reason': reason});
+
+  @override
+  Future<void> createUser(NewUserParams params) async =>
+      await _send(AccessMethods.adminCreateUser, params.toJson());
+
+  @override
+  Future<void> deleteUser(String subject, {String? reason}) async =>
+      await _send(AccessMethods.adminDeleteUser,
+          {'subject': subject, 'reason': reason});
+
+  @override
+  Future<void> setUserRole(String subject, String newRole,
+          {String? reason}) async =>
+      await _send(AccessMethods.adminSetUserRole,
+          {'subject': subject, 'newRole': newRole, 'reason': reason});
+
+  @override
+  Future<void> setUserStationAccount(String subject, bool value,
+          {String? reason}) async =>
+      await _send(AccessMethods.adminSetUserStationAccount,
+          {'subject': subject, 'value': value, 'reason': reason});
+
+  @override
+  Future<void> setUserPassword(SetUserPasswordParams params) async =>
+      await _send(AccessMethods.adminSetUserPassword, params.toJson());
+}
+
+/// [AuditApi] over the pipe — read-only, like the interface: there is no
+/// `record` member here for the same reason there is none on the wire, and a
+/// `who` in [entries]' query is a *filter*, never an attribution.
+final class ClientAuditApi implements AuditApi {
+  ClientAuditApi(this._call);
+
+  final RemoteCall _call;
+
+  Future<Object?> _send(String method, Map<String, Object?> params) =>
+      withAccessErrors(() => _call(method, params));
+
+  @override
+  Future<List<AuditRecord>> entries(AuditQueryParams query) async => [
+        for (final row in jsonArray(await _send(
+            AccessMethods.auditEntries, {'query': query.toJson()})))
+          auditRecordFromJson(jsonObject(row)),
+      ];
+
+  @override
+  Future<Map<String, int>> memberCountsByAction(List<String> actionIds) async {
+    final raw = jsonObject(await _send(
+        AccessMethods.auditMemberCountsByAction, {'actionIds': actionIds}));
+    return {for (final entry in raw.entries) entry.key: (entry.value as num).toInt()};
+  }
+
+  @override
+  Future<List<String>> distinctWho() async => [
+        for (final who
+            in jsonArray(await _send(AccessMethods.auditDistinctWho, const {})))
+          '$who',
+      ];
+}
+
+/// [BackendConfigApi] over the pipe.
+final class ClientBackendConfigApi implements BackendConfigApi {
+  ClientBackendConfigApi(this._call);
+
+  final RemoteCall _call;
+
+  Future<Object?> _send(String method, Map<String, Object?> params) =>
+      withAccessErrors(() => _call(method, params));
+
+  @override
+  Future<BackendConfigDocument> read() async => BackendConfigDocument.fromJson(
+      jsonObject(await _send(AccessMethods.configRead, const {})));
+
+  @override
+  Future<ConfigValidation> validate(String configJson) async =>
+      ConfigValidation.fromJson(jsonObject(await _send(
+          AccessMethods.configValidate, {'configJson': configJson})));
+
+  @override
+  Future<void> write(String configJson, {String? reason}) async =>
+      await _send(AccessMethods.configWrite,
+          {'configJson': configJson, 'reason': reason});
+
+  /// Null survives as null: "nothing has been overwritten yet" is a different
+  /// fact from an empty document, and the restore button greys on the first.
+  @override
+  Future<BackendConfigDocument?> previous() async {
+    final raw = await _send(AccessMethods.configPrevious, const {});
+    return raw == null ? null : BackendConfigDocument.fromJson(jsonObject(raw));
+  }
+
+  @override
+  Future<void> restorePrevious({String? reason}) async =>
+      await _send(AccessMethods.configRestorePrevious, {'reason': reason});
 }

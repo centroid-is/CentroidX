@@ -32,6 +32,18 @@ dependencies:
   web_socket_channel: ^3.0.3
   # The wire shapes, the DTOs and the pure cores this client decodes into.
   tfc_relay_protocol: {path: ../tfc_relay_protocol}
+  # The master access-control vocabulary, needed here for exactly one type:
+  # `AccessDenied`, the exception a gateway refusal is re-raised as so a screen
+  # cannot tell which transport refused it (D-09). The edge was already in this
+  # package's solve transitively through tfc_relay_protocol (17-03's first
+  # runtime dependency); it is declared directly because lib/ names the type.
+  # Safe on 17-03's four grounds: pure Dart (that package's own
+  # package_purity_test.dart enforces it); four leaf deps already in this
+  # repository's solve; a path dependency, so nothing is fetched from a
+  # registry and no package-legitimacy question arises (T-17-SC); and the
+  # reverse edge stays forbidden — tfc_access must never depend on a relay
+  # package.
+  tfc_access: {path: ../tfc_access}
 
 dev_dependencies:
   # Same analyzer-recommended lint set as the other three relay packages.
