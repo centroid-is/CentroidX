@@ -10,6 +10,19 @@
 /// * `config_history_insert_delete.png` — asymmetric rendering: an insert is one `New entity` row with a new side only, a delete one `Removed entity` row with an old side only, and neither carries an arrow. 1100x600.
 /// * `config_history_empty.png`         — the query ran and matched nothing: the filter bar and the scope banner still on screen above the message. 1100x500.
 /// * `config_history_unavailable.png`   — no database: the unavailable copy, and neither bar nor banner. 1100x500, **deliberately the same size as the empty image** so the two can be laid side by side and must not look alike.
+/// * `config_history_undo_confirm.png`  — what an undo will write, one line per entity, in all three shapes at once: a restore, a put-back and a delete. 700x460.
+/// * `config_history_undo_confirm_dark.png` — the same, dark.
+/// * `config_history_undo_blocked.png`  — the refusal: two entities, one with an author and an instant and one the log cannot attribute. 700x460.
+/// * `config_history_undo_blocked_dark.png` — the same, dark. The variant that would catch a dialog whose text or divider came from `colorScheme.outline`, which is unset in both schemes.
+///
+/// **The two undo dialogs are pumped directly, not through `showDialog`.**
+/// A routed dialog arrives with a scrim and an entry animation, so the image
+/// would be a picture of a translucent black rectangle over an empty page and
+/// of whichever millisecond the shutter caught. Both dialogs are pure functions
+/// of the values handed to them — `config_undo_dialogs.dart` says so in as many
+/// words and neither can write — so pumping the widget is a picture of the same
+/// thing with none of that. What the *route* does is covered by
+/// `config_undo_test.dart`, which taps the real button.
 ///
 /// The four traps `audit_trail_golden_test.dart` documents apply here
 /// unchanged, and this file is modelled on it rather than importing from it:
@@ -66,6 +79,10 @@ import 'package:tfc/providers/audit_trail.dart';
 import 'package:tfc/providers/config_history.dart';
 import 'package:tfc/theme.dart' show muted;
 import 'package:tfc/widgets/config_change_row.dart';
+import 'package:tfc/widgets/config_undo_dialogs.dart';
+import 'package:tfc_dart/core/config/config_change.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_undo.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 
 import 'config_history_fixture.dart';
@@ -435,6 +452,224 @@ void main() {
       await expectLater(
         find.byKey(_boundary),
         matchesGoldenFile('goldens/config_history_unavailable.png'),
+      );
+    });
+  });
+
+  _undoGoldens();
+}
+
+
+// ---------------------------------------------------------------------------
+// Undo (04-10)
+// ---------------------------------------------------------------------------
+
+/// One asset, as `planUndo` hands it back for a restore.
+///
+/// Position included, because position is what the sentence claims comes back
+/// and a step built without it would picture a promise the store does not make.
+ConfigItem _undoAsset(String id, {required String page, int? key}) =>
+    ConfigItem.of(
+      kind: ConfigKind.asset,
+      id: id,
+      value: {'id': id, 'colour': 'red'},
+      parentId: page,
+      sortIndex: key,
+    );
+
+/// A ready plan over the three shapes an inverse takes, in one dialog.
+///
+/// Deliberately all three: the sentences differ most where an operator is most
+/// likely to misread them — undoing an *insert* deletes a row — so the picture
+/// that gets inspected by eye has to contain that line.
+UndoPlan _undoConfirmPlan() => UndoPlan(
+      originalActionId: kConfigGoldenActionId,
+      kinds: const {ConfigKind.asset},
+      steps: <UndoStep>[
+        UndoStep(
+          kind: ConfigKind.asset,
+          entityId: '/roe/CN05',
+          scope: ConfigScope.shared,
+          originalOp: ConfigChangeOp.delete,
+          item: _undoAsset('/roe/CN05', page: '/roe', key: 2048),
+        ),
+        UndoStep(
+          kind: ConfigKind.asset,
+          entityId: '/roe/CN04',
+          scope: ConfigScope.shared,
+          originalOp: ConfigChangeOp.update,
+          item: _undoAsset('/roe/CN04', page: '/roe', key: 1024),
+        ),
+        const UndoStep(
+          kind: ConfigKind.asset,
+          entityId: '/roe/CN06',
+          scope: ConfigScope.shared,
+          originalOp: ConfigChangeOp.insert,
+        ),
+      ],
+      blockers: const <UndoBlocker>[],
+    );
+
+/// Two blocked entities: one the log can attribute, one it cannot.
+///
+/// Both in one picture on purpose. The author line is the part most likely to
+/// be built and never looked at, and the second blocker is the case where
+/// inventing an author would be the tempting thing to do.
+List<UndoBlocker> _undoBlockers() => <UndoBlocker>[
+      UndoBlocker(
+        reason: UndoBlockReason.newerChange,
+        kindName: ConfigKind.asset.wireName,
+        entityId: '/roe/CN04',
+        scopeName: ConfigScope.shared.wireName,
+        who: 'kari',
+        at: kConfigGoldenBase,
+        summary: 'not rendered here — see config_undo_dialogs.dart',
+      ),
+      const UndoBlocker(
+        reason: UndoBlockReason.entityMoved,
+        kindName: 'asset',
+        entityId: '/roe/CN06',
+        scopeName: 'shared',
+        summary: 'not rendered here — see config_undo_dialogs.dart',
+      ),
+    ];
+
+/// One dialog over the barrier a real `showDialog` paints.
+///
+/// The scrim is not decoration. Without it the `AlertDialog`'s surface is the
+/// same colour as the page behind it and the dialog has **no visible edge at
+/// all** — which is exactly the regression a dark golden is supposed to catch,
+/// and the first pass of these images had it. `Colors.black54` is the framework
+/// default `barrierColor`, and it is a constant, so the picture stays
+/// deterministic where a routed barrier's fade would not.
+///
+/// See the library doc for why this is not `showDialog`.
+Widget _dialogHost({
+  required ThemeData theme,
+  required Widget dialog,
+  required Size size,
+}) =>
+    MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: theme,
+      home: Scaffold(
+        backgroundColor: theme.colorScheme.surface,
+        body: Center(
+          child: RepaintBoundary(
+            key: _boundary,
+            child: Material(
+              color: theme.colorScheme.surface,
+              child: SizedBox(
+                width: size.width,
+                height: size.height,
+                child: ColoredBox(
+                  color: Colors.black54,
+                  child: Center(child: dialog),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+void _undoGoldens() {
+  final (light, dark) = muted();
+  const size = Size(700, 460);
+
+  group('undo dialog goldens',
+      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+    Future<void> pumpConfirm(WidgetTester tester, ThemeData theme) async {
+      _sizeView(tester, size);
+      await tester.pumpWidget(_dialogHost(
+        theme: theme,
+        dialog: ConfigUndoConfirmDialog(plan: _undoConfirmPlan()),
+        size: size,
+      ));
+      await _settle(tester);
+    }
+
+    /// What the confirmation must be showing before it is captured.
+    void expectConfirm(WidgetTester tester) {
+      expect(find.byKey(kConfigUndoConfirmKey), findsOneWidget);
+      expect(find.byKey(kConfigUndoStepKey), findsNWidgets(3));
+      // The three sentences, named rather than counted: an image with three
+      // lines of the same shape would match its own baseline forever.
+      expect(find.text('Restore asset /roe/CN05 onto /roe, in its original '
+          'order'), findsOneWidget);
+      expect(find.text('Put asset /roe/CN04 back as it was onto /roe, in its '
+          'original order'), findsOneWidget);
+      expect(find.text('Delete asset /roe/CN06'), findsOneWidget);
+      // And the promise about the history, which is the line an operator is
+      // most likely to be surprised by afterwards.
+      expect(find.byKey(kConfigUndoAuditNoteKey), findsOneWidget);
+    }
+
+    testWidgets('the confirmation names what will be written back',
+        (tester) async {
+      await pumpConfirm(tester, light);
+      expectConfirm(tester);
+
+      await expectLater(
+        find.byKey(_boundary),
+        matchesGoldenFile('goldens/config_history_undo_confirm.png'),
+      );
+    });
+
+    testWidgets('the confirmation on the dark scheme', (tester) async {
+      await pumpConfirm(tester, dark);
+      expectConfirm(tester);
+
+      await expectLater(
+        find.byKey(_boundary),
+        matchesGoldenFile('goldens/config_history_undo_confirm_dark.png'),
+      );
+    });
+
+    Future<void> pumpBlocked(WidgetTester tester, ThemeData theme) async {
+      _sizeView(tester, size);
+      await tester.pumpWidget(_dialogHost(
+        theme: theme,
+        dialog: ConfigUndoBlockedDialog(blockers: _undoBlockers()),
+        size: size,
+      ));
+      await _settle(tester);
+    }
+
+    void expectBlocked(WidgetTester tester) {
+      expect(find.byKey(kConfigUndoBlockedKey), findsOneWidget);
+      // Nothing was written — the first thing an operator needs after pressing
+      // a button labelled Undo.
+      expect(find.text(kConfigUndoBlockedLead), findsOneWidget);
+      // Two entities, two clauses, and exactly one author line: the second
+      // blocker has nobody to name and must not invent one.
+      expect(find.byKey(kConfigUndoBlockedEntityKey), findsNWidgets(2));
+      expect(find.byKey(kConfigUndoBlockedClauseKey), findsNWidgets(2));
+      expect(find.byKey(kConfigUndoBlockedAuthorKey), findsOneWidget);
+      expect(tester.widget<Text>(find.byKey(kConfigUndoBlockedAuthorKey)).data,
+          contains('kari'));
+      expect(find.text('asset /roe/CN04'), findsOneWidget);
+      expect(find.text('asset /roe/CN06'), findsOneWidget);
+    }
+
+    testWidgets('the refusal names the entity, the author and the instant',
+        (tester) async {
+      await pumpBlocked(tester, light);
+      expectBlocked(tester);
+
+      await expectLater(
+        find.byKey(_boundary),
+        matchesGoldenFile('goldens/config_history_undo_blocked.png'),
+      );
+    });
+
+    testWidgets('the refusal on the dark scheme', (tester) async {
+      await pumpBlocked(tester, dark);
+      expectBlocked(tester);
+
+      await expectLater(
+        find.byKey(_boundary),
+        matchesGoldenFile('goldens/config_history_undo_blocked_dark.png'),
       );
     });
   });
