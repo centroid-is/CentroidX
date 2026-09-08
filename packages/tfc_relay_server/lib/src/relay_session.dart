@@ -111,21 +111,30 @@ final class _LastSeen {
   }
 }
 
-/// The two access families whose backend halves attribute every audit row to
+/// The access families whose backend halves attribute every audit row to
 /// a session — the ones `composeBackendRelay` deliberately does **not** wire
 /// (17-06): at compose time there is no identity to attribute to, and
 /// constructing them with an invented one would be the false attribution
 /// D-11 forbids.
+///
+/// `backendConfig` is the third slot, the Phase 17 gate's one named
+/// carry-forward: the config store writes audit rows for accepted AND
+/// refused writes (17-10), so it needs the verified identity exactly as the
+/// other two do. Nullable, and null is a **decision**, not a default: a
+/// factory that hands no config family leaves the shared source answering,
+/// which on the shipped backend is 17-03b's refuse-by-name — fail closed,
+/// never a stub.
 typedef IdentityAccessFamilies = ({
   AccessTemplateApi accessTemplates,
   AccessAdminApi accessAdmin,
+  BackendConfigApi? backendConfig,
 });
 
 /// Builds the per-identity halves of the access surface, invoked exactly once
 /// per session, at `hello`, with the resolver-verified [StationIdentity].
 ///
 /// The seam 17-11 fills from the moved stores
-/// (`BackendAccessTemplates`/`BackendAccessAdmin` take
+/// (`BackendAccessTemplates`/`BackendAccessAdmin`/`BackendConfigStore` take
 /// `session: () => identity.session, station: identity.station` — their own
 /// contract, per 17-06-SUMMARY deviation 1). This package cannot name those
 /// classes — `tfc_dart` depends on it, not the reverse — so the construction
@@ -472,11 +481,11 @@ final class RelaySession {
   /// can build the write predicate from its `canWrite`, which keeps the
   /// null-identity decision in exactly one place.
   late final PolicyStateMan api = PolicyStateMan(
-    // The one divergence from handing [_source] straight in, and it is two
+    // The one divergence from handing [_source] straight in, and it is three
     // getters wide: the scoping view answers the session's per-identity
-    // template/admin families once `_hello` has built them, and forwards
-    // everything else — including `audit` and `backendConfig`, which are
-    // sessionless (17-06) — untouched. It sits UNDER the decorator on
+    // template/admin/config families once `_hello` has built them, and
+    // forwards everything else — including `audit`, which is sessionless
+    // (17-06) — untouched. It sits UNDER the decorator on
     // purpose, so the policy gate applies to a scoped family exactly as it
     // applies to the shared one; a scoped family handed to a handler
     // directly would be a family the gate never sees.
@@ -1475,10 +1484,11 @@ final class RelaySession {
           _identity = identity;
           _credentialDigest = credentialDigest;
           // Beside the identity, and only ever here: the per-identity
-          // template/admin families are constructed once, for the verified
-          // station (D-11). The once-only guard above is what makes "once"
-          // true for this line too — a batched hello that could replace the
-          // identity could replace the families the audit rows attribute to.
+          // template/admin/config families are constructed once, for the
+          // verified station (D-11). The once-only guard above is what makes
+          // "once" true for this line too — a batched hello that could replace
+          // the identity could replace the families the audit rows attribute
+          // to.
           _scoped = _accessFor?.call(identity);
       }
     }
@@ -1813,7 +1823,7 @@ final class RelaySession {
   }
 }
 
-/// The session's source, with the two identity-scoped families swapped in —
+/// The session's source, with the identity-scoped families swapped in —
 /// and everything else forwarded untouched.
 ///
 /// Sits **under** the policy decorator, deliberately: the decorator's family
@@ -1827,15 +1837,18 @@ final class RelaySession {
 /// Hand-written forwarding, no `noSuchMethod`, on `PolicyStateMan`'s own
 /// argument: a member added to `StateManApi` in a later phase must be a
 /// compile error here, so somebody decides whether it needs scoping, rather
-/// than a silent pass-through nobody reviewed. Eighteen members; sixteen
+/// than a silent pass-through nobody reviewed. Eighteen members; fifteen
 /// forward.
 ///
 /// [_scopedOf] is read late, per call — the `identityOf` idiom — because
 /// this object is built before `_hello` mints anything. Before the handshake
 /// it answers the shared source's families, which the handshake gate keeps
-/// unreachable from the wire anyway; `audit` and `backendConfig` always
-/// forward, because those two are sessionless (17-06 wired the audit family
-/// at composition; 17-10 owns config).
+/// unreachable from the wire anyway; `audit` always forwards, because it is
+/// sessionless (17-06 wired the audit family at composition). `backendConfig`
+/// is scoped like the other two — the store attributes accepted and refused
+/// writes to the verified identity (17-10, D-11) — with the shared source as
+/// the fallback when the factory hands none, which on the shipped backend is
+/// refuse-by-name (fail closed).
 final class _IdentityScopedSource implements StateManApi {
   _IdentityScopedSource(this._inner, this._scopedOf);
 
@@ -1854,7 +1867,8 @@ final class _IdentityScopedSource implements StateManApi {
   AuditApi get audit => _inner.audit;
 
   @override
-  BackendConfigApi get backendConfig => _inner.backendConfig;
+  BackendConfigApi get backendConfig =>
+      _scopedOf()?.backendConfig ?? _inner.backendConfig;
 
   @override
   ValueListenable<DynamicValue> listen(String key) => _inner.listen(key);

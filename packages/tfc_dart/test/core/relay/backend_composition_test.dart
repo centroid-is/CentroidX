@@ -48,6 +48,8 @@ import 'package:tfc_dart/core/relay/backend_access.dart'
     show BackendAccessAdmin, BackendAccessTemplates;
 import 'package:tfc_dart/core/relay/backend_browse.dart';
 import 'package:tfc_dart/core/relay/backend_composition.dart';
+import 'package:tfc_dart/core/relay/backend_config_store.dart'
+    show BackendConfigStore;
 import 'package:tfc_dart/core/relay/backend_data_services.dart';
 import 'package:tfc_dart/core/relay/backend_freshness.dart';
 import 'package:tfc_dart/core/relay/backend_live_values.dart';
@@ -124,6 +126,7 @@ void main() {
     KeyMappings? keyMappings,
     BackendLiveValues? values,
     BackendFreshnessSweep? freshness,
+    String? statemanFilePath,
   }) {
     final config = RelayConfig.fromJson(
       stateman ?? _relaySection(),
@@ -139,6 +142,7 @@ void main() {
       validator: validator,
       values: values,
       freshness: freshness,
+      statemanFilePath: statemanFilePath,
       log: Logger(level: Level.off),
     );
     addTearDown(composed.dispose);
@@ -533,6 +537,97 @@ void main() {
           reason: 'the real store-backed family, not a fake behind a decorator');
       expect(families.accessAdmin, isA<BackendAccessAdmin>(),
           reason: 'and the admin family with it');
+    });
+
+    test('the factory also mints the per-identity backendConfig family — a '
+        'BackendConfigStore over the boot file the composition was handed '
+        '(the 17-GATE carry-forward: -32011 on the wire until this exists)',
+        () async {
+      // A parseable stateman file for the store to serve, relay section
+      // included so the read can flag it read-only (D-10).
+      final statemanPath = '${tmp.path}/stateman-config-arm.json';
+      File(statemanPath).writeAsStringSync(jsonEncode(<String, dynamic>{
+        'opcua': <Object?>[],
+        'jbtm': <Object?>[],
+        'modbus': <Object?>[],
+        'relay': <String, dynamic>{
+          'port': 8787,
+          'token_file': '/etc/centroid/relay-tokens.json',
+        },
+      }));
+      final composed = compose(
+        stateman: _relaySection(
+            source: 'token_file',
+            tokenFile: _tokenFile('ST101-panel', 'ST101')),
+        statemanFilePath: statemanPath,
+      );
+
+      const user = AuthenticatedUser(
+          username: 'ST101-panel',
+          roleName: 'Shift Leader',
+          stationAccount: true);
+      const identity = StationIdentity(
+        user: user,
+        station: 'ST101',
+        session: AccessSession(
+            user: user, groups: {AccessGroup.operate, AccessGroup.setpoints}),
+      );
+      final families = composed.server.accessFor!(identity);
+
+      expect(families.backendConfig, isA<BackendConfigStore>(),
+          reason: 'the real file-backed store, minted per verified identity — '
+              'a compose-time store would have no session to attribute rows '
+              'to (D-11), and no store at all is the -32011 the gate measured');
+      final doc = await families.backendConfig!.read();
+      expect(doc.readOnlySections, contains('relay'),
+          reason: 'the store serves the handed boot file with 17-10\'s D-10 '
+              'semantics intact');
+    });
+
+    test('with no boot file handed to the composition, the config family '
+        'refuses by name — never a stub that quietly succeeds', () async {
+      final composed = compose(
+        stateman: _relaySection(
+            source: 'token_file',
+            tokenFile: _tokenFile('ST101-panel', 'ST101')),
+        // statemanFilePath deliberately absent.
+      );
+      const user = AuthenticatedUser(
+          username: 'ST101-panel',
+          roleName: 'Shift Leader',
+          stationAccount: true);
+      const identity = StationIdentity(
+        user: user,
+        station: 'ST101',
+        session: AccessSession(
+            user: user, groups: {AccessGroup.operate, AccessGroup.setpoints}),
+      );
+      final families = composed.server.accessFor!(identity);
+
+      await expectLater(
+          families.backendConfig!.read(),
+          throwsA(isA<UnsupportedError>().having(
+              (e) => e.message,
+              'message',
+              contains('CENTROID_STATEMAN_FILE_PATH'))),
+          reason: 'fail closed, and the refusal names the thing that is '
+              'missing — "no servers configured" and "nobody wired a path" '
+              'must not look the same from a screen (17-10)');
+    });
+
+    test('bin/main.dart hands the boot file to composeBackendRelay — the '
+        'shipped binary, not just this fixture', () {
+      // The source arm the revocation-poll test established for D-08: the
+      // wiring must exist in the binary the plant runs, or the E2E is green
+      // while every real panel still gets -32011.
+      final src = File('bin/main.dart').readAsStringSync();
+      expect(
+          RegExp(r'statemanFilePath:\s*statemanConfigFilePath')
+              .hasMatch(src),
+          isTrue,
+          reason: 'the relay block must pass the CENTROID_STATEMAN_FILE_PATH '
+              'file it already reads into composeBackendRelay, or the config '
+              'family refuses by name on the shipped backend');
     });
 
     test('an off-by-default composition (no token file) wires no resolver and '

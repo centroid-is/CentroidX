@@ -425,6 +425,12 @@ void main() async {
       // name — correctly, and uselessly: the operator is told the backend
       // serves no alarm engine while this process is running one.
       alarms: alarmEngine,
+      // The boot file this process already parsed, for the per-identity
+      // config family (ACCESS-04): without it every `backendConfig.*` frame
+      // refuses by name (-32011) and the Server Config page is a screen with
+      // nothing behind it. The same file, not a second path — one config
+      // world (13-06).
+      statemanFilePath: statemanConfigFilePath,
       log: logger,
     );
     // Visible to the shutdown path from here on. Assigned before `start()`

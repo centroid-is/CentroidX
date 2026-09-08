@@ -29,13 +29,15 @@
 /// end-to-end revocation the whole phase turns on. Every number — row counts,
 /// the close code, the poll — is quoted in 17-14-SUMMARY.md.
 ///
-/// **The backendConfig honesty (ACCESS-04/06).** 17-11 deviation 3 recorded a
-/// standing gap: `composeBackendRelay` wires templates and admin per identity
-/// but serves `backendConfig` sessionlessly from the shared source, so
-/// over-the-wire config editing is 17-13's to complete. This test *probes* the
-/// config surface of the shipped graph and asserts whatever it honestly finds,
-/// rather than asserting a behaviour the graph does not yet have — a named gap
-/// with its reason, never a fudge.
+/// **The backendConfig leg (ACCESS-04/06).** 17-11 deviation 3 recorded a
+/// standing gap — `composeBackendRelay` served `backendConfig` sessionlessly,
+/// refusing -32011 on the wire — and the Phase 17 gate carried it forward by
+/// name. That gap is now closed: the composition mints a per-identity
+/// `BackendConfigStore` over the boot file (`statemanFilePath`), and the arm-4
+/// group here measures BOTH polarities over the real socket: an
+/// administer-holding station reads/validates/writes (edit lands in the file,
+/// secrets redacted on the wire, relay section refused by name — D-10), an
+/// unauthorised one is refused server-side with deny rows.
 @Tags(['db'])
 @Timeout(Duration(minutes: 6))
 library;
@@ -54,6 +56,8 @@ import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/relay/backend_composition.dart';
+import 'package:tfc_dart/core/relay/backend_config_store.dart'
+    show kSecretPreservedSentinel;
 import 'package:tfc_dart/core/relay/relay_config.dart';
 import 'package:tfc_dart/core/state_man.dart'
     show KeyMappings, KeyMappingEntry, OpcUANodeConfig;
@@ -362,7 +366,10 @@ void main() {
   });
 
   /// The shipping graph over the real DB and the real TLS token file, bound.
-  BackendRelayComposition composeAt(int port) {
+  ///
+  /// [statemanPath] is the backend's own boot file (CENTROID_STATEMAN_FILE_PATH)
+  /// for the config family to serve — the argument `bin/main.dart` passes.
+  BackendRelayComposition composeAt(int port, {String? statemanPath}) {
     final config = RelayConfig.fromJson(<String, dynamic>{
       'relay': <String, dynamic>{
         'port': port,
@@ -382,14 +389,18 @@ void main() {
       keyMappings: _mappings(),
       database: database,
       prefs: prefs,
+      // The backend's own boot file, exactly as bin/main.dart passes it —
+      // the slot whose absence was the gate's measured -32011.
+      statemanFilePath: statemanPath,
       log: Logger(level: Level.off),
     );
   }
 
   /// Stands up the graph, refreshes the account cache (the embedder's order),
   /// binds, and connects a pinned panel that has said hello with [token].
-  Future<(BackendRelayComposition, _Panel)> up(String token) async {
-    final composed = composeAt(0);
+  Future<(BackendRelayComposition, _Panel)> up(String token,
+      {String? statemanPath}) async {
+    final composed = composeAt(0, statemanPath: statemanPath);
     await composed.refreshAccounts();
     await composed.server.start();
     final panel = await _Panel.connect(composed.server.port, caCertPem);
@@ -574,52 +585,209 @@ void main() {
   });
 
   // ------------------------------------------------------------------ arm 4
-  test('ACCESS-04: the backend config surface over wss:// — measured honestly '
-      'against the shipped graph (17-11 dev 3 gap)', () async {
-    final (composed, panel) = await up(adminTok);
-    addTearDown(() async {
-      await panel.close();
-      await composed.dispose();
+  group('ACCESS-04: the Server Config page follows the transport — the '
+      'backend config surface over wss://, both polarities', () {
+    // Phase 17's one named carry-forward (17-GATE.md): the shipped graph
+    // served `backendConfig` sessionlessly from the shared source, which
+    // refuses by name (-32011), because `IdentityAccessFamilies` carried no
+    // config slot and wiring the store sessionlessly would forge D-11
+    // attribution. These two arms are the fix's measurement: an authorised
+    // station DOES the config work over the real wire, an unauthorised one is
+    // REFUSED server-side — a fix that made both succeed would be worse than
+    // the bug.
+
+    /// The secret literals the stateman fixture carries. If either appears in
+    /// a read frame, SECURITY FIX 3 (17-10) has regressed over the wire.
+    const storedPassword = 'hunter2-e2e-very-secret';
+    final storedKeyB64 = base64Encode(utf8.encode('FAKE-OPCUA-KEY-PEM-BYTES'));
+
+    /// A parseable stateman file for the backend to serve: two OPC UA servers
+    /// (one carrying credentials), and a `relay` section — readable, never
+    /// writable over this socket (D-10).
+    Map<String, Object?> statemanFixture() => {
+          'opcua': <Object?>[
+            <String, Object?>{
+              'endpoint': 'opc.tcp://10.104.29.11:4840',
+              'username': 'hmi',
+              'password': storedPassword,
+              'ssl_key': storedKeyB64,
+              'server_alias': 'ST101',
+            },
+            <String, Object?>{
+              'endpoint': 'opc.tcp://10.104.29.12:4840',
+              'server_alias': 'ST201',
+            },
+          ],
+          'jbtm': <Object?>[],
+          'modbus': <Object?>[],
+          'relay': {'port': 8787, 'token_file': tokenPath},
+        };
+
+    late String statemanPath;
+    setUp(() {
+      // A fresh file per arm: the authorised arm WRITES it, and the two arms
+      // must not read each other's edits.
+      statemanPath = '${tmp.path}/stateman-arm4-${Random().nextInt(1 << 20)}.json';
+      File(statemanPath).writeAsStringSync(jsonEncode(statemanFixture()));
     });
 
-    // Probe the shipped graph's config surface and record what it honestly
-    // does. 17-11 deviation 3: composeBackendRelay serves backendConfig
-    // sessionlessly (IdentityAccessFamilies carries only templates+admin), so
-    // over-the-wire config editing is 17-13's to complete. This arm asserts the
-    // MEASURED behaviour rather than a behaviour the graph does not yet have.
-    Object? readResult;
-    _RpcError? readError;
-    try {
-      readResult = await panel.request(relay.AccessMethods.configRead);
-    } on _RpcError catch (e) {
-      readError = e;
-    }
+    test('an administer-holding station reads, validates and WRITES the '
+        'backend config over wss:// — the edit lands in the file on the '
+        'backend, secrets stay redacted on the wire and preserved on disk, '
+        'the relay section stays refused by name, and the audit rows name '
+        'the verified station', () async {
+      final (composed, panel) = await up(adminTok, statemanPath: statemanPath);
+      addTearDown(() async {
+        await panel.close();
+        await composed.dispose();
+      });
 
-    // Whatever the graph does, it must be a definite answer — never a hang and
-    // never a silent success that forged an unattributed write.
-    expect(readResult != null || readError != null, isTrue,
-        reason: 'config.read must give a definite answer over the wire');
-    // Record the verdict for the gate: printed so the SUMMARY can quote it.
-    // ignore: avoid_print
-    print('ACCESS-04 PROBE: config.read over wss:// -> '
-        '${readError != null ? "refused ${readError.code}: ${readError.message}" : "answered"}');
+      final auditBefore = await count(
+          "SELECT COUNT(*) AS c FROM audit_entry WHERE $stationLike "
+          "AND surface = 'config'");
 
-    if (readError != null) {
-      // The named gap (17-11 dev 3): config is not wired per-session on the
-      // shipped graph, so a definite refusal is the correct, honest state —
-      // 17-13 completes the screen. Assert the refusal is a real one, not a
-      // crash.
-      expect(readError.code, isNotNull,
-          reason: 'a refused config.read carries an RPC error code, not a hang');
-    } else {
-      // If the graph DID serve read, then a write must be gated administer and
-      // validated before persistence — assert those over the wire.
-      final refusalInvalid = await panel.refusal(
-          relay.AccessMethods.configWrite,
-          params: {'configJson': '{ not json', 'reason': null});
-      expect(refusalInvalid.code, isNotNull,
-          reason: 'an unparseable config is refused, not written (D-10)');
-    }
+      // -- read: the gate's measured -32011 refusal is the failure this arm
+      //    exists to catch; a green run means the per-identity config slot is
+      //    wired on the shipped graph.
+      final raw = await panel.request(relay.AccessMethods.configRead);
+      final doc = relay.BackendConfigDocument.fromJson(
+          (raw as Map).cast<String, Object?>());
+      expect(doc.readOnlySections, contains('relay'),
+          reason: 'the relay section is readable and flagged read-only so the '
+              'screen greys it (D-10)');
+      final decoded =
+          jsonDecode(doc.configJson) as Map; // the document, as the screen sees it
+      expect((decoded['relay'] as Map)['token_file'], tokenPath,
+          reason: 'paths cross whole — the TlsConfig discipline (17-10)');
+      expect(((decoded['opcua'] as List)[0] as Map)['endpoint'],
+          'opc.tcp://10.104.29.11:4840',
+          reason: 'the document is the real file, not an empty stub');
+
+      // SECURITY FIX 3 over the real wire: neither secret literal is in the
+      // full encoded frame; the sentinel stands in.
+      final frame = jsonEncode(raw);
+      expect(frame, isNot(contains(storedPassword)),
+          reason: 'the OPC UA password must never cross the wire');
+      expect(frame, isNot(contains(storedKeyB64)),
+          reason: 'nor the private key bytes');
+      expect(frame, contains(kSecretPreservedSentinel),
+          reason: 'the sentinel marks the redacted values for the screen');
+
+      // -- validate: a definite verdict for a bad document, never a write.
+      final verdictRaw = await panel.request(relay.AccessMethods.configValidate,
+          params: {'configJson': jsonEncode({...statemanFixture(), 'opcua': 42})});
+      expect((verdictRaw as Map)['ok'], isFalse,
+          reason: 'validate answers the parser verdict over the wire — the '
+              'method the contract-kit parity sweep names as its gap, driven '
+              'here on the shipped graph');
+
+      // -- write: a benign edit through the sentinel round trip, exactly the
+      //    screen's read-modify-write path.
+      ((decoded['opcua'] as List)[1] as Map)['publishing_interval_ms'] = 400;
+      await panel.request(relay.AccessMethods.configWrite,
+          params: {'configJson': jsonEncode(decoded), 'reason': null});
+
+      // The edit landed in the FILE the backend boots from — read off disk,
+      // not through the socket, the ACCESS-01 "rows read by SQL" discipline.
+      final onDisk = File(statemanPath).readAsStringSync();
+      final diskDoc = jsonDecode(onDisk) as Map;
+      expect(((diskDoc['opcua'] as List)[1] as Map)['publishing_interval_ms'],
+          400,
+          reason: 'the write crossed the wire and landed in the boot file');
+      expect(onDisk, contains(storedPassword),
+          reason: 'the sentinel resolved to the STORED secret — a round trip '
+              'must not blank credentials (17-10 S2)');
+      expect(onDisk, isNot(contains(kSecretPreservedSentinel)),
+          reason: 'the marker never lands on disk as a literal credential');
+
+      // Recoverability crossed the wire too.
+      final after = relay.BackendConfigDocument.fromJson(
+          ((await panel.request(relay.AccessMethods.configRead)) as Map)
+              .cast<String, Object?>());
+      expect(after.hasPrevious, isTrue,
+          reason: 'the accepted write left a .previous to restore');
+
+      // -- D-10 on the shipped wire: a relay-section edit is refused by name
+      //    and the file does not move.
+      final bytesBefore = File(statemanPath).readAsBytesSync();
+      final tampered = jsonDecode(after.configJson) as Map;
+      (tampered['relay'] as Map)['port'] = 9999;
+      final relayRefusal = await panel.refusal(relay.AccessMethods.configWrite,
+          params: {'configJson': jsonEncode(tampered), 'reason': null});
+      expect(relayRefusal.message, contains('relay'),
+          reason: 'the refusal names the section — you do not edit the socket '
+              'over the socket (D-10)');
+      expect(File(statemanPath).readAsBytesSync(), bytesBefore,
+          reason: 'a refused write leaves the file byte-identical');
+
+      // -- attribution, by SQL (ACCESS-06's config leg, unreachable until
+      //    this fix): the accepted write's row names the VERIFIED station.
+      //
+      // Pinned to the STORE's own row — `item_key` is the boot file's path,
+      // where the policy gate's twin row carries `state_man_config` — because
+      // a sabotage round proved the loose form was satisfiable by the gate's
+      // row while the store's carried a forged station.
+      expect(
+          await count("SELECT COUNT(*) AS c FROM audit_entry WHERE "
+              "surface = 'config' AND item_key = '$statemanPath' "
+              "AND origin = 'relay' AND who = '$adminUser' "
+              "AND station = '$adminStation' AND allowed = true"),
+          greaterThan(0),
+          reason: 'the config write is attributed by the STORE to the '
+              'server-verified station account (D-11) — the leg 17-GATE said '
+              'rode this gap; a compose-time or payload-named station must '
+              'not be able to hide behind the policy gate\'s own allow row');
+      expect(
+          await count("SELECT COUNT(*) AS c FROM audit_entry WHERE "
+              "$stationLike AND surface = 'config'"),
+          greaterThan(auditBefore),
+          reason: 'the decisions grew the trail; counted, not merely present');
+    });
+
+    test('a station whose role lacks administer is REFUSED the config '
+        'surface server-side (-32005) while its own permitted work still '
+        'succeeds — and the file does not move', () async {
+      // {operate, configure} — the SHARP negative: even the configure grade
+      // does not reach the backend's own config, which sits at administer
+      // (AccessPolicy, the `state_man_config` row).
+      final (composed, panel) = await up(cfgTok, statemanPath: statemanPath);
+      addTearDown(() async {
+        await panel.close();
+        await composed.dispose();
+      });
+
+      // Live control FIRST: this session is alive and authorised for its own
+      // grade — the refusal below is about the group, not a broken session.
+      await panel.request(relay.DataServiceMethods.prefSetString,
+          params: {'key': 'key_mappings', 'value': '{"nodes":{}}'});
+
+      final readRefusal =
+          await panel.refusal(relay.AccessMethods.configRead);
+      expect(readRefusal.code, _kForbidden,
+          reason: 'reads are gated too — the document is the plant\'s server '
+              'list and PLC addresses (ACCESS-05: the server refuses, the '
+              'client is not the boundary)');
+
+      final bytesBefore = File(statemanPath).readAsBytesSync();
+      final writeRefusal = await panel.refusal(relay.AccessMethods.configWrite,
+          params: {
+            'configJson': jsonEncode(statemanFixture()),
+            'reason': null
+          });
+      expect(writeRefusal.code, _kForbidden,
+          reason: 'a configure-holding session may not write the backend '
+              'config — administer is the grade');
+      expect(File(statemanPath).readAsBytesSync(), bytesBefore,
+          reason: 'the refused write left the boot file byte-identical');
+
+      // The refusals left deny rows attributed to the refused account (D-05).
+      expect(
+          await count("SELECT COUNT(*) AS c FROM audit_entry WHERE "
+              "$stationLike AND surface = 'config' AND who = '$cfgUser' "
+              "AND allowed = false"),
+          greaterThan(0),
+          reason: 'a server-side refusal is a decision somebody can audit');
+    });
   });
 
   // ------------------------------------------------------------------ arm 5
