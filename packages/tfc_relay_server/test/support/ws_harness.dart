@@ -32,9 +32,14 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:stream_channel/stream_channel.dart';
 import 'package:test/test.dart';
+import 'package:tfc_access/tfc_access.dart' show AuditSink, NullAuditSink;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
+import 'package:tfc_relay_server/src/auth/file_token_validator.dart'
+    show UserResolver;
 import 'package:tfc_relay_server/src/error_reporter.dart';
 import 'package:tfc_relay_server/src/relay_server.dart';
+import 'package:tfc_relay_server/src/relay_session.dart'
+    show AccessScopeFactory;
 import 'package:tfc_relay_server/src/server_config.dart';
 import 'package:tfc_relay_server/src/token_validator.dart';
 import 'package:tfc_relay_server/src/ws_channel.dart';
@@ -215,6 +220,11 @@ RelayFixture relayFixture({
   List<String> serverSupported = const [protocolVersion],
   bool withProxy = false,
   RelayErrorHandler? onError,
+  // 17-09's three pass-throughs, defaulted to the server's own defaults so
+  // every existing fixture composition is byte-identical.
+  UserResolver? accounts,
+  AuditSink? audit,
+  AccessScopeFactory? accessFor,
 }) {
   final served = FakeStateMan(
     staleAfter: staleAfter,
@@ -231,6 +241,9 @@ RelayFixture relayFixture({
     config: config ?? fixtureConfig(),
     validator: validator,
     serverSupported: serverSupported,
+    accounts: accounts,
+    audit: audit ?? const NullAuditSink(),
+    accessFor: accessFor,
     // Defaults to a collector that discards rather than to `reportToStderr`:
     // several cases in this phase provoke errors on purpose, and a suite that
     // printed a stack trace per provoked error would train everyone to

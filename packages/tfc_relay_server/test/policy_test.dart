@@ -48,12 +48,14 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 import 'dart:mirrors';
 
 import 'package:json_rpc_2/error_code.dart' as rpc_error;
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:stream_channel/stream_channel.dart';
 import 'package:test/test.dart';
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_relay_server/src/auth/identity.dart';
 import 'package:tfc_relay_server/src/error_codes.dart';
@@ -73,6 +75,7 @@ import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'support/permissive_resolver.dart';
+import 'support/scripted_policy.dart';
 
 /// A tag in the plant's own naming convention, so the cases read like the
 /// thing they model rather than like synthetic strings.
@@ -314,33 +317,32 @@ final class _MapsTheRealTags implements SeriesResolver {
   String? keyForNode(String nodeId) => nodeId;
 }
 
-/// A panel next to a machine, and a display on a wall.
-const _panel = Identity(stationId: 'ST101', role: Role.operate);
-const _display = Identity(stationId: 'HALL-DISPLAY', role: Role.view);
+/// A panel next to a machine, a display on a wall, and the engineer's station
+/// that holds every group the master system has.
+///
+/// Group sets rather than a two-valued role: 17-04b deleted `Role` and
+/// `Identity`, and what a station may do is now whatever the groups behind its
+/// resolver-verified user's role say. `_panel` holds the tag-write floor and
+/// nothing else, so an arm it passes is about `operate` and not about some
+/// wider grant riding along; `_display` holds nothing at all, which is the
+/// honest spelling of "may not actuate"; `_engineer` exists for the
+/// anti-vacuity arms, whose subject is "the store really records" rather than
+/// any particular grading.
+final _panel = stationHolding(const {AccessGroup.operate});
+final _display = stationHolding(const <AccessGroup>{});
+final _engineer = stationHolding(AccessGroup.values.toSet());
 
 // ---------------------------------------------------------------------------
 // The levers.
+//
+// The hiding double is `ScriptedPolicy` (test/support/scripted_policy.dart).
+// Its predecessor — `_HidesTags`, declared right here at :332 — had a
+// `canWrite` that ignored `hidden` entirely, so every write-refusal arm it
+// drove was satisfiable by `canSee` making the key absent (17-CONTEXT D-12).
+// `ScriptedPolicy.hiding` hides and does nothing else: under it a refused
+// write on a hidden key can only have been refused by the existence check,
+// which is the claim the arms below actually make.
 // ---------------------------------------------------------------------------
-
-/// A policy that hides exactly the tags it is given, and otherwise ships.
-///
-/// The lever 06-RESEARCH §E.4 calls for, and the reason `RelayServer` takes a
-/// `policy:` argument at all. It is deliberately not clever: hiding is a set
-/// membership test, because 06-CONTEXT's scope fence forbids defining the
-/// pattern grammar this phase and a test policy that invented one would be
-/// specifying policy language by the back door.
-final class _HidesTags implements KeyPolicy {
-  const _HidesTags(this.hidden);
-
-  final Set<String> hidden;
-
-  @override
-  bool canSee(String key, Identity identity) => !hidden.contains(key);
-
-  @override
-  bool canWrite(String key, Identity identity) =>
-      identity.role == Role.operate;
-}
 
 /// A preference store that writes down every mutation it is asked to make.
 ///
@@ -408,7 +410,7 @@ final class _RecordingPreferences extends FakePreferences {
 final class _AlwaysStation implements TokenValidator {
   const _AlwaysStation(this.identity);
 
-  final Identity identity;
+  final StationIdentity identity;
 
   @override
   Future<TokenVerdict> validate(HelloParams params) async =>
@@ -448,8 +450,8 @@ final class _Gateway {
   PolicyStateMan get served => sessions.first.api;
 
   static Future<_Gateway> start({
-    KeyPolicy policy = const AllVisibleOperatorWrites(),
-    Identity identity = _panel,
+    KeyPolicy policy = const AccessPolicyKeyPolicy(),
+    StationIdentity? identity,
     SeriesResolver resolver = const PermissiveSeriesResolver(),
   }) async {
     final history = _seededHistory();
@@ -465,7 +467,7 @@ final class _Gateway {
       resolver: resolver,
       api: plant,
       config: ServerConfig(tick: ServerConfig.minTick),
-      validator: _AlwaysStation(identity),
+      validator: _AlwaysStation(identity ?? _panel),
       policy: policy,
       // A collector that discards: several cases here provoke refusals on
       // purpose, and a suite printing a stack trace per provoked refusal
@@ -571,6 +573,20 @@ Future<rpc.RpcException> _refused(
 /// One decoded JSON object, cast where the wire hands back `Object?`.
 Map<String, Object?> _asMap(Object? raw) =>
     (raw! as Map).cast<String, Object?>();
+
+/// A production decorator over a fresh fake plant, as seen by [identity] —
+/// for in-process arms whose subject is the gate rather than the transport.
+PolicyStateMan seenByStation(StationIdentity? identity) {
+  final plant = FakeStateMan();
+  addTearDown(plant.dispose);
+  return PolicyStateMan(
+    source: plant,
+    policy: const AccessPolicyKeyPolicy(),
+    resolver: const PermissiveSeriesResolver(),
+    tally: SeriesMappingTally(),
+    identityOf: () => identity,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // The six surfaces, as one comparable answer each.
@@ -795,114 +811,65 @@ Future<Object?> _askKeys(_Gateway gateway, _Station station, String key) async =
     {'present': gateway.served.keys.contains(key)};
 
 void main() {
-  group('the shipped policy is trivial, and honestly named', () {
-    test('the shipped policy lets an operator write and a viewer not', () {
-      const policy = AllVisibleOperatorWrites();
+  // The two groups that used to open this file — `AllVisibleOperatorWrites`'
+  // semantics and the two-member `KeyPolicy` mirror pin — are gone with their
+  // subjects: 17-04 replaced the shipped policy with `AccessPolicyKeyPolicy`
+  // and grew the interface a third member, and `key_policy_test.dart` carries
+  // the up-to-date copies of both (the three-member synchronous pin, the
+  // package-uri pin, and the adapter's four properties). A second copy here
+  // would be the drift D-12 is about.
 
-      expect(policy.canSee(_key, _display), isTrue,
-          reason: 'CONTEXT decision 2 fixes this phase\'s canSee at "always '
-              'true": there is no policy data yet to hide anything with, and '
-              'a seam that hid something nobody configured would be policy '
-              'invented by the plumbing. A view station reads the plant — '
-              'that is what a wall display is for');
-      expect(policy.canSee(_key, _panel), isTrue,
-          reason: 'the same answer for both roles, because canSee does not '
-              'read the role at all this phase. If this ever diverges by role '
-              'without a policy file saying so, the divergence came from the '
-              'seam rather than from a deployment');
-
-      expect(policy.canWrite(_key, _panel), isTrue,
-          reason: 'an operate station is a panel bolted next to a machine, '
-              'and refusing its writes would be a gateway that serves nobody. '
-              'This is also what keeps every fixture in this workspace '
-              'writing: PermissiveTokenValidator grants operate');
-      expect(policy.canWrite(_key, _display), isFalse,
-          reason: 'a view station actuating a machine is T-06-35, the whole '
-              'of SEC-03\'s authorization clause. The canteen display can '
-              'start a conveyor if this comparison is missing, and the only '
-              'person who finds out is whoever is standing next to the belt');
-    });
-
-    test('the shipped policy is const-constructible and reads honestly in a '
-        'config diff', () {
-      expect(identical(const AllVisibleOperatorWrites(),
-              const AllVisibleOperatorWrites()),
-          isTrue,
-          reason: 'Dart canonicalises const instances, which is what lets a '
-              'default be compared by identity the way RelayServer already '
-              'compares its permissive validator (relay_server.dart:149). A '
-              'non-const default would make that idiom unavailable to the '
-              'next plan that needs it');
-      expect('$AllVisibleOperatorWrites', 'AllVisibleOperatorWrites',
-          reason: 'named for what it *does*, not for what it lacks — '
-              'PermissiveTokenValidator\'s argument (token_validator.dart:'
-              '70-73), and for the same reason: a deployment still running '
-              'the shipped policy in Phase 12 has to be legible in a config '
-              'diff. A name like NoPolicy or DefaultPolicy reads as "somebody '
-              'configured this"');
-    });
-  });
-
-  group('the interface itself', () {
-    test('the policy interface is synchronous', () {
-      final members = reflectClass(KeyPolicy)
-          .declarations
-          .values
-          .whereType<MethodMirror>()
-          .where((member) => !member.isConstructor && !member.isPrivate)
+  group('the operate vocabulary is gone from the decorator', () {
+    /// The decorator's source, comment lines stripped, so a pin about code
+    /// cannot be satisfied or tripped by prose. Same stripping rule the
+    /// 17-04b parser pins use: whole-line comments only, because this file's
+    /// house style never trails a comment on a code line.
+    List<String> strippedSource() {
+      final lines = File('lib/src/policy/policy_state_man.dart')
+          .readAsLinesSync()
+          .where((line) => !line.trimLeft().startsWith('//'))
           .toList();
+      // Anti-vacuity: a wrong path reads nothing and every "contains no X"
+      // below would be true of an empty list.
+      expect(lines.length, greaterThan(400),
+          reason: 'the decorator is a long file; a source read this short '
+              'means the path is wrong and the pins below are counting an '
+              'empty list');
+      return lines;
+    }
 
-      expect(
-          members.map((m) => MirrorSystem.getName(m.simpleName)).toSet(),
-          {'canSee', 'canWrite'},
-          reason: 'two members, and only two. CONTEXT decision 2 names '
-              'canSee and canWrite; a third would be policy vocabulary '
-              'invented before there is policy data to fill it');
-
-      for (final member in members) {
-        final name = MirrorSystem.getName(member.simpleName);
-        final returns = MirrorSystem.getName(member.returnType.simpleName);
-        expect(returns, 'bool',
-            reason: '$name returns $returns. An asynchronous policy is what '
-                'introduces the await between the atCapacity check and the '
-                'put in session_handlers.dart:255-264 — the comment there '
-                'says so in as many words, and names this phase as the '
-                'obvious thing to open the race. A subscription that got past '
-                'a full ceiling would then be refused as -32011 '
-                'handlerFailed, whose documented meaning is "retrying is '
-                'legitimate", so a panel would retry a limit it can never get '
-                'under. The shipped policy is a constant and a role '
-                'comparison over a token file already in memory: there is '
-                'nothing here to await');
-      }
+    test('requireOperate exists nowhere', () {
+      final offending = strippedSource()
+          .where((line) => line.contains('requireOperate'))
+          .toList();
+      expect(offending, isEmpty,
+          reason: 'the seven-times-one-question gate survived. Sweep §3.12 '
+              'point 1: the relay graded by station role over the same rows '
+              'the app grades by key, and `requireOperate` was that second '
+              'rule\'s name. Every gate now takes the group the policy '
+              'supplies for that key and that member — found: $offending');
     });
 
-    test('the policy is not on the wire vocabulary', () {
-      // Amendment 3, asserted from the type system rather than from a grep.
-      // `KeyPolicy` lives in this package; `StateManApi` lives in the protocol
-      // package, which this one depends on and not the reverse. A policy
-      // member on the wire interface is therefore impossible to write, and
-      // that impossibility is the amendment satisfied by construction —
-      // api_surface_test stays at 49 because there is nothing that could move
-      // it.
-      //
-      // Read as the library's **uri** rather than its name: every library in
-      // this package is declared `library;` with a doc comment above it, so
-      // `simpleName` is the empty string for all of them and a name-based
-      // assertion would pass against anything.
-      final home = (reflectClass(KeyPolicy).owner! as LibraryMirror).uri;
-      expect('$home', startsWith('package:tfc_relay_server/'),
-          reason: 'the policy interface moved out of the server package. The '
-              'access-control question is not one a connected client may ask: '
-              'api_surface_test.dart:213-226 calls the 49-member set "the '
-              'access-control policy", so adding a policy *query* to it is '
-              'the contradiction 06-CONTEXT amendment 3 forbids');
+    test('no group literal in the file — the decorator asks, it does not know',
+        () {
+      final literal = RegExp(
+          r'AccessGroup\.(operate|setpoints|device|force|configure|'
+          r'administer|users)');
+      final offending = strippedSource()
+          .where((line) => literal.hasMatch(line))
+          .toList();
+      expect(offending, isEmpty,
+          reason: 'a group literal in the decorator is a rule stated a second '
+              'time — the exact duplication "one master system" deletes. The '
+              'group in every gate and every audit row must be the one '
+              'AccessPolicy answered, never one this file named — found: '
+              '$offending');
     });
   });
 
   group('the decorator hides through the key list', () {
     test('a hidden key is absent from the key list', () async {
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       gateway.plant.setValue(_key, 1200);
       gateway.plant.setValue(_hidden, 900);
       await gateway.station();
@@ -936,7 +903,8 @@ void main() {
             ...gateway.plant.keys,
             ...SessionHealthStateMan.perSessionKeys,
           ]),
-          reason: 'under AllVisibleOperatorWrites the decorator must be '
+          reason: 'under the shipped AccessPolicyKeyPolicy the decorator must '
+              'be '
               'invisible — same list, same order. It sits in the path of '
               'every request the whole suite makes, so anything it changes '
               'here it changes for all of them, and a leak found later '
@@ -949,7 +917,7 @@ void main() {
 
     test('readFresh answers a hidden key the way it answers a nonexistent one',
         () async {
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       gateway.plant.setValue(_hidden, 900);
       final station = await gateway.station();
 
@@ -980,7 +948,7 @@ void main() {
 
     test('the decorator\'s readFresh refuses a hidden key without asking the '
         'source', () async {
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       gateway.plant.setValue(_hidden, 900);
       await gateway.station();
 
@@ -1038,7 +1006,7 @@ void main() {
   group('a series the gateway cannot map is a series that does not exist', () {
     test('an unmapped series answers exactly as a hidden one does', () async {
       final gateway = await _Gateway.start(
-          policy: const _HidesTags({_hidden}),
+          policy: ScriptedPolicy.hiding(const {_hidden}),
           resolver: const _MapsTheRealTags());
       final station = await gateway.station();
 
@@ -1078,7 +1046,7 @@ void main() {
     test('the multi-series path answers an empty entry, never an omission',
         () async {
       final gateway = await _Gateway.start(
-          policy: const _HidesTags({_hidden}),
+          policy: ScriptedPolicy.hiding(const {_hidden}),
           resolver: const _MapsTheRealTags());
       final station = await gateway.station();
 
@@ -1150,7 +1118,7 @@ void main() {
     test('a member address is resolved once, and canSee is asked about the '
         'series', () async {
       final gateway = await _Gateway.start(
-          policy: const _HidesTags({_hidden}),
+          policy: ScriptedPolicy.hiding(const {_hidden}),
           resolver: const _MapsTheRealTags());
       final station = await gateway.station();
       final tally = gateway.server.seriesTally;
@@ -1280,7 +1248,7 @@ void main() {
     });
 
     test('the view still comes back, without the key', () async {
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       final station = await gateway.station();
 
       final id = await saveView(station, [_key, _hidden]);
@@ -1315,7 +1283,7 @@ void main() {
       // **The boundary case**, and the only one where "drop the key" and
       // "drop the view" produce different answers. Everything else in this
       // group passes under either rule.
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       final station = await gateway.station();
 
       final id = await saveView(station, [_hidden]);
@@ -1361,7 +1329,7 @@ void main() {
 
     test('a view the store already holds gives up its hidden key on the way '
         'out', () async {
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       final id = await gateway.plant.historyViews
           .createHistoryView('Vaktir', [_key, _hidden]);
       final station = await gateway.station();
@@ -1389,7 +1357,7 @@ void main() {
       // "drop the key" and "drop the view" give different answers: under the
       // first the picker still offers the view, under the second the operator
       // watches a view they saved disappear.
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       final id = await gateway.plant.historyViews
           .createHistoryView('Vaktir', [_hidden]);
       final station = await gateway.station();
@@ -1411,7 +1379,7 @@ void main() {
     });
 
     test('graphs are untouched by the filter', () async {
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       final station = await gateway.station();
 
       final id = await saveView(station, [_hidden],
@@ -1435,7 +1403,7 @@ void main() {
     });
 
     test('a hidden key never reaches the store on the way in', () async {
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       final station = await gateway.station();
 
       final id = await saveView(station, [_key, _hidden]);
@@ -1456,7 +1424,7 @@ void main() {
     });
 
     test('an update drops a hidden key too', () async {
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       final station = await gateway.station();
 
       final id = await saveView(station, [_key]);
@@ -1480,26 +1448,25 @@ void main() {
   });
 
   // -----------------------------------------------------------------------
-  // 10-REVIEW CR-03: the destructive history-view mutators take a role.
+  // History views, graded by member — the app's split, in both directions
+  // (17-CONTEXT D-04, ruled 2026-09-07).
   //
-  // The group above is about hiding, and hiding was all this seam did. Until
-  // the review, `_PolicyHistoryViews` consulted no identity anywhere: create,
-  // update, delete, addPeriod and deletePeriod all delegated straight
-  // through, and the handlers above them added no check either. The only
-  // thing between the wire and the DELETE was the handshake gate, which asks
-  // whether a station said `hello`.
-  //
-  // The asymmetry that makes it a hole rather than a scope decision is
-  // visible in one file: a `view`-role wall display was refused
-  // `preferences.setBool('svn.theme.dark', true)` and could delete every
-  // saved chart in the plant, one `history.deleteView{id: n}` at a time —
-  // over rows the plant's own HMI owns and no other surface can restore.
+  // 10-REVIEW CR-03 put one gate — "the role a setpoint takes" — on the four
+  // destructive members, and that was the relay grading by station role over
+  // the same rows the panel grades by member (sweep §3.12). The panel's
+  // split, which wins in BOTH directions: the two deletes need `configure`
+  // (destroying work that was not yours), and create, update and addPeriod
+  // are OPEN — matching `guarded_history_views.dart`'s
+  // `kHistoryViewWriteGroup == null`, stated by the policy rather than by the
+  // absence of a call. So `deleteHistoryView` tightens (operate no longer
+  // suffices) while `updateHistoryView` and `addHistoryViewPeriod` loosen to
+  // where the panel has always had them.
   //
   // Over a real socket, deliberately. The gate has to hold where a station
-  // actually reaches it, and `_display` is a real `view` identity minted by
-  // the same validator seam a token file drives.
+  // actually reaches it, and each identity here is minted by the same
+  // validator seam a token file drives.
   // -----------------------------------------------------------------------
-  group('deleting somebody else\'s saved chart takes the role a setpoint takes',
+  group('a history-view member takes the group the panel\'s guard takes',
       () {
     /// The five mutators, as a name and a request against view [id].
     Map<String, ({String method, Map<String, Object?> params})> mutators(
@@ -1550,14 +1517,16 @@ void main() {
             view.name,
         ];
 
-    test('an operate station may do all five, and the store records them',
-        () async {
+    test('a configure-holding station may do all five, and the store records '
+        'them', () async {
       // **The anti-vacuity companion, and it goes first.** Every arm below
       // asserts a refusal; without this one they would all pass against a
       // gateway whose history views were broken for everybody, which is
       // exactly the failure a wall display would report as "the charts are
       // gone".
-      final gateway = await _Gateway.start(identity: _panel);
+      final gateway = await _Gateway.start(
+          identity: stationHolding(
+              const {AccessGroup.operate, AccessGroup.configure}));
       final station = await gateway.station();
 
       final id = (await station.request(DataServiceMethods.historyCreateView,
@@ -1587,14 +1556,14 @@ void main() {
               'because a gate ran');
     });
 
-    for (final name in const [
-      'updateView',
-      'deleteView',
-      'addPeriod',
-      'deletePeriod',
-    ]) {
-      test('a view station\'s $name is refused, pre-effect', () async {
-        final gateway = await _Gateway.start(identity: _display);
+    for (final name in const ['deleteView', 'deletePeriod']) {
+      test('an operate station\'s $name is refused, pre-effect — the two '
+          'destructive members take configure', () async {
+        // D-04's behaviour change on the wire, carried by these two arms:
+        // `operate` used to suffice for a delete here, and the panel's guard
+        // has always demanded `configure`. `deletePeriod` is also the member
+        // the relay gated and the panel graded *differently*, now agreeing.
+        final gateway = await _Gateway.start(identity: _panel);
         // Seeded through the **unpoliced** source: this case is about a
         // station destroying work it did not do, so the work has to exist
         // before the station connects and must not itself be a gated call.
@@ -1607,7 +1576,7 @@ void main() {
 
         final call = mutators(id)[name]!;
         final refusal = await station.refusal(call.method,
-            params: call.params, what: '$name from a view station');
+            params: call.params, what: '$name from an operate-only station');
 
         expect(refusal.code, ServerErrorCodes.forbidden,
             reason: 'the same code and the same argument as the preference '
@@ -1632,24 +1601,60 @@ void main() {
       });
     }
 
-    test('a view station may still save a chart of its own', () async {
-      // The line 10-04 drew, kept. "Chart configuration, not plant state"
-      // holds for creating one — it costs nobody anything and a wall display
-      // that cannot save a view is a wall display nobody can set up. What it
-      // does not hold for is destroying somebody else's, which is the four
-      // arms above.
+    test('a station holding nothing may create, update and add a period — '
+        'deliberate parity with kHistoryViewWriteGroup == null', () async {
+      // NOT a hole. `guarded_history_views.dart` leaves the three creative
+      // members open to any session, anonymous included — an operator saving
+      // a view of the line they run is doing their job — and the app's split
+      // wins in both directions (D-04). The relay used to gate `update` and
+      // `addPeriod` at operate where the panel leaves them open; these arms
+      // are that disagreement closing from the loosening side, and the two
+      // delete arms above are it closing from the tightening side.
       final gateway = await _Gateway.start(identity: _display);
       final station = await gateway.station();
 
-      final id = await station.request(DataServiceMethods.historyCreateView,
+      final id = (await station.request(DataServiceMethods.historyCreateView,
           params: const {'name': 'Vaktir', 'keys': <String>[_key]},
-          what: 'a view station saving a chart of its own');
+          what: 'a station holding no groups saving a chart'))! as int;
+      await station.request(DataServiceMethods.historyUpdateView,
+          params: {'id': id, 'name': 'Endurskírt', 'keys': const <String>[_key]},
+          what: 'a station holding no groups renaming its chart');
+      await station.request(DataServiceMethods.historyAddPeriod,
+          params: {
+            'viewId': id,
+            'name': 'Vakt 1',
+            'start': _ms(_tsBase),
+            'end': _ms(_tsBase.add(const Duration(hours: 8))),
+          },
+          what: 'a station holding no groups bookmarking a window');
 
-      expect(id, isA<int>());
-      expect(await storedViews(gateway), ['Vaktir']);
+      expect(await storedViews(gateway), ['Endurskírt'],
+          reason: 'all three creative members reached the store for a session '
+              'holding nothing at all, exactly as they do at a panel');
     });
 
-    test('the reads stay open to a view station', () async {
+    test('an operate-and-configure station deletes, and the store records it',
+        () async {
+      // The live control for the two refusal arms: the same member, one
+      // group later, goes through. Without it a gate that refused every
+      // delete for everybody would pass those arms.
+      final gateway = await _Gateway.start(
+          identity: stationHolding(
+              const {AccessGroup.operate, AccessGroup.configure}));
+      final id = await gateway.plant.historyViews
+          .createHistoryView('Vaktir', [_key]);
+      final station = await gateway.station();
+
+      await station.request(DataServiceMethods.historyDeleteView,
+          params: {'id': id}, what: 'a configure-holding station deleting');
+
+      expect(await storedViews(gateway), isEmpty,
+          reason: 'configure is the group the panel\'s guard demands for a '
+              'delete, and holding it must be sufficient over the wire too — '
+              'the same table, the same answer');
+    });
+
+    test('the reads stay open to a station holding nothing', () async {
       // The other half of the line: gating a read would leave a wall display
       // showing an empty picker, which is the failure the gate is supposed to
       // prevent arriving from the other side.
@@ -1672,31 +1677,31 @@ void main() {
     });
   });
 
-  // **Preferences: reads for everyone, writes for `operate`** (10-05,
-  // 10-CONTEXT ruling 1, T-10-17).
+  // **Preferences: reads for everyone, writes graded BY KEY** — the same
+  // `kPrefAccessRules` table the panel is graded by (17-CONTEXT D-03, ruled
+  // 2026-09-07; sweep §3.12 point 1).
   //
   // A sibling group rather than a ninth `_surfaces` entry, and for a plainer
   // reason than the history-view group's: a preference key is not a plant key
   // at all. `svn.chart.maxPoints` names a row in the gateway's own settings
-  // store, `KeyPolicy` was never written about it, and asking the
-  // indistinguishability loop about it would be asking whether the *plant* has
-  // a tag called `svn.chart.maxPoints` — a question with one honest answer for
-  // both a hidden tag and a nonexistent one, arrived at by accident.
+  // store, and asking the indistinguishability loop about it would be asking
+  // whether the *plant* has a tag by that name.
   //
-  // What this group asserts instead is the one access-control decision the
-  // phase carries. The reason it is `operate` and not something weaker is
-  // `key_mappings`: 518 KiB of the gateway's own routing configuration lives in
-  // this store, and a `view` station that can `setString` it re-points the
-  // plant's tag map — at least as sensitive as writing a motor setpoint, which
-  // is exactly what `operate` already guards.
+  // What this group asserts is the phase's centre: the relay used to ask ONE
+  // question — "may this station actuate?" — about every preference key
+  // alike, over the same rows in the same `flutter_preferences` table in the
+  // same Postgres the app grades per key. So a station the gateway called
+  // `operate` could `setString('key_mappings', …)` and re-point the plant's
+  // tag map while an operator standing at a panel with the same grade could
+  // not. One master table now answers both.
   //
   // These cases drive the decorator **in process** rather than over a socket,
   // and that is not a shortcut: the pre-effect property is "the store was not
   // touched", which needs a store that counts, and the no-identity arm needs a
   // session state the handshake gate makes unreachable from the wire. The
-  // wire-level half — a `view` station refused with -32005 over a real socket —
-  // is `data_handlers_test.dart`'s and the contract legs'.
-  group('a preference write needs the role a setpoint needs', () {
+  // wire-level half — a refusal with -32005 over a real socket — is
+  // `data_handlers_test.dart`'s and the contract legs'.
+  group('a preference write is graded by key, by the app\'s own table', () {
     /// One recording store, and the decorator [identity] sees it through.
     ///
     /// Built by hand rather than read off a live session because
@@ -1704,7 +1709,7 @@ void main() {
     /// below are about an identity a session cannot be in while it is
     /// answering: null, which is every session between `serve` and `hello`.
     ({_RecordingPreferences store, PolicyStateMan served}) seenBy(
-        Identity? identity) {
+        StationIdentity? identity) {
       final store = _RecordingPreferences();
       final plant = FakeStateMan(preferences: store);
       addTearDown(plant.dispose);
@@ -1712,9 +1717,10 @@ void main() {
         store: store,
         served: PolicyStateMan(
           source: plant,
-          // The shipped policy, deliberately: this gate is not a `KeyPolicy`
-          // rule and must hold under the policy the plant actually runs.
-          policy: const AllVisibleOperatorWrites(),
+          // The shipped adapter over the shipped master policy, deliberately:
+          // the grading under test is `kPrefAccessRules` itself, not a
+          // scripted double's answer.
+          policy: const AccessPolicyKeyPolicy(),
           resolver: const PermissiveSeriesResolver(),
           tally: SeriesMappingTally(),
           identityOf: () => identity,
@@ -1742,40 +1748,41 @@ void main() {
       'clear': (prefs) => prefs.clear(allowList: const {'svn.ui.dark'}),
     };
 
-    test('an operate station writes, and the store records it', () async {
+    test('a station holding every group writes, and the store records it',
+        () async {
       // **The anti-vacuity companion, and it goes first.** Every arm below
       // asserts a write was *refused* and that the store recorded nothing;
       // without this one they would all pass against a decorator that refused
       // everybody, and against a recorder that never recorded.
-      final panel = seenBy(_panel);
+      final panel = seenBy(_engineer);
 
       for (final mutator in mutators.entries) {
         await mutator.value(panel.served.preferences);
       }
 
       expect(panel.store.writes, mutators.keys.toList(),
-          reason: 'the shipped policy grants `operate` to every station '
-              '`PermissiveTokenValidator` mints, so a panel writing a '
-              'preference must reach the store. If this fails, every refusal '
-              'arm below is passing because nothing writes rather than '
-              'because the gate ran');
+          reason: 'a station holding the full group set holds whatever group '
+              'each of these keys grades to, so every mutator must reach the '
+              'store. If this fails, every refusal arm below is passing '
+              'because nothing writes rather than because the gate ran');
       expect(mutators, hasLength(7),
           reason: 'seven mutators is the surface being gated — five typed '
               'setters, remove and clear. A mutator added to PreferencesApi '
-              'and not to this map is one nobody checked the role on');
+              'and not to this map is one nobody checked the grading on');
     });
 
     for (final mutator in mutators.entries) {
-      test('a view station\'s ${mutator.key} is refused, pre-effect', () async {
+      test('a station holding nothing has its ${mutator.key} refused, '
+          'pre-effect', () async {
         final display = seenBy(_display);
 
         final refusal = await _refused(
             () => mutator.value(display.served.preferences),
-            '${mutator.key} from a view station');
+            '${mutator.key} from a station holding no groups');
 
         expect(refusal.code, ServerErrorCodes.forbidden,
             reason: '`forbidden` is the right refusal here and `unknownKey` '
-                'would be wrong, which makes this the one place in Phase 10 '
+                'would be wrong, which makes this the one place '
                 'where naming the refusal is the correct answer. Preference '
                 'reads are all-visible, so this station has already been told '
                 'the key exists — there is no existence left to conceal, and '
@@ -1792,6 +1799,100 @@ void main() {
                 'plant\'s tag map has already been re-pointed');
       });
     }
+
+    // -------------------------------------------------------------------
+    // Graded BY KEY: the table, thirty cells (D-03).
+    //
+    // Six sessions crossed with five keys, one per rule kind plus the
+    // default, each asserting the outcome of `setString` — allowed iff the
+    // session holds the group `kPrefAccessRules` answers for that key. The
+    // interesting cells are called out where they are:
+    //
+    //  * `key_mappings` refused for {operate} and allowed for
+    //    {operate, configure} is **D-03's behaviour change**, the one the
+    //    ruling accepted the deployment cost of.
+    //  * `theme_mode` allowed for {operate} is the loosening nobody should
+    //    read as one: a panel writing what a panel writes about itself.
+    //  * an unmatched key refused for {operate, configure} is the
+    //    `administer` default failing closed.
+    // -------------------------------------------------------------------
+    group('graded by key: six sessions, five keys', () {
+      final sessions = <String, Set<AccessGroup>>{
+        'nothing': const <AccessGroup>{},
+        'operate': const {AccessGroup.operate},
+        'operate+setpoints': const {AccessGroup.operate, AccessGroup.setpoints},
+        'operate+configure': const {AccessGroup.operate, AccessGroup.configure},
+        'operate+administer': const {
+          AccessGroup.operate,
+          AccessGroup.administer,
+        },
+        'all seven': AccessGroup.values.toSet(),
+      };
+
+      /// One row per key: the group the app's table answers, read off the
+      /// master policy rather than restated, so the expectation column cannot
+      /// drift from the table it is about.
+      const keys = <String>[
+        'key_mappings', // exact -> configure: D-03's key
+        'theme_mode', // exact -> operate: what a panel writes about itself
+        'collector_config', // exact -> administer
+        'svn.batch.recipes', // suffix -> setpoints: the one runtime-built key
+        'svn.uncharted.key', // unmatched -> the administer default
+      ];
+
+      for (final session in sessions.entries) {
+        for (final key in keys) {
+          final groups = session.value;
+          final required = const AccessPolicy().groupForPref(key);
+          final allowed = groups.contains(required);
+
+          test('{${session.key}} × $key → '
+              '${allowed ? 'allowed' : 'refused pre-effect'}', () async {
+            final seat = seenBy(stationHolding(groups));
+
+            if (allowed) {
+              await seat.served.preferences.setString(key, 'gildi');
+              expect(seat.store.writes, ['setString'],
+                  reason: 'the session holds ${required.name}, which is what '
+                      'the app\'s table answers for "$key", so the write '
+                      'must reach the store — the same table, the same '
+                      'answer, over the wire');
+            } else {
+              final refusal = await _refused(
+                  () => seat.served.preferences.setString(key, 'gildi'),
+                  'setString("$key") from {${session.key}}');
+              expect(refusal.code, ServerErrorCodes.forbidden,
+                  reason: '"$key" grades to ${required.name} in '
+                      'kPrefAccessRules and this session does not hold it');
+              expect(seat.store.writes, isEmpty,
+                  reason: 'pre-effect, every cell: "the write was refused" is '
+                      'cheap to assert and easy to satisfy by accident — the '
+                      'store must never have been touched');
+            }
+          });
+        }
+      }
+
+      test('the table is the app\'s, not a copy of it', () {
+        // The expectation column above is computed from the production
+        // `AccessPolicy`, so this arm is what keeps the six interesting
+        // answers from drifting: if any of these six moves in
+        // kPrefAccessRules, this fails here rather than thirty cells lying
+        // in unison.
+        const master = AccessPolicy();
+        expect(master.groupForPref('key_mappings'), AccessGroup.configure,
+            reason: 'D-03: key_mappings grades as configure everywhere, and '
+                'there is no per-key exception');
+        expect(master.groupForPref('theme_mode'), AccessGroup.operate);
+        expect(master.groupForPref('collector_config'), AccessGroup.administer);
+        expect(master.groupForPref('svn.batch.recipes'), AccessGroup.setpoints,
+            reason: 'the one suffix rule: a recipes bucket is built at '
+                'runtime, so only the tail is knowable');
+        expect(
+            master.groupForPref('svn.uncharted.key'), AccessGroup.administer,
+            reason: 'anything unmatched fails closed to administer');
+      });
+    });
 
     test('a session with no identity may not write either', () async {
       final anonymous = seenBy(null);
@@ -1907,17 +2008,20 @@ void main() {
     // — and it takes the allow-listed form, which is the form that still
     // works.
     // -------------------------------------------------------------------
-    test('an unrestricted clear is refused, for an operate station too',
+    test('an unrestricted clear is refused, for a session holding everything',
         () async {
-      final panel = seenBy(_panel);
+      // The volume control is not a permission and must not be graded away:
+      // this station holds every group the master system has, and the
+      // unbounded shape of the call is still refused (10-REVIEW CR-02).
+      final panel = seenBy(_engineer);
 
       final refusal = await _refused(() => panel.served.preferences.clear(),
-          'a clear with no allow list from a station that may write');
+          'a clear with no allow list from a station holding every group');
 
       expect(refusal.code, ServerErrorCodes.forbidden,
-          reason: 'the role is not the problem — this station has `operate` '
-              'and every other mutator goes through. What is refused is the '
-              'unbounded shape of the call');
+          reason: 'the grading is not the problem — this station holds every '
+              'group and every other mutator goes through. What is refused is '
+              'the unbounded shape of the call');
       expect(refusal.message, contains('key_mappings'),
           reason: 'the refusal has to say what would have been destroyed. '
               '"Forbidden" alone sends an engineer looking for a permission '
@@ -1937,8 +2041,10 @@ void main() {
         () async {
       // The anti-vacuity companion for the arm above: a decorator that refused
       // every clear would satisfy it and would also break every settings page
-      // that tidies up after itself.
-      final panel = seenBy(_panel);
+      // that tidies up after itself. The session holds the groups of every
+      // key in the list ('svn.site.name' is unmatched, so administer), which
+      // is what an allow-listed clear now takes.
+      final panel = seenBy(_engineer);
       await panel.store.setString('svn.site.name', 'Sæból');
       await panel.store.setString('key_mappings', '{"CN01":"x"}');
       panel.store.writes.clear();
@@ -1964,11 +2070,45 @@ void main() {
     });
   });
 
+  group('a refusal still says the call definitively had no effect', () {
+    // The safety wording is semantics, not prose: it is what stops a client
+    // retrying a refusal as though it were transient (T-17-07g). It must
+    // survive the gate's rewrite verbatim, on every refusing family.
+    void expectSafetyWording(rpc.RpcException refusal, String family) {
+      expect(refusal.message, contains('definitively had no effect'),
+          reason: 'the $family refusal no longer states that nothing '
+              'happened. A client that cannot tell "refused before any '
+              'effect" from "failed somewhere" has to treat the answer as '
+              'unknown, and an unknown on a setpoint is what makes an '
+              'operator press the button again');
+      expect(refusal.message, contains('Do not retry'),
+          reason: 'and it must say not to retry: a permission does not '
+              'appear on the next attempt, and a retry loop against a '
+              'refusal is load with no exit condition');
+    }
+
+    test('a refused preference write carries the wording', () async {
+      final display = seenByStation(_display);
+      final refusal = await _refused(
+          () => display.preferences.setString('key_mappings', '{}'),
+          'the wording probe on the preferences family');
+      expectSafetyWording(refusal, 'preferences');
+    });
+
+    test('a refused history-view delete carries the wording', () async {
+      final panel = seenByStation(_panel);
+      final refusal = await _refused(
+          () => panel.historyViews.deleteHistoryView(1),
+          'the wording probe on the history-view family');
+      expectSafetyWording(refusal, 'history-view');
+    });
+  });
+
   group('a hidden key is a key that does not exist', () {
     test('a hidden key is indistinguishable from a key that does not exist',
         () async {
       final gateway = await _Gateway.start(
-          policy: const _HidesTags({_hidden}),
+          policy: ScriptedPolicy.hiding(const {_hidden}),
           resolver: const _MapsTheRealTags());
       gateway.plant.setValue(_key, 1200);
       gateway.plant.setValue(_hidden, 900);
@@ -2058,7 +2198,7 @@ void main() {
     });
 
     test('a hidden key\'s write is not answered forbidden', () async {
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       gateway.plant.setValue(_hidden, 900);
       final station = await gateway.station();
 
@@ -2111,7 +2251,7 @@ void main() {
     });
 
     test('a hidden leaf is dropped from the level it belongs to', () async {
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       final station = await gateway.station();
 
       final ids = await _reachableNodeIds(station);
@@ -2133,7 +2273,7 @@ void main() {
       // that happens to answer for a folder id — this file's identity one
       // does — must not turn a policy entry into a pruned branch.
       final gateway =
-          await _Gateway.start(policy: const _HidesTags({_hiddenParent}));
+          await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hiddenParent}));
       final station = await gateway.station();
 
       final ids = await _reachableNodeIds(station);
@@ -2152,7 +2292,7 @@ void main() {
 
     test('a hidden node\'s detail answers exactly as a nonexistent one does',
         () async {
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       final station = await gateway.station();
 
       final forHidden = _asMap(await station.request(
@@ -2180,7 +2320,7 @@ void main() {
     });
 
     test('a path to a hidden node is null, not a truncated chain', () async {
-      final gateway = await _Gateway.start(policy: const _HidesTags({_hidden}));
+      final gateway = await _Gateway.start(policy: ScriptedPolicy.hiding(const {_hidden}));
       final station = await gateway.station();
 
       final chain = await station.request(

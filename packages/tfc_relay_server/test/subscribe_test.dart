@@ -457,7 +457,7 @@ void main() {
     expect(link.session.subscriptions.count, 0);
   });
 
-  test('the wire surface is exactly the forty-four methods declared today, '
+  test('the wire surface is exactly the seventy-two methods declared today, '
       'plus the one name a client announces', () async {
     final link = _link();
     addTearDown(link.dispose);
@@ -521,6 +521,11 @@ void main() {
       DataServiceMethods.prefSetStringList,
       DataServiceMethods.prefRemove,
       DataServiceMethods.prefClear,
+      // Phase 17 plan 09, the access twenty-eight. Iterated from the
+      // declared set here — this ledger already spells every family through
+      // its constants, and `surface_test.dart` holds the canonical bare
+      // strings a rename must break against.
+      ...AccessMethods.all,
       // 05-05. Not a forty-fourth callable name: `h` is a client→server
       // notification, dispatched through the same table because that is how
       // json_rpc_2 routes a frame with no id. `surface_test.dart` keeps the
@@ -531,8 +536,9 @@ void main() {
         'nobody counted. 03-08 freezes this set, 04-02 added the five value '
         'methods to it, 10-02 the four browse ones, 10-03 the four timeseries '
         'ones, 10-04 the eleven history-view ones and 10-05 the preferences '
-        'fifteen that closed it, and 14-12 the acknowledge that reopened it '
-        'for exactly one name. This is the third file '
+        'fifteen that closed it, 14-12 the acknowledge that reopened it '
+        'for exactly one name, and 17-09 the access twenty-eight. This is the '
+        'third file '
         'spelling the table out — '
         '`surface_test.dart` holds the canonical literal, and the fact that '
         'three copies had to be edited in lockstep is itself worth the note');

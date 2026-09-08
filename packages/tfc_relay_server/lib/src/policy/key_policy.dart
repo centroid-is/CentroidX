@@ -3,16 +3,26 @@
 /// **Source: 06-CONTEXT decision 2**, which records the user's framing as the
 /// reason this file exists at all: *"What if it should be hidden. Let's think
 /// about the future even though we don't implement all at once."* So the seam
-/// ships now and the policy data does not. This phase's shipped rule is
-/// [AllVisibleOperatorWrites] — everything visible, `operate` may write — and
-/// per-key hiding later becomes patterns in the token file rather than new
-/// plumbing, because every enforcement point already exists and is tested.
+/// ships now and the hiding data does not. The shipped implementation is
+/// [AccessPolicyKeyPolicy] — everything visible, and every write question
+/// forwarded to `AccessPolicy`.
+///
+/// ## This file is an adapter. It states no rule.
+///
+/// Phase 17's constitution, from the user: *"I dont want duplication, and I
+/// would like that there would be one master access control system, the
+/// websocket can build on top of that"*. The rule "a tag write needs `operate`"
+/// is therefore **not written here**. It is written once, in
+/// `AccessPolicy.groupForTag`'s operate floor, and this file asks. What used to
+/// be here — a comparison of the identity's role against one value of a
+/// two-valued enum this package declared itself — was the second copy, and it
+/// disagreed with the first in both directions (17-CONTEXT D-03, D-04).
 ///
 /// ## What breaks in the plant without this file
 ///
-/// A wall display in the canteen can start a conveyor. `view` and `operate`
-/// are two words in a token file with nothing behind them until something
-/// compares them, and this interface is that comparison's only home
+/// A wall display in the canteen can start a conveyor. A station is a username
+/// in a token file with nothing behind it until the database says who that is
+/// and what its role may do, and this interface is where the wire asks
 /// (T-06-35).
 ///
 /// The quieter half is [canSee]. A gateway that answers *forbidden* for a tag
@@ -25,7 +35,7 @@
 /// is no "you may not see this" answer on the wire, only "this source does not
 /// serve that tag".
 ///
-/// ## Both members are synchronous, and that is a decision
+/// ## All three members are synchronous, and that is a decision
 ///
 /// `session_handlers.dart:255-264` catches a `SubscriptionLimitExceeded` for a
 /// race that is unreachable today — there is no `await` between the
@@ -37,13 +47,14 @@
 /// retrying is legitimate", so a panel would retry a limit it can never get
 /// under.
 ///
-/// There is nothing here to await. The shipped policy is a constant and a role
-/// comparison, and the token file the role came from is already in memory
-/// (`file_token_validator.dart`). A future policy that genuinely needs a
-/// directory lookup should cache into memory on reload — the way the token set
-/// does — rather than make this interface asynchronous. `policy_test.dart`
-/// pins the return types by mirrors so the change cannot be made absent-
-/// mindedly.
+/// There is nothing here to await. Every question is a switch over constants
+/// plus a set membership test, and the group set the identity is carrying was
+/// resolved once, at `hello`, from a user cache the same reload refreshes the
+/// token set from (`file_token_validator.dart`'s `UserResolver`). A future
+/// policy that genuinely needs a directory lookup should cache into memory on
+/// reload — the way the token set does — rather than make this interface
+/// asynchronous. `key_policy_test.dart` pins the return types of all three
+/// members by mirrors so the change cannot be made absent-mindedly.
 ///
 /// ## The open case: a key hidden *after* subscribe
 ///
@@ -51,8 +62,9 @@
 /// be standing. CONTEXT asks what happens to the `u` and resync frames of a
 /// live subscription whose key becomes hidden. **In Phase 6 that state is
 /// unreachable**, and it is unreachable structurally rather than by luck:
-/// policy is static per session (the [Identity] is minted once, in `_hello`,
-/// and `relay_session.dart` assigns it with `??=` so it cannot be replaced),
+/// policy is static per session (the [StationIdentity] is minted once, in
+/// `_hello`, and `relay_session.dart` assigns it with `??=` so it cannot be
+/// replaced),
 /// and the only thing that changes a live session's authorization is
 /// revocation — which does not re-evaluate anything, it closes the session
 /// with `CloseCodes.authExpired`. There is no live re-evaluation path, and the
@@ -68,7 +80,20 @@
 /// panel's cache backwards.
 library;
 
+import 'package:tfc_access/tfc_access.dart';
+
 import '../auth/identity.dart';
+
+/// Whether a station may know a key exists.
+///
+/// The seam this file exists for, extracted so [AccessPolicyKeyPolicy] can hold
+/// it without pretending to be the thing that decides. The default answers
+/// true for everything, which is the shipped behaviour: there is no hiding data
+/// in the tree, and a seam that hid a tag nobody had configured would be policy
+/// invented by the plumbing.
+typedef KeyVisibility = bool Function(String key, StationIdentity identity);
+
+bool _everythingIsVisible(String key, StationIdentity identity) => true;
 
 /// The one question every key-touching surface asks about a station.
 ///
@@ -96,7 +121,7 @@ abstract interface class KeyPolicy {
   /// nonexistent-tag path on every one of them without any of them being
   /// edited (06-RESEARCH §E.2). Answering "forbidden" instead is the
   /// information disclosure the hiding rule exists to prevent.
-  bool canSee(String key, Identity identity);
+  bool canSee(String key, StationIdentity identity);
 
   /// Whether [identity] may actuate [key].
   ///
@@ -114,32 +139,102 @@ abstract interface class KeyPolicy {
   /// setpoint but not jog a machine by hand; it is deliberately not built,
   /// because a member with no policy data behind it is a name pretending to be
   /// a rule.
-  bool canWrite(String key, Identity identity);
+  ///
+  /// **[canWritePreference] is not that mistake, and the difference is the
+  /// data.** A hypothetical `canHold` would have had none. This one has
+  /// `kPrefAccessRules` behind it the day it lands — thirty-four rules the app
+  /// has been enforcing since Phase 3.
+  bool canWrite(String key, StationIdentity identity);
+
+  /// Whether [identity] may write the **preference** [key].
+  ///
+  /// The third member, and what sweep §3.12 point 1 said closing would need.
+  /// Before it, every `preferences.set*` frame asked the same single question
+  /// this interface's [canWrite] asked about a motor setpoint — so a station
+  /// the gateway called `operate` could `setString('key_mappings', …)` over the
+  /// pipe and re-point the plant's tag map for every panel on the site, while
+  /// an operator standing at a panel holding the same grade could not. Same
+  /// rows, same table, same Postgres, two answers.
+  ///
+  /// **Graded by key, from the app's own table.** D-03, ruled 2026-09-07: the
+  /// app's `kPrefAccessRules` wins everywhere and there is no per-key
+  /// exception. Keeping `key_mappings` at the tag floor was put to the user
+  /// with its cost and declined, precisely because it would have kept the
+  /// divergence alive in the one place it bites most often. The accepted cost
+  /// is that a station whose role holds only the write floor can no longer save
+  /// key mappings over the WebSocket; engineering panels are provisioned with a
+  /// role that carries the higher grade.
+  ///
+  /// Separate from [canWrite] rather than folded into it because the two
+  /// surfaces genuinely grade differently — the same string is one group as a
+  /// tag and another as a preference key — and because the surface name is what
+  /// travels into the audit row beside the answer.
+  bool canWritePreference(String key, StationIdentity identity);
 }
 
-/// Everything is visible; an `operate` station may write. **The shipped
-/// policy.**
+/// Everything is visible; every write question is forwarded to [AccessPolicy].
+/// **The shipped policy.**
 ///
 /// Named for what it does rather than for what it lacks, which is
-/// `PermissiveTokenValidator`'s argument (`token_validator.dart:70-73`) and
-/// holds for the same reason: a deployment still running this in Phase 12 must
-/// be legible in a config diff. `NoPolicy` or `DefaultPolicy` would read as
-/// something somebody chose.
+/// `PermissiveTokenValidator`'s argument and holds for the same reason: a
+/// deployment still running this in Phase 12 must be legible in a config diff.
+/// `NoPolicy` or `DefaultPolicy` would read as something somebody chose.
 ///
-/// Both answers are honest rather than generous. Everything *is* visible —
-/// there is no policy data in this phase to hide anything with, and a seam
-/// that hid a tag nobody configured would be policy invented by the plumbing.
-/// And `operate` really is the write rule: it is the whole of CONTEXT decision
-/// 2's shipped clause, and it is also what keeps every fixture in this
-/// workspace writing, because `PermissiveTokenValidator` grants `operate` for
-/// exactly that reason (`token_validator.dart:85-94`).
-final class AllVisibleOperatorWrites implements KeyPolicy {
-  const AllVisibleOperatorWrites();
+/// **The rule "a tag write needs `operate`" is not stated here.** It is stated
+/// once, in `AccessPolicy.groupForTag`'s operate floor, and this class asks.
+/// That sentence is the whole point of Phase 17 and the reason this class
+/// replaced `AllVisibleOperatorWrites`, whose `canWrite` compared the
+/// identity's role against one value of a two-valued enum — a second copy of
+/// the rule, in a role vocabulary the master system did not share, which
+/// disagreed with the app in both directions.
+///
+/// Both answers stay honest rather than generous. Everything *is* visible —
+/// there is no hiding data in the tree, and [visibility] defaults to saying so
+/// rather than inventing a rule the plumbing would then own. And the write
+/// answers are whatever the master policy says, which is the strongest form of
+/// "no opinion" this class can have.
+final class AccessPolicyKeyPolicy implements KeyPolicy {
+  /// [policy] defaults to a bare [AccessPolicy]: no tag bindings, no route
+  /// table. That is the shipped answer for the relay today — 17-11 injects the
+  /// composed one — and it is not a fail-open, because `groupForTag` floors at
+  /// `AccessGroup.operate` for an unbound key by the 2026-09-02 ruling.
+  const AccessPolicyKeyPolicy({
+    AccessPolicy policy = const AccessPolicy(),
+    KeyVisibility visibility = _everythingIsVisible,
+  })  : _policy = policy,
+        _visibility = visibility;
 
-  @override
-  bool canSee(String key, Identity identity) => true;
+  final AccessPolicy _policy;
+  final KeyVisibility _visibility;
 
+  /// True for every key under the shipped configuration.
+  ///
+  /// Written as a call into an injected lookup rather than as `=> true` so the
+  /// seam this file exists for is still a seam — `key_policy_test.dart` drives
+  /// a hiding lookup through it, which is the only way "the member is
+  /// consulted" can be a claim that fails.
   @override
-  bool canWrite(String key, Identity identity) =>
-      identity.role == Role.operate;
+  bool canSee(String key, StationIdentity identity) =>
+      _visibility(key, identity);
+
+  /// Asks the master policy what writing this tag requires, then asks the
+  /// session whether it holds that.
+  ///
+  /// [AccessSurface.tag]'s wire name rather than the literal `'tag'`, because
+  /// it is the same string a `PolicyStateMan` audit row records in its
+  /// `surface` column: the group that was checked and the surface that was
+  /// recorded cannot disagree if there is only one place the name comes from.
+  @override
+  bool canWrite(String key, StationIdentity identity) => identity.session
+      .can(_policy.groupForWireSurface(AccessSurface.tag.wireName, key));
+
+  /// Asks the master policy what writing this preference key requires.
+  ///
+  /// `groupForPref` rather than `groupForWireSurface` with the `pref` name: the
+  /// two are the same answer (the wire switch delegates), and naming the
+  /// specific member here says that this surface has no open operation to
+  /// collapse. See [KeyPolicy.canWritePreference] for the ruling.
+  @override
+  bool canWritePreference(String key, StationIdentity identity) =>
+      identity.session.can(_policy.groupForPref(key));
 }

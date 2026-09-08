@@ -65,6 +65,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_relay_server/src/auth/identity.dart';
 import 'package:tfc_relay_server/src/relay_session.dart';
@@ -96,10 +97,27 @@ final class _TwoStations implements TokenValidator {
   static const String stationOneToken = 'ST101-TOKEN-8f3b1d64ac0e529716b4d8fa';
   static const String stationTwoToken = 'ST201-TOKEN-4d2a9e71bc0f38562a7c15eb';
 
-  static const Identity stationOne =
-      Identity(stationId: 'ST101', role: Role.operate);
-  static const Identity stationTwo =
-      Identity(stationId: 'ST201', role: Role.operate);
+  // StationIdentity fixtures on the user model (17-04b): the resolver-
+  // verified account row, the station, and the session its role resolved
+  // to. What the arms assert about them — value equality against the field
+  // the winning hello set — is unchanged.
+  static const AuthenticatedUser _userOne = AuthenticatedUser(
+      username: 'ST101-panel',
+      roleName: 'Panel Operator',
+      stationAccount: true);
+  static const AuthenticatedUser _userTwo = AuthenticatedUser(
+      username: 'ST201-panel',
+      roleName: 'Panel Operator',
+      stationAccount: true);
+
+  static const StationIdentity stationOne = StationIdentity(
+      user: _userOne,
+      station: 'ST101',
+      session: AccessSession(user: _userOne, groups: {AccessGroup.operate}));
+  static const StationIdentity stationTwo = StationIdentity(
+      user: _userTwo,
+      station: 'ST201',
+      session: AccessSession(user: _userTwo, groups: {AccessGroup.operate}));
 
   /// Stand-in digests, and deliberately **not** derived from the tokens.
   ///

@@ -88,7 +88,11 @@ void main() {
   RelayServer buildServer({
     required FakeStateMan plant,
     TlsConfig? tls,
-    KeyPolicy policy = const AllVisibleOperatorWrites(),
+    // `AccessPolicyKeyPolicy` since 17-07 deleted `AllVisibleOperatorWrites`:
+    // the shipped adapter, everything visible, writes graded by the master
+    // policy — which under the permissive validator's full group set answers
+    // exactly as the old default did for every case in this file.
+    KeyPolicy policy = const AccessPolicyKeyPolicy(),
     // **Named rather than defaulted since 16-08.** The `link_degraded` case
     // below needs *a* soft ceiling to push one session over, and it used to
     // borrow `ServerConfig`'s default. That default is now null
@@ -466,12 +470,21 @@ int _handleOf(Plant plant, String key) =>
     plant.handles.handlesFor([key]).values.single;
 
 /// A policy that hides exactly one health key, and nothing else.
+///
+/// `StationIdentity` since 17-04b deleted `Identity`; the judgement — hide
+/// egress, permit nothing — is unchanged. `canWritePreference` answers as
+/// `canWrite` does, because a policy this closed has no reason to grade the
+/// two surfaces apart.
 final class _HidesEgress implements KeyPolicy {
   const _HidesEgress();
 
   @override
-  bool canSee(String key, Identity identity) => key != PipeKeys.egressKbps;
+  bool canSee(String key, StationIdentity identity) =>
+      key != PipeKeys.egressKbps;
 
   @override
-  bool canWrite(String key, Identity identity) => false;
+  bool canWrite(String key, StationIdentity identity) => false;
+
+  @override
+  bool canWritePreference(String key, StationIdentity identity) => false;
 }

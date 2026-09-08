@@ -74,10 +74,12 @@
 library;
 
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import '../auth/identity.dart';
 import '../error_codes.dart';
+import '../error_reporter.dart';
 import 'key_policy.dart';
 import 'series_mapping_tally.dart';
 
@@ -94,48 +96,200 @@ import 'series_mapping_tally.dart';
 /// covered by the existing assertions instead of silently outside them.
 const Set<String> reservedPreferenceKeys = <String>{'key_mappings'};
 
-/// The `operate` gate, shared by the two sub-APIs that **refuse** rather than
-/// hide.
+/// Where every authorization verdict this file makes becomes a row.
 ///
-/// Two of the four decorators in this file gate on identity — preferences since
-/// 10-05, history views since 10-REVIEW CR-03 — and the predicate is one rule,
-/// not two copies of it. Factored here rather than copied a third time on the
-/// review's instruction: the copy was already twice in this file, and the way a
-/// permission hole gets in is one of the copies not being updated.
+/// D-05, and sweep §3.12 point 2 closing: a refusal at the gateway used to be
+/// "the one kind of guard nobody can audit afterwards" — it left nothing
+/// behind. Now a verdict writes an [AuditRecord] naming the station's
+/// **resolver-verified** user (17-04b: the `who`, the `station` and the
+/// `roleName` are what the server read out of the database after the digest
+/// compare, never what a file claimed) and the group the master policy
+/// answered.
+///
+/// ## The sink is fire-and-forget, and the `catchError` is not optional
+///
+/// The row is handed to the sink and **never awaited on the write path**, and
+/// a failure lands on an attached handler rather than propagating — quoting
+/// `lib/providers/access.dart`'s rule, which must hold identically here: *a
+/// plant that stops because the audit database blinked is worse than a gap in
+/// the trail*. `unawaited()` attaches no handler, so spelling this with
+/// `unawaited(sink.record(row))` would convert a sink outage into an
+/// isolate-killing unhandled error that detonates long after the write
+/// already applied. The failure is logged loudly through [onError] instead,
+/// because an absent audit row is the one defect nobody ever notices.
+final class _DecisionLedger {
+  const _DecisionLedger({
+    required this.sink,
+    required this.origin,
+    required this.station,
+    required this.onError,
+  });
+
+  final AuditSink sink;
+
+  /// The `origin` column: `'relay'`, the value that says a row came over the
+  /// wire rather than from a keyboard. A client cannot supply it — there is
+  /// no wire field it could travel in (ACCESS-06, D-11).
+  final String origin;
+
+  /// The `station` column's fallback for a verdict made with no identity —
+  /// a pre-hello session, unreachable from the wire today but fail-closed
+  /// here rather than crashed on.
+  final String station;
+
+  /// Where a sink failure is reported. The package's one logging seam.
+  final RelayErrorHandler onError;
+
+  void record({
+    required StationIdentity? identity,
+    required String surface,
+    required String itemKey,
+    String? member,
+    required AccessGroup group,
+    required bool allowed,
+    required String actionId,
+  }) {
+    final row = AuditRecord(
+      at: DateTime.now(),
+      who: identity?.user.username ?? 'anonymous',
+      station: identity?.station ?? station,
+      roleName: identity?.session.roleName ?? '',
+      surface: surface,
+      itemKey: itemKey,
+      member: member,
+      groupRequired: group.name,
+      allowed: allowed,
+      origin: origin,
+      actionId: actionId,
+    );
+    try {
+      // Fire-and-forget: the write path never waits for durability. The
+      // handler is attached HERE, not via unawaited() — see the class doc.
+      // ignore: unawaited_futures
+      sink.record(row).catchError((Object error, StackTrace stack) {
+        onError(error, stack, 'audit sink');
+      });
+    } on Object catch (error, stack) {
+      // A sink that throws synchronously is the same outage one microtask
+      // earlier, and gets the same answer: log it, change nothing.
+      onError(error, stack, 'audit sink');
+    }
+  }
+}
+
+/// The group gate, shared by every sub-API that **refuses** rather than hides.
+///
+/// What replaced `requireOperate` — one question ("may this station
+/// actuate?") asked seven times on preferences and four times on history
+/// views, with the same answer every time. That shape was sweep §3.12's
+/// finding: the relay graded by station role over the same rows in the same
+/// `flutter_preferences` table in the same Postgres the app grades by key.
+/// [_requireGroup] takes the group the policy supplies for *that* key and
+/// *that* member; this mixin never knows a group's name, and the pin in
+/// `policy_test.dart` keeps it that way.
 ///
 /// **Gating, not hiding.** Everywhere else in this file a refusal that names
-/// what it refused is the leak being closed. These two invert it, and for the
-/// same reason in both: their reads are all-visible, so the caller has already
-/// been told the thing exists and there is no existence left to conceal. The
-/// two facts a client acts on differently are "fix the name" (`unknownKey`)
-/// and "obtain the permission" (`forbidden`), and these are the second.
-mixin _OperateGate {
+/// what it refused is the leak being closed. The refusing families invert it,
+/// for the same reason in all of them: their reads are all-visible, so the
+/// caller has already been told the thing exists and there is no existence
+/// left to conceal. The two facts a client acts on differently are "fix the
+/// name" (`unknownKey`) and "obtain the permission" (`forbidden`), and these
+/// are the second.
+mixin _GroupGate {
   /// Who is asking, read **late** — the identity is minted by `_hello`, long
   /// after this object is built.
-  Identity? Function() get identityOf;
+  StationIdentity? Function() get identityOf;
 
-  /// Refuses [method] unless the asking station may actuate.
+  /// Where this family's verdicts become rows.
+  _DecisionLedger get ledger;
+
+  /// The `surface` column this family's rows carry — an [AccessSurface] wire
+  /// name, so the surface a row is recorded under and the surface the policy
+  /// is asked about are one string.
+  String get gateSurface;
+
+  /// Refuses [method] unless the asking station holds [group] — writing the
+  /// deny row **before** the throw, because a refusal that leaves no trace is
+  /// the one kind of guard nobody can audit afterwards.
   ///
-  /// [what] states what did *not* happen, in the caller's own vocabulary; it is
-  /// what turns a refusal into something an operator can act on.
+  /// A **null [group] means open and returns immediately**: the same open
+  /// answer the policy states (today, `groupForHistoryView`'s three creative
+  /// members), now spoken by the policy instead of by the absence of a call.
+  /// No row for an open member — nothing was decided.
+  ///
+  /// [may] overrides the holding check where the verdict has its own seam:
+  /// the preferences door hands `KeyPolicy.canWritePreference` here, so the
+  /// question still goes through the adapter every other key question goes
+  /// through, while [group] — the master's answer for the row — is what a
+  /// refusal names.
+  ///
+  /// [what] states what did *not* happen, in the caller's own vocabulary; it
+  /// is what turns a refusal into something an operator can act on.
   ///
   /// Null identity is refused too, by the same `identity != null` rule
-  /// [PolicyStateMan.canSee] and [PolicyStateMan.canWrite] answer by: a session
-  /// between `serve` and `hello` has no station for the policy to answer about,
-  /// and null means "nothing", not "everything". The state is unreachable from
-  /// the wire — the handshake gate refuses every method before `hello` — but
-  /// that is a property of today's gate rather than of this mixin.
-  void requireOperate(String method, String what) {
+  /// [PolicyStateMan.canSee] and [PolicyStateMan.canWrite] answer by: a
+  /// session between `serve` and `hello` has no station for the policy to
+  /// answer about, and null means "nothing", not "everything". The state is
+  /// unreachable from the wire — the handshake gate refuses every method
+  /// before `hello` — but that is a property of today's gate rather than of
+  /// this mixin.
+  void _requireGroup(
+    AccessGroup? group,
+    String method,
+    String what, {
+    required String itemKey,
+    String? member,
+    bool Function(StationIdentity identity)? may,
+  }) {
+    if (group == null) return;
     final identity = identityOf();
-    if (identity != null && identity.role == Role.operate) return;
+    final can = may ?? ((StationIdentity id) => id.session.can(group));
+    if (identity != null && can(identity)) return;
+    // Deny-row-before-throw (D-05): the row is the only thing a refused
+    // frame leaves behind, and it must exist even if the throw is the last
+    // thing this handler does.
+    ledger.record(
+        identity: identity,
+        surface: gateSurface,
+        itemKey: itemKey,
+        member: member,
+        group: group,
+        allowed: false,
+        actionId: method);
     throw rpc.RpcException(
         ServerErrorCodes.forbidden,
-        'this station may read but may not write, so "$method" was refused. '
+        'a permission is missing, so "$method" was refused. '
         '$what: nothing was changed, so this call definitively had no effect. '
         'Do not retry — the session is fine and reading continues; what is '
-        'missing is a permission, and permissions change in the gateway\'s '
-        'token file rather than on the next attempt',
+        'missing is the "${group.name}" permission, and permissions change '
+        'on this station\'s account in the access database rather than on '
+        'the next attempt',
         data: substitutedRequest(method));
+  }
+
+  /// The allow row, recorded **after the delegation** has been initiated —
+  /// the verdict was made either way, and the ordering keeps the row from
+  /// ever standing in front of the write it describes.
+  ///
+  /// Only the write-shaped members call this. Reads record nothing on the
+  /// allow path — a guard that wrote a row every time somebody read would
+  /// bury the trail in itself, which is the defect `audit_trail_store.dart`
+  /// refuses by design.
+  void _recordAllowed(
+    AccessGroup? group,
+    String method, {
+    required String itemKey,
+    String? member,
+  }) {
+    if (group == null) return;
+    ledger.record(
+        identity: identityOf(),
+        surface: gateSurface,
+        itemKey: itemKey,
+        member: member,
+        group: group,
+        allowed: true,
+        actionId: method);
   }
 }
 
@@ -176,6 +330,11 @@ final class PolicyStateMan implements StateManApi {
     required this.resolver,
     required this.tally,
     required this.identityOf,
+    this.master = const AccessPolicy(),
+    this.sink = const NullAuditSink(),
+    this.station = '',
+    this.origin = 'relay',
+    this.onAuditError = reportToStderr,
   });
 
   /// The shared source every session on this gateway is served from.
@@ -191,6 +350,42 @@ final class PolicyStateMan implements StateManApi {
   final StateManApi source;
 
   final KeyPolicy policy;
+
+  /// The master system's own policy object, asked for the **group** a key or
+  /// a member requires — `groupForPref`, `groupForHistoryView`,
+  /// `groupForTemplate`, `groupForAdmin`, `groupForBackendConfig`.
+  ///
+  /// Beside [policy] rather than instead of it, and the split is deliberate:
+  /// [policy] is the adapter seam every yes/no question goes through (a test
+  /// scripts it; 17-11 injects a composed one), while [master] is where the
+  /// *name* of a requirement comes from — the group a refusal states and an
+  /// audit row's `groupRequired` column records. Under the shipped
+  /// composition the two agree by construction: `AccessPolicyKeyPolicy` asks
+  /// this same object. The default is the bare policy, which is not a
+  /// fail-open — every surface it grades floors at a real group.
+  final AccessPolicy master;
+
+  /// Where this session's authorization verdicts become rows (D-05).
+  ///
+  /// [NullAuditSink] by default, so every existing composition in the
+  /// workspace is unaffected: the trail is an account of decisions, never a
+  /// precondition for making them. `RelayServer` grows the parameter in
+  /// 17-09 and injects the real sink.
+  final AuditSink sink;
+
+  /// The `station` column's fallback for a verdict made before `hello`.
+  final String station;
+
+  /// The `origin` column: `'relay'` in production — the value that says a
+  /// row came over the wire rather than from a keyboard.
+  final String origin;
+
+  /// Where a sink failure is logged. Loudly, and never propagated — see
+  /// [_DecisionLedger].
+  final RelayErrorHandler onAuditError;
+
+  late final _DecisionLedger _ledger = _DecisionLedger(
+      sink: sink, origin: origin, station: station, onError: onAuditError);
 
   /// How a node id and a table name become the plant key [canSee] is asked
   /// about.
@@ -235,7 +430,7 @@ final class PolicyStateMan implements StateManApi {
   /// showed the plant to a peer it could not name would be the failure worth
   /// preventing; a session that saw nothing before saying hello is one it
   /// could not have used anyway.
-  final Identity? Function() identityOf;
+  final StationIdentity? Function() identityOf;
 
   /// Whether the asking station may know [key] exists.
   ///
@@ -327,59 +522,52 @@ final class PolicyStateMan implements StateManApi {
       _PolicyTimeseries(source.timeseries, resolver, canSee, tally);
 
   @override
-  HistoryViewApi get historyViews =>
-      _PolicyHistoryViews(source.historyViews, canSee, identityOf);
+  HistoryViewApi get historyViews => _PolicyHistoryViews(
+      source.historyViews, canSee, identityOf, _ledger,
+      groupForMember: master.groupForHistoryView);
 
   @override
-  PreferencesApi get preferences =>
-      _PolicyPreferences(source.preferences, identityOf);
+  PreferencesApi get preferences => _PolicyPreferences(
+      source.preferences, identityOf, _ledger,
+      groupForKey: master.groupForPref,
+      mayWrite: policy.canWritePreference);
 
   // ------------------------------------------------------- the access families
   //
-  // The four getters 17-03 added, and the only four members of this class that
-  // do not delegate. That is the whole decision, so it is stated here rather
-  // than left to be inferred from four `throw`s.
-
-  /// The one shape every access refusal on this class takes.
-  ///
-  /// **Not a delegation, and this is the point.** Every other member here
-  /// forwards to [source] with a filter or a gate in front of it. There is no
-  /// gate for these four yet — 17-07 writes `_requireGroup` and the four
-  /// decorators behind it — and a getter that forwarded meanwhile would put
-  /// twenty-nine administration methods on the wire with nothing between them
-  /// and the store. `canSee`-as-absence and `requireOperate` are this file's
-  /// two existing shapes for "no"; a family that has neither yet gets this
-  /// third one, which is the fail-closed direction.
-  ///
-  /// **An [UnsupportedError] and deliberately not an `RpcException` with
-  /// [ServerErrorCodes.forbidden].** A `forbidden` is an *authorisation
-  /// verdict* — it says the caller's role does not allow this — and under D-05
-  /// every verdict writes an audit row naming a station and a role. That row
-  /// would be false: nothing has been decided about the caller here, and what
-  /// is absent is the gate itself. A false deny row is worse than a missing
-  /// one, because it is the kind a reviewer believes. `UnsupportedError` says
-  /// the composition is incomplete, which is the fact, and
-  /// `data_handlers.dart:216` already treats it as the survivable case.
-  Never _noAccessGate(String member) =>
-      throw UnsupportedError('PolicyStateMan.$member is not available: this '
-          'gateway has no access gate for the $member family, so the '
-          'decorator refuses rather than passing an ungated administration '
-          'surface through to its source. Plan 17-07 wires the group check '
-          '(AccessPolicy.groupForTemplate / groupForAdmin / '
-          'groupForBackendConfig) and replaces this. Not an authorisation '
-          'verdict: nothing was decided about the caller.');
+  // The four getters 17-03 added, gated as of this plan. Until now they threw
+  // `UnsupportedError` — deliberately not a `forbidden`, because a `forbidden`
+  // is an authorisation verdict and under D-05 every verdict writes an audit
+  // row; with no gate yet, that row would have been FALSE, and a false deny
+  // row is worse than a missing one because it is the kind a reviewer
+  // believes. The gates exist now, so the verdicts are real and the rows are
+  // true.
+  //
+  // Each decorator takes its source as a **thunk**, not a value, and the
+  // thunk is evaluated only after the gate has passed. Two properties ride on
+  // that: a refused caller may not cost a lookup (readFresh's side-channel
+  // argument, §E.2 item 2), and on a composition whose source is unwired —
+  // `FakeStateMan` still refuses these getters by name — the refusal a
+  // wrongly-grouped caller gets is the VERDICT, never an `UnsupportedError`
+  // standing in for one.
 
   @override
-  AccessTemplateApi get accessTemplates => _noAccessGate('accessTemplates');
+  AccessTemplateApi get accessTemplates => _PolicyAccessTemplates(
+      () => source.accessTemplates, identityOf, _ledger,
+      groupFor: master.groupForTemplate);
 
   @override
-  AccessAdminApi get accessAdmin => _noAccessGate('accessAdmin');
+  AccessAdminApi get accessAdmin => _PolicyAccessAdmin(
+      () => source.accessAdmin, identityOf, _ledger,
+      groupFor: master.groupForAdmin);
 
   @override
-  AuditApi get audit => _noAccessGate('audit');
+  AuditApi get audit => _PolicyAudit(() => source.audit, identityOf, _ledger,
+      groupFor: master.groupForAdmin);
 
   @override
-  BackendConfigApi get backendConfig => _noAccessGate('backendConfig');
+  BackendConfigApi get backendConfig => _PolicyBackendConfig(
+      () => source.backendConfig, identityOf, _ledger,
+      groupFor: master.groupForBackendConfig);
 
   /// Delegates, and owns nothing of its own to release.
   ///
@@ -718,28 +906,39 @@ final class _PolicyTimeseries implements TimeseriesApi {
 /// [getHistoryViewKeys] and [getHistoryViewKeyNames], which are the two
 /// methods that do filter.
 ///
-/// ## And since 10-REVIEW CR-03 it also **gates**
+/// ## And since 10-REVIEW CR-03 it also **gates** — per member, as of 17-07
 ///
-/// The three rules above are about hiding, and hiding was all this class did:
-/// it filtered keys out of views and consulted no identity at all, so a
-/// `view`-role wall display could delete every saved chart in the plant while
-/// being refused a theme setting by the file's other decorator. The four
-/// destructive members — [updateHistoryView], [deleteHistoryView],
-/// [addHistoryViewPeriod], [deleteHistoryViewPeriod] — now take
-/// [_OperateGate.requireOperate], the same predicate and the same pre-effect
-/// discipline `_PolicyPreferences` uses. [createHistoryView] does not, and
-/// [deleteHistoryView] carries the argument for why the line is drawn there.
+/// The three rules above are about hiding, and hiding was all this class did
+/// until the review. CR-03 then put one gate — "the role a setpoint takes" —
+/// on the four destructive members, and that was the relay grading by station
+/// role over rows the panel grades by member: sweep §3.12, the seam between
+/// two guards answering differently about one table. There is now one answer.
+/// Every member asks [_groupForMember] — `AccessPolicy.groupForHistoryView`,
+/// the same switch `guarded_history_views.dart` consults — and the split is
+/// the app's, in **both** directions (D-04, ruled 2026-09-07): the two
+/// deletes take `configure` (a tightening over the wire), and the three
+/// creative members are **open**.
+///
+/// [createHistoryView] asks too, and its group is null today. That is not a
+/// loosening: it is the same open answer it always had, now stated by the
+/// policy instead of by the absence of a call — so changing
+/// `guarded_history_views.dart`'s `kHistoryViewWriteGroup` from null to
+/// `configure` would gate the wire in the same edit, which is the property
+/// this phase was after.
 ///
 /// Written as explicit member-by-member delegation like everything else in
 /// this file — **never `noSuchMethod`**: a forwarder would absorb an interface
 /// member added later and serve it unfiltered *and* ungated, which is now two
 /// jobs it would be skipping rather than one.
 ///
-/// Under the shipped [AllVisibleOperatorWrites] and the shipped
-/// `PermissiveTokenValidator` this whole class is a no-op, which is why the two
-/// history-view contract checks are unchanged by it.
-final class _PolicyHistoryViews with _OperateGate implements HistoryViewApi {
-  const _PolicyHistoryViews(this._source, this._canSee, this.identityOf);
+/// Under the shipped [AccessPolicyKeyPolicy] and a `PermissiveTokenValidator`
+/// session — which holds every group — the gates are a no-op, which is why
+/// the two history-view contract checks are unchanged by them.
+final class _PolicyHistoryViews with _GroupGate implements HistoryViewApi {
+  const _PolicyHistoryViews(
+      this._source, this._canSee, this.identityOf, this.ledger,
+      {required AccessGroup? Function(String member) groupForMember})
+      : _groupForMember = groupForMember;
 
   final HistoryViewApi _source;
 
@@ -747,10 +946,21 @@ final class _PolicyHistoryViews with _OperateGate implements HistoryViewApi {
   /// decorator so this class cannot reach anything else on it.
   final bool Function(String key) _canSee;
 
-  /// [PolicyStateMan.identityOf], for the four destructive members. See
+  /// [PolicyStateMan.identityOf], for the five gated members. See
   /// [deleteHistoryView].
   @override
-  final Identity? Function() identityOf;
+  final StationIdentity? Function() identityOf;
+
+  @override
+  final _DecisionLedger ledger;
+
+  /// `AccessPolicy.groupForHistoryView`, passed as a function for the same
+  /// reason [_canSee] is. Null means **open**, and only
+  /// [_GroupGate._requireGroup] interprets it.
+  final AccessGroup? Function(String member) _groupForMember;
+
+  @override
+  String get gateSurface => AccessSurface.historyView.wireName;
 
   /// The keys of [keys] this station may see.
   ///
@@ -782,25 +992,40 @@ final class _PolicyHistoryViews with _OperateGate implements HistoryViewApi {
   List<String> _visibleKeys(List<String> keys) =>
       keys.where(_canSee).toList();
 
+  /// Asks the policy like its four siblings, and the policy answers **open**
+  /// today — the same open answer the absence of a gate used to spell, now
+  /// spoken where it can be changed in one place. See the class doc.
   @override
   Future<int> createHistoryView(String name, List<String> keys,
       [Map<String, HistoryViewKeyRecord>? keyConfigs,
       Map<int, HistoryViewGraphRecord>? graphConfigs]) {
+    final group = _groupForMember(AccessPolicy.historyViewCreate);
+    _requireGroup(group, 'history.createView', 'no view was saved',
+        itemKey: AccessPolicy.historyViewCreate);
     final visible = _visibleKeys(keys);
-    return _source.createHistoryView(
+    final applied = _source.createHistoryView(
         name, visible, _visibleConfigs(keyConfigs), graphConfigs);
+    _recordAllowed(group, 'history.createView',
+        itemKey: AccessPolicy.historyViewCreate);
+    return applied;
   }
 
-  /// **Gated** (10-REVIEW CR-03): overwriting a view is overwriting somebody
-  /// else's work. See [deleteHistoryView] for the whole argument.
+  /// Open at the policy today, exactly as the panel's guard leaves it: an
+  /// operator renaming the view of the line they run is doing their job
+  /// (D-04, both directions).
   @override
   Future<void> updateHistoryView(int id, String name, List<String> keys,
       [Map<String, HistoryViewKeyRecord>? keyConfigs,
       Map<int, HistoryViewGraphRecord>? graphConfigs]) {
-    requireOperate('history.updateView', 'view $id is unchanged');
+    final group = _groupForMember(AccessPolicy.historyViewUpdate);
+    _requireGroup(group, 'history.updateView', 'view $id is unchanged',
+        itemKey: AccessPolicy.historyViewUpdate, member: '$id');
     final visible = _visibleKeys(keys);
-    return _source.updateHistoryView(
+    final applied = _source.updateHistoryView(
         id, name, visible, _visibleConfigs(keyConfigs), graphConfigs);
+    _recordAllowed(group, 'history.updateView',
+        itemKey: AccessPolicy.historyViewUpdate, member: '$id');
+    return applied;
   }
 
   /// The per-key configuration of the keys that survived [_visibleKeys].
@@ -843,21 +1068,27 @@ final class _PolicyHistoryViews with _OperateGate implements HistoryViewApi {
   /// own costs nobody anything; deleting one destroys work that was not yours,
   /// and no reading of "not plant state" makes that a read.
   ///
-  /// So the four destructive members take the gate and [createHistoryView] does
-  /// not. The reads — [selectHistoryViews], [getHistoryViewKeys],
-  /// [getHistoryViewGraphs], [getHistoryViewKeyNames],
-  /// [listHistoryViewPeriods] and [getGlobalRetentionHorizon] — stay ungated by
-  /// design; they are bounded instead, which is the other half of the review's
-  /// finding (WR-05).
+  /// As of 17-07 the group is the **policy's answer, per member** —
+  /// `configure` for the two deletes, matching what the panel's guard has
+  /// always demanded (D-04) — rather than CR-03's one-size gate. The reads —
+  /// [selectHistoryViews], [getHistoryViewKeys], [getHistoryViewGraphs],
+  /// [getHistoryViewKeyNames], [listHistoryViewPeriods] and
+  /// [getGlobalRetentionHorizon] — stay ungated by design; they are bounded
+  /// instead, which is the other half of the review's finding (WR-05).
   ///
-  /// Under the shipped `PermissiveTokenValidator`, which mints `operate` for
-  /// every station it accepts, this gate is a no-op — which is why the two
-  /// history-view contract checks are unchanged by it, and is the acceptance
-  /// shape 06-08 established.
+  /// Under a `PermissiveTokenValidator` session, which holds every group,
+  /// this gate is a no-op — which is why the two history-view contract
+  /// checks are unchanged by it, and is the acceptance shape 06-08
+  /// established.
   @override
   Future<void> deleteHistoryView(int id) {
-    requireOperate('history.deleteView', 'view $id is still saved');
-    return _source.deleteHistoryView(id);
+    final group = _groupForMember(AccessPolicy.historyViewDelete);
+    _requireGroup(group, 'history.deleteView', 'view $id is still saved',
+        itemKey: AccessPolicy.historyViewDelete, member: '$id');
+    final applied = _source.deleteHistoryView(id);
+    _recordAllowed(group, 'history.deleteView',
+        itemKey: AccessPolicy.historyViewDelete, member: '$id');
+    return applied;
   }
 
   /// Delegates. See the class doc: there are no keys on a
@@ -889,22 +1120,36 @@ final class _PolicyHistoryViews with _OperateGate implements HistoryViewApi {
   Future<List<String>> getHistoryViewKeyNames(int viewId) async =>
       _visibleKeys(await _source.getHistoryViewKeyNames(viewId));
 
-  /// **Gated** (10-REVIEW CR-03). A period is a row on somebody else's view,
-  /// and with no gate and no quota it is also an unbounded row factory in a
-  /// shared table — which is what makes [listHistoryViewPeriods] a
-  /// caller-grown response (WR-05).
+  /// Open at the policy today, matching the panel: bookmarking eight hours
+  /// you want to look at again is an operator doing their job (D-04). The
+  /// unbounded-row-factory concern CR-03 raised is real and is answered
+  /// where the panel answers it — auditing, and [listHistoryViewPeriods]
+  /// being a caller-grown response (WR-05) — not by a gate the app does not
+  /// have.
   @override
   Future<int> addHistoryViewPeriod(
       int viewId, String name, DateTime start, DateTime end) {
-    requireOperate( 'history.addPeriod', 'no window was added to view $viewId');
-    return _source.addHistoryViewPeriod(viewId, name, start, end);
+    final group = _groupForMember(AccessPolicy.historyViewAddPeriod);
+    _requireGroup(group, 'history.addPeriod',
+        'no window was added to view $viewId',
+        itemKey: AccessPolicy.historyViewAddPeriod, member: '$viewId');
+    final applied = _source.addHistoryViewPeriod(viewId, name, start, end);
+    _recordAllowed(group, 'history.addPeriod',
+        itemKey: AccessPolicy.historyViewAddPeriod, member: '$viewId');
+    return applied;
   }
 
-  /// **Gated** (10-REVIEW CR-03). See [deleteHistoryView].
+  /// **Gated at `configure`** — the member the relay and the panel used to
+  /// grade *differently*, now agreeing. See [deleteHistoryView].
   @override
   Future<void> deleteHistoryViewPeriod(int id) {
-    requireOperate('history.deletePeriod', 'window $id is still saved');
-    return _source.deleteHistoryViewPeriod(id);
+    final group = _groupForMember(AccessPolicy.historyViewDeletePeriod);
+    _requireGroup(group, 'history.deletePeriod', 'window $id is still saved',
+        itemKey: AccessPolicy.historyViewDeletePeriod, member: '$id');
+    final applied = _source.deleteHistoryViewPeriod(id);
+    _recordAllowed(group, 'history.deletePeriod',
+        itemKey: AccessPolicy.historyViewDeletePeriod, member: '$id');
+    return applied;
   }
 
   @override
@@ -917,33 +1162,32 @@ final class _PolicyHistoryViews with _OperateGate implements HistoryViewApi {
 }
 
 /// Stored preferences: **anyone authenticated may read them, and writing one
-/// takes the same role writing a motor setpoint takes** (10-05, 10-CONTEXT
-/// ruling 1).
+/// takes the group the app's own table answers for THAT key** (17-07,
+/// 17-CONTEXT D-03; sweep §3.12 point 1 closed).
 ///
 /// The least obvious of the four seams, because a preference key is not a
 /// plant key: `svn.chart.maxPoints` names a row in the gateway's own settings
-/// store, and [KeyPolicy] — which answers about tags — has nothing to say about
-/// it. So the question this class had to settle was not *which* preferences a
-/// station may touch but whether preferences are policed by identity at all.
+/// store. 10-05 settled that preferences are policed by identity at all;
+/// what it left was ONE question — "may this station actuate?" — asked about
+/// every key alike.
 ///
-/// ## Why `operate`, and why that is not a new rule
+/// ## Graded by key now, and why that closes a seam rather than adds a rule
 ///
 /// **`key_mappings`.** That one preference row is the gateway's own routing
 /// configuration — 518 KiB of it — and a station that can `setString` it
-/// re-points the plant's tag map for every panel on the site. A `view` station
-/// doing that is at least as consequential as a `view` station writing a motor
-/// setpoint, which is precisely what `operate` already guards. So the rule
-/// reused here is [AllVisibleOperatorWrites]'s own, verbatim: everything is
-/// readable, and the `operate` role is what a write takes. The comparison
-/// below is the only one in this file — one rule, not seven copies of it.
-///
-/// **No new rule shape**, and that is a deliberate scope fence rather than
-/// laziness. A `canWritePreference(String key, Identity)` on [KeyPolicy] would
-/// be a second policy surface to keep in step with the first, for behaviour
-/// nobody has asked for and no policy data exists to fill; tightening this
-/// later — a per-key preference rule, a read rule — stays a change to policy
-/// *data* rather than to plumbing, which is the whole point of the Phase 6
-/// hiding architecture. The `operate` gate is the safe floor either way.
+/// re-points the plant's tag map for every panel on the site. The previous
+/// doc here argued the `operate` floor was "one rule, not seven copies of
+/// it", and named the fix it declined to build: *"a
+/// `canWritePreference(String key, Identity)` on [KeyPolicy] would be a
+/// second policy surface"*. The fix landed (17-04), and it is not a second
+/// surface: [KeyPolicy.canWritePreference] asks `kPrefAccessRules` — the
+/// same thirty-four rows the app has graded these keys by since Phase 3, in
+/// the same `flutter_preferences` table in the same Postgres. The
+/// disagreement the floor left behind was not a hole, it was a **seam
+/// between two guards answering differently about one table**, and there is
+/// now one answer: `key_mappings` takes `configure` here exactly as it does
+/// at a panel (D-03, ruled 2026-09-07 — the cost, an `operate`-only station
+/// losing key-mapping saves over the wire, was accepted by name).
 ///
 /// ## The refusal is `forbidden`, and here that is the *correct* answer
 ///
@@ -984,24 +1228,55 @@ final class _PolicyHistoryViews with _OperateGate implements HistoryViewApi {
 /// file — **never `noSuchMethod`**: a forwarder would absorb a mutator added to
 /// the interface later and serve it ungated, which is this class's whole job.
 ///
-/// Under the shipped `PermissiveTokenValidator`, which mints `operate` for
-/// every station it accepts, this class is a no-op — which is why both
-/// preference contract checks pass through it unchanged, and is the acceptance
-/// shape 06-08 established.
-final class _PolicyPreferences with _OperateGate implements PreferencesApi {
-  const _PolicyPreferences(this._source, this.identityOf);
+/// Under a `PermissiveTokenValidator` session, which holds every group, the
+/// gates are a no-op — which is why both preference contract checks pass
+/// through them unchanged, and is the acceptance shape 06-08 established.
+final class _PolicyPreferences with _GroupGate implements PreferencesApi {
+  const _PolicyPreferences(this._source, this.identityOf, this.ledger,
+      {required AccessGroup Function(String key) groupForKey,
+      required bool Function(String key, StationIdentity identity) mayWrite})
+      : _groupForKey = groupForKey,
+        _mayWrite = mayWrite;
 
   final PreferencesApi _source;
 
-  /// [PolicyStateMan.identityOf], passed as a function rather than as the whole
-  /// decorator so this class cannot reach anything else on it.
-  ///
-  /// The identity itself rather than a `canWrite`-shaped predicate, because
-  /// there is no key to ask about: the comparison in [_OperateGate] **is** the
-  /// rule, and it is made once so there are not seven copies of it to keep in
-  /// step — nor, since 10-REVIEW CR-03, two copies in two decorators.
+  /// [PolicyStateMan.identityOf], passed as a function rather than as the
+  /// whole decorator so this class cannot reach anything else on it.
   @override
-  final Identity? Function() identityOf;
+  final StationIdentity? Function() identityOf;
+
+  @override
+  final _DecisionLedger ledger;
+
+  @override
+  String get gateSurface => AccessSurface.pref.wireName;
+
+  /// `AccessPolicy.groupForPref` — the group a key *requires*, which is what
+  /// a refusal states and an audit row's `groupRequired` column records.
+  /// Never null: the table fails closed to a real group for anything
+  /// unmatched.
+  final AccessGroup Function(String key) _groupForKey;
+
+  /// [KeyPolicy.canWritePreference] — the **verdict**, asked through the
+  /// adapter so every preference question goes through the same seam every
+  /// tag question does. Under the shipped composition the two functions here
+  /// agree by construction (the adapter asks the same master); a scripted
+  /// double can split them, which is exactly what makes the write-refusal
+  /// arms falsifiable (D-12).
+  final bool Function(String key, StationIdentity identity) _mayWrite;
+
+  /// The gate every mutator takes, spelled once: the group for the row, the
+  /// adapter for the verdict, the deny row before the throw, and the allow
+  /// row after the delegation.
+  Future<T> _graded<T>(
+      String method, String key, String what, Future<T> Function() delegate) {
+    final group = _groupForKey(key);
+    _requireGroup(group, method, what,
+        itemKey: key, may: (identity) => _mayWrite(key, identity));
+    final applied = delegate();
+    _recordAllowed(group, method, itemKey: key);
+    return applied;
+  }
 
 
   @override
@@ -1031,56 +1306,49 @@ final class _PolicyPreferences with _OperateGate implements PreferencesApi {
   @override
   Future<bool> containsKey(String key) => _source.containsKey(key);
 
-  // The seven mutators. Each states the gate on its own line, above the
-  // delegation, so a reader adding an eighth sees what the other seven do.
+  // The seven mutators. Each takes [_graded] with its own key, so a reader
+  // adding an eighth sees what the other seven do — and so there is exactly
+  // one spelling of the gate to get wrong.
 
   @override
-  Future<void> setBool(String key, bool value) {
-    requireOperate('preferences.setBool', 'nothing was stored under "$key"');
-    return _source.setBool(key, value);
-  }
+  Future<void> setBool(String key, bool value) =>
+      _graded('preferences.setBool', key, 'nothing was stored under "$key"',
+          () => _source.setBool(key, value));
 
   @override
-  Future<void> setInt(String key, int value) {
-    requireOperate('preferences.setInt', 'nothing was stored under "$key"');
-    return _source.setInt(key, value);
-  }
+  Future<void> setInt(String key, int value) =>
+      _graded('preferences.setInt', key, 'nothing was stored under "$key"',
+          () => _source.setInt(key, value));
 
   @override
-  Future<void> setDouble(String key, double value) {
-    requireOperate('preferences.setDouble', 'nothing was stored under "$key"');
-    return _source.setDouble(key, value);
-  }
+  Future<void> setDouble(String key, double value) =>
+      _graded('preferences.setDouble', key, 'nothing was stored under "$key"',
+          () => _source.setDouble(key, value));
 
   @override
-  Future<void> setString(String key, String value) {
-    // The one this ruling is about: `key_mappings` is a string, and it is the
-    // gateway's own routing configuration.
-    requireOperate('preferences.setString', 'nothing was stored under "$key"');
-    return _source.setString(key, value);
-  }
+  Future<void> setString(String key, String value) =>
+      // The one D-03 is about: `key_mappings` is a string, it is the
+      // gateway's own routing configuration, and its grading is the table's.
+      _graded('preferences.setString', key, 'nothing was stored under "$key"',
+          () => _source.setString(key, value));
 
   @override
-  Future<void> setStringList(String key, List<String> value) {
-    requireOperate(
-        'preferences.setStringList', 'nothing was stored under "$key"');
-    return _source.setStringList(key, value);
-  }
+  Future<void> setStringList(String key, List<String> value) =>
+      _graded('preferences.setStringList', key,
+          'nothing was stored under "$key"',
+          () => _source.setStringList(key, value));
 
   @override
-  Future<void> remove(String key) {
-    requireOperate('preferences.remove', '"$key" is still stored');
-    return _source.remove(key);
-  }
+  Future<void> remove(String key) =>
+      // Removing a row is writing it: the same key, the same group.
+      _graded('preferences.remove', key, '"$key" is still stored',
+          () => _source.remove(key));
 
-  /// **An unrestricted clear is refused** (10-REVIEW CR-02).
-  ///
-  /// The gate above this line is [_OperateGate.requireOperate], the same
-  /// predicate
-  /// `setBool` uses — and that is the whole problem. Under the shipped
-  /// `PermissiveTokenValidator`, which mints `operate` for every station it
-  /// accepts (`token_validator.dart:145`), the permission needed to wipe the
-  /// gateway's routing configuration was the permission needed to set a theme.
+  /// **An unrestricted clear is refused** (10-REVIEW CR-02) — and that
+  /// refusal is a **volume control, not a permission**, which is why it
+  /// survives the per-key grading untouched: a session holding every group
+  /// the master system has is still refused this shape of the call. The
+  /// allow-listed form is graded per named key, exactly as [remove] is.
   ///
   /// Two facts make this worse than the other six mutators, and both are
   /// reasons to refuse rather than to log:
@@ -1117,8 +1385,21 @@ final class _PolicyPreferences with _OperateGate implements PreferencesApi {
   /// (the 02-05 hang).
   @override
   Future<void> clear({Set<String>? allowList}) {
-    requireOperate('preferences.clear', 'nothing was removed');
-    if (allowList != null) return _source.clear(allowList: allowList);
+    if (allowList != null) {
+      // Graded per named key: clearing a row is writing it, and a list that
+      // mixes gradings is refused at its most demanding member — the first
+      // key the session's groups do not cover, named in the refusal.
+      for (final key in allowList) {
+        _requireGroup(_groupForKey(key), 'preferences.clear',
+            '"$key" is still stored — nothing was removed',
+            itemKey: key, may: (identity) => _mayWrite(key, identity));
+      }
+      final applied = _source.clear(allowList: allowList);
+      for (final key in allowList) {
+        _recordAllowed(_groupForKey(key), 'preferences.clear', itemKey: key);
+      }
+      return applied;
+    }
     throw rpc.RpcException(
         ServerErrorCodes.forbidden,
         'preferences.clear with no allowList would remove every preference '
@@ -1134,4 +1415,380 @@ final class _PolicyPreferences with _OperateGate implements PreferencesApi {
 
   @override
   Stream<String> get onPreferencesChanged => _source.onPreferencesChanged;
+}
+
+// ---------------------------------------------------------------------------
+// The four access families (17-03's getters, gated as of 17-07).
+//
+// Shared shape, worth stating once: every decorator takes its source as a
+// THUNK evaluated only after the gate has passed — a refused caller may not
+// cost a lookup (§E.2 item 2's side-channel argument), and on a composition
+// whose source is unwired the refusal a wrongly-grouped caller gets is the
+// verdict, never an `UnsupportedError` standing in for one. Every gate asks
+// the injected group function — `AccessPolicy.groupForTemplate` /
+// `groupForAdmin` / `groupForBackendConfig` — and never names a group.
+// Writes record allow rows; reads record nothing on the allow path; every
+// refusal records its deny row before the throw (D-05).
+//
+// Explicit member-by-member delegation, never `noSuchMethod`, for the same
+// reason as everything else in this file.
+// ---------------------------------------------------------------------------
+
+/// Access templates and their bindings: the three reads open (a panel renders
+/// the templates screen before anyone signs in, matching the store), the six
+/// writes gated — including [bind] and [unbind], because pointing a key at a
+/// template changes who may write that key just as much as editing the
+/// template does.
+final class _PolicyAccessTemplates with _GroupGate
+    implements AccessTemplateApi {
+  const _PolicyAccessTemplates(this._source, this.identityOf, this.ledger,
+      {required AccessGroup Function(String member) groupFor})
+      : _groupFor = groupFor;
+
+  final AccessTemplateApi Function() _source;
+
+  @override
+  final StationIdentity? Function() identityOf;
+
+  @override
+  final _DecisionLedger ledger;
+
+  @override
+  String get gateSurface => AccessSurface.accessAdmin.wireName;
+
+  /// `AccessPolicy.groupForTemplate`. The member name is passed so the call
+  /// site says what it is asking about, exactly as the store does.
+  final AccessGroup Function(String member) _groupFor;
+
+  Future<T> _write<T>(String memberConstant, String wireMethod, String what,
+      String subject, Future<T> Function() delegate) {
+    final group = _groupFor(memberConstant);
+    _requireGroup(group, wireMethod, what,
+        itemKey: 'access_template.$memberConstant', member: subject);
+    final applied = delegate();
+    _recordAllowed(group, wireMethod,
+        itemKey: 'access_template.$memberConstant', member: subject);
+    return applied;
+  }
+
+  @override
+  Future<List<AccessTemplate>> list() => _source().list();
+
+  @override
+  Future<Map<String, String>> bindings() => _source().bindings();
+
+  @override
+  Future<List<String>> keysBoundTo(String templateName) =>
+      _source().keysBoundTo(templateName);
+
+  @override
+  Future<void> create(AccessTemplate value, {String? reason}) =>
+      _write(AccessPolicy.templateCreate, AccessMethods.templateCreate,
+          'template "${value.name}" was not created', value.name,
+          () => _source().create(value, reason: reason));
+
+  @override
+  Future<void> update(AccessTemplate value, {String? reason}) =>
+      _write(AccessPolicy.templateUpdate, AccessMethods.templateUpdate,
+          'template "${value.name}" is unchanged', value.name,
+          () => _source().update(value, reason: reason));
+
+  @override
+  Future<void> rename(String from, String to, {String? reason}) =>
+      _write(AccessPolicy.templateRename, AccessMethods.templateRename,
+          'template "$from" keeps its name', from,
+          () => _source().rename(from, to, reason: reason));
+
+  @override
+  Future<void> delete(String name, {String? reason}) =>
+      _write(AccessPolicy.templateDelete, AccessMethods.templateDelete,
+          'template "$name" is still stored', name,
+          () => _source().delete(name, reason: reason));
+
+  @override
+  Future<void> bind(String keyName, String templateName, {String? reason}) =>
+      _write(AccessPolicy.templateBind, AccessMethods.templateBind,
+          '"$keyName" is not bound', keyName,
+          () => _source().bind(keyName, templateName, reason: reason));
+
+  @override
+  Future<void> unbind(String keyName, {String? reason}) =>
+      _write(AccessPolicy.templateUnbind, AccessMethods.templateUnbind,
+          '"$keyName" keeps its binding', keyName,
+          () => _source().unbind(keyName, reason: reason));
+}
+
+/// Roles and accounts: nine writes gated, [roles] an open read matching the
+/// store — and [listUsers] gated, which is this decorator departing from the
+/// store's read policy **on an owner ruling** (2026-09-08):
+///
+/// The store leaves its two reads ungated on the reasoning that a read is not
+/// an authorization change, and the app's deferral of a read gate was
+/// reasoned for a panel already holding Postgres credentials — a reader who
+/// can open the database gains nothing from a UI gate. Over the wire that
+/// premise is FALSE: a valid token is not database credentials, and an
+/// ungated [listUsers] would hand any station — view-only included — every
+/// username and role in the plant. The group asked is still the master's own
+/// answer for this whole concern (`groupForAdmin` → the one group that
+/// answers for who-may-do-what), so this is the master's rule asked at the
+/// wire, not a second rule.
+///
+/// **No secret in any refusal.** [createUser] and [setUserPassword] carry a
+/// password in their params objects; the `what` strings below name the
+/// SUBJECT and never touch the credential, and [_DecisionLedger]'s row has no
+/// field a value ever flows into from here. `policy_access_gate_test.dart`
+/// drives a distinctive password through both refusals and sweeps the
+/// message, the error data and every row field for it (F-B, F-G).
+final class _PolicyAccessAdmin with _GroupGate implements AccessAdminApi {
+  const _PolicyAccessAdmin(this._source, this.identityOf, this.ledger,
+      {required AccessGroup Function(String member) groupFor})
+      : _groupFor = groupFor;
+
+  final AccessAdminApi Function() _source;
+
+  @override
+  final StationIdentity? Function() identityOf;
+
+  @override
+  final _DecisionLedger ledger;
+
+  @override
+  String get gateSurface => AccessSurface.accessAdmin.wireName;
+
+  /// `AccessPolicy.groupForAdmin`.
+  final AccessGroup Function(String member) _groupFor;
+
+  /// The gate for the nine writes. [itemKey] is the trail's own eight-string
+  /// admin vocabulary (`audit.dart`'s class doc), so a relay-minted row
+  /// filters under the same chips a panel-minted one does; [subject] is the
+  /// account or role acted upon and goes in `member`, never in the itemKey.
+  Future<T> _write<T>(String memberConstant, String wireMethod, String what,
+      String itemKey, String subject, Future<T> Function() delegate) {
+    final group = _groupFor(memberConstant);
+    _requireGroup(group, wireMethod, what, itemKey: itemKey, member: subject);
+    final applied = delegate();
+    _recordAllowed(group, wireMethod, itemKey: itemKey, member: subject);
+    return applied;
+  }
+
+  /// An open read, matching the store: a role's name and group set is what
+  /// the templates screen renders before anyone signs in. The FIX-1 ruling
+  /// names `listUsers` and the trail; widening it silently would be this
+  /// file deciding policy.
+  @override
+  Future<List<AccessRole>> roles() => _source().roles();
+
+  /// **Gated, unlike the store's read** — see the class doc.
+  @override
+  Future<List<AuthenticatedUser>> listUsers() {
+    _requireGroup(_groupFor('listUsers'), AccessMethods.adminListUsers,
+        'no accounts were listed',
+        itemKey: 'listUsers');
+    return _source().listUsers();
+  }
+
+  @override
+  Future<void> createRole(AccessRole role, {String? reason}) =>
+      _write(AccessPolicy.adminCreateRole, AccessMethods.adminCreateRole,
+          'role "${role.name}" was not created', 'role.create', role.name,
+          () => _source().createRole(role, reason: reason));
+
+  @override
+  Future<void> updateRole(AccessRole role, {String? reason}) =>
+      _write(AccessPolicy.adminUpdateRole, AccessMethods.adminUpdateRole,
+          'role "${role.name}" is unchanged', 'role.update', role.name,
+          () => _source().updateRole(role, reason: reason));
+
+  @override
+  Future<void> deleteRole(String name, {String? reason}) =>
+      _write(AccessPolicy.adminDeleteRole, AccessMethods.adminDeleteRole,
+          'role "$name" is still stored', 'role.delete', name,
+          () => _source().deleteRole(name, reason: reason));
+
+  @override
+  Future<void> renameRole(String from, String to, {String? reason}) =>
+      _write(AccessPolicy.adminRenameRole, AccessMethods.adminRenameRole,
+          'role "$from" keeps its name', 'role.rename', from,
+          () => _source().renameRole(from, to, reason: reason));
+
+  /// The `what` names the subject and NEVER the credential riding beside it
+  /// in [params] — see the class doc.
+  @override
+  Future<void> createUser(NewUserParams params) =>
+      _write(AccessPolicy.adminCreateUser, AccessMethods.adminCreateUser,
+          'account "${params.subject}" was not created', 'user.create',
+          params.subject, () => _source().createUser(params));
+
+  @override
+  Future<void> deleteUser(String subject, {String? reason}) =>
+      _write(AccessPolicy.adminDeleteUser, AccessMethods.adminDeleteUser,
+          'account "$subject" is still stored', 'user.delete', subject,
+          () => _source().deleteUser(subject, reason: reason));
+
+  @override
+  Future<void> setUserRole(String subject, String newRole, {String? reason}) =>
+      _write(AccessPolicy.adminSetUserRole, AccessMethods.adminSetUserRole,
+          'account "$subject" keeps its role', 'user.role', subject,
+          () => _source().setUserRole(subject, newRole, reason: reason));
+
+  @override
+  Future<void> setUserStationAccount(String subject, bool value,
+          {String? reason}) =>
+      _write(
+          AccessPolicy.adminSetUserStationAccount,
+          AccessMethods.adminSetUserStationAccount,
+          'account "$subject" keeps its station marking',
+          'user.station_account',
+          subject,
+          () => _source()
+              .setUserStationAccount(subject, value, reason: reason));
+
+  /// The `what` names the subject and NEVER the credential riding beside it
+  /// in [params] — see the class doc.
+  @override
+  Future<void> setUserPassword(SetUserPasswordParams params) =>
+      _write(
+          AccessPolicy.adminSetUserPassword,
+          AccessMethods.adminSetUserPassword,
+          'the password of "${params.subject}" is unchanged',
+          'user.password',
+          params.subject,
+          () => _source().setUserPassword(params));
+}
+
+/// The audit trail's three reads, **all gated** — the other half of the FIX-1
+/// ruling [_PolicyAccessAdmin.listUsers] carries: over the wire, an ungated
+/// trail is every write anyone ever made, every username and every denial,
+/// readable by any station holding any valid token. The group is
+/// `groupForAdmin`'s answer — [AccessSurface.accessAdmin]'s doc says roles,
+/// users and templates "all answer to `users`", and the trail OF that concern
+/// answers to the same group.
+///
+/// An ALLOWED read records nothing: reading the trail must not grow the
+/// trail, which is `audit_trail_store.dart`'s refusal-by-design. A REFUSED
+/// read records its deny row — a station probing the trail is exactly the
+/// event the trail exists to show, and no key existence is being concealed
+/// on this family (the family's presence is public wire vocabulary).
+final class _PolicyAudit with _GroupGate implements AuditApi {
+  const _PolicyAudit(this._source, this.identityOf, this.ledger,
+      {required AccessGroup Function(String member) groupFor})
+      : _groupFor = groupFor;
+
+  final AuditApi Function() _source;
+
+  @override
+  final StationIdentity? Function() identityOf;
+
+  @override
+  final _DecisionLedger ledger;
+
+  @override
+  String get gateSurface => AccessSurface.accessAdmin.wireName;
+
+  final AccessGroup Function(String member) _groupFor;
+
+  @override
+  Future<List<AuditRecord>> entries(AuditQueryParams query) {
+    _requireGroup(_groupFor('entries'), AccessMethods.auditEntries,
+        'no trail rows were read',
+        itemKey: 'entries');
+    return _source().entries(query);
+  }
+
+  @override
+  Future<Map<String, int>> memberCountsByAction(List<String> actionIds) {
+    _requireGroup(
+        _groupFor('memberCountsByAction'),
+        AccessMethods.auditMemberCountsByAction,
+        'no counts were read',
+        itemKey: 'memberCountsByAction');
+    return _source().memberCountsByAction(actionIds);
+  }
+
+  @override
+  Future<List<String>> distinctWho() {
+    _requireGroup(_groupFor('distinctWho'), AccessMethods.auditDistinctWho,
+        'no names were read',
+        itemKey: 'distinctWho');
+    return _source().distinctWho();
+  }
+}
+
+/// The backend's own configuration: **all five members gated, reads
+/// included** (ACCESS-04, D-10) — the document is the plant's server list and
+/// PLC addresses, and `BackendConfigApi`'s own doc grades every member. The
+/// group is `groupForBackendConfig`'s, which derives from the
+/// `state_man_config` row of `kPrefAccessRules` so the two transports onto
+/// one concern cannot disagree.
+///
+/// The `relay` section's write refusal — you do not edit the socket over the
+/// socket — is the far end's, by name, per the interface doc; this decorator
+/// answers only who may ask at all.
+final class _PolicyBackendConfig with _GroupGate implements BackendConfigApi {
+  const _PolicyBackendConfig(this._source, this.identityOf, this.ledger,
+      {required AccessGroup Function(String section) groupFor})
+      : _groupFor = groupFor;
+
+  final BackendConfigApi Function() _source;
+
+  @override
+  final StationIdentity? Function() identityOf;
+
+  @override
+  final _DecisionLedger ledger;
+
+  @override
+  String get gateSurface => AccessSurface.backendConfig.wireName;
+
+  final AccessGroup Function(String section) _groupFor;
+
+  @override
+  Future<BackendConfigDocument> read() {
+    _requireGroup(_groupFor('read'), AccessMethods.configRead,
+        'the configuration was not read',
+        itemKey: AccessPolicy.stateManConfigPrefKey, member: 'read');
+    return _source().read();
+  }
+
+  @override
+  Future<ConfigValidation> validate(String configJson) {
+    _requireGroup(_groupFor('validate'), AccessMethods.configValidate,
+        'nothing was validated',
+        itemKey: AccessPolicy.stateManConfigPrefKey, member: 'validate');
+    return _source().validate(configJson);
+  }
+
+  @override
+  Future<void> write(String configJson, {String? reason}) {
+    final group = _groupFor('write');
+    _requireGroup(group, AccessMethods.configWrite,
+        'the configuration is unchanged',
+        itemKey: AccessPolicy.stateManConfigPrefKey, member: 'write');
+    final applied = _source().write(configJson, reason: reason);
+    _recordAllowed(group, AccessMethods.configWrite,
+        itemKey: AccessPolicy.stateManConfigPrefKey, member: 'write');
+    return applied;
+  }
+
+  @override
+  Future<BackendConfigDocument?> previous() {
+    _requireGroup(_groupFor('previous'), AccessMethods.configPrevious,
+        'the previous configuration was not read',
+        itemKey: AccessPolicy.stateManConfigPrefKey, member: 'previous');
+    return _source().previous();
+  }
+
+  @override
+  Future<void> restorePrevious({String? reason}) {
+    final group = _groupFor('restorePrevious');
+    _requireGroup(group, AccessMethods.configRestorePrevious,
+        'nothing was restored',
+        itemKey: AccessPolicy.stateManConfigPrefKey,
+        member: 'restorePrevious');
+    final applied = _source().restorePrevious(reason: reason);
+    _recordAllowed(group, AccessMethods.configRestorePrevious,
+        itemKey: AccessPolicy.stateManConfigPrefKey,
+        member: 'restorePrevious');
+    return applied;
+  }
 }

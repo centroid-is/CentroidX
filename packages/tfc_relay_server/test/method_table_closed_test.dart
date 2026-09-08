@@ -316,13 +316,20 @@ Iterable<String> _dartPaths(String argument) => RegExp(r'[\w./]+\.dart')
     .allMatches(argument)
     .map((match) => match.group(0)!);
 
+/// Every dotted name a client may call: the thirty-four data services plus —
+/// 17-09 — the twenty-eight access methods. Spelled from the two declared
+/// sets so a name can only exist in one place, exactly as each `all` is
+/// spelled from its family sets.
+Set<String> get declaredDottedNames =>
+    {...DataServiceMethods.all, ...AccessMethods.all};
+
 void main() {
   group('the data-service ledger is closed in both directions', () {
-    test('the dotted half of the ledger is exactly the declared thirty-four',
+    test('the dotted half of the ledger is exactly the declared sixty-two',
         () {
       final registered = _session().registeredMethods;
 
-      expect(dataServiceNames(registered), DataServiceMethods.all,
+      expect(dataServiceNames(registered), declaredDottedNames,
           reason: 'one equality rather than two containment checks, so the '
               'failure prints the whole difference. A declared name missing '
               'from the left is a method a panel calls and the gateway answers '
@@ -463,7 +470,7 @@ void main() {
       final undeclared =
           dataServiceNames(_session().registeredMethods).difference(const {});
 
-      expect(undeclared, hasLength(DataServiceMethods.all.length),
+      expect(undeclared, hasLength(declaredDottedNames.length),
           reason: 'emptying the declared set must not silence the check — '
               'every dotted name in the ledger becomes undeclared surface, '
               'which is the honest answer and the reason the equality is '

@@ -38,6 +38,19 @@ dependencies:
   # The wire shapes, the DTOs and the pure cores (ConflatingSendBuffer,
   # HelloGate) this server is assembled from.
   tfc_relay_protocol: {path: ../tfc_relay_protocol}
+  # The master access-control system. Phase 17's constitution: "one master
+  # access control system, the websocket can build on top of that" — so this
+  # package owns no policy, it asks. AccessGroup, AccessSession,
+  # AuthenticatedUser and AccessPolicy all live there.
+  #
+  # The description above forbids Flutter and forbids the *app* depending on
+  # this package; it says nothing against a pure-Dart vocabulary package, and
+  # tfc_access is exactly that — its own dependency list is collection, meta,
+  # clock and cryptography, all already in the workspace solve, and
+  # `package_purity_test.dart` keeps it that way. tfc_access's own description
+  # names the relay as its second intended consumer. The reverse edge
+  # (tfc_access -> here) stays forbidden and stays tested.
+  tfc_access: {path: ../tfc_access}
   # RSA keygen, private-key PEM encoding and certificate PEM *parsing* for the
   # provisioning helper — and deliberately NOT certificate construction.
   # `X509Utils.generateSelfSignedCertificate` encodes every subject-alternative

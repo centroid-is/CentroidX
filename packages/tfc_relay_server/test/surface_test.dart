@@ -171,6 +171,42 @@ const Set<String> expectedHandlerTable = {
   'preferences.setStringList',
   'preferences.remove',
   'preferences.clear',
+  // Phase 17 plan 09. The access twenty-eight — the four families 17-03
+  // declared and this plan registers, the largest single addition to this
+  // surface since Phase 10. Twenty-eight and not twenty-nine:
+  // `accessTemplates.template` was cut by the access audit (no caller
+  // anywhere, its own store included) and must never appear here. Every one
+  // of these is gated server-side by the session's PolicyStateMan (17-07);
+  // the registration through `_on` is what puts them all behind the
+  // handshake gate, and `access_handlers_test.dart` sweeps exactly that.
+  'accessTemplates.list',
+  'accessTemplates.bindings',
+  'accessTemplates.keysBoundTo',
+  'accessTemplates.create',
+  'accessTemplates.update',
+  'accessTemplates.rename',
+  'accessTemplates.delete',
+  'accessTemplates.bind',
+  'accessTemplates.unbind',
+  'accessAdmin.roles',
+  'accessAdmin.listUsers',
+  'accessAdmin.createRole',
+  'accessAdmin.updateRole',
+  'accessAdmin.deleteRole',
+  'accessAdmin.renameRole',
+  'accessAdmin.createUser',
+  'accessAdmin.deleteUser',
+  'accessAdmin.setUserRole',
+  'accessAdmin.setUserStationAccount',
+  'accessAdmin.setUserPassword',
+  'audit.entries',
+  'audit.memberCountsByAction',
+  'audit.distinctWho',
+  'backendConfig.read',
+  'backendConfig.validate',
+  'backendConfig.write',
+  'backendConfig.previous',
+  'backendConfig.restorePrevious',
 };
 
 /// Every name the server *sends* as a notification, and therefore may never
@@ -275,13 +311,14 @@ void main() {
               'registration.');
     });
 
-    test('the table is exactly the forty-four names a client may call today',
+    test('the table is exactly the seventy-two names a client may call today',
         () {
-      // The sentence is unchanged in shape and still true: forty-four names
-      // a client may *call*. `h` is not one of them — it is announced, never
-      // called — so it is taken out of the ledger by name here rather than
-      // being added to the literal, which would say a client may ask the
-      // gateway to tick.
+      // The sentence is unchanged in shape and still true: seventy-two names
+      // a client may *call* — forty-four through Phase 14, plus 17-09's
+      // twenty-eight access methods. `h` is not one of them — it is
+      // announced, never called — so it is taken out of the ledger by name
+      // here rather than being added to the literal, which would say a
+      // client may ask the gateway to tick.
       expect(
           _session().registeredMethods.difference(expectedClientNotifications),
           expectedHandlerTable,
@@ -289,7 +326,7 @@ void main() {
               'failure prints the whole table rather than a difference');
     });
 
-    test('the registered table is the forty-four callable names plus the '
+    test('the registered table is the seventy-two callable names plus the '
         'client notifications', () {
       expect(_session().registeredMethods, everyRegisterableName,
           reason: 'the ledger is the union, because json_rpc_2 dispatches a '
