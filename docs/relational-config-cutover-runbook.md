@@ -268,6 +268,15 @@ Every key on that list must be one of three things:
    `startup_url`, `access.session`, `update_channel`, `mcp.config`. Also
    `key_mappings` and `page_editor_data` themselves, whose blobs are rollback
    insurance until section 6 drops the table.
+
+   **`mcp.config` in particular is abandoned, not migrated**, and the reason
+   is worth knowing because it is the strongest of them. The raw preferences
+   editor merges the two stores with the **shared** value overriding the
+   device-local one. So a migrated `mcp.config` row would not merely be an
+   inert setting nobody reads — it would *mask this station's real
+   device-local value* in that list, while offering an `administer`-gated edit
+   that changes nothing anywhere. A write that quietly does nothing, arriving
+   through the front door.
 3. **Unknown** — nobody has classified it.
 
 **Resolve every unknown key with Jón BEFORE the window, not during it.** An
@@ -348,18 +357,32 @@ this:
 Preference migration: 9 migrated (alarm_man_config: 1, collector_config: 1, images: 4, page_editor_top_level_order: 1, recipes: 1, server_config_envelope: 1), 6 abandoned, 0 unknown
 ```
 
-The names in brackets are **families**, sorted: one per migrated setting, plus
-`images` for the uploaded page images and `recipes` for the recipe buckets,
-which are the two families that can hold more than one key. Your counts will
-differ; the shape will not. Two things to check on it:
+**Those numbers are an illustration, not a target.** Every count in that line
+depends on what this plant has, and none of them is something to match against
+a figure written down in advance. What is fixed is the **shape**.
 
-- **`0 unknown`.** If it is not zero, the line names the unknown keys in
-  brackets. **Resolve them before going on** — that is section 3's work
-  arriving late, and the drop in section 6 will refuse on them anyway.
+The names in brackets are **families**, sorted. There is one per migrated
+setting — `alarm_man_config`, `state_man_config`, `collector_config`,
+`page_editor_top_level_order`, `server_config_envelope` — plus `images` for
+the uploaded page images and `recipes` for the recipe buckets, which are the
+two that can hold more than one key each. A family with nothing to move simply
+does not appear.
+
+**Only one number on that line gates anything, and it is `unknown`.** Check,
+in this order:
+
+- **`0 unknown`.** This is the check. If it is not zero, the line names the
+  unknown keys in brackets. **Resolve them before going on** — that is
+  section 3's work arriving late, and the drop in section 6 will refuse on
+  them anyway.
 - **The line is there at all.** Its absence means the migration did not run.
   The nearby log lines say why — the common one is *"skipped because the
   key_mappings or pages migration has not run"*, which means the attach
   ordering went wrong and this station is serving what it already had.
+- **The migrated and abandoned counts are information, not a gate.** Read them
+  against what you know this plant has — if `alarm_man_config` is missing from
+  the families and you know the plant has alarms, that is worth stopping for.
+  Do not compare them to any number from a test or a document.
 
 **Step 5 — Verify this station by looking at it.** Pages draw. Key mappings
 resolve — values are live, not stale. Alarms are present. The history view
@@ -412,21 +435,63 @@ dart run bin/tfc_mcp_server.dart \
 ```
 
 It speaks MCP over stdin/stdout, so you need an MCP client to call the tool —
-the station's own HMI bridge, or any MCP client you already use. The
-`CENTROID_PGHOST` / `CENTROID_PGPORT` / `CENTROID_PGDATABASE` /
-`CENTROID_PGUSER` / `CENTROID_PGPASSWORD` environment variables take
-precedence over the `--db-*` flags, so a shell that already has them set will
-override what you typed.
+the station's own HMI bridge, or any MCP client you already use.
+
+> **The `--db-*` flags do not win. Check which database you actually reached.**
+>
+> `CENTROID_PGHOST`, `CENTROID_PGPORT`, `CENTROID_PGDATABASE`,
+> `CENTROID_PGUSER` and `CENTROID_PGPASSWORD` take **precedence over** the
+> `--db-*` flags. A shell that already has any of them set overrides what you
+> typed, silently and with no error — you name a database on the command line,
+> see no complaint, and connect to a different one. At 02:00, on a plant, that
+> is a confident wrong answer rather than a failure, which is the harder kind
+> to catch.
+>
+> Do not rely on remembering the rule. **Check it**, before you trust anything
+> the tool reports:
+>
+> ```bash
+> env | grep '^CENTROID_PG'      # anything printed here beat your flags
+> ```
+>
+> And confirm the target independently of this binary — the same host, port,
+> database and user you meant, asked of the database itself:
+>
+> ```bash
+> psql -h <host> -p <port> -U <user> -d <db> \
+>   -Atc "SELECT current_database(), inet_server_addr(), inet_server_port()"
+> ```
+>
+> Do **not** use the binary's own "Connected to PostgreSQL at ..." line for
+> this. See the next note: that line is printed before anything is tried.
 
 Two things about that `--toggles` value:
 
-- **Every group must be named.** A missing key in that JSON defaults to
-  *enabled*, so `'{"config":true}'` turns on everything, not just config.
+- **Name every group explicitly, as above.** Do not write `'{"config":true}'`
+  and assume the rest are off. What an *unnamed* group defaults to is a
+  capability-surface decision that has deliberately moved during this
+  milestone, and it is not something to carry in your head at 02:00. Naming
+  all nine is correct whichever way that default currently sits.
+- **Do not assume — read it back.** The server prints every resolved toggle at
+  startup, on one line, before it does anything else:
+
+  ```
+  Tool toggles from commandLine: tags=false, alarms=false, config=true,
+  drawings=false, trends=false, plcCode=false, proposals=false,
+  techDocs=false, screenshots=false
+  ```
+
+  That line is the check. It also names *where* the decision came from —
+  `commandLine`, `environment`, or `absent`. If it says `absent` when you
+  passed `--toggles`, something ate your argument.
 - **Without `--toggles` and without `CENTROIDX_MCP_TOGGLES`, the server
   offers `ping` and nothing else.** That is the intended closed start, not a
-  failure. It prints a line to stderr saying so. **Expect to see `ping` in the
+  failure. It prints a line to stderr saying so, in as many words: *"no tool
+  toggles were handed down, so every tool group is disabled and this server
+  offers no tools but the ping health check."* **Expect to see `ping` in the
   tool list** — a closed server is not an empty tool list, it is `ping` alone.
-  If you were expecting nothing at all and see one tool, nothing is wrong.
+  If you were expecting nothing at all and see one tool, nothing is wrong; if
+  you see two, something is.
 
 > **A trap, and it will catch you if nobody warns you.** The MCP binary logs
 >
@@ -704,7 +769,20 @@ to stop being reported once removed. Run this if you ever need to believe the
 clean result.
 
 **`./scripts/check-preferences-construction.sh`** — the sibling gate on how
-preference stores are constructed, held to the same non-vacuity standard.
+preference stores are constructed: a store built outside `lib/providers/` is
+not wrapped by its guard, so its writes pass no access check and leave no
+audit row, and nothing about the call site looks wrong.
+
+**`./scripts/check-preferences-construction.sh --self-test`** — added at this
+phase's close, and worth knowing why. Until then this script had **no**
+self-test, while its sibling had one: its clean result could only be trusted
+by whoever had last planted a violation by hand, which meant the proof was the
+developer's and never the reader's. It now plants a violation for **all four**
+constructor patterns it watches and requires each to be detected and then to
+stop being reported once removed.
+
+Both gates can now be verified by anyone, at any time, with one flag. If you
+are ever asked to trust a "clean" from either, run its `--self-test` first.
 
 ---
 
