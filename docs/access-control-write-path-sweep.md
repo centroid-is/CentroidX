@@ -114,7 +114,7 @@ one; no row is blank and no row says "probably".
 |---|---|
 | `guarded by NN-NN` | a plan routes it through a guard. `03-NN` for the plans in this phase; one later row carries `06-03`, which closed §3.3 |
 | `route-gated (Phase 2)` | reachable only from a route in `kRaisedRoutes` |
-| `session-gated (relay policy)` | reached over the relay's WebSocket, and refused by `PolicyStateMan` (`packages/tfc_relay_server/lib/src/policy/policy_state_man.dart`) unless the session's `Identity.role` is `Role.operate`. Not a route and not one of this milestone's plans — a **third** enforcement point, in a different process. The row says which member is gated and which is deliberately not; §3.12 carries the model and where it disagrees with `kPrefAccessRules` |
+| `session-gated (relay policy)` | reached over the relay's WebSocket, and refused by `PolicyStateMan` (`packages/tfc_relay_server/lib/src/policy/policy_state_man.dart`) unless the session's `AccessSession` holds the `AccessGroup` the master `AccessPolicy` requires for that surface — the same question the app's guards ask, of the same policy object. Since Phase 17 (17-07/17-09/17-11) this is one enforcement point consuming the one master system, not a second policy; §3.12 records how it came to agree. Every row carrying this verdict keeps it — the redefinition is a change of wording, not of which rows are gated, and no row needs re-verdicting. The row says which member is gated and which is deliberately not |
 | `not widget-reachable` | provider or core machinery with no path from a widget; the row says which and why the claim holds |
 | `test-kit only (dev dependency)` | in `packages/tfc_stateman_contract`, which every package that uses it names under `dev_dependencies` and which no production `lib/` in the repository imports. Not compiled into the app or into the gateway. The row still says what the call would write, so the claim is checkable rather than a category |
 | `correct as-is` | the audit sink, the guards themselves, and the stores' own declarations |
@@ -229,6 +229,8 @@ file and call rather than by line.**
 | `packages/tfc_dart/lib/core/relay/backend_alarm_history.dart:396` | `db.customUpdate(closeStatement)` | `alarm_history` | the engine's clear and restart-reconciliation paths (`backend_alarms.dart:589, 978, 1054`) | `not widget-reachable` — driven by rule transitions and boot reconciliation. One leg is wire-adjacent and the row says so rather than rounding it off: acknowledging an already-cleared alarm closes its row (`backend_alarms.dart:1152`), and that leg sits behind the same gated `ackAlarm` as the `:335` row — so every path to this statement is either a plant transition or a gated operator action |
 | `packages/tfc_dart/lib/core/relay/backend_data_services.dart:991` | `database.db.customUpdate('DELETE FROM flutter_preferences WHERE key IN (…)', updateKind: UpdateKind.delete)` | `flutter_preferences` | `PreferencesSource.deletePreferenceRows` ← `BackendPreferences.clear(allowList:)` ← `_PolicyPreferences.clear` | `session-gated (relay policy)` — the centroidx-backend's twin of `preference_store.dart:517`, and the same three controls hold: every key is a bound `Variable.withString` placeholder, the key list comes from `getKeys(allowList:)` rather than from the client, and the *unrestricted* clear is refused outright above it (`policy_state_man.dart:1075`, 10-REVIEW CR-02). The allow-listed form still takes `operate` for every key alike — §3.12's disagreement with `kPrefAccessRules`, over the same table |
 | `packages/tfc_dart/lib/core/relay/backend_access.dart:152, 162` | `_require('update').update(value, origin: kRelayOrigin, reason: reason)` and `_require('delete').delete(name, origin: kRelayOrigin, reason: reason)` on `BackendAccessTemplates` | `access_template`, `access_key_binding` | nothing in the shipped graph today: `composeBackendRelay` constructs only the audit family (`backend_composition.dart:369`), `BackendStateMan` refuses `accessTemplates` **by name** until 17-09 constructs this class per minted identity, and `PolicyStateMan.accessTemplates` refuses wholesale (`_noAccessGate`, `policy_state_man.dart:373`) until 17-07 grades it | `correct as-is` — these are calls **on `AccessTemplateStore`**, the same claim as `access_templates_section.dart:635, 1130` above and true for the same reason: the `users` gate (`kAccessTemplateGroup`) and the audit row are inside the store, whose own §2.2 row carries the writes. This file maps and delegates and decides nothing — `backend_access_test.dart`'s arm 10 greps its source for permission-check tokens and requires zero, because a second gate here is what the phase's constitution forbids. The verdict is deliberately **not** `session-gated (relay policy)`: 17-07's wire grading is not written yet, and a row banking it early is the decorative outcome §6 forbids. What holds today is duller and stronger — no wire frame reaches this class at all, and when 17-09 does construct it, the gate that answers is the panel's own store gate, with `origin: 'relay'` on every row |
+| `packages/tfc_relay_server/lib/src/access_handlers.dart:110, 124, 139` (and the eleven admin/config members beside them) | `source.accessTemplates.update(...)`, `.delete(...)`, `source.accessAdmin.<...>`, `source.backendConfig.write(...)` on the session's decorated `source` | `access_template`, `access_key_binding`, `app_role`, `app_user`, `audit_entry`, the `StateManConfig` file | the twenty-eight `AccessMethods.*` frames on the session's peer, registered through `RelaySession._on` (17-09) | `session-gated (relay policy)` — `source` is the session's `PolicyStateMan`, never the shared plant (`relay_session.dart` builds `AccessHandlers(source: api)` where `api` is the decorator), so every one of these delegates through the master-policy gate before touching a store. `access_handlers_test.dart` greps this file, comments stripped, for the vocabulary of a check and requires **zero** — the file decodes and delegates and decides nothing (17-09), and 17-14 reconciled its `value`/`role`/`query` decode envelope with the client's encoder (F-3). The deny row is written pre-effect by the decorator (D-05, `origin = 'relay'`) |
+| `packages/tfc_stateman_contract/lib/src/access_contract.dart:217, 242, 310, 325` (and every gated member the suite drives) | `api.accessTemplates.create/update/delete(...)`, `api.accessAdmin.*`, `api.backendConfig.*` on the implementation under test | whatever the implementation under test writes — a `FakeAccessServices`'s maps in memory, or a real store behind the leg | `runAccessContract`, the shared judgement run against every leg (17-05) | `test-kit only (dev dependency)` — the access half of the contract kit, named under `dev_dependencies` by every package that runs it and imported by no production `lib/`. The calls exercise the four families' gating on whatever leg is under test; the gate that answers is the implementation's, never this file's. The row still says what the calls would write, so the claim is checkable rather than a category |
 
 **Nothing further found** in this section beyond `server_config_db.dart`, the
 three MCP index classes and the audit stores: every other hit is either the
@@ -371,18 +373,21 @@ that arithmetic is the whole content of the two rows.
 | `packages/tfc_dart/lib/core/access/guarded_preferences.dart:436, 650` | `MySecureStorage get secureStorage => _inner.secureStorage` | — | anything holding the guarded object | `left open: secure storage is outside both guards` — the same hole as §3.4, reached through the decorator's own forwarding getter. Two hits because the checked path and `systemWrites` each forward it |
 | `packages/tfc_relay_local/lib/src/data/preference_store.dart:71, 182` | the `MySecureStorage` import, and `final class NoSecretStorage implements MySecureStorage` | **nothing — every member throws** | the gateway's composition root installs it before building `Preferences` | `correct as-is` — and the one row in this section that is a *closure* of §3.4 rather than another instance of it. `Preferences.create` asks `SecureStorage.getInstance()` unconditionally and the Linux default builds an `AwsSecureStorage` over the OS keychain; a headless gateway has no keyring, and worse, a keychain reachable from the pipe would be remote retrieval of the secure store. So the gateway installs a store whose `read`, `write` and `delete` all throw (SEC-01), the `PreferencesApi` this package implements omits the `secret:` parameter entirely, and `preference_store_test.dart` greps the source for the word `secret` because the obvious future edit is to add it back "for symmetry". A type that cannot hold the secret cannot leak it, done by construction rather than by convention |
 
-### 2.7 File writes (script §7 — 3 hits at the first two runs, 4 at the 2026-09-05 re-run)
+### 2.7 File writes (script §7 — 3 hits at the first two runs, 4 at the 2026-09-05 re-run, 5+ at the 2026-09-08 re-run once `backend_config_store.dart`'s three `writeAsBytes` sites landed with 17-10)
 
 | File and line | Call | Store | Reached from | Verdict |
 |---|---|---|---|---|
 | `lib/pages/key_repository.dart:1886` | `file.writeAsString(jsonString)` | filesystem | key-mapping export, `/advanced/key-repository` | `route-gated (Phase 2)` — `configure` |
 | `lib/pages/server_config.dart:2923` | `.writeAsString(...convert(envelope))` | filesystem | server-config export, `/advanced/server-config` | `route-gated (Phase 2)` — `administer` |
 | `packages/centroidx_upgrader/lib/src/manager_launcher.dart:159` | `staged.writeAsBytes(bytes)` | filesystem | `managerLauncher.launchForUpdate(...)` at `centroid-hmi/lib/main.dart:369` | `left open: the update path is ungated` — see §3.5 |
-| `packages/tfc_stateman_contract/lib/src/faults/os_level.dart:468` | `rules.writeAsString(pfRulesetWithDummynet(baseRuleset: …, pipe: …))` | filesystem — a file under `Directory.systemTemp.createTemp('dummynet_spike')` | `installDummynet(...)`, from a fault-injection test run by hand on a developer's macOS machine | `test-kit only (dev dependency)` — the fourth file write in the tree, and the one that is not the app's. It is worth a sentence because it is the only hit in this whole sweep that runs under `sudo`: the file is a pf ruleset **added to** the system's rather than replacing it, every command is an argv vector handed straight to `Process.run` with no shell in between, the one caller-supplied value that lands next to `sudo` is checked against `netemShapeableDevices` before it goes in the list (threat T-02-14), and teardown — `:535`'s directory delete, `pfctl -f` of the original ruleset, `dnctl` flush — is registered the moment the install succeeds. It reaches no plant and no station |
+| `packages/tfc_stateman_contract/lib/src/faults/os_level.dart:468` | `rules.writeAsString(pfRulesetWithDummynet(baseRuleset: …, pipe: …))` | filesystem — a file under `Directory.systemTemp.createTemp('dummynet_spike')` | `installDummynet(...)`, from a fault-injection test run by hand on a developer's macOS machine | `test-kit only (dev dependency)` — a file write in the tree, and the one that is not the app's. It is worth a sentence because it is the only hit in this whole sweep that runs under `sudo`: the file is a pf ruleset **added to** the system's rather than replacing it, every command is an argv vector handed straight to `Process.run` with no shell in between, the one caller-supplied value that lands next to `sudo` is checked against `netemShapeableDevices` before it goes in the list (threat T-02-14), and teardown — `:535`'s directory delete, `pfctl -f` of the original ruleset, `dnctl` flush — is registered the moment the install succeeds. It reaches no plant and no station |
+| `packages/tfc_dart/lib/core/relay/backend_config_store.dart:247, 271, 470` | `File('$path.previous').writeAsBytes(original)`, `prevFile.writeAsBytes(rejected)`, `temp.writeAsBytes(bytes)` — the config file, its `.previous` backup, and the atomic temp before the rename | filesystem — the backend's `StateManConfig` file and its `<path>.previous` | `backendConfig.write` / `restorePrevious` frames on the session's peer (17-10, D-10) | `session-gated (relay policy)` — the **fifth** file write in the tree, and the one the wire reaches. It is graded `administer` by `AccessPolicy.groupForBackendConfig` in `PolicyStateMan.backendConfig` before any byte is written; the payload is validated by round-tripping `StateManConfig.fromJson` and **refused** rather than written on any failure (D-10 first hazard), a `relay`-section edit is refused by name (D-10 second hazard), and the previous file is copied to `<path>.previous` before the write so `restorePrevious` can reach it. **Standing wiring gap, named not hidden (17-11 deviation 3):** the shipped `composeBackendRelay` wires templates and admin per identity but serves `backendConfig` sessionlessly from the shared source — `IdentityAccessFamilies` carries no config slot — so over-the-wire config editing is 17-13's to complete; wiring it sessionlessly would forge D-11 attribution, so it was deliberately left for the plan that owns the screen. 17-14's E2E records the measured behaviour of the shipped graph at its config surface |
 
-**Nothing further found** in this section: four file writes in the whole tree,
-all four identified, two of them already behind a raised route and the fourth
-in a package no shipped binary links.
+**Nothing further found** in this section: five file writes in the whole tree,
+all five identified — two already behind a raised route, one in a package no
+shipped binary links, and the fifth (the backend config store) graded
+`administer` over the wire before it touches disk, with the standing sessionless
+wiring gap named in its row.
 
 ### 2.8 D-Bus — network and hostname (script §8 — 31 hits at the 2026-08-29 run, 34 at the 2026-08-30 re-run, 45 at the 2026-09-05 re-run)
 
@@ -450,7 +455,7 @@ in §5.
 | `packages/tfc_dart/lib/core/alarm.dart:303` | `preferences.setString('alarm_man_config', ...)` | preferences | `addAlarm`/`removeAlarm`/`updateAlarm`, behind the `configure`-gated alarm editor. **Not** `ackAlarm` | `guarded by 03-06` |
 | `packages/tfc_mcp_server/lib/src/tools/read_toggles.dart:38, 114` | `prefs.setString(McpConfig.kPrefKey, ...)`, `local.setString(...)` | preferences and device-local | an MCP tool call, in the HMI process | `left open: reached over MCP, not from a widget` — see §3.2 |
 | `packages/tfc_mcp_server/lib/src/services/config_service.dart:64` | `_prefCache.clear()` | — | `invalidateCache()` | `not widget-reachable` — `_prefCache` is a `TtlCache` (`config_service.dart:45`), not a preferences store. A false positive of section 9b's receiver-spelling filter, recorded rather than quietly dropped |
-| `packages/tfc_relay_server/lib/src/policy/policy_state_man.dart:993, 999, 1005, 1013, 1020` | the five `set*` members on `_PolicyPreferences`, each calling `requireOperate(...)` before delegating to `_source.set*` — and `remove` and `clear` beside them | `flutter_preferences` | every `preferences.*` frame on the wire | `correct as-is` — this **is** the relay's preference guard, the same shape as `guarded_preferences.dart`'s five rows below. All seven mutators ask the gate; `clear` asks it **and then refuses an unrestricted clear outright**, because the permission needed to wipe `key_mappings` was otherwise the permission needed to set a theme (10-REVIEW CR-02). The reads above them are ungated by design. What the gate asks is `Identity.role == Role.operate` for every key alike, which is where it and `kPrefAccessRules` disagree — §3.12 |
+| `packages/tfc_relay_server/lib/src/policy/policy_state_man.dart:993, 999, 1005, 1013, 1020` | the five `set*` members on `_PolicyPreferences`, each calling `requireOperate(...)` before delegating to `_source.set*` — and `remove` and `clear` beside them | `flutter_preferences` | every `preferences.*` frame on the wire | `correct as-is` — this **is** the relay's preference guard, the same shape as `guarded_preferences.dart`'s five rows below. All seven mutators ask the gate; `clear` asks it **and then refuses an unrestricted clear outright**, because the permission needed to wipe `key_mappings` was otherwise the permission needed to set a theme (10-REVIEW CR-02). The reads above them are ungated by design. Since D-03 (17-07/17-11) the gate asks `AccessPolicy.groupForPref(key)` then `session.can(group)` — the same per-key question `kPrefAccessRules` answers for the app, no longer a flat operate check — so it and the app now agree; §3.12 records the close |
 | `packages/tfc_relay_server/lib/src/data_handlers.dart:688, 704, 732, 745, 778` | `source.preferences.set*(key, raw)` | `flutter_preferences` | the `preferences.setBool` / `setInt` / `setDouble` / `setString` / `setStringList` methods on the session's peer | `session-gated (relay policy)` — `source` is the session's `PolicyStateMan`, so the row above is what these five reach. The key is **whatever the client sent**, which makes this the relay's counterpart of `lib/widgets/preferences.dart`'s raw editor — except that the app's raw editor is behind an `administer` route and this one is behind `operate`. See §3.12 and §5 |
 | `packages/tfc_relay_local/lib/src/data/preference_store.dart:425, 429, 433, 437, 441` and `:525` | `(await _load()).set*(key, value)`, and `prefs.clear(allowList:)` after the durable delete | `flutter_preferences` — **the same table and the same rows the HMI writes** | `_PolicyPreferences`, from the five handlers above | `session-gated (relay policy)` — the store the relay's guard delegates through, and the reason `correct as-is` would be the wrong verdict here: a reader who found this file by grepping for `flutter_preferences` needs to be told that the check above it is **not** `GuardedPreferences` and does not consult `kPrefAccessRules`. `_load()` goes through `Preferences.create` and never the public constructor, because a hand-built `Preferences` answers "no keys" to a store that at SVN holds 675,890 bytes (TRAP 8) |
 | `packages/tfc_stateman_contract/lib/src/channel/served_state_man.dart:672, 679, 690, 697, 703` and `:710, 716` | `api.preferences.set*(params[…])`, `.remove(...)`, `.clear(allowList:)` | whatever the suite pointed it at | the harness peer's method table | `test-kit only (dev dependency)` — the shape `data_handlers.dart` copied rather than imported; see 2.1 |
@@ -833,101 +838,95 @@ What would settle it either way: decide whether the clock is `administer`
 (most of `/advanced` is) or stays an operator affordance, then either raise
 the route or split the clock section onto a page that is already raised.
 
-### 3.12 The relay is a third enforcement point, and it grades the same rows differently
+### 3.12 The relay was a third enforcement point that graded the same rows differently — Phase 17 made it consume the one master
 
-This entry exists because the 2026-09-05 re-run found seventeen files whose
-guard this document had no word for, and because writing seventeen rows without
-writing this would have made the vocabulary look like it had always fitted.
+This entry existed because the 2026-09-05 re-run found seventeen files whose
+guard this document had no word for, and it recorded three ways the relay's
+grading disagreed with the app's over the same tables. **Phase 17 closed the
+disagreement.** The entry is kept in the shape §3.1 and §3.3 used when they
+closed — the evidence stays, what closed it is stated, and what did *not* close
+is stated too — because a section that closed by rounding its open half away is
+the defect this document exists to prevent.
 
-**The model, in one paragraph.** A relay write starts as a JSON-RPC frame on a
-`wss://` socket. `RelaySession` registers every method through one seam, `_on`,
-which applies the handshake gate: a frame arriving before `hello` reaches no
-handler at all. `hello` hands the client's token to a `TokenValidator`, which
-either refuses the connection or returns an `Identity{stationId, role}` — a
-**station**, deliberately never a person, because what the plant has is panels
-bolted to walls with a token mounted beside each one. `RelaySession` then builds
-one `PolicyStateMan` per session and hands *that* — never the shared plant
-source — to every handler object, so a handler added later cannot reach around
-the policy because there is no unwrapped source in scope to reach for. Inside
-it, `requireOperate` refuses unless `identity != null && identity.role ==
-Role.operate`, fails closed on a null identity, and throws a `forbidden` whose
-message says the call definitively had no effect and must not be retried.
+**The model, in one paragraph, as it now stands.** A relay write starts as a
+JSON-RPC frame on a `wss://` socket. `RelaySession` registers every method
+through one seam, `_on`, which applies the handshake gate: a frame arriving
+before `hello` reaches no handler at all. `hello` hands the client's token to a
+`TokenValidator`, which either refuses the connection or resolves it through a
+`UserResolver` into a `StationIdentity` — an `AuthenticatedUser` (station
+account) plus the station name plus the `AccessSession` the account's role
+resolves to, the groups chased through `app_role` in the database (D-06). The
+token file names a **user** and grants nothing; the role, and the groups behind
+it, are the database's answer. `RelaySession` builds one `PolicyStateMan` per
+session and hands *that* — never the shared plant source — to every handler
+object, so a handler added later cannot reach around the policy. Inside it,
+`_requireGroup` asks the **one master `AccessPolicy`** which `AccessGroup` a
+surface needs and refuses unless the session holds it, fails closed on a null
+identity, and throws a `forbidden` whose message says the call definitively had
+no effect and must not be retried. It is the same policy object, asked the same
+question, the app's `GuardedPreferences` and `guarded_history_views.dart` ask.
 
-**So the honest phrase for these rows is "the relay's session role check
-rather than a route guard", and that is what `session-gated (relay policy)`
-means.** It is a real guard, at a real seam, with a fail-closed default. It is
-not one of this milestone's plans, it is not `kRaisedRoutes`, and it is not in
-the app's process.
+**So `session-gated (relay policy)` now means "one enforcement point consuming
+the one master system", not "a third policy".** It is a real guard, at a real
+seam, with a fail-closed default, and it grades by the same `AccessPolicy` the
+app does.
 
-**Three things it does not do, named so the verdict is not read as more than
-it is.**
+**The three disagreements, and what became of each.**
 
-1. **It grades by station role, not by key.** Seven mutators on
-   `_PolicyPreferences` ask one question — `role == operate` — for every key
-   alike. `kPrefAccessRules` grades the same rows: `key_mappings` and
-   `page_editor_data` are `configure`, `collector_config` is `administer`.
-   These are the **same rows in the same `flutter_preferences` table in the
-   same Postgres** — `preference_store.dart` writes through `tfc_dart`'s own
-   `Preferences`, which is what `GuardedPreferences` decorates on the app side.
-   So a station the gateway calls `operate` may `setString('key_mappings', …)`
-   over the pipe, and an operator standing at a panel holding only `operate`
-   may not. The relay's own reasoning is written down and is not careless — a
-   `view` station re-pointing the plant's tag map is at least as consequential
-   as one writing a motor setpoint, so `operate` is reused verbatim as the safe
-   floor rather than a second policy surface being invented for behaviour
-   nobody has asked for. What that reasoning does not appear to know is that a
-   grading for these exact keys **already exists**, twelve inches away in
-   `kPrefAccessRules`. That is the disagreement, and it is the useful kind of
-   finding: not a hole, a seam between two guards that answer differently about
-   one table.
-2. **It writes no audit row.** Every write the app's guards allow or refuse
-   produces a row in `audit_entry` naming who, what, where and whether it was
-   allowed. The relay writes none: `policy_state_man.dart` says so in as many
-   words about history views — "no idempotency id, no three-state outcome and
-   no audit trail" — and the same is true of the preference mutators. A refusal
-   at the gateway leaves nothing behind, which is the property §3.3's closure
-   calls "the one kind of guard nobody can audit afterwards".
-3. **`createHistoryView` is deliberately ungated, and unbounded.** Four of the
-   five history-view mutators take `requireOperate`; the fifth does not, on the
-   stated argument that "creating a view of your own costs nobody anything"
-   where "deleting one destroys work that was not yours". The argument is
-   sound about *authority* and silent about *volume*: a `view`-role station may
-   create history views without limit, in a shared table, and
-   `addHistoryViewPeriod` — the row factory the same review bounded — is gated
-   while its parent is not. It is recorded here rather than raised as a bypass
-   because it is a written decision with a reason beside it, which is a
-   different thing from an unenumerated hole.
+1. **Graded by station role, not by key — CLOSED (D-03).** The seven
+   `_PolicyPreferences` mutators no longer ask one flat `role == operate`
+   question. `AccessPolicyKeyPolicy` asks `AccessPolicy.groupForPref(key)` and
+   then `session.can(group)` — the identical call the app's `GuardedPreferences`
+   makes against the identical `kPrefAccessRules`. `key_mappings` and
+   `page_editor_data` take `configure`; `collector_config`,
+   `state_man_config` and `server_config_envelope` take `administer`;
+   `theme_mode`, `startup_url` and the rest take `operate`. The evidence that
+   this was a real seam stays on the record; the seam is gone. **The behaviour
+   change it cost, named:** a station whose role holds only `operate` can no
+   longer save `key_mappings` over the pipe — the honest consequence of the
+   ruling that the app's grading wins everywhere, and the reason engineering
+   panels are provisioned with a `configure`-holding role (17-CONTEXT, ruled by
+   Jón 2026-09-07). The unrestricted-`clear` refusal stays — a volume control,
+   not a policy, unchanged by who is asking.
+2. **Wrote no audit row — CLOSED (D-05).** `RelayServer` now takes an
+   `AuditSink`, and `composeBackendRelay` injects `DriftAuditSink(database.db)`
+   — the same sink shape and the same `audit_entry` table the app's
+   `auditSinkProvider` builds. Every `PolicyStateMan` decision writes a row,
+   **allowed and refused**, with `origin = 'relay'` so a trail reader tells a
+   wire write from a panel write, and the deny row is written **before** the
+   refusal is thrown, because a refusal that leaves no trace is the one kind of
+   guard nobody can audit afterwards. The failure `policy_state_man.dart` once
+   named as the blocker is closed.
+3. **`createHistoryView` ungated and unbounded — the AUTHORITY half CLOSED
+   (D-04), the VOLUME half deliberately STILL OPEN.** The five history-view
+   mutators now follow the app's own split: `createHistoryView`,
+   `updateHistoryView` and `addHistoryViewPeriod` are open; `deleteHistoryView`
+   and `deleteHistoryViewPeriod` take `configure` — the app's grading, so
+   deleting a saved chart over the wire now takes `configure`, matching direct
+   mode. That closes the authority question: the wire and the panel refuse the
+   same deletes. It does **not** close the volume question — a station may
+   still create history views without limit in a shared table, and that is an
+   authority fix, not a quota. It stays open with its reason: the gate stops a
+   station building its own chart, a quota does not, and no quota is written.
+   Stated as open on purpose, because a section that reported this half closed
+   would be describing a system that does not exist.
 
-**The permissive default, stated because it changes what the rows above are
-worth today.** `RelayServer`'s `validator` parameter defaults to
-`PermissiveTokenValidator`, which mints `Role.operate` for every peer that
-completes the handshake, and the gateway's composition root
-(`packages/tfc_relay_local/lib/src/gateway_config.dart`, the `RelayServer(...)`
-call) passes no `validator` at all. A real deployment gets real identities the
-other way: `ServerConfig.auth.token_file` in the gateway's config file makes
-`RelayServer.start()` load a `FileTokenValidator` before the port is opened,
-and the constructor refuses a configuration carrying both. So **the gate is
-live code with a fail-closed default and its own revocation sweep; whether it
-distinguishes anybody is a property of the deployment's config file.** The
-class is named for what it does rather than for what it lacks precisely so a
-gateway still running one is legible in a config diff, and `exposureWarning`
-logs before the bind.
+**The permissive default, updated because the claim it makes is now larger.**
+`RelayServer`'s `validator` still defaults to `PermissiveTokenValidator`, but it
+can no longer mint `Role.operate` — there is no `Role`. It mints a
+`StationIdentity` whose role name is `kPermissiveRoleName` (`'Permissive
+(development)'`) resolving to the **full** `AccessGroup` set — every group, a
+larger grant than the old operate-only default made, and named for what it does
+so a gateway still running it is legible in a config diff, with `exposureWarning`
+logging before the bind (D-07). A real deployment gets real identities through
+`ServerConfig.auth.token_file`, which `RelayServer.start()` loads before the
+port opens and refuses to start without a `UserResolver` (D-06); the constructor
+still refuses a configuration carrying both a validator and an `auth` section.
 
-**What closing each of the three would take.** For (1): a
-`canWritePreference(String key, Identity)` on `KeyPolicy` fed from the same
-table `kPrefAccessRules` is, which is a change to policy *data* rather than to
-plumbing — the whole point of the hiding architecture — plus a decision about
-how a station role maps onto seven `AccessGroup`s, which is the part nobody has
-made. For (2): an audit sink in the gateway, which needs a store and a schema
-this process does not have; `policy_state_man.dart` already names the absence
-as the blocker for its own third option on hidden-key saves. For (3): a quota,
-or the gate, and the two have different costs — the gate stops a `view` station
-building its own chart, the quota does not.
-
-**None of this is a `left open` row**, and the reason is worth stating: the
-rows are `session-gated (relay policy)` because a guard genuinely stands there.
-This entry is what stops that verdict being read as "and it agrees with the
-app's".
+**This entry no longer stops `session-gated (relay policy)` being read as "and
+it agrees with the app's" — it now records that it DOES agree**, on one
+`AccessPolicy`, and names the one half (history-view volume) that is a separate
+piece of work rather than a disagreement.
 
 ## 4. Is there a fifth?
 
@@ -1135,6 +1134,36 @@ negative:
   `flutter_preferences` table `kPrefAccessRules` grades by key. Nothing new
   to decide; the same decision now applies in two binaries.
 
+### 4.3d What the 2026-09-08 re-run found (Phase 17 complete)
+
+Recorded in the shape of §4.3a–c. This run is not a fresh grep for a fifth
+guard; it is the record of what Phase 17 changed in the tree, on this
+document's own terms, so §3.12's rewrite above is not left as an appendix to
+somebody else's run.
+
+| Files | Change | What it turned out to be |
+|---|---|---|
+| `access_handlers.dart` (`tfc_relay_server/lib/src`) | +1 file, twenty-eight members | the four access families on the wire (17-09), each decode-and-delegate, no check of its own — the gate is the `PolicyStateMan` decorator it holds. Rowed in §2.2. 17-14 reconciled its `value`/`role`/`query` decode envelope with the client encoder (F-3): the flat-map decode it shipped with hard-failed every real client on five single-DTO methods |
+| `backend_config_store.dart` (`tfc_dart/lib/core/relay`) | the tree's **fifth** file write | the backend's `StateManConfig` file, `.previous` backup and atomic temp (17-10, D-10), graded `administer` over the wire. §2.7's "four file writes" count is corrected to five. Standing gap: served sessionlessly today (17-11 dev 3), 17-13's to complete |
+| `backend_composition.dart`, `bin/main.dart` (`tfc_dart`) | audit sink, account resolver, revocation poll wired | the shipping graph now carries the real `AccessPolicyKeyPolicy`, the `DriftAuditSink`, and the `UserResolver`; `bin/main.dart` polls `reloadTokensIfChanged` on the config-watch tick, closing SEC-03's revocation clause that had never fired in production (D-08, 17-11) |
+| the three stores (17-02) | moved into `tfc_dart/lib/core/access` | one implementation serves direct and gateway mode; `no_duplicate_access_stores_test.dart` and, from 17-14, `no_second_policy_test.dart` pin that it stays one |
+
+**The largest fact is a negative, as §4.3b's was:** no new unguarded write path
+was found, and none was created. The relay's three graded-differently rows
+(§3.12) were **closed** onto the one master `AccessPolicy` rather than left
+standing — two fully (D-03 preference grading, D-05 audit trail) and one on its
+authority half (D-04 history-view delete), with the history-view volume question
+named as the single deliberately-open half.
+
+**What the run says about the document rather than about the tree:** §3.12's
+title and closing line were both now false and are rewritten; the
+`session-gated (relay policy)` verdict definition named two deleted types
+(`Identity.role`, `Role.operate`) and is redefined without them, the vocabulary
+staying at seven terms; §2.7's counted claim of "four file writes" was made
+false by the config store and is corrected to five. Every one of those is a
+claim a reader could check and would have found wrong — the class of hole this
+document exists to close, and the reason §4.3c was itself written.
+
 ### 4.4 What §5 checked and did not find
 
 The rule this document is meant to enforce — *a key the app writes in normal
@@ -1218,16 +1247,17 @@ from one behind a Save button.
 | `served_state_man.dart:672-716`, `broken_browse.dart:177-192` | `key` (a parameter) | pass-through, in the test kit | n/a | n/a | `test-kit only` |
 | `data_services_contract.dart:390-551` | `_prefKey`, `_clearedKey`, `'svn.chart.maxPoints'`, `'svn.weigher.tolerance'`, `'svn.site.name'`, `'svn.page.recent'` | the contract suite's own literals | **no rule, and none is wanted** — these keys exist only inside a test run | n/a | `test-kit only` |
 
-**The relay's five rows are the exception this table did not have before, and
-they are an honest one rather than an unresolvable one.** The app's key
-expressions resolve to a rule because the app consults `kPrefAccessRules`; the
-relay's do not resolve at all, because the gateway does not consult that table
-— it asks one question about the station's role and asks it for every key.
-Listing them as "unresolved" would read as an omission somebody could go and
-fix by adding rules. They are not unresolved: they are graded by a **different
-policy**, in a different process, and §3.12 is where the two are compared. The
-one row that matters concretely is `key_mappings`, which this table already
-grades `configure` and which the pipe serves at `operate`.
+**The relay's five rows were the exception this table did not have before, and
+Phase 17 resolved it.** The app's key expressions resolve to a rule because the
+app consults `kPrefAccessRules`; **the relay now consults the same table**, via
+`AccessPolicyKeyPolicy` → `AccessPolicy.groupForPref(key)` → `session.can(...)`
+(D-03, 17-07/17-11). They are no longer graded by a different policy in a
+different process — they are graded by the one master policy, and §3.12 records
+how they came to agree. The one row that mattered concretely is `key_mappings`,
+which this table grades `configure` and which **the pipe now serves at
+`configure` too** — the change landed with D-03 (17-07/17-11, merged
+2026-09-08), and the honest cost is that a station whose role holds only
+`operate` can no longer save key mappings over the wire.
 
 **One key is written outside section 9 and belongs in this table anyway.**
 `server_config_envelope` (`lib/core/server_config_db.dart:55`) is written
