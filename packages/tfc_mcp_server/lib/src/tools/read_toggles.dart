@@ -15,6 +15,14 @@ import 'tool_toggles.dart';
 /// Returns [McpConfig.defaults] when no config exists yet — every tool group
 /// off, and the blob written back so the next read is the fast path. A device
 /// nobody has configured serves nothing until somebody configures it.
+///
+/// **This writes, and it writes to whatever [prefs] is.** The migration
+/// persists its result, so handing this a shared store would put `mcp.config`
+/// back in the shared database — the one thing
+/// [migrateMcpConfigToDeviceLocal] exists to undo. Every caller passes the
+/// device-local store today (`mcp_bridge.dart`'s `mcpConfigProvider`), and
+/// that is a property of the call sites rather than of this function, so it
+/// is worth re-checking before adding one.
 Future<McpConfig> readMcpConfigFromPreferences(PreferencesApi prefs) async {
   final json = await prefs.getString(McpConfig.kPrefKey);
 
