@@ -95,9 +95,18 @@ final class AccessHandlers {
 
   /// The operator's justification, when the frame carries one. It says
   /// *why*, never *who* — see `access_api.dart`'s library doc.
+  ///
+  /// **Present-but-null is treated as absent (17-14).** Every client proxy
+  /// sends `{'reason': reason}` with `reason` frequently null
+  /// (`client_sub_apis.dart`), so `"reason":null` arrives on the wire on the
+  /// common path. `params['reason'].exists` is `true` for a present-null value
+  /// and `.asString` then throws `-32602 "must be a string, but was null"` —
+  /// which would refuse every create/update/delete/bind that carries no
+  /// justification, i.e. almost all of them. `valueOr(null)` is what the data
+  /// handlers use for exactly this reason.
   static String? _reason(rpc.Parameters params) {
-    final reason = params['reason'];
-    return reason.exists ? reason.asString : null;
+    final reason = params['reason'].valueOr(null);
+    return reason is String ? reason : null;
   }
 
   // ------------------------------------------------- templates (nine names)
