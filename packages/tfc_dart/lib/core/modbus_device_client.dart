@@ -203,9 +203,7 @@ class ModbusDeviceClientAdapter implements DeviceClient {
     this.decodeString,
     Map<String, String>? umasPollGroupByKey,
     List<ModbusPollGroupConfig>? pollGroups,
-    DateTime Function()? clock,
   })  : _specs = Map.unmodifiable(specs),
-        _clock = clock ?? DateTime.timestamp,
         _variableNames = Map.of(variableNames) {
     _initUmasPollGroups(
       umasPollGroupByKey: umasPollGroupByKey ?? const {},
@@ -214,15 +212,6 @@ class ModbusDeviceClientAdapter implements DeviceClient {
     _initUmasLifecycle();
     _initEffectiveStatus();
   }
-
-  /// The clock read to stamp UMAS-by-name readings, injected so a test can pin
-  /// the *site* of the reading rather than merely its presence. Defaults to
-  /// `DateTime.timestamp` (UTC).
-  ///
-  /// The classic-Modbus path does not use this one: its instant is taken inside
-  /// [ModbusClientWrapper], one line after the socket answered, and travels
-  /// here on the [ModbusSample].
-  final DateTime Function() _clock;
 
   /// Build the per-group key lists from the supplied per-key mapping
   /// `(key -> pollGroupName)` and the per-server pollGroup intervals.
@@ -586,9 +575,7 @@ class ModbusDeviceClientAdapter implements DeviceClient {
     try {
       wrapper.recordRequest();
       final values = await umas.monitorReadAll();
-      // One batched read, one instant: every key in this group answered on the
-      // same round trip and shares its completion time.
-      _demuxUmasReadAll(values, _clock());
+      _demuxUmasReadAll(values);
     } catch (e) {
       _log.w('UMAS monitorReadAll for group "$group" failed: $e');
       // Subjects retain their last value (SCADA semantics).
@@ -597,16 +584,13 @@ class ModbusDeviceClientAdapter implements DeviceClient {
 
   /// Demux a [monitorReadAll] response into the per-key subjects + cache.
   /// Assumes `values` is in the same order as [_umasKeyOrder].
-  ///
-  /// [readAt] is the completion instant of the single batched read that
-  /// produced [values]; every demuxed key carries it.
-  void _demuxUmasReadAll(List<TypedVariableValue> values, DateTime readAt) {
+  void _demuxUmasReadAll(List<TypedVariableValue> values) {
     final n = values.length < _umasKeyOrder.length
         ? values.length
         : _umasKeyOrder.length;
     for (var i = 0; i < n; i++) {
       final key = _umasKeyOrder[i];
-      final dv = typedVariableToDynamicValue(values[i], readAt);
+      final dv = typedVariableToDynamicValue(values[i]);
       _umasLastValues[key] = dv;
       final subject = _umasSubjects[key];
       if (subject != null && !subject.isClosed) {
@@ -1064,12 +1048,12 @@ class ModbusDeviceClientAdapter implements DeviceClient {
     }
     final spec = _specs[key];
     if (spec == null) throw ArgumentError('Unknown Modbus key: $key');
-    // subscribeSamples, not subscribe: the read instant has to come from the
-    // event, not from a clock read here. A second poll landing between the
-    // wrapper's emit and this map would otherwise re-date the reading.
+    // subscribeSamples, not subscribe: [ModbusSample] is the seam that keeps
+    // the read instant available to callers who want the fact, even though no
+    // instant enters the value — see [_toDynamicValue] for why it may not.
     return wrapper
         .subscribeSamples(spec)
-        .map((s) => _toDynamicValue(s.value, spec, s.readAt));
+        .map((s) => _toDynamicValue(s.value, spec));
   }
 
   /// Get-or-create the long-lived [BehaviorSubject] for a UMAS-by-name
@@ -1100,12 +1084,9 @@ class ModbusDeviceClientAdapter implements DeviceClient {
     }
     final spec = _specs[key];
     if (spec == null) return null;
-    // The cached reading keeps the instant of the read that produced it. A
-    // fresh clock reading here would make a value that has sat in the subject
-    // for a whole poll interval report as though it had just come off the wire.
     final sample = wrapper.readSample(key);
     if (sample == null || sample.value == null) return null;
-    return _toDynamicValue(sample.value, spec, sample.readAt);
+    return _toDynamicValue(sample.value, spec);
   }
 
   /// Read a single UMAS-by-name key. Throws [StateError] if [key] is
@@ -1141,9 +1122,7 @@ class ModbusDeviceClientAdapter implements DeviceClient {
     DynamicValue dv;
     try {
       final typed = await umas.readVariableByName(variableName);
-      // The clock is read on the line after the read returned, not before the
-      // await and not after the cache write below.
-      dv = typedVariableToDynamicValue(typed, _clock());
+      dv = typedVariableToDynamicValue(typed);
     } on UmasNotScalarException {
       // FB-instance binding: the operator (or LLM-generated key
       // mapping) pointed a single key at an FB instance root rather
@@ -1157,7 +1136,7 @@ class ModbusDeviceClientAdapter implements DeviceClient {
       // See commit 8c03c68d for the exception's introduction and the
       // umas-fb-dynamic-value branch for this fall-back's rationale.
       final members = await umas.readFbInstanceMembers(variableName);
-      dv = fbMembersToDynamicValue(members, _clock());
+      dv = fbMembersToDynamicValue(members);
     }
     _umasLastValues[key] = dv;
     // F-1: push the fresh value to any active subscribers so
@@ -1188,18 +1167,14 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   /// flat string-keyed map; keeping the keys dotted matches that
   /// contract without a second-level walk.
   ///
-  /// [readAt] is the instant the batched read that produced [members]
-  /// completed. It is **not** stamped as a source timestamp on the parent or on
-  /// any member — see [_toDynamicValue] for the whole argument. It stays in the
-  /// signature because it is the one instant a caller could legitimately want
-  /// for this struct, and because the parameter is what stops a future member
-  /// converter inventing a per-member instant for a fact they share.
+  /// No read instant is stamped on the parent or on any member — see
+  /// [_toDynamicValue] for the whole argument.
   @visibleForTesting
   static DynamicValue fbMembersToDynamicValue(
-      Map<String, TypedVariableValue> members, DateTime readAt) {
+      Map<String, TypedVariableValue> members) {
     final map = LinkedHashMap<String, DynamicValue>();
     for (final entry in members.entries) {
-      map[entry.key] = typedVariableToDynamicValue(entry.value, readAt);
+      map[entry.key] = typedVariableToDynamicValue(entry.value);
     }
     return DynamicValue(value: map);
   }
@@ -1244,13 +1219,11 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   /// non-null typeId; the raw value stays untouched so the consumer
   /// can still inspect it.
   ///
-  /// [readAt] is the instant the UMAS read returned on this host. It is **not**
-  /// stamped as a source timestamp: UMAS carries no device instant either, and
-  /// a clock on this host in that field is read downstream as a plant instant.
+  /// No source timestamp is stamped: UMAS carries no device instant, and a
+  /// clock on this host in that field is read downstream as a plant instant.
   /// See [_toDynamicValue].
   @visibleForTesting
-  static DynamicValue typedVariableToDynamicValue(
-      TypedVariableValue t, DateTime readAt) {
+  static DynamicValue typedVariableToDynamicValue(TypedVariableValue t) {
     final upper = t.typeName.toUpperCase();
     final typeId = switch (upper) {
       'BOOL' || 'EBOOL' => NodeId.boolean,
@@ -1370,8 +1343,8 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   /// bit masking.
   ///
   /// **Modbus offers no `sourceTimestamp`, and that is the honest answer.**
-  /// Nothing in the protocol says when the PLC produced the number. [readAt] —
-  /// the instant this driver's read round trip completed — is a clock on *this
+  /// Nothing in the protocol says when the PLC produced the number. The read
+  /// instant — when this driver's round trip completed — is a clock on *this
   /// host*, and `package:open62541` documents the field it would go in as *"the
   /// instant the SOURCE (the PLC, not this process) says the value was
   /// produced"*, with null meaning *"a consumer that needs an instant must
@@ -1382,19 +1355,15 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   /// for the whole Modbus fleet — in direct mode as well as through the pipe,
   /// because `AlarmMan.onChange` reads this field straight off the value. A
   /// bare `DateTime` has no room to say which clock it came from, so the only
-  /// way to stop the claim being made is not to make it.
-  ///
-  /// [readAt] is still threaded here, and to [typedVariableToDynamicValue] and
-  /// [fbMembersToDynamicValue], because it is a real fact about the read that
-  /// [ModbusSample] exposes to callers who want it; it simply may not enter the
-  /// value as a provenance claim.
+  /// way to stop the claim being made is not to make it. No converter takes
+  /// the instant at all now; [ModbusSample] remains the seam that exposes the
+  /// read instant to callers who want the fact.
   ///
   /// `applyBitMask` carries `statusCode` and `sourceTimestamp` across the fresh
   /// [DynamicValue] it builds. That stays load-bearing for masked **OPC UA**
   /// keys, which do have a real server stamp to lose; here there is nothing for
   /// it to carry.
-  static DynamicValue _toDynamicValue(
-      Object? value, ModbusRegisterSpec spec, DateTime readAt) {
+  static DynamicValue _toDynamicValue(Object? value, ModbusRegisterSpec spec) {
     final dv =
         DynamicValue(value: value, typeId: _typeIdFromDataType(spec.dataType));
     return StateMan.applyBitMask(dv, spec.bitMask, spec.bitShift);

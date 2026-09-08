@@ -165,7 +165,6 @@ const _maskedSpec = ModbusRegisterSpec(
   final adapter = ModbusDeviceClientAdapter(
     wrapper,
     specs: specs,
-    clock: clock.now,
   );
   return (wrapper: wrapper, adapter: adapter);
 }
@@ -258,7 +257,6 @@ void main() {
       final dv = ModbusDeviceClientAdapter.typedVariableToDynamicValue(
         TypedVariableValue(
             value: 7, typeName: 'INT', rawBytes: Uint8List(2)),
-        _driverClock,
       );
 
       expect(dv.sourceTimestamp, isNull);
@@ -271,7 +269,6 @@ void main() {
           'p_Stat_xRunningFwd': TypedVariableValue(
               value: true, typeName: 'BOOL', rawBytes: Uint8List(1)),
         },
-        _driverClock,
       );
 
       expect(dv.sourceTimestamp, isNull);
@@ -313,7 +310,6 @@ void main() {
           ModbusDeviceClientAdapter.typedVariableToDynamicValue(
             TypedVariableValue(
                 value: 7, typeName: 'INT', rawBytes: Uint8List(2)),
-            _driverClock,
           ).sourceTimestamp,
         ],
         clock: clock,
@@ -372,7 +368,6 @@ void main() {
         ModbusDeviceClientAdapter.typedVariableToDynamicValue(
           TypedVariableValue(
               value: 7, typeName: 'INT', rawBytes: Uint8List(2)),
-          _driverClock,
         ),
         arrivedAt: _arrivedAt,
         onSourceTimeFallback: () => fallbacks++,
