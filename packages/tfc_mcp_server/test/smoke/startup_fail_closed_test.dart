@@ -8,6 +8,14 @@
 /// returns `allDisabled` into a variable nobody reads would pass every test
 /// in that file.
 ///
+/// It is also the only thing in this repository that *runs* this binary. The
+/// 1300-odd other tests import the library; `compile_test.dart` builds the
+/// executable and asks it for `--version`, which returns before any of the
+/// startup path. The first time this file spawned it on Windows it found the
+/// binary crashing at launch on `ProcessSignal.sigterm.watch()`, which throws
+/// there rather than returning an empty stream. Deleting or skipping this
+/// file gives that class of defect its silence back.
+///
 /// It also covers the second of the two live fail-open paths. The first —
 /// a standalone launch against a migrated plant, whose shared store the
 /// migration has emptied of every MCP key — cannot be built here without a

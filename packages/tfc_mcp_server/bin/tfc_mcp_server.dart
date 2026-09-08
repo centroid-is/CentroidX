@@ -148,8 +148,25 @@ Future<void> main(List<String> arguments) async {
     });
   }
 
-  ProcessSignal.sigterm.watch().listen(handleShutdown);
-  // SIGINT for Ctrl+C during development
+  // SIGTERM does not exist on Windows, and asking to watch it there does not
+  // return an empty stream -- it throws `SignalException: Failed to listen
+  // for SIGTERM ... The request is not supported, errno = 50`, unhandled,
+  // killing the process at startup before it ever answers `initialize`.
+  //
+  // That is why this binary had never once run on Windows. `compile_test`
+  // built and executed it there for a year, but only ever as `--version`,
+  // which returns above this line. Nothing else spawned it until
+  // `startup_fail_closed_test.dart` did.
+  //
+  // The Flutter side sends SIGTERM to shut this down. On Windows that maps
+  // to TerminateProcess, so the process still dies; what is unavailable
+  // there is the graceful path -- closing the database and flushing the log
+  // -- not the shutdown. Losing a graceful close on one platform beats not
+  // starting on it.
+  if (!Platform.isWindows) {
+    ProcessSignal.sigterm.watch().listen(handleShutdown);
+  }
+  // SIGINT for Ctrl+C during development. Supported on Windows.
   ProcessSignal.sigint.watch().listen(handleShutdown);
 
   await server.connect(transport);
