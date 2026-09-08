@@ -16,7 +16,9 @@ import 'package:tfc_mcp_server/tfc_mcp_server.dart'
         writeMcpConfigToPreferences;
 
 import '../core/feature_flags.dart';
+import '../core/gateway_config.dart';
 import '../core/update_channel.dart';
+import '../providers/gateway.dart';
 import '../providers/mcp_bridge.dart';
 import '../providers/preferences.dart';
 import '../providers/theme.dart';
@@ -517,6 +519,21 @@ class _DatabaseConfigWidgetState extends ConsumerState<DatabaseConfigWidget> {
 
   @override
   Widget build(BuildContext context) {
+    // The transport decides what this section may claim. In gateway mode the
+    // station opens no direct database connection — `databaseProvider` and
+    // `preferencesProvider` both branch before dialling — so there is no
+    // status to report and no pool to census. A status line must be true or
+    // absent: rendering "Disconnected" in red here would read as a fault on
+    // a healthy panel, and rendering "Connected" was the lie this branch
+    // exists to remove.
+    final gatewayAsync = ref.watch(gatewayConfigProvider);
+    if (gatewayAsync.isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final gateway = gatewayAsync.valueOrNull ?? GatewayConfig.defaults;
+    if (gateway.isGateway) {
+      return const _GatewayDatabaseCard();
+    }
     if (_loading || _config == null) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -528,6 +545,40 @@ class _DatabaseConfigWidgetState extends ConsumerState<DatabaseConfigWidget> {
         // Reload config after save so the editor reflects new values
         _loadConfig();
       },
+    );
+  }
+}
+
+/// The database card on a gateway-mode station: a statement, not a status.
+///
+/// No connection-state stream (there is no station-side connection to
+/// describe), no editor (the stored row applies only in direct mode, and an
+/// editable credentials form under a transport that never dials it invites
+/// exactly the confusion the owner reported), and no census button (the
+/// census reads the pool this station does not hold). The neutral colour is
+/// `onSurface` with alpha rather than `colorScheme.outline`, which neither
+/// Solarized scheme sets and which disappears on dark.
+class _GatewayDatabaseCard extends StatelessWidget {
+  const _GatewayDatabaseCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+    final muted = onSurface.withValues(alpha: 0.65);
+    return Card(
+      child: ListTile(
+        leading: FaIcon(FontAwesomeIcons.database, size: 20, color: muted),
+        title: const Text('Database Configuration'),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            'Not used in gateway mode. This station opens no direct database '
+            'connection — the backend owns the database. The settings stored '
+            'here apply only when the transport is set to Direct.',
+            style: TextStyle(color: muted),
+          ),
+        ),
+      ),
     );
   }
 }
