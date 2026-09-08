@@ -60,7 +60,7 @@ void main() {
             'enabled when the migration had emptied the store');
   });
 
-  test('nothing outside the schema declaration selects from it', () {
+  test('no production file names it, with nothing excluded', () {
     final offenders = <String>[];
 
     for (final file in productionSources()) {
