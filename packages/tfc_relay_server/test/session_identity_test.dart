@@ -568,7 +568,109 @@ void main() {
           reason: 'the wire must serve the identity-scoped family, through '
               'the same policy gate as everything else');
     });
+
+    test('the factory\'s backendConfig family serves the wire too, under the '
+        'same policy gate — the third slot the 17-GATE carry-forward adds',
+        () async {
+      // An administer-holding station, because every config member gates at
+      // administer (AccessPolicy's `state_man_config` row) — the scoped
+      // family must be graded exactly as a shared one would be.
+      final scoped = _ScopedConfig();
+      final pair = channelPair();
+      final api = FakeStateMan();
+      final session = RelaySession.serve(
+        resolver: const PermissiveSeriesResolver(),
+        channel: pair.server,
+        api: api,
+        config: ServerConfig(),
+        handles: HandleTable(),
+        buffer: ConflatingSendBuffer(maxPending: 4096),
+        validator: const _AdminStation(),
+        accessFor: (identity) => (
+          accessTemplates: _ScopedTemplates('scoped-for-${identity.station}'),
+          accessAdmin: _ScopedAdmin(),
+          backendConfig: scoped,
+        ),
+        onError: (_, __, ___) {},
+      );
+      final client = rpc.Client(pair.client);
+      unawaited(client.listen());
+      addTearDown(() async {
+        await client.close();
+        await session.close(1000, 'scoped config test over');
+        await api.dispose();
+      });
+
+      await within(
+          client.sendRequest(Methods.hello, _helloWith(_adminToken).toJson()),
+          'the admin hello');
+
+      final answer = await within(
+          client.sendRequest(AccessMethods.configRead, const {}),
+          'backendConfig.read through the scoped family');
+      expect((answer as Map)['configJson'], '{"opcua":[]}',
+          reason: 'the wire answered the SCOPED family\'s document — the '
+              'shared source has its own backendConfig here (FakeStateMan), '
+              'so only the swap-in can produce this marker');
+      expect(scoped.reads, 1,
+          reason: 'the read reached the per-identity store exactly once; '
+              'zero means the scoped source forwarded config to the shared '
+              'source, which on the shipped graph is the -32011 refusal the '
+              'gate measured');
+    });
   });
+}
+
+// ---------------------------------------------------------------------------
+// The administer-holding station the scoped-config arm needs: config members
+// gate at `administer`, which neither _stationOne nor _stationTwo holds.
+// ---------------------------------------------------------------------------
+
+const _adminToken = 'ST301-4dQw8sKp2Xn6Vt1Mb9Rj5Yc7';
+const _userAdmin = AuthenticatedUser(
+    username: 'ST301-panel', roleName: 'Panel Admin', stationAccount: true);
+const _stationAdmin = StationIdentity(
+  user: _userAdmin,
+  station: 'ST301',
+  session: AccessSession(
+      user: _userAdmin,
+      groups: {AccessGroup.operate, AccessGroup.administer}),
+);
+
+final class _AdminStation implements TokenValidator {
+  const _AdminStation();
+
+  @override
+  Future<TokenVerdict> validate(HelloParams params) async =>
+      params.token == _adminToken
+          ? const TokenAccepted(_stationAdmin)
+          : const TokenRejected('this gateway issued no such credential');
+}
+
+/// A recording scoped config family — the marker document tells it apart from
+/// the shared source's own [FakeStateMan] config.
+final class _ScopedConfig implements BackendConfigApi {
+  int reads = 0;
+
+  @override
+  Future<BackendConfigDocument> read() async {
+    reads++;
+    return const BackendConfigDocument(
+        configJson: '{"opcua":[]}', readOnlySections: ['relay']);
+  }
+
+  @override
+  Future<ConfigValidation> validate(String configJson) async =>
+      const ConfigValidation(ok: true);
+
+  @override
+  Future<void> write(String configJson, {String? reason}) async {}
+
+  @override
+  Future<BackendConfigDocument?> previous() async => null;
+
+  @override
+  Future<void> restorePrevious({String? reason}) async {}
 }
 
 final class _ScopedTemplates implements AccessTemplateApi {
