@@ -1452,8 +1452,8 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
               ),
             if (refusal != null) const SizedBox(height: 12),
           ],
-          // The live link, under the three fields, where an operator who has
-          // just typed the address is standing.
+          // The live link, under the address field and the trust line, where
+          // an operator who has just typed the address is standing.
           //
           // Outside the `_edited.isGateway` block on purpose: a link that is
           // live right now must not vanish because a radio button moved and has
@@ -1462,7 +1462,7 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
           //
           // Nothing is rendered while the provider is still resolving. Not a
           // spinner: `access_status_action.dart:44-51` gives the reason, and
-          // this surface rebuilds on every keystroke in the three fields above.
+          // this surface rebuilds on every keystroke in the field above.
           if (linkReport != null) ...[
             GatewayLinkStatusRow(report: linkReport),
             const SizedBox(height: 12),
