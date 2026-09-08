@@ -69,8 +69,10 @@ import 'dart:async';
 
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:stream_channel/stream_channel.dart';
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
+import '../access_contract.dart';
 import '../data_services_contract.dart';
 import '../harness.dart';
 import '../write_contract.dart';
@@ -79,7 +81,11 @@ import 'rpc_names.dart';
 
 /// A state source on the far side of a message channel.
 final class ChannelStateMan
-    implements StateManApi, StateManWriteHarness, StateManDataHarness {
+    implements
+        StateManApi,
+        StateManWriteHarness,
+        StateManDataHarness,
+        StateManAccessHarness {
   /// Wraps the client end of a channel whose other end is a served source.
   ///
   /// [observables] is the served instance's control surface, read directly for
@@ -560,38 +566,64 @@ final class ChannelStateMan
 
   // -------------------------------------------------- the access families
   //
-  // Four getters and no forwarders. This channel carries the thirty-four
-  // data-service requests in `channel_sub_apis.dart` and nothing else; plan
-  // 17-05 adds the access forwarders and replaces these four.
-
-  /// The one shape every access refusal on this class takes.
-  ///
-  /// This is the argument the library doc above already makes about the four
-  /// data services — *"a getter returning an empty implementation would have
-  /// let `runDataServicesContract` run against a channel carrying nothing and
-  /// report a colour"* — applied to the four families that are in that state
-  /// now. A green run against a channel that forwards nothing is the one
-  /// outcome this kit exists to make impossible.
-  Never _notCarriedByThisChannel(String member) =>
-      throw UnsupportedError('ChannelStateMan.$member is not available: this '
-          'channel forwards no access family. The kit\'s channel leg carries '
-          'the four data services (channel_sub_apis.dart) and nothing else; '
-          'plan 17-05 adds the access forwarders. An empty answer here would '
-          'let a contract case pass against a channel carrying nothing.');
+  // Four forwarders now, added by plan 17-05. Each sends one request and awaits
+  // one answer over the same peer the data services use; a refusal comes back as
+  // `HarnessErrorCodes.accessForbidden` and `channel_sub_apis.dart` re-raises it
+  // as the same [AccessDenied] the in-memory leg throws, so a refusal is one
+  // exception type on both legs (D-09). Built once and kept, like the data
+  // services, though these four hold no state of their own.
 
   @override
-  AccessTemplateApi get accessTemplates =>
-      _notCarriedByThisChannel('accessTemplates');
+  late final AccessTemplateApi accessTemplates =
+      ChannelAccessTemplateApi(_request);
 
   @override
-  AccessAdminApi get accessAdmin => _notCarriedByThisChannel('accessAdmin');
+  late final AccessAdminApi accessAdmin = ChannelAccessAdminApi(_request);
 
   @override
-  AuditApi get audit => _notCarriedByThisChannel('audit');
+  late final AuditApi audit = ChannelAuditApi(_request);
 
   @override
-  BackendConfigApi get backendConfig =>
-      _notCarriedByThisChannel('backendConfig');
+  late final BackendConfigApi backendConfig =
+      ChannelBackendConfigApi(_request);
+
+  // ------------------------------------------------ the access control lever
+  //
+  // The session lever, the recording readout and the stored-password probe are
+  // read straight off the served instance through [_accessObservables], not
+  // over the channel — the same arrangement `roundTrips`, `upstreamWriteAttempts`
+  // and `mintedCmds` use, and for the same reason `harness.dart` gives: these
+  // are test scaffolding, not wire traffic, and putting them on the wire would
+  // make them things a connected client may invoke. The session must take
+  // effect on the served source's own access store, which [_observables] IS —
+  // so swapping it there directly is both correct and race-free, where a lever
+  // notification would depend on ordering the request that follows it.
+
+  @override
+  void actAs(AccessSession session) => _accessObservables.actAs(session);
+
+  @override
+  List<String> get accessStoreWrites => _accessObservables.accessStoreWrites;
+
+  @override
+  String? storedPasswordFor(String subject) =>
+      _accessObservables.storedPasswordFor(subject);
+
+  /// The served source's access control surface, or a failure naming what is
+  /// missing — the same bargain [_writeObservables] strikes for the write side.
+  StateManAccessHarness get _accessObservables {
+    final observables = _observables;
+    if (observables is StateManAccessHarness) {
+      return observables as StateManAccessHarness;
+    }
+    throw UnsupportedError(
+        'the served source (${observables.runtimeType}) exposes no '
+        'StateManAccessHarness, so the session lever and the store-touch '
+        'recording this harness would report are not measurements of anything. '
+        'Serve a source that implements it, or declare supportsAccessControl: '
+        'false where the contract is registered so the access group is skipped '
+        'on the record instead of passing vacuously.');
+  }
 
   /// Records samples on the far side — the one data-service lever.
   ///

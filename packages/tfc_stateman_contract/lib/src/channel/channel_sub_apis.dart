@@ -39,6 +39,7 @@ library;
 import 'dart:async';
 
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'rpc_names.dart';
@@ -466,4 +467,247 @@ final class ChannelPreferencesApi implements PreferencesApi {
 
   Future<void> _set(String method, String key, Object? value) async =>
       await _call(method, {'key': key, 'value': value});
+}
+
+// -----------------------------------------------------------------------------
+// The four access families, over the channel
+// -----------------------------------------------------------------------------
+//
+// A deliberate, method-for-method copy of the client half — the same
+// duplication `data_handlers.dart`'s library doc defends: the gateway may not
+// import this kit at runtime (`handler_table_test.dart` requires this package's
+// name to appear zero times in the server's production lib/), so the channel
+// forwards rather than shares. The copy is the control.
+//
+// One thing is NOT ported: the refusal shape. The harness peer forwards
+// whatever the underlying implementation throws — it does not mint its own
+// `forbidden`. A refusal that was refused server-side comes back as
+// [HarnessErrorCodes.accessForbidden] and is re-raised HERE as the same
+// [AccessDenied] the in-memory leg throws, carrying the same item key and
+// required group — so a refusal is one exception type on both legs (D-09). If
+// the peer minted its own refusal, the channel leg would pass the suite's
+// negative arms against an implementation with no gate at all;
+// `test/channel/channel_access_test.dart` asserts the shape is the same on both
+// legs.
+
+/// Re-raises an [AccessDenied] that was refused on the far side, so a refusal is
+/// the same type over the channel as in memory. Every other RpcException — the
+/// domain refusals travelling as [HarnessErrorCodes.subApiFailed] — propagates
+/// unchanged, which is what keeps them distinguishable from an authorisation
+/// verdict.
+Future<Object?> _withAccessErrors(Future<Object?> Function() send) async {
+  try {
+    return await send();
+  } on rpc.RpcException catch (error) {
+    if (error.code != HarnessErrorCodes.accessForbidden) rethrow;
+    final data = error.data;
+    final itemKey =
+        (data is Map ? data['itemKey'] : null)?.toString() ?? 'unknown';
+    final groupName = data is Map ? data['group']?.toString() : null;
+    final group = (groupName == null ? null : AccessGroup.byName(groupName)) ??
+        AccessGroup.users;
+    throw AccessDenied(itemKey, group);
+  }
+}
+
+/// [AccessTemplateApi] over the channel.
+final class ChannelAccessTemplateApi implements AccessTemplateApi {
+  ChannelAccessTemplateApi(this._call);
+
+  final ChannelCall _call;
+
+  Future<Object?> _send(String method, Map<String, Object?> params) =>
+      _withAccessErrors(() => _call(method, params));
+
+  @override
+  Future<List<AccessTemplate>> list() async => [
+        for (final row in jsonArray(
+            await _send(HarnessMethods.accessTemplatesList, const {})))
+          accessTemplateFromJson(jsonObject(row)),
+      ];
+
+  // No `template(name)` forwarder: the access audit cut the member from the
+  // wire. A remote that wants one template derives it from [list] — same
+  // snapshot semantics, zero wire names.
+
+  @override
+  Future<Map<String, String>> bindings() async {
+    final raw = jsonObject(
+        await _send(HarnessMethods.accessTemplatesBindings, const {}));
+    return {for (final e in raw.entries) e.key: '${e.value}'};
+  }
+
+  @override
+  Future<List<String>> keysBoundTo(String templateName) async => [
+        for (final k in jsonArray(await _send(
+            HarnessMethods.accessTemplatesKeysBoundTo,
+            {'templateName': templateName})))
+          '$k',
+      ];
+
+  @override
+  Future<void> create(AccessTemplate value, {String? reason}) async =>
+      await _send(HarnessMethods.accessTemplatesCreate,
+          {'value': accessTemplateToJson(value), 'reason': reason});
+
+  @override
+  Future<void> update(AccessTemplate value, {String? reason}) async =>
+      await _send(HarnessMethods.accessTemplatesUpdate,
+          {'value': accessTemplateToJson(value), 'reason': reason});
+
+  @override
+  Future<void> rename(String from, String to, {String? reason}) async =>
+      await _send(HarnessMethods.accessTemplatesRename,
+          {'from': from, 'to': to, 'reason': reason});
+
+  @override
+  Future<void> delete(String name, {String? reason}) async => await _send(
+      HarnessMethods.accessTemplatesDelete, {'name': name, 'reason': reason});
+
+  @override
+  Future<void> bind(String keyName, String templateName,
+          {String? reason}) async =>
+      await _send(HarnessMethods.accessTemplatesBind, {
+        'keyName': keyName,
+        'templateName': templateName,
+        'reason': reason,
+      });
+
+  @override
+  Future<void> unbind(String keyName, {String? reason}) async =>
+      await _send(HarnessMethods.accessTemplatesUnbind,
+          {'keyName': keyName, 'reason': reason});
+}
+
+/// [AccessAdminApi] over the channel.
+final class ChannelAccessAdminApi implements AccessAdminApi {
+  ChannelAccessAdminApi(this._call);
+
+  final ChannelCall _call;
+
+  Future<Object?> _send(String method, Map<String, Object?> params) =>
+      _withAccessErrors(() => _call(method, params));
+
+  @override
+  Future<List<AccessRole>> roles() async => [
+        for (final row
+            in jsonArray(await _send(HarnessMethods.accessAdminRoles, const {})))
+          accessRoleFromJson(jsonObject(row)),
+      ];
+
+  @override
+  Future<List<AuthenticatedUser>> listUsers() async => [
+        for (final row in jsonArray(
+            await _send(HarnessMethods.accessAdminListUsers, const {})))
+          authenticatedUserFromJson(jsonObject(row)),
+      ];
+
+  @override
+  Future<void> createRole(AccessRole role, {String? reason}) async =>
+      await _send(HarnessMethods.accessAdminCreateRole,
+          {'role': accessRoleToJson(role), 'reason': reason});
+
+  @override
+  Future<void> updateRole(AccessRole role, {String? reason}) async =>
+      await _send(HarnessMethods.accessAdminUpdateRole,
+          {'role': accessRoleToJson(role), 'reason': reason});
+
+  @override
+  Future<void> deleteRole(String name, {String? reason}) async => await _send(
+      HarnessMethods.accessAdminDeleteRole, {'name': name, 'reason': reason});
+
+  @override
+  Future<void> renameRole(String from, String to, {String? reason}) async =>
+      await _send(HarnessMethods.accessAdminRenameRole,
+          {'from': from, 'to': to, 'reason': reason});
+
+  @override
+  Future<void> createUser(NewUserParams params) async =>
+      await _send(HarnessMethods.accessAdminCreateUser, params.toJson());
+
+  @override
+  Future<void> deleteUser(String subject, {String? reason}) async =>
+      await _send(HarnessMethods.accessAdminDeleteUser,
+          {'subject': subject, 'reason': reason});
+
+  @override
+  Future<void> setUserRole(String subject, String newRole,
+          {String? reason}) async =>
+      await _send(HarnessMethods.accessAdminSetUserRole,
+          {'subject': subject, 'newRole': newRole, 'reason': reason});
+
+  @override
+  Future<void> setUserStationAccount(String subject, bool value,
+          {String? reason}) async =>
+      await _send(HarnessMethods.accessAdminSetUserStationAccount,
+          {'subject': subject, 'value': value, 'reason': reason});
+
+  @override
+  Future<void> setUserPassword(SetUserPasswordParams params) async =>
+      await _send(HarnessMethods.accessAdminSetUserPassword, params.toJson());
+}
+
+/// [AuditApi] over the channel — read-only, like the interface.
+final class ChannelAuditApi implements AuditApi {
+  ChannelAuditApi(this._call);
+
+  final ChannelCall _call;
+
+  Future<Object?> _send(String method, Map<String, Object?> params) =>
+      _withAccessErrors(() => _call(method, params));
+
+  @override
+  Future<List<AuditRecord>> entries(AuditQueryParams query) async => [
+        for (final row in jsonArray(
+            await _send(HarnessMethods.auditEntries, {'query': query.toJson()})))
+          auditRecordFromJson(jsonObject(row)),
+      ];
+
+  @override
+  Future<Map<String, int>> memberCountsByAction(List<String> actionIds) async {
+    final raw = jsonObject(await _send(
+        HarnessMethods.auditMemberCounts, {'actionIds': actionIds}));
+    return {for (final e in raw.entries) e.key: (e.value as num).toInt()};
+  }
+
+  @override
+  Future<List<String>> distinctWho() async => [
+        for (final w
+            in jsonArray(await _send(HarnessMethods.auditDistinctWho, const {})))
+          '$w',
+      ];
+}
+
+/// [BackendConfigApi] over the channel.
+final class ChannelBackendConfigApi implements BackendConfigApi {
+  ChannelBackendConfigApi(this._call);
+
+  final ChannelCall _call;
+
+  Future<Object?> _send(String method, Map<String, Object?> params) =>
+      _withAccessErrors(() => _call(method, params));
+
+  @override
+  Future<BackendConfigDocument> read() async => BackendConfigDocument.fromJson(
+      jsonObject(await _send(HarnessMethods.configRead, const {})));
+
+  @override
+  Future<ConfigValidation> validate(String configJson) async =>
+      ConfigValidation.fromJson(jsonObject(await _send(
+          HarnessMethods.configValidate, {'configJson': configJson})));
+
+  @override
+  Future<void> write(String configJson, {String? reason}) async =>
+      await _send(HarnessMethods.configWrite,
+          {'configJson': configJson, 'reason': reason});
+
+  @override
+  Future<BackendConfigDocument?> previous() async {
+    final raw = await _send(HarnessMethods.configPrevious, const {});
+    return raw == null ? null : BackendConfigDocument.fromJson(jsonObject(raw));
+  }
+
+  @override
+  Future<void> restorePrevious({String? reason}) async =>
+      await _send(HarnessMethods.configRestorePrevious, {'reason': reason});
 }

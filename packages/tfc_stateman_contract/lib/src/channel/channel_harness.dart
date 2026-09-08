@@ -25,6 +25,7 @@ library;
 
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
+import '../../testing/fake_access_services.dart';
 import '../../testing/fake_data_services.dart';
 import '../../testing/fake_state_man.dart';
 import 'channel_pair.dart';
@@ -65,6 +66,7 @@ ChannelServedFake serveFakeOverChannel({
   FakeTimeseries? timeseries,
   FakeHistoryViews? historyViews,
   FakePreferences? preferences,
+  FakeAccessServices? access,
   String Function(String message)? corruptServerToClient,
 }) {
   final served = FakeStateMan(
@@ -75,6 +77,7 @@ ChannelServedFake serveFakeOverChannel({
     timeseries: timeseries,
     historyViews: historyViews,
     preferences: preferences,
+    access: access,
   );
   final channel = channelPair(corruptServerToClient: corruptServerToClient);
   final session = serveStateMan(served, channel.server);
@@ -102,6 +105,7 @@ StateManApi channelServedFake({
   FakeTimeseries? timeseries,
   FakeHistoryViews? historyViews,
   FakePreferences? preferences,
+  FakeAccessServices? access,
   String Function(String message)? corruptServerToClient,
 }) =>
     serveFakeOverChannel(
@@ -112,5 +116,6 @@ StateManApi channelServedFake({
       timeseries: timeseries,
       historyViews: historyViews,
       preferences: preferences,
+      access: access,
       corruptServerToClient: corruptServerToClient,
     ).api;

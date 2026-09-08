@@ -203,33 +203,50 @@ void main() {
   final registered = contractCasesRegistered - before;
 
   group('the run itself', () {
-    test('every check the suite has was registered against the gateway', () {
-      expect(registered, allContractChecks.length,
-          reason: 'the umbrella registered $registered of '
-              '${allContractChecks.length} checks against a gateway-served '
-              'source that declared every capability. A smaller number does '
-              'not mean the gateway carries less — it means a capability was '
-              'switched off rather than met, and the cases behind it are '
-              'unjudged for every panel that uses this client afterwards. Fix '
-              'the forwarding; do not lower the flag');
+    // The one named gap this leg carries: the access family 17-05 merged
+    // into the kit roster (51 -> 78). RemoteStateMan serves no access surface
+    // yet, so the umbrella's supportsAccessControl default (false) holds, and
+    // the gap is pinned by NAME rather than absorbed into a lower count.
+    // access checks — 17-06/17-08 opt this leg in; 17-14 empties the gap.
+    final accessGap = accessChecks.keys.toSet();
+
+    test('every check outside the named access gap was registered against '
+        'the gateway, and the gap is pinned by name', () {
+      final entitled = contractCases(readOnlyKey: _readOnlyKey);
+      final gap =
+          allContractChecks.keys.toSet().difference(entitled.keys.toSet());
+      expect(gap, accessGap,
+          reason: 'this leg is short of the full roster by cases that are '
+              'not the access family. That is a second capability switched '
+              'off inside the first one\'s arithmetic, and the cases behind '
+              'it are unjudged for every panel that uses this client '
+              'afterwards. Fix the forwarding; do not lower the flag');
+      expect(registered + gap.length, allContractChecks.length,
+          reason: 'the umbrella registered $registered and the named access '
+              'gap holds ${gap.length}; together they must reconcile to the '
+              'roster of ${allContractChecks.length}, or a check exists that '
+              'is neither run nor accounted for');
     });
 
     test('every registered check actually started', () {
-      expect(ran, allContractChecks.length,
-          reason: '$ran of $registered registered cases actually ran. The '
+      expect(ran + accessGap.length, allContractChecks.length,
+          reason: '$ran of $registered registered cases actually ran, and '
+              'the named access gap holds ${accessGap.length}. The '
               'difference is a case registered and then skipped, which the '
               'registration count cannot see: the report shows a skip reason, '
               'the suite stays green, and the property is as unjudged as it '
               'would have been with the capability off');
     });
 
-    test('the reachable set and the named gap account for every check', () {
-      expect(reachableChecks + unreachableChecks.length,
+    test('the reachable set and the named gaps account for every check', () {
+      expect(reachableChecks + unreachableChecks.length + accessGap.length,
           allContractChecks.length,
-          reason: 'this leg claims to pass $reachableChecks checks and names '
-              '${unreachableChecks.length} it does not, which is '
-              '${reachableChecks + unreachableChecks.length} of '
-              '${allContractChecks.length}. The two must account for the whole '
+          reason: 'this leg claims to pass $reachableChecks checks, names '
+              '${unreachableChecks.length} it does not, and carries the '
+              '${accessGap.length}-check access gap (17-06/17-08 opt this '
+              'leg in; 17-14 empties it), which is '
+              '${reachableChecks + unreachableChecks.length + accessGap.length} of '
+              '${allContractChecks.length}. The three must account for the whole '
               'suite or the gap is not a gap, it is a number somebody stopped '
               'maintaining — which is exactly the failure mode a named '
               'constant with no list has');

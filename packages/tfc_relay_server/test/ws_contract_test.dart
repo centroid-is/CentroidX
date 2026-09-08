@@ -78,20 +78,35 @@ void main() {
   final registered = contractCasesRegistered - before;
 
   group('the run itself', () {
-    test('every check the suite has ran over the WebSocket', () {
-      expect(registered, allContractChecks.length,
-          reason: 'the umbrella registered $registered of '
-              '${allContractChecks.length} checks against a WS-served source '
-              'that declared every capability. A smaller number does not mean '
-              'the WebSocket carries less — it means a capability was switched '
-              'off rather than met, and the cases behind it are unjudged over '
-              'this transport for every client that uses it afterwards. Fix '
-              'the forwarding; do not lower the flag');
+    // The one named gap this leg carries: the access family 17-05 merged
+    // into the kit roster (51 -> 78). The WS harness serves no access surface
+    // yet, so the umbrella's supportsAccessControl default (false) holds, and
+    // the gap is pinned by NAME rather than absorbed into a lower count.
+    // access checks — 17-06/17-08 opt this leg in; 17-14 empties the gap.
+    final accessGap = accessChecks.keys.toSet();
+
+    test('every check outside the named access gap ran over the WebSocket, '
+        'and the gap is pinned by name', () {
+      final entitled = contractCases(readOnlyKey: _readOnlyKey);
+      final gap =
+          allContractChecks.keys.toSet().difference(entitled.keys.toSet());
+      expect(gap, accessGap,
+          reason: 'this leg is short of the full roster by cases that are '
+              'not the access family. That is a second capability switched '
+              'off inside the first one\'s arithmetic, and the cases behind '
+              'it are unjudged over this transport for every client that '
+              'uses it afterwards. Fix the forwarding; do not lower the flag');
+      expect(registered + gap.length, allContractChecks.length,
+          reason: 'the umbrella registered $registered and the named access '
+              'gap holds ${gap.length}; together they must reconcile to the '
+              'roster of ${allContractChecks.length}, or a check exists that '
+              'is neither run nor accounted for');
     });
 
     test('every registered check actually started', () {
-      expect(ran, allContractChecks.length,
-          reason: '$ran of $registered registered cases actually ran. The '
+      expect(ran + accessGap.length, allContractChecks.length,
+          reason: '$ran of $registered registered cases actually ran, and '
+              'the named access gap holds ${accessGap.length}. The '
               'difference is a case registered and then skipped, which the '
               'registration count cannot see: the report shows a skip reason, '
               'the suite stays green, and the property is as unjudged as it '

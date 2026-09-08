@@ -66,6 +66,7 @@ library;
 import 'package:test/test.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
+import 'src/access_contract.dart';
 import 'src/browse_contract.dart';
 import 'src/check.dart';
 import 'src/data_services_contract.dart';
@@ -76,6 +77,7 @@ import 'src/store_contract.dart';
 import 'src/subscribe_contract.dart';
 import 'src/write_contract.dart';
 
+export 'src/access_contract.dart';
 export 'src/browse_contract.dart';
 export 'src/check.dart';
 export 'src/data_services_contract.dart';
@@ -92,16 +94,22 @@ export 'src/write_contract.dart';
 /// Every sub-suite's registry, keyed by the group name the umbrella runs it
 /// under.
 ///
-/// The one place that knows the suite has eight parts. `allContractChecks`
+/// The one place that knows how many parts the suite has. `allContractChecks`
 /// merges it, the integrity tests iterate it, and a new sub-suite becomes
 /// visible to both by being added here — which is the whole reason it exists
-/// as data rather than as eight references scattered through this file.
+/// as data rather than as references scattered through this file.
 ///
 /// `hold` is the eighth, added in Phase 5 with the deadman it judges
 /// (05-RESEARCH §C.3 recommends a registry of its own rather than five more
 /// entries in `write`: a source can take writes and still have nothing to
 /// hold, and `supportsWrites` should not be the flag that switches a deadman
 /// off).
+///
+/// `access` is the ninth, added in Phase 17: templates, roles-and-users, the
+/// audit trail and the backend's config, judged on any leg through the session
+/// lever `access_contract.dart` documents. Gated by `supportsAccessControl`,
+/// which — unlike the other capability flags — defaults **false**, because most
+/// implementations of this interface serve no access surface.
 const contractRegistries = <String, Map<String, Check<StateManApi>>>{
   'subscribe': subscribeChecks,
   'store': storeChecks,
@@ -111,6 +119,7 @@ const contractRegistries = <String, Map<String, Check<StateManApi>>>{
   'browse': browseChecks,
   'data services': dataServicesChecks,
   'hold': holdChecks,
+  'access': accessChecks,
 };
 
 /// Every registered check in the suite, keyed by the property it asserts.
@@ -149,6 +158,7 @@ Map<String, Check<StateManApi>> contractCases({
   bool supportsBrowse = true,
   bool supportsDataServices = true,
   bool supportsHoldToRun = true,
+  bool supportsAccessControl = false,
 }) =>
     {
       ...subscribeChecks,
@@ -167,6 +177,11 @@ Map<String, Check<StateManApi>> contractCases({
       if (supportsBrowse) ...browseChecks,
       if (supportsDataServices) ...dataServicesChecks,
       if (supportsHoldToRun) ...holdChecks,
+      // Defaults false, unlike its siblings: most StateManApi implementations
+      // are not access-serving (the plant leg administers no roles), so the
+      // umbrella opts them out and an access-serving leg opts in — the same
+      // shape supportsDataServices takes for a source with no historian.
+      if (supportsAccessControl) ...accessChecks,
     };
 
 /// How many cases every [runStateManContract] call in this test file has
@@ -216,6 +231,12 @@ var _casesRegistered = 0;
 /// no tag to hold. A flag of its own rather than a corner of [supportsWrites],
 /// because a source can take writes and still have nothing to hold.
 ///
+/// [supportsAccessControl] — `true` for a source that serves the four access
+/// families (templates, roles-and-users, audit, backend config) and implements
+/// the test-only [StateManAccessHarness] session lever. Defaults **false**: the
+/// plant leg administers no roles, so the access group is skipped for it with a
+/// reason on the record, exactly as [supportsDataServices] skips the historian.
+///
 /// ### Harness hooks
 ///
 /// Each of these overrides where one case gets its lever or its observable.
@@ -264,6 +285,7 @@ void runStateManContract(
   void Function(StateManApi api, String tableName, List<TimeseriesData> points)?
       seedTimeseries,
   bool supportsHoldToRun = true,
+  bool supportsAccessControl = false,
   Set<String> expectUnreachable = const {},
 }) {
   // At registration, not inside a case: a name that matches nothing would
@@ -309,6 +331,7 @@ void runStateManContract(
       expectUnreachable: expectUnreachable,
     );
     runHoldContract(make, supportsHoldToRun: supportsHoldToRun);
+    runAccessContract(make, supportsAccessControl: supportsAccessControl);
   });
 
   _casesRegistered += contractCases(
@@ -317,5 +340,6 @@ void runStateManContract(
     supportsBrowse: supportsBrowse,
     supportsDataServices: supportsDataServices,
     supportsHoldToRun: supportsHoldToRun,
+    supportsAccessControl: supportsAccessControl,
   ).length;
 }

@@ -136,17 +136,22 @@ void main() {
               'would have been with the capability off');
     });
 
-    test('the only gap against the full roster is the seven data-services '
-        'cases, named', () {
+    test('the only gaps against the full roster are the data-services and '
+        'access cases, named', () {
       final gap = allContractChecks.keys.toSet().difference(entitled.keys.toSet());
 
-      expect(gap, dataServicesChecks.keys.toSet(),
+      // The named gap, as two named SETS and never as a count: the
+      // data-services cases behind `supportsDataServices: false`, and the
+      // access family 17-05 merged into the kit roster (51 -> 78), which
+      // this leg does not serve yet.
+      // access checks — 17-06/17-08 opt this leg in; 17-14 empties the gap.
+      expect(gap, {...dataServicesChecks.keys, ...accessChecks.keys},
           reason: 'this leg is short of the full roster by cases that are not '
-              'the seven Phase 10 owns. That is a second capability gone '
-              'false, hiding inside the first one\'s arithmetic — which is '
-              'exactly what comparing a single count against a single number '
-              'cannot see, and why the gap is pinned by name as well as by '
-              'size');
+              'the ones Phase 10 and the access family own. That is a THIRD '
+              'capability gone false, hiding inside the first two\'s '
+              'arithmetic — which is exactly what comparing a single count '
+              'against a single number cannot see, and why the gap is pinned '
+              'by name as well as by size');
       expect(registered + gap.length, allContractChecks.length,
           reason: 'registered plus the named gap must reconcile to the whole '
               'roster; if it does not, a check exists that is neither run nor '
@@ -154,10 +159,12 @@ void main() {
       // ignore: avoid_print
       print('leg 4 (LocalStateMan): $registered of '
           '${allContractChecks.length} checks registered and $ran ran; the '
-          '${gap.length} data-services cases are off behind '
+          '${dataServicesChecks.length} data-services cases are off behind '
           'supportsDataServices: false, because this leg composes no '
           'database — they are judged over a real one by contract_db_test '
-          'in the db lane');
+          'in the db lane. The ${accessChecks.length} access cases are off '
+          'behind supportsAccessControl: false until 17-06/17-08 opt this '
+          'leg in; 17-14 empties the gap');
     });
   });
 }

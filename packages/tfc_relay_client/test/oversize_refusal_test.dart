@@ -20,9 +20,11 @@
 ///
 /// ## Why it is not a contract check
 ///
-/// `allContractChecks` is **51** and both leg constants are 51 with empty gap
-/// lists — 50 until the 10-REVIEW fix cycle added the eighth data-services
-/// check (CR-02, `preferences.clear`). This is a case *beside* them: the
+/// `allContractChecks` is **78** — 51 until 17-05 merged the 27-check access
+/// family, 50 until the 10-REVIEW fix cycle added the eighth data-services
+/// check (CR-02, `preferences.clear`) — and both leg constants are 51 with
+/// empty -32601 gap lists plus the named 27-check access gap (17-06/17-08 opt
+/// the legs in; 17-14 empties it). This is a case *beside* them: the
 /// contract is about properties every
 /// `StateManApi` implementation must have, and "the gateway refuses an
 /// over-large result rather than evicting you" is a property of this gateway's

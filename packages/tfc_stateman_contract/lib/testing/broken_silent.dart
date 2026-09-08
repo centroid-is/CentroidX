@@ -107,6 +107,25 @@ class NeverResponds extends FakeStateMan {
   @override
   PreferencesApi get preferences => _dead ??= _DeadServices();
 
+  // The four access families are dead too. NeverResponds extends FakeStateMan,
+  // whose access families are the real in-memory reference implementation — so
+  // without these overrides an access check would pass here, and the no-hang
+  // sweep exists precisely to catch a check that does anything but fail against
+  // a source that answers nothing. `actAs` and the observables stay inherited:
+  // a check may swap the session and read the (empty) recording, then hang on
+  // the family call, which is the silence this class is for.
+  @override
+  AccessTemplateApi get accessTemplates => _dead ??= _DeadServices();
+
+  @override
+  AccessAdminApi get accessAdmin => _dead ??= _DeadServices();
+
+  @override
+  AuditApi get audit => _dead ??= _DeadServices();
+
+  @override
+  BackendConfigApi get backendConfig => _dead ??= _DeadServices();
+
   /// Releases what this object holds, out of band.
   ///
   /// Not `dispose`: that is part of the surface under test and must stay hung.
@@ -135,7 +154,15 @@ class NeverResponds extends FakeStateMan {
 /// forgotten — a new query that answers instantly with a default would be a
 /// hole in the very sweep this class exists to power.
 class _DeadServices
-    implements BrowseApi, TimeseriesApi, HistoryViewApi, PreferencesApi {
+    implements
+        BrowseApi,
+        TimeseriesApi,
+        HistoryViewApi,
+        PreferencesApi,
+        AccessTemplateApi,
+        AccessAdminApi,
+        AuditApi,
+        BackendConfigApi {
   /// Open and empty, never closed while the source lives: a listener waits
   /// rather than being told the news is over. A closed stream is an event, and
   /// events are the one thing this class does not produce.

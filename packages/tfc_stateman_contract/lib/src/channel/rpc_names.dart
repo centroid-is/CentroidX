@@ -54,6 +54,22 @@ abstract final class HarnessErrorCodes {
 
   /// A sub-API method failed on the far side for any other reason.
   static const subApiFailed = -32002;
+
+  /// An access family refused a write: the session lacked the group it needs.
+  ///
+  /// Its own code, and the one the channel maps back into an [AccessDenied] on
+  /// the client, so a refusal is the **same type** on both legs — the property
+  /// D-09 requires ("one exception type, so a screen cannot tell which
+  /// transport refused it"). The harness mints its own number rather than
+  /// importing the gateway's `forbidden` code: this kit may not depend on the
+  /// gateway package (`handler_table_test` requires this name to appear zero
+  /// times in its production lib, and the reverse edge is equally forbidden),
+  /// and the number only has to be stable across this one channel. The
+  /// **domain** refusals — a bound template, the last
+  /// users-holder, a bad config — travel as [subApiFailed] instead, because
+  /// they are deliberately NOT authorisation verdicts and the contract asserts
+  /// they arrive as something other than an AccessDenied.
+  static const accessForbidden = -32003;
 }
 
 /// Every method name the channel harness registers or sends.
@@ -365,6 +381,109 @@ abstract final class HarnessMethods {
     ...preferenceMethods,
   };
 
+  // -------------------------------------------------------- the access families
+  //
+  // Twenty-eight request names, one per method on the four access interfaces
+  // (twenty-nine until the access audit cut `accessTemplates.template` — no
+  // caller anywhere; a remote derives one template from `list()`),
+  // and — like the data services — not one generic `call(method, args)` among
+  // them (T-02-22). `test/channel/channel_sub_apis_test.dart` counts these
+  // against the interfaces by mirrors, in both directions, so the table cannot
+  // fall behind the interface it mirrors.
+  //
+  // The session lever `actAs`, the recording readout `accessStoreWrites` and
+  // the stored-password probe are deliberately NOT here: they are observables
+  // and levers, read straight off the served instance the way `roundTrips` is,
+  // so nothing carries them and mirroring them would invent wire traffic to
+  // move a value that is already correct (channel_state_man.dart's argument).
+
+  // templates
+  static const accessTemplatesList = '${prefix}access.templates.list';
+  static const accessTemplatesBindings = '${prefix}access.templates.bindings';
+  static const accessTemplatesKeysBoundTo =
+      '${prefix}access.templates.keysBoundTo';
+  static const accessTemplatesCreate = '${prefix}access.templates.create';
+  static const accessTemplatesUpdate = '${prefix}access.templates.update';
+  static const accessTemplatesRename = '${prefix}access.templates.rename';
+  static const accessTemplatesDelete = '${prefix}access.templates.delete';
+  static const accessTemplatesBind = '${prefix}access.templates.bind';
+  static const accessTemplatesUnbind = '${prefix}access.templates.unbind';
+
+  static const templateMethods = <String>{
+    accessTemplatesList,
+    accessTemplatesBindings,
+    accessTemplatesKeysBoundTo,
+    accessTemplatesCreate,
+    accessTemplatesUpdate,
+    accessTemplatesRename,
+    accessTemplatesDelete,
+    accessTemplatesBind,
+    accessTemplatesUnbind,
+  };
+
+  // roles and users
+  static const accessAdminRoles = '${prefix}access.admin.roles';
+  static const accessAdminListUsers = '${prefix}access.admin.listUsers';
+  static const accessAdminCreateRole = '${prefix}access.admin.createRole';
+  static const accessAdminUpdateRole = '${prefix}access.admin.updateRole';
+  static const accessAdminDeleteRole = '${prefix}access.admin.deleteRole';
+  static const accessAdminRenameRole = '${prefix}access.admin.renameRole';
+  static const accessAdminCreateUser = '${prefix}access.admin.createUser';
+  static const accessAdminDeleteUser = '${prefix}access.admin.deleteUser';
+  static const accessAdminSetUserRole = '${prefix}access.admin.setUserRole';
+  static const accessAdminSetUserStationAccount =
+      '${prefix}access.admin.setUserStationAccount';
+  static const accessAdminSetUserPassword =
+      '${prefix}access.admin.setUserPassword';
+
+  static const adminMethods = <String>{
+    accessAdminRoles,
+    accessAdminListUsers,
+    accessAdminCreateRole,
+    accessAdminUpdateRole,
+    accessAdminDeleteRole,
+    accessAdminRenameRole,
+    accessAdminCreateUser,
+    accessAdminDeleteUser,
+    accessAdminSetUserRole,
+    accessAdminSetUserStationAccount,
+    accessAdminSetUserPassword,
+  };
+
+  // audit (read-only)
+  static const auditEntries = '${prefix}access.audit.entries';
+  static const auditMemberCounts = '${prefix}access.audit.memberCountsByAction';
+  static const auditDistinctWho = '${prefix}access.audit.distinctWho';
+
+  static const auditMethods = <String>{
+    auditEntries,
+    auditMemberCounts,
+    auditDistinctWho,
+  };
+
+  // backend config
+  static const configRead = '${prefix}access.config.read';
+  static const configValidate = '${prefix}access.config.validate';
+  static const configWrite = '${prefix}access.config.write';
+  static const configPrevious = '${prefix}access.config.previous';
+  static const configRestorePrevious = '${prefix}access.config.restorePrevious';
+
+  static const configMethods = <String>{
+    configRead,
+    configValidate,
+    configWrite,
+    configPrevious,
+    configRestorePrevious,
+  };
+
+  /// Every request name belonging to the four access sub-APIs.
+  static const accessMethods = <String>{
+    ...templateMethods,
+    ...adminMethods,
+    ...auditMethods,
+    ...configMethods,
+  };
+
   // There is deliberately no name here for `upstreamWriteAttempts` or
   // `mintedCmds`. Both are synchronous on the interface, so neither could be
   // answered by a round trip without changing the interface — the same
@@ -404,5 +523,6 @@ abstract final class HarnessMethods {
     holdTick,
     ...levers,
     ...dataServices,
+    ...accessMethods,
   };
 }
