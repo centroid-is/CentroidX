@@ -14,10 +14,12 @@
 /// no longer change what this server exposes — because nothing on the path
 /// from `main` to a registered tool group looks at it.
 ///
-/// The one surviving mention is the drift table *declaration* in
-/// `server_database.dart`, which describes a table the plant still carries as
-/// rollback insurance. It is a schema, not a read; it goes when the table
-/// does, with the cutover drop.
+/// The table class went with the read. `tfc_dart` keeps its declaration on
+/// purpose -- a plant carries the table until somebody runs the drop tool, and
+/// a build whose schema does not know the table can neither open that database
+/// nor drop it -- but this package has neither need: it drops nothing and
+/// reads nothing. So there is no mention left here at all, and a schema this
+/// package does not need is a schema that invites the read back.
 library;
 
 import 'dart:io';
@@ -31,8 +33,9 @@ void main() {
 
   /// Every hand-written Dart file the binary can reach.
   ///
-  /// Generated drift output is excluded: it mirrors the schema declaration
-  /// and would report the table whatever the production code does.
+  /// Generated drift output is excluded on principle rather than necessity:
+  /// it mirrors whatever the schema declares, so it reports the declaration
+  /// rather than a decision.
   List<File> productionSources() {
     return [
       File('$packageRoot/bin/tfc_mcp_server.dart'),
@@ -61,10 +64,6 @@ void main() {
     final offenders = <String>[];
 
     for (final file in productionSources()) {
-      final isSchemaDeclaration =
-          file.path.endsWith('database/server_database.dart');
-      if (isSchemaDeclaration) continue;
-
       final lines = file.readAsLinesSync();
       for (var i = 0; i < lines.length; i++) {
         if (lines[i].contains('serverFlutterPreferences') ||
@@ -79,15 +78,26 @@ void main() {
             'empties and the cutover drops:\n${offenders.join('\n')}');
   });
 
-  test('the surviving mention is a table declaration, not a query', () {
-    // Stated positively so the exclusion above cannot quietly grow to cover
-    // a real read that somebody adds to the same file.
+  test('the schema no longer declares the table either', () {
+    // The exclusion this test used to carry is gone with the declaration, and
+    // that is the point: while `server_database.dart` was skipped, a real read
+    // added to that one file would have gone unseen. Now nothing is skipped.
     final source =
         File('$packageRoot/lib/src/database/server_database.dart')
             .readAsStringSync();
 
-    expect(source, contains('class ServerFlutterPreferences extends Table'));
-    expect(source, isNot(contains('select(')),
-        reason: 'the schema file describes tables; it does not read them');
+    expect(source, isNot(contains('class ServerFlutterPreferences')));
+    expect(source, isNot(contains("tableName => 'flutter_preferences'")));
+  });
+
+  test('tests that want the retired table build it themselves', () {
+    // Not a leftover: `config_service_test.dart` seeds the blob to prove the
+    // readers ignore it, and that claim only means something against a
+    // database where the table really exists. The DDL helper is how a test
+    // gets one now, which is also how a plant has one.
+    final helper =
+        File('$packageRoot/test/helpers/config_rows.dart').readAsStringSync();
+
+    expect(helper, contains('CREATE TABLE IF NOT EXISTS flutter_preferences'));
   });
 }

@@ -193,15 +193,11 @@ void main() {
       await db.close();
     });
 
-    Future<void> insertPreference(String key, dynamic value) async {
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: key,
-              value: Value(jsonEncode(value)),
-              type: 'String',
-            ),
-          );
-    }
+    /// Seeds the retired blob, into a table this package no longer has a
+    /// drift schema for -- so the DDL comes from the helper, the way a plant
+    /// that has not yet run the drop tool still has it.
+    Future<void> insertPreference(String key, dynamic value) =>
+        insertFlutterPreferenceRow(db, key: key, value: value);
 
     /// Seeds the alarm definitions the way the app really stores them.
     ///

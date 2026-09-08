@@ -10,9 +10,13 @@
 ///
 /// `config_item` is created by tfc_dart's migration and is deliberately not
 /// part of `ServerDatabase`'s drift schema — one physical table with more than
-/// one Dart schema over it, the same arrangement `flutter_preferences` has. So
-/// [createConfigItemTable] creates it with DDL, the way a real database gets
-/// it, and a test that wants the *un*migrated database simply never calls it.
+/// one Dart schema over it. So [createConfigItemTable] creates it with DDL,
+/// the way a real database gets it, and a test that wants the *un*migrated
+/// database simply never calls it.
+///
+/// [createFlutterPreferencesTable] is here for the opposite reason: the
+/// retired table has no Dart schema in this package at all any more, and the
+/// tests that still want it want to prove it is ignored.
 library;
 
 import 'dart:convert';
@@ -27,6 +31,36 @@ Future<void> createConfigItemTable(GeneratedDatabase db) => db.customStatement(
     'sort_index INTEGER, payload TEXT NOT NULL, '
     'rev INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, '
     'updated_by TEXT NOT NULL, PRIMARY KEY (kind, id, scope))');
+
+/// `flutter_preferences`, the retired table, matching what a plant still
+/// physically carries until somebody runs the drop tool.
+///
+/// Created with DDL because this package no longer has a drift schema for it:
+/// the MCP server stopped reading the table, and the table class went with the
+/// read. A schema this package does not need is a schema that invites the read
+/// back. Tests seed it here to prove the readers ignore it, which is a claim
+/// that only means anything against a database where the table really exists.
+Future<void> createFlutterPreferencesTable(GeneratedDatabase db) =>
+    db.customStatement(
+        'CREATE TABLE IF NOT EXISTS flutter_preferences (key TEXT NOT NULL '
+        'PRIMARY KEY, value TEXT, type TEXT NOT NULL)');
+
+/// One `flutter_preferences` row, JSON-encoding [value] the way the app did.
+///
+/// Creates the table first, so a test that seeds a blob does not also have to
+/// remember that nothing else will.
+Future<void> insertFlutterPreferenceRow(
+  GeneratedDatabase db, {
+  required String key,
+  required Object? value,
+  String type = 'String',
+}) async {
+  await createFlutterPreferencesTable(db);
+  await db.customStatement(
+    'INSERT INTO flutter_preferences (key, value, type) VALUES (?, ?, ?)',
+    [key, jsonEncode(value), type],
+  );
+}
 
 /// `config_change`, matching tfc_dart's migration.
 ///
