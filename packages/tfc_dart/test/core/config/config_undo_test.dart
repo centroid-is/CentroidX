@@ -23,7 +23,6 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/config/config_change.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart';
-import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:tfc_dart/core/config/config_undo.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 
@@ -378,7 +377,25 @@ void main() {
   });
 
   group('what this write path cannot put back', () {
-    test('a preference row is refused, naming the store that owns it',
+    test('a shared preference plans like any other row', () async {
+      final pref = ConfigItem.of(
+        kind: ConfigKind.preference,
+        id: 'alarm_man_config',
+        value: {'type': 'String', 'value': '{}'},
+      );
+      await seed(pref, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'act-1', after: pref));
+
+      final plan = await planUndo(remote, 'act-1');
+
+      expect(plan.isReady, isTrue,
+          reason: 'a shared preference is a shared row like any other since '
+              '04-05, and writeItems can replace it');
+      expect(plan.kinds, {ConfigKind.preference});
+      expect(plan.steps.single.isRemoval, isTrue);
+    });
+
+    test('a station-scoped preference is refused — another store owns it',
         () async {
       final pref = ConfigItem.of(
         kind: ConfigKind.preference,
@@ -392,8 +409,8 @@ void main() {
 
       expect(plan.isReady, isFalse);
       expect(plan.isUnknownAction, isFalse);
-      expect(plan.blockers.single.reason, UndoBlockReason.unsupportedKind);
-      expect(plan.blockers.single.summary, contains('preference'));
+      expect(plan.blockers.single.reason, UndoBlockReason.unsupportedScope);
+      expect(plan.blockers.single.summary, contains('startup_url'));
     });
 
     test('a station-scoped entity of a shared kind is refused', () async {
@@ -435,6 +452,15 @@ void main() {
       expect(plan.isReady, isFalse);
       expect(plan.blockers.single.reason, UndoBlockReason.unknownKind);
       expect(plan.blockers.single.kindName, 'recipe');
+    });
+
+    test('every kind this build knows is one writeItems can replace', () {
+      // Which is why `UndoBlockReason.unsupportedKind` has no test that
+      // reaches it: there is no such kind today. The arm stays as the
+      // fail-closed answer for the next kind somebody adds outside the set,
+      // and this assertion is what makes adding one a decision rather than a
+      // silent change of what undo will attempt to write.
+      expect(ConfigKind.values.toSet().difference(kSharedConfigKinds), isEmpty);
     });
   });
 
