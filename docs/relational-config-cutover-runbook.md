@@ -80,10 +80,16 @@ with three columns — `key,value,type` — and a header line.
 **REQUIRE THE ROW COUNT.** The script prints how many rows it wrote and warns
 when the table looks empty. That number is the check:
 
-- **A count in the dozens** is what a configured plant looks like.
-- **Zero, or a handful,** means you are pointed at the wrong database or the
-  wrong user. It does **not** mean the plant has no configuration. Fix the
-  `--dbname`/`--dbuser` and dump again.
+- **Zero is always wrong.** It does **not** mean the plant has no
+  configuration; it means you are pointed at the wrong database or the wrong
+  user. Fix the `--dbname`/`--dbuser` and dump again.
+- **Sanity-check the count against what you know is there.** A configured
+  plant has, at minimum, `key_mappings`, `page_editor_data`,
+  `alarm_man_config`, `collector_config`, `server_config_envelope`,
+  `page_editor_top_level_order`, `startup_url`, plus one
+  `page_editor_image:<id>` per uploaded mimic image and one `<bucket>.recipes`
+  per recipe bucket. If the count is smaller than the list of things you can
+  see working on the HMI, stop and find out why before you go any further.
 
 A zero here is the quiet failure this whole document is built to avoid: an
 empty CSV gives you an empty key inventory, which passes section 3 without
