@@ -5,6 +5,7 @@ library;
 
 import 'dart:async';
 
+import 'package:logger/logger.dart';
 import 'package:meta/meta.dart' show visibleForTesting;
 
 import '../access/guarded_config_store.dart';
@@ -22,6 +23,11 @@ import 'preference_payload.dart';
 /// answers `administer` — which is the right answer for "delete every shared
 /// setting in the plant", and the same string `GuardedPreferences` used.
 const String kWholeStoreItemKey = '*';
+
+/// Only ever used off the happy path — a caller naming a bookkeeping row.
+/// Nothing here logs per read or per write, the same rule
+/// `sqlite_preferences.dart` states for its own logger.
+final Logger _logger = Logger();
 
 /// Ids beginning with this are bookkeeping and are not preferences.
 ///
@@ -372,14 +378,58 @@ class SharedRowPreferences extends Preferences {
     }
   }
 
+  /// Removes one shared preference.
+  ///
+  /// **A bookkeeping row is not one, and naming it does not make it one.**
+  /// [clear] has always kept the `_`-prefixed rows and this did not, and the
+  /// asymmetry was the bug: the only internal shared row is the
+  /// `flutter_preferences` migration marker, which `config_sync.dart` reads at
+  /// `scope='shared'` to tell an empty remote from an unmigrated one. Deleting
+  /// it makes every station read a fully migrated plant as one whose migration
+  /// has not run — and once 04-12 has dropped `flutter_preferences`, there is
+  /// nothing left to re-read it from.
+  ///
+  /// **A deliberate divergence from `SqlitePreferences`**, whose [remove] is
+  /// *not* filtered and says so: its marker is this station's own account of a
+  /// local import, naming it is how an operator asks for that import to run
+  /// again, and the worst case is one station re-reading one file. Here the
+  /// row belongs to the whole plant and the worst case is every station
+  /// mistaking a migrated store for an unmigrated one, so the same reasoning
+  /// lands on the opposite answer.
+  ///
+  /// **Refused with a word, not silently** — the one decision here that could
+  /// have gone either way. [clear]'s silence is right for [clear]: it names no
+  /// key, and "everything" never meant the bookkeeping. A caller here named
+  /// *this* key, and being ignored without explanation is its own trap. A log
+  /// line rather than a throw because no legitimate caller can reach it
+  /// ([getKeys] and [getAll] never surface an internal id, so the preferences
+  /// editor cannot offer one), and a throw out of a preference removal is a
+  /// panel that stops rather than one that keeps working. This is not a second
+  /// convention: `sqlite_preferences.dart` keeps a logger for exactly this
+  /// class of off-happy-path event, and this file simply had no such case
+  /// until now.
+  ///
+  /// Reads are **not** filtered, and that is not a half-applied rule.
+  /// [containsKey] still answers for a marker, because asking whether a
+  /// migration has run is the marker's whole purpose and a read destroys
+  /// nothing.
   @override
   Future<void> remove(String key, {bool secret = false}) async {
     if (secret) {
       // Checked and recorded exactly as a secret write is: a deletion of a
-      // credential is as much a configuration change as setting one.
+      // credential is as much a configuration change as setting one. Above
+      // the rule below on purpose: an internal id names a *row*, and this
+      // deletes a keychain entry.
       await _secretWriter(
           prefKey: key, write: () => super.remove(key, secret: true));
       _events.add(key);
+      return;
+    }
+    if (_isInternal(key)) {
+      _logger.w('refusing to remove the shared configuration row "$key": it '
+          'is bookkeeping, not a preference. Deleting a migration marker '
+          'makes a migrated shared store read as un-migrated on every '
+          'station. Nothing was written.');
       return;
     }
     final rows = _rows();
