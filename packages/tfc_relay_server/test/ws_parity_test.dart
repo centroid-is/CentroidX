@@ -103,6 +103,17 @@ final _legs = <_Leg>[
 /// points at the transport rather than at the contract.
 _Leg get _reference => _legs.first;
 
+/// The named access gap per leg — a SET, never a count.
+///
+/// 17-05 merged the 27-check access family into the kit roster (51 -> 78).
+/// The kit's own channel harness serves the four access families, so the
+/// channel leg carries no gap; the socket and WS harnesses serve no access
+/// surface yet, so their gap is `accessChecks` by name. Naming it per leg is
+/// what keeps a 28th unjudged check red — the count-blind defect 13-11 caught.
+/// access checks — 17-06/17-08 opt this leg in; 17-14 empties the gap.
+Set<String> _accessGapFor(String leg) =>
+    leg == 'channel' ? const <String>{} : accessChecks.keys.toSet();
+
 /// The property `DropsSubscriptions` is built to violate.
 ///
 /// Named here rather than inlined so the falsification case asserts on the same
@@ -144,28 +155,36 @@ void main() {
               'like a stronger claim than it is');
     });
 
-    test('the sweep recorded a non-empty pass set on every leg', () {
+    test('the sweep recorded a full pass set on every leg, outside each '
+        'leg\'s named access gap', () {
       for (final leg in _legs) {
         expect(_main.passesOn(leg.name), isNotEmpty,
             reason: 'the ${leg.name} leg passed nothing at all. Three empty '
                 'sets are equal to each other, so a sweep that discovers no '
                 'outcomes reports perfect parity — the exact vacuous pass this '
                 'assertion exists to make impossible');
-        expect(_main.passesOn(leg.name).length, allContractChecks.length,
+        expect(_main.passesOn(leg.name),
+            allContractChecks.keys.toSet().difference(_accessGapFor(leg.name)),
             reason: 'the ${leg.name} leg passed '
                 '${_main.passesOn(leg.name).length} of '
-                '${allContractChecks.length} checks. Every leg is expected to '
-                'pass the whole registry — each has a green contract driver of '
-                'its own — so a shortfall here is either a real regression on '
-                'that transport or a check that escaped its deadline under the '
-                'load of a three-leg sweep. Both are worth reading; neither is '
-                'worth lowering this number for');
+                '${allContractChecks.length} checks, against a roster minus '
+                'its named access gap of ${_accessGapFor(leg.name).length}. '
+                'Every leg is expected to pass everything outside that named '
+                'set — each has a green contract driver of its own — so a '
+                'shortfall here is either a real regression on that transport '
+                'or a check that escaped its deadline under the load of a '
+                'three-leg sweep. Both are worth reading; neither is worth '
+                'lowering this number for');
       }
     });
 
-    test('every leg passes the same set of properties', () {
+    test('every leg passes the same set of properties, outside its named '
+        'access gap', () {
       for (final leg in _legs.skip(1)) {
-        expect(_main.passesOn(leg.name), _main.passesOn(_reference.name),
+        expect(_main.passesOn(leg.name).union(_accessGapFor(leg.name)),
+            _main
+                .passesOn(_reference.name)
+                .union(_accessGapFor(_reference.name)),
             reason: _main.disagreementReport(_reference.name, leg.name));
       }
     });

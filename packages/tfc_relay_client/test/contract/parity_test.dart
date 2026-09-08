@@ -195,10 +195,15 @@ void main() {
               'both are worth reading and neither is worth subtracting');
     });
 
-    test('what the gateway leg does not pass is exactly the named gap', () {
+    test('what the gateway leg does not pass is exactly the named gaps', () {
+      // The access family (17-05, 51 -> 78 on the kit roster) passes on the
+      // channel reference leg — the kit's ChannelStateMan serves it — and not
+      // over the gateway, because RemoteStateMan has no access surface yet.
+      // Pinned as a NAMED SET beside the -32601 gap list, never as a count.
+      // access checks — 17-06/17-08 opt this leg in; 17-14 empties the gap.
       expect(
           _main.passesOn(_channel.name).difference(_main.passesOn(_ws.name)),
-          unreachableChecks.toSet(),
+          {...unreachableChecks, ...accessChecks.keys},
           reason: _main.disagreementReport(_channel.name, _ws.name));
     });
 

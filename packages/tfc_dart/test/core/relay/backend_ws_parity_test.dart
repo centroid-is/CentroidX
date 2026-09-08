@@ -284,30 +284,37 @@ void main() {
   });
 
   group('the three legs together cover the roster', () {
-    test('every check in allContractChecks is judged by at least one leg', () {
+    test('every non-access check is judged by at least one leg, and the '
+        'access family is the one named orphan set', () {
       final covered = <String>{
         for (final leg in _legs) ...judged[leg.name]!,
       };
       final orphaned = allContractChecks.keys.toSet().difference(covered);
-      expect(orphaned, isEmpty,
-          reason: 'these checks are judged by no leg in this phase at all. A '
-              'check nobody runs is a property nobody has, and the per-leg '
-              'accounting arms cannot see it: each of them reconciles against '
-              'its own flags, so a check that fell out of every leg reconciles '
-              'everywhere');
-      expect(covered.length, allContractChecks.length,
+      // The access family (17-05, 51 -> 78 on the kit roster) is judged by
+      // NO backend leg yet — pinned here as a NAMED SET rather than lowered
+      // to a count, so a 28th unjudged check still reddens this arm.
+      // access checks — 17-06/17-08 opt this leg in; 17-14 empties the gap.
+      expect(orphaned, accessChecks.keys.toSet(),
+          reason: 'a check outside the access family is judged by no leg in '
+              'this phase at all. A check nobody runs is a property nobody '
+              'has, and the per-leg accounting arms cannot see it: each of '
+              'them reconciles against its own flags, so a check that fell '
+              'out of every leg reconciles everywhere');
+      expect(covered.length + accessChecks.length, allContractChecks.length,
           reason: 'the union of the three legs is ${covered.length} against a '
-              'roster of ${allContractChecks.length}');
+              'roster of ${allContractChecks.length}, and the named access '
+              'gap must account for every check the union is short of');
     });
 
-    test('the offline legs plus the named db-lane gap reconcile to the roster',
-        () {
+    test('the offline legs plus the named db-lane and access gaps reconcile '
+        'to the roster', () {
       final gap = allContractChecks.keys.toSet().difference(judged[ws]!);
-      expect(gap, dataServicesChecks.keys.toSet(),
-          reason: 'what the WebSocket leg is short of is not the group its '
+      // access checks — 17-06/17-08 opt this leg in; 17-14 empties the gap.
+      expect(gap, {...dataServicesChecks.keys, ...accessChecks.keys},
+          reason: 'what the WebSocket leg is short of is not the groups its '
               'own file names. The gap has to be pinned by name and not by '
-              'size, or a second capability can go false inside the first '
-              'one\'s arithmetic');
+              'size, or a third capability can go false inside the first '
+              'two\'s arithmetic');
       expect(judged[ws]!.length + gap.length, allContractChecks.length,
           reason: 'judged plus the named gap must reconcile to the whole '
               'roster; if it does not, a check exists that is neither run nor '
@@ -322,11 +329,17 @@ void main() {
         final missing = allContractChecks.keys.toSet().difference(set);
         final group = missing.isEmpty
             ? 'nothing — it judges the whole roster'
-            : (missing.setEquals(dataServicesChecks.keys.toSet())
-                ? 'the ${missing.length} data-services checks '
-                    '(supportsDataServices: false)'
-                : '${missing.length} check(s), NOT the data-services group: '
-                    '${missing.toList()..sort()}');
+            : (missing.setEquals(
+                    {...dataServicesChecks.keys, ...accessChecks.keys})
+                ? 'the ${dataServicesChecks.length} data-services checks '
+                    '(supportsDataServices: false) and the '
+                    '${accessChecks.length} access checks (17-06/17-08 opt '
+                    'this leg in; 17-14 empties the gap)'
+                : missing.setEquals(accessChecks.keys.toSet())
+                    ? 'the ${missing.length} access checks (17-06/17-08 opt '
+                        'this leg in; 17-14 empties the gap)'
+                    : '${missing.length} check(s), NOT a named gap group: '
+                        '${missing.toList()..sort()}');
         buffer
           ..writeln('  ${leg.name}:')
           ..writeln('    file:       ${leg.path}')

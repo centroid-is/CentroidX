@@ -385,21 +385,30 @@ void main() {
               'registration count cannot see');
     });
 
-    test('this leg is short of nothing — the full roster, over a database',
-        () {
+    test('this leg is short of exactly the access family, named', () {
       final gap =
           allContractChecks.keys.toSet().difference(entitled.keys.toSet());
 
-      expect(gap, isEmpty,
-          reason: 'the flags leave ${gap.length} of the roster unjudged '
-              '($gap). This leg exists to have no gap: it is the one with both '
-              'a plant and a database behind it');
-      expect(registered, allContractChecks.length,
-          reason: 'registered must reconcile to the whole roster');
+      // The access family (17-05, 51 -> 78 on the kit roster) is the one
+      // NAMED gap: this leg has a plant and a database behind it, but no
+      // access surface yet, and the gap is pinned as a set rather than a
+      // count so a 28th unjudged check still reddens this arm.
+      // access checks — 17-06/17-08 opt this leg in; 17-14 empties the gap.
+      expect(gap, accessChecks.keys.toSet(),
+          reason: 'the flags leave part of the roster unjudged that is not '
+              'the access family ($gap). Outside that named set this leg '
+              'exists to have no gap: it is the one with both a plant and a '
+              'database behind it');
+      expect(registered + gap.length, allContractChecks.length,
+          reason: 'registered plus the named access gap must reconcile to '
+              'the whole roster; if it does not, a check exists that is '
+              'neither run nor accounted for');
       // ignore: avoid_print
       print('leg 7 (BackendStateMan over TimescaleDB): $registered of '
           '${allContractChecks.length} checks registered and $ran ran; '
-          'supportsDataServices is true and the gap list is empty');
+          'supportsDataServices is true; the ${gap.length} access cases are '
+          'off behind supportsAccessControl: false until 17-06/17-08 opt '
+          'this leg in (17-14 empties the gap)');
     });
 
     test('nothing this leg recorded went into an unprefixed table', () {
