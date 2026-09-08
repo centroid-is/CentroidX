@@ -22,6 +22,22 @@
 // cleaning that up is precisely what the tool is for. The SQL below is what
 // that method emitted, kept here because it is now the only record of it.
 //
+// **This file takes a database of its own, and it is the only one that has
+// to.** It runs a real `DROP TABLE`, and every other integration file in this
+// package points at the same `testdb`. On the Docker leg that is survivable by
+// accident — each file's `setUpAll` does `compose down` then `up`, which takes
+// the container's storage with it — but the macOS and Windows CI legs run with
+// `TIMESCALEDB_EXTERNAL=1` against a native PostgreSQL, where both of those
+// calls are no-ops. One database then lives for the whole run and this file's
+// last drop is permanent for every file scheduled after it.
+//
+// That failure is sequential, not a race: `dart_test.yaml` sets
+// `concurrency: 1`. Which file pays depends only on enumeration order, which
+// is why CI failed in `page_migration_test.dart` on macOS and in
+// `preference_migration_test.dart` on Windows with the same `42P01: relation
+// "flutter_preferences" does not exist`, while a local Docker run stayed
+// green. `createIsolatedDatabase` is the fix, and the reasoning lives on it.
+//
 // PARALLEL WORKTREES: `docker_compose.dart` hardcodes the container name and
 // both ports (5432, and the proxy on 15432). Two checkouts running integration
 // suites at once bind the same ports and each `setUpAll` tears the other's
@@ -58,17 +74,27 @@ void main() {
     /// and it asserts. Assertions must not ride the connection under test.
     late pg.Connection other;
 
+    /// The database this file owns outright — see the header. Both connections
+    /// below point at it, so the `DROP TABLE` under test cannot reach any
+    /// other file's state.
+    late String ownDatabase;
+
     setUpAll(() async {
       await stopDockerCompose();
       await startDockerCompose();
       await waitForDatabaseReady();
-      database = await connectToDatabase();
-      other = await getTestConnection();
+      ownDatabase = await createIsolatedDatabase('drop');
+      database = await connectToDatabaseNamed(ownDatabase);
+      other = await getTestConnectionFor(ownDatabase);
     });
 
     tearDownAll(() async {
       await other.close();
       await database.close();
+      // Before the compose teardown: dropping the database needs the proxy
+      // the teardown shuts down, and a database left behind is a leak that
+      // accumulates one per run forever.
+      await dropIsolatedDatabase(ownDatabase);
       await stopDockerCompose();
     });
 
