@@ -43,7 +43,6 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'alarm_ack_sink.dart';
 import 'auth/file_token_validator.dart';
-import 'close_codes.dart';
 import 'error_reporter.dart';
 import 'handle_table.dart';
 import 'health/cert_health_state_man.dart';
@@ -785,7 +784,7 @@ final class RelayServer {
     if (unhelloedCount >= config.maxUnhelloedSessions) {
       unawaited(ws.sink
           .close(
-              GatewayCloseCodes.unhelloedBudget,
+              CloseCodes.unhelloedBudget,
               'the gateway is already holding ${config.maxUnhelloedSessions} '
                   'connections that have not said hello; try again shortly')
           .catchError((Object _) {}));
