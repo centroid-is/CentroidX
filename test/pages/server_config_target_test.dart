@@ -1,0 +1,549 @@
+/// One screen, two targets — and the operator can tell which machine they are
+/// editing (17-13, ACCESS-04/ACCESS-06).
+///
+/// The ROADMAP names the failure mode before the feature: silently configuring
+/// the wrong machine. Arm 2 is that sentence as a test — it asserts the store
+/// that was NOT written, because a page that shows the remote config and saves
+/// the local one passes every arm that only asserts "a save happened".
+///
+/// The fixture is 15-05's (`buildTestableServerConfig` + `_gatewayStation`'s
+/// shape), not a second one. The backend at the far end is a scripted
+/// [BackendConfigApi]: the wire, the policy check and the audit row are
+/// 17-08/17-09/17-10's tested territory, and this file is about the page.
+library;
+
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+import 'package:tfc/access_routes.dart';
+import 'package:tfc/core/gateway_config.dart';
+import 'package:tfc/pages/server_config.dart';
+import 'package:tfc/providers/access.dart';
+import 'package:tfc/providers/preferences.dart';
+import 'package:tfc_access/tfc_access.dart' show AccessGroup;
+import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
+import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
+    show BackendConfigApi, BackendConfigDocument, ConfigValidation;
+
+import '../helpers/test_helpers.dart';
+
+// ---------------------------------------------------------------------------
+// The structural keys the page exports. Spelled as literals here so this file
+// compiles — and fails by "found nothing" — before the page grows them; the
+// GREEN task declares constants with these exact strings and the goldens use
+// those.
+// ---------------------------------------------------------------------------
+
+const _banner = Key('config_target_banner');
+const _editor = Key('backend_config_editor');
+const _relayField = Key('backend_config_relay_field');
+const _save = Key('backend_config_save');
+const _restore = Key('backend_config_restore');
+const _refusal = Key('backend_config_refusal');
+const _attribution = Key('backend_config_attribution');
+const _restartNote = Key('backend_config_restart_note');
+
+/// The station name every arm pins. Overridden onto [stationNameProvider]
+/// because the production value is `Platform.localHostname`, which is a
+/// different string on every machine that runs this suite.
+const _station = 'SVN-ST101';
+
+/// The endpoint the gateway fixture dials — the machine the banner must name.
+const _gatewayUrl = 'wss://10.50.10.11:9443';
+
+/// The backend's live configuration, as the scripted far end serves it.
+/// One editable section (`opcua`) and the one that is not (`relay`, D-10).
+const _liveConfig = <String, Object?>{
+  'opcua': [
+    <String, Object?>{
+      'endpoint': 'opc.tcp://10.104.20.10:4840',
+      'server_alias': 'ST101',
+      'publishing_interval_ms': 250,
+    },
+  ],
+  'relay': <String, Object?>{
+    'port': 9443,
+    'token_file': '/etc/centroid/relay-tokens.json',
+  },
+};
+
+/// A scripted far end. Records what was written and can be told to refuse.
+class ScriptedBackendConfig implements BackendConfigApi {
+  ScriptedBackendConfig({
+    Map<String, Object?> config = _liveConfig,
+    this.hasPrevious = false,
+    this.writeRefusal,
+  }) : configJson = jsonEncode(config);
+
+  String configJson;
+  bool hasPrevious;
+
+  /// Thrown by [write] when set — the backend refusing, in the backend's own
+  /// words, exactly as the client proxy re-raises it.
+  Object? writeRefusal;
+
+  final List<String> writes = [];
+  int reads = 0;
+  int restoreCalls = 0;
+
+  @override
+  Future<BackendConfigDocument> read() async {
+    reads++;
+    return BackendConfigDocument(
+      configJson: configJson,
+      readOnlySections: const ['relay'],
+      hasPrevious: hasPrevious,
+    );
+  }
+
+  @override
+  Future<ConfigValidation> validate(String configJson) async =>
+      const ConfigValidation(ok: true);
+
+  @override
+  Future<void> write(String configJson, {String? reason}) async {
+    final refusal = writeRefusal;
+    if (refusal != null) throw refusal;
+    writes.add(configJson);
+    this.configJson = configJson;
+    hasPrevious = true;
+  }
+
+  @override
+  Future<BackendConfigDocument?> previous() async => hasPrevious
+      ? BackendConfigDocument(
+          configJson: jsonEncode(_liveConfig),
+          readOnlySections: const ['relay'],
+        )
+      : null;
+
+  @override
+  Future<void> restorePrevious({String? reason}) async {
+    restoreCalls++;
+  }
+}
+
+/// The parser's refusal — arm 5's. It names the field that was wrong.
+final rpc.RpcException _parserRefusal = rpc.RpcException(
+  -32011,
+  'BackendConfigStore.write refused: The submitted document could not be '
+  'parsed as a StateManConfig: publishing_interval_ms must be a number.',
+);
+
+/// The relay-section refusal — arm 7's, D-10's exact voice. It must not read
+/// like arm 5's: one is "your config is wrong", this is "this section cannot
+/// be changed from here".
+final rpc.RpcException _relayRefusal = rpc.RpcException(
+  -32011,
+  'BackendConfigStore.write refused: The `relay` section differs from the '
+  'live configuration, and it is not remotely editable: it configures the '
+  'very socket this edit arrived on, and you do not edit the socket over the '
+  'socket. Change it at the machine (/etc/centroid/state-man.json) and '
+  'restart the backend.',
+);
+
+/// A station already switched to the gateway, as its device-local row —
+/// 15-05's `_gatewayStation`, verbatim in shape.
+Future<PreferencesApi> _gatewayStation() async {
+  final prefs = InMemoryPreferences();
+  await writeGatewayConfig(
+    prefs,
+    GatewayConfig(
+      mode: TransportMode.gateway,
+      url: _gatewayUrl,
+      caCertPath: '/pki/ca.pem',
+    ),
+  );
+  return prefs;
+}
+
+/// The wiring seam this file shares with the GREEN task. At RED it answered
+/// `const []` (the page had no seam to override), so every gateway arm failed
+/// by "found nothing" while arms 1 and 11 stayed green; GREEN flipped this
+/// one function to override the page's provider with the scripted far end.
+List<Override> _scriptedBackend(ScriptedBackendConfig api) => [
+      backendConfigApiProvider.overrideWith((ref) async => api),
+    ];
+
+/// The page, in gateway mode, over a scripted backend.
+Future<
+    ({
+      ScriptedBackendConfig api,
+      Preferences shared,
+    })> _pumpGateway(
+  WidgetTester tester, {
+  ScriptedBackendConfig? api,
+}) async {
+  final backend = api ?? ScriptedBackendConfig();
+  final shared = await createTestPreferences();
+  await pumpAndLoad(
+    tester,
+    buildTestableServerConfig(
+      localPreferences: await _gatewayStation(),
+      overrides: [
+        preferencesProvider.overrideWith((ref) async => shared),
+        stationNameProvider.overrideWithValue(_station),
+        ..._scriptedBackend(backend),
+      ],
+    ),
+  );
+  return (api: backend, shared: shared);
+}
+
+/// The page, in direct mode. The scripted backend is wired anyway, so arm 1
+/// can assert it was never consulted — the pre-effect half of arm 2's claim,
+/// pointing the other way.
+Future<
+    ({
+      ScriptedBackendConfig api,
+      Preferences shared,
+    })> _pumpDirect(WidgetTester tester) async {
+  final backend = ScriptedBackendConfig();
+  final shared = await createTestPreferences();
+  await pumpAndLoad(
+    tester,
+    buildTestableServerConfig(
+      localPreferences: InMemoryPreferences(),
+      overrides: [
+        preferencesProvider.overrideWith((ref) async => shared),
+        stationNameProvider.overrideWithValue(_station),
+        ..._scriptedBackend(backend),
+      ],
+    ),
+  );
+  return (api: backend, shared: shared);
+}
+
+/// Types [text] into the backend editor and taps the card's own save button.
+Future<void> _editAndSave(WidgetTester tester, String text) async {
+  await tester.enterText(find.byKey(_editor), text);
+  await settle(tester);
+  await tester.ensureVisible(find.byKey(_save));
+  await tester.tap(find.byKey(_save));
+  await settle(tester);
+}
+
+/// The live config with one benign edit, relay section deliberately absent:
+/// the page owns re-attaching the live relay section, and asserting it did is
+/// arm 2's second half.
+String _editedOpcuaOnly() => jsonEncode({
+      'opcua': [
+        <String, Object?>{
+          'endpoint': 'opc.tcp://10.104.20.10:4840',
+          'server_alias': 'ST101',
+          'publishing_interval_ms': 400,
+        },
+      ],
+    });
+
+void main() {
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    SharedPreferencesAsyncPlatform.instance =
+        InMemorySharedPreferencesAsync.empty();
+    SecureStorage.setInstance(FakeSecureStorage());
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 1 — direct mode is unchanged: the store that was written is the
+  // station's own preferences, and the backend was never consulted.
+  // -------------------------------------------------------------------------
+  testWidgets(
+      'arm 1: a direct-mode save writes StateManConfig to this station\'s own '
+      'preferences, and never the backend', (tester) async {
+    final fixture = await _pumpDirect(tester);
+
+    // Today's page, exactly: add an OPC UA server and save the section.
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Add Server').first);
+    await settle(tester);
+    await tester.ensureVisible(find.text('Save Configuration').first);
+    await tester.tap(find.text('Save Configuration').first);
+    await settle(tester);
+
+    final saved = await fixture.shared
+        .getString(StateManConfig.configKey, secret: true);
+    expect(saved, isNotNull);
+    final decoded =
+        StateManConfig.fromJson(jsonDecode(saved!) as Map<String, dynamic>);
+    expect(decoded.opcua, hasLength(1),
+        reason: 'the direct-mode save path is today\'s: the section writes '
+            'the station\'s own StateManConfig through preferencesProvider');
+
+    expect(fixture.api.writes, isEmpty,
+        reason: 'a direct station\'s config is its own; nothing here may '
+            'travel to the backend');
+    expect(fixture.api.reads, isZero,
+        reason: 'direct mode must not even read the backend\'s config — a '
+            'page that shows one machine and saves another is the ROADMAP\'s '
+            'named failure mode, in either direction');
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 2 — gateway mode targets the backend, and the local store is NOT
+  // written. The pre-effect half catches a page that shows the remote config
+  // and saves the local one.
+  // -------------------------------------------------------------------------
+  testWidgets(
+      'arm 2: a gateway-mode save goes to backendConfig.write with the live '
+      'relay section re-attached, and the local store is not written',
+      (tester) async {
+    final fixture = await _pumpGateway(tester);
+    final localBefore = await fixture.shared
+        .getString(StateManConfig.configKey, secret: true);
+
+    await _editAndSave(tester, _editedOpcuaOnly());
+
+    expect(fixture.api.writes, hasLength(1),
+        reason: 'the save must reach the backend');
+    final written =
+        jsonDecode(fixture.api.writes.single) as Map<String, Object?>;
+    expect(
+        ((written['opcua'] as List).first
+            as Map<String, Object?>)['publishing_interval_ms'],
+        400,
+        reason: 'the edit the operator typed is what crossed');
+    expect((written['relay'] as Map<String, Object?>?)?['port'], 9443,
+        reason: 'the page re-attaches the live relay section verbatim — a '
+            'document sent without it would be refused for the wrong reason');
+
+    final localAfter = await fixture.shared
+        .getString(StateManConfig.configKey, secret: true);
+    expect(localAfter, localBefore,
+        reason: 'THE named failure mode: showing the backend\'s config and '
+            'saving the station\'s own. The local StateManConfig row must be '
+            'byte-identical after a gateway-mode save');
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 3 — the banner names the machine, differently in each mode.
+  // -------------------------------------------------------------------------
+  testWidgets('arm 3: the banner names this station in direct mode',
+      (tester) async {
+    await _pumpDirect(tester);
+
+    final banner = find.byKey(_banner);
+    expect(banner, findsOneWidget);
+    expect(
+        find.descendant(of: banner, matching: find.textContaining(_station)),
+        findsOneWidget,
+        reason: 'a banner that only says "this station" would pass on a '
+            'station that is not this one; the name is the claim');
+    expect(
+        find.descendant(
+            of: banner, matching: find.textContaining('10.50.10.11')),
+        findsNothing,
+        reason: 'direct mode must not name a backend nothing is dialling');
+  });
+
+  testWidgets(
+      'arm 3: the banner names the backend\'s endpoint host in gateway mode',
+      (tester) async {
+    await _pumpGateway(tester);
+
+    final banner = find.byKey(_banner);
+    expect(banner, findsOneWidget);
+    expect(
+        find.descendant(
+            of: banner, matching: find.textContaining('10.50.10.11')),
+        findsOneWidget,
+        reason: 'the banner\'s whole job: the machine about to be edited is '
+            'the one the panel is dialling, named. "A banner exists" would '
+            'pass on a banner naming the wrong machine');
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 4 — the relay section renders, is not editable, and says why.
+  // Present, disabled, explained: three properties, three assertions. Hiding
+  // it would pass the "not editable" half alone.
+  // -------------------------------------------------------------------------
+  testWidgets('arm 4: the relay section is present, disabled and explained',
+      (tester) async {
+    await _pumpGateway(tester);
+
+    final relayFinder = find.byKey(_relayField);
+    expect(relayFinder, findsOneWidget,
+        reason: 'present: an operator who cannot see the relay port will go '
+            'and look for it somewhere worse');
+
+    final relay = tester.widget<TextField>(relayFinder);
+    expect(relay.enabled, isFalse,
+        reason: 'disabled: the section configures the socket this edit '
+            'arrives on (D-10)');
+    expect(relay.controller?.text, contains('token_file'),
+        reason: 'the section\'s actual content is shown, not a placeholder');
+
+    expect(find.textContaining('cut this screen off'), findsOneWidget,
+        reason: 'explained: the copy says why, in operator language');
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 5 — a rejected save shows the parser's message, not "failed".
+  // -------------------------------------------------------------------------
+  testWidgets('arm 5: a rejected save surfaces the parser\'s own sentence',
+      (tester) async {
+    final fixture = await _pumpGateway(
+        tester, api: ScriptedBackendConfig(writeRefusal: null));
+    fixture.api.writeRefusal = _parserRefusal;
+
+    await _editAndSave(tester, _editedOpcuaOnly());
+
+    expect(find.byKey(_refusal), findsOneWidget);
+    // Scoped to the refusal row: the editor's own text also carries the
+    // field name, which is not the claim — the claim is that the REFUSAL
+    // names it.
+    expect(
+        find.descendant(
+            of: find.byKey(_refusal),
+            matching: find.textContaining('publishing_interval_ms')),
+        findsOneWidget,
+        reason: 'the operator-facing text must contain the field the parser '
+            'named — "Save failed" is a refusal nobody can act on');
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 6 — a rejected save leaves a way back, and the way back is not
+  // always-present furniture.
+  // -------------------------------------------------------------------------
+  testWidgets(
+      'arm 6 (anti-vacuity): before anything was ever overwritten, there is '
+      'no restore control', (tester) async {
+    await _pumpGateway(
+        tester, api: ScriptedBackendConfig(hasPrevious: false));
+
+    expect(find.byKey(_restore), findsNothing,
+        reason: 'an always-present restore control proves nothing; it appears '
+            'only when the backend reports a previous document to restore');
+  });
+
+  testWidgets(
+      'arm 6: after a refusal there is a restore control, and it calls '
+      'restorePrevious', (tester) async {
+    final fixture = await _pumpGateway(tester,
+        api: ScriptedBackendConfig(
+            hasPrevious: true, writeRefusal: _parserRefusal));
+
+    await _editAndSave(tester, _editedOpcuaOnly());
+    expect(find.byKey(_refusal), findsOneWidget,
+        reason: 'the refusal must be on screen for this to be the arm it '
+            'claims to be');
+
+    final restore = find.byKey(_restore);
+    expect(restore, findsOneWidget);
+    await tester.ensureVisible(restore);
+    await tester.tap(restore);
+    await settle(tester);
+    expect(fixture.api.restoreCalls, 1,
+        reason: 'the control must reach BackendConfigApi.restorePrevious — '
+            'a button that only repaints is a way back to nowhere');
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 7 — a relay-section refusal has its own message, distinct from an
+  // invalid-config refusal.
+  // -------------------------------------------------------------------------
+  testWidgets(
+      'arm 7: a relay-section refusal reads as "cannot be changed from here", '
+      'not as "your config is wrong"', (tester) async {
+    final fixture = await _pumpGateway(tester);
+    fixture.api.writeRefusal = _relayRefusal;
+
+    await _editAndSave(tester, _editedOpcuaOnly());
+
+    expect(find.byKey(_refusal), findsOneWidget);
+    expect(find.textContaining('not remotely editable'), findsOneWidget,
+        reason: 'D-10\'s refusal, in D-10\'s words');
+    expect(find.textContaining('could not be parsed'), findsNothing,
+        reason: 'the two refusals must not read the same: one is about the '
+            'document, the other about the section that carries the edit');
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 8 — restart-to-apply is said after a successful save.
+  // -------------------------------------------------------------------------
+  testWidgets(
+      'arm 8: after a successful save the copy says the backend applies it '
+      'on restart', (tester) async {
+    await _pumpGateway(tester);
+
+    await _editAndSave(tester, _editedOpcuaOnly());
+
+    expect(find.byKey(_restartNote), findsOneWidget);
+    expect(find.textContaining('when the backend restarts'), findsWidgets,
+        reason: 'a save that silently changes nothing visible is a save an '
+            'operator repeats — the backend does not restart itself (17-10)');
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 9 — attribution is shown and is honest: a station account, named,
+  // and marked as a station rather than a person.
+  // -------------------------------------------------------------------------
+  testWidgets(
+      'arm 9: the save is attributed to a station account, by name, marked '
+      'as a station and not a person', (tester) async {
+    await _pumpGateway(tester);
+
+    final attribution = find.byKey(_attribution);
+    expect(attribution, findsOneWidget);
+    expect(
+        find.descendant(
+            of: attribution, matching: find.textContaining(_station)),
+        findsOneWidget,
+        reason: 'named: the account the gateway verified is this station\'s');
+    expect(
+        find.descendant(
+            of: attribution,
+            matching: find.textContaining('station account')),
+        findsOneWidget);
+    expect(
+        find.descendant(
+            of: attribution, matching: find.textContaining('not a person')),
+        findsOneWidget,
+        reason: 'ACCESS-06: a screen that implies a person signed off is the '
+            'UI form of recording a client-supplied identity as verified');
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 10 — the copy does not overclaim. A source-text arm, 15-05 FIND-C's
+  // rule carried forward with what 17-12 changed: gateway mode is CLOSER to
+  // one WebSocket now, and still not there — session login still needs a
+  // database, so no copy may say "only the WebSocket".
+  // -------------------------------------------------------------------------
+  test('arm 10: no copy claims the panel uses only the WebSocket', () {
+    const paths = [
+      'lib/pages/server_config.dart',
+      'lib/widgets/config_target_banner.dart',
+    ];
+    for (final path in paths) {
+      final file = File(path);
+      expect(file.existsSync(), isTrue,
+          reason: '$path must exist — the banner is this plan\'s artifact, '
+              'and a scan over a missing file proves nothing');
+      final source = file
+          .readAsStringSync()
+          .toLowerCase()
+          .replaceAll(RegExp(r'\s+'), ' ');
+      expect(source, isNot(contains('only the websocket')),
+          reason: '$path: session login still needs a database (17-12); '
+              'claiming more isolation than the panel has is 15-05 FIND-C');
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 11 — `administer` still gates the route. Nothing in this plan
+  // loosens /advanced/server-config.
+  // -------------------------------------------------------------------------
+  test('arm 11: /advanced/server-config still takes administer', () {
+    expect(kRaisedRoutes[kServerConfigRoute], AccessGroup.administer,
+        reason: 'the existing route gate, unchanged — the page grew a second '
+            'target, not a second audience');
+  });
+}

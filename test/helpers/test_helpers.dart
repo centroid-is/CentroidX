@@ -11,11 +11,16 @@ import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 
+import 'package:tfc/providers/access.dart' show stationNameProvider;
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/pages/key_repository.dart';
 import 'package:tfc/pages/server_config.dart';
+
+/// The station name every server-config fixture pins — see the override in
+/// [buildTestableServerConfig].
+const String kTestStationName = 'SVN-ST101';
 
 /// In-memory secure storage for tests.
 class FakeSecureStorage implements MySecureStorage {
@@ -330,6 +335,12 @@ Widget buildTestableServerConfig({
 }) {
   return ProviderScope(
     overrides: [
+      // 17-13's config-target banner names this station, and the production
+      // value is `Platform.localHostname` — a different string on every
+      // machine. Pinned here so the page's goldens do not disagree with
+      // themselves by machine; a caller that needs another name replaces it
+      // through [overrides], which comes last.
+      stationNameProvider.overrideWithValue(kTestStationName),
       preferencesProvider.overrideWith((ref) => createTestPreferences(
             stateManConfig: stateManConfig,
           )),

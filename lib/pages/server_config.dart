@@ -16,20 +16,28 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:cryptography/cryptography.dart' as crypto;
 import 'package:cryptography_flutter/cryptography_flutter.dart' as crypto_fl;
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:tfc_access/tfc_access.dart';
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
+    show BackendConfigApi, BackendConfigDocument;
 
 import '../core/gateway_config.dart';
+import '../core/gateway_state_man.dart';
+import '../core/relayed_access_stores.dart' show relayedAccessErrors;
 import '../core/server_config_db.dart';
 import '../theme.dart';
 import '../widgets/base_scaffold.dart';
+import '../widgets/config_target_banner.dart';
 import '../widgets/connection_status_chip.dart';
 import '../widgets/duration_field.dart';
 import '../widgets/gateway_link_status_row.dart';
 import '../widgets/preferences.dart';
+import 'package:tfc_dart/core/access/guarded_state_man.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:modbus_client/modbus_client.dart' show ModbusEndianness;
 import 'package:tfc_dart/core/database.dart';
+import '../providers/access.dart' show stationNameProvider;
 import '../providers/gateway.dart';
 import '../providers/gateway_link.dart';
 import '../providers/state_man.dart';
@@ -559,10 +567,23 @@ class ServerConfigBody extends ConsumerWidget {
     final gateway = ref.watch(gatewayConfigProvider).valueOrNull ??
         GatewayConfig.defaults;
 
+    // The station's own name, for the direct-mode banner and the gateway
+    // section's attribution row — the same string every audit row's `station`
+    // column carries.
+    final stationName = ref.watch(stationNameProvider);
+
     return SingleChildScrollView(
       child: Column(
         children: [
-          // Which pipe this station runs on. First, because in gateway mode
+          // Which machine this page edits, named, before anything editable.
+          // One screen, two targets — silently configuring the wrong one is
+          // the failure mode, and this row is the page's answer to it.
+          gateway.isGateway
+              ? ConfigTargetBanner.backend(name: gateway.url)
+              : ConfigTargetBanner.station(name: stationName),
+          const SizedBox(height: 16),
+
+          // Which pipe this station runs on. In gateway mode
           // the four sections below are not siblings of it — they are
           // irrelevant, and it is this card that says so.
           TransportModeCard(key: ValueKey('transport_$refreshKey')),
@@ -584,8 +605,14 @@ class ServerConfigBody extends ConsumerWidget {
             // Modbus TCP Servers Section
             _ModbusServersSection(key: ValueKey('modbus_$refreshKey')),
             const ImportExportCard(),
-          ] else
+          ] else ...[
+            // The backend's own configuration — the page's second target
+            // (ACCESS-04). It sits above the hidden-sections note because it
+            // is the thing an administrator opened this page for.
+            BackendConfigSection(key: ValueKey('backend_config_$refreshKey')),
+            const SizedBox(height: 16),
             const _DirectSectionsHiddenNote(),
+          ],
         ],
       ),
     );
@@ -1400,6 +1427,448 @@ class _DirectSectionsHiddenNote extends StatelessWidget {
                 'Switch back to Direct to PLCs to edit them all here.',
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ===================== Backend Configuration (gateway target) ==============
+
+/// The one relay client's [BackendConfigApi], for a station in gateway mode.
+///
+/// The shape is `accessTemplateStoreProvider`'s (17-12), on purpose: the
+/// backend's config is reached through the ONE client the panel already
+/// holds — a second client would be a second socket, a second session and a
+/// second identity in the revocation sweep. `ref.watch`, never `ref.read`,
+/// on the config AND the StateMan: `alarm.dart:45` records what `ref.read`
+/// behind a `keepAlive` cost — a stale transport over a disposed client whose
+/// streams CLOSE rather than error, so nothing reported it (the Phase 14
+/// blocker).
+final backendConfigApiProvider = FutureProvider<BackendConfigApi>((ref) async {
+  final gateway = await ref.watch(gatewayConfigProvider.future);
+  if (!gateway.isGateway) {
+    // Refuse by name rather than answer null: direct mode has no backend
+    // target, and nothing on a direct station may read this provider — the
+    // page branches before it ever would.
+    throw StateError(
+        'backendConfigApiProvider is a gateway-mode surface: a direct '
+        'station edits its own StateManConfig through preferencesProvider, '
+        'and this page never reads the backend\'s from direct mode.');
+  }
+  final stateMan = await ref.watch(stateManProvider.future);
+  final remote = stateMan is GuardedStateMan
+      ? stateMan.innerAs<GatewayStateMan>()?.remote
+      : null;
+  if (remote == null) {
+    // Refuse by name, exactly as the 17-12 stores do: a silent fallback here
+    // is how a second route quietly appears, and a route that exists will be
+    // taken.
+    throw UnsupportedError(
+        'backendConfigApiProvider is not available: this station resolved a '
+        'StateMan with no relay client behind it. Fix the gateway branch of '
+        'lib/providers/state_man.dart — do not fall back to anything here.');
+  }
+  return remote.backendConfig;
+});
+
+/// The editable half of the backend's configuration document.
+const Key kBackendConfigEditorKey = Key('backend_config_editor');
+
+/// The `relay` section, rendered and not editable (D-10).
+const Key kBackendConfigRelayFieldKey = Key('backend_config_relay_field');
+
+/// The section's own save button — its ONE unsaved-state indicator, the same
+/// ruling the Transport card's save button carries.
+const Key kBackendConfigSaveKey = Key('backend_config_save');
+
+/// The way back: present only while the backend reports a previous document.
+const Key kBackendConfigRestoreKey = Key('backend_config_restore');
+
+/// The backend's refusal, in the backend's own words.
+const Key kBackendConfigRefusalKey = Key('backend_config_refusal');
+
+/// Who a save is recorded against — a station account, named as one.
+const Key kBackendConfigAttributionKey = Key('backend_config_attribution');
+
+/// Restart-to-apply, said where the save happens.
+const Key kBackendConfigRestartNoteKey = Key('backend_config_restart_note');
+
+/// The backend's `StateManConfig`, editable from a gateway-mode panel —
+/// except for the section that carries the edit (ACCESS-04, D-10).
+///
+/// Reads come from `backendConfig.read`, saves go to `backendConfig.write`;
+/// nothing here touches this station's own preferences. The check, the audit
+/// row and the validation live at the far end (17-09/17-10); this card is the
+/// screen for them and adds no second policy.
+class BackendConfigSection extends ConsumerStatefulWidget {
+  const BackendConfigSection({super.key});
+
+  @override
+  ConsumerState<BackendConfigSection> createState() =>
+      _BackendConfigSectionState();
+}
+
+class _BackendConfigSectionState extends ConsumerState<BackendConfigSection> {
+  BackendConfigApi? _api;
+  BackendConfigDocument? _doc;
+
+  /// Why the backend's config could not be read, or null.
+  String? _loadError;
+  bool _isLoading = true;
+
+  /// The refusal of the last save or restore, verbatim from the far end —
+  /// the parser's sentence for an invalid document, D-10's for a relay-
+  /// section edit. This card composes no refusal prose of its own: a
+  /// paraphrase is a second place the two refusals could start reading the
+  /// same.
+  String? _refusalText;
+
+  final _editorController = TextEditingController();
+
+  /// The editable text as it was last loaded, for the save button's unsaved
+  /// diff.
+  String _loadedEditableText = '';
+
+  /// The read-only sections of the live document, decoded, re-attached
+  /// verbatim on save so the document that crosses is whole. Only sections
+  /// the operator's editable text does not itself carry are re-attached — a
+  /// differing `relay` typed into the editor crosses as typed and is refused
+  /// by name at the far end, which is the honest path for it.
+  Map<String, Object?> _readOnlyLive = const {};
+
+  /// One controller per read-only section's disabled field, owned here so
+  /// they are disposed rather than re-minted every build.
+  final Map<String, TextEditingController> _readOnlyControllers = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _editorController.addListener(() => setState(() {}));
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _editorController.dispose();
+    for (final controller in _readOnlyControllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  /// The operator-facing sentence for [error]. A protocol refusal carries the
+  /// far end's message; anything else is shown as what it is.
+  static String _describe(Object error) =>
+      error is rpc.RpcException ? error.message : error.toString();
+
+  Future<void> _load({bool refresh = false}) async {
+    if (refresh) ref.invalidate(backendConfigApiProvider);
+    setState(() {
+      _isLoading = true;
+      _loadError = null;
+    });
+    try {
+      final api = await ref.read(backendConfigApiProvider.future);
+      final doc = await relayedAccessErrors(api.read);
+      if (!mounted) return;
+      _api = api;
+      _applyDocument(doc);
+    } on Object catch (e) {
+      _loadError = _describe(e);
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  /// Splits [doc] into the editable text and the read-only sections.
+  ///
+  /// The document travels as text; splitting it needs a decode, and the
+  /// re-encode below is the same trade 17-10's redaction already made —
+  /// showing the read-only sections greyed wins over preserving the byte
+  /// layout of a file the backend re-parses anyway.
+  void _applyDocument(BackendConfigDocument doc) {
+    _doc = doc;
+    Map<String, Object?>? decoded;
+    try {
+      final raw = jsonDecode(doc.configJson);
+      if (raw is Map<String, dynamic>) decoded = raw;
+    } on FormatException {
+      decoded = null;
+    }
+    if (decoded == null) {
+      // A document this station cannot decode is still the backend's truth:
+      // show it whole and let the far end's parser own any refusal.
+      _readOnlyLive = const {};
+      for (final controller in _readOnlyControllers.values) {
+        controller.dispose();
+      }
+      _readOnlyControllers.clear();
+      _loadedEditableText = doc.configJson;
+    } else {
+      const encoder = JsonEncoder.withIndent('  ');
+      final readOnly = doc.readOnlySections.toSet();
+      final editable = <String, Object?>{
+        for (final entry in decoded.entries)
+          if (!readOnly.contains(entry.key)) entry.key: entry.value,
+      };
+      _readOnlyLive = <String, Object?>{
+        for (final entry in decoded.entries)
+          if (readOnly.contains(entry.key)) entry.key: entry.value,
+      };
+      for (final entry in _readOnlyLive.entries) {
+        _readOnlyControllers
+            .putIfAbsent(entry.key, TextEditingController.new)
+            .text = encoder.convert(entry.value);
+      }
+      _readOnlyControllers.removeWhere((name, controller) {
+        if (_readOnlyLive.containsKey(name)) return false;
+        controller.dispose();
+        return true;
+      });
+      _loadedEditableText = encoder.convert(editable);
+    }
+    _editorController.text = _loadedEditableText;
+    setState(() {});
+  }
+
+  bool get _hasUnsavedChanges =>
+      _doc != null && _editorController.text != _loadedEditableText;
+
+  /// The document that crosses: the operator's editable sections plus the
+  /// live read-only sections they cannot have typed. `putIfAbsent`, not a
+  /// blind spread — a read-only section the operator somehow smuggled into
+  /// the editable text must cross as typed and be refused by name at the far
+  /// end, not be silently papered over here.
+  String _payload() {
+    final text = _editorController.text;
+    try {
+      final edited = jsonDecode(text);
+      if (edited is! Map<String, dynamic>) return text;
+      final merged = <String, Object?>{...edited};
+      for (final entry in _readOnlyLive.entries) {
+        merged.putIfAbsent(entry.key, () => entry.value);
+      }
+      return jsonEncode(merged);
+    } on FormatException {
+      // Not decodable here — sent as typed, so the refusal the operator
+      // reads is the parser's own sentence rather than this card's guess.
+      return text;
+    }
+  }
+
+  Future<void> _save() async {
+    final backendConfig = _api;
+    if (backendConfig == null) return;
+    setState(() => _refusalText = null);
+    try {
+      await relayedAccessErrors(() => backendConfig.write(_payload()));
+      final doc = await relayedAccessErrors(backendConfig.read);
+      if (!mounted) return;
+      _applyDocument(doc);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Saved to the backend. It applies the new '
+              'configuration when it restarts.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } on Object catch (e) {
+      if (!mounted) return;
+      setState(() => _refusalText = _describe(e));
+    }
+  }
+
+  Future<void> _restore() async {
+    final backendConfig = _api;
+    if (backendConfig == null) return;
+    try {
+      await relayedAccessErrors(() => backendConfig.restorePrevious());
+      final doc = await relayedAccessErrors(backendConfig.read);
+      if (!mounted) return;
+      _refusalText = null;
+      _applyDocument(doc);
+    } on Object catch (e) {
+      if (!mounted) return;
+      setState(() => _refusalText = _describe(e));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final stationName = ref.watch(stationNameProvider);
+
+    final loadError = _loadError;
+    if (loadError != null) {
+      // The refusal frame, in the shape every section on this page uses: a
+      // card that cannot read what it edits has to say so, with a retry.
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              FaIcon(FontAwesomeIcons.triangleExclamation,
+                  size: 48, color: theme.colorScheme.error),
+              const SizedBox(height: 16),
+              Text('Could not read the backend\'s configuration: $loadError'),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () => _load(refresh: true),
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final doc = _doc;
+    if (doc == null || _isLoading) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const FaIcon(FontAwesomeIcons.server, size: 20),
+                const SizedBox(width: 8),
+                Text('Backend Configuration',
+                    style: theme.textTheme.titleMedium),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'These are the backend\'s own settings, read and saved over '
+              'the relay connection. This station\'s transport is the card '
+              'above, and its sign-in database is unchanged by anything '
+              'saved here.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              key: kBackendConfigEditorKey,
+              controller: _editorController,
+              maxLines: null,
+              decoration: const InputDecoration(
+                labelText: 'Backend configuration (JSON)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            for (final entry in _readOnlyControllers.entries) ...[
+              TextField(
+                key: entry.key == 'relay'
+                    ? kBackendConfigRelayFieldKey
+                    : Key('backend_config_readonly_${entry.key}'),
+                controller: entry.value,
+                enabled: false,
+                maxLines: null,
+                decoration: InputDecoration(
+                  labelText: '${entry.key} — read-only from here',
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Changing the ${entry.key} port or its TLS from here would '
+                'cut this screen off mid-change, so this section is changed '
+                'on the machine the backend runs on.',
+                style: theme.textTheme.bodySmall,
+              ),
+              const SizedBox(height: 16),
+            ],
+            if (_refusalText != null) ...[
+              Row(
+                key: kBackendConfigRefusalKey,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.error_outline,
+                      size: 18, color: theme.colorScheme.error),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _refusalText!,
+                      style: TextStyle(color: theme.colorScheme.error),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+            ],
+            if (doc.hasPrevious) ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      key: kBackendConfigRestoreKey,
+                      onPressed: _restore,
+                      icon: const FaIcon(FontAwesomeIcons.clockRotateLeft,
+                          size: 14),
+                      label: const Text('Restore previous configuration'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+            ],
+            Row(
+              key: kBackendConfigAttributionKey,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.desktop_windows, size: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'A save here is recorded against the account the gateway '
+                    'verified for this station ($stationName) — a station '
+                    'account, not a person.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    key: kBackendConfigSaveKey,
+                    onPressed: _hasUnsavedChanges ? _save : null,
+                    icon: FaIcon(FontAwesomeIcons.floppyDisk,
+                        size: 16,
+                        color: _hasUnsavedChanges ? null : Colors.grey),
+                    label: Text(_hasUnsavedChanges
+                        ? 'Save Configuration'
+                        : 'All Changes Saved'),
+                    style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        backgroundColor:
+                            _hasUnsavedChanges ? null : Colors.grey),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              key: kBackendConfigRestartNoteKey,
+              'A saved configuration takes effect when the backend restarts. '
+              'The backend does not restart itself, and nothing on this '
+              'screen changes until it has.',
+              style: theme.textTheme.bodySmall,
             ),
           ],
         ),
