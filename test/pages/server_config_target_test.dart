@@ -82,6 +82,7 @@ class ScriptedBackendConfig implements BackendConfigApi {
     Map<String, Object?> config = _liveConfig,
     this.hasPrevious = false,
     this.writeRefusal,
+    this.readRefusal,
   }) : configJson = jsonEncode(config);
 
   String configJson;
@@ -91,6 +92,10 @@ class ScriptedBackendConfig implements BackendConfigApi {
   /// words, exactly as the client proxy re-raises it.
   Object? writeRefusal;
 
+  /// Thrown by [read] when set — the state a panel is in when the relay is
+  /// down or the backend will not answer, which is arm 14's whole subject.
+  Object? readRefusal;
+
   final List<String> writes = [];
   int reads = 0;
   int restoreCalls = 0;
@@ -98,6 +103,8 @@ class ScriptedBackendConfig implements BackendConfigApi {
   @override
   Future<BackendConfigDocument> read() async {
     reads++;
+    final refusal = readRefusal;
+    if (refusal != null) throw refusal;
     return BackendConfigDocument(
       configJson: configJson,
       readOnlySections: const ['relay'],
@@ -626,5 +633,38 @@ void main() {
     expect(find.textContaining('It still opens one Postgres connection'),
         findsNothing,
         reason: 'the note went whole, not sentence by sentence');
+  });
+
+  // -------------------------------------------------------------------------
+  // Arm 14 — the refused/cannot-read face still names its target. A sabotage
+  // pass found this hole: the loaded face's header was guarded, the error
+  // face's was not, and the error face is exactly where an operator is about
+  // to be surprised — "the backend refused" is only actionable when you can
+  // see WHICH backend.
+  // -------------------------------------------------------------------------
+  testWidgets(
+      'arm 14: when the backend cannot be read, the card still names the '
+      'machine that refused', (tester) async {
+    await _pumpGateway(tester,
+        api: ScriptedBackendConfig(
+            readRefusal: rpc.RpcException(
+                -32011, 'the relay is not accepting this station')));
+
+    expect(find.textContaining('Could not read the backend'), findsOneWidget,
+        reason: 'this arm is only the error-face arm if the error face is '
+            'on screen');
+    expect(
+        find.descendant(
+            of: find.byType(BackendConfigSection),
+            matching: find.byKey(_banner)),
+        findsOneWidget,
+        reason: 'the target chip must survive onto the error face');
+    expect(
+        find.descendant(
+            of: find.byKey(_banner),
+            matching: find.textContaining('10.50.10.11')),
+        findsOneWidget,
+        reason: 'named, not just present — a refusal from an unnamed machine '
+            'sends the operator to the wrong one');
   });
 }
