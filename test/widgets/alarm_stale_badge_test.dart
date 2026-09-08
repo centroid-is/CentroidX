@@ -13,7 +13,10 @@
 library;
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc/core/gateway_link_status.dart';
+import 'package:tfc/providers/gateway_link.dart';
 import 'package:tfc_dart/core/alarm.dart';
+import 'package:tfc_relay_client/tfc_relay_client.dart' show LinkState;
 
 import 'alarm_fixture.dart';
 
@@ -65,5 +68,39 @@ void main() {
 
     expect(find.textContaining('Input stale'), findsNothing);
     expect(find.textContaining('cannot change state'), findsNothing);
+  });
+
+  testWidgets('the local gateway alarm and a held plant alarm share the list, '
+      'and only the plant alarm carries the badge', (tester) async {
+    // The two are different kinds of thing: the local alarm is this panel's
+    // own report about its wire (never in any AlarmSource, never persisted),
+    // while the badge is the backend's report about a PLANT input. A badge on
+    // the local alarm would send an operator hunting for a sensor named
+    // nowhere; the local alarm vanishing under the badge work would silence
+    // the one report a dead gateway leaves.
+    await pumpAlarmList(
+      tester,
+      AlarmFixture(active: {held}),
+      extraOverrides: [
+        gatewayLinkProvider.overrideWith(
+          (ref) => Stream.value(describeGatewayLink(
+            state: LinkState.down,
+            url: Uri.parse('wss://10.50.10.11:9444'),
+            elapsed: const Duration(minutes: 10),
+            lastDownReason: 'the transport ended by remote close',
+          )),
+        ),
+        gatewayLinkClockProvider
+            .overrideWithValue(() => DateTime(2026, 9, 8, 20, 0)),
+      ],
+    );
+
+    expect(find.text('Gateway unreachable'), findsOneWidget,
+        reason: 'the local alarm still rides the list');
+    expect(find.text('Cooler temperature'), findsOneWidget,
+        reason: 'and the plant alarm is not displaced by it');
+    expect(find.textContaining('Input stale since'), findsOneWidget,
+        reason: 'exactly one badge — on the plant alarm, whose input it '
+            'names, and never on the panel\'s own link report');
   });
 }
