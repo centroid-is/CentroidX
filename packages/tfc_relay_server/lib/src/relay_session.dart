@@ -472,7 +472,7 @@ final class RelaySession {
   /// can build the write predicate from its `canWrite`, which keeps the
   /// null-identity decision in exactly one place.
   late final PolicyStateMan api = PolicyStateMan(
-    // The one divergence from handing [_source] straight in, and it is four
+    // The one divergence from handing [_source] straight in, and it is two
     // getters wide: the scoping view answers the session's per-identity
     // template/admin families once `_hello` has built them, and forwards
     // everything else — including `audit` and `backendConfig`, which are
@@ -480,7 +480,15 @@ final class RelaySession {
     // purpose, so the policy gate applies to a scoped family exactly as it
     // applies to the shared one; a scoped family handed to a handler
     // directly would be a family the gate never sees.
-    source: _IdentityScopedSource(_source, () => _scoped),
+    //
+    // Interposed only when a factory exists: with none, the view would be
+    // pure forwarding — semantically identical and one indirection wide —
+    // and `health_session_test.dart`'s chain arm reads "policy over health
+    // over source" off this field by type, which a decorative wrapper would
+    // break for nothing.
+    source: _accessFor == null
+        ? _source
+        : _IdentityScopedSource(_source, () => _scoped),
     policy: policy,
     resolver: resolver,
     tally: _seriesTally,
