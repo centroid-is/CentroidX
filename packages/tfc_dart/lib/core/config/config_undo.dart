@@ -463,6 +463,97 @@ Future<UndoPlan> planUndo(GeneratedDatabase db, String actionId) async {
   );
 }
 
+/// Writes [plan]'s inverse as a new action, and answers what it wrote.
+///
+/// ## The gate, asserted here
+///
+/// [sessionGroups] is the caller's session — `AccessSession.groups` — and it
+/// is a required parameter because there is no defensible default for it. The
+/// strictest group [plan] needs is computed by [undoGate] and checked before
+/// anything is read or written; a caller that does not hold it gets the
+/// ordinary [AccessDenied] and the databases are untouched. 04-10's check
+/// before it opens its dialog is UX and does not replace this one.
+///
+/// This function performs **no access check on the store's behalf beyond that
+/// one, and writes no `audit_entry` row**, exactly as [ConfigStore.writeItems]
+/// does not: the audit parent carrying this same [actionId] is the app layer's
+/// to write, as it already is for a save. The two must share an id or the
+/// undo reads in the history as an action with no author.
+///
+/// ## Why the whole stored set is handed over
+///
+/// [ConfigStore.writeItems] replaces within kinds. [wanted] here is
+/// `store.itemsOf(plan.kinds)` — every stored item of those kinds — with the
+/// inverse applied to the entities the action touched. Handing over the
+/// touched entities alone would delete every one of their siblings, which for
+/// an undo of a one-asset edit is the whole plant's page layout. The tests
+/// pin it for assets and for shared preferences, the two kinds where a partial
+/// set is the tempting mistake.
+///
+/// ## What re-checks the verdict
+///
+/// Nothing here re-reads the log. The window between [planUndo] and this write
+/// is closed by the store's own compare-and-swap: an entity somebody moved in
+/// between fails its `rev` guard, and an entity somebody re-created fails the
+/// insert guard (04-01), so the whole undo rolls back with [ConfigConflict]
+/// rather than committing half of itself.
+///
+/// Throws [ArgumentError] for a plan that is not ready — a refusal the caller
+/// was given in full and chose to ignore is a programming error, not an
+/// operator's problem — and everything [ConfigStore.writeItems] throws,
+/// unwrapped.
+///
+/// `async` so that both refusals reach the caller the same way the store's do
+/// — as a failed future. A gate that threw synchronously would escape a
+/// `catch` written around an `await` and land as an unhandled error in a
+/// button handler.
+Future<ConfigWriteResult> executeUndo(
+  UndoPlan plan, {
+  required ConfigStore store,
+  required AccessPolicy policy,
+  required Set<AccessGroup> sessionGroups,
+  required String actionId,
+  required String who,
+  required String roleName,
+}) async {
+  if (!plan.isReady) {
+    throw ArgumentError.value(
+        plan,
+        'plan',
+        plan.isUnknownAction
+            ? 'is for an action the change log does not hold, so there is '
+                'nothing to invert'
+            : 'was refused: ${plan.blockers.map((b) => b.summary).join(' ')}');
+  }
+
+  final gate = undoGate(policy, plan);
+  if (!sessionGroups.contains(gate.group)) {
+    throw AccessDenied(gate.itemKey, gate.group);
+  }
+
+  final wanted = <String, ConfigItem>{
+    for (final item in store.itemsOf(plan.kinds))
+      configSnapshotKey(item.kind, item.id): item,
+  };
+  for (final step in plan.steps) {
+    final key = configSnapshotKey(step.kind, step.entityId);
+    if (step.item case final item?) {
+      wanted[key] = item;
+    } else {
+      wanted.remove(key);
+    }
+  }
+
+  return store.writeItems(
+    kinds: plan.kinds,
+    wanted: wanted.values.toList(),
+    actionId: actionId,
+    who: who,
+    roleName: roleName,
+    reason: undoReason(plan.originalActionId),
+  );
+}
+
 /// The net effect of an action on one entity, from the first row's old side
 /// and the last row's new side.
 ConfigChangeOp _netOp(String? oldValue, String? newValue) {

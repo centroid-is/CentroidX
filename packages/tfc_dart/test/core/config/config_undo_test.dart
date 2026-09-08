@@ -692,9 +692,11 @@ void main() {
       await seed(asset, into: [remote]);
 
       await expectLater(undo(plan), throwsA(isA<ConfigConflict>()));
-      expect((await changeRows(remote)), isEmpty,
+      expect((await changeRows(remote)).map((r) => r.actionId), ['act-1'],
           reason: 'the transaction rolled back, so the undo wrote no change '
-              'row either');
+              'row of its own');
+      expect(await itemRows(remote), hasLength(1),
+          reason: "the other station's row is intact");
     });
   });
 
