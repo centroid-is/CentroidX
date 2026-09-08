@@ -16,11 +16,15 @@
 library;
 
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:test/test.dart';
 import 'package:tfc_access/tfc_access.dart';
+import 'package:tfc_dart/core/access/guarded_config_store.dart';
 import 'package:tfc_dart/core/config/config_change.dart';
+import 'package:tfc_dart/core/config/config_consistency.dart';
+import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart';
 import 'package:tfc_dart/core/config/config_undo.dart';
@@ -505,6 +509,335 @@ void main() {
           reason: 'the image is not in the replace set, so undoing the asset '
               'cannot delete it');
       expect(plan.steps.map((s) => s.entityId), ['a1']);
+    });
+  });
+
+  group('executing an undo is an ordinary save', () {
+    /// A store attached to [remote] with its snapshot filled.
+    Future<void> openStore() async {
+      store.attachRemoteDatabase(remote, startSync: false);
+      await store.open();
+    }
+
+    Future<ConfigWriteResult> undo(UndoPlan plan,
+            {Set<AccessGroup>? groups, String actionId = 'undo-1'}) =>
+        executeUndo(
+          plan,
+          store: store,
+          policy: policy,
+          sessionGroups: groups ?? kAllGroups,
+          actionId: actionId,
+          who: 'gudrun',
+          roleName: 'Engineer',
+        );
+
+    test('the inverse goes through writeItems and nowhere else', () {
+      // The source, with whole-line comments stripped so the paragraph above
+      // `writeItems` cannot be what makes this pass — and so a commented-out
+      // second write cannot be what makes it fail.
+      final source = File('lib/core/config/config_undo.dart')
+          .readAsLinesSync()
+          .where((line) => !line.trimLeft().startsWith('//'))
+          .join('\n');
+
+      expect('writeItems('.allMatches(source), hasLength(1),
+          reason: 'a second write path would be a second copy of the '
+              'compare-and-swap, the change-row append and the offline '
+              'refusal, and the two would drift');
+      expect(source, isNot(contains('ConfigItemTableCompanion')));
+      expect(source, isNot(contains('ConfigChangeTableCompanion')));
+      expect(source, isNot(contains('.delete(')));
+    });
+
+    test('undoing an insert removes it and leaves its siblings alone',
+        () async {
+      final a1 = assetItem('a1', page: 'p1', ordinal: 1024);
+      final a2 = assetItem('a2', page: 'p1', ordinal: 2048);
+      final a3 = assetItem('a3', page: 'p1', ordinal: 3072);
+      await seed(a1, into: [local, remote]);
+      await seed(a2, into: [local, remote]);
+      await seed(a3, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'act-1', after: a3));
+      await openStore();
+
+      final result = await undo(await planUndo(remote, 'act-1'));
+
+      expect(result.diff.removed.map((i) => i.id), ['a3']);
+      expect(
+          (await itemRows(remote)).map((r) => r.id), ['a1', 'a2'],
+          reason: 'writeItems replaces within kinds, so handing it a partial '
+              'set would have deleted every asset on the plant');
+      expect(store.itemsOf(const {ConfigKind.asset}).map((i) => i.id),
+          ['a1', 'a2']);
+    });
+
+    test('undoing a shared preference leaves the other preferences alone',
+        () async {
+      final alarms = ConfigItem.of(
+          kind: ConfigKind.preference,
+          id: 'alarm_man_config',
+          value: {'type': 'String', 'value': '{"a":1}'});
+      final edited = ConfigItem.of(
+          kind: ConfigKind.preference,
+          id: 'alarm_man_config',
+          value: {'type': 'String', 'value': '{"a":2}'});
+      final other = ConfigItem.of(
+          kind: ConfigKind.preference,
+          id: 'page_editor_top_level_order',
+          value: {'type': 'String', 'value': '[]'});
+      await seed(edited, into: [local, remote]);
+      await seed(other, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'act-1', before: alarms, after: edited));
+      await openStore();
+
+      await undo(await planUndo(remote, 'act-1'));
+
+      final rows = {
+        for (final row in await itemRows(remote)) row.id: row.payload,
+      };
+      expect(rows.keys, containsAll(['alarm_man_config',
+        'page_editor_top_level_order']));
+      expect(rows['alarm_man_config'], alarms.payload);
+      expect(rows['page_editor_top_level_order'], other.payload);
+    });
+
+    test('the undo is a new action whose rows say what they are', () async {
+      final asset = assetItem('a1', page: 'p1', ordinal: 1024);
+      await seed(asset, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'act-1', after: asset));
+      await openStore();
+
+      await undo(await planUndo(remote, 'act-1'), actionId: 'undo-of-act-1');
+
+      final rows = await changeRows(remote);
+      expect(rows, hasLength(2), reason: 'the log is append-only: the undo '
+          'adds a row, it does not remove the one it inverts');
+      expect(rows.first.actionId, 'act-1');
+      expect(rows.last.actionId, 'undo-of-act-1');
+      expect(rows.last.op, ConfigChangeOp.delete.wireName);
+      expect(rows.last.reason, 'undo of act-1');
+      expect(rows.last.who, 'gudrun');
+    });
+
+    test('undoing the undo puts it back, with no extra machinery', () async {
+      final before = assetItem('a1', page: 'p1', ordinal: 1024);
+      final after = assetItem('a1', page: 'p1', ordinal: 1024, colour: 'blue');
+      await seed(after, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'act-1', before: before, after: after));
+      await openStore();
+
+      await undo(await planUndo(remote, 'act-1'), actionId: 'undo-1');
+      expect(store.itemsOf(const {ConfigKind.asset}).single.payload,
+          before.payload);
+
+      // The undo is an action like any other, so it inverts the same way.
+      final second = await planUndo(remote, 'undo-1');
+      expect(second.isReady, isTrue);
+      await undo(second, actionId: 'undo-2');
+
+      expect(store.itemsOf(const {ConfigKind.asset}).single.payload,
+          after.payload);
+      expect((await changeRows(remote)).map((r) => r.actionId),
+          ['act-1', 'undo-1', 'undo-2']);
+    });
+
+    test('a restored page and its assets leave no orphan behind', () async {
+      final page = pageItem('p1');
+      final a1 = assetItem('a1', page: 'p1', ordinal: 1024);
+      final a2 = assetItem('a2', page: 'p1', ordinal: 2048);
+      await seedChange(changeOf(actionId: 'act-1', before: page));
+      await seedChange(changeOf(actionId: 'act-1', before: a1));
+      await seedChange(changeOf(actionId: 'act-1', before: a2));
+      await openStore();
+
+      await undo(await planUndo(remote, 'act-1'));
+
+      expect((await itemRows(remote)).map((r) => r.id), ['a1', 'a2', 'p1']);
+      // The invariant the step order is about, checked rather than assumed:
+      // `parent_id` is not a foreign key, so nothing but this says the
+      // children came back onto a page that exists.
+      expect(await checkConfigConsistency(remote), isEmpty);
+    });
+
+    test('a reorder is undone to the original order', () async {
+      final a1 = assetItem('a1', page: 'p1', ordinal: 1024);
+      final a2 = assetItem('a2', page: 'p1', ordinal: 2048);
+      // The action moved a2 in front of a1.
+      final movedA2 = assetItem('a2', page: 'p1', ordinal: 512);
+      await seed(a1, into: [local, remote], key: 1024);
+      await seed(movedA2, into: [local, remote], key: 512);
+      await seedChange(changeOf(actionId: 'act-1', before: a2, after: movedA2));
+      await openStore();
+
+      await undo(await planUndo(remote, 'act-1'));
+
+      final order = store.itemsOf(const {ConfigKind.asset}).toList()
+        ..sort((x, y) => x.sortIndex!.compareTo(y.sortIndex!));
+      expect(order.map((i) => i.id), ['a1', 'a2'],
+          reason: "the change row's stored key is what puts it back, and "
+              'assignSortKeys reads it as the rank it already is');
+    });
+
+    test('a delete-undo racing a re-creation surfaces ConfigConflict',
+        () async {
+      final asset = assetItem('a1', page: 'p1', ordinal: 1024);
+      await seedChange(changeOf(actionId: 'act-1', before: asset));
+      await openStore();
+
+      final plan = await planUndo(remote, 'act-1');
+      expect(plan.isReady, isTrue);
+
+      // Another station re-creates it in the window between the verdict and
+      // the write. Nothing this store knows about — which is the point.
+      await seed(asset, into: [remote]);
+
+      await expectLater(undo(plan), throwsA(isA<ConfigConflict>()));
+      expect((await changeRows(remote)), isEmpty,
+          reason: 'the transaction rolled back, so the undo wrote no change '
+              'row either');
+    });
+  });
+
+  group('the gate is inside execute, not at the page', () {
+    test('the group is the one the original write required', () {
+      expect(undoGateFor(policy, ConfigKind.asset, 'a1').group,
+          AccessGroup.configure);
+      expect(undoGateFor(policy, ConfigKind.page, 'p1').group,
+          AccessGroup.configure);
+      expect(undoGateFor(policy, ConfigKind.keyMapping, 'CN04.Belt').group,
+          AccessGroup.configure);
+      // A preference is gated per key, as `GuardedConfigStore.writePreference`
+      // is: two preference rows are not one permission.
+      expect(undoGateFor(policy, ConfigKind.preference, 'alarm_man_config')
+          .group, AccessGroup.configure);
+      expect(undoGateFor(policy, ConfigKind.preference, 'collector_config')
+          .group, AccessGroup.administer);
+      // A kind nobody classified falls to the policy's closed default.
+      expect(undoGateFor(policy, ConfigKind.pageImage, 'sha-abc').group,
+          AccessGroup.administer);
+    });
+
+    test('the check keys are the guard\'s own, spelled out', () {
+      for (final entry in kUndoCheckKeys.entries) {
+        expect(kConfigWriteKeys[entry.key], entry.value,
+            reason: 'this map is a deliberate copy, made because the guard\'s '
+                'own reaches open62541 through the key-mapping codec. A copy '
+                'that drifts would gate an undo on a different permission '
+                'from the write it inverts.');
+      }
+      expect(kUndoCheckKeys.keys.toSet(), kConfigWriteKeys.keys.toSet());
+    });
+
+    test('a plan spanning two permissions is gated on the stricter', () async {
+      final alarms = ConfigItem.of(
+          kind: ConfigKind.preference,
+          id: 'alarm_man_config',
+          value: {'type': 'String', 'value': '{}'});
+      final collector = ConfigItem.of(
+          kind: ConfigKind.preference,
+          id: 'collector_config',
+          value: {'type': 'String', 'value': '{}'});
+      await seed(alarms, into: [local, remote]);
+      await seed(collector, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'act-1', after: alarms));
+      await seedChange(changeOf(actionId: 'act-1', after: collector));
+
+      final plan = await planUndo(remote, 'act-1');
+
+      expect(undoGate(policy, plan).group, AccessGroup.administer);
+      expect(undoGate(policy, plan).itemKey, 'collector_config');
+    });
+
+    test('a session without the group is refused, and nothing is written',
+        () async {
+      final asset = assetItem('a1', page: 'p1', ordinal: 1024);
+      await seed(asset, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'act-1', after: asset));
+      store.attachRemoteDatabase(remote, startSync: false);
+      await store.open();
+
+      final plan = await planUndo(remote, 'act-1');
+      final before = await snapshotOf(remote);
+      final beforeLocal = await snapshotOf(local);
+
+      await expectLater(
+          executeUndo(
+            plan,
+            store: store,
+            policy: policy,
+            sessionGroups: kOperatorGroups,
+            actionId: 'undo-1',
+            who: 'gudrun',
+            roleName: 'Operator',
+          ),
+          throwsA(isA<AccessDenied>()
+              .having((d) => d.required, 'required', AccessGroup.configure)
+              .having((d) => d.itemKey, 'itemKey', 'page_editor_data')));
+
+      expect(await snapshotOf(remote), before,
+          reason: 'a gate that throws after writing is not a gate');
+      expect(await snapshotOf(local), beforeLocal);
+      expect(store.itemsOf(const {ConfigKind.asset}).single.payload,
+          asset.payload);
+    });
+
+    test('a configure session may not undo an administer write', () async {
+      final collector = ConfigItem.of(
+          kind: ConfigKind.preference,
+          id: 'collector_config',
+          value: {'type': 'String', 'value': '{}'});
+      await seed(collector, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'act-1', after: collector));
+      store.attachRemoteDatabase(remote, startSync: false);
+      await store.open();
+
+      final plan = await planUndo(remote, 'act-1');
+      final before = await snapshotOf(remote);
+
+      await expectLater(
+          executeUndo(
+            plan,
+            store: store,
+            policy: policy,
+            sessionGroups: const {AccessGroup.operate, AccessGroup.configure},
+            actionId: 'undo-1',
+            who: 'gudrun',
+            roleName: 'Engineer',
+          ),
+          throwsA(isA<AccessDenied>()
+              .having((d) => d.required, 'required', AccessGroup.administer)));
+
+      expect(await snapshotOf(remote), before);
+    });
+
+    test('a plan that is not ready cannot be executed at all', () async {
+      final asset = assetItem('a1', page: 'p1', ordinal: 1024);
+      await seed(asset, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'act-1', after: asset));
+      await seedChange(changeOf(
+          actionId: 'act-2',
+          before: asset,
+          after: assetItem('a1', page: 'p1', ordinal: 1024, colour: 'blue')));
+      store.attachRemoteDatabase(remote, startSync: false);
+      await store.open();
+
+      final plan = await planUndo(remote, 'act-1');
+      expect(plan.isReady, isFalse);
+      final before = await snapshotOf(remote);
+
+      await expectLater(
+          executeUndo(
+            plan,
+            store: store,
+            policy: policy,
+            sessionGroups: kAllGroups,
+            actionId: 'undo-1',
+            who: 'gudrun',
+            roleName: 'Engineer',
+          ),
+          throwsA(isA<ArgumentError>()));
+
+      expect(await snapshotOf(remote), before);
     });
   });
 
