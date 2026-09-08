@@ -60,7 +60,7 @@ List<String> _mainLinesWithoutComments() {
 }
 
 void main() {
-  _blobTests();
+  _preferenceTests();
   group('readSharedKeyMappingItems', () {
     test('returns the shared key_mapping rows, ordered by id', () async {
       final db = AppDatabase.inMemoryForTest();
@@ -214,28 +214,81 @@ void main() {
   });
 
   group('the backend boot, read from source', () {
-    test('reads the rows before it falls back to the blob', () {
+    test('boots its mappings from rows, and nothing else reads the blob', () {
+      // Phase 4. `readSharedKeyMappingBlob` is deleted, not merely unused: it
+      // was the last thing in this binary that named `flutter_preferences`,
+      // and a fallback left in place is a fallback that runs on the night the
+      // drop happens.
       final lines = _mainLinesWithoutComments();
+      final source = lines.join('\n');
+
+      expect(source, contains('readSharedKeyMappingItems'),
+          reason: 'the backend must boot its mappings from config_item rows');
+      expect(source.contains('readSharedKeyMappingBlob'), isFalse,
+          reason: 'the blob fallback retired with the table');
+      expect(source.contains('flutter_preferences'), isFalse,
+          reason: 'this binary must not name the dropped table at all — the '
+              'SC-2 gate searches packages/*/bin for exactly this');
+    });
+
+    test('no rows is fatal and says which migration is missing', () {
+      // The other half of deleting the fallback. Rows-or-nothing means the
+      // empty case has to be loud: a backend that carried on would acquire
+      // from a key set nobody is editing, silently, for as long as it ran.
+      final lines = _mainLinesWithoutComments();
+      final source = lines.join('\n');
 
       final rowsRead =
           lines.indexWhere((l) => l.contains('readSharedKeyMappingItems'));
-      // `readSharedKeyMappingBlob`, not `KeyMappings.fromPrefs`: plan 02-06
-      // deleted that constructor (it would have written its two-key example
-      // back over a live plant) and stopped `loadFromPostgres` loading the
-      // key, so the fallback has to read the row itself. The fallback stays;
-      // only the spelling of it moved.
-      final blobRead =
-          lines.indexWhere((l) => l.contains('readSharedKeyMappingBlob'));
+      final refusal = lines.indexWhere((l) => l.contains('mappingItems.isEmpty'));
+      expect(rowsRead, isNonNegative);
+      expect(refusal, greaterThan(rowsRead));
+      expect(source, contains('StateError'),
+          reason: 'empty rows must throw, not fall through to a default');
+      expect(source, contains('migration'),
+          reason: 'the throw has to name what is missing, or the operator '
+              'reads it as a database outage');
+    });
 
-      expect(rowsRead, isNonNegative,
-          reason: 'the backend must boot its mappings from config_item rows');
-      expect(blobRead, isNonNegative,
-          reason: 'the blob fallback has to stay until Phase 4 — the backend '
-              'container can restart before any station has run the migration');
-      expect(rowsRead, lessThan(blobRead),
-          reason: 'rows first. The other order serves the blob forever, which '
-              'after the cutover is a backend running configuration nobody '
-              'is editing any more.');
+    test('reads alarm_man_config as a value and never writes a default', () {
+      // Fable's 04-12 ruling. The backend has one boot read and no reconcile,
+      // so it cannot tell "no alarms" from "not yet migrated" — and a process
+      // that cannot tell must not write. The station writes that default
+      // itself, through the checked path, with an audit row behind it.
+      final lines = _mainLinesWithoutComments();
+      final source = lines.join('\n');
+
+      expect(source, contains('readSharedPreferenceValue'),
+          reason: 'one row read through the shared codec, not a store');
+      expect(source, contains('AlarmMan.headless'),
+          reason: 'the config goes in as a value; the headless constructor '
+              'takes no store, so there is nothing here that could write');
+      expect(source.contains('AlarmMan.create('), isFalse,
+          reason: 'AlarmMan.create seeds the empty default when the row is '
+              'absent — the write this plan removed');
+      expect(source.contains('Preferences.create('), isFalse,
+          reason: 'the backend built a whole preferences object for one key, '
+              'and that object was a writer');
+    });
+
+    test('an absent alarm row is disambiguated by the migration marker', () {
+      // Both arms run empty; the marker only decides which line is logged.
+      // That is the point — a backend that refused to boot over alarm
+      // configuration would trade the plant's data acquisition, which is its
+      // actual job, for its annunciation.
+      final lines = _mainLinesWithoutComments();
+      final source = lines.join('\n');
+
+      expect(source, contains('kPreferencesMigratedMarkerId'),
+          reason: 'the purpose-built answer to "empty, or not yet migrated?"');
+      expect(source, contains('AlarmManConfig(alarms: [])'),
+          reason: 'absent means run with zero alarms');
+      expect(source.contains('alarm'), isTrue);
+      // The refusal that must NOT be there.
+      final alarmThrow = lines.indexWhere((l) =>
+          l.contains('alarm_man_config') && l.contains('throw'));
+      expect(alarmThrow, -1,
+          reason: 'absent alarm configuration must never stop the boot');
     });
 
     test('the blob watcher is gone and one row watcher replaced it', () {
@@ -306,19 +359,24 @@ void main() {
 }
 
 // ---------------------------------------------------------------------------
-// The blob, after plan 02-06 stopped loading it
+// The one-key preference read, for the processes that have no store
 // ---------------------------------------------------------------------------
 
-/// The blob row, written the way `flutter_preferences` holds it.
-Future<void> _writeBlob(AppDatabase db, String? value) =>
-    db.into(db.flutterPreferences).insert(FlutterPreferencesCompanion.insert(
-          key: 'key_mappings',
-          value: Value(value),
-          type: 'String',
-        ));
+/// A `preference` row written the way `SharedRowPreferences` writes one.
+Future<void> _writePreference(
+  AppDatabase db,
+  String key,
+  String type,
+  Object value,
+) =>
+    _insert(db,
+        kind: ConfigKind.preference,
+        id: key,
+        scope: ConfigScope.shared,
+        payload: jsonEncode({'type': type, 'value': value}));
 
-void _blobTests() {
-  group('readSharedKeyMappingBlob', () {
+void _preferenceTests() {
+  group('readSharedPreferenceValue', () {
     late AppDatabase db;
 
     setUp(() {
@@ -327,26 +385,62 @@ void _blobTests() {
     });
     tearDown(() => db.close());
 
-    test('answers the row the preference cache no longer holds', () async {
-      final blob = jsonEncode({
-        'nodes': {
-          'CN04.Belt.Speed': {
-            'opcua_node': {'namespace': 2, 'identifier': 'Speed'},
-          },
-        },
-      });
-      await _writeBlob(db, blob);
+    test('answers the value the shared row holds, through the shared codec',
+        () async {
+      // The backend's one key. Written as the store writes it, read back as
+      // the store would read it — that is what makes this the same answer
+      // rather than a second one.
+      final config = jsonEncode({'alarms': []});
+      await _writePreference(db, 'alarm_man_config', 'String', config);
 
-      expect(await readSharedKeyMappingBlob(db), blob);
+      expect(await readSharedPreferenceValue(db, 'alarm_man_config'), config);
+    });
+
+    test('carries the type tag, so an int is not a string', () async {
+      await _writePreference(db, 'poll_seconds', 'int', 30);
+      expect(await readSharedPreferenceValue(db, 'poll_seconds'), 30);
+      await _writePreference(db, 'ratio', 'double', 1);
+      // `1` on the wire under a `double` tag is still a double: whole-numbered
+      // doubles are encoded without a fraction by every JSON encoder there is.
+      expect(await readSharedPreferenceValue(db, 'ratio'), isA<double>());
     });
 
     test('answers null when there is no row', () async {
-      expect(await readSharedKeyMappingBlob(db), null);
+      expect(await readSharedPreferenceValue(db, 'alarm_man_config'), null);
     });
 
-    test('answers null when the row holds null', () async {
-      await _writeBlob(db, null);
-      expect(await readSharedKeyMappingBlob(db), null);
+    test('answers null for a payload this build cannot read', () async {
+      // A row somebody edited by hand, or one written by a newer build with a
+      // tag this one does not know. Absent is the right reading: it costs the
+      // caller a default, never the boot.
+      await _insert(db,
+          kind: ConfigKind.preference,
+          id: 'alarm_man_config',
+          scope: ConfigScope.shared,
+          payload: '{"type":"Widget","value":3}');
+      expect(await readSharedPreferenceValue(db, 'alarm_man_config'), null);
+    });
+
+    test('does not answer a station-scoped row of the same name', () async {
+      // The one thing this read must not do. `preference` is the first kind
+      // that legitimately exists at both scopes; a backend that picked up one
+      // station's local row would run the plant on it.
+      await _writePreference(db, 'alarm_man_config', 'String', 'shared');
+      await _insert(db,
+          kind: ConfigKind.preference,
+          id: 'alarm_man_config',
+          scope: ConfigScope.forStation('svn-nes-ot-cl02'),
+          payload: jsonEncode({'type': 'String', 'value': 'local'}));
+
+      expect(await readSharedPreferenceValue(db, 'alarm_man_config'), 'shared');
+    });
+
+    test('does not answer a row of another kind with the same id', () async {
+      await _insert(db,
+          kind: ConfigKind.keyMapping,
+          id: 'alarm_man_config',
+          scope: ConfigScope.shared);
+      expect(await readSharedPreferenceValue(db, 'alarm_man_config'), null);
     });
   });
 }

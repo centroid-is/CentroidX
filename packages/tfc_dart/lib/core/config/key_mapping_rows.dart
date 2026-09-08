@@ -1,11 +1,16 @@
-/// Reading `key_mappings` out of `config_item`, for the processes that are
-/// not the Flutter app.
+/// Reading shared configuration out of `config_item`, for the processes that
+/// are not the Flutter app.
 ///
-/// The app gets its mappings through the store; the backend and the collector
-/// do not have one and do not need one — they read the whole set once at boot
-/// and bake it into the isolates they spawn. This file is that read, in one
-/// place, so "the shared key mappings" means the same rows to every process
-/// that asks for them.
+/// The app gets its configuration through the store; the backend and the
+/// collector do not have one and do not need one — they read what they need
+/// once at boot and bake it into the isolates they spawn. This file is those
+/// reads, in one place, so "the shared key mappings" and "the shared value of
+/// this preference" mean the same rows to every process that asks for them.
+///
+/// [readSharedPreferenceValue] decodes through `preference_payload.dart`, the
+/// same codec both preference stores write with. That is deliberately not a
+/// third preferences-shaped object: it is the same answer to "what is on
+/// disk", read without a store.
 ///
 /// ## Why [GeneratedDatabase] and not `AppDatabase`
 ///
@@ -26,18 +31,17 @@ library;
 import 'package:drift/drift.dart';
 import 'package:meta/meta.dart';
 
-import '../database_drift.dart'
-    show $ConfigItemTableTable, $FlutterPreferencesTable, ConfigItemRow;
+import '../database_drift.dart' show $ConfigItemTableTable, ConfigItemRow;
 import 'config_item.dart';
-import 'key_mapping_codec.dart' show kKeyMappingsPrefKey;
+import 'preference_payload.dart' show decodePreferencePayload;
 
 /// The shared `key_mapping` rows, ordered by id.
 ///
-/// Empty while the blob → rows migration has not run, which is a state the
-/// callers have to handle rather than a failure: the backend container can
-/// restart before any station has run it. So an empty list means "no rows
-/// yet", never "no mappings" — the caller falls back to the blob and says so
-/// in its log.
+/// Empty when the blob → rows migration has not run — and since 04-12 dropped
+/// the blob reader, that is the only thing empty can mean here that a caller
+/// can act on. A backend with no rows has no plant wiring at all, so it says
+/// which migration is missing and refuses to boot rather than acquiring from
+/// a key set it invented.
 ///
 /// Ordered by id because the order has to come from the query. Rows come back
 /// in whatever order the engine chooses otherwise, and a key set whose order
@@ -153,24 +157,40 @@ class KeyMappingFingerprint {
 $ConfigItemTableTable _configItems(GeneratedDatabase db) =>
     $ConfigItemTableTable(db);
 
-/// The legacy `flutter_preferences.key_mappings` blob, read **straight from the
-/// row**.
+/// The value of one shared `preference` row, decoded, or null when there is
+/// none this build can read.
 ///
-/// Not through `PreferencesApi.getString`. As of v1.2 phase 2 plan 06,
-/// `Preferences.loadFromPostgres` deliberately skips this key, so the memory
-/// cache answers null for it however full the row is — that is what stops the
-/// blob from being a second live copy of the plant's wiring. A process that
-/// still needs the blob as a boot fallback therefore has to read the row, and
-/// this is that read.
+/// For a process that has no [ConfigStore] and needs one setting: the
+/// acquisition backend's `alarm_man_config`, read once at boot and baked into
+/// what it builds. A store would bring a snapshot, a reconcile, a change feed
+/// and a write path, none of which a one-shot boot read has any use for — and
+/// the write path is the part that must not exist here, because a process
+/// with no snapshot cannot tell "this setting is empty" from "the migration
+/// has not run" and so must never conclude "empty, therefore write the
+/// default".
 ///
-/// Null when the row is absent or holds null: the key has never been saved.
-Future<String?> readSharedKeyMappingBlob(GeneratedDatabase db) async {
-  final prefs = $FlutterPreferencesTable(db);
-  final row = await (db.select(prefs)
-        ..where((t) => t.key.equals(kKeyMappingsPrefKey))
+/// Decoded through `preference_payload.dart` — the one codec both preference
+/// stores write with — so the tag that separates `7` from `'7'` survives the
+/// trip. **Null covers absent and unreadable alike**, which is the codec's
+/// documented contract: a row nobody can parse costs the caller a default,
+/// never the boot. A caller that must tell an empty plant from an unmigrated
+/// one asks the migration marker, which exists for exactly that question.
+///
+/// Shared scope only. `preference` is the first kind that legitimately lives
+/// at both scopes, so a read that did not filter could hand a backend one
+/// station's local row and run the plant on it.
+Future<Object?> readSharedPreferenceValue(
+    GeneratedDatabase db, String key) async {
+  final table = _configItems(db);
+  final row = await (db.select(table)
+        ..where((t) =>
+            t.kind.equals(ConfigKind.preference.wireName) &
+            t.id.equals(key) &
+            t.scope.equals(ConfigScope.shared.wireName))
         ..limit(1))
       .getSingleOrNull();
-  return row?.value;
+  if (row == null) return null;
+  return decodePreferencePayload(row.payload);
 }
 
 /// One row as the value type the rest of the code uses.

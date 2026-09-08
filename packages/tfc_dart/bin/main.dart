@@ -1,12 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
-import 'package:tfc_dart/core/config/key_mapping_codec.dart'
-    show keyMappingItemsFromBlob, keyMappingsOf;
+import 'package:tfc_dart/core/config/key_mapping_codec.dart' show keyMappingsOf;
 import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_store.dart'
+    show kPreferencesMigratedMarkerId;
 import 'package:tfc_dart/core/config/key_mapping_rows.dart';
 import 'package:tfc_dart/core/database.dart';
-import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/alarm.dart';
 
@@ -23,7 +24,6 @@ void main() async {
 
   final dbConfig = await DatabaseConfig.fromEnv();
   final db = await Database.connectWithRetry(dbConfig);
-  final prefs = await Preferences.create(db: db);
 
   final statemanConfigFilePath =
       Platform.environment['CENTROID_STATEMAN_FILE_PATH'];
@@ -32,39 +32,27 @@ void main() async {
   }
   final smConfig = await StateManConfig.fromFile(statemanConfigFilePath);
 
-  // Key mappings come from `config_item` rows, and from the old
-  // `flutter_preferences.key_mappings` blob only while there are no rows to
-  // read. The fallback is a read, not a dual-write: it reads the same physical
-  // blob this line read before, and it exists because the backend container
-  // can restart before any station has run the one-shot migration. It retires
-  // itself the moment the rows are there, and goes with the blob in Phase 4.
+  // Key mappings come from `config_item` rows, and from nowhere else. The
+  // `flutter_preferences.key_mappings` blob fallback retired with 04-12: it
+  // existed because the backend container could restart before any station
+  // had run the one-shot migration, and it is the last thing that made this
+  // process a reader of a table the cutover drops.
   //
-  // Post-cutover, the warning below appearing in the log means the migration
-  // has not run — which is worth a line an engineer can grep for, because the
-  // symptom otherwise is a backend quietly acquiring from an old key set.
+  // No rows is therefore fatal, and loudly so. A backend that invented a key
+  // set would acquire nothing anybody is looking at, quietly, forever; the
+  // container restarts on the throw and says which migration is missing every
+  // time it does.
   final mappingItems = await readSharedKeyMappingItems(db.db);
-  final KeyMappings keyMappings;
-  if (mappingItems.isNotEmpty) {
-    keyMappings = keyMappingsOf(mappingItems);
-    logger.i('Loaded ${keyMappings.nodes.length} key mappings from '
-        'config_item rows');
-  } else {
-    logger.w('No config_item key_mapping rows found; falling back to the '
-        'flutter_preferences.key_mappings blob. After the cutover this line '
-        'means the blob → rows migration has not run.');
-    // The row, not `prefs.getString`: plan 02-06 stopped `loadFromPostgres`
-    // loading this key, so the preference cache answers null for it however
-    // full the row is. `KeyMappings.fromPrefs` is deleted for the same reason —
-    // it would have found that null and written its two-key example back.
-    final blob = await readSharedKeyMappingBlob(db.db);
-    if (blob == null) {
-      throw StateError(
-          'No config_item key_mapping rows and no flutter_preferences.'
-          'key_mappings blob: this backend is pointed at a database that holds '
-          'no plant wiring at all.');
-    }
-    keyMappings = keyMappingsOf(keyMappingItemsFromBlob(blob));
+  if (mappingItems.isEmpty) {
+    throw StateError(
+        'No config_item key_mapping rows: this backend is pointed at a '
+        'database that holds no plant wiring at all. Either the blob → rows '
+        'migration has not run (start a station, which runs it at attach), or '
+        'this is the wrong database.');
   }
+  final keyMappings = keyMappingsOf(mappingItems);
+  logger.i('Loaded ${keyMappings.nodes.length} key mappings from '
+      'config_item rows');
 
   // Disable SSL for alarm StateMan to test if the issue is specific to
   // encrypted secure channel renewal
@@ -84,10 +72,57 @@ void main() async {
     alias: 'alarmman',
   );
 
+  // The alarm configuration, read as a value out of the shared row — one key,
+  // through the same codec the stores write with, with no preferences object
+  // in between. `AlarmMan`'s store is only ever used by `addAlarm` /
+  // `removeAlarm` / `_saveConfig`, which are the alarm editor's operations;
+  // this process has no editor and so has no business holding a writer.
+  //
+  // **It no longer writes the empty default when the row is absent.** That
+  // write was inert for this process — `AlarmMan` seeds the same empty config
+  // in memory either way — and it was a second author with none of the
+  // station's machinery behind it: no checked group, no `origin='system'`, no
+  // audit row. A process with one boot read and no reconcile cannot tell
+  // "empty" from "not yet migrated", so it must not conclude "empty,
+  // therefore write".
+  //
+  // Absent is not fatal. Alarms are one function of a process whose job is
+  // acquisition; refusing to boot over them would trade the plant's data for
+  // its annunciation. Which absence it is, though, is worth knowing, and the
+  // migration marker is the purpose-built answer — the same question
+  // `config_sync.dart`'s `_remoteIsMigrated` asks.
+  final alarmConfigJson =
+      await readSharedPreferenceValue(db.db, 'alarm_man_config');
+  final AlarmManConfig alarmConfig;
+  if (alarmConfigJson is String) {
+    alarmConfig = AlarmManConfig.fromJson(jsonDecode(alarmConfigJson));
+    logger.i('Loaded ${alarmConfig.alarms.length} alarms from the shared '
+        'alarm_man_config row');
+  } else {
+    final migrated =
+        await readSharedPreferenceValue(db.db, kPreferencesMigratedMarkerId) !=
+            null;
+    if (migrated) {
+      logger.i('No alarm_man_config row and the preference migration has run: '
+          'this plant has no alarms configured. Running with none.');
+    } else {
+      // Names the marker and not the retired table: this binary must not
+      // mention that name at all, or the SC-2 gate cannot tell a log line
+      // from a read. The marker is the more useful thing to grep for anyway,
+      // because it is what the runbook checks.
+      logger.w('No alarm_man_config row and no $kPreferencesMigratedMarkerId '
+          'marker: the preference migration has not run, so the alarms this '
+          'plant does have are not visible to this backend yet. Running with '
+          'none — start a station, which migrates them at attach.');
+    }
+    alarmConfig = AlarmManConfig(alarms: []);
+  }
+
   // Setup alarm monitoring with database persistence
-  final alarmHandler = await AlarmMan.create(
-    prefs,
-    stateMan,
+  final alarmHandler = await AlarmMan.headless(
+    config: alarmConfig,
+    stateMan: stateMan,
+    database: db,
     historyToDb: true,
   );
   // AlarmMan only wires its evaluators up when someone listens to the active
