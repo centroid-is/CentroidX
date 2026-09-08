@@ -133,6 +133,27 @@ that it runs — would stop this recurring.
 **This one is a regression, not a pre-existing bug, and should land before
 anything ships.**
 
+**Two workarounds now stand on it, which is the cost worth seeing** before
+anyone decides whether to fix it. Neither is wrong; both exist only because
+the codec cannot be imported by anything that must stay FFI-free:
+
+1. `tfc_dart_core.dart` still does not export `config/key_mapping_codec.dart`,
+   so `ConfigService` reaches past the barrel (above). That is the defect
+   itself.
+2. `packages/tfc_dart/lib/core/config/config_undo.dart:283` (plan 04-07)
+   declares `kUndoCheckKeys` as **a hand-written literal copy of
+   `GuardedConfigStore.kConfigWriteKeys`**, because importing the original
+   would pull `key_mapping_codec.dart` → `state_man.dart` → `dart:ffi` into
+   the config layer — the same chain, caught this time by
+   `page_rows_test.dart`'s import-graph walk rather than by a link error. The
+   copy is pinned against the original by `config_undo_test.dart:730`, so the
+   two cannot drift silently; that test is the maintenance this workaround
+   costs, permanently, until the codec is freed.
+
+A third instance is the point at which the cheap fix stops being cheap: every
+copy is another map somebody must remember to keep in step, and the pinning
+test only catches drift after somebody has already written it.
+
 ---
 
 ## Not defects, but decided by default
@@ -283,3 +304,72 @@ is what happens by default if nobody chooses.
 **Until then:** after any `build_runner` run in `tfc_dart`, run
 `access_schema_test` and check `grep -c REFERENCES database_drift.g.dart` is
 non-zero before committing.
+
+---
+
+## D-7 — the shared preference store is empty until the migration lands
+
+**Introduced deliberately by plan 04-05, 2026-09-08 (`921d18a7`). This is a
+deploy-blocking constraint, not a nicety.**
+
+`preferencesProvider` now answers `SharedRowPreferences`, which reads and
+writes `kind='preference'` rows at `scope='shared'` through `ConfigStore`
+(`lib/providers/preferences.dart`). The plant's shared settings are still in
+the `flutter_preferences` table. **Plan 04-11 is the migration that copies them
+across, and it has not landed.**
+
+So on this branch, before 04-11, every shared preference reads as **absent** —
+not stale, not wrong, absent — and a caller cannot tell that from a plant that
+has never been configured. That indistinguishability is the recurring trap of
+this milestone (six near-misses), and here it is the whole defect.
+
+**What a station that took this branch today would come up without:**
+
+| Key family | Group | What the operator sees |
+|---|---|---|
+| `alarm_man_config` | configure | no alarms at all; `AlarmMan` builds on the empty default |
+| `page_editor_top_level_order` | configure | the menu in whatever order the pages happen to come out in |
+| `page_editor_image:<id>` | configure | every uploaded image on every mimic fails to load (`PageImageStore.load` answers null) |
+| `<bucket>.recipes` | setpoints | recipe assets open with no recipes |
+| `server_config_envelope` | administer | the stored server configuration reads as unset |
+| `collector_config` | administer | the collector falls back to its default |
+| `update_channel` | administer | unset |
+
+Two boundaries, both narrowing the blast radius and both worth stating so that
+nobody over-corrects:
+
+* **Pages, assets and key mappings are unaffected.** They moved onto rows in
+  Phases 2 and 3 and were migrated then; the mimics themselves come up.
+* **`state_man_config` is unaffected.** It is written `secret: true`, so it
+  lives in the OS keychain, which this plan did not touch. A station still
+  knows how to reach its PLC.
+
+**Nothing is lost.** `flutter_preferences` is untouched — 04-12 is what drops
+it — so this is fully reversible: reverting the branch restores the previous
+behaviour with every value still in place.
+
+**The sharp edge, which is worse than a blank read.** Several of the missing
+keys have *boot defaults* that the app writes for itself through
+`systemPreferencesProvider` — `alarm_man_config` at `lib/providers/alarm.dart:28`,
+`collector_config`, and the empty recipe list written on the recipes **read**
+path. Against a reachable Postgres those defaults now succeed: the station
+writes an **empty** `alarm_man_config` row into the shared store, which every
+other station then syncs. The migration afterwards is no longer copying into an
+empty table — it is reconciling against rows a booting station invented. 04-11
+must decide explicitly what wins, and must not assume the destination is empty.
+
+**Why it is deferred rather than fixed here.** The only fix available inside
+04-05 would be a read-through fallback to `flutter_preferences` when a row is
+absent — which is precisely "cannot tell empty from not yet loaded" written
+into the store on purpose, and would need its own ruling on which of the two
+stores is authoritative during the window. That ruling belongs with the
+migration that closes the window, not with the plan that opens it. The plan's
+own ordering is deliberate: 04-12 retires `Preferences` "once the migration
+(04-11) has landed", so the swap was always meant to precede it.
+
+**What closes it:** plan **04-11** landing. Until then the two are one
+deployable unit — **this branch must not reach a plant without 04-11 in the
+same release.** Plan 04-13's runbook must carry that as a hard precondition and
+not as a recommendation; a release that ships 04-05 alone is a plant-wide loss
+of alarm configuration on the first restart.
+
