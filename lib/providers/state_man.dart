@@ -202,14 +202,14 @@ Future<StateMan> stateMan(Ref ref) async {
       // gateway owns the upstream sessions and does the historising; a panel
       // that also collected would write a second copy of every sample.
       //
-      // **And one Postgres connection**, which is not optional and is not
-      // closed by this branch. `lib/providers/database.dart` has no transport
-      // branch at all, so sign-in, preferences and the audit trail still go
-      // over the station's own database link in gateway mode — measured on the
-      // rig, 13-RIG-E2E-EVIDENCE FIND-C. Closing that dependency (access,
-      // preferences and audit over the relay) is Phase 17; until then, any
-      // copy claiming this panel opens only a WebSocket is false, and a
-      // source-scan test keeps the old wording from coming back.
+      // The station-side Postgres dependency the rig measured here
+      // (13-RIG-E2E-EVIDENCE FIND-C) is closed now: `lib/providers/
+      // database.dart` branches on the transport and returns before dialling,
+      // and `preferencesProvider` no longer watches it in gateway mode —
+      // access, the audit trail and templates went over the relay in 17-12,
+      // and the shared configuration store runs on the device-local mirror.
+      // What a gateway panel still opens beside the socket is device-local
+      // storage, which is a file, not a connection.
       final refusal = gateway.validationError;
       if (refusal != null) {
         throw StateError('Gateway mode is selected but the configuration '
