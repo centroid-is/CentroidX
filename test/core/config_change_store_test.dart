@@ -375,7 +375,7 @@ void main() {
       expect(rows.map((r) => r.change.kind), [ConfigKind.preference]);
     });
 
-    test('preference is readable, because nothing here intersects with '
+    test('preference is readable, because this read never intersects with '
         'kSharedConfigKinds', () async {
       await _seed(db, actionId: 'A', kind: 'preference', scope: 'shared');
       await _seed(db, actionId: 'B', kind: 'preference', scope: 'station:ST101');
@@ -386,14 +386,18 @@ void main() {
 
       expect(all, hasLength(2));
       expect(named, hasLength(2),
-          reason: 'ConfigKind.preference is deliberately NOT in '
-              'kSharedConfigKinds — that set says what the sync propagates, '
-              'not what the history holds. A read scoped by intersecting the '
-              'two would silently return nothing for every preference change '
-              'anybody ever made.');
-      expect(kSharedConfigKinds.contains(ConfigKind.preference), isFalse,
-          reason: 'if this ever becomes true the paragraph above needs '
-              'rewriting, not deleting.');
+          reason: 'kSharedConfigKinds says what the sync propagates and at '
+              'which scope, not what the history holds. Both rows above are '
+              'preference changes and one of them is station-scoped, which no '
+              'sweep will ever carry — so a read scoped by intersecting the '
+              'two would silently drop it.');
+      expect(kSharedConfigKinds.contains(ConfigKind.preference), isTrue,
+          reason: 'preference joined the set in 04-05 when the shared '
+              'PreferencesApi moved onto rows. That makes the paragraph above '
+              'MORE important, not less: the set now contains the kind and '
+              'still says nothing about the station-scoped half of it, so an '
+              'intersecting read would look correct and return half the '
+              'history.');
     });
 
     test('scope filtering names station scopes by their wire form', () async {

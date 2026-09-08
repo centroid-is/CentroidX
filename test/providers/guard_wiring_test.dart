@@ -17,7 +17,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/access/guarded_config_store.dart';
-import 'package:tfc_dart/core/access/guarded_preferences.dart';
+import 'package:tfc_dart/core/config/shared_row_preferences.dart';
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
 import 'package:tfc_dart/core/config/config_diff.dart';
 import 'package:tfc_dart/core/database.dart';
@@ -255,9 +255,14 @@ void main() {
   });
 
   group('the wrapping', () {
-    test('preferencesProvider answers a GuardedPreferences', () async {
+    test('preferencesProvider answers the row-backed store', () async {
       final w = await _wiring();
-      expect(await w.prefs, isA<GuardedPreferences>());
+      // Since 04-05 the shared store is `config_item` rows and the check lives
+      // one layer down, in `GuardedConfigStore.writePreference` — which is
+      // what lets one `action_id` cover the audit row and the change rows
+      // together. It is still a `Preferences`, which is why no caller changed.
+      expect(await w.prefs, isA<SharedRowPreferences>());
+      expect(await w.prefs, isA<Preferences>());
     });
 
     test('stateManProvider answers a GuardedStateMan around the built inner',
@@ -290,7 +295,7 @@ void main() {
       expect(
           await container.read(auditSinkProvider.future), isA<NullAuditSink>());
       expect(await container.read(preferencesProvider.future),
-          isA<GuardedPreferences>());
+          isA<SharedRowPreferences>());
       expect(await container.read(stateManProvider.future),
           isA<GuardedStateMan>());
     });
@@ -727,7 +732,8 @@ AccessDenied _denial(String key) => AccessDenied(key, AccessGroup.configure);
 
 /// The two tokens that reach the unchecked write path.
 ///
-/// `systemWrites` is the member on `GuardedPreferences`;
+/// `systemWrites` is the member on `SharedRowPreferences` (and, until 04-12
+/// retires it, on `GuardedPreferences`);
 /// `systemPreferencesProvider` is how everything but `preferences.dart` gets
 /// hold of it. Capping only the first would leave the provider readable from
 /// anywhere, which is the same hole one indirection further out.
@@ -907,7 +913,7 @@ KeyMappings _mappingsOf(Map<String, String> keysToIdentifiers) => KeyMappings(
 /// their inner construction faked, and nothing pointed at a real database or a
 /// real PLC.
 Future<_Wiring> _wiring(
-    {bool withDatabase = false, bool withConfigStore = false}) async {
+    {bool withDatabase = false, bool withConfigStore = true}) async {
   AccessRepository? repository;
   if (withDatabase) {
     final db = AppDatabase.inMemoryForTest();
@@ -946,13 +952,22 @@ Future<_Wiring> _wiring(
       // `collectorProvider` watches `stateManProvider`, so leaving it real
       // would have this test reaching for a database it does not have.
       collectorProvider.overrideWith((ref) async => null),
-      // The real provider builds over the device-local database and attaches
-      // nothing, which is a station with no Postgres — right for every test
-      // here except the ones that need a shared write to land somewhere.
+      // On by default since 04-05: `preferencesProvider` is now backed by this
+      // store, so a container without one is a station with no Postgres — and
+      // every preference write in this file would be refused as offline rather
+      // than checked. `sessionOf` rather than `session`, because production
+      // passes `() => sessionInForce(ref)` and the tests below sign in and out
+      // between two writes on one guard.
       if (withConfigStore)
         configStoreProvider.overrideWith((ref) => createTestConfigStore(
               station: _kStation,
+              sessionOf: () => sessionInForce(ref),
               audit: sink,
+              // Through the provider, exactly as `configStoreProvider` does:
+              // handing the list straight in would leave "a refusal reaches
+              // accessDenialsProvider" passing without the publish ever
+              // happening.
+              onDenied: (denial) => reportAccessDenial(ref, denial),
             )),
     ],
   );

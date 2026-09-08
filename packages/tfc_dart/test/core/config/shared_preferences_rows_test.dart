@@ -507,6 +507,50 @@ void main() {
       // And the non-secret read does not find it: the two stores are separate.
       expect(await prefs.getString('a_secret'), isNull);
     });
+
+    test('are still checked and recorded, naming neither side of the value',
+        () async {
+      await prefs.setString('server_config_envelope', 'ciphertext',
+          secret: true);
+
+      // `GuardedPreferences` checked and recorded all seven of its write
+      // members regardless of where the value landed, and the write that
+      // stores the plant's database credentials is the one that must never
+      // fall out of the trail.
+      expect(sink.rows.single.itemKey, 'server_config_envelope');
+      expect(sink.rows.single.allowed, isTrue);
+      expect(sink.rows.single.groupRequired, AccessGroup.administer.name);
+      // Reading the old value is the single edit that would copy a credential
+      // into a permanent, replicated table.
+      expect(sink.rows.single.oldValue, isNull);
+      expect(sink.rows.single.newValue, isNull);
+    });
+
+    test('a session that may not set one is refused, and nothing is written',
+        () async {
+      session = configureSession();
+
+      await expectLater(
+        prefs.setString('server_config_envelope', 'ciphertext', secret: true),
+        throwsA(isA<AccessDenied>()),
+      );
+
+      expect(secrets.values, isEmpty,
+          reason: 'a refused secret write must not reach the keychain');
+      expect(sink.rows.single.allowed, isFalse);
+      expect(denials.single.required, AccessGroup.administer);
+    });
+
+    test('the system arm writes one with nobody signed in', () async {
+      session = anonymous();
+
+      await prefs.systemWrites
+          .setString('state_man_config', '{"host":"x"}', secret: true);
+
+      expect(secrets.values['state_man_config'], '{"host":"x"}');
+      expect(sink.rows.single.origin, 'system');
+      expect(sink.rows.single.allowed, isTrue);
+    });
   });
 
   group('the change feed', () {

@@ -97,6 +97,15 @@ Future<GuardedConfigStore> createTestConfigStore({
   KeyMappings? keyMappings,
   AccessPolicy policy = const AccessPolicy(),
   AccessSession? session,
+  /// The session read **at each write**, for a test that signs in or out
+  /// between two of them.
+  ///
+  /// [session] freezes one; this one is the shape production uses
+  /// (`configStoreProvider` passes `() => sessionInForce(ref)`), and without it
+  /// a guard built here can only ever answer with the session it was made
+  /// with — which is exactly the elevation window the callback exists to
+  /// close. Wins over [session] when both are given.
+  AccessSession Function()? sessionOf,
   AuditSink? audit,
   String station = 'test-station',
   void Function(AccessDenied denial)? onDenied,
@@ -139,8 +148,8 @@ Future<GuardedConfigStore> createTestConfigStore({
   return GuardedConfigStore(
     inner: store,
     policy: policy,
-    session: () =>
-        session ?? AccessSession.anonymous(const {AccessGroup.operate}),
+    session: sessionOf ??
+        () => session ?? AccessSession.anonymous(const {AccessGroup.operate}),
     audit: audit ?? _DiscardingAuditSink(),
     station: station,
     onDenied: onDenied,

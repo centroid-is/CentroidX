@@ -34,10 +34,24 @@ const String kWholeStoreItemKey = '*';
 /// would delete it.
 const String _internalIdPrefix = '_';
 
-/// How a write reaches the guard: checked, or as the app acting for itself.
+/// How a row write reaches the guard: checked, or as the app acting for
+/// itself.
 typedef _PreferenceWriter = Future<ConfigWriteResult> Function(
   List<ConfigItem> wanted, {
   required String prefKey,
+  String? reason,
+});
+
+/// The same, for a write that lands in the keychain rather than in a row.
+///
+/// Separate because there is nothing to diff and nothing to replace — the
+/// guard checks, records a row naming neither side of the value, and then runs
+/// [write]. It exists at all because `GuardedPreferences` checked and recorded
+/// secret writes too, and the one write in the app that must never fall out of
+/// the trail is the one that stores a credential.
+typedef _SecretWriter = Future<void> Function({
+  required String prefKey,
+  required Future<void> Function() write,
   String? reason,
 });
 
@@ -103,6 +117,7 @@ class SharedRowPreferences extends Preferences {
           secureStorage: secureStorage,
           database: database,
           writer: store.writePreference,
+          secretWriter: store.writeSecret,
           events: StreamController<String>.broadcast(),
           ownsEvents: true,
         );
@@ -112,10 +127,12 @@ class SharedRowPreferences extends Preferences {
     required MySecureStorage secureStorage,
     required Database? database,
     required _PreferenceWriter writer,
+    required _SecretWriter secretWriter,
     required StreamController<String> events,
     required bool ownsEvents,
   })  : _store = store,
         _writer = writer,
+        _secretWriter = secretWriter,
         _events = events,
         _ownsEvents = ownsEvents,
         super(
@@ -140,6 +157,7 @@ class SharedRowPreferences extends Preferences {
 
   final GuardedConfigStore _store;
   final _PreferenceWriter _writer;
+  final _SecretWriter _secretWriter;
   final StreamController<String> _events;
   final bool _ownsEvents;
   StreamSubscription<Object?>? _diffs;
@@ -157,6 +175,7 @@ class SharedRowPreferences extends Preferences {
         secureStorage: secureStorage,
         database: database,
         writer: _store.writePreferenceAsSystem,
+        secretWriter: _store.writeSecretAsSystem,
         events: _events,
         ownsEvents: false,
       );
@@ -327,11 +346,18 @@ class SharedRowPreferences extends Preferences {
     await _writer(_wantedWith(key, item), prefKey: key);
   }
 
-  /// The secret write, delegated up so the keychain and its cache stay
-  /// [Preferences]' business. Typed by the same tag the row would have
-  /// carried, so a secret and a shared value of the same key round-trip the
-  /// same way they did before.
-  Future<void> _setSecret(String key, String type, Object value) {
+  /// The secret write: checked and recorded by the guard, then delegated up
+  /// so the keychain and its read cache stay [Preferences]' business.
+  ///
+  /// Typed by the same tag the row would have carried, so a secret and a
+  /// shared value of the same key round-trip the way they did before.
+  Future<void> _setSecret(String key, String type, Object value) =>
+      _secretWriter(
+        prefKey: key,
+        write: () => _writeSecretValue(key, type, value),
+      );
+
+  Future<void> _writeSecretValue(String key, String type, Object value) {
     switch (type) {
       case kPrefBoolType:
         return super.setBool(key, value as bool, secret: true);
@@ -349,7 +375,10 @@ class SharedRowPreferences extends Preferences {
   @override
   Future<void> remove(String key, {bool secret = false}) async {
     if (secret) {
-      await super.remove(key, secret: true);
+      // Checked and recorded exactly as a secret write is: a deletion of a
+      // credential is as much a configuration change as setting one.
+      await _secretWriter(
+          prefKey: key, write: () => super.remove(key, secret: true));
       _events.add(key);
       return;
     }

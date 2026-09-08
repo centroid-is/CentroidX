@@ -16,6 +16,7 @@ import 'package:tfc_access/tfc_access.dart';
 import '../config/config_diff.dart';
 import '../config/config_item.dart';
 import '../config/config_store.dart';
+import '../config/config_store_errors.dart';
 import '../config/key_mapping_codec.dart' as codec;
 import '../state_man.dart' show KeyMappingEntry, KeyMappings, OpcUANodeConfig;
 
@@ -417,12 +418,43 @@ class GuardedConfigStore {
   /// The group is resolved and recorded even though it was not enforced, so
   /// the trail shows what authority was skipped rather than showing none —
   /// the same shape [seedDefaultIfEmpty] uses.
+  ///
+  /// ## Offline is not empty, and a default must never take a panel down
+  ///
+  /// Unlike [writePreference], this **does not throw when the shared store is
+  /// unreachable**: it logs and returns an empty result. Two reasons, and they
+  /// are the same two [seedDefaultIfEmpty] states at length.
+  ///
+  /// A default is written *because storage held nothing*, and a station that
+  /// cannot reach Postgres has not learned that storage held nothing — it has
+  /// learned nothing at all. Writing on that basis is inventing configuration;
+  /// refusing loudly is worse still, because every one of these call sites is
+  /// inside a provider that a mimic hangs off (`alarm.dart:26-29` is the
+  /// clearest: the exception comes out of `alarmMan` and takes the alarm page
+  /// with it). The station is already coming up on its mirror with defaults in
+  /// hand; the shared row is written by whichever station is online when the
+  /// value is next set.
+  ///
+  /// A [ConfigConflict] is swallowed for the third reason [seedDefaultIfEmpty]
+  /// gives: it means another station wrote the same default first, which is
+  /// the outcome this wanted anyway.
+  ///
+  /// **An operator's write is not covered by any of this.** [writePreference]
+  /// still refuses, loudly, every time — a Save button that quietly wrote
+  /// nothing is the green snackbar this milestone exists to end.
   Future<ConfigWriteResult> writePreferenceAsSystem(
     List<ConfigItem> wanted, {
     required String prefKey,
     String? reason,
-  }) =>
-      _writeAndRecord(
+  }) async {
+    if (!_inner.hasRemote) {
+      _logger.i('the system default for $prefKey was not written: the shared '
+          'store is unreachable, so "storage is empty" is not something this '
+          'station knows. It boots on the default in hand.');
+      return ConfigWriteResult(diff: ConfigDiff.none, actionId: newActionId());
+    }
+    try {
+      return await _writeAndRecord(
         wanted,
         kinds: const {ConfigKind.preference},
         itemKey: prefKey,
@@ -432,6 +464,102 @@ class GuardedConfigStore {
         origin: _systemOrigin,
         reason: reason,
       );
+    } on ConfigStoreOfflineException catch (error) {
+      _logger.w('the system default for $prefKey did not land; the shared '
+          'database went away between the attach and the write: $error');
+    } on ConfigConflict catch (error) {
+      _logger.i('the system default for $prefKey was not needed; another '
+          'station wrote it first: $error');
+    }
+    return ConfigWriteResult(diff: ConfigDiff.none, actionId: newActionId());
+  }
+
+  /// Checks and records a preference write that lands in the OS keychain
+  /// rather than in a row, then performs it.
+  ///
+  /// ## Why a write with no row is still this class's business
+  ///
+  /// A secret is a preference: `server_config_envelope` and
+  /// `state_man_config` are set through the same `setString(…, secret: true)`
+  /// every other setting uses, and `GuardedPreferences` checked and recorded
+  /// all seven of its write members without caring where the value ended up.
+  /// Losing that in the move to rows would take "somebody set the plant's
+  /// database credentials" out of the trail — the one write where the trail
+  /// matters most — and would leave the *only* unchecked configuration write
+  /// in the app being the one that stores a credential.
+  ///
+  /// **Neither side of the value is ever recorded.** [AuditRecord.oldValue]
+  /// and `newValue` are both null here, which is the rule
+  /// `GuardedPreferences._oldValueOf` states: reading the old value is the
+  /// single edit that would copy a credential into a permanent, replicated
+  /// table, and it would look like completeness while doing it.
+  ///
+  /// The row is written **before** [write], matching `GuardedPreferences`:
+  /// there is no store underneath that can refuse, so there is no window in
+  /// which the row would claim a write that did not happen.
+  Future<void> writeSecret({
+    required String prefKey,
+    required Future<void> Function() write,
+    String? reason,
+  }) async {
+    final group = _policy.groupForWireSurface(_configSurface, prefKey);
+    final session = _session();
+    final actionId = newActionId();
+
+    if (!session.can(group)) {
+      await _record(_row(
+        session: session,
+        itemKey: prefKey,
+        group: group,
+        newValue: null,
+        allowed: false,
+        actionId: actionId,
+        reason: reason,
+      ));
+      final denial = AccessDenied(prefKey, group);
+      _onDenied?.call(denial);
+      throw denial;
+    }
+
+    await _record(_row(
+      session: session,
+      itemKey: prefKey,
+      group: group,
+      newValue: null,
+      allowed: true,
+      actionId: actionId,
+      origin: _operatorOrigin,
+      reason: reason,
+    ));
+    await write();
+  }
+
+  /// [writeSecret] with no check and `origin: 'system'` — the secret half of
+  /// [writePreferenceAsSystem].
+  ///
+  /// The boot default `state_man_config` is written this way: with nobody
+  /// signed in, through `systemPreferences`, into the keychain. Unlike its row
+  /// counterpart this does **not** no-op when Postgres is unreachable, because
+  /// the keychain is local: there is no "storage is empty" this station could
+  /// be wrong about, and a station that cannot store its own default
+  /// connection settings would re-derive them on every boot.
+  Future<void> writeSecretAsSystem({
+    required String prefKey,
+    required Future<void> Function() write,
+    String? reason,
+  }) async {
+    await _record(_row(
+      session: _session(),
+      itemKey: prefKey,
+      group: _policy.groupForWireSurface(_configSurface, prefKey),
+      newValue: null,
+      allowed: true,
+      actionId: newActionId(),
+      origin: _systemOrigin,
+      reason: reason,
+    ));
+    await write();
+  }
 
   /// [save] for key mappings, and nothing more.
   ///

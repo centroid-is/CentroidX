@@ -64,11 +64,14 @@ import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import 'package:tfc/providers/access.dart';
+import 'package:tfc/providers/access_policy.dart';
+import 'package:tfc/providers/config_store.dart';
 import 'package:tfc/providers/collector.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
-import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
+import '../helpers/test_helpers.dart'
+    show createTestConfigStore, useInMemoryDeviceLocalPreferences;
 
 // ---------------------------------------------------------------------------
 // The sweep, parsed
@@ -300,6 +303,18 @@ AccessSession _anonymous() =>
       // `collectorProvider` watches `stateManProvider`, so leaving it real
       // would have this test reaching for a database it does not have.
       collectorProvider.overrideWith((ref) async => null),
+      // Since 04-05 `preferencesProvider` is backed by the configuration
+      // store, so a container without a reachable one is a station with no
+      // Postgres — every preference write below would be refused as offline
+      // before it was ever checked, and this file is about what the *policy*
+      // permits. `sessionOf` rather than `session` because production passes
+      // `() => sessionInForce(ref)`.
+      configStoreProvider.overrideWith((ref) => createTestConfigStore(
+            station: _kStation,
+            sessionOf: () => sessionInForce(ref),
+            audit: sink,
+            onDenied: (denial) => reportAccessDenial(ref, denial),
+          )),
     ],
   );
   addTearDown(container.dispose);

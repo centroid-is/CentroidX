@@ -4,16 +4,17 @@ import 'package:logger/logger.dart';
 import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:tfc_dart/core/access/guarded_preferences.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/shared_row_preferences.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/sqlite_preferences.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../core/device_local_store.dart';
 import '../core/startup_url.dart';
-import 'access.dart';
-import 'access_policy.dart';
+import 'config_store.dart';
 import 'database.dart';
 
 part 'preferences.g.dart';
@@ -206,31 +207,50 @@ Future<void> resetDeviceLocalPreferencesForTest() async {
   await db?.close();
 }
 
-/// The shared configuration store, **guarded**.
+/// The shared configuration store: `kind='preference'` rows, **guarded**.
 ///
-/// Every caller in the app already reads this provider, so wrapping the value
-/// here is what puts a check and an audit row on every configuration write in
-/// the app without changing a single call site.
+/// Every caller in the app already reads this provider, so replacing the value
+/// here is what moves the plant's shared settings off `flutter_preferences`
+/// without changing a single call site. `Preferences` itself is not deleted —
+/// 04-12 retires it once the migration (04-11) has landed — it is simply no
+/// longer what this answers.
+///
+/// ## One guard, and it is not [GuardedPreferences]
+///
+/// [SharedRowPreferences] is **not** wrapped: the check lives in
+/// `GuardedConfigStore.writePreference`, which `configStoreProvider` already
+/// built with this file's policy, session callback, audit sink and
+/// `onDenied`. Wrapping would put two checks and two `audit_entry` rows on one
+/// write, and the inner one is the only one that can share its `action_id`
+/// with the `config_change` rows underneath it. What the swap must not lose is
+/// the *behaviour*: [AccessDenied] out of the setter, `onDenied` fired, the
+/// denial recorded before the throw, and a key no rule names answering
+/// `administer` — `preferences_provider_test.dart` holds all four.
 @Riverpod(keepAlive: true)
 Future<Preferences> preferences(Ref ref) async {
   final db = await ref.watch(databaseProvider.future);
   final localCache = createDeviceLocalPreferences();
+  // Watched, not read: the store is built once and keeps its identity for the
+  // life of the process (`config_store.dart`), so this is a dependency edge
+  // rather than a rebuild source.
+  final store = await ref.watch(configStoreProvider.future);
 
-  final inner = await Preferences.create(db: db, localCache: localCache);
-
-  final guarded = GuardedPreferences(
-    inner: inner,
-    policy: ref.watch(accessPolicyProvider),
-    // A callback, and never a watch on the session provider: a watch would
-    // rebuild this provider — and every provider downstream of it, including
-    // the plant connection — on every sign-in, sign-out and inactivity
-    // timeout. Pinned by `guard_wiring_test.dart`'s "the session is a
-    // callback, not a watch" group, which greps this file for that mistake.
-    session: () => sessionInForce(ref),
-    audit: RefAuditSink(ref),
-    station: ref.watch(stationNameProvider),
-    onDenied: (denial) => reportAccessDenial(ref, denial),
+  final prefs = SharedRowPreferences(
+    store: store,
+    secureStorage: SecureStorage.getInstance(),
+    // The `database` escape `Preferences` obliges the class to expose. Nothing
+    // in the row store reads it; it is here so that a caller reaching
+    // `prefs.database` gets what it got before rather than null.
+    database: db,
   );
+  // The change-feed subscription is the only thing this holds. `unawaited()`
+  // would attach no error handler, and a throw out of a dispose becomes an
+  // unhandled asynchronous error in whichever zone the container was torn
+  // down in.
+  ref.onDispose(() {
+    prefs.close().catchError((Object e) =>
+        _logger.w('the shared preference store did not close cleanly: $e'));
+  });
 
   // A startup_url row in the shared database would overwrite every station's
   // local choice on each sync; delete it the moment it is seen. Runs on every
@@ -242,12 +262,23 @@ Future<Preferences> preferences(Ref ref) async {
   // working again — the exact bug #354 fixed. It still produces one audit row,
   // marked `origin: 'system'`, which is how the mcp.config migration is
   // recorded too.
-  await migrateStartupUrlToDeviceLocal(
-    shared: guarded.systemWrites,
-    local: localCache,
-  );
+  //
+  // It can now also be refused outright: a shared write with no Postgres
+  // throws rather than returning false. That is not a station that may fail to
+  // boot, so it is caught and logged — the stale row is deleted on the next
+  // connect, and until then the local choice still wins because the read is
+  // device-local.
+  try {
+    await migrateStartupUrlToDeviceLocal(
+      shared: prefs.systemWrites,
+      local: localCache,
+    );
+  } on Object catch (e) {
+    _logger.w('the shared startup_url row was not cleaned up this time; the '
+        'next reconnect retries it: $e');
+  }
 
-  return guarded;
+  return prefs;
 }
 
 /// The unchecked write path, for the defaults the app writes for itself.
@@ -263,14 +294,22 @@ Future<Preferences> preferences(Ref ref) async {
 /// [kSystemWriteCallSites] and by a test that compares that constant against
 /// the source in both directions.
 ///
-/// Falls back to the guarded object when `preferencesProvider` has been
-/// overridden with something that is not a [GuardedPreferences], which is what
-/// a test that overrides the store gets. A cast would turn that into a crash
-/// in every such test for no gain.
+/// Falls back to the object itself when `preferencesProvider` has been
+/// overridden with something that has no unchecked arm, which is what a test
+/// that overrides the store gets. A cast would turn that into a crash in every
+/// such test for no gain.
+///
+/// Two arms because two stores can answer here: [SharedRowPreferences] since
+/// 04-05, and [GuardedPreferences] for as long as anything still builds one.
+/// Losing the arm would be worse than a compile error — a boot default would
+/// go through the *checked* path with nobody signed in, be refused, and the
+/// station would come up without its `alarm_man_config`.
 @Riverpod(keepAlive: true)
 Future<Preferences> systemPreferences(Ref ref) async {
   final prefs = await ref.watch(preferencesProvider.future);
-  return prefs is GuardedPreferences ? prefs.systemWrites : prefs;
+  if (prefs is SharedRowPreferences) return prefs.systemWrites;
+  if (prefs is GuardedPreferences) return prefs.systemWrites;
+  return prefs;
 }
 
 /// Device-local preferences that never touch the shared database.
