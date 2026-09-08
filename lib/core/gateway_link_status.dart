@@ -556,8 +556,10 @@ String _detail(_Voice voice, String where, String? path) => switch (voice) {
             'panel keeps retrying.',
       _Voice.certificateRefused =>
         'The gateway answered and this panel would not trust the certificate '
-            'it presented. Check the CA root file configured above — this '
-            'panel trusts that file and nothing else. It keeps retrying.',
+            'it presented. This panel trusts the plant CA pinned on its '
+            'Server Config page and nothing else; if the plant\'s CA '
+            'genuinely changed, Forget the pinned CA there and save again. '
+            'It keeps retrying.',
       _Voice.credentialRefused =>
         'The panel has stopped retrying: the gateway has already decided about '
             'this token and would refuse it again. Check the credential file '
@@ -573,9 +575,8 @@ String _detail(_Voice voice, String where, String? path) => switch (voice) {
             'may read it, then restart the panel.',
       _Voice.transportNotBuilt =>
         'The connection was never built, so nothing was dialled and nothing '
-            'is retrying. Check the gateway address, the CA root file and the '
-            'credential file on this station\'s Server Config page, then '
-            'restart the panel.',
+            'is retrying. Check the gateway address and the pinned plant CA '
+            'on this station\'s Server Config page, then restart the panel.',
     };
 
 /// The extra sentence for a certificate refused on a dial by name.

@@ -8,14 +8,17 @@
 /// and it is deliberately absent from the `StoredServerConfig` envelope that
 /// import/export moves between machines.
 ///
-/// **Paths, never secrets.** Both the CA root and the station credential are
-/// named by a file the integrator mounted, not carried as bytes. That is the
-/// discipline `ClientTlsConfig` already states for the root ("bytes on a
-/// config object end up in a preferences row, a log line or a crash dump") and
-/// the credential deserves it more, not less: a token in a preferences row is
-/// a token in every database backup and every support bundle. The operator
-/// types two paths; the operating system's permissions still apply to what is
-/// behind them.
+/// **Secrets are paths; the trust anchor is material.** The station
+/// credential stays a file the integrator mounted — a token in a preferences
+/// row is a token in every database backup and every support bundle. The CA
+/// root, though, is *public* material (it is what the gateway hands anyone
+/// who asks its trust endpoint), and carrying it as [GatewayConfig.caPem] is
+/// what lets the whole gateway configuration be one typed URL: Save fetches
+/// the root from the gateway, the operator approves its fingerprint — the
+/// same "Server identity … Approve / Reject" ceremony noVNC runs on this
+/// plant's rigs — and the approved bytes are pinned here. The legacy
+/// [GatewayConfig.caCertPath] keeps dialling and migrates to material on the
+/// next save ([GatewayConfig.migrateLegacyTrust]).
 library;
 
 import 'dart:convert';
@@ -62,6 +65,7 @@ final class GatewayConfig {
   const GatewayConfig({
     this.mode = TransportMode.direct,
     this.url = '',
+    this.caPem,
     this.caCertPath,
     this.tokenPath,
   });
@@ -81,10 +85,20 @@ final class GatewayConfig {
   /// permits and the UI marks.
   final String url;
 
-  /// The plant's private CA root, as provisioned to this station. Required for
-  /// `wss`, refused for `ws` — both mirroring `ClientConfig.checkDialable`, so
-  /// the operator reads the refusal in the settings page instead of watching a
-  /// panel fail to construct at boot.
+  /// The plant's CA root as PEM text — what the operator approved by
+  /// fingerprint, or what a fleet tool seeded. Preferred over [caCertPath]
+  /// at dial time: material is the thing a human vouched for, a path is a
+  /// file that may have rotted since.
+  ///
+  /// Public material, deliberately in the row. The pin itself stays
+  /// `SecurityContext(withTrustedRoots: false)` inside `RemoteStateMan`, so a
+  /// gateway whose CA changes is a hard handshake refusal — never a prompt.
+  final String? caPem;
+
+  /// The legacy provisioning shape: the plant's CA root as a file on this
+  /// station. Still dials; [migrateLegacyTrust] turns it into [caPem] on the
+  /// next save. Refused for `ws` alongside [caPem], mirroring
+  /// `ClientConfig.checkDialable`.
   final String? caCertPath;
 
   /// A file holding this station's credential, one line. Null when the gateway
@@ -96,14 +110,17 @@ final class GatewayConfig {
   GatewayConfig copyWith({
     TransportMode? mode,
     String? url,
+    String? caPem,
     String? caCertPath,
     String? tokenPath,
+    bool clearCaPem = false,
     bool clearCaCertPath = false,
     bool clearTokenPath = false,
   }) =>
       GatewayConfig(
         mode: mode ?? this.mode,
         url: url ?? this.url,
+        caPem: clearCaPem ? null : (caPem ?? this.caPem),
         caCertPath: clearCaCertPath ? null : (caCertPath ?? this.caCertPath),
         tokenPath: clearTokenPath ? null : (tokenPath ?? this.tokenPath),
       );
@@ -111,6 +128,7 @@ final class GatewayConfig {
   Map<String, Object?> toJson() => {
         'mode': mode.wireName,
         'url': url,
+        if (caPem != null) 'ca_pem': caPem,
         if (caCertPath != null) 'ca_cert_path': caCertPath,
         if (tokenPath != null) 'token_path': tokenPath,
       };
@@ -118,6 +136,7 @@ final class GatewayConfig {
   factory GatewayConfig.fromJson(Map<String, Object?> json) => GatewayConfig(
         mode: TransportMode.parse(json['mode']),
         url: json['url'] is String ? json['url'] as String : '',
+        caPem: _material(json['ca_pem']),
         caCertPath: _nonEmpty(json['ca_cert_path']),
         tokenPath: _nonEmpty(json['token_path']),
       );
@@ -125,13 +144,44 @@ final class GatewayConfig {
   static String? _nonEmpty(Object? raw) =>
       raw is String && raw.trim().isNotEmpty ? raw.trim() : null;
 
-  /// Why this configuration cannot be dialled, or null when it can.
+  /// Like [_nonEmpty] but **never trims**: the pinned material must stay
+  /// byte-identical to what the operator approved, or the fingerprint shown
+  /// later for "what does this panel trust" stops matching the file the
+  /// gateway serves.
+  static String? _material(Object? raw) =>
+      raw is String && raw.trim().isNotEmpty ? raw : null;
+
+  /// Whether this station already holds a trust anchor for a `wss` dial —
+  /// approved material, or the legacy provisioned file.
+  bool get hasPinnedTrust => caPem != null || caCertPath != null;
+
+  /// Whether Save's next act is the fetch-and-approve ceremony: a `wss` dial
+  /// with nothing pinned yet and no other refusal standing.
+  ///
+  /// The gate on [validationError] is not decoration — a URL that does not
+  /// parse has no host to fetch from, and one complaint at a time is this
+  /// class's standing rule about a string somebody is halfway through typing.
+  bool get needsTrustAcquisition =>
+      isGateway &&
+      validationError == null &&
+      uri.scheme == 'wss' &&
+      !hasPinnedTrust;
+
+  /// Why the operator cannot *save* this, or null when they can.
   ///
   /// Returned as a sentence rather than thrown, because the caller is a text
-  /// field an operator is halfway through typing into. `RemoteStateMan` throws
-  /// on the same three combinations at construction; this exists so the
-  /// operator sees them while the keyboard is still in their hands rather than
-  /// as a dark screen at the next restart.
+  /// field an operator is halfway through typing into.
+  ///
+  /// **Missing trust is deliberately not refused here — that used to be this
+  /// getter's fourth arm, and moving it is the one-URL flow.** Save is now
+  /// the step that acquires trust (fetch the gateway's identity, show the
+  /// fingerprint, pin on approval), so an edit-time refusal for the thing
+  /// Save is about to provide would disable the very button that provides it
+  /// — the deadlock the old PEM-path field hid behind "how do I obtain pem
+  /// path". The boot side did not weaken: [undialable] still carries the
+  /// arm, and `stateManProvider` consults *that*, so a hand-edited trustless
+  /// row still lands on `GatewayLinkKind.notBuilt` and the chip still says
+  /// "Panel misconfigured".
   String? get validationError {
     if (!isGateway) return null;
     final trimmed = url.trim();
@@ -143,17 +193,32 @@ final class GatewayConfig {
     if (uri.scheme != 'wss' && uri.scheme != 'ws') {
       return 'Scheme must be wss (or ws for a bench gateway), not ${uri.scheme}';
     }
-    if (uri.scheme == 'wss' && caCertPath == null) {
-      return 'wss needs the plant CA root: without it every handshake fails '
-          'with the same error a real impostor produces';
-    }
-    if (uri.scheme == 'ws' && caCertPath != null) {
+    if (uri.scheme == 'ws' && hasPinnedTrust) {
       return 'A CA root on a ws:// dial is never consulted — the config would '
           'read as encrypted while the traffic is not';
     }
     if (uri.scheme == 'ws' && tokenPath != null) {
       return 'A station credential on a ws:// dial crosses the plant LAN in '
           'the clear on every reconnect';
+    }
+    return null;
+  }
+
+  /// Why this configuration cannot be *dialled*, or null when it can.
+  ///
+  /// [validationError] plus the missing-trust arm. This is what the boot path
+  /// (`stateManProvider`) consults: at boot there is no Save about to acquire
+  /// anything, so a `wss` row with no pinned trust is exactly as undialable
+  /// as it always was — and refusing it by name here is what keeps the
+  /// refusal readable instead of the `CERTIFICATE_VERIFY_FAILED` a genuine
+  /// impostor also produces.
+  String? get undialable {
+    final refusal = validationError;
+    if (refusal != null) return refusal;
+    if (isGateway && uri.scheme == 'wss' && !hasPinnedTrust) {
+      return 'wss needs the plant CA pinned first: without it every handshake '
+          'fails with the same error a real impostor produces. Save on the '
+          'Server Config page fetches the gateway\'s identity for approval';
     }
     return null;
   }
@@ -209,7 +274,7 @@ final class GatewayConfig {
     return 'The gateway certificate must carry a subject-alternative name for '
         'exactly "${uri.host}". A certificate issued for an IP address instead '
         'fails the handshake with a message about trust rather than about the '
-        'name, so check the certificate before you touch the CA root path.';
+        'name, so check the certificate before you distrust the pinned CA.';
   }
 
   /// The dial target, once [validationError] is null.
@@ -228,12 +293,50 @@ final class GatewayConfig {
   Future<ClientConfig> toClientConfig() async {
     final path = tokenPath;
     final token = path == null ? null : (await File(path).readAsString()).trim();
+    // Material first: it is the thing a human vouched for by fingerprint,
+    // where a path is a file that may have rotted since. A row carrying both
+    // exists only mid-migration, and mid-migration the approved bytes win.
+    final pem = caPem;
     return ClientConfig(
       token: token == null || token.isEmpty ? null : token,
-      tls: caCertPath == null
-          ? null
-          : ClientTlsConfig(rootCertPath: caCertPath!),
+      tls: pem != null
+          ? ClientTlsConfig.pem(pem)
+          : caCertPath == null
+              ? null
+              : ClientTlsConfig(rootCertPath: caCertPath!),
     );
+  }
+
+  /// The one save-time migration: a legacy [caCertPath] becomes pinned
+  /// [caPem], same bytes, path dropped.
+  ///
+  /// **On save only, never on load** — a read path that rewrote preferences
+  /// would turn every boot into a write, and a half-failed one into a
+  /// corrupted row. No new trust decision is being made: the station already
+  /// dialled under this file every day, so its contents move homes without a
+  /// fingerprint ceremony.
+  ///
+  /// Fails *soft* in both directions, and the asymmetry is deliberate: an
+  /// unreadable or certificate-free file keeps the path (a path that fails at
+  /// boot at least fails with the notBuilt report naming the file, where a
+  /// silently dropped pin fails as a fake impostor alarm), and material
+  /// already pinned is returned untouched.
+  ///
+  /// Synchronous, and that is load-bearing twice over: the one caller is a
+  /// Save handler inside a widget, where a real-IO future never completes
+  /// under the test binding's fake async; and a one-file read at a button
+  /// press is not the kind of latency an async signature buys anything for.
+  GatewayConfig migrateLegacyTrust() {
+    final path = caCertPath;
+    if (caPem != null || path == null) return this;
+    final String pem;
+    try {
+      pem = File(path).readAsStringSync();
+    } on FileSystemException {
+      return this;
+    }
+    if (!pem.contains('BEGIN CERTIFICATE')) return this;
+    return copyWith(caPem: pem, clearCaCertPath: true);
   }
 
   @override
@@ -241,15 +344,19 @@ final class GatewayConfig {
       other is GatewayConfig &&
       other.mode == mode &&
       other.url == url &&
+      other.caPem == caPem &&
       other.caCertPath == caCertPath &&
       other.tokenPath == tokenPath;
 
   @override
-  int get hashCode => Object.hash(mode, url, caCertPath, tokenPath);
+  int get hashCode => Object.hash(mode, url, caPem, caCertPath, tokenPath);
 
+  /// Never the material body: public or not, a PEM in every log line trains
+  /// people to stop reading configs.
   @override
   String toString() => 'GatewayConfig(${mode.wireName}, $url, '
-      'ca=$caCertPath, token=$tokenPath)';
+      'ca=${caPem != null ? '<pinned material, ${caPem!.length} chars>' : caCertPath}, '
+      'token=$tokenPath)';
 }
 
 /// Reads the station's transport choice, falling back to direct mode.

@@ -23,6 +23,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
 
 import '../core/gateway_config.dart';
 import '../core/gateway_state_man.dart';
+import '../core/gateway_trust.dart';
 import '../core/relayed_access_stores.dart' show relayedAccessErrors;
 import '../core/server_config_db.dart';
 import '../theme.dart';
@@ -30,6 +31,7 @@ import '../widgets/base_scaffold.dart';
 import '../widgets/config_target_banner.dart';
 import '../widgets/connection_status_chip.dart';
 import '../widgets/duration_field.dart';
+import '../widgets/gateway_identity_dialog.dart';
 import '../widgets/gateway_link_status_row.dart';
 import '../widgets/preferences.dart';
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
@@ -1032,8 +1034,16 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
   /// Why the device-local row could not be read, or null.
   String? _error;
 
+  /// Why the last Save's trust fetch failed, or null. Rendered in the card —
+  /// the operator is standing at it — and cleared by the next edit or the
+  /// next attempt.
+  String? _trustError;
+
+  /// A Save (which may include a fetch and a dialog) is in flight. Guards
+  /// re-entry only; the button's visuals stay the three-state switch below.
+  bool _saving = false;
+
   final _urlController = TextEditingController();
-  final _caController = TextEditingController();
   final _tokenController = TextEditingController();
 
   @override
@@ -1051,7 +1061,6 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
   @override
   void dispose() {
     _urlController.dispose();
-    _caController.dispose();
     _tokenController.dispose();
     super.dispose();
   }
@@ -1077,7 +1086,6 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
       final loaded = await ref.read(gatewayConfigProvider.future);
       if (!mounted) return;
       _urlController.text = loaded.url;
-      _caController.text = loaded.caCertPath ?? '';
       _tokenController.text = loaded.tokenPath ?? '';
       _saved = loaded;
       _edited = loaded;
@@ -1092,20 +1100,79 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
 
   bool get _hasUnsavedChanges => _saved != null && _edited != _saved;
 
+  /// Saves — and on a `wss` address with nothing pinned, Save IS the trust
+  /// ceremony: fetch the gateway's identity, show the fingerprint, and write
+  /// only on Approve. Reject and a failed fetch write nothing at all: a
+  /// half-saved row (URL yes, trust no) would boot the panel into exactly the
+  /// notBuilt state the ceremony exists to prevent.
+  ///
+  /// The other trust path is silent by design: a legacy `caCertPath` row
+  /// migrates its file's bytes into pinned material here
+  /// ([GatewayConfig.migrateLegacyTrust]) — same bytes the station already
+  /// dialled under every day, so no new trust decision is being made and no
+  /// dialog would have anything to ask.
   Future<void> _save() async {
-    await writeGatewayConfig(ref.read(localPreferencesProvider), _edited);
-    ref.invalidate(gatewayConfigProvider);
-    if (!mounted) return;
-    setState(() => _saved = _edited);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Transport saved. Restart the HMI to apply it.'),
-        backgroundColor: Colors.green,
-      ),
-    );
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+      _trustError = null;
+    });
+    try {
+      var next = _edited;
+      if (next.needsTrustAcquisition) {
+        final FetchedGatewayTrust trust;
+        try {
+          trust = await ref.read(gatewayTrustFetcherProvider)(next.uri);
+        } on GatewayTrustException catch (error) {
+          if (!mounted) return;
+          setState(() => _trustError = error.message);
+          return;
+        }
+        if (!mounted) return;
+        final approved = await showGatewayIdentityDialog(
+          context,
+          gateway: next.uri,
+          fingerprint: trust.sha256Fingerprint,
+        );
+        if (!approved || !mounted) return;
+        next = next.copyWith(caPem: trust.caPem);
+      } else {
+        next = next.migrateLegacyTrust();
+      }
+      await writeGatewayConfig(ref.read(localPreferencesProvider), next);
+      ref.invalidate(gatewayConfigProvider);
+      if (!mounted) return;
+      setState(() {
+        _saved = next;
+        _edited = next;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Transport saved. Restart the HMI to apply it.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
-  void _edit(GatewayConfig next) => setState(() => _edited = next);
+  void _edit(GatewayConfig next) => setState(() {
+        _edited = next;
+        // A stale fetch refusal over a corrected address would read as the
+        // correction having failed too.
+        _trustError = null;
+      });
+
+  /// What the pinned material fingerprints as — or the honest sentence when a
+  /// hand-edited row does not parse. Never a throw into `build`.
+  String _pinnedFingerprint(String pem) {
+    try {
+      return caFingerprintSha256(pem);
+    } on GatewayTrustException {
+      return 'not a certificate — Forget this and save again';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1252,35 +1319,101 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
               onChanged: (value) => _edit(_edited.copyWith(url: value)),
             ),
             const SizedBox(height: 12),
-            TextField(
-              controller: _caController,
-              decoration: const InputDecoration(
-                labelText: 'Plant CA certificate (PEM path)',
-                hintText: '/home/centroid/relay_config/pki/ca.pem',
-                helperText: 'Required for wss. A path on this machine, never '
-                    'the certificate text.',
-                border: OutlineInputBorder(),
+            // The trust line — what replaced the "PEM path" field ("how do I
+            // obtain pem path, and what is that"). Three states, one visible
+            // at a time: pinned material with its fingerprint and a Forget;
+            // a legacy provisioned file, named until the next save migrates
+            // it; or the promise of the fetch-and-approve ceremony. Nothing
+            // here is an input.
+            if (_edited.caPem != null) ...[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const FaIcon(FontAwesomeIcons.certificate, size: 16),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Pinned plant CA'),
+                        Text(
+                          'SHA-256 ${_pinnedFingerprint(_edited.caPem!)}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                  TextButton(
+                    // An edit, not a write: the pin actually goes when the
+                    // operator saves — and that save runs the ceremony
+                    // again, which is the deliberate path for a genuinely
+                    // re-keyed plant. A changed CA never re-prompts on a
+                    // connection; it is refused there.
+                    onPressed: () =>
+                        _edit(_edited.copyWith(clearCaPem: true)),
+                    child: const Text('Forget'),
+                  ),
+                ],
               ),
-              onChanged: (value) => _edit(_edited.copyWith(
-                caCertPath: value.trim().isEmpty ? null : value.trim(),
-                clearCaCertPath: value.trim().isEmpty,
-              )),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _tokenController,
-              decoration: const InputDecoration(
-                labelText: 'Station credential file (optional)',
-                helperText: 'A file holding this station\'s token. Leave '
-                    'empty when the gateway runs no token file.',
-                border: OutlineInputBorder(),
+              const SizedBox(height: 12),
+            ] else if (_edited.caCertPath != null) ...[
+              Text(
+                'Trusting CA file: ${_edited.caCertPath} — saving will pin '
+                'its contents to this station.',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
-              onChanged: (value) => _edit(_edited.copyWith(
-                tokenPath: value.trim().isEmpty ? null : value.trim(),
-                clearTokenPath: value.trim().isEmpty,
-              )),
-            ),
-            const SizedBox(height: 12),
+              const SizedBox(height: 12),
+            ] else if (_edited.needsTrustAcquisition) ...[
+              Text(
+                'No plant CA pinned yet — Save fetches the gateway\'s '
+                'identity for your approval.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+            ],
+            // Legacy-only: the station-token work is removing the credential
+            // file entirely, so the field renders solely on a station whose
+            // saved row still carries one — anywhere else it would be a
+            // second unanswerable question on a card that just lost its
+            // first. Kept visible while a value exists so the ws:// refusal
+            // that names it stays clearable.
+            if (_saved?.tokenPath != null || _edited.tokenPath != null) ...[
+              TextField(
+                controller: _tokenController,
+                decoration: const InputDecoration(
+                  labelText: 'Station credential file (legacy)',
+                  helperText: 'A file holding this station\'s token. Clear '
+                      'it when the gateway runs no token file.',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (value) => _edit(_edited.copyWith(
+                  tokenPath: value.trim().isEmpty ? null : value.trim(),
+                  clearTokenPath: value.trim().isEmpty,
+                )),
+              ),
+              const SizedBox(height: 12),
+            ],
+            // The trust fetch's own refusal, beside the fields like the
+            // validation refusal below: the operator who tapped Save is
+            // standing here, not at a log.
+            if (_trustError != null) ...[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.error_outline,
+                      size: 18, color: Theme.of(context).colorScheme.error),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _trustError!,
+                      style: TextStyle(
+                          color: Theme.of(context).colorScheme.error),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+            ],
             // A warning, in a warning's voice, and visibly not the refusal
             // below it. `HmiStateColors.yellow` is the repo's manual/attention
             // colour; `colorScheme.error` is what a refusal wears, and wearing
@@ -1321,8 +1454,8 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
               ),
             if (refusal != null) const SizedBox(height: 12),
           ],
-          // The live link, under the three fields, where an operator who has
-          // just typed the address is standing.
+          // The live link, under the address field and the trust line, where
+          // an operator who has just typed the address is standing.
           //
           // Outside the `_edited.isGateway` block on purpose: a link that is
           // live right now must not vanish because a radio button moved and has
@@ -1331,7 +1464,7 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
           //
           // Nothing is rendered while the provider is still resolving. Not a
           // spinner: `access_status_action.dart:44-51` gives the reason, and
-          // this surface rebuilds on every keystroke in the three fields above.
+          // this surface rebuilds on every keystroke in the field above.
           if (linkReport != null) ...[
             GatewayLinkStatusRow(report: linkReport),
             const SizedBox(height: 12),

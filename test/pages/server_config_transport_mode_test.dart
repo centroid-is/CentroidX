@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -6,8 +8,10 @@ import 'package:shared_preferences_platform_interface/in_memory_shared_preferenc
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:tfc/core/gateway_config.dart';
 import 'package:tfc/core/gateway_link_status.dart';
+import 'package:tfc/core/gateway_trust.dart';
 import 'package:tfc/pages/server_config.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/gateway.dart';
 import 'package:tfc/providers/gateway_link.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
@@ -17,6 +21,19 @@ import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../helpers/test_helpers.dart';
+
+/// What the fake fetcher hands back, and what Approve must pin verbatim.
+const String _approvedPem = '-----BEGIN CERTIFICATE-----\n'
+    'dGhlIHBsYW50IENBLCBhcyBhcHByb3ZlZCBieSB0aGUgb3BlcmF0b3I=\n'
+    '-----END CERTIFICATE-----\n';
+
+/// The fingerprint of [_approvedPem], computed by the app's own function —
+/// self-consistent on purpose. The dialog shows what the fetcher handed it;
+/// the pinned row afterwards *recomputes* from the stored material (a display
+/// that derives from the material cannot lie about it), so a fake whose claim
+/// disagreed with its material would fail the arm for the wrong reason.
+/// Proving the fetcher computes locally is `test/core/gateway_trust_test.dart`'s.
+final String _fingerprint = caFingerprintSha256(_approvedPem);
 
 /// A station already switched to the gateway, as its preferences row.
 Future<PreferencesApi> _gatewayStation({
@@ -165,7 +182,7 @@ void main() {
       expect(find.text('Gateway address'), findsNothing);
     });
 
-    testWidgets('choosing the gateway reveals the three things a dial needs',
+    testWidgets('choosing the gateway reveals one field: the address',
         (tester) async {
       await pumpAndLoad(tester, buildTestableServerConfig());
       await _expandTransport(tester);
@@ -174,8 +191,16 @@ void main() {
       await settle(tester);
 
       expect(find.text('Gateway address'), findsOneWidget);
-      expect(find.text('Plant CA certificate (PEM path)'), findsOneWidget);
-      expect(find.text('Station credential file (optional)'), findsOneWidget);
+      // The two questions an operator cannot answer are gone. Trust is
+      // fetched and approved at Save ("how do I obtain pem path" was the
+      // owner's, verbatim), and the credential file is on its way out with
+      // the station-token work — the field only appears on a station whose
+      // saved row still carries one.
+      expect(find.text('Plant CA certificate (PEM path)'), findsNothing);
+      expect(find.text('Station credential file (optional)'), findsNothing);
+      expect(find.textContaining('No plant CA pinned yet'), findsNothing,
+          reason: 'nothing typed yet — the trust note belongs to a wss '
+              'address, not to the empty field');
     });
 
     // Restart-to-apply: the running panel is on the saved transport, so moving
@@ -220,7 +245,14 @@ void main() {
   });
 
   group('refusing a configuration that cannot be dialled', () {
-    testWidgets('wss with no CA root is refused, and save stays disabled',
+    // The old first arm of this group — "wss with no CA root is refused, and
+    // save stays disabled" — is deliberately gone, and this is the record of
+    // where it went. Save is now the step that acquires trust, so disabling
+    // it for missing trust would disable the acquisition; the value-level
+    // guarantee moved to `GatewayConfig.undialable`, which stateManProvider
+    // consults at boot (`gateway_config_test.dart` pins both halves). What
+    // this group still owns is the refusals Save cannot fix.
+    testWidgets('a scheme that is not a WebSocket stays refused',
         (tester) async {
       await pumpAndLoad(tester, buildTestableServerConfig());
       await _expandTransport(tester);
@@ -228,25 +260,23 @@ void main() {
       await settle(tester);
 
       await tester.enterText(
-          find.byType(TextField).first, 'wss://10.50.10.11:9443');
+          find.byType(TextField).first, 'https://10.50.10.11:9443');
       await settle(tester);
 
-      expect(find.textContaining('CA root'), findsOneWidget);
-      // Not "All Changes Saved": there are changes, and the operator can see
-      // them. The button says it will not take them yet.
+      expect(find.textContaining('Scheme must be wss'), findsOneWidget);
       expect(find.text('Cannot save yet'), findsOneWidget);
       final save = tester.widget<ElevatedButton>(find
           .ancestor(
               of: find.text('Cannot save yet'),
               matching: find.byType(ElevatedButton))
           .first);
-      expect(save.onPressed, isNull,
-          reason: 'a panel that cannot dial must not be saveable: the refusal '
-              'belongs here, not in a start-up error at the next boot');
+      expect(save.onPressed, isNull);
     });
+  });
 
-    testWidgets('adding the CA root clears the refusal and enables save',
-        (tester) async {
+  group('trust is acquired at Save: fetch, fingerprint, approve', () {
+    testWidgets('a wss address with nothing pinned says so, and Save is the '
+        'way forward', (tester) async {
       await pumpAndLoad(tester, buildTestableServerConfig());
       await _expandTransport(tester);
       await tester.tap(find.text('Relay gateway'));
@@ -255,16 +285,235 @@ void main() {
       await tester.enterText(
           find.byType(TextField).first, 'wss://10.50.10.11:9443');
       await settle(tester);
-      await tester.enterText(find.byType(TextField).at(1), '/pki/ca.pem');
-      await settle(tester);
 
-      expect(find.textContaining('CA root'), findsNothing);
+      expect(find.textContaining('No plant CA pinned yet'), findsOneWidget);
       final save = tester.widget<ElevatedButton>(find
           .ancestor(
               of: find.text('Save Configuration'),
               matching: find.byType(ElevatedButton))
           .first);
-      expect(save.onPressed, isNotNull);
+      expect(save.onPressed, isNotNull,
+          reason: 'Save runs the fetch-and-approve ceremony; a disabled '
+              'button here is the pem-path deadlock wearing new clothes');
+    });
+
+    testWidgets('Approve pins exactly what the fetch returned', (tester) async {
+      final local = InMemoryPreferences();
+      var fetches = 0;
+      await pumpAndLoad(
+        tester,
+        _serverConfigWith(
+          [
+            gatewayTrustFetcherProvider.overrideWithValue((uri) async {
+              fetches++;
+              expect(uri, Uri.parse('wss://10.50.10.11:9443'),
+                  reason: 'the fetch must be for the very URL the operator '
+                      'typed — anything else is a pin for a different '
+                      'gateway');
+              return FetchedGatewayTrust(
+                  caPem: _approvedPem, sha256Fingerprint: _fingerprint);
+            }),
+          ],
+          localPreferences: local,
+        ),
+      );
+      await _expandTransport(tester);
+      await tester.tap(find.text('Relay gateway'));
+      await settle(tester);
+      await tester.enterText(
+          find.byType(TextField).first, 'wss://10.50.10.11:9443');
+      await settle(tester);
+
+      await tester.tap(find.text('Save Configuration'));
+      await settle(tester);
+
+      // The noVNC-shaped ceremony: identity, fingerprint, a real choice.
+      expect(find.text('Gateway identity'), findsOneWidget);
+      expect(find.textContaining(_fingerprint), findsOneWidget,
+          reason: 'the dialog must show the fingerprint the fetcher '
+              'computed from the received DER — it is the one thing the '
+              'operator can compare against the gateway\'s own print-out');
+
+      await tester.tap(find.text('Approve'));
+      await settle(tester);
+
+      expect(fetches, 1);
+      final saved = await readGatewayConfig(local);
+      expect(saved.mode, TransportMode.gateway);
+      expect(saved.caPem, _approvedPem,
+          reason: 'what is pinned must be byte-identical to what was '
+              'fetched and fingerprinted — a normalisation here would make '
+              'the pin differ from what the operator approved');
+      expect(saved.caCertPath, isNull);
+      expect(find.textContaining('Restart the HMI'), findsOneWidget);
+      // And the card now wears the pin.
+      expect(find.textContaining('Pinned plant CA'), findsOneWidget);
+      expect(find.textContaining(_fingerprint), findsOneWidget);
+    });
+
+    testWidgets('Reject writes nothing at all', (tester) async {
+      final local = InMemoryPreferences();
+      await pumpAndLoad(
+        tester,
+        _serverConfigWith(
+          [
+            gatewayTrustFetcherProvider.overrideWithValue((uri) async =>
+                FetchedGatewayTrust(
+                    caPem: _approvedPem, sha256Fingerprint: _fingerprint)),
+          ],
+          localPreferences: local,
+        ),
+      );
+      await _expandTransport(tester);
+      await tester.tap(find.text('Relay gateway'));
+      await settle(tester);
+      await tester.enterText(
+          find.byType(TextField).first, 'wss://10.50.10.11:9443');
+      await settle(tester);
+
+      await tester.tap(find.text('Save Configuration'));
+      await settle(tester);
+      await tester.tap(find.text('Reject'));
+      await settle(tester);
+
+      expect(await local.getString(GatewayConfig.prefsKey), isNull,
+          reason: 'a rejected identity must leave no trace: not the URL, '
+              'not the mode, and certainly not the material — half-saving '
+              'would boot the panel into the very notBuilt state the '
+              'ceremony exists to prevent');
+      expect(find.textContaining('Pinned plant CA'), findsNothing);
+    });
+
+    testWidgets('a fetch that fails says why, in the card, and writes nothing',
+        (tester) async {
+      final local = InMemoryPreferences();
+      await pumpAndLoad(
+        tester,
+        _serverConfigWith(
+          [
+            gatewayTrustFetcherProvider.overrideWithValue((uri) async =>
+                throw GatewayTrustException(
+                    'the gateway did not answer at '
+                    'http://10.50.10.11:9444/relay-trust within 10 s. Check '
+                    'that the address is right and the gateway is running, '
+                    'then save again.')),
+          ],
+          localPreferences: local,
+        ),
+      );
+      await _expandTransport(tester);
+      await tester.tap(find.text('Relay gateway'));
+      await settle(tester);
+      await tester.enterText(
+          find.byType(TextField).first, 'wss://10.50.10.11:9443');
+      await settle(tester);
+
+      await tester.tap(find.text('Save Configuration'));
+      await settle(tester);
+
+      expect(find.textContaining('did not answer'), findsOneWidget,
+          reason: 'the operator is standing at this card; the refusal '
+              'renders here, in their own words, not in a log');
+      expect(await local.getString(GatewayConfig.prefsKey), isNull);
+    });
+
+    testWidgets('a saved legacy CA path migrates to pinned material on the '
+        'next save, with no fetch and no dialog', (tester) async {
+      final dir = Directory.systemTemp.createTempSync('transport-card-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final path = '${dir.path}/ca.pem';
+      File(path).writeAsStringSync(_approvedPem);
+
+      final local = await _gatewayStation(caCertPath: path);
+      await pumpAndLoad(
+        tester,
+        _serverConfigWith(
+          [
+            gatewayTrustFetcherProvider.overrideWithValue((uri) async =>
+                fail('a station that already trusts a provisioned file must '
+                    'not re-ask the gateway who it is')),
+          ],
+          localPreferences: local,
+        ),
+      );
+
+      // The legacy shape is named while it is still there.
+      expect(find.textContaining('Trusting CA file'), findsOneWidget);
+
+      // Any edit, so there is something to save. By label: on a station
+      // whose row is already gateway other cards on the page render text
+      // fields of their own, so `.first` is not this card's.
+      await tester.enterText(
+          find.widgetWithText(TextField, 'Gateway address'),
+          'wss://10.50.10.11:9444');
+      await settle(tester);
+      await tester.ensureVisible(find.text('Save Configuration'));
+      await settle(tester);
+      await tester.tap(find.text('Save Configuration'));
+      await settle(tester);
+
+      final saved = await readGatewayConfig(local);
+      expect(saved.url, 'wss://10.50.10.11:9444',
+          reason: 'the edit and the migration ride the same save — a '
+              'migration assertion alone would also pass on a save that '
+              'never ran against a row that already carried material');
+      expect(saved.caPem, _approvedPem,
+          reason: 'same bytes, new home: the station already dialled under '
+              'this file every day, so its contents move without a new '
+              'trust decision');
+      expect(saved.caCertPath, isNull);
+    });
+
+    testWidgets('Forget clears the pin so the next save re-fetches',
+        (tester) async {
+      final prefs = InMemoryPreferences();
+      await writeGatewayConfig(
+        prefs,
+        const GatewayConfig(
+          mode: TransportMode.gateway,
+          url: 'wss://10.50.10.11:9443',
+          caPem: _approvedPem,
+        ),
+      );
+      await pumpAndLoad(
+        tester,
+        buildTestableServerConfig(localPreferences: prefs),
+      );
+
+      expect(find.textContaining('Pinned plant CA'), findsOneWidget);
+      await tester.tap(find.text('Forget'));
+      await settle(tester);
+
+      expect(find.textContaining('No plant CA pinned yet'), findsOneWidget,
+          reason: 'forgetting is an edit, not a write: the pin goes when '
+              'the operator saves, and the save runs the ceremony again — '
+              'which is the deliberate path for a genuinely re-keyed plant');
+    });
+  });
+
+  group('the credential file field is legacy-only', () {
+    testWidgets('a station whose saved row carries a tokenPath still sees '
+        'the field, so it can be cleared', (tester) async {
+      final prefs = InMemoryPreferences();
+      await writeGatewayConfig(
+        prefs,
+        const GatewayConfig(
+          mode: TransportMode.gateway,
+          url: 'wss://10.50.10.11:9443',
+          caPem: _approvedPem,
+          tokenPath: '/etc/centroid/station.token',
+        ),
+      );
+      await pumpAndLoad(
+        tester,
+        buildTestableServerConfig(localPreferences: prefs),
+      );
+
+      expect(find.text('Station credential file (legacy)'), findsOneWidget,
+          reason: 'hiding the field on a station that still has a value '
+              'would strand the value: the ws:// refusal names it and the '
+              'operator would have no way to clear it. The station-token '
+              'work deletes the field and the value together');
     });
   });
 
@@ -278,10 +527,11 @@ void main() {
 
       await tester.tap(find.text('Relay gateway'));
       await settle(tester);
+      // A bench ws:// dial: this arm is about WHERE the row lands and what
+      // the card says after; the wss fetch-and-approve path has its own
+      // group above.
       await tester.enterText(
-          find.byType(TextField).first, 'wss://10.50.10.11:9443');
-      await settle(tester);
-      await tester.enterText(find.byType(TextField).at(1), '/pki/ca.pem');
+          find.byType(TextField).first, 'ws://bench:9443');
       await settle(tester);
 
       await tester.tap(find.text('Save Configuration'));
@@ -289,8 +539,7 @@ void main() {
 
       final saved = await readGatewayConfig(local);
       expect(saved.mode, TransportMode.gateway);
-      expect(saved.url, 'wss://10.50.10.11:9443');
-      expect(saved.caCertPath, '/pki/ca.pem');
+      expect(saved.url, 'ws://bench:9443');
 
       expect(find.textContaining('Restart the HMI'), findsOneWidget);
     });
@@ -342,8 +591,6 @@ void main() {
       await tester.tap(find.text('Relay gateway'));
       await settle(tester);
       await tester.enterText(find.byType(TextField).first, url);
-      await settle(tester);
-      await tester.enterText(find.byType(TextField).at(1), '/pki/ca.pem');
       await settle(tester);
     }
 

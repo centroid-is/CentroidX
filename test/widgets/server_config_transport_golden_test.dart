@@ -60,7 +60,9 @@ import 'package:tfc_relay_client/tfc_relay_client.dart' show LinkState;
 
 import 'package:tfc/core/gateway_config.dart';
 import 'package:tfc/core/gateway_link_status.dart';
+import 'package:tfc/core/gateway_trust.dart';
 import 'package:tfc/providers/gateway_link.dart';
+import 'package:tfc/widgets/gateway_identity_dialog.dart';
 import 'package:tfc/widgets/gateway_link_status_row.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
@@ -104,6 +106,15 @@ StateManConfig _configWithOneOfEach() => StateManConfig(
       ],
     );
 
+/// What the one-field flow leaves in the row: material, not a path. The
+/// gateway frames below therefore show the pinned-CA line with its
+/// fingerprint — the state every station configured through the ceremony is
+/// in, and the state the operator reads to answer "what does this panel
+/// trust".
+const String _pinnedPem = '-----BEGIN CERTIFICATE-----\n'
+    'dGhlIHBsYW50IENBLCBhcyBhcHByb3ZlZCBieSB0aGUgb3BlcmF0b3I=\n'
+    '-----END CERTIFICATE-----\n';
+
 /// A device-local store already pointed at the gateway.
 Future<PreferencesApi> _savedGatewayStation() async {
   final local = InMemoryPreferences();
@@ -112,7 +123,7 @@ Future<PreferencesApi> _savedGatewayStation() async {
     const GatewayConfig(
       mode: TransportMode.gateway,
       url: 'wss://10.50.10.11:9443',
-      caCertPath: '/home/centroid/relay_config/pki/ca.pem',
+      caPem: _pinnedPem,
     ),
   );
   return local;
@@ -250,6 +261,10 @@ void main() {
         expect(find.byKey(kGatewayLinkStatusRowKey), findsOneWidget,
             reason: 'this image is only a connected-gateway golden if the '
                 'status row is in it');
+        expect(find.textContaining('Pinned plant CA'), findsOneWidget,
+            reason: 'the one-field flow\'s answer to "what does this panel '
+                'trust" is this line and its fingerprint; a gateway frame '
+                'without it is a frame of the old card');
 
         await expectLater(
           find.byType(MaterialApp),
@@ -279,9 +294,13 @@ void main() {
         await tester.enterText(
             find.byType(TextField).first, 'wss://plc-gw.svn:9444');
         await settle(tester);
-        await tester.enterText(find.byType(TextField).at(1), '/pki/ca.pem');
-        await settle(tester);
         expectNoSpinner('advisory');
+
+        // This frame gained a second sentence with the one-field flow: the
+        // trust note, because a hostname dial with nothing pinned is exactly
+        // the state Save's ceremony exists for. Named so the frame cannot
+        // silently lose it.
+        expect(find.textContaining('No plant CA pinned yet'), findsOneWidget);
 
         expect(find.textContaining('subject-alternative name'), findsOneWidget,
             reason: 'the operator has to learn this while the keyboard is '
@@ -308,6 +327,40 @@ void main() {
           find.byType(MaterialApp),
           matchesGoldenFile(
               'goldens/server_config_transport_advisory$suffix.png'),
+        );
+      });
+
+      testWidgets('the identity ceremony: fingerprint, Approve, Reject, $label',
+          (tester) async {
+        // The dialog alone, at its own size: it is the one security prompt
+        // in the flow, the operator reads it exactly once per plant CA, and
+        // its whole job is a fingerprint legible enough to compare character
+        // by character — which is what this frame reviews.
+        await tester.binding.setSurfaceSize(const Size(560, 480));
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+
+        await tester.pumpWidget(MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: themedGoldenTheme(dark: dark),
+          home: Scaffold(
+            body: GatewayIdentityDialog(
+              gateway: Uri.parse('wss://10.50.10.11:9443'),
+              fingerprint: caFingerprintSha256(_pinnedPem),
+            ),
+          ),
+        ));
+        await settle(tester);
+
+        expect(find.text('Approve'), findsOneWidget);
+        expect(find.text('Reject'), findsOneWidget);
+        expect(find.textContaining('certificate authority'), findsWidgets);
+
+        await expectLater(
+          find.byType(MaterialApp),
+          matchesGoldenFile(
+              'goldens/server_config_gateway_identity_dialog$suffix.png'),
         );
       });
     }

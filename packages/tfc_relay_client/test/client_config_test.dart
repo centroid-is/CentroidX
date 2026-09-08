@@ -478,7 +478,7 @@ void main() {
       );
     });
 
-    test('the pinned root is named by path and never carried as bytes', () {
+    test('the pinned root is a path or public PEM text, never raw bytes', () {
       final source = File('lib/src/client_config.dart');
       expect(source.existsSync(), isTrue,
           reason: 'this case reads the implementation as text, so it must be '
@@ -486,14 +486,22 @@ void main() {
               'working-directory');
 
       final code = source.readAsStringSync();
-      expect(code, contains('final String rootCertPath;'),
-          reason: 'paths, never bytes — the same discipline TlsConfig carries '
-              'on the gateway side, and what makes the SEC-01 sweep and this '
-              'class agree about where key material lives');
+      expect(code, contains('final String? rootCertPath;'),
+          reason: 'the path variant survives: a station provisioned by mount '
+              'keeps dialling, and the field staying a String path is what '
+              'keeps the SEC-01 sweep and this class agreeing about where '
+              'key material lives');
+      expect(code, contains('final String? rootCertPem;'),
+          reason: 'the material variant is a *PEM string* — public '
+              'certificate text, the same shape OpcUAConfig carries — never '
+              'an opaque byte field. A CA root is what the gateway hands '
+              'anyone who asks; the discipline that stays absolute is about '
+              'keys, and no key has a field here');
       expect(code, isNot(contains('List<int>')),
-          reason: 'a config that can hold certificate bytes is a config that '
-              'ends up in a preferences row, a log line or a crash dump; the '
-              'root is a file the integrator mounted and this class names it');
+          reason: 'a config that can hold opaque bytes is a config that '
+              'eventually holds key material — in a preferences row, a log '
+              'line or a crash dump. PEM text is greppable and visibly '
+              'public; a byte field is neither');
     });
 
     test('a dial carries a bound by default', () {

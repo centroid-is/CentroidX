@@ -59,6 +59,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
@@ -122,14 +123,25 @@ final class RemoteStateMan implements StateManApi {
     // lifetime off it would make it something else.
     final tls = config.tls;
     if (tls != null) {
+      // The provisioned root and nothing else. With `withTrustedRoots: false`
+      // the machine's own store is never consulted, so a rogue root installed
+      // on the station cannot vouch for anything claiming to be the gateway
+      // (T-06-20) — which is also why our own gateway is refused by a client
+      // that skips this (SEC-02's system-roots arm). The root arrives one of
+      // two ways — a mounted file, or the PEM text the trust-acquisition flow
+      // pinned after the operator approved its fingerprint — and both land on
+      // the same context: the pin does not know or care how it was
+      // provisioned, which is what `tls_pem_pin_test.dart`'s foreign-CA arm
+      // holds it to.
+      final context = SecurityContext(withTrustedRoots: false);
+      final pem = tls.rootCertPem;
+      if (pem != null) {
+        context.setTrustedCertificatesBytes(utf8.encode(pem));
+      } else {
+        context.setTrustedCertificates(tls.rootCertPath!);
+      }
       _pinned = HttpClient(
-        context: SecurityContext(withTrustedRoots: false)
-          // The mounted root and nothing else. With `withTrustedRoots: false`
-          // the machine's own store is never consulted, so a rogue root
-          // installed on the station cannot vouch for anything claiming to be
-          // the gateway (T-06-20) — which is also why our own gateway is
-          // refused by a client that skips this (SEC-02's system-roots arm).
-          ..setTrustedCertificates(tls.rootCertPath),
+        context: context,
       )
         // The second bound under the abandoned dial.
         // `IOWebSocketChannel.connect` applies `connectTimeout` as a

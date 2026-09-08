@@ -6,6 +6,14 @@ import 'package:tfc/core/gateway_config.dart';
 import 'package:tfc/core/gateway_link_status.dart' show isIpLiteralHost;
 import 'package:tfc_dart/core/preferences.dart';
 
+/// Stands in for the plant CA. Not a parseable certificate — nothing in
+/// `GatewayConfig` parses it; parsing happens where the pin is consumed
+/// (`RemoteStateMan`) and where the fingerprint is computed
+/// (`gateway_trust.dart`), each with tests of its own.
+const String _fakePem = '-----BEGIN CERTIFICATE-----\n'
+    'dGhlIHBsYW50IENBLCBhcyBhcHByb3ZlZCBieSB0aGUgb3BlcmF0b3I=\n'
+    '-----END CERTIFICATE-----\n';
+
 void main() {
   group('GatewayConfig persistence', () {
     test('a station that has never been configured runs direct', () async {
@@ -25,6 +33,28 @@ void main() {
       );
       await writeGatewayConfig(prefs, written);
       expect(await readGatewayConfig(prefs), written);
+    });
+
+    test('pinned material round-trips too, and beats the legacy path',
+        () async {
+      final prefs = InMemoryPreferences();
+      const written = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://10.50.10.11:9443',
+        caPem: _fakePem,
+      );
+      await writeGatewayConfig(prefs, written);
+      final read = await readGatewayConfig(prefs);
+      expect(read, written);
+      expect(read.caPem, _fakePem);
+
+      // Precedence, stated where the JSON is: a row that somehow carries
+      // both dials on the material — the thing an operator approved a
+      // fingerprint for — never on a path that may have rotted since.
+      final both = written.copyWith(caCertPath: '/pki/old-ca.pem');
+      final dial = await both.toClientConfig();
+      expect(dial.tls!.rootCertPem, _fakePem);
+      expect(dial.tls!.rootCertPath, isNull);
     });
 
     // A hand-edited or half-written row must not stop a panel booting, and
@@ -85,13 +115,59 @@ void main() {
       expect(config.validationError, contains('wss'));
     });
 
-    // Mirrors ClientConfig.checkDialable. Without the root every handshake
-    // fails with the message a genuine impostor produces, so the panel reports
-    // an attack rather than a missing file.
-    test('wss without a pinned root is refused', () {
+    // The one deliberate weakening in this getter's history. wss with no
+    // trust used to be refused *here*, which disabled Save — but Save is now
+    // the thing that acquires trust (fetch → fingerprint → approve), so the
+    // edit-time getter must let it through. What must NOT weaken is the boot
+    // side: a hand-edited trustless row still cannot dial, and `undialable`
+    // is the getter `stateManProvider` consults for exactly that, so the
+    // 15-08 honesty chain (build failure → notBuilt → "Panel misconfigured")
+    // holds end to end.
+    test('wss without trust: Save may proceed, the dial may not', () {
       const config = GatewayConfig(
           mode: TransportMode.gateway, url: 'wss://10.50.10.11:9443');
-      expect(config.validationError, contains('CA root'));
+      expect(config.validationError, isNull,
+          reason: 'refusing here would disable the Save that performs the '
+              'acquisition — the deadlock the pem-path field used to hide');
+      expect(config.needsTrustAcquisition, isTrue);
+      expect(config.undialable, contains('CA'),
+          reason: 'the boot guard must still refuse: without a root every '
+              'handshake fails with the message a genuine impostor produces');
+    });
+
+    test('wss with pinned material is dialable and needs no acquisition', () {
+      const config = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://10.50.10.11:9443',
+        caPem: _fakePem,
+      );
+      expect(config.validationError, isNull);
+      expect(config.undialable, isNull);
+      expect(config.needsTrustAcquisition, isFalse);
+    });
+
+    test('a legacy path still satisfies the boot guard', () {
+      const config = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://10.50.10.11:9443',
+        caCertPath: '/pki/ca.pem',
+      );
+      expect(config.undialable, isNull);
+      expect(config.needsTrustAcquisition, isFalse,
+          reason: 'a station provisioned by mount is provisioned; fetching '
+              'over it would re-ask a question that was answered');
+    });
+
+    test('pinned material on a plaintext dial is refused like a path is', () {
+      const config = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'ws://10.50.10.11:9443',
+        caPem: _fakePem,
+      );
+      expect(config.validationError, contains('never consulted'),
+          reason: 'the mistake is about the dial, not about how the root '
+              'was provisioned — material must not slip past the refusal '
+              'the path variant earns');
     });
 
     test('wss with a pinned root is accepted', () {
@@ -131,7 +207,106 @@ void main() {
     });
   });
 
+  group('the legacy path migrates on save, never on load', () {
+    test('a readable legacy file becomes pinned material, path dropped',
+        () async {
+      final dir = Directory.systemTemp.createTempSync('gateway-config-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final path = '${dir.path}/ca.pem';
+      File(path).writeAsStringSync(_fakePem);
+
+      final legacy = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://10.50.10.11:9443',
+        caCertPath: path,
+      );
+      final migrated = legacy.migrateLegacyTrust();
+      expect(migrated.caPem, _fakePem,
+          reason: 'the material pinned is exactly what the station already '
+              'trusted — same bytes, new home, no new trust decision');
+      expect(migrated.caCertPath, isNull,
+          reason: 'keeping the path too would leave two answers to "what '
+              'does this panel trust", which stop agreeing the first time '
+              'the file is edited');
+    });
+
+    test('an unreadable legacy file is kept as a path, not traded for null',
+        () async {
+      const legacy = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://10.50.10.11:9443',
+        caCertPath: '/no/such/file.pem',
+      );
+      expect(legacy.migrateLegacyTrust(), legacy,
+          reason: 'never trade a working configuration shape for a broken '
+              'one silently — a path that fails at boot at least fails with '
+              'the notBuilt report naming the file');
+    });
+
+    test('a file with no certificate in it is not pinned', () async {
+      final dir = Directory.systemTemp.createTempSync('gateway-config-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final path = '${dir.path}/ca.pem';
+      File(path).writeAsStringSync('not pem at all');
+
+      final legacy = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://10.50.10.11:9443',
+        caCertPath: path,
+      );
+      expect(legacy.migrateLegacyTrust(), legacy);
+    });
+
+    test('material already pinned is left exactly alone', () async {
+      const pinned = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://10.50.10.11:9443',
+        caPem: _fakePem,
+      );
+      expect(pinned.migrateLegacyTrust(), same(pinned));
+    });
+  });
+
+  group('what the config renders as', () {
+    test('toString never carries the certificate body', () {
+      const config = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://10.50.10.11:9443',
+        caPem: _fakePem,
+      );
+      expect(config.toString(), isNot(contains('BEGIN CERTIFICATE')),
+          reason: 'public material or not, a config that dumps a PEM into '
+              'every log line trains people to stop reading configs');
+    });
+
+    test('material participates in equality, so the save button can tell',
+        () {
+      const a = GatewayConfig(
+          mode: TransportMode.gateway,
+          url: 'wss://10.50.10.11:9443',
+          caPem: _fakePem);
+      const b = GatewayConfig(
+          mode: TransportMode.gateway, url: 'wss://10.50.10.11:9443');
+      expect(a == b, isFalse,
+          reason: 'the Save button is the page\'s only unsaved indicator, '
+              'and it diffs these two objects — a pin that equality cannot '
+              'see is a pin the operator cannot save');
+    });
+  });
+
   group('GatewayConfig.toClientConfig', () {
+    test('pinned material dials as material', () async {
+      const config = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://10.50.10.11:9443',
+        caPem: _fakePem,
+      );
+      final dial = await config.toClientConfig();
+      expect(dial.tls, isNotNull);
+      expect(dial.tls!.rootCertPem, _fakePem);
+      expect(dial.tls!.rootCertPath, isNull);
+    });
+
     test('no credential file means no token on the wire', () async {
       const config = GatewayConfig(
         mode: TransportMode.gateway,
@@ -265,10 +440,6 @@ void main() {
     test('a config that is already refused advises about nothing', () {
       const cases = <String, GatewayConfig>{
         'empty': GatewayConfig(mode: TransportMode.gateway),
-        'wss with no CA root': GatewayConfig(
-          mode: TransportMode.gateway,
-          url: 'wss://plc-gw.svn:9444',
-        ),
         'unparseable': GatewayConfig(
           mode: TransportMode.gateway,
           url: 'just some words',
@@ -281,6 +452,18 @@ void main() {
         expect(entry.value.advisory, isNull,
             reason: '${entry.key} is refused, so it must not also advise');
       }
+      // 'wss with no CA root' used to sit in the refused set above. It moved
+      // sides with the one-URL flow: no longer an edit-time refusal (Save is
+      // the acquisition step), so a *hostname* dial with no trust yet is now
+      // exactly the moment the SAN advisory earns its keep — the operator is
+      // about to approve a fingerprint for a certificate that must carry
+      // that name.
+      const unpinnedByName = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://plc-gw.svn:9444',
+      );
+      expect(unpinnedByName.validationError, isNull);
+      expect(unpinnedByName.advisory, isNotNull);
       // The control: the same hostname, once it IS dialable, does advise.
       expect(byName.advisory, isNotNull);
     });
@@ -383,10 +566,12 @@ void main() {
       }
     });
 
-    // The blast-radius guard. `advisory` is new; validationError is not, and a
-    // later edit to that getter must not be silently absorbed by this plan's
-    // diff. Walks all six inputs and pins the sentence each returns today.
-    test('the six validationError arms return exactly what they returned', () {
+    // The blast-radius guard. Walks the inputs and pins the sentence each
+    // returns today. **One arm moved on purpose** (one-field gateway config):
+    // wss-without-trust left `validationError` for `undialable`, because Save
+    // is now the acquisition step and an edit-time refusal would disable it.
+    // This test is exactly where that move was made loud.
+    test('the validationError arms return exactly what they returned', () {
       expect(const GatewayConfig(mode: TransportMode.gateway).validationError,
           'Enter the gateway address, e.g. wss://10.50.10.11:9443');
       expect(
@@ -399,12 +584,20 @@ void main() {
                   mode: TransportMode.gateway, url: 'https://10.50.10.11:9443')
               .validationError,
           'Scheme must be wss (or ws for a bench gateway), not https');
+      // The moved arm: null at edit time, and the sentence lives on the boot
+      // guard — pinned here so neither half can drift without this reddening.
       expect(
           const GatewayConfig(
                   mode: TransportMode.gateway, url: 'wss://10.50.10.11:9443')
               .validationError,
-          'wss needs the plant CA root: without it every handshake fails '
-          'with the same error a real impostor produces');
+          isNull);
+      expect(
+          const GatewayConfig(
+                  mode: TransportMode.gateway, url: 'wss://10.50.10.11:9443')
+              .undialable,
+          'wss needs the plant CA pinned first: without it every handshake '
+          'fails with the same error a real impostor produces. Save on the '
+          'Server Config page fetches the gateway\'s identity for approval');
       expect(
           const GatewayConfig(
             mode: TransportMode.gateway,

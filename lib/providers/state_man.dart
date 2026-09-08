@@ -210,7 +210,14 @@ Future<StateMan> stateMan(Ref ref) async {
       // and the shared configuration store runs on the device-local mirror.
       // What a gateway panel still opens beside the socket is device-local
       // storage, which is a file, not a connection.
-      final refusal = gateway.validationError;
+      //
+      // `undialable`, not `validationError`: the edit-time getter deliberately
+      // lets a wss row with no pinned trust through so the Save button can
+      // run the fetch-and-approve ceremony, but at boot there is no Save
+      // coming — a trustless row here is exactly as undialable as ever, and
+      // refusing it by name is what lands on GatewayLinkKind.notBuilt instead
+      // of on the CERTIFICATE_VERIFY_FAILED a genuine impostor also produces.
+      final refusal = gateway.undialable;
       if (refusal != null) {
         throw StateError('Gateway mode is selected but the configuration '
             'cannot be dialled: $refusal');
