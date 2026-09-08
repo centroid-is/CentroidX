@@ -73,13 +73,36 @@ Future<List<ConfigItem>> readSharedKeyMappingItems(GeneratedDatabase db) async {
 ///
 /// Two integers over the wire, whatever the configuration weighs.
 Future<KeyMappingFingerprint> readSharedKeyMappingFingerprint(
-    GeneratedDatabase db) async {
+        GeneratedDatabase db) =>
+    readSharedConfigFingerprint(db, const {ConfigKind.keyMapping});
+
+/// The same two integers over any set of kinds.
+///
+/// Generalised in 04-11, when the backend gained a second thing to watch. The
+/// acquisition isolates bake in `key_mappings` **and** `alarm_man_config`, and
+/// once the alarms moved out of `flutter_preferences` onto a `preference` row
+/// the digest watcher over the old table could only ever report that the row
+/// nobody writes any more had not changed. Both are `config_item` rows now, so
+/// both are watched the same way.
+///
+/// [kinds] is what the caller consumes and nothing else. A backend that
+/// restarted on a `page` write would be restarting to boot into exactly the
+/// state it was already in — and a **`page_image` write must not move this
+/// number at all**, which is what keeps an operator pasting a picture from
+/// bouncing the acquisition backend.
+///
+/// An empty [kinds] answers a zero fingerprint rather than the whole table:
+/// "watch nothing" has to mean nothing, or a caller that computed its kind set
+/// and got none would silently start watching everything.
+Future<KeyMappingFingerprint> readSharedConfigFingerprint(
+    GeneratedDatabase db, Set<ConfigKind> kinds) async {
+  if (kinds.isEmpty) return const KeyMappingFingerprint(count: 0, revSum: 0);
   final table = _configItems(db);
   final count = table.id.count();
   final revSum = table.rev.sum();
   final row = await (db.selectOnly(table)
         ..addColumns([count, revSum])
-        ..where(table.kind.equals(ConfigKind.keyMapping.wireName) &
+        ..where(table.kind.isIn([for (final kind in kinds) kind.wireName]) &
             table.scope.equals(ConfigScope.shared.wireName)))
       .getSingle();
   return KeyMappingFingerprint(

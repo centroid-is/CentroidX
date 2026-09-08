@@ -3,10 +3,10 @@ import 'dart:io';
 
 import 'package:tfc_dart/core/config/key_mapping_codec.dart'
     show keyMappingItemsFromBlob, keyMappingsOf;
+import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/key_mapping_rows.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/preferences.dart';
-import 'package:tfc_dart/core/preferences_watch.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/alarm.dart';
 
@@ -180,13 +180,13 @@ void main() async {
   // cleanly relaunches with the fresh config, and that is the behaviour the
   // operators already know.
   //
-  // The two configurations are watched by different machinery now, because
-  // they live in different places. `alarm_man_config` is still a
-  // `flutter_preferences` blob and keeps the digest watcher exactly as it was
-  // until Phase 4. `key_mappings` is `config_item` rows, and rows are watched
-  // by the `config_change` NOTIFY plus a two-integer poll — a digest over the
-  // blob would only ever report that the row nobody writes any more has not
-  // changed.
+  // **One watcher now.** Both configurations are `config_item` rows since
+  // 04-11 moved `alarm_man_config` out of `flutter_preferences`, so both are
+  // watched the same way: the `config_change` NOTIFY as the fast path and a
+  // two-integer poll as the net under it. The digest watcher over the old
+  // table is gone — kept until this plan only because the alarms were still
+  // in it, and after the move it could only ever have reported that the row
+  // nobody writes any more had not changed.
   final pollSeconds = int.tryParse(
           Platform.environment['CENTROID_CONFIG_POLL_SECONDS'] ?? '') ??
       300;
@@ -204,32 +204,29 @@ void main() async {
     restartTimer = Timer(restartQuiet, () => exit(0));
   }
 
-  final configWatcher = PreferencesWatcher.forDatabase(
-    db,
-    keys: const {'alarm_man_config'},
-    pollInterval: Duration(seconds: pollSeconds),
-  );
-  await configWatcher.start();
-  configWatcher.changes.listen(
-      (key) => restartSoon('Configuration "$key" changed in database'));
+  // The kinds this process bakes into its isolates, and nothing else. A
+  // `page` write must not restart an acquisition backend that would boot to
+  // exactly the same state, and a `page_image` write must not either — an
+  // operator pasting a picture would otherwise bounce the plant's data
+  // acquisition.
+  const watchedKinds = {ConfigKind.keyMapping, ConfigKind.preference};
 
-  // The rows half. Both paths answer a signal with the same cheap read and
-  // restart only if the answer moved, so the notification is the fast path to
-  // one check and the poll is the slow one — and a `config_change` row written
-  // by something that is not a key mapping (pages, from Phase 3 on) does not
-  // restart an acquisition backend that would boot to exactly the same state.
-  var mappingFingerprint = await readSharedKeyMappingFingerprint(db.db);
+  // Both paths answer a signal with the same cheap read and restart only if
+  // the answer moved, so the notification is the fast path to one check and
+  // the poll is the slow one.
+  var mappingFingerprint = await readSharedConfigFingerprint(db.db, watchedKinds);
   Future<void> checkMappings(String why) async {
     try {
-      final now = await readSharedKeyMappingFingerprint(db.db);
+      final now = await readSharedConfigFingerprint(db.db, watchedKinds);
       if (now == mappingFingerprint) return;
       mappingFingerprint = now;
-      restartSoon('$why (${now.count} shared key mappings)');
+      restartSoon('$why (${now.count} shared key mapping and preference '
+          'rows)');
     } catch (e) {
       // A failed read is not a change. Postgres being briefly unreachable is
       // the normal case on this path, and restarting on it would turn a
       // network blip into a restart loop.
-      logger.w('Key-mapping check failed: $e');
+      logger.w('Shared configuration check failed: $e');
     }
   }
 
@@ -256,7 +253,7 @@ void main() async {
 
   listenForConfigChanges();
   Timer.periodic(Duration(seconds: pollSeconds),
-      (_) => checkMappings('Key mappings changed in database'));
+      (_) => checkMappings('Shared configuration changed in database'));
 
   // Keep main alive indefinitely
   await Completer<void>().future;

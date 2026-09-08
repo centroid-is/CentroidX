@@ -6,6 +6,7 @@ import 'package:tfc_dart/core/access/guarded_config_store.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart';
 import 'package:tfc_dart/core/config/key_mapping_migration.dart';
+import 'package:tfc_dart/core/config/preference_migration.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_connections.dart' show kMaxPoolConnectionsEnv;
 
@@ -113,6 +114,17 @@ Future<void> _attach(
     // other — which is why the outcome of each is logged on its own line.
     _logMigration('key_mappings', await migrateKeyMappingsBlobToRows(db));
     _logMigration('pages', await migratePageBlobToRows(db));
+    // Third, and after both, because it refuses to run until their markers
+    // are there: its families are what is *left* in `flutter_preferences`
+    // once the two blobs have gone, and a run before them would write rows
+    // those migrations are about to write differently.
+    //
+    // Wired here rather than behind a hand-run command, and that is the whole
+    // delivery mechanism: the cutover window's step 4 is "deploy the build and
+    // start one station", and this is what makes that sentence true. A
+    // migration only invocable by hand would leave the window with no command
+    // and 04-12's drop gates unreachable.
+    _logPreferenceMigration(await migratePreferencesIntoRows(db));
     store.attachRemote(db);
     await guarded.seedDefaultIfEmpty();
   } catch (error, stackTrace) {
@@ -123,6 +135,46 @@ Future<void> _attach(
       error: error,
       stackTrace: stackTrace,
     );
+  }
+}
+
+/// The one line the cutover runbook's step 4 greps for, at the level each
+/// outcome deserves.
+///
+/// Separate from [_logMigration] because this migration's result is not a bare
+/// outcome: the runbook needs the per-family counts and 04-12's drop tool
+/// needs the unknown names, so the evidence is the line rather than a
+/// paraphrase of it. An **exhaustive switch with no default arm**, for the
+/// same reason its sibling has one.
+void _logPreferenceMigration(PreferenceMigrationResult result) {
+  switch (result.outcome) {
+    case PreferenceMigrationOutcome.migrated:
+      // The evidence line itself, verbatim — counts, families, unknown names.
+      _logger.i(result.evidenceLine);
+    case PreferenceMigrationOutcome.alreadyDone:
+      _logger.i('Preference migration: already done, nothing written');
+    case PreferenceMigrationOutcome.heldByAnother:
+      _logger.i('Preference migration: another station holds the lock and '
+          'is running it; this station picks the rows up at its next '
+          'reconcile');
+    case PreferenceMigrationOutcome.noTable:
+      // Every boot after 04-12 drops the table lands here. Not a warning:
+      // this is the end state the whole milestone is walking towards.
+      _logger.i('Preference migration: flutter_preferences is gone; nothing '
+          'left to copy');
+    case PreferenceMigrationOutcome.siblingsNotMigrated:
+      // Loud, because it means the plant is half-migrated and the runbook's
+      // evidence line will be missing — but a skip, so the station comes up.
+      _logger.w('Preference migration: skipped because the key_mappings or '
+          'pages migration has not run. This station is serving what it has; '
+          're-check the attach ordering before running the cutover window.');
+    case PreferenceMigrationOutcome.notPostgres:
+      _logger.e('Preference migration: the attached shared database does not '
+          'report the postgres dialect. This path only ever runs against '
+          'Postgres, so this is a bug in how the database was built.');
+    case PreferenceMigrationOutcome.unsafePool:
+      _logger.e('Preference migration: refused because this process pools '
+          'more than one connection. Nothing was written.');
   }
 }
 

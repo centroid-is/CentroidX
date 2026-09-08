@@ -22,6 +22,7 @@ import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart';
 import 'package:tfc_dart/core/config/config_undo.dart';
 import 'package:tfc_dart/core/config/key_mapping_migration.dart';
+import 'package:tfc_dart/core/config/key_mapping_rows.dart';
 import 'package:tfc_dart/core/config/preference_migration.dart';
 import 'package:tfc_dart/core/config/preference_payload.dart';
 import 'package:tfc_dart/core/database_drift.dart';
@@ -461,6 +462,89 @@ void main() {
 
       expect(result.outcome, PreferenceMigrationOutcome.alreadyDone);
       expect(await changeRows(), isEmpty);
+    });
+  });
+
+  group('the fingerprint the backend restarts on', () {
+    /// One shared row of [kind], at [rev].
+    Future<void> row(ConfigKind kind, String id, {int rev = 1}) =>
+        db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
+              kind: kind.wireName,
+              id: id,
+              scope: ConfigScope.shared.wireName,
+              payload: '{"v":1}',
+              rev: Value(rev),
+              updatedAt: DateTime.utc(2026, 9, 1),
+              updatedBy: 'tester',
+            ));
+
+    const watched = {ConfigKind.keyMapping, ConfigKind.preference};
+
+    test('a preference row change moves it — the alarm restart path',
+        () async {
+      await row(ConfigKind.keyMapping, 'CN04.Belt.Speed');
+      final before = await readSharedConfigFingerprint(db, watched);
+
+      // An HMI station edits the alarms. Before 04-11 this was a
+      // `flutter_preferences` blob watched by a digest; now it is a row, and
+      // the backend has to notice or its isolates keep yesterday's alarms.
+      await row(ConfigKind.preference, 'alarm_man_config');
+
+      expect(await readSharedConfigFingerprint(db, watched),
+          isNot(before));
+    });
+
+    test('an edit to an existing row moves it too', () async {
+      await row(ConfigKind.preference, 'alarm_man_config');
+      final before = await readSharedConfigFingerprint(db, watched);
+
+      await (db.update(db.configItemTable)
+            ..where((t) => t.id.equals('alarm_man_config')))
+          .write(const ConfigItemTableCompanion(rev: Value(2)));
+
+      expect(await readSharedConfigFingerprint(db, watched), isNot(before),
+          reason: 'count stays where it was, so revSum is what has to move');
+    });
+
+    test('an exempt page_image row does not move it', () async {
+      await row(ConfigKind.preference, 'alarm_man_config');
+      final before = await readSharedConfigFingerprint(db, watched);
+
+      await row(ConfigKind.pageImage, 'abc123');
+
+      expect(await readSharedConfigFingerprint(db, watched), before,
+          reason: 'an operator pasting a picture must not bounce the plant\'s '
+              'data acquisition');
+    });
+
+    test('a page row does not move it either', () async {
+      await row(ConfigKind.preference, 'alarm_man_config');
+      final before = await readSharedConfigFingerprint(db, watched);
+
+      await row(ConfigKind.page, '/roe');
+
+      expect(await readSharedConfigFingerprint(db, watched), before,
+          reason: 'the backend would restart to boot into exactly the state '
+              'it was already in');
+    });
+
+    test('the old name still answers for key mappings alone', () async {
+      await row(ConfigKind.keyMapping, 'CN04.Belt.Speed');
+      await row(ConfigKind.preference, 'alarm_man_config');
+
+      expect(await readSharedKeyMappingFingerprint(db),
+          await readSharedConfigFingerprint(
+              db, const {ConfigKind.keyMapping}),
+          reason: 'the wrapper is one line and must stay one line');
+    });
+
+    test('watching no kinds watches nothing, not everything', () async {
+      await row(ConfigKind.preference, 'alarm_man_config');
+
+      expect(await readSharedConfigFingerprint(db, const {}),
+          const KeyMappingFingerprint(count: 0, revSum: 0),
+          reason: 'a caller that computed an empty kind set must not silently '
+              'start watching the whole table');
     });
   });
 

@@ -130,12 +130,16 @@ void main() {
               'config_change is never pruned, so a superseded ciphertext '
               'written there stays forever. Route the insert through a helper '
               'that asks historyExempt.');
-      expect(writers, hasLength(3),
-          reason: 'The scan is only as good as its corpus. Three writers are '
-              'known: the store, the local preference store and the blob '
-              'migration. A fourth is fine — add it here once you have '
-              'checked it asks the rule — and a count that dropped means the '
-              'scan stopped matching anything and would pass vacuously.');
+      expect(writers, hasLength(4),
+          reason: 'The scan is only as good as its corpus. Four writers are '
+              'known: the store, the local preference store, the blob '
+              'migration and — since 04-11 — the preference migration, whose '
+              '_insertChange asks the rule for exactly the reason the others '
+              'do (it copies the page images and the server_config_envelope, '
+              'the two exempt things, out of the old table). A fifth is fine '
+              '— add it here once you have checked it asks the rule — and a '
+              'count that dropped means the scan stopped matching anything '
+              'and would pass vacuously.');
     });
   });
 

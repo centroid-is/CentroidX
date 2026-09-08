@@ -238,23 +238,41 @@ void main() {
               'is editing any more.');
     });
 
-    test('key_mappings has left the watched preference set', () {
-      // A digest over a row nobody writes never changes, so leaving
-      // `key_mappings` in the set is worse than removing it: it reads as
-      // coverage and provides none. `alarm_man_config` is still a blob until
-      // Phase 4 and keeps the watcher exactly as it was.
+    test('the blob watcher is gone and one row watcher replaced it', () {
+      // Phase 4 arrived. `alarm_man_config` was the last thing keeping
+      // `PreferencesWatcher` alive here, and 04-11 moved it onto a
+      // `preference` row — after which a digest over the old table could only
+      // ever report that the row nobody writes any more had not changed.
+      // That is the same argument that removed `key_mappings` from the set in
+      // Phase 2, applied to the last key in it.
+      final source = _mainLinesWithoutComments().join('\n');
+
+      expect(source.contains('PreferencesWatcher'), isFalse,
+          reason: 'a digest over a table nothing writes reads as coverage and '
+              'provides none');
+      expect(source, contains('watchedKinds'),
+          reason: 'the successor: one fingerprint over the kinds this process '
+              'bakes into its isolates');
+    });
+
+    test('the watched kinds are what the isolates bake in, and no more', () {
       final lines = _mainLinesWithoutComments();
       final watched = lines.firstWhere(
-        (l) => l.contains('keys: const {'),
+        (l) => l.contains('watchedKinds ='),
         orElse: () => '',
       );
 
-      expect(watched, isNotEmpty,
-          reason: 'could not find the PreferencesWatcher key set');
-      expect(watched, contains('alarm_man_config'));
-      expect(watched.contains('key_mappings'), isFalse,
-          reason: 'the key_mappings row stops being written at the cutover; '
-              'its digest can only report that nothing changed');
+      expect(watched, isNotEmpty, reason: 'could not find the watched kinds');
+      expect(watched, contains('ConfigKind.keyMapping'));
+      expect(watched, contains('ConfigKind.preference'),
+          reason: 'alarm_man_config is a preference row since 04-11, and the '
+              'isolates bake the alarms in');
+      // The two that must not be there. A page or an image write would
+      // restart an acquisition backend into exactly the state it was already
+      // in — and for images that means an operator pasting a picture bounces
+      // the plant's data acquisition.
+      expect(watched.contains('ConfigKind.page'), isFalse);
+      expect(watched.contains('ConfigKind.pageImage'), isFalse);
     });
 
     test('subscribes to the config_change channel', () {
@@ -264,9 +282,10 @@ void main() {
       expect(source, contains("listenToChannel('config_change')"),
           reason: 'without it the backend hears about a mapping edit only on '
               'the poll, up to CENTROID_CONFIG_POLL_SECONDS late');
-      expect(source, contains('readSharedKeyMappingFingerprint'),
+      expect(source, contains('readSharedConfigFingerprint'),
           reason: 'the safety net for a notification missed while the '
-              'connection was down');
+              'connection was down — kind-general since 04-11, because the '
+              'backend now watches preferences as well');
     });
 
     test('both restart paths re-arm one timer', () {
