@@ -125,6 +125,17 @@ final class _SlowSink implements AuditSink {
   );
 }
 
+/// Runs [call] expecting a refusal — which the gate raises **synchronously**,
+/// before any Future exists, so a `throwsA` over the expression never sees it.
+Future<rpc.RpcException> _refusedAudit(Future<void> Function() call) async {
+  try {
+    await call();
+  } on rpc.RpcException catch (error) {
+    return error;
+  }
+  fail('the call was answered instead of refused');
+}
+
 void main() {
   group('a row per decision', () {
     test('an allowed preference write records one row, and the row is whole',
@@ -198,9 +209,8 @@ void main() {
       final sink = _RecordingSink(() => ++order);
       final seat = _seenBy(_display, sink: sink);
 
-      await expectLater(
-          seat.served.preferences.setString('collector_config', '{}'),
-          throwsA(isA<rpc.RpcException>()));
+      await _refusedAudit(
+          () => seat.served.preferences.setString('collector_config', '{}'));
 
       expect(sink.rows, hasLength(1),
           reason: 'one refusal, one row. Two rows for one decision is a trail '
@@ -213,8 +223,7 @@ void main() {
       final sink = _RecordingSink(() => ++order);
       final seat = _seenBy(_panel, sink: sink);
 
-      await expectLater(seat.served.historyViews.deleteHistoryView(7),
-          throwsA(isA<rpc.RpcException>()));
+      await _refusedAudit(() => seat.served.historyViews.deleteHistoryView(7));
 
       expect(sink.rows, hasLength(1));
       expect(sink.rows.single.surface, 'history_view',
@@ -293,10 +302,9 @@ void main() {
       // also swallows the forbidden converts a refusal into a pass.
       final refused = _seenBy(_display,
           sink: sink, onAuditError: (error, stack, where) => errors.add(error));
-      await expectLater(
-          refused.served.preferences.setString('key_mappings', '{}'),
-          throwsA(isA<rpc.RpcException>()
-              .having((e) => e.code, 'code', ServerErrorCodes.forbidden)),
+      final refusal = await _refusedAudit(
+          () => refused.served.preferences.setString('key_mappings', '{}'));
+      expect(refusal.code, ServerErrorCodes.forbidden,
           reason: 'still refused: the sink failing must not fail the refusal '
               'open');
       expect(await refused.store.containsKey('key_mappings'), isFalse,
@@ -379,11 +387,10 @@ void main() {
         tally: SeriesMappingTally(),
         identityOf: () => _display,
       );
-      await expectLater(
-          refused.preferences.setString('key_mappings', '{}'),
-          throwsA(isA<rpc.RpcException>()),
-          reason: 'the gate holds with no sink at all: the trail is an '
-              'account of decisions, never a precondition for making them');
+      await _refusedAudit(
+          () => refused.preferences.setString('key_mappings', '{}'));
+      // The gate holds with no sink at all: the trail is an account of
+      // decisions, never a precondition for making them.
     });
   });
 }
