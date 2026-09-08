@@ -722,14 +722,21 @@ void main() {
 
       // -- attribution, by SQL (ACCESS-06's config leg, unreachable until
       //    this fix): the accepted write's row names the VERIFIED station.
+      //
+      // Pinned to the STORE's own row — `item_key` is the boot file's path,
+      // where the policy gate's twin row carries `state_man_config` — because
+      // a sabotage round proved the loose form was satisfiable by the gate's
+      // row while the store's carried a forged station.
       expect(
           await count("SELECT COUNT(*) AS c FROM audit_entry WHERE "
-              "$stationLike AND surface = 'config' AND origin = 'relay' "
-              "AND who = '$adminUser' AND station = '$adminStation' "
-              "AND allowed = true"),
+              "surface = 'config' AND item_key = '$statemanPath' "
+              "AND origin = 'relay' AND who = '$adminUser' "
+              "AND station = '$adminStation' AND allowed = true"),
           greaterThan(0),
-          reason: 'the config write is attributed to the server-verified '
-              'station account (D-11) — the leg 17-GATE said rode this gap');
+          reason: 'the config write is attributed by the STORE to the '
+              'server-verified station account (D-11) — the leg 17-GATE said '
+              'rode this gap; a compose-time or payload-named station must '
+              'not be able to hide behind the policy gate\'s own allow row');
       expect(
           await count("SELECT COUNT(*) AS c FROM audit_entry WHERE "
               "$stationLike AND surface = 'config'"),
