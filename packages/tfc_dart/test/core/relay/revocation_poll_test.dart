@@ -326,21 +326,36 @@ void main() {
           reason: 'sabotage (d): a bare reload() re-parses every tick');
     });
 
-    test('the tick is guarded — the poll call sits inside a try/catch', () {
+    test('the tick is guarded — the poll call sits inside a try/catch OPENED '
+        'inside the timer callback', () {
       // A throwing tick must not take the backend down (reload()'s own rule): a
       // rotation that produced a broken file, or a database that blinked, logs
-      // and continues. Sabotage (h) removes the try and this goes red.
-      final callIndex = main.indexOf('reloadTokensIfChanged');
-      expect(callIndex, greaterThan(0));
-      // The nearest `try {` before the call, and the nearest `catch` after it,
-      // must both exist within the same periodic-tick body.
-      final before = main.substring(0, callIndex);
-      final after = main.substring(callIndex);
-      expect(before.lastIndexOf('try {'), greaterThan(before.lastIndexOf('});')),
-          reason: 'the poll call must be inside a try opened within the tick '
-              'body, not before some earlier statement');
-      expect(after.contains('catch'), isTrue,
-          reason: 'and a catch that logs and continues follows it');
+      // and continues. The guard must live INSIDE the Timer.periodic callback,
+      // because that callback runs asynchronously, long after — and outside the
+      // dynamic extent of — the outer try that wraps the synchronous bind. A
+      // sabotage that removed the callback's own try/catch left the call still
+      // lexically inside the bind try and slipped past the naive scan; this arm
+      // scans the callback body only. (Sabotage (h) turns this red.)
+      final timerIndex = main.indexOf('Timer.periodic');
+      expect(timerIndex, greaterThan(0),
+          reason: 'the poll runs on a Timer.periodic');
+      // Everything from the callback onward. The bind's outer `try {` is BEFORE
+      // this point, so a `try {` found here is one opened inside the callback —
+      // which is the only kind that guards the async tick.
+      final fromTimer = main.substring(timerIndex);
+      final tryIndex = fromTimer.indexOf('try {');
+      final callIndex = fromTimer.indexOf('reloadTokensIfChanged');
+      final catchIndex = fromTimer.indexOf('catch', callIndex);
+
+      expect(callIndex, greaterThan(0), reason: 'the poll call is in the tick');
+      expect(tryIndex, greaterThan(-1),
+          reason: 'a try opened INSIDE the callback — not the bind try that '
+              'wraps the synchronous setup, which does not guard an async tick '
+              '(the finding sabotage h exposed)');
+      expect(tryIndex, lessThan(callIndex),
+          reason: 'the guard wraps the call, it does not follow it');
+      expect(catchIndex, greaterThan(callIndex),
+          reason: 'a catch that logs and continues follows the call');
     });
 
     test('the revocation timer is cancelled on shutdown', () {
