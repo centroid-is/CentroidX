@@ -120,12 +120,19 @@ Future<GuardedConfigStore> createTestConfigStore({
   /// go behind the store's back — bumping a row's `rev` the way another
   /// station would, or reading the `config_change` rows a save wrote.
   void Function(AppDatabase remote)? onRemote,
+  /// The stand-in for Postgres, when the test already has one.
+  ///
+  /// `ServerConfigDb.fetch` selects straight out of the shared database the
+  /// page was handed, so a test of that round trip needs the store's writes
+  /// to land in *that* database rather than in one this helper made up. The
+  /// caller owns it and closes it.
+  AppDatabase? remoteDatabase,
 }) async {
   driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
   final local = AppDatabase.inMemoryForTest();
-  final remote = AppDatabase.inMemoryForTest();
+  final remote = remoteDatabase ?? AppDatabase.inMemoryForTest();
   addTearDown(local.close);
-  addTearDown(remote.close);
+  if (remoteDatabase == null) addTearDown(remote.close);
 
   final store = ConfigStore(
     local: local,
