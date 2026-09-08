@@ -41,6 +41,7 @@ import 'access_handlers.dart';
 import 'alarm_ack_sink.dart';
 import 'alarm_handlers.dart';
 import 'auth/identity.dart';
+import 'auth/session_login_validator.dart';
 import 'data_handlers.dart';
 import 'error_codes.dart';
 import 'error_reporter.dart';
@@ -925,7 +926,12 @@ final class RelaySession {
       String method, Future<Object?> Function(rpc.Parameters) handler) {
     _registered.add(method);
     peer.registerMethod(method, (rpc.Parameters params) async {
-      if (_gate.checkRequest(method) is! GateAllow) {
+      // The awaiting-sign-in condition rides beside the handshake gate for
+      // the same reason it rides inside `_gated`: a session nobody signed in
+      // on has no hold to feed either, and a refusal with no id to answer is
+      // dropped-and-counted the same way a pre-hello one is.
+      if (_gate.checkRequest(method) is! GateAllow ||
+          _identity == SessionLoginValidator.awaitingSignIn) {
         _ungatedNotifications++;
         if (!_complainedUngated) {
           _complainedUngated = true;
@@ -1084,6 +1090,12 @@ final class RelaySession {
       // is what makes the drop free.
       notify: (method, params) {
         if (_closed || peer.isClosed || _sessionId == null) return;
+        // The awaiting-sign-in session is helloed, so the `_sessionId` guard
+        // above no longer covers it — and the disclosure argument is the
+        // same: preference keys are the gateway's configuration vocabulary,
+        // and nobody has signed in on this socket. Dropped, not queued, for
+        // the reason the pre-hello drop gives.
+        if (_identity == SessionLoginValidator.awaitingSignIn) return;
         peer.sendNotification(method, params);
       },
     );
@@ -1311,6 +1323,7 @@ final class RelaySession {
     final action = _gate.checkRequest(method);
     switch (action) {
       case GateAllow():
+        _refuseWhileAwaitingSignIn(method);
         return await work();
       case GateReject(:final kind):
         throw rpc.RpcException(
@@ -1339,6 +1352,42 @@ final class RelaySession {
         // because that is what makes the switch total.
         return await work();
     }
+  }
+
+  /// Refuses [method] while this session's identity is the awaiting-sign-in
+  /// sentinel — the second stage of the gate, and the fail-closed half of
+  /// the credential-less admission `SessionLoginValidator` makes.
+  ///
+  /// **Why the empty group set is not enough on its own.** The sentinel's
+  /// session holds no groups, so every write question already answers no —
+  /// but reads are deliberately ungated on this wire (`key_policy.dart`,
+  /// §11's deferral: `canSee` filters, there is no read gate), so a session
+  /// graded only by its groups could still subscribe to every tag, read
+  /// every preference and walk the browse tree while nobody has signed in.
+  /// "Nobody yet" is an *authentication* state, and it is answered here, at
+  /// the same single choke point the handshake gate uses — before params
+  /// are decoded, ahead of every handler, covering a method added next year
+  /// by construction. It grades no key and names no group, which is what
+  /// keeps it the credential mechanism's business rather than a second
+  /// policy (`no_second_policy_test.dart`'s constitution).
+  ///
+  /// `hello` is exempt because the first hello runs while `_identity` is
+  /// still null (and a second one is the gate's `already_helloed` refusal
+  /// before this is ever consulted); `ping` is exempt because a panel
+  /// sitting at the sign-in screen is waiting, not broken, and reaping it
+  /// for silence would darken every idle station.
+  ///
+  /// The refusal is `unauthorized` with a stable `awaiting_sign_in` marker:
+  /// what a panel does with it is show the sign-in screen, not an error.
+  void _refuseWhileAwaitingSignIn(String method) {
+    if (method == Methods.hello || method == Methods.ping) return;
+    if (_identity != SessionLoginValidator.awaitingSignIn) return;
+    throw rpc.RpcException(
+        ServerErrorCodes.unauthorized,
+        '$method refused: awaiting_sign_in — nobody has signed in on this '
+        'session, and a session nobody signed in on may do nothing but '
+        'wait. Sign in first',
+        data: _substitute(method));
   }
 
   /// Answers [method], with every failure turned into an encodable error.
@@ -1489,7 +1538,16 @@ final class RelaySession {
           // "once" true for this line too — a batched hello that could replace
           // the identity could replace the families the audit rows attribute
           // to.
-          _scoped = _accessFor?.call(identity);
+          //
+          // Never for the awaiting-sign-in sentinel: the factory builds
+          // stores whose audit rows attribute to the identity it was called
+          // with, and nobody is not an identity a row may name (D-11). The
+          // gate holds every access method away from an awaiting session
+          // anyway; leaving `_scoped` null keeps the shared source's
+          // refuse-by-name behind it, fail closed twice over.
+          _scoped = identity == SessionLoginValidator.awaitingSignIn
+              ? null
+              : _accessFor?.call(identity);
       }
     }
 

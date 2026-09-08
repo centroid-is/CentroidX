@@ -31,6 +31,7 @@ export 'src/alarm_ack_sink.dart';
 export 'src/auth/auth_config.dart';
 export 'src/auth/file_token_validator.dart';
 export 'src/auth/identity.dart';
+export 'src/auth/session_login_validator.dart';
 // On the barrel because `RelayServer.certHealth` is public and an embedder
 // that wants the number recomputed on its own cadence has to be able to name
 // the type — and because `certDaysToExpiryKey` is the string Phase 8's HLTH-03
