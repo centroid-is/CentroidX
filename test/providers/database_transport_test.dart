@@ -197,9 +197,20 @@ void main() {
               'connects the plant even when no screen asks; gateway mode must '
               'not have the dependency, not merely survive it');
 
-      // Device-local settings are not the database and must keep working.
-      await prefs.setString('database_transport_probe', 'still-works');
-      expect(await prefs.getString('database_transport_probe'), 'still-works');
+      // The store itself must be functional on the local mirror, not merely
+      // constructed: a read must answer rather than throw. (A write probe
+      // would measure the access guard, not the transport — unknown keys
+      // require the administer group by design.)
+      expect(await prefs.getString('key_mappings'), isNull);
+
+      // The mirror of the direct arm's rebuild check: in gateway mode the
+      // dependency does not exist, so invalidating databaseProvider must NOT
+      // rebuild the store — a listen-without-read would still tie the world
+      // to a provider gateway mode has no business with.
+      h.ref.invalidate(databaseProvider);
+      final second = await h.ref.read(preferencesProvider.future);
+      expect(identical(prefs, second), isTrue);
+      expect(h.touched(), isFalse);
     });
 
     test('gateway mode with a database PRESENT still carries none', () async {
@@ -228,6 +239,19 @@ void main() {
           reason: 'direct mode must keep watching databaseProvider on the '
               'same seam it always did — a "fix" that severed both modes '
               'would break the plant to quiet a settings page');
+
+      // The touch flag alone is satisfiable through the audit sink, which
+      // also consults databaseProvider in direct mode — a sabotage run
+      // measured exactly that (`final db = null;` here reddened nothing).
+      // The WATCH relationship is the property: a database that connects
+      // must rebuild the shared store, or every direct station boots onto
+      // the local mirror and stays there.
+      h.ref.invalidate(databaseProvider);
+      final rebuilt = await h.ref.read(preferencesProvider.future);
+      expect(identical(prefs, rebuilt), isFalse,
+          reason: 'invalidating databaseProvider must rebuild the direct-mode '
+              'preferences — severing the watch leaves the plant reading a '
+              'store that never notices Postgres coming up');
     });
   });
 }
