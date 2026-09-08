@@ -1,32 +1,23 @@
-/// `RemoteStateMan` refuses the four access families, by name, and still
-/// serves the four data services.
+/// `RemoteStateMan` serves all four access families, and none of them by
+/// refusal any more.
 ///
-/// Plan 17-03 added `accessTemplates`, `accessAdmin`, `audit` and
-/// `backendConfig` to `StateManApi`. This client has no proxy for any of them —
-/// plan 17-08 adds four to `client_sub_apis.dart` — so all four refuse.
+/// ## What this file used to claim, and why the claim flipped
 ///
-/// ## Why a refusal and not a proxy that would surface `-32601`
+/// Between 17-03 and 17-08 the four getters refused with an
+/// `UnsupportedError` naming the missing proxy, and this file pinned that —
+/// its own doc said "until 17-08 writes one". 17-08 wrote them:
+/// `client_sub_apis.dart` gained `ClientAccessTemplateApi`,
+/// `ClientAccessAdminApi`, `ClientAuditApi` and `ClientBackendConfigApi`, and
+/// the getters answer with proxies built once and kept, exactly as the four
+/// data services are. The refusal arms would now be false claims, so the file
+/// keeps only the halves that are still true — the exhaustiveness guard over
+/// the four families, and the live controls.
 ///
-/// That was the right answer for the data services before Phase 10, and
-/// `remote_state_man.dart:635` says so: a proxy with no gateway handler
-/// surfaced method-not-found, "which is the honest answer". It is not the right
-/// answer here, because it is not yet honest — there is no `AccessMethods`
-/// handler table on the gateway *and* no client proxy to send with, so a proxy
-/// would have to be written before it could fail usefully. Until 17-08 writes
-/// one, the member that does not exist should say it does not exist here, where
-/// the caller is, rather than after a round trip.
-///
-/// A refusal on the client is also safe in the direction that matters:
-/// authorisation is enforced server-side (17-CONTEXT's hard requirement), so a
-/// client refusing early can only ever remove a capability, never grant one.
-///
-/// ## The anti-vacuity half
-///
-/// Every refusal group is paired with a **live control** on the same object.
-/// `RemoteStateMan` dials lazily and never blocks in its constructor, so a
-/// client pointed at a dead port is a perfectly good fixture for a getter
-/// that answers without a round trip — which is exactly what the four
-/// data-service getters do, and exactly what the four access getters must not.
+/// The proxies' own behavioural pins — one request per member, the
+/// no-identity payload pin, `forbidden` → `AccessDenied` with the message
+/// intact, the two no-retry halves, the structured domain payload and the
+/// contract leg — live in `access_proxies_test.dart`, which supersedes this
+/// file's refusal groups rather than duplicating them here.
 library;
 
 import 'dart:io';
@@ -36,7 +27,9 @@ import 'package:tfc_relay_client/src/client_config.dart';
 import 'package:tfc_relay_client/src/remote_state_man.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
-/// The four getters this file judges.
+/// The four getters this file judges — the exhaustiveness guard: a fifth
+/// access family added to `StateManApi` without a row here is invisible to
+/// this sweep, and the surface test in the contract kit reddens on the count.
 const accessFamilies = <String>[
   'accessTemplates',
   'accessAdmin',
@@ -62,7 +55,10 @@ ClientConfig _config() => ClientConfig(
       deadlineFloor: const Duration(milliseconds: 50),
     );
 
-/// A port nothing is bound to — the panel's ordinary state at power-on.
+/// A port nothing is bound to — the panel's ordinary state at power-on. The
+/// getters under test answer without a round trip, so a dead port is the
+/// right fixture: anything they did over the wire would hang here instead of
+/// passing quietly.
 Future<Uri> _deadPort() async {
   final dead = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
   final port = dead.port;
@@ -78,63 +74,30 @@ void main() {
     addTearDown(client.dispose);
   });
 
-  group('RemoteStateMan refuses the four access families', () {
+  group('RemoteStateMan serves the four access families', () {
     for (final member in accessFamilies) {
-      test('$member refuses, naming itself', () {
-        expect(
-          () => reachFamily(client, member),
-          throwsA(isA<UnsupportedError>().having((e) => e.message.toString(),
-              'message', contains('RemoteStateMan.$member'))),
-          reason: 'a panel that asked for the audit trail and got '
-              '"unsupported" with no member name cannot tell which of four '
-              'families it was denied',
-        );
+      test('$member answers with a proxy, without a round trip', () {
+        expect(reachFamily(client, member), isNotNull,
+            reason: 'a panel that asked for $member and was refused after '
+                '17-08 has lost a capability the plan shipped — the getter '
+                'is one line over the proxy 17-08 wrote');
       });
     }
 
-    test('no refusal hides behind "TODO" or "not implemented"', () {
+    test('each family answers the same instance every time', () {
       for (final member in accessFamilies) {
-        Object? caught;
-        try {
-          reachFamily(client, member);
-        } catch (e) {
-          caught = e;
-        }
-        final message = (caught as UnsupportedError).message.toString();
-        expect(message.toLowerCase(), isNot(contains('todo')),
-            reason: '$member: a refusal naming a plan tells an integrator '
-                'nothing to change');
-        expect(message.toLowerCase(), isNot(contains('not implemented')),
-            reason: '$member: the member IS implemented; what is absent is the '
-                'proxy behind it');
-      }
-    });
-
-    test('no family answers with an empty proxy instead of refusing', () {
-      // A `ClientAuditApi` that answered "no entries" without a wire method
-      // behind it would draw an empty audit trail on a panel, for a plant that
-      // has plenty, with nothing anywhere saying why. That is the same failure
-      // `remote_state_man.dart` already refuses to make about timeseries.
-      for (final member in accessFamilies) {
-        Object? returned;
-        var threw = false;
-        try {
-          returned = reachFamily(client, member);
-        } catch (_) {
-          threw = true;
-        }
-        expect(threw, isTrue,
-            reason: 'RemoteStateMan.$member answered with $returned instead '
-                'of refusing, and there is no wire method behind it to have '
-                'answered from');
+        expect(identical(reachFamily(client, member), reachFamily(client, member)),
+            isTrue,
+            reason: '$member: the sub-APIs are built once and kept '
+                '(remote_state_man.dart\'s sub-API block); a fresh instance '
+                'per getter read would be a different shape for no reason');
       }
     });
 
     test('LIVE CONTROL: the four data-service proxies are still built', () {
-      // Without this the refusals above are satisfied by a client that has
+      // Without this the group above is satisfied by a client that has
       // failed to construct anything at all. These four answer from memory —
-      // no round trip — so a dead port is irrelevant to them, which is what
-      // makes them the right control for a getter-level property.
+      // no round trip — so a dead port is irrelevant to them.
       expect(client.browse, isA<BrowseApi>());
       expect(client.timeseries, isA<TimeseriesApi>());
       expect(client.historyViews, isA<HistoryViewApi>());
