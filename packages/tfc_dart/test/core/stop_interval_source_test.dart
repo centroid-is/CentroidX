@@ -53,6 +53,22 @@ void main() {
       expect(source.hasOpen, isFalse);
     });
 
+    test('an active entry that already cleared is closed at its clear time',
+        () {
+      // An ack-required alarm stays in the active set after its condition
+      // drops, carrying the clear time in `deactivated`. The machine is
+      // running again — drawing it as still-growing downtime would bill the
+      // line for however long the ack takes.
+      final source = StopIntervalSource.fromAlarms(
+        history: const [],
+        active: [activation('a', from: 0, to: 15)],
+      );
+      expect(source.open, isEmpty);
+      expect(source.closed, hasLength(1));
+      expect(source.closed.single.interval.end, at(15));
+      expect(source.hasOpen, isFalse);
+    });
+
     test('the live set becomes open intervals', () {
       final source = StopIntervalSource.fromAlarms(
         history: const [],

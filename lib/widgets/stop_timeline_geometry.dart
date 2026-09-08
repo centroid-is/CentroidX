@@ -199,6 +199,8 @@ const _tickSteps = <Duration>[
   Duration(hours: 6),
   Duration(hours: 12),
   Duration(days: 1),
+  Duration(days: 2),
+  Duration(days: 7),
 ];
 
 /// The step between axis ticks: the smallest round interval that leaves at
@@ -232,6 +234,18 @@ List<TimelineTick> timelineTicks(TimelineWindow window, double width) {
         isHour: t.minute == 0 && t.second == 0));
   }
   return ticks;
+}
+
+/// The sliver of future kept visible at the live edge.
+///
+/// Without it the now line and the "still standing" marker sit glued to the
+/// right border, half clipped. Proportional so a one-hour view is not a fifth
+/// dead space, clamped so a week-long one does not open on an hour of future.
+Duration livePad(Duration span) {
+  final pad = Duration(microseconds: span.inMicroseconds ~/ 20);
+  if (pad < const Duration(seconds: 30)) return const Duration(seconds: 30);
+  if (pad > const Duration(minutes: 10)) return const Duration(minutes: 10);
+  return pad;
 }
 
 /// How the Pareto is grouped.

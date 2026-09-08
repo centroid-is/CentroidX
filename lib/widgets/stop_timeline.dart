@@ -82,7 +82,6 @@ class StopTimeline extends ConsumerStatefulWidget {
 class _StopTimelineState extends ConsumerState<StopTimeline> {
   StopIntervalSource _source = StopIntervalSource.empty;
   AlarmTree? _tree;
-  bool _loading = true;
   Object? _error;
 
   /// An absolute range the operator picked, or null for the live rolling
@@ -98,10 +97,39 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
   /// changing the range twice in a row starts two overlapping fetches.
   int _generation = 0;
 
+  /// The last fetched history and the latest active set, kept apart so an
+  /// active-set event can rebuild [_source] without a database round trip.
+  List<AlarmActive> _history = const [];
+  List<AlarmActive> _active = const [];
+
+  /// The standing subscription that makes the view live: a new activation
+  /// appears the moment it fires, not the next time the period is changed.
+  StreamSubscription<Set<AlarmActive>>? _activeSub;
+
+  /// Identity of the last-seen active set, to tell "something new appeared"
+  /// (rebuild locally) from "something cleared" (it just became a history
+  /// row, so refetch).
+  Set<String> _activeKeys = const {};
+
+  /// Live safety net: the rolling fetch window goes stale as the clock walks
+  /// past it, and rows written by other stations never announce themselves.
+  Timer? _refresh;
+
   @override
   void initState() {
     super.initState();
     _load();
+    // A fixed clock means a test or a golden; timers there are only flake.
+    if (widget.clock == null) {
+      _refresh = Timer.periodic(const Duration(minutes: 1), (_) => _load());
+    }
+  }
+
+  @override
+  void dispose() {
+    _activeSub?.cancel();
+    _refresh?.cancel();
+    super.dispose();
   }
 
   /// The stretch of history to fetch: the picked range, or the live one the
@@ -131,23 +159,55 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
         from: window.start,
         to: window.end,
       );
-      final active = await man.activeAlarms().first;
       if (!mounted || generation != _generation) return;
+      // The seeded stream delivers the current set to a new listener, so the
+      // first event doubles as the initial read the `.first` await used to be.
+      _activeSub ??= man.activeAlarms().listen(_onActive);
       setState(() {
         // An alarm the editor marked as not a stop is out at the source:
         // no lane, and no share of the header counts or the overview strip,
         // which only ever ask about uids the tree contains.
         _tree = AlarmTree.fromConfigs(
             man.config.alarms.where((a) => a.countsAsStop).toList());
+        _history = history;
         _source =
-            StopIntervalSource.fromAlarms(history: history, active: active);
-        _loading = false;
+            StopIntervalSource.fromAlarms(history: _history, active: _active);
+        _error = null;
       });
     } catch (e) {
       if (!mounted || generation != _generation) return;
+      // With something already on screen, a failed refresh keeps the last
+      // good data — the minute timer retries — rather than replacing a
+      // working chart with an error page.
+      if (_tree != null) {
+        debugPrint('StopTimeline refresh failed: $e');
+        return;
+      }
+      setState(() => _error = e);
+    }
+  }
+
+  /// The live set changed. A new activation is drawn straight from the event;
+  /// a cleared one just became a history row this widget has not fetched, so
+  /// that refetches.
+  void _onActive(Set<AlarmActive> active) {
+    // Snapshot immediately: AlarmMan emits its own mutable set, the same
+    // instance every time.
+    final snapshot = List<AlarmActive>.of(active);
+    final keys = {
+      for (final a in snapshot)
+        '${a.alarm.config.uid}@${a.notification.timestamp.microsecondsSinceEpoch}'
+    };
+    final cleared = _activeKeys.any((k) => !keys.contains(k));
+    _activeKeys = keys;
+    _active = snapshot;
+    if (!mounted) return;
+    if (cleared) {
+      _load();
+    } else if (_tree != null) {
       setState(() {
-        _error = e;
-        _loading = false;
+        _source =
+            StopIntervalSource.fromAlarms(history: _history, active: _active);
       });
     }
   }
@@ -157,7 +217,6 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
     setState(() {
       _range = range;
       _error = null;
-      _loading = true;
     });
     _load();
   }
@@ -168,23 +227,27 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
       _interval = interval;
       _range = null;
       _error = null;
-      _loading = true;
     });
     _load();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator());
-    if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Text('Could not load alarms.\n$_error',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall),
-        ),
-      );
+    // The view stays mounted across refetches: only the very first load has
+    // nothing to show. Swapping to a spinner on every period change threw
+    // away the operator's expansion, filters and view mode with it.
+    if (_tree == null) {
+      if (_error != null) {
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text('Could not load alarms.\n$_error',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall),
+          ),
+        );
+      }
+      return const Center(child: CircularProgressIndicator());
     }
     return StopTimelineView(
       config: widget.config,
@@ -247,15 +310,37 @@ class _StopTimelineViewState extends State<StopTimelineView> {
 
   final Set<String> _expanded = {};
   final Set<AlarmLevel> _levels = {...AlarmLevel.values};
-  AlarmInterval? _selected;
+
+  /// The selection, held as *coordinates* — which lane, which start — rather
+  /// than as an interval object. Data refreshes every few seconds now, and an
+  /// object reference into the previous fetch is orphaned by each one; the
+  /// coordinates survive, and are resolved against the current series each
+  /// build (see [_resolveSelection]).
+  String? _selectedLaneKey;
+  DateTime? _selectedStart;
   String? _selectedLabel;
+
   bool _showTable = false;
   ParetoGrouping _grouping = ParetoGrouping.alarm;
   bool _rankByCount = false;
 
-  /// Frozen per frame so every lane and every statistic agrees about "now".
-  late DateTime _now;
+  /// The clock, frozen per frame so every lane and every statistic agrees
+  /// about "now". A notifier rather than a field so the painters can repaint
+  /// off its ticks: the now line and a standing alarm's live edge must move
+  /// even when nothing else changes.
+  late final ValueNotifier<DateTime> _clockN;
+  DateTime get _now => _clockN.value;
   Timer? _tick;
+
+  /// Whether the view is docked to the live edge and rolls with the clock.
+  /// Panning or zooming into the past undocks; pushing back against the
+  /// right edge — or picking a new period — docks again.
+  late bool _followLive;
+
+  /// Coalesces window changes into one rebuild per frame, so the lane
+  /// statistics and the Pareto keep up with a pan without rebuilding the
+  /// tree on every pointer event.
+  bool _windowRebuildQueued = false;
 
   static const double _labelWidth = 210;
   static const double _groupRowHeight = 38;
@@ -264,40 +349,66 @@ class _StopTimelineViewState extends State<StopTimelineView> {
   /// The span the overview strip covers and panning is clamped to.
   ///
   /// A picked range pins it; otherwise it rolls with the clock, at the
-  /// runtime interval if one was picked and the configured one if not.
+  /// runtime interval if one was picked and the configured one if not. The
+  /// live period keeps [livePad] of future inside its bounds — the opening
+  /// window ends there, and `clampTo` must not yank that sliver away on the
+  /// first pan.
   TimelineWindow get _period {
     final range = widget.range;
     if (range != null) return TimelineWindow(range.start, range.end);
-    return TimelineWindow(_now.subtract(_liveSpan), _now);
+    return TimelineWindow(
+        _now.subtract(_liveSpan), _now.add(livePad(_liveSpan)));
   }
 
   Duration get _liveSpan =>
       widget.interval ?? Duration(hours: widget.config.periodHours);
 
   /// Where the view starts out. A picked range is shown whole — that is what
-  /// picking it asked for; the live period opens on its last three hours,
-  /// which is the shift-so-far rather than a day squeezed into a lane.
+  /// picking it asked for — and so is a picked rolling span: "Last 24 hours"
+  /// answered with the same three hours as before looks like a dead control.
+  /// Only the configured default opens on its last three hours, the
+  /// shift-so-far rather than a day squeezed into a lane.
   TimelineWindow _openingWindow() {
     final range = widget.range;
-    if (range != null) return TimelineWindow(range.start, range.end);
-    final span =
-        _liveSpan < const Duration(hours: 3) ? _liveSpan : const Duration(hours: 3);
+    if (range != null) {
+      var end = range.end;
+      // A degenerate pick (start == end) would make every xOf a division by
+      // zero; give it the minimum span instead of NaN geometry.
+      if (!end.isAfter(range.start.add(TimelineWindow.minSpan))) {
+        end = range.start.add(TimelineWindow.minSpan);
+      }
+      return TimelineWindow(range.start, end);
+    }
+    final span = widget.interval ??
+        (_liveSpan < const Duration(hours: 3)
+            ? _liveSpan
+            : const Duration(hours: 3));
     return TimelineWindow(
-        _now.subtract(span), _now.add(const Duration(minutes: 10)));
+        _now.subtract(span), _now.add(livePad(_liveSpan)));
   }
 
   @override
   void initState() {
     super.initState();
-    _now = widget.clock ?? DateTime.now();
+    _clockN = ValueNotifier(widget.clock ?? DateTime.now());
+    _followLive = widget.range == null;
     _window = ValueNotifier(_openingWindow());
-    // The live edge really is live: an alarm still standing keeps growing.
-    // A repaint only, never a refetch. A fixed clock means a test or a
-    // golden, where a ticking timer would only cause flake.
+    _window.addListener(_onWindowChanged);
+    // The live edge really is live: the window rolls with the clock while it
+    // is docked there, so the axis, the header read-out and a standing
+    // alarm's bar all keep moving. A repaint and a slide only, never a
+    // refetch. A fixed clock means a test or a golden, where a ticking timer
+    // would only cause flake.
     if (widget.clock == null) {
       _tick = Timer.periodic(const Duration(seconds: 1), (_) {
         if (!mounted) return;
-        setState(() => _now = DateTime.now());
+        final now = DateTime.now();
+        if (widget.range == null && _followLive) {
+          final span = _window.value.span;
+          final end = now.add(livePad(_liveSpan));
+          _window.value = TimelineWindow(end.subtract(span), end);
+        }
+        setState(() => _clockN.value = now);
       });
     }
   }
@@ -309,18 +420,35 @@ class _StopTimelineViewState extends State<StopTimelineView> {
     // rather than leaving the old window hanging outside the new bounds --
     // where `clampTo` would drag it to an edge nobody asked for. The
     // selection went with the old period too.
-    if (old.range != widget.range || old.interval != widget.interval) {
-      _now = widget.clock ?? DateTime.now();
+    if (old.range != widget.range ||
+        old.interval != widget.interval ||
+        old.config.periodHours != widget.config.periodHours) {
+      _clockN.value = widget.clock ?? DateTime.now();
+      _followLive = widget.range == null;
       _window.value = _openingWindow();
-      _selected = null;
+      _selectedLaneKey = null;
+      _selectedStart = null;
       _selectedLabel = null;
     }
+  }
+
+  /// One rebuild per frame however many times the window moved, so labels
+  /// and statistics track a pan instead of freezing until the next tick.
+  void _onWindowChanged() {
+    if (_windowRebuildQueued) return;
+    _windowRebuildQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _windowRebuildQueued = false;
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
     _tick?.cancel();
+    _window.removeListener(_onWindowChanged);
     _window.dispose();
+    _clockN.dispose();
     super.dispose();
   }
 
@@ -388,11 +516,23 @@ class _StopTimelineViewState extends State<StopTimelineView> {
   }
 
   void _pan(double dx, double width) {
-    _window.value = _window.value.panBy(dx, width).clampTo(_period);
+    _moveWindow(_window.value.panBy(dx, width));
   }
 
   void _zoom(double factor, double anchor) {
-    _window.value = _window.value.zoomBy(factor, anchor).clampTo(_period);
+    _moveWindow(_window.value.zoomBy(factor, anchor));
+  }
+
+  /// Every operator-driven window move lands here, so undocking from the
+  /// live edge cannot be forgotten by one of the gestures: looking into the
+  /// past stops the clock from dragging the view along, and pushing back up
+  /// against the right edge re-docks it.
+  void _moveWindow(TimelineWindow window) {
+    final clamped = window.clampTo(_period);
+    _window.value = clamped;
+    if (widget.range == null) {
+      _followLive = !clamped.end.isBefore(_period.end);
+    }
   }
 
   Map<AlarmLevel, Color> _levelColors(BuildContext context) => {
@@ -404,6 +544,7 @@ class _StopTimelineViewState extends State<StopTimelineView> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final lanes = _visibleLanes();
+    final selected = _resolveSelection(lanes);
     return LayoutBuilder(builder: (context, constraints) {
       final compact = constraints.maxHeight < 260;
       return Container(
@@ -421,10 +562,10 @@ class _StopTimelineViewState extends State<StopTimelineView> {
               Expanded(child: _table(context)),
             ] else ...[
               _axis(context),
-              Expanded(child: _lanes(context, lanes)),
+              Expanded(child: _lanes(context, lanes, selected)),
             ],
             if (!compact) _brush(context),
-            if (!compact && !_showTable) _detail(context),
+            if (!compact && !_showTable) _detail(context, selected),
           ],
         ),
       );
@@ -593,6 +734,17 @@ class _StopTimelineViewState extends State<StopTimelineView> {
         ? '${_dayLabel(window.end)} ${_hhmm(window.end)}'
         : _hhmm(window.end);
     return '${_dayLabel(window.start)} ${_hhmm(window.start)} – $end';
+  }
+
+  /// Over a window inside one day every tick reads as a time. Once the
+  /// window crosses midnight, "00:00" seven times over is seven ways of
+  /// saying nothing — the midnight ticks say which day begins instead.
+  String _tickLabel(TimelineTick tick, TimelineWindow window) {
+    final crossesDay = !_sameDay(window.start, window.end);
+    if (crossesDay && tick.at.hour == 0 && tick.at.minute == 0) {
+      return _dayLabel(tick.at);
+    }
+    return _hhmm(tick.at);
   }
 
   Widget _viewToggle(BuildContext context) {
@@ -903,7 +1055,7 @@ class _StopTimelineViewState extends State<StopTimelineView> {
                       bottom: 3,
                       width: 40,
                       child: Text(
-                        _hhmm(tick.at),
+                        _tickLabel(tick, window),
                         textAlign: TextAlign.center,
                         style: theme.textTheme.labelSmall?.copyWith(
                           fontSize: 10,
@@ -922,7 +1074,8 @@ class _StopTimelineViewState extends State<StopTimelineView> {
     );
   }
 
-  Widget _lanes(BuildContext context, List<_Lane> lanes) {
+  Widget _lanes(
+      BuildContext context, List<_Lane> lanes, AlarmInterval? selected) {
     final theme = Theme.of(context);
     if (lanes.isEmpty) {
       return Center(
@@ -950,7 +1103,7 @@ class _StopTimelineViewState extends State<StopTimelineView> {
       ListView.builder(
         padding: EdgeInsets.zero,
         itemCount: lanes.length,
-        itemBuilder: (context, i) => _laneRow(context, lanes[i]),
+        itemBuilder: (context, i) => _laneRow(context, lanes[i], selected),
       ),
       // One overlay for gridlines, the hatch and the future, rather than
       // eleven elements per row repainted on every pan frame.
@@ -968,7 +1121,10 @@ class _StopTimelineViewState extends State<StopTimelineView> {
               futureColor:
                   theme.colorScheme.surface.withValues(alpha: 0.55),
               nowColor: theme.colorScheme.onSurface.withValues(alpha: 0.5),
-              repaint: _window,
+              // The clock is a repaint source too: the now line has to keep
+              // walking even when the operator has panned into the past and
+              // the window is standing still.
+              repaint: Listenable.merge([_window, _clockN]),
             ),
             child: const SizedBox.expand(),
           ),
@@ -977,10 +1133,14 @@ class _StopTimelineViewState extends State<StopTimelineView> {
     ]);
   }
 
-  Widget _laneRow(BuildContext context, _Lane lane) {
+  Widget _laneRow(BuildContext context, _Lane lane, AlarmInterval? selected) {
     final theme = Theme.of(context);
     final height = lane.isGroup ? _groupRowHeight : _alarmRowHeight;
     final stats = lane.series.statsIn(_window.value.start, _window.value.end);
+    // The selection belongs to one lane; handing it to every painter would
+    // ring a bar in each lane that happens to share the start time.
+    final laneSelected =
+        _keyOf(lane.row) == _selectedLaneKey ? selected : null;
 
     return SizedBox(
       height: height,
@@ -1011,10 +1171,10 @@ class _StopTimelineViewState extends State<StopTimelineView> {
                     now: () => _now,
                     colors: _levelColors(context),
                     isGroup: lane.isGroup,
-                    selectedInterval: _selected,
+                    selectedInterval: laneSelected,
                     selectionColor: theme.colorScheme.primary,
                     laneColor: _laneColor(theme, isGroup: lane.isGroup),
-                    repaint: _window,
+                    repaint: Listenable.merge([_window, _clockN]),
                   ),
                   child: const SizedBox.expand(),
                 ),
@@ -1145,22 +1305,40 @@ class _StopTimelineViewState extends State<StopTimelineView> {
           final span = Duration(
               microseconds:
                   (_window.value.span.inMicroseconds * 0.3).round());
-          _window.value = TimelineWindow(
-                  centre.subtract(span ~/ 2), centre.add(span ~/ 2))
-              .clampTo(_period);
+          _moveWindow(
+              TimelineWindow(centre.subtract(span ~/ 2), centre.add(span ~/ 2)));
           return;
         }
         setState(() {
-          _selected = run.interval;
+          _selectedLaneKey = _keyOf(lane.row);
+          _selectedStart = run.interval?.start;
           _selectedLabel = lane.label;
         });
         return;
       }
     }
     setState(() {
-      _selected = null;
+      _selectedLaneKey = null;
+      _selectedStart = null;
       _selectedLabel = null;
     });
+  }
+
+  /// The interval the stored selection coordinates point at in [lanes] —
+  /// resolved fresh each build, so it is always an object out of the very
+  /// series the painters are drawing, and simply disappears when the data
+  /// no longer contains it.
+  AlarmInterval? _resolveSelection(List<_Lane> lanes) {
+    final start = _selectedStart;
+    if (_selectedLaneKey == null || start == null) return null;
+    for (final lane in lanes) {
+      if (_keyOf(lane.row) != _selectedLaneKey) continue;
+      for (final iv in lane.series.intervals) {
+        if (iv.start == start) return iv;
+      }
+      return null;
+    }
+    return null;
   }
 
   /// What day the overview strip covers — a range now that it need not end
@@ -1213,7 +1391,7 @@ class _StopTimelineViewState extends State<StopTimelineView> {
                   windowColor: theme.colorScheme.primary,
                   shadeColor:
                       theme.colorScheme.surface.withValues(alpha: 0.55),
-                  repaint: _window,
+                  repaint: Listenable.merge([_window, _clockN]),
                 ),
                 child: const SizedBox.expand(),
               ),
@@ -1227,14 +1405,11 @@ class _StopTimelineViewState extends State<StopTimelineView> {
   void _centreOn(double x, double width) {
     final t = _period.timeAt(x, width);
     final span = _window.value.span;
-    _window.value =
-        TimelineWindow(t.subtract(span ~/ 2), t.add(span ~/ 2))
-            .clampTo(_period);
+    _moveWindow(TimelineWindow(t.subtract(span ~/ 2), t.add(span ~/ 2)));
   }
 
-  Widget _detail(BuildContext context) {
+  Widget _detail(BuildContext context, AlarmInterval? selected) {
     final theme = Theme.of(context);
-    final selected = _selected;
     return Container(
       height: 34,
       padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -1261,10 +1436,10 @@ class _StopTimelineViewState extends State<StopTimelineView> {
               Expanded(
                 child: Text(
                   selected.isOpen
-                      ? 'Since ${_hhmmss(selected.start)} · still standing · '
+                      ? 'Since ${_stamp(selected.start)} · still standing · '
                           '${_durShort(selected.lengthAt(_now))}'
-                      : '${_hhmmss(selected.start)} – '
-                          '${_hhmmss(selected.end!)} · '
+                      : '${_stamp(selected.start)} – '
+                          '${_stamp(selected.end!)} · '
                           '${_durShort(selected.lengthAt(_now))}',
                   style: theme.textTheme.labelSmall?.copyWith(
                       fontFeatures: const [FontFeature.tabularFigures()]),
@@ -1273,6 +1448,12 @@ class _StopTimelineViewState extends State<StopTimelineView> {
             ]),
     );
   }
+
+  /// A timestamp for the detail row, with the day spelled out whenever
+  /// "today" would be a guess — an alarm standing since yesterday saying
+  /// only "Since 14:32:10" reads as ten minutes ago.
+  String _stamp(DateTime t) =>
+      _sameDay(t, _now) ? _hhmmss(t) : '${_dayLabel(t)} ${_hhmmss(t)}';
 }
 
 /// The lane ground. Derived from the surface rather than taken from a
@@ -1313,5 +1494,8 @@ const _intervalPresets = <(String, Duration)>[
 String _durShort(Duration d) {
   if (d.inSeconds < 60) return '${d.inSeconds}s';
   if (d.inMinutes < 60) return '${d.inMinutes}m';
-  return '${d.inHours}h ${_two(d.inMinutes % 60)}m';
+  // Two days is where "h" stops being how anyone thinks about it: a week-long
+  // total reading "170h 23m" is a sum, not a duration.
+  if (d.inHours < 48) return '${d.inHours}h ${_two(d.inMinutes % 60)}m';
+  return '${d.inDays}d ${d.inHours % 24}h';
 }

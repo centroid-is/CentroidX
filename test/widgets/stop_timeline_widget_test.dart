@@ -69,6 +69,7 @@ Future<void> pumpTimeline(
   WidgetTester tester, {
   StopTimelineSpec? config,
   List<AlarmConfig>? configs,
+  StopIntervalSource? intervals,
   Size size = const Size(900, 420),
   DateTimeRange? range,
   Duration? interval,
@@ -84,7 +85,7 @@ Future<void> pumpTimeline(
           child: StopTimelineView(
             config: config ?? StopTimelineSpec(),
             tree: AlarmTree.fromConfigs(configs ?? alarms),
-            source: source(),
+            source: intervals ?? source(),
             range: range,
             interval: interval,
             onRangeChanged: onRangeChanged,
@@ -387,9 +388,19 @@ void main() {
     testWidgets('a runtime interval overrides the configured period',
         (tester) async {
       await pumpTimeline(tester, interval: const Duration(hours: 1));
-      expect(find.text('13:22 – 14:32'), findsOneWidget);
+      // The whole picked hour, plus the proportional live pad (1h / 20 = 3m).
+      expect(find.text('13:22 – 14:25'), findsOneWidget);
       // The strip covers the interval, so it is still today.
       expect(find.text('29/08'), findsOneWidget);
+    });
+
+    testWidgets('a picked interval opens showing the whole span',
+        (tester) async {
+      // "Last 8 hours" answered with the same three-hour window as before
+      // looked like a dead control; the pick is the ask. The live pad is
+      // 8h / 20 = 24m, capped at ten minutes.
+      await pumpTimeline(tester, interval: const Duration(hours: 8));
+      expect(find.text('06:22 – 14:32'), findsOneWidget);
     });
 
     testWidgets('picking an interval reports the span', (tester) async {
@@ -468,6 +479,46 @@ void main() {
       );
       expect(find.text('27/08 06:00 – 18:00'), findsOneWidget);
       expect(find.text('11:22 – 14:32'), findsNothing);
+    });
+  });
+
+  group('an alarm standing longer than the window', () {
+    final sinceYesterday = StopIntervalSource(
+      closed: const [],
+      open: [
+        StopActivation(
+          alarmUid: 'seal-temperature-out-of-band',
+          interval: AlarmInterval(
+              start: now.subtract(const Duration(hours: 26)),
+              end: null,
+              level: AlarmLevel.error),
+        ),
+      ],
+    );
+
+    testWidgets('the detail row says which day it started', (tester) async {
+      await pumpTimeline(tester, intervals: sinceYesterday);
+
+      // The bar fills the whole visible window; tap it anywhere right of the
+      // label column, on the collapsed Line 3 group lane.
+      final label =
+          tester.getRect(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.tapAt(Offset(label.right + 120, label.center.dy));
+      await tester.pumpAndSettle();
+
+      // Started 28/08 12:22 — "Since 12:22:10" alone would read as today.
+      expect(find.textContaining('Since 28/08 12:22:00'), findsOneWidget);
+      expect(find.textContaining('still standing'), findsOneWidget);
+      expect(find.textContaining('26h 00m'), findsOneWidget,
+          reason: 'hour precision holds until two days; beyond that '
+              '_durShort switches to days');
+    });
+
+    testWidgets('the lane statistic clamps to the window', (tester) async {
+      await pumpTimeline(tester, intervals: sinceYesterday);
+      // Opening window is the last 3h (+pad): in-window standing time is 3h,
+      // not the alarm\'s 26h lifetime.
+      expect(find.textContaining('now · 3h 00m · 1×'), findsOneWidget);
     });
   });
 }
