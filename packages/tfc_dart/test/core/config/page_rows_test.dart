@@ -434,11 +434,44 @@ void main() {
           contains(startsWith('package:open62541/')));
       expect(
           walk.violations.any((v) =>
-              v.trail.any((f) => f.endsWith('core/state_man.dart')) &&
-              v.trail.first.endsWith('key_mapping_codec.dart')),
+              v.reachedThrough('core/state_man.dart') &&
+              v.startedAt('key_mapping_codec.dart')),
           isTrue,
           reason: 'the violation has to be reported with the chain that '
               'reaches it, or nobody can act on it. ${walk.report}');
+    });
+
+    test('the chain matches on a Windows trail, from a POSIX machine', () {
+      // The bug this pins cannot be reproduced on macOS or Linux, so the
+      // Windows shape is constructed instead of discovered. `tfc-dart-test
+      // (windows-latest)` failed the test above with `Expected: true / Actual:
+      // <false>` while its own failure message printed the correct chain —
+      // the walk had found the violation and the assertion could not see it,
+      // because the trail holds native separators and the suffix is written
+      // with `/`.
+      //
+      // A backslash trail must match exactly as a forward-slash one does. The
+      // negative half is here too: a suffix that is genuinely not on the chain
+      // must still not match, or this would pass by matching everything.
+      final windows = _Violation('package:open62541/open62541.dart', [
+        r'C:\src\packages\tfc_dart\lib\core\config\key_mapping_codec.dart',
+        r'C:\src\packages\tfc_dart\lib\core\state_man.dart',
+      ]);
+
+      expect(windows.reachedThrough('core/state_man.dart'), isTrue);
+      expect(windows.startedAt('key_mapping_codec.dart'), isTrue);
+      expect(windows.reachedThrough('core/page_rows.dart'), isFalse,
+          reason: 'normalising separators must not make every suffix match');
+      expect(windows.startedAt('core/state_man.dart'), isFalse,
+          reason: 'startedAt is about the first file, not any file');
+
+      // And the POSIX trail the same assertions were written for still works.
+      final posix = _Violation('package:open62541/open62541.dart', [
+        '/src/packages/tfc_dart/lib/core/config/key_mapping_codec.dart',
+        '/src/packages/tfc_dart/lib/core/state_man.dart',
+      ]);
+      expect(posix.reachedThrough('core/state_man.dart'), isTrue);
+      expect(posix.startedAt('key_mapping_codec.dart'), isTrue);
     });
 
     test('the barrel exports page_rows.dart', () {
@@ -474,12 +507,42 @@ final List<RegExp> _banned = [
 final RegExp _directive =
     RegExp(r"^\s*(?:import|export|part)\s+'([^']+)'", multiLine: true);
 
+/// [path] with whatever separator this platform uses rewritten to `/`.
+///
+/// The walk stores **absolute, native** paths, because it has to open the
+/// files. On Windows a trail entry is therefore
+/// `C:\\...\\lib\\core\\state_man.dart`, and an assertion asking
+/// `endsWith('core/state_man.dart')` is false for a chain that is entirely
+/// correct — a working guard reporting a failure that is really about string
+/// comparison. Every path assertion in this file goes through here so the
+/// next one cannot rediscover that.
+///
+/// A plain replace, and **deliberately not** `p.split(...).join('/')`.
+/// `package:path` resolves its context from the host platform, so on macOS it
+/// does not treat `\` as a separator at all — a helper built on it would be
+/// correct only on the platform that cannot run the test that proves it. This
+/// one behaves identically everywhere, which is what lets the Windows shape be
+/// pinned from a POSIX machine below. The cost is a POSIX filename containing
+/// a literal backslash, which no Dart source path in this repository has.
+String _posix(String path) => path.replaceAll(r'\', '/');
+
 /// One banned import, and the chain of files that reached it.
 class _Violation {
   _Violation(this.uri, this.trail);
 
   final String uri;
+
+  /// Absolute native paths, entry point first. Compare through
+  /// [reachedThrough] and [startedAt] rather than directly.
   final List<String> trail;
+
+  /// Whether any file on the chain ends in [suffix], written with `/`.
+  bool reachedThrough(String suffix) =>
+      trail.any((f) => _posix(f).endsWith(suffix));
+
+  /// Whether the chain begins at a file ending in [suffix], written with `/`.
+  bool startedAt(String suffix) =>
+      trail.isNotEmpty && _posix(trail.first).endsWith(suffix);
 }
 
 /// The result of walking one entry point.

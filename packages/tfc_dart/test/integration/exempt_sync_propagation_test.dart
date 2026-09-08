@@ -278,6 +278,14 @@ void main() {
       await eventually(
           () => heldBy(b, ConfigKind.keyMapping).keys.toList(),
           equals(['a_key']));
+      // **The snapshot lands before the watermark does.** `_pull` applies the
+      // rows and only then advances (`config_sync.dart`, `_apply` then
+      // `_advanceWatermark`, two awaits apart), so `heldBy` going true says
+      // nothing about the watermark yet. Reading it here without settling
+      // first is a timing assumption that holds on a fast runner and not on a
+      // slow one — inserting a 400 ms delay between those two statements
+      // reproduces the Windows failure exactly, and only in this test.
+      await b.syncSettled;
       final watermark = b.watermark;
       expect(watermark, greaterThan(0));
 
@@ -286,6 +294,12 @@ void main() {
           wanted: [imageItem('aaa111', 'a picture')]);
       await eventually(() => heldBy(b, ConfigKind.pageImage).keys.toList(),
           equals(['aaa111']));
+      // Settled on this side too, and for the opposite reason: the assertion
+      // below is that nothing advanced, and a watermark write still in flight
+      // would let it pass while the advance it forbids happened a moment
+      // later. Both halves have to be quiescent for the comparison to mean
+      // what it says.
+      await b.syncSettled;
 
       expect(b.watermark, watermark,
           reason: 'the nudge is not a change-log event and must not be '
