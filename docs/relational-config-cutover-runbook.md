@@ -825,7 +825,7 @@ plant's dump is still ahead of you.
 |---|---|---|
 | App | `flutter test test/` (repo root) | **6592 passed / 3 skipped / 0 failed** |
 | tfc_dart core | `dart test test/core/` (in `packages/tfc_dart`) | **1461 passed / 8 skipped / 0 failed** |
-| MCP server | `dart test` (in `packages/tfc_mcp_server`) | **1365 passed / 1 skipped / 0 failed** |
+| MCP server | `dart test` (in `packages/tfc_mcp_server`) | **1370 passed / 1 skipped / 0 failed** |
 | tfc_dart integration | `dart test test/integration/` (in `packages/tfc_dart`) | **148 passed / 4 skipped / 0 failed** |
 
 Both code-side gates exit 0 and both were watched failing.
@@ -837,6 +837,37 @@ proven by hand — and now plants a violation for all four constructor patterns
 it watches, requiring each to be detected and then to stop being reported.
 
 Zero golden churn: `git status -- '*.png'` was empty after the full app run.
+
+### One open failure at the time of writing — the window must not start on it
+
+**The app suite is not green as this is written: 6588 passed / 3 skipped / 4
+failed.** The figure in the table above was observed at commit `a702f29a`, and
+was 6592 / 3 / 0 then. What changed after it is commit `d2c91ea5`, *"tool
+groups are off until somebody turns them on"* — the ruling that MCP tool
+groups default to disabled rather than enabled. It is the right change and it
+is what section 4's step 8 now documents.
+
+Its side effect has not been resolved. All four failures are in
+`test/mcp/*_e2e_test.dart` — `batch_proposal_e2e_test.dart`,
+`proposal_e2e_test.dart` and `page_asset_proposal_e2e_test.dart` — and all
+four fail the same way:
+
+```
+McpError -32602: Tool 'create_alarm' not found
+```
+
+Those tests stand up an MCP server without naming the `proposals` group, which
+used to be enabled by omission and is now off. The proposal tools are
+therefore never registered. Whether the fix is in the tests or in what the app
+hands down when it spawns a server is not settled here.
+
+**What this means for you.** It is confined to the MCP proposal path — the
+route by which a suggested alarm or page edit reaches the HMI for approval —
+and touches nothing this cutover moves: no configuration store, no migration,
+no `config_item` row, no station boot path. But *"the window starts from a
+known-green tree"* is the reason this section exists, and the tree is not
+green. **Confirm this has been resolved, or consciously accepted, before the
+window.** Do not read the table above and stop there.
 
 The integration run stood its throwaway Postgres up and tore it down cleanly —
 ports 5432 and 15432 were released afterwards, and the unrelated
