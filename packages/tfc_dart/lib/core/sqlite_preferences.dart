@@ -1,8 +1,6 @@
 /// The device-local preference store: one `config_item` row per preference.
 library;
 
-import 'dart:convert';
-
 import 'package:drift/drift.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart' show newActionId;
@@ -10,6 +8,7 @@ import 'package:tfc_access/tfc_access.dart' show newActionId;
 import 'config/config_change.dart';
 import 'config/config_history_policy.dart';
 import 'config/config_item.dart';
+import 'config/preference_payload.dart';
 import 'database_drift.dart';
 import 'preferences.dart';
 
@@ -118,14 +117,16 @@ class SqlitePreferences implements PreferencesApi {
   /// adopted.
   final ConfigScope scope;
 
-  /// The wire strings for the five types [PreferencesApi] carries. Permanent:
-  /// they are stored, and `Preferences.loadFromPostgres` already switches on
-  /// exactly these.
-  static const String _boolType = 'bool';
-  static const String _intType = 'int';
-  static const String _doubleType = 'double';
-  static const String _stringType = 'String';
-  static const String _stringListType = 'List<String>';
+  /// The wire strings for the five types [PreferencesApi] carries.
+  ///
+  /// Pointers at `config/preference_payload.dart`, which owns them, because
+  /// the shared store writes the same bytes into the same column and two
+  /// definitions would be two answers to what is on disk.
+  static const String _boolType = kPrefBoolType;
+  static const String _intType = kPrefIntType;
+  static const String _doubleType = kPrefDoubleType;
+  static const String _stringType = kPrefStringType;
+  static const String _stringListType = kPrefStringListType;
 
   /// The hostname change rows are stamped with. A store at [ConfigScope.shared]
   /// has no station to name; Phase 1 never constructs one.
@@ -335,19 +336,17 @@ class SqlitePreferences implements PreferencesApi {
   /// The type tag and the value to store for [value], or null when
   /// [PreferencesApi] cannot carry its type.
   static ({String type, Object value})? _tag(Object? value) {
-    if (value is bool) return (type: _boolType, value: value);
-    if (value is int) return (type: _intType, value: value);
-    if (value is double) return (type: _doubleType, value: value);
-    if (value is String) return (type: _stringType, value: value);
-    if (value is List && value.every((e) => e is String)) {
+    final type = preferenceTypeOf(value);
+    if (type == null) return null;
+    if (value is List) {
       // Cast now, so the payload is a list of strings whatever the source's
       // static type was.
       return (
-        type: _stringListType,
+        type: type,
         value: value.cast<String>().toList(growable: false),
       );
     }
-    return null;
+    return (type: type, value: value!);
   }
 
   // ---------------------------------------------------------------------
@@ -542,41 +541,8 @@ class SqlitePreferences implements PreferencesApi {
   /// *does* know but the caller did not ask for is a different matter: the cast
   /// in the getter throws a `TypeError`, which is the contract
   /// `InMemoryPreferences`' `as bool?` already has.
-  static Object? _decode(String payload) {
-    final Object? decoded;
-    try {
-      decoded = jsonDecode(payload);
-    } on FormatException {
-      return null;
-    }
-    // A bare scalar is not a legal payload for any kind: `ConfigItem.decode()`
-    // casts to `Map<String, dynamic>`.
-    if (decoded is! Map) return null;
-    final Object? value = decoded['value'];
-    try {
-      switch (decoded['type']) {
-        case _boolType:
-          return value! as bool;
-        case _intType:
-          return value! as int;
-        case _doubleType:
-          // `toDouble()` and not a cast: a whole-numbered double written by
-          // something other than this store may have been encoded as `7`.
-          return (value! as num).toDouble();
-        case _stringType:
-          return value! as String;
-        case _stringListType:
-          // `.toList()` forces the element cast now, so a list holding a
-          // non-string fails here as a corrupt row rather than later, at some
-          // unrelated call site.
-          return (value! as List).cast<String>().toList(growable: false);
-        default:
-          return null;
-      }
-    } on TypeError {
-      return null;
-    }
-  }
+  static Object? _decode(String payload) =>
+      decodePreferencePayload(payload);
 
   /// Whether [id] names one of the store's own rows rather than a preference.
   ///
