@@ -114,8 +114,8 @@ void main() {
 
     // A certificate problem is not silence. Sending the operator to the cable
     // here is the wrong-end failure `_refusalReason`'s own doc exists to
-    // prevent — this end is the CA root file.
-    test('a refused certificate sends the operator to the CA root, not the wire',
+    // prevent — this end is the pinned plant CA.
+    test('a refused certificate sends the operator to the pinned CA, not the wire',
         () {
       final report = describeGatewayLink(
         state: LinkState.down,
@@ -125,7 +125,10 @@ void main() {
       );
       expect(report.kind, GatewayLinkKind.untrustedCertificate);
       expect(report.terminal, isFalse);
-      expect(report.detail, contains('CA root'));
+      expect(report.detail, contains('plant CA pinned'),
+          reason: 'the one-field flow removed the CA file and its path field; '
+              'a sentence still naming "the CA root file configured above" '
+              'would send the operator to a field that no longer exists');
       expect(report.raw, startsWith(GatewayLinkReasons.certificateNotTrusted));
     });
 
@@ -393,8 +396,8 @@ void main() {
       expect(report.raw, tls);
       // Not vacuous: it still tells the operator where to go, it just cannot
       // point at one filename.
-      expect(report.detail, contains('CA root file'));
-      expect(report.detail, contains('credential file'));
+      expect(report.detail, contains('gateway address'));
+      expect(report.detail, contains('pinned plant CA'));
     });
 
     test('an empty path is the same as no path, not a blank filename', () {
@@ -404,7 +407,7 @@ void main() {
         url: kByAddress,
         failure: const GatewayLinkBuildFailure(raw: 'boom', path: ''),
       );
-      expect(report.detail, contains('CA root file'));
+      expect(report.detail, contains('pinned plant CA'));
     });
 
     test('a URL that will not parse renders as nothing rather than as a '
