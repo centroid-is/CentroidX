@@ -56,6 +56,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tfc_dart/core/config/config_history_policy.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_undo.dart';
 
 import '../core/audit_trail_grouping.dart';
 import '../core/config_change_store.dart';
@@ -68,6 +69,7 @@ import '../widgets/audit_trail_filters.dart'
         auditRangeLabel;
 import '../widgets/base_scaffold.dart';
 import '../widgets/config_change_row.dart';
+import '../widgets/config_undo_dialogs.dart';
 import '../widgets/fuzzy_search_bar.dart';
 
 // ---------------------------------------------------------------------------
@@ -119,6 +121,31 @@ const String kConfigHistoryPrefixHint = 'Search entity ids, e.g. /roe';
 
 /// The tooltip on the refresh control.
 const String kConfigHistoryRefreshTooltip = 'Refresh';
+
+/// The control that puts one action back.
+const String kConfigHistoryUndoLabel = 'Undo';
+
+/// The tooltip on it — what it will do, in the write's terms.
+const String kConfigHistoryUndoTooltip =
+    'Write this action’s changes back as they were';
+
+/// Said after an undo lands.
+///
+/// Names the second half deliberately: an operator who believes an undo erased
+/// the original action would be surprised by the history, and the confirmation
+/// dialog has already promised this sentence.
+const String kConfigHistoryUndoneNote =
+    'Undone. The restore is in the history as its own action.';
+
+/// The action's rows are not in the log.
+///
+/// Distinct from every other refusal, and it is worth its own sentence: the
+/// change rows an undo inverts are gone (or were never written, which is what a
+/// history-exempt kind does), so there is nothing to name as blocked. Telling
+/// an operator "nothing moved" would be a claim this station cannot support.
+const String kConfigHistoryUndoNothingToDoNote =
+    'This action has no change rows in the log, so there is nothing to put '
+    'back.';
 
 /// The kinds that write no `config_change` row at all, said out loud.
 ///
@@ -236,6 +263,36 @@ const Key kConfigHistoryLoadMoreKey =
 
 /// The one-line summary above the list.
 const Key kConfigHistorySummaryKey = ValueKey<String>('config-history-summary');
+
+/// One action's Undo control.
+///
+/// Keyed by action id rather than by index: the list re-sorts and re-pages, and
+/// a test that tapped "the undo button in row 2" would be tapping whatever
+/// landed there.
+Key configHistoryUndoKey(String actionId) =>
+    ValueKey<String>('config-history-undo-$actionId');
+
+/// Whether this action can be offered an Undo at all.
+///
+/// Two conditions, both about what `planUndo` could possibly do with it:
+///
+///  * **it has change rows.** An action with none is either an audit-only
+///    action or one that touched history-exempt entities only, and in both
+///    cases the log holds nothing to invert. Offering a button that can only
+///    ever answer "there is nothing to put back" would be worse than not
+///    offering one.
+///  * **every row is shared-scope.** C-13: station-scoped rows live in each
+///    station's own SQLite and this view reads Postgres, so a station row
+///    cannot appear here — and `planUndo` refuses one by scope regardless. The
+///    check is kept anyway rather than left to the refusal, because an Undo
+///    button that always refuses is a worse surface than none.
+///
+/// Judged on the **loaded** rows. An action whose siblings were filtered out
+/// still offers Undo, and `planUndo` reads the action whole, so the write is
+/// never the partial thing this list is showing.
+bool configActionIsUndoable(HistoryAction action) =>
+    action.changes.isNotEmpty &&
+    action.changes.every((record) => record.change.scope.isShared);
 
 // ---------------------------------------------------------------------------
 // The page
@@ -537,12 +594,131 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
   /// whose height changes when it opens, and a fixed extent would clip it.
   /// `ListView.builder` is what keeps a 500-row result from building every tile
   /// in one frame.
+  /// The virtualised list, each action beside its Undo.
+  ///
+  /// The control is **composed next to** [ConfigActionTile] rather than added
+  /// inside it: the tile is the history's read-only rendering and is shared
+  /// with the goldens 04-06 already baselined, and threading an action callback
+  /// through it would put a write concern into the widget that draws a row.
+  ///
+  /// `CrossAxisAlignment.start` pins the button to the header line, so it does
+  /// not drift to the vertical middle of a tile the operator has expanded.
   Widget _list(List<HistoryAction> actions) => ListView.builder(
         key: kConfigHistoryListKey,
         itemCount: actions.length,
-        itemBuilder: (context, index) =>
-            ConfigActionTile(action: actions[index]),
+        itemBuilder: (context, index) {
+          final action = actions[index];
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: ConfigActionTile(action: action)),
+              if (configActionIsUndoable(action))
+                Padding(
+                  padding: const EdgeInsets.only(top: 6, right: 8),
+                  child: Tooltip(
+                    message: kConfigHistoryUndoTooltip,
+                    child: TextButton.icon(
+                      key: configHistoryUndoKey(action.actionId),
+                      // Disabled while one is in flight, rather than guarded on
+                      // the way in: a second tap must look refused, not
+                      // ignored.
+                      onPressed:
+                          _undoInFlight == null ? () => _undo(action) : null,
+                      icon: const Icon(Icons.undo, size: 16),
+                      label: const Text(kConfigHistoryUndoLabel),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
       );
+
+  // -------------------------------------------------------------------------
+  // Undo
+  // -------------------------------------------------------------------------
+
+  /// The action currently being undone, or null. One at a time: two undos in
+  /// flight against overlapping entities would have the second refused by the
+  /// compare-and-swap for a reason the operator did not cause.
+  String? _undoInFlight;
+
+  /// Plan it, ask whether this session may, confirm it, write it, show it.
+  ///
+  /// Every branch that stops short says why, and none of them stops silently.
+  /// The gate is checked **before** the confirmation opens — a dialog an
+  /// operator cannot finish is a worse refusal than an immediate one — and the
+  /// real enforcement is inside `executeUndo` regardless (T-04-10a).
+  Future<void> _undo(HistoryAction action) async {
+    final controller = ref.read(configUndoControllerProvider);
+    setState(() => _undoInFlight = action.actionId);
+    try {
+      final plan = await controller.plan(action.actionId);
+      if (!mounted) return;
+
+      if (plan == null) {
+        _note(kConfigHistoryUnavailable);
+        return;
+      }
+      if (plan.isUnknownAction) {
+        _note(kConfigHistoryUndoNothingToDoNote);
+        return;
+      }
+      if (!plan.isReady) {
+        await _showBlocked(plan.blockers);
+        return;
+      }
+      // The standard treatment: the operator gets the app's own denial prompt,
+      // the trail gets a refused row, and nothing is issued to the store.
+      if (!controller.mayUndo(plan)) {
+        await controller.refuse(plan);
+        return;
+      }
+
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (_) => ConfigUndoConfirmDialog(plan: plan),
+      );
+      if (confirmed != true || !mounted) return;
+
+      final outcome = await controller.execute(plan);
+      if (!mounted) return;
+      switch (outcome) {
+        case UndoDone():
+          // No optimistic edit anywhere: the list is re-read from the store,
+          // so what is on screen afterwards is what the database holds.
+          _refresh();
+          _note(kConfigHistoryUndoneNote);
+        case UndoBlocked(:final blockers):
+          await _showBlocked(blockers);
+        case UndoDenied():
+          // Already prompted and already recorded by the controller. A second
+          // message here would be the same refusal told twice.
+          break;
+        case UndoUnavailable(:final message):
+          _note(message);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _undoInFlight = null);
+      } else {
+        _undoInFlight = null;
+      }
+    }
+  }
+
+  Future<void> _showBlocked(List<UndoBlocker> blockers) => showDialog<void>(
+        context: context,
+        builder: (_) => ConfigUndoBlockedDialog(blockers: blockers),
+      );
+
+  /// One line to the operator. A snackbar and not a dialog: none of these needs
+  /// an answer.
+  void _note(String message) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger.showSnackBar(SnackBar(content: Text(message)));
+  }
 
   /// Under the list, not over it: the cap is a fact about the bottom of the
   /// result, and the operator reads it when they get there.

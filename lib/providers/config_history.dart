@@ -35,11 +35,21 @@ library;
 
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:tfc_access/tfc_access.dart';
+import 'package:tfc_dart/core/access/guarded_config_store.dart'
+    show GuardedConfigStore, auditSummaryOf;
+import 'package:tfc_dart/core/config/config_store.dart' show ConfigWriteResult;
+import 'package:tfc_dart/core/config/config_store_errors.dart';
+import 'package:tfc_dart/core/config/config_undo.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 
 import '../core/audit_trail_grouping.dart';
 import '../core/config_change_store.dart';
+import 'access.dart' show auditSinkProvider, stationNameProvider;
+import 'access_policy.dart'
+    show accessPolicyProvider, reportAccessDenial, sessionInForce;
 import 'audit_trail.dart';
+import 'config_store.dart' show configStoreProvider;
 import 'database.dart';
 
 part 'config_history.g.dart';
@@ -214,3 +224,267 @@ class ConfigHistoryFilterState extends _$ConfigHistoryFilterState {
 
   void clear() => state = state.cleared();
 }
+
+// ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+
+/// The `who` of a row written with nobody signed in.
+///
+/// The literal rather than an import: `GuardedConfigStore`'s own constant is
+/// private, and this row has to carry the same word or one operator's actions
+/// would read as two people's.
+const String _anonymousWho = 'anonymous';
+
+/// A hand-made write. The `origin` every operator-initiated row carries.
+const String _operatorOrigin = 'operator';
+
+/// What one attempt to undo an action came to.
+///
+/// A sealed union rather than an exception the page catches: three of these
+/// four are ordinary outcomes an operator is entitled to see, and only the
+/// fourth involves anything going wrong. Making the page catch
+/// [ConfigConflict] to render a refusal would put the store's exception
+/// vocabulary into a widget.
+sealed class UndoOutcome {
+  const UndoOutcome();
+}
+
+/// The undo was written. [actionId] is the new action, already in the log.
+class UndoDone extends UndoOutcome {
+  const UndoDone({required this.actionId, required this.result});
+
+  /// The undo's own `action_id`, shared with the `audit_entry` row written for
+  /// it — the same relationship a save has.
+  final String actionId;
+
+  /// What the store wrote.
+  final ConfigWriteResult result;
+}
+
+/// The undo was refused, entity by entity.
+///
+/// Reached from both ends of the window: a plan that was never ready, and a
+/// race lost between the confirmation and the write. In the second case the
+/// blockers come from asking [planUndo] again, so the operator gets the same
+/// sentences either way rather than a driver error the second time.
+class UndoBlocked extends UndoOutcome {
+  const UndoBlocked(this.blockers);
+
+  final List<UndoBlocker> blockers;
+}
+
+/// The session may not. Already reported to [accessDenialsProvider] and
+/// already recorded in the trail.
+class UndoDenied extends UndoOutcome {
+  const UndoDenied(this.denial);
+
+  final AccessDenied denial;
+}
+
+/// The write could not be attempted: no database, the connection died, or the
+/// pool is misconfigured. [message] is the store's own sentence, which is
+/// written to be shown to an operator.
+class UndoUnavailable extends UndoOutcome {
+  const UndoUnavailable(this.message);
+
+  final String message;
+}
+
+/// Undo, from the page's point of view: plan it, ask whether this session may,
+/// do it, and write the audit parent.
+///
+/// ## Why a plain [Provider] and not `@riverpod`
+///
+/// Adding a generated provider means running `build_runner` over `lib/`, which
+/// rewrites every `.g.dart` in the app — including ones another plan is editing
+/// in this worktree. `access_policy.dart` already mixes hand-written providers
+/// beside generated ones for its own reasons; this is the same call made for a
+/// different one.
+///
+/// ## The enforcement is not here
+///
+/// [mayUndo] exists so the page can refuse before it opens a dialog the
+/// operator cannot finish. It is **UX**. The gate that matters is inside
+/// `executeUndo`, which takes the session's groups and throws; this class calls
+/// it that way and would be refused by it even if [mayUndo] were deleted. A
+/// boundary enforced by the only caller remembering to ask stops being a
+/// boundary the moment there are two callers.
+class ConfigUndoController {
+  const ConfigUndoController(this._ref);
+
+  final Ref _ref;
+
+  /// What undoing [actionId] would do, or null when this station has no
+  /// database — the same null the rest of this file uses for that.
+  Future<UndoPlan?> plan(String actionId) async {
+    final db = await _ref.read(databaseProvider.future);
+    if (db == null) return null;
+    return planUndo(db.db, actionId);
+  }
+
+  /// The permission [plan] needs, and the key it is checked under.
+  ({AccessGroup group, String itemKey}) gate(UndoPlan plan) =>
+      undoGate(_ref.read(accessPolicyProvider), plan);
+
+  /// Whether the session in force may execute [plan]. Advisory — see the class
+  /// doc.
+  bool mayUndo(UndoPlan plan) => sessionInForce(_ref).can(gate(plan).group);
+
+  /// Refuse [plan] at the tap: prompt the operator, and record the refusal.
+  ///
+  /// Called instead of [execute], never before it. A refusal that leaves no row
+  /// is the repudiation the trail exists to prevent, so the row is written here
+  /// exactly as `GuardedConfigStore` writes one on its own deny path — and
+  /// nothing is issued to the store, which is what `writeTag`'s tap-time check
+  /// established for the plant side.
+  Future<AccessDenied> refuse(UndoPlan plan) async {
+    final gate = this.gate(plan);
+    final denial = AccessDenied(gate.itemKey, gate.group);
+    await _recordParent(
+      plan: plan,
+      gate: gate,
+      actionId: newActionId(),
+      allowed: false,
+      newValue: null,
+    );
+    reportAccessDenial(_ref, denial);
+    return denial;
+  }
+
+  /// Write [plan]'s inverse, and the `audit_entry` parent over it.
+  ///
+  /// The audit row is this layer's job and carries the **same** `actionId` as
+  /// the `config_change` rows beneath it, exactly as a save does — the store
+  /// has no session to ask and writes no audit row of its own. It is written
+  /// after the store returns, which is `GuardedConfigStore`'s ordering and for
+  /// its reason: this write can be refused outright, and a row written first
+  /// would claim an undo that never happened.
+  Future<UndoOutcome> execute(UndoPlan plan) async {
+    final policy = _ref.read(accessPolicyProvider);
+    final session = sessionInForce(_ref);
+    final gate = undoGate(policy, plan);
+    final actionId = newActionId();
+
+    final GuardedConfigStore guarded;
+    try {
+      guarded = await _ref.read(configStoreProvider.future);
+    } on Object catch (e) {
+      return UndoUnavailable('$e');
+    }
+
+    try {
+      final result = await executeUndo(
+        plan,
+        store: guarded.inner,
+        policy: policy,
+        sessionGroups: session.groups,
+        actionId: actionId,
+        who: session.user?.username ?? _anonymousWho,
+        roleName: session.roleName,
+      );
+      await _recordParent(
+        plan: plan,
+        gate: gate,
+        actionId: actionId,
+        allowed: true,
+        // The guard's own summariser: key names, never values, capped. An undo
+        // is a save and its parent row has to be the same size as one.
+        newValue: auditSummaryOf(result.diff),
+      );
+      return UndoDone(actionId: actionId, result: result);
+    } on AccessDenied catch (denial) {
+      // Reachable even after [mayUndo] answered true: a session can expire
+      // between the confirmation and the write. The gate inside `executeUndo`
+      // is what catches it, which is the whole reason it is in there.
+      await _recordParent(
+        plan: plan,
+        gate: gate,
+        actionId: actionId,
+        allowed: false,
+        newValue: null,
+      );
+      reportAccessDenial(_ref, denial);
+      return UndoDenied(denial);
+    } on ConfigConflict catch (conflict) {
+      // The race the compare-and-swap caught. Nothing was committed, so this
+      // is a refusal and not a failure — and it is answered by asking the same
+      // question again, which now sees the newer change row and can say who
+      // wrote it.
+      return UndoBlocked(await _blockersAfterRace(plan, conflict));
+    } on ConfigStoreOfflineException catch (e) {
+      return UndoUnavailable('$e');
+    } on ConfigStoreUnsafePoolException catch (e) {
+      return UndoUnavailable('$e');
+    }
+  }
+
+  /// Why the write lost, in the same words a refused plan uses.
+  ///
+  /// Falls back to one blocker built from the conflict when the re-plan comes
+  /// back ready — which happens when the row that moved was put back in the
+  /// meantime. Naming the entity with no author is honest; claiming the undo
+  /// is fine when it has just failed would not be.
+  Future<List<UndoBlocker>> _blockersAfterRace(
+      UndoPlan plan, ConfigConflict conflict) async {
+    final replanned = await this.plan(plan.originalActionId);
+    if (replanned != null && replanned.blockers.isNotEmpty) {
+      return replanned.blockers;
+    }
+    final step = plan.steps
+        .where((step) => step.entityId == conflict.key)
+        .firstOrNull;
+    return <UndoBlocker>[
+      UndoBlocker(
+        reason: UndoBlockReason.entityMoved,
+        kindName: step?.kind.wireName ?? '',
+        entityId: conflict.key,
+        scopeName: step?.scope.wireName ?? '',
+        summary: '$conflict',
+      ),
+    ];
+  }
+
+  /// One `audit_entry` over the undo, permitted or refused.
+  ///
+  /// Never lets the sink's failure become the caller's: on the permitted path
+  /// the write has already committed, so an escaping exception would report a
+  /// successful undo as failed and have the operator do it twice.
+  Future<void> _recordParent({
+    required UndoPlan plan,
+    required ({AccessGroup group, String itemKey}) gate,
+    required String actionId,
+    required bool allowed,
+    required String? newValue,
+  }) async {
+    final session = sessionInForce(_ref);
+    final row = AuditRecord(
+      at: DateTime.now(),
+      who: session.user?.username ?? _anonymousWho,
+      station: _ref.read(stationNameProvider),
+      roleName: session.roleName,
+      surface: kConfigUndoSurface,
+      itemKey: gate.itemKey,
+      oldValue: null,
+      newValue: newValue,
+      groupRequired: gate.group.name,
+      allowed: allowed,
+      origin: _operatorOrigin,
+      actionId: actionId,
+      reason: undoReason(plan.originalActionId),
+    );
+    try {
+      final sink = await _ref.read(auditSinkProvider.future);
+      await sink.record(row);
+    } on Object catch (_) {
+      // The same swallow `GuardedConfigStore._record` performs, for the same
+      // reason. The undo either happened or did not; the trail's failure must
+      // not change which the operator is told.
+    }
+  }
+}
+
+/// Undo, as one object the page holds.
+final configUndoControllerProvider = Provider<ConfigUndoController>(
+  ConfigUndoController.new,
+);
