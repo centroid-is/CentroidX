@@ -157,6 +157,11 @@ Widget buildTestableKeyRepository({
             stateManConfig: stateManConfig,
           )),
       databaseProvider.overrideWith((ref) async => null),
+      // 17-12: the access store providers now consult the transport row
+      // (`gatewayConfigProvider` → `localPreferencesProvider`) before choosing
+      // their route. An in-memory device-local store reads as direct mode and
+      // keeps these page tests from reaching an unmocked SharedPreferences.
+      localPreferencesProvider.overrideWithValue(InMemoryPreferences()),
       // Override stateManProvider to avoid real network connections.
       // With no [stateMan] given it throws, which the page treats as
       // "nothing to probe".
