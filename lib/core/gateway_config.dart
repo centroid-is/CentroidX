@@ -319,12 +319,17 @@ final class GatewayConfig {
   /// boot at least fails with the notBuilt report naming the file, where a
   /// silently dropped pin fails as a fake impostor alarm), and material
   /// already pinned is returned untouched.
-  Future<GatewayConfig> migrateLegacyTrust() async {
+  ///
+  /// Synchronous, and that is load-bearing twice over: the one caller is a
+  /// Save handler inside a widget, where a real-IO future never completes
+  /// under the test binding's fake async; and a one-file read at a button
+  /// press is not the kind of latency an async signature buys anything for.
+  GatewayConfig migrateLegacyTrust() {
     final path = caCertPath;
     if (caPem != null || path == null) return this;
     final String pem;
     try {
-      pem = await File(path).readAsString();
+      pem = File(path).readAsStringSync();
     } on FileSystemException {
       return this;
     }

@@ -8,6 +8,7 @@ library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/gateway_config.dart';
+import '../core/gateway_trust.dart';
 import 'preferences.dart';
 
 /// Where this panel gets its values from.
@@ -25,3 +26,15 @@ import 'preferences.dart';
 final gatewayConfigProvider = FutureProvider<GatewayConfig>(
   (ref) async => readGatewayConfig(ref.watch(localPreferencesProvider)),
 );
+
+/// How the Server Config page fetches a gateway's identity for the approval
+/// ceremony.
+///
+/// Production is `fetchGatewayTrust` and nothing else; the provider exists so
+/// a widget test can hand the card a fetcher that answers, fails or must not
+/// be called at all, without a socket anywhere in the test. The seam carries
+/// no policy: whatever it returns still goes through the same dialog, and
+/// only an approval pins anything.
+final gatewayTrustFetcherProvider =
+    Provider<Future<FetchedGatewayTrust> Function(Uri)>(
+        (ref) => fetchGatewayTrust);

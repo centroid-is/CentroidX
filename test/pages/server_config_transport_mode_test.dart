@@ -27,12 +27,13 @@ const String _approvedPem = '-----BEGIN CERTIFICATE-----\n'
     'dGhlIHBsYW50IENBLCBhcyBhcHByb3ZlZCBieSB0aGUgb3BlcmF0b3I=\n'
     '-----END CERTIFICATE-----\n';
 
-/// The fingerprint the fake fetcher claims to have computed. The card and the
-/// dialog must show THIS string — the fetcher owns the computation, and
-/// `test/core/gateway_trust_test.dart` owns proving it is computed locally.
-const String _fingerprint =
-    'BA:78:16:BF:8F:01:CF:EA:41:41:40:DE:5D:AE:22:23:'
-    'B0:03:61:A3:96:17:7A:9C:B4:10:FF:61:F2:00:15:AD';
+/// The fingerprint of [_approvedPem], computed by the app's own function —
+/// self-consistent on purpose. The dialog shows what the fetcher handed it;
+/// the pinned row afterwards *recomputes* from the stored material (a display
+/// that derives from the material cannot lie about it), so a fake whose claim
+/// disagreed with its material would fail the arm for the wrong reason.
+/// Proving the fetcher computes locally is `test/core/gateway_trust_test.dart`'s.
+final String _fingerprint = caFingerprintSha256(_approvedPem);
 
 /// A station already switched to the gateway, as its preferences row.
 Future<PreferencesApi> _gatewayStation({
@@ -433,14 +434,23 @@ void main() {
       // The legacy shape is named while it is still there.
       expect(find.textContaining('Trusting CA file'), findsOneWidget);
 
-      // Any edit, so there is something to save.
+      // Any edit, so there is something to save. By label: on a station
+      // whose row is already gateway other cards on the page render text
+      // fields of their own, so `.first` is not this card's.
       await tester.enterText(
-          find.byType(TextField).first, 'wss://10.50.10.11:9444');
+          find.widgetWithText(TextField, 'Gateway address'),
+          'wss://10.50.10.11:9444');
+      await settle(tester);
+      await tester.ensureVisible(find.text('Save Configuration'));
       await settle(tester);
       await tester.tap(find.text('Save Configuration'));
       await settle(tester);
 
       final saved = await readGatewayConfig(local);
+      expect(saved.url, 'wss://10.50.10.11:9444',
+          reason: 'the edit and the migration ride the same save — a '
+              'migration assertion alone would also pass on a save that '
+              'never ran against a row that already carried material');
       expect(saved.caPem, _approvedPem,
           reason: 'same bytes, new home: the station already dialled under '
               'this file every day, so its contents move without a new '

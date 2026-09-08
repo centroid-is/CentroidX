@@ -220,7 +220,7 @@ void main() {
         url: 'wss://10.50.10.11:9443',
         caCertPath: path,
       );
-      final migrated = await legacy.migrateLegacyTrust();
+      final migrated = legacy.migrateLegacyTrust();
       expect(migrated.caPem, _fakePem,
           reason: 'the material pinned is exactly what the station already '
               'trusted — same bytes, new home, no new trust decision');
@@ -237,7 +237,7 @@ void main() {
         url: 'wss://10.50.10.11:9443',
         caCertPath: '/no/such/file.pem',
       );
-      expect(await legacy.migrateLegacyTrust(), legacy,
+      expect(legacy.migrateLegacyTrust(), legacy,
           reason: 'never trade a working configuration shape for a broken '
               'one silently — a path that fails at boot at least fails with '
               'the notBuilt report naming the file');
@@ -254,7 +254,7 @@ void main() {
         url: 'wss://10.50.10.11:9443',
         caCertPath: path,
       );
-      expect(await legacy.migrateLegacyTrust(), legacy);
+      expect(legacy.migrateLegacyTrust(), legacy);
     });
 
     test('material already pinned is left exactly alone', () async {
@@ -263,7 +263,7 @@ void main() {
         url: 'wss://10.50.10.11:9443',
         caPem: _fakePem,
       );
-      expect(await pinned.migrateLegacyTrust(), same(pinned));
+      expect(pinned.migrateLegacyTrust(), same(pinned));
     });
   });
 
