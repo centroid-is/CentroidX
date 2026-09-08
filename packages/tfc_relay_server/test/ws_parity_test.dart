@@ -103,16 +103,23 @@ final _legs = <_Leg>[
 /// points at the transport rather than at the contract.
 _Leg get _reference => _legs.first;
 
-/// The named access gap per leg — a SET, never a count.
+/// The roster this sweep runs: everything but the access family, by NAME.
 ///
 /// 17-05 merged the 27-check access family into the kit roster (51 -> 78).
-/// The kit's own channel harness serves the four access families, so the
-/// channel leg carries no gap; the socket and WS harnesses serve no access
-/// surface yet, so their gap is `accessChecks` by name. Naming it per leg is
-/// what keeps a 28th unjudged check red — the count-blind defect 13-11 caught.
+/// The kit's own channel harness serves the four access families, but the
+/// socket and WS harnesses do not yet — sweeping the access checks against
+/// them would buy 27 five-second case budgets per transport leg and leak
+/// dispose-time errors into the zone, read by the leak arm as defects on
+/// whatever case runs next. So the swept roster is pinned MINUS the named
+/// set — a set, never a count, which is what keeps a 28th unjudged check
+/// red (the count-blind defect 13-11 caught) — and the arithmetic arm
+/// reconciles `swept + accessChecks.length == allContractChecks.length`.
+/// The channel leg's access surface is judged by the kit's own
+/// `channel_full_contract_test.dart`, not here.
 /// access checks — 17-06/17-08 opt this leg in; 17-14 empties the gap.
-Set<String> _accessGapFor(String leg) =>
-    leg == 'channel' ? const <String>{} : accessChecks.keys.toSet();
+final _sweptRoster = allContractChecks.keys
+    .where((property) => !accessChecks.containsKey(property))
+    .toList();
 
 /// The property `DropsSubscriptions` is built to violate.
 ///
@@ -130,19 +137,24 @@ void main() {
   final wall = Stopwatch()..start();
 
   group('the same registry, run through every leg', () {
-    allContractChecks.forEach((property, check) {
-      test(property, () => _main.runCheck(property, check));
-    });
+    for (final property in _sweptRoster) {
+      test(property, () => _main.runCheck(property, allContractChecks[property]!));
+    }
   });
 
   group('the sweep itself', () {
-    test('every registered check was run through every leg', () {
-      expect(_main.swept, allContractChecks.length,
+    test('every registered check outside the named access gap was run '
+        'through every leg, and the gap reconciles to the roster', () {
+      expect(_main.swept, _sweptRoster.length,
           reason: 'the sweep ran ${_main.swept} of '
-              '${allContractChecks.length} registered checks. The parity claim '
+              '${_sweptRoster.length} registered checks. The parity claim '
               'is about the whole registry, so a check the sweep never reached '
               'is a property whose legs nobody compared — and it would read as '
               'parity rather than as a gap');
+      expect(_main.swept + accessChecks.length, allContractChecks.length,
+          reason: 'swept plus the named access gap must reconcile to the '
+              'whole roster of ${allContractChecks.length}; if it does not, '
+              'a check exists that is neither swept nor accounted for');
     });
 
     test('every declared leg was actually swept', () {
@@ -155,36 +167,28 @@ void main() {
               'like a stronger claim than it is');
     });
 
-    test('the sweep recorded a full pass set on every leg, outside each '
-        'leg\'s named access gap', () {
+    test('the sweep recorded a full pass set on every leg', () {
       for (final leg in _legs) {
         expect(_main.passesOn(leg.name), isNotEmpty,
             reason: 'the ${leg.name} leg passed nothing at all. Three empty '
                 'sets are equal to each other, so a sweep that discovers no '
                 'outcomes reports perfect parity — the exact vacuous pass this '
                 'assertion exists to make impossible');
-        expect(_main.passesOn(leg.name),
-            allContractChecks.keys.toSet().difference(_accessGapFor(leg.name)),
+        expect(_main.passesOn(leg.name), _sweptRoster.toSet(),
             reason: 'the ${leg.name} leg passed '
-                '${_main.passesOn(leg.name).length} of '
-                '${allContractChecks.length} checks, against a roster minus '
-                'its named access gap of ${_accessGapFor(leg.name).length}. '
-                'Every leg is expected to pass everything outside that named '
-                'set — each has a green contract driver of its own — so a '
-                'shortfall here is either a real regression on that transport '
-                'or a check that escaped its deadline under the load of a '
-                'three-leg sweep. Both are worth reading; neither is worth '
-                'lowering this number for');
+                '${_main.passesOn(leg.name).length} of the '
+                '${_sweptRoster.length} swept checks. Every leg is expected '
+                'to pass the whole swept roster — each has a green contract '
+                'driver of its own — so a shortfall here is either a real '
+                'regression on that transport or a check that escaped its '
+                'deadline under the load of a three-leg sweep. Both are worth '
+                'reading; neither is worth lowering this number for');
       }
     });
 
-    test('every leg passes the same set of properties, outside its named '
-        'access gap', () {
+    test('every leg passes the same set of properties', () {
       for (final leg in _legs.skip(1)) {
-        expect(_main.passesOn(leg.name).union(_accessGapFor(leg.name)),
-            _main
-                .passesOn(_reference.name)
-                .union(_accessGapFor(_reference.name)),
+        expect(_main.passesOn(leg.name), _main.passesOn(_reference.name),
             reason: _main.disagreementReport(_reference.name, leg.name));
       }
     });
@@ -199,8 +203,9 @@ void main() {
     test('the parity sweep costs less than its declared budget', () {
       print('the three-leg parity sweep ran in '
           '${wall.elapsed.inMilliseconds} ms '
-          '(${allContractChecks.length} checks x ${_legs.length} legs, budget '
-          '${_budget.inSeconds} s)');
+          '(${_sweptRoster.length} checks x ${_legs.length} legs, budget '
+          '${_budget.inSeconds} s; the ${accessChecks.length} access checks '
+          'are the named unswept gap — 17-06/17-08 opt the legs in)');
       expect(wall.elapsed, lessThan(_budget),
           reason: 'running one registry through ${_legs.length} legs took '
               '${wall.elapsed.inSeconds} s, which is the cost this budget '

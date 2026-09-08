@@ -147,23 +147,42 @@ const _droppedSubscription =
 
 final _main = _Sweep(_legs);
 
+/// The roster this sweep runs: everything but the access family, by NAME.
+///
+/// 17-05 grew `allContractChecks` from 51 to 78 with the 27 access checks.
+/// The gateway leg has no access surface yet, so sweeping them would buy 27
+/// five-second case budgets against RemoteStateMan and 27 dispose-time
+/// StateErrors leaked into the zone — read by the leak arm as defects on
+/// whatever case runs next. The gap is pinned as a set rather than lowered
+/// into a count, and the arithmetic arm below reconciles
+/// `swept + accessChecks.length == allContractChecks.length`.
+/// access checks — 17-06/17-08 opt this leg in; 17-14 empties the gap.
+final _sweptRoster = allContractChecks.keys
+    .where((property) => !accessChecks.containsKey(property))
+    .toList();
+
 void main() {
   final wall = Stopwatch()..start();
 
   group('the same registry, run through both legs', () {
-    for (final property in allContractChecks.keys) {
+    for (final property in _sweptRoster) {
       test(property, () => _main.runCheck(property));
     }
   });
 
   group('the sweep itself', () {
-    test('every registered check was run through both legs', () {
-      expect(_main.swept, allContractChecks.length,
+    test('every registered check outside the named access gap was run '
+        'through both legs, and the gap reconciles to the roster', () {
+      expect(_main.swept, _sweptRoster.length,
           reason: 'the sweep ran ${_main.swept} of '
-              '${allContractChecks.length} registered checks. The parity claim '
+              '${_sweptRoster.length} registered checks. The parity claim '
               'is about the whole registry, so a check the sweep never reached '
               'is a property nobody compared across the two legs — and it '
               'would read here as parity rather than as a gap');
+      expect(_main.swept + accessChecks.length, allContractChecks.length,
+          reason: 'swept plus the named access gap must reconcile to the '
+              'whole roster of ${allContractChecks.length}; if it does not, '
+              'a check exists that is neither swept nor accounted for');
     });
 
     test('both declared legs were actually swept', () {
@@ -185,8 +204,8 @@ void main() {
       }
     });
 
-    test('the reference leg passes the whole registry', () {
-      expect(_main.passesOn(_channel.name), allContractChecks.keys.toSet(),
+    test('the reference leg passes the whole swept roster', () {
+      expect(_main.passesOn(_channel.name), _sweptRoster.toSet(),
           reason: 'the in-memory reference leg did not pass every check, so '
               'the difference measured below is not "what the gateway cannot '
               'do" — it is that minus whatever the reference also failed. A '
@@ -195,15 +214,12 @@ void main() {
               'both are worth reading and neither is worth subtracting');
     });
 
-    test('what the gateway leg does not pass is exactly the named gaps', () {
-      // The access family (17-05, 51 -> 78 on the kit roster) passes on the
-      // channel reference leg — the kit's ChannelStateMan serves it — and not
-      // over the gateway, because RemoteStateMan has no access surface yet.
-      // Pinned as a NAMED SET beside the -32601 gap list, never as a count.
-      // access checks — 17-06/17-08 opt this leg in; 17-14 empties the gap.
+    test('what the gateway leg does not pass is exactly the named gap', () {
+      // The access family is not in this difference because it is not swept
+      // at all — see [_sweptRoster], where it is pinned and reconciled.
       expect(
           _main.passesOn(_channel.name).difference(_main.passesOn(_ws.name)),
-          {...unreachableChecks, ...accessChecks.keys},
+          unreachableChecks.toSet(),
           reason: _main.disagreementReport(_channel.name, _ws.name));
     });
 
@@ -230,8 +246,9 @@ void main() {
 
     test('the parity sweep costs less than its declared budget', () {
       print('the two-leg parity sweep ran in ${wall.elapsed.inMilliseconds} ms '
-          '(${allContractChecks.length} checks x ${_legs.length} legs, budget '
-          '${_budget.inSeconds} s)');
+          '(${_sweptRoster.length} checks x ${_legs.length} legs, budget '
+          '${_budget.inSeconds} s; the ${accessChecks.length} access checks '
+          'are the named unswept gap — 17-06/17-08 opt the gateway leg in)');
       expect(wall.elapsed, lessThan(_budget),
           reason: 'running one registry through ${_legs.length} legs took '
               '${wall.elapsed.inSeconds} s, which is the cost this budget '
