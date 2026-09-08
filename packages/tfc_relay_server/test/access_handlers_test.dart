@@ -250,8 +250,15 @@ const Map<String, Map<String, Object?>> _validParams = {
   AccessMethods.templateList: {},
   AccessMethods.templateBindings: {},
   AccessMethods.templateKeysBoundTo: {'templateName': 'Ops'},
-  AccessMethods.templateCreate: {'name': 'T-wire', 'rules': ''},
-  AccessMethods.templateUpdate: {'name': 'T-wire', 'rules': ''},
+  // 17-14 F-3: the single-DTO members carry the DTO under a `value`/`role`/
+  // `query` envelope key — the shape the channel kit's served side and 17-08's
+  // client both send, and the shape this handler was reconciled to.
+  AccessMethods.templateCreate: {
+    'value': {'name': 'T-wire', 'rules': ''}
+  },
+  AccessMethods.templateUpdate: {
+    'value': {'name': 'T-wire', 'rules': ''}
+  },
   AccessMethods.templateRename: {'from': 'T-wire', 'to': 'T-wire-2'},
   AccessMethods.templateDelete: {'name': 'T-wire'},
   AccessMethods.templateBind: {
@@ -261,8 +268,12 @@ const Map<String, Map<String, Object?>> _validParams = {
   AccessMethods.templateUnbind: {'keyName': 'CN01.MOT01.speed'},
   AccessMethods.adminRoles: {},
   AccessMethods.adminListUsers: {},
-  AccessMethods.adminCreateRole: {'name': 'Wire Role', 'groups': '[]'},
-  AccessMethods.adminUpdateRole: {'name': 'Wire Role', 'groups': '[]'},
+  AccessMethods.adminCreateRole: {
+    'role': {'name': 'Wire Role', 'groups': '[]'}
+  },
+  AccessMethods.adminUpdateRole: {
+    'role': {'name': 'Wire Role', 'groups': '[]'}
+  },
   AccessMethods.adminDeleteRole: {'name': 'Wire Role'},
   AccessMethods.adminRenameRole: {'from': 'Wire Role', 'to': 'Wire Role 2'},
   AccessMethods.adminCreateUser: {
@@ -283,7 +294,9 @@ const Map<String, Map<String, Object?>> _validParams = {
     'subject': 'ST999-panel',
     'password': 'wire-probe-credential-000001',
   },
-  AccessMethods.auditEntries: {'keyPrefix': ''},
+  AccessMethods.auditEntries: {
+    'query': {'keyPrefix': ''}
+  },
   AccessMethods.auditMemberCountsByAction: {
     'actionIds': ['probe']
   },

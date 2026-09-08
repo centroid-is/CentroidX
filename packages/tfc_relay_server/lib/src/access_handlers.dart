@@ -39,11 +39,24 @@
 ///  * A member taking scalars takes them as named params spelled exactly as
 ///    the interface spells them (`{'from': …, 'to': …}`, `{'keyName': …}`),
 ///    plus an optional `reason`.
-///  * A member taking one DTO takes that DTO's `toJson` **as** the params
-///    object: `accessTemplates.create` takes `{name, rules}`,
-///    `accessAdmin.createUser` takes `NewUserParams.toJson`, `audit.entries`
-///    takes `AuditQueryParams.toJson`. No envelope key, because the DTO's
-///    field set is already the closed vocabulary `access_api.dart` pins.
+///  * A member taking one DTO carries it under a single **envelope key** whose
+///    name is the interface parameter: `accessTemplates.create`/`update` take
+///    `{'value': {name, rules}, 'reason'?}`, `accessAdmin.createRole`/
+///    `updateRole` take `{'role': {name, groups, seeded}, 'reason'?}`, and
+///    `audit.entries` takes `{'query': AuditQueryParams.toJson}`. The envelope
+///    keeps the DTO's field set from colliding with the sibling `reason`, and
+///    it is the shape the contract kit's channel served side
+///    (`served_state_man.dart`) and 17-08's client proxies
+///    (`client_sub_apis.dart`) both already speak — this file was reconciled to
+///    that reference in 17-14 (F-3), because a decoder that read the flat map
+///    could not decode a single template, role or filtered query any client
+///    actually sends.
+///  * The two credential-carrying members are the exception, and deliberately:
+///    `accessAdmin.createUser` takes `NewUserParams.toJson` and
+///    `accessAdmin.setUserPassword` takes `SetUserPasswordParams.toJson`
+///    **as** the params object, with no envelope — their DTOs already carry a
+///    `reason`-free withholding shape, and both the kit and the client send
+///    them whole.
 ///  * Answers are the `access_api.dart` codecs' output — lists of
 ///    `toJson`/codec maps, or `null` for a void write.
 ///
@@ -101,14 +114,16 @@ final class AccessHandlers {
       source.accessTemplates.keysBoundTo(params['templateName'].asString);
 
   Future<Object?> templateCreate(rpc.Parameters params) async {
-    await source.accessTemplates
-        .create(accessTemplateFromJson(_map(params)), reason: _reason(params));
+    await source.accessTemplates.create(
+        accessTemplateFromJson(params['value'].asMap.cast<String, Object?>()),
+        reason: _reason(params));
     return null;
   }
 
   Future<Object?> templateUpdate(rpc.Parameters params) async {
-    await source.accessTemplates
-        .update(accessTemplateFromJson(_map(params)), reason: _reason(params));
+    await source.accessTemplates.update(
+        accessTemplateFromJson(params['value'].asMap.cast<String, Object?>()),
+        reason: _reason(params));
     return null;
   }
 
@@ -151,14 +166,16 @@ final class AccessHandlers {
       ];
 
   Future<Object?> adminCreateRole(rpc.Parameters params) async {
-    await source.accessAdmin
-        .createRole(accessRoleFromJson(_map(params)), reason: _reason(params));
+    await source.accessAdmin.createRole(
+        accessRoleFromJson(params['role'].asMap.cast<String, Object?>()),
+        reason: _reason(params));
     return null;
   }
 
   Future<Object?> adminUpdateRole(rpc.Parameters params) async {
-    await source.accessAdmin
-        .updateRole(accessRoleFromJson(_map(params)), reason: _reason(params));
+    await source.accessAdmin.updateRole(
+        accessRoleFromJson(params['role'].asMap.cast<String, Object?>()),
+        reason: _reason(params));
     return null;
   }
 
@@ -215,9 +232,8 @@ final class AccessHandlers {
   // ---------------------------------------------------- audit (three names)
 
   Future<Object?> auditEntries(rpc.Parameters params) async => [
-        for (final row
-            in await source.audit.entries(AuditQueryParams.fromJson(
-                _map(params))))
+        for (final row in await source.audit.entries(AuditQueryParams.fromJson(
+            params['query'].asMap.cast<String, Object?>())))
           auditRecordToJson(row),
       ];
 
