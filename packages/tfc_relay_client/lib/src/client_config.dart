@@ -542,24 +542,35 @@ final class ClientConfig {
   static String _ms(Duration d) => '${d.inMilliseconds} ms';
 }
 
-/// Where this station's copy of the plant's private CA root is mounted.
+/// The one certificate authority this station recognises — named by the file
+/// the integrator mounted, or carried as the certificate text itself.
 ///
-/// One field, deliberately. The gateway's `TlsConfig` carries a chain, a key
-/// and a password because a gateway proves who it is; a panel only has to
-/// recognise one signature, so a second field here would be a second thing to
-/// provision on every station for a capability nothing asks for.
+/// One trust source, deliberately. The gateway's `TlsConfig` carries a chain,
+/// a key and a password because a gateway proves who it is; a panel only has
+/// to recognise one signature, so a second trust anchor here would be a second
+/// thing to provision on every station for a capability nothing asks for. The
+/// two constructors are two ways to *provision* that one anchor, and exactly
+/// one of [rootCertPath] and [rootCertPem] is ever non-null.
 ///
-/// **A path, never bytes** — orchestrator ruling OQ4, and the same discipline
-/// `TlsConfig` carries on the gateway side. Bytes on a config object end up in
-/// a preferences row, a log line or a crash dump; a path names a file the
-/// integrator mounted and the operating system's permissions still apply to
-/// it. It is also what keeps SEC-01's "no key material readable from config or
-/// preferences" sweep and this class saying the same thing.
+/// **Material is allowed here because a CA root is public, and only because
+/// of that.** Orchestrator ruling OQ4 ("a path, never bytes") was written to
+/// keep *key* material out of preferences rows, log lines and crash dumps —
+/// and it still governs everything that is a secret: the gateway's `TlsConfig`
+/// is untouched, and `client_config_test.dart` keeps sweeping this file for
+/// byte-carrying fields. A root certificate is the thing the gateway hands to
+/// anyone who asks; refusing to carry it forced every station to answer "what
+/// is a pem path", which is an integrator's question aimed at an operator.
+/// The one cost material has — it shows up where the config is printed — is
+/// paid by [toString], which never renders the body.
 ///
-/// The file is read exactly once, when `RemoteStateMan` builds its one
-/// `SecurityContext` — not per attempt. See that constructor for why.
+/// Whichever way the root arrives, it is consumed exactly once, when
+/// `RemoteStateMan` builds its one `SecurityContext` — not per attempt. See
+/// that constructor for why.
 final class ClientTlsConfig {
-  ClientTlsConfig({required this.rootCertPath}) {
+  /// The path variant: the root is a file mounted on this station.
+  ClientTlsConfig({required String rootCertPath})
+      : rootCertPath = rootCertPath,
+        rootCertPem = null {
     if (rootCertPath.isEmpty) {
       throw ArgumentError('rootCertPath is empty: SecurityContext reads an '
           'empty path as the process working directory and fails with a '
@@ -569,6 +580,35 @@ final class ClientTlsConfig {
     }
   }
 
-  /// The PEM the integrator provisioned to this station.
-  final String rootCertPath;
+  /// The material variant: the root certificate itself, as PEM text — what
+  /// the trust-acquisition flow pins after the operator approved its
+  /// fingerprint, and what a fleet tool would seed into the device-local
+  /// store.
+  ClientTlsConfig.pem(String rootCertPem)
+      : rootCertPem = rootCertPem,
+        rootCertPath = null {
+    if (rootCertPem.trim().isEmpty) {
+      throw ArgumentError('rootCertPem is empty: material that decayed to '
+          'nothing builds a context that trusts nothing, and every handshake '
+          'then fails with the exact message a real impostor produces — the '
+          'panel would report an attack instead of a missing certificate');
+    }
+  }
+
+  /// The PEM file the integrator provisioned to this station, or null when
+  /// the root travels as [rootCertPem].
+  final String? rootCertPath;
+
+  /// The root certificate as PEM text, or null when the root is named by
+  /// [rootCertPath].
+  final String? rootCertPem;
+
+  /// Names the trust source; never renders the certificate body. Public
+  /// material or not, a 2 kB PEM in every log line and support ticket trains
+  /// people to stop reading configs.
+  @override
+  String toString() => rootCertPath != null
+      ? 'ClientTlsConfig(rootCertPath: $rootCertPath)'
+      : 'ClientTlsConfig(rootCertPem: <${rootCertPem!.length} chars of '
+          'public certificate material>)';
 }
