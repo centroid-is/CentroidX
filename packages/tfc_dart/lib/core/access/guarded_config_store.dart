@@ -257,10 +257,15 @@ class GuardedConfigStore {
   /// name, and for any kind in [kinds] outside [kSharedConfigKinds] — both are
   /// developer errors and must die in a test rather than fall through to the
   /// policy's `administer` default, where they would read as a permissions
-  /// problem at an operator's panel. The second is the narrower gate and the
-  /// one worth stating: `preference` rows are this station's own, and a write
-  /// of one through here would put a local setting on every screen in the
-  /// plant.
+  /// problem at an operator's panel.
+  ///
+  /// `preference` is now a shared kind (04-05) but still has no entry in
+  /// [kConfigWriteKeys], so a preference write through here dies on the first
+  /// throw rather than the second. That is deliberate and it is the whole
+  /// point of [writePreference]: every other kind is checked once per *kind*,
+  /// and a preference is checked per *key* — `alarm_man_config` is `configure`
+  /// where `collector_config` is `administer`. A single entry in that table
+  /// would flatten eight key families onto one group.
   ///
   /// Throws [AccessDenied] when the session may not, having written the row
   /// and fired `onDenied` first. Everything the store throws —
@@ -276,6 +281,21 @@ class GuardedConfigStore {
     // Before the check, and before any row: a kind that may not be written
     // here at all is not a denial to record, it is a call that should not
     // compile and could not be stopped at compile time.
+    //
+    // `preference` is under sync since 04-05, so the shared-set loop below no
+    // longer catches it — and without this it would be checkable under
+    // *another* kind's key: `kinds: {preference}, checkKind: keyMapping`
+    // would replace every shared preference in the plant on a `configure`
+    // check, which is T-04-05a exactly. The per-key arm is the only way in.
+    if (kinds.contains(ConfigKind.preference)) {
+      throw ArgumentError.value(
+          kinds,
+          'kinds',
+          'holds `preference`, which is checked per key and not per kind — '
+              '`alarm_man_config` is configure where `collector_config` is '
+              'administer. Use writePreference(prefKey: …), whose one string '
+              'is both the group looked up and the item_key recorded.');
+    }
     for (final kind in kinds) {
       if (!kSharedConfigKinds.contains(kind)) {
         throw ArgumentError.value(
@@ -318,6 +338,100 @@ class GuardedConfigStore {
       reason: reason,
     );
   }
+
+  /// Replaces the shared preference rows with [wanted], checked and recorded
+  /// as the preference key [prefKey] — the write path `SharedRowPreferences`
+  /// uses, and the only one that resolves a group per key.
+  ///
+  /// ## Why a second entry point and not an entry in [kConfigWriteKeys]
+  ///
+  /// Every other kind is one permissioned thing: a key mapping is `configure`
+  /// because the key repository is, an asset is `configure` because the page
+  /// it sits on is. Preferences are eight key families with three different
+  /// groups between them — `alarm_man_config` is `configure`,
+  /// `<bucket>.recipes` is `setpoints`, `state_man_config`,
+  /// `collector_config`, `update_channel` and `server_config_envelope` are
+  /// `administer` — and one table entry would flatten them onto whichever one
+  /// was written down. So the *key* is passed in, and it is the same string
+  /// twice over, exactly as [kConfigWriteKeys] is for the other kinds: the
+  /// group checked and the `item_key` recorded cannot disagree, and a key no
+  /// rule names answers `administer` rather than falling open.
+  ///
+  /// ## Why the whole set and not the one key
+  ///
+  /// [ConfigStore.writeItems] replaces within kinds: [wanted] is every shared
+  /// preference that must exist after this write, not the one that changed. A
+  /// caller passing one item would delete every sibling. `SharedRowPreferences`
+  /// is what assembles it from the snapshot, and
+  /// `shared_preferences_rows_test.dart` pins the rule with three seeded keys.
+  ///
+  /// Throws exactly what [write] throws, for the same reasons.
+  Future<ConfigWriteResult> writePreference(
+    List<ConfigItem> wanted, {
+    required String prefKey,
+    String? reason,
+  }) async {
+    final group = _policy.groupForWireSurface(_configSurface, prefKey);
+    final session = _session();
+    final actionId = newActionId();
+
+    if (!session.can(group)) {
+      await _record(_row(
+        session: session,
+        itemKey: prefKey,
+        group: group,
+        newValue: null,
+        allowed: false,
+        actionId: actionId,
+        reason: reason,
+      ));
+      final denial = AccessDenied(prefKey, group);
+      _onDenied?.call(denial);
+      throw denial;
+    }
+
+    return _writeAndRecord(
+      wanted,
+      kinds: const {ConfigKind.preference},
+      itemKey: prefKey,
+      group: group,
+      session: session,
+      actionId: actionId,
+      origin: _operatorOrigin,
+      reason: reason,
+    );
+  }
+
+  /// [writePreference] with no check, `origin: 'system'` and one audit row —
+  /// the [ConfigStore] side of `GuardedPreferences.systemWrites`.
+  ///
+  /// **This is not "writes we want to allow".** It is "writes the app makes on
+  /// its own behalf when nobody has acted": the empty `alarm_man_config`
+  /// `AlarmMan.create` writes at boot, the default `collector_config`, the
+  /// empty recipe list written on an asset's *read* path. A Save button never
+  /// qualifies; the fix for a legitimate operator write being refused is a
+  /// rule in `kPrefAccessRules`. The set of files that may reach this is
+  /// capped by `kSystemWriteCallSites` and by a test that compares that
+  /// constant against the source in both directions.
+  ///
+  /// The group is resolved and recorded even though it was not enforced, so
+  /// the trail shows what authority was skipped rather than showing none —
+  /// the same shape [seedDefaultIfEmpty] uses.
+  Future<ConfigWriteResult> writePreferenceAsSystem(
+    List<ConfigItem> wanted, {
+    required String prefKey,
+    String? reason,
+  }) =>
+      _writeAndRecord(
+        wanted,
+        kinds: const {ConfigKind.preference},
+        itemKey: prefKey,
+        group: _policy.groupForWireSurface(_configSurface, prefKey),
+        session: _session(),
+        actionId: newActionId(),
+        origin: _systemOrigin,
+        reason: reason,
+      );
 
   /// [save] for key mappings, and nothing more.
   ///

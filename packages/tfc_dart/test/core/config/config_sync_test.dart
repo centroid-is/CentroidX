@@ -390,6 +390,12 @@ void main() {
       expect(await localRowKeys(), [
         'key_mapping|${kStationScope.wireName}|CN04.Belt.Speed',
         'page|shared|/roe',
+        // The remote's migration marker, mirrored down: `preference` came
+        // under sync in 04-05, so a SHARED preference row now replicates like
+        // any other. The station-scoped watermark below is the same kind and
+        // does not, which is the scope filter doing the work the kind set was
+        // once wrongly credited with.
+        'preference|shared|$kKeyMappingsMigratedMarkerId',
         'preference|${kStationScope.wireName}|$kKeyMappingsWatermarkId',
       ]);
     });

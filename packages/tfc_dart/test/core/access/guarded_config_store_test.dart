@@ -311,10 +311,13 @@ void main() {
     // would be inserted and never removed. What the guard adds is that the
     // *check* stays one key from one table.
 
-    test('a kind outside the shared set is refused before any check', () async {
-      // `preference` is not under sync and must never be reachable through
-      // this surface: a shared-scope preference write would put one station's
-      // own setting on every screen in the plant.
+    test('a preference write is refused before any check', () async {
+      // `preference` came under sync in 04-05, so it is no longer caught by
+      // the shared-set gate — and that is precisely why it needs its own.
+      // This call names `keyMapping` as the check kind, so without the refusal
+      // it would replace every shared preference in the plant on a `configure`
+      // check while the trail recorded a key-mappings edit. Per-key checking
+      // is what `writePreference` is for.
       attach();
       final guard = newGuard();
 

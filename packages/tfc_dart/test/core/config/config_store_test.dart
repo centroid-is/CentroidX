@@ -1185,11 +1185,13 @@ void main() {
       expect(kSharedConfigKinds, contains(ConfigKind.pageImage));
       expect(
         ConfigKind.values.toSet().difference(kSharedConfigKinds),
-        {ConfigKind.preference},
-        reason: 'preference is deliberately out: station rows and this '
-            'station\'s own bookkeeping are not the plant\'s configuration. '
-            'Every other kind must be in, because the rev sweep is the only '
-            'net under a kind that writes no change rows.',
+        isEmpty,
+        reason: 'every kind must be in: the rev sweep is the only net under '
+            'a kind that writes no change rows, and a kind outside the set '
+            'is outside the boot snapshot, which leaves writeItems no rev to '
+            'compare and swap against. `preference` joined in 04-05 — what '
+            'keeps this station\'s bookkeeping rows out of a sweep is the '
+            'scope filter, not this set.',
       );
       expect(kMigrationMarkerIds.keys.toSet(), kSharedConfigKinds,
           reason: 'a kind under sync with no marker cannot tell an empty '

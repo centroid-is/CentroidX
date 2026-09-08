@@ -99,11 +99,26 @@ const String kKeyMappingsWatermarkId = '_sync.key_mappings.watermark';
 /// The kinds Postgres owns, every station mirrors, and the sync engine is
 /// allowed to replace.
 ///
-/// `preference` is deliberately absent and must stay so. Station rows live at
-/// `station:<hostname>` scope, and the two bookkeeping rows that do not — the
-/// watermark and the migration markers — are this station's account of what it
-/// has read, not configuration anybody wrote. A sweep that adopted them would
-/// let one station's position overwrite another's.
+/// **What keeps a station's own rows out is the scope filter, not this set.**
+/// Every read here and in the sync engine is `kind IN (…) AND scope='shared'`
+/// — the boot fill, the rev sweep, the remote revision read and the change-log
+/// pull alike. The bookkeeping rows that worried an earlier draft of this doc
+/// — the watermark and the migration markers — are `preference` rows at
+/// `station:<hostname>`, so no sweep can see them and no station's position
+/// can overwrite another's, whatever this set says.
+///
+/// [ConfigKind.preference] joined the set in 04-05, when the shared
+/// `PreferencesApi` moved off `flutter_preferences` onto rows. Two reasons,
+/// and the first is not a preference at all:
+///
+///   * A kind outside this set is outside the boot snapshot, and a kind
+///     outside the snapshot has no `rev` for [writeItems] to compare and swap
+///     against. Its every write would diff as an *insert*, so the second one
+///     would collide with the row the first wrote — the shared store would
+///     have been unusable rather than merely un-synced.
+///   * `flutter_preferences` had a keyed NOTIFY that reached every station.
+///     A shared preference this station could not hear another station change
+///     would be a regression against the table this milestone replaces.
 ///
 /// [ConfigKind.pageImage] is in the set and has to be. It writes no
 /// `config_change` rows at all (`config_history_policy.dart`), so the rev
@@ -114,6 +129,7 @@ const Set<ConfigKind> kSharedConfigKinds = {
   ConfigKind.page,
   ConfigKind.asset,
   ConfigKind.pageImage,
+  ConfigKind.preference,
 };
 
 /// The marker the page/asset blob→rows migration writes last.
@@ -124,6 +140,17 @@ const Set<ConfigKind> kSharedConfigKinds = {
 /// out of one blob in one transaction, so they share one marker — a state
 /// where the pages migrated and their assets did not is not reachable.
 const String kPagesMigratedMarkerId = '_migrated.pages';
+
+/// The marker the `flutter_preferences`→rows migration writes last.
+///
+/// Defined here, with the other two, rather than in the migration that writes
+/// it (04-11): [kMigrationMarkerIds] must name a marker for every kind under
+/// sync, and `preference` came under sync in 04-05 — one plan earlier. Until
+/// the migration lands, `_remoteIsMigrated(preference)` answers false, which
+/// costs nothing: a kind is only *refused* when this station holds mirrored
+/// rows of it and the remote holds none, and before the migration both are
+/// empty.
+const String kPreferencesMigratedMarkerId = '_migrated.preferences';
 
 /// Which marker row answers "has this kind been migrated?".
 ///
@@ -141,6 +168,10 @@ const Map<ConfigKind, String> kMigrationMarkerIds = {
   // page marker is the honest answer for them too: there is no state where the
   // pages migrated and their images did not.
   ConfigKind.pageImage: kPagesMigratedMarkerId,
+  // Its own marker: the preferences leave `flutter_preferences` in their own
+  // migration (04-11), on a plant whose pages may have moved a release
+  // earlier, so the page marker would be an answer to a different question.
+  ConfigKind.preference: kPreferencesMigratedMarkerId,
 };
 
 /// The wire names of [kinds], for an `IN` clause. Bound variables, never
