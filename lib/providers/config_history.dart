@@ -383,6 +383,17 @@ class ConfigUndoController {
         who: session.user?.username ?? _anonymousWho,
         roleName: session.roleName,
       );
+      // **A ready plan that writes nothing is a contradiction, not a
+      // success.** The guard skips the audit row on an empty diff because a
+      // save of identical bytes is genuinely a no-op; an undo is not. Its plan
+      // named entities to change and `executeUndo` asserted the world still
+      // matched the verdict, so an empty diff means the two disagree anyway —
+      // and reporting it as done would write an `audit_entry` claiming a
+      // restore, with zero change rows beneath it. An audit row for a restore
+      // that did not happen is worse than the failed undo.
+      if (result.diff.isEmpty) {
+        return UndoBlocked(await _blockersFor(plan));
+      }
       await _recordParent(
         plan: plan,
         gate: gate,
@@ -411,7 +422,8 @@ class ConfigUndoController {
       // is a refusal and not a failure — and it is answered by asking the same
       // question again, which now sees the newer change row and can say who
       // wrote it.
-      return UndoBlocked(await _blockersAfterRace(plan, conflict));
+      return UndoBlocked(await _blockersFor(plan, entityId: conflict.key,
+          fallback: '$conflict'));
     } on ConfigStoreOfflineException catch (e) {
       return UndoUnavailable('$e');
     } on ConfigStoreUnsafePoolException catch (e) {
@@ -419,28 +431,40 @@ class ConfigUndoController {
     }
   }
 
-  /// Why the write lost, in the same words a refused plan uses.
+  /// Why the write did not happen, in the same words a refused plan uses.
   ///
-  /// Falls back to one blocker built from the conflict when the re-plan comes
-  /// back ready — which happens when the row that moved was put back in the
-  /// meantime. Naming the entity with no author is honest; claiming the undo
-  /// is fine when it has just failed would not be.
-  Future<List<UndoBlocker>> _blockersAfterRace(
-      UndoPlan plan, ConfigConflict conflict) async {
+  /// Asks [planUndo] again: by the time this runs the log holds whatever the
+  /// other station wrote, so the re-plan can name who moved what and when —
+  /// which the store's exception cannot. Used from both places a permitted
+  /// undo can still fail: a lost compare-and-swap, and a ready plan whose
+  /// write came out empty.
+  ///
+  /// Falls back to one synthesised blocker when the re-plan comes back ready —
+  /// the row that moved was put back in between, or the disagreement was
+  /// between the remote and this station's mirror rather than in the log.
+  /// Naming the entity with no author is honest; claiming the undo is fine
+  /// when it has just failed would not be.
+  Future<List<UndoBlocker>> _blockersFor(
+    UndoPlan plan, {
+    String? entityId,
+    String? fallback,
+  }) async {
     final replanned = await this.plan(plan.originalActionId);
     if (replanned != null && replanned.blockers.isNotEmpty) {
       return replanned.blockers;
     }
     final step = plan.steps
-        .where((step) => step.entityId == conflict.key)
+        .where((step) => entityId == null || step.entityId == entityId)
         .firstOrNull;
     return <UndoBlocker>[
       UndoBlocker(
         reason: UndoBlockReason.entityMoved,
         kindName: step?.kind.wireName ?? '',
-        entityId: conflict.key,
+        entityId: entityId ?? step?.entityId ?? '',
         scopeName: step?.scope.wireName ?? '',
-        summary: '$conflict',
+        summary: fallback ??
+            'This station and the shared database disagree about what this '
+            'action left, so nothing was written.',
       ),
     ];
   }

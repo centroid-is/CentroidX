@@ -140,6 +140,9 @@ String configUndoBlockerClause(UndoBlocker blocker) => switch (blocker.reason) {
       UndoBlockReason.unknownKind =>
         'This station does not know how to write that kind — undo it from a '
             'station running the build that made the change.',
+      UndoBlockReason.internalRow =>
+        'This is bookkeeping the configuration store keeps about itself, not '
+            'a setting anybody chose.',
     };
 
 /// `asset /roe/CN04` — one entity, named the way the rest of the page names

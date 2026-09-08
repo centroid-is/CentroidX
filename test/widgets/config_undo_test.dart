@@ -102,7 +102,8 @@ ConfigItem prefItem(String id, String value) => ConfigItem.of(
       value: {'type': 'String', 'value': value},
     );
 
-Future<void> seedItem(ConfigItem item, List<AppDatabase> into) async {
+Future<void> seedItem(ConfigItem item, List<AppDatabase> into,
+    {int rev = 1}) async {
   for (final db in into) {
     await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
           kind: item.kind.wireName,
@@ -111,7 +112,7 @@ Future<void> seedItem(ConfigItem item, List<AppDatabase> into) async {
           parentId: Value(item.parentId),
           sortIndex: Value(item.sortIndex),
           payload: item.payload,
-          rev: const Value(1),
+          rev: Value(rev),
           updatedAt: DateTime.utc(2026, 9, 1),
           updatedBy: 'migration',
         ));
@@ -472,6 +473,40 @@ void main() {
 
       expect(await itemRows(), isEmpty);
       expect((await changeRows()), hasLength(2));
+    });
+  });
+
+  group('an undo that writes nothing is never reported as done', () {
+    testWidgets('no audit parent, and the refusal dialog instead',
+        (tester) async {
+      final before = assetItem('a1', page: 'p1', ordinal: 1024);
+      final after = assetItem('a1', page: 'p1', ordinal: 1024, colour: 'blue');
+      // A mirror that recorded the revision but not the payload. The rev
+      // assert inside executeUndo passes — snapshot and plan agree on the
+      // number — and the inverse then diffs to nothing, which is the state
+      // that used to be reported as a successful restore with an audit row
+      // and zero change rows beneath it.
+      await seedItem(after, [remote], rev: 2);
+      await seedItem(before, [local], rev: 2);
+      await seedChange(remote, actionId: 'act-1', before: before, after: after);
+      await seedAuditHeader(remote, 'act-1');
+
+      await pump(tester);
+      await settle(tester);
+      await tester.tap(find.byKey(configHistoryUndoKey('act-1')));
+      await settle(tester);
+      await tester.tap(find.byKey(kConfigUndoConfirmButtonKey));
+      await settle(tester);
+
+      expect(find.byKey(kConfigUndoBlockedKey), findsOneWidget);
+      expect(find.text(kConfigHistoryUndoneNote), findsNothing,
+          reason: 'nothing was written, so nothing may say it was');
+      expect(sink.rows, isEmpty,
+          reason: 'an audit_entry claiming a restore that did not happen is '
+              'worse than the failed undo — the trail is the thing this '
+              'milestone exists to make trustworthy');
+      expect((await changeRows()), hasLength(1),
+          reason: 'the log holds the original action and nothing else');
     });
   });
 
