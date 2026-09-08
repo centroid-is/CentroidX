@@ -585,8 +585,8 @@ void main() {
     // the finding written as executable statements rather than as prose in a
     // SUMMARY nobody re-reads. Neither changes behaviour; see 13-10-SUMMARY.
 
-    test('KeyPolicy has exactly two members, and neither is about a preference '
-        'key', () {
+    test('KeyPolicy now carries canWritePreference — the narrowing found its '
+        'home in 17-07, not in this composition', () {
       final declared = reflectClass(KeyPolicy)
           .declarations
           .values
@@ -595,18 +595,20 @@ void main() {
           .map((m) => MirrorSystem.getName(m.simpleName))
           .toSet();
 
-      expect(declared, <String>{'canSee', 'canWrite'},
-          reason: 'The BackendPreferences.clear() allow-list narrowing was '
-              'handed to this composition\'s `policy:` argument by 13-06. It '
-              'cannot land there: KeyPolicy answers about PLANT TAGS, and '
-              '_PolicyPreferences — the class that gates every preference '
-              'mutator — is constructed with (source, identityOf) and never '
-              'consults a KeyPolicy at all (policy_state_man.dart:945-947). '
-              'policy_state_man.dart:892-899 rejects a canWritePreference '
-              'member deliberately, as a second policy surface to keep in '
-              'step with the first. If this arm is red because somebody added '
-              'that member, the narrowing finally HAS a home and this '
-              'composition must pass one — see 13-10-SUMMARY.');
+      // UPDATED FOR 17-07 (was `{canSee, canWrite}`). The prior arm pinned the
+      // ABSENCE of a preference member and pointed here: "If this arm is red
+      // because somebody added that member, the narrowing finally HAS a home."
+      // 17-07 added `canWritePreference`, graded by key from the app's own
+      // `kPrefAccessRules` (key_policy.dart:149-172), so the finding 13-05/13-06
+      // flagged is answered in the MASTER policy layer — exactly where Phase
+      // 17's constitution says one access-control system lives — rather than in
+      // this composition's `policy:` argument. The residual `clear(allowList:)`
+      // exposure the second arm measures is a separate, still-open hole in
+      // tfc_relay_server's `_PolicyPreferences`, not this member's concern.
+      expect(declared, <String>{'canSee', 'canWrite', 'canWritePreference'},
+          reason: 'KeyPolicy is the AccessPolicy-backed adapter now; a fourth '
+              'member appearing here is a new policy surface somebody must '
+              'decide the composition passes data for');
     });
 
     test('an allow-listed clear naming key_mappings still deletes it — the '
