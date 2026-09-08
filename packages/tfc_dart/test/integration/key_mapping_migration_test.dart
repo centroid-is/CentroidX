@@ -93,6 +93,25 @@ class _PowerCut implements Exception {}
 
 void main() {
   final realBlobPath = Platform.environment[_realBlobEnv];
+
+  // The same guard the two codec suites carry, and the one this file was
+  // missing: `CENTROIDX_REQUIRE_REAL_BLOB=1` was inert here, so the runbook's
+  // third gate command ran green against the committed fixture and proved
+  // nothing about production data. That is T-04-13a — "the gate signed off on
+  // the fixture" — with the mitigation absent on a third of its surface, and
+  // it left the printed `over <source>` line as the only evidence, i.e. an
+  // operator reading carefully at 02:00.
+  //
+  // It throws **before the group is declared**, so `setUpAll` never runs and
+  // no container is started: a refused gate costs nothing and takes no lock
+  // on port 15432.
+  if (Platform.environment['CENTROIDX_REQUIRE_REAL_BLOB'] == '1' &&
+      realBlobPath == null) {
+    throw StateError('CENTROIDX_REQUIRE_REAL_BLOB=1 but $_realBlobEnv is not '
+        'set: this run would have passed against the committed fixture and '
+        'proved nothing about production data.');
+  }
+
   final blob = realBlobPath != null
       ? File(realBlobPath).readAsStringSync()
       : _fixtureBlob;
