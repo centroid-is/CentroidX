@@ -19,9 +19,8 @@ import '../models/menu_item.dart';
 import '../providers/preferences.dart';
 import '../route_registry.dart';
 import '../providers/access.dart';
-import '../providers/gateway_link.dart';
+import '../providers/local_gateway_alarm.dart';
 import '../providers/theme.dart';
-import 'gateway_link_chip.dart';
 import '../providers/alarm.dart';
 import '../providers/nav_alarm.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessSession;
@@ -220,14 +219,34 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
   }
 
   Widget _buildAlarmBanner(BuildContext context, WidgetRef ref) {
+    // The panel's OWN alarm — the gateway link is gone, or the transport
+    // could not even be built — merged into the one banner rather than given
+    // a second surface beside it: two banners competing for the row is how
+    // the real alarm stops being read (the argument that once justified the
+    // gateway-link chip, now spent on retiring it). It is read OUTSIDE the
+    // StreamBuilder because in gateway mode the plant's alarm stream itself
+    // rides the transport, so the very fault this alarm reports can leave
+    // `_alarmStream` errored or silent — and the banner must not need a
+    // working alarm source to say the alarm source's transport is gone.
+    // Null on every direct station and on a healthy link, so this costs the
+    // fleet nothing. Why it is local-only and never in TimescaleDB:
+    // lib/core/local_gateway_alarm.dart.
+    final localAlarm = ref.watch(localGatewayAlarmProvider);
     return StreamBuilder<(AlarmSource, List<AlarmActive>)>(
         stream: _alarmStream,
         builder: (context, snapshot) {
-          if (!snapshot.hasError &&
-              snapshot.hasData &&
-              snapshot.data!.$2.isNotEmpty) {
-            final (alarmMan, activeAlarms) = snapshot.data!;
-            final filteredAlarms = alarmMan.filterAlarms(activeAlarms, '');
+          final hasPlant = !snapshot.hasError && snapshot.hasData;
+          final plantAlarms = hasPlant
+              ? snapshot.data!.$1.filterAlarms(snapshot.data!.$2, '')
+              : const <AlarmActive>[];
+          // Local first, not severity-sorted in: while the gateway is down
+          // every plant row below may be stale, so the row that says so
+          // leads. The plant's own ordering is untouched behind it.
+          final filteredAlarms = [
+            if (localAlarm != null) localAlarm,
+            ...plantAlarms,
+          ];
+          if (filteredAlarms.isNotEmpty) {
             final highestPriorAlarms =
                 filteredAlarms.sublist(0, math.min(2, filteredAlarms.length));
 
@@ -358,17 +377,11 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
         (accessElevated ? kAccessStatusActionMaxWidth : 48.0) +
         (kAccessStatusActionGap * 2) +
         _clockWidth;
-    // Whether the gateway-link chip is showing, read here from the SAME
-    // provider the chip itself watches so the margin and the chip cannot
-    // disagree about whether there is anything in that slot. Null is direct
-    // mode -- the overwhelming majority of stations -- and an unresolved value
-    // is the device-local transport row still being read; both mean no chip
-    // and no reservation, which is what keeps a direct panel's app bar
-    // byte-identical to what it is today.
-    final showGatewayChip =
-        ref.watch(gatewayLinkProvider).valueOrNull != null;
-    final appBarRightMargin =
-        280.0 + (showGatewayChip ? kGatewayChipWidth : 0.0);
+    // The gateway-link chip that used to sit left of the logo is gone — a
+    // lost or unbuildable gateway link now reports through the alarm banner
+    // (see _buildAlarmBanner), so the right cluster is back to the logo and
+    // the theme toggle and reserves nothing extra.
+    const appBarRightMargin = 280.0;
 
     return Scaffold(
       appBar: _isFullscreen
@@ -386,12 +399,6 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                     // with aspect ratio ~4.2 => ~210px wide, plus 16px right
                     // padding, plus ~48px theme toggle IconButton = ~274px.
                     // Use 280 for a small safety buffer.
-                    // Plus kGatewayChipWidth, and only while the gateway-link
-                    // chip is actually showing -- see showGatewayChip above.
-                    // A gateway station reserves the chip's budget so the
-                    // alarm banner keeps its clear space; a direct station
-                    // reserves nothing, which is why the four existing
-                    // appbar_clock_*.png goldens are unmoved by this.
                     // Left margin: the back arrow, the access action and the
                     // clock -- see appBarLeftMargin above, which is the one
                     // that changes with the session.
@@ -476,17 +483,12 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          // What the gateway link is doing, on a gateway
-                          // station, on every page. It sits here rather than
-                          // on the left because identity and navigation stay
-                          // grouped over there -- see the access-action
-                          // comment above -- and because globalLeftProvider
-                          // injects into that row and the page editor uses the
-                          // slot. On a direct station it renders SizedBox
-                          // .shrink() and costs exactly nothing, gap included;
-                          // its width budget is counted into
-                          // appBarRightMargin above.
-                          const GatewayLinkChip(),
+                          // The gateway-link chip lived here until 2026-09.
+                          // A lost (or never-buildable) gateway link is a
+                          // fault, and it now reports as one — through the
+                          // alarm banner in the centre, via
+                          // localGatewayAlarmProvider — instead of as a pill
+                          // nobody watched beside the logo.
                           // Only show SVG if not in mobile portrait mode
                           if (!(MediaQuery.of(context).orientation ==
                                   Orientation.portrait &&

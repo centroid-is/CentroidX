@@ -147,6 +147,27 @@ void main() {
             'results themselves may be stale');
   });
 
+  testWidgets('it is counted — a red card beside an "Error 0" chip would '
+      'read as a broken counter', (tester) async {
+    await _pump(tester, report: _unreachable(), alarms: _plant());
+    expect(
+        find.byWidgetPredicate((w) =>
+            w is FilterChip &&
+            w.label is Text &&
+            (w.label as Text).data == 'Error 1'),
+        findsOneWidget);
+  });
+
+  testWidgets('but no level filter can hide it', (tester) async {
+    await _pump(tester, report: _unreachable(), alarms: _plant());
+    await tapLevelChip(tester, AlarmLevel.warning);
+    expect(find.text('Gateway unreachable'), findsOneWidget,
+        reason: 'the operator narrowed to warnings; the row that says the '
+            'warnings themselves may be stale stays');
+    expect(find.text('CN07 færiband'), findsOneWidget,
+        reason: 'control — the warning filter did apply');
+  });
+
   testWidgets('it is NOT in history — nothing about it is a record',
       (tester) async {
     await _pump(tester, report: _unreachable(), alarms: _plant());

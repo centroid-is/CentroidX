@@ -20,7 +20,6 @@ import 'package:tfc/providers/gateway_link.dart';
 import 'package:tfc/providers/local_gateway_alarm.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
-import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart' show LinkState;
 
 final Uri _url = Uri.parse('wss://10.50.10.11:9444');

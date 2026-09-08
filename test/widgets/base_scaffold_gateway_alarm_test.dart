@@ -69,6 +69,9 @@ void _registerMenu() {
   registry.menuItems.clear();
   registry
       .addMenuItem(const MenuItem(label: 'Home', path: '/', icon: Icons.home));
+  // NavigationBar asserts destinations.length >= 2.
+  registry.addMenuItem(const MenuItem(
+      label: 'Alarms', path: '/alarms', icon: Icons.notifications));
 }
 
 Widget _shell({
