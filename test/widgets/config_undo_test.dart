@@ -295,8 +295,8 @@ void main() {
       // The confirmation names the write, not the original edit.
       expect(find.byKey(kConfigUndoConfirmKey), findsOneWidget);
       expect(find.byKey(kConfigUndoStepKey), findsOneWidget);
-      expect(find.text('Put asset a1 back as it was onto p1, in its original '
-          'order'), findsOneWidget);
+      expect(find.text('Revert asset a1 to its previous version on p1, in '
+          'its original order'), findsOneWidget);
       expect(find.byKey(kConfigUndoAuditNoteKey), findsOneWidget);
 
       await tester.tap(find.byKey(kConfigUndoConfirmButtonKey));
@@ -409,6 +409,72 @@ void main() {
     });
   });
 
+  group('an action with no audit header is gated the same way', () {
+    testWidgets(
+        'the required group comes from the change rows, not from the header '
+        'the action never got', (tester) async {
+      // Both are `administer` under kPrefAccessRules. One has its audit header
+      // and one does not — the orphan window, which a half-migrated plant is
+      // full of. The permission must not depend on which.
+      final withHeader = prefItem('collector_config', '{}');
+      final parentless = prefItem('state_man_config', '{}');
+      await seedItem(withHeader, [local, remote]);
+      await seedItem(parentless, [local, remote]);
+      await seedChange(remote, actionId: 'act-header', after: withHeader);
+      await seedAuditHeader(remote, 'act-header');
+      // No seedAuditHeader for this one. `HistoryAction.requiredGroupLabel`
+      // is the empty string for it, and the gate must not read that.
+      await seedChange(remote, actionId: 'act-orphan', after: parentless);
+
+      final container =
+          await pump(tester, groups: const {AccessGroup.configure});
+      final denials = <AccessDenied>[];
+      final sub = container.read(accessDenialsProvider).listen(denials.add);
+      addTearDown(sub.cancel);
+      await settle(tester);
+
+      await tester.tap(find.byKey(configHistoryUndoKey('act-header')));
+      await settle(tester);
+      await tester.tap(find.byKey(configHistoryUndoKey('act-orphan')));
+      await settle(tester);
+
+      expect(denials.map((d) => d.required),
+          [AccessGroup.administer, AccessGroup.administer],
+          reason: 'an action whose permission was never recorded must not be '
+              'easier to undo than one whose permission is known — the gate '
+              'resolves it from the change rows kind and key, and planUndo '
+              'never reads audit_entry at all');
+      expect(denials.map((d) => d.itemKey),
+          ['collector_config', 'state_man_config']);
+
+      // Neither fell open and neither threw: no dialog was offered, and the
+      // configuration is untouched.
+      expect(find.byKey(kConfigUndoConfirmKey), findsNothing);
+      expect((await changeRows()), hasLength(2));
+      expect(sink.rows.map((r) => r.allowed), [false, false]);
+    });
+
+    testWidgets('holding the group, a parentless action undoes normally',
+        (tester) async {
+      final asset = assetItem('a1', page: 'p1', ordinal: 1024);
+      await seedItem(asset, [local, remote]);
+      await seedChange(remote, actionId: 'act-orphan', after: asset);
+
+      await pump(tester);
+      await settle(tester);
+      await tester.tap(find.byKey(configHistoryUndoKey('act-orphan')));
+      await settle(tester);
+      expect(find.byKey(kConfigUndoConfirmKey), findsOneWidget,
+          reason: 'a missing header is not a reason to refuse either — it '
+              'must neither fall open nor throw');
+      await tester.tap(find.byKey(kConfigUndoConfirmButtonKey));
+      await settle(tester);
+
+      expect(await itemRows(), isEmpty);
+      expect((await changeRows()), hasLength(2));
+    });
+  });
+
   group('a refusal names what moved, who moved it and when', () {
     testWidgets('a plan blocked before the dialog', (tester) async {
       final v1 = assetItem('a1', page: 'p1', ordinal: 1024);
@@ -501,6 +567,7 @@ void main() {
         originalOp: ConfigChangeOp.insert,
       );
       expect(configUndoStepSentence(step), 'Delete asset /roe/CN09');
+      expect(configUndoStepIsDestructive(step), isTrue);
     });
 
     test('a delete inverts to Restore, naming the page and the order', () {
@@ -512,7 +579,9 @@ void main() {
         item: assetItem('/baader/CN21', page: '/baader', ordinal: 2048),
       );
       expect(configUndoStepSentence(step),
-          'Restore asset /baader/CN21 onto /baader, in its original order');
+          'Re-create asset /baader/CN21 on /baader, in its original order');
+      expect(configUndoStepIsDestructive(step), isFalse,
+          reason: 'undoing a delete writes a row; it does not remove one');
     });
 
     test('a page has no parent and no order, and the sentence has neither', () {
@@ -524,7 +593,32 @@ void main() {
         item: ConfigItem.of(
             kind: ConfigKind.page, id: '/roe', value: const {'menu_item': {}}),
       );
-      expect(configUndoStepSentence(step), 'Restore page /roe');
+      expect(configUndoStepSentence(step), 'Re-create page /roe');
+    });
+
+    test('the three verbs name three different states of the row', () {
+      // The complaint this replaced: `Restore` and `Put back as it was` were
+      // two phrasings of one idea, and a reader could not tell which line
+      // meant the row was absent. Each verb now says what is there now.
+      String sentenceFor(ConfigChangeOp originalOp, {ConfigItem? item}) =>
+          configUndoStepSentence(UndoStep(
+            kind: ConfigKind.asset,
+            entityId: 'a1',
+            scope: ConfigScope.shared,
+            originalOp: originalOp,
+            item: item,
+          ));
+
+      final verbs = <String>{
+        sentenceFor(ConfigChangeOp.insert).split(' ').first,
+        sentenceFor(ConfigChangeOp.delete,
+            item: assetItem('a1', page: 'p1')).split(' ').first,
+        sentenceFor(ConfigChangeOp.update,
+            item: assetItem('a1', page: 'p1')).split(' ').first,
+      };
+      expect(verbs, hasLength(3),
+          reason: 'one verb per operation, and the operation is what varies');
+      expect(verbs, {'Delete', 'Re-create', 'Revert'});
     });
 
     test('no author is no line, rather than an invented one', () {

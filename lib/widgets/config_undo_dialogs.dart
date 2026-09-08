@@ -5,11 +5,34 @@
 ///
 /// An operator about to undo something is not asking "what did I do" — the row
 /// they tapped already says that. They are asking "what is about to happen to
-/// the plant". So every line here is phrased as the write:
-/// `Restore asset /roe/CN04 onto /roe`, `Delete asset /roe/CN09`, and never
+/// the plant". So every line here is phrased as the write, and never as
 /// `you changed CN04`. The two readings differ most in exactly the case that
 /// matters — undoing an *insert* deletes a row, and an operator who read the
 /// dialog as a description of the original edit would not expect that.
+///
+/// ## One verb per operation, and the operation is what varies
+///
+/// Three inverses, three verbs, chosen so that the **state of the row right
+/// now** is legible from the word alone:
+///
+/// | Verb | The row now | What the undo writes |
+/// |---|---|---|
+/// | `Re-create` | is gone | an insert of the old entity |
+/// | `Revert` | is there, holding something else | an overwrite with the old entity |
+/// | `Delete` | is there, and this action put it there | a removal |
+///
+/// An earlier draft said `Restore …` and `Put … back as it was`, which are two
+/// phrasings of one idea: a reader could not tell which line meant the row was
+/// absent. The distinction is not cosmetic — re-creating a row somebody else
+/// has since re-created is the collision `ConfigConflict.created` exists for,
+/// and it is the line an operator should read twice.
+///
+/// **`Delete` is styled apart.** It is the only line in the list that removes
+/// something, and on a dialog whose whole job is "here is what I am about to
+/// write" the destructive line must be distinguishable at a glance. It carries
+/// the muted orange the history list already uses for a removed entity
+/// (`ConfigChangeTile`'s op mark), so the two surfaces name removal with the
+/// same colour rather than inventing a second vocabulary.
 ///
 /// Position is named where it exists, because position is part of the entity a
 /// restore writes back (`ConfigItem.encodeEntity`) and putting an asset back on
@@ -18,6 +41,12 @@
 /// holds a gapped stored key (1024, 2048 — `sort_keys.dart`), and telling an
 /// operator their asset returns to "position 2048" would be honest about the
 /// column and meaningless about the screen.
+///
+/// A `Revert` names the destination too, and names it as a destination rather
+/// than as a move: the step carries the old entity and not the current one, so
+/// this file cannot tell whether the page or the order is what changed. "on
+/// /roe, in its original order" is true either way; "back onto /roe" would
+/// claim it had left.
 ///
 /// ## The refusal is structured, not one sentence
 ///
@@ -44,6 +73,7 @@ import 'package:flutter/material.dart';
 import 'package:tfc_dart/core/config/config_change.dart';
 import 'package:tfc_dart/core/config/config_undo.dart';
 
+import '../theme.dart' show HmiStateColors;
 import 'base_scaffold.dart' show formatTimestamp;
 import 'config_change_row.dart' show configKindLabel;
 
@@ -133,20 +163,30 @@ String? configUndoBlockerAuthorLine(UndoBlocker blocker) {
 
 /// One line of the confirmation: what this step writes.
 ///
-/// Phrased as the write and never as the original edit — see the library doc.
+/// Phrased as the write and never as the original edit, one verb per
+/// operation — see the library doc for the table and the argument.
 String configUndoStepSentence(UndoStep step) {
   final what = '${configKindLabel(step.kind)} ${step.entityId}';
   final item = step.item;
-  final onto = item?.parentId == null ? '' : ' onto ${item!.parentId}';
+  final where = item?.parentId == null ? '' : ' on ${item!.parentId}';
   final order = item?.sortIndex == null ? '' : ', in its original order';
 
   return switch (step.inverseOp) {
     // The one an operator can misread, so it says the word.
     ConfigChangeOp.delete => 'Delete $what',
-    ConfigChangeOp.insert => 'Restore $what$onto$order',
-    ConfigChangeOp.update => 'Put $what back as it was$onto$order',
+    ConfigChangeOp.insert => 'Re-create $what$where$order',
+    ConfigChangeOp.update => 'Revert $what to its previous version$where$order',
   };
 }
+
+/// Whether this step removes something.
+///
+/// The confirmation styles these apart; nothing else branches on it. A
+/// predicate rather than a check on [UndoStep.inverseOp] at the call site, so
+/// "which lines are destructive" is answered in one place if a fourth op ever
+/// exists.
+bool configUndoStepIsDestructive(UndoStep step) =>
+    step.inverseOp == ConfigChangeOp.delete;
 
 // ---------------------------------------------------------------------------
 // The keys
@@ -157,6 +197,11 @@ const Key kConfigUndoConfirmKey = ValueKey<String>('config-undo-confirm');
 
 /// One line of the confirmation's write list.
 const Key kConfigUndoStepKey = ValueKey<String>('config-undo-step');
+
+/// The mark on a line that removes something. Present once per destructive
+/// step and never otherwise, which is what a test can count.
+const Key kConfigUndoDestructiveKey =
+    ValueKey<String>('config-undo-destructive');
 
 /// The note about what the history keeps.
 const Key kConfigUndoAuditNoteKey = ValueKey<String>('config-undo-audit-note');
@@ -209,6 +254,7 @@ class ConfigUndoConfirmDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final colors = HmiStateColors.of(context);
     final secondary = theme.textTheme.bodySmall
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
 
@@ -229,14 +275,23 @@ class ConfigUndoConfirmDialog extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.chevron_right,
-                        size: 16, color: theme.colorScheme.onSurfaceVariant),
+                    if (configUndoStepIsDestructive(step))
+                      Icon(Icons.remove_circle_outline,
+                          key: kConfigUndoDestructiveKey,
+                          size: 16,
+                          color: colors.orange)
+                    else
+                      Icon(Icons.chevron_right,
+                          size: 16, color: theme.colorScheme.onSurfaceVariant),
                     const SizedBox(width: 4),
                     Expanded(
                       child: Text(
                         configUndoStepSentence(step),
                         key: kConfigUndoStepKey,
-                        style: theme.textTheme.bodyMedium,
+                        style: configUndoStepIsDestructive(step)
+                            ? theme.textTheme.bodyMedium
+                                ?.copyWith(color: colors.orange)
+                            : theme.textTheme.bodyMedium,
                       ),
                     ),
                   ],

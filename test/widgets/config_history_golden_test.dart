@@ -10,7 +10,7 @@
 /// * `config_history_insert_delete.png` — asymmetric rendering: an insert is one `New entity` row with a new side only, a delete one `Removed entity` row with an old side only, and neither carries an arrow. 1100x600.
 /// * `config_history_empty.png`         — the query ran and matched nothing: the filter bar and the scope banner still on screen above the message. 1100x500.
 /// * `config_history_unavailable.png`   — no database: the unavailable copy, and neither bar nor banner. 1100x500, **deliberately the same size as the empty image** so the two can be laid side by side and must not look alike.
-/// * `config_history_undo_confirm.png`  — what an undo will write, one line per entity, in all three shapes at once: a restore, a put-back and a delete. 700x460.
+/// * `config_history_undo_confirm.png`  — what an undo will write, one line per entity, in all three shapes at once: a re-create, a revert and a delete, the last marked apart in the removal orange. 700x460.
 /// * `config_history_undo_confirm_dark.png` — the same, dark.
 /// * `config_history_undo_blocked.png`  — the refusal: two entities, one with an author and an instant and one the log cannot attribute. 700x460.
 /// * `config_history_undo_blocked_dark.png` — the same, dark. The variant that would catch a dialog whose text or divider came from `colorScheme.outline`, which is unset in both schemes.
@@ -595,11 +595,15 @@ void _undoGoldens() {
       expect(find.byKey(kConfigUndoStepKey), findsNWidgets(3));
       // The three sentences, named rather than counted: an image with three
       // lines of the same shape would match its own baseline forever.
-      expect(find.text('Restore asset /roe/CN05 onto /roe, in its original '
+      expect(find.text('Re-create asset /roe/CN05 on /roe, in its original '
           'order'), findsOneWidget);
-      expect(find.text('Put asset /roe/CN04 back as it was onto /roe, in its '
-          'original order'), findsOneWidget);
+      expect(find.text('Revert asset /roe/CN04 to its previous version on '
+          '/roe, in its original order'), findsOneWidget);
       expect(find.text('Delete asset /roe/CN06'), findsOneWidget);
+      // The destructive line, marked apart. Exactly one: two restores and one
+      // removal, and an image where all three looked alike is what this
+      // replaced.
+      expect(find.byKey(kConfigUndoDestructiveKey), findsOneWidget);
       // And the promise about the history, which is the line an operator is
       // most likely to be surprised by afterwards.
       expect(find.byKey(kConfigUndoAuditNoteKey), findsOneWidget);
