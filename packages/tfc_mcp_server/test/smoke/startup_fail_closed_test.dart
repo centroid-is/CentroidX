@@ -54,6 +54,50 @@ void main() {
       ? Directory.current.path
       : '${Directory.current.path}/packages/tfc_mcp_server';
 
+  /// The compiled binary, built once for the whole file.
+  ///
+  /// This used to spawn `dart run bin/tfc_mcp_server.dart` per case, and that
+  /// is what broke on Windows (CI run 34243838034). `dart run` *builds*: it
+  /// resolves native assets and runs the package's build hooks on every
+  /// invocation. `dart test` runs files concurrently, so those builds landed
+  /// on top of `compile_test.dart`'s `dart build cli` — same package, same
+  /// artifacts. On Windows, where file locking is mandatory rather than
+  /// advisory, the first spawn blocked for the client's whole 60 s
+  /// `initialize` budget, was killed mid-build, and left the build state
+  /// broken; every later spawn then died instantly with exit 255. Linux and
+  /// macOS passed the same commit.
+  ///
+  /// Building once here and spawning a plain executable takes the whole class
+  /// of problem away: the build happens where nothing is timing it and may
+  /// wait on a lock as long as it likes, and a spawn is then just a process
+  /// start. It also tests the artifact that actually ships to a Windows
+  /// station rather than a JIT run of its source.
+  late String binaryPath;
+
+  setUpAll(() async {
+    final outputDirectory = Directory.systemTemp.createTempSync('tfc_mcp_fc_');
+    addTearDown(() {
+      if (outputDirectory.existsSync()) {
+        outputDirectory.deleteSync(recursive: true);
+      }
+    });
+
+    final build = await Process.run(
+      // The SDK running this test, not whatever `dart` is on PATH: a homebrew
+      // Dart cannot load a `hook.dill` the pinned SDK built.
+      Platform.resolvedExecutable,
+      ['build', 'cli', '-o', outputDirectory.path],
+      workingDirectory: packageRoot,
+    );
+    expect(build.exitCode, 0,
+        reason: 'could not build the binary under test\n'
+            'stdout: ${build.stdout}\nstderr: ${build.stderr}');
+
+    final exe = Platform.isWindows ? 'tfc_mcp_server.exe' : 'tfc_mcp_server';
+    binaryPath = '${outputDirectory.path}/bundle/bin/$exe';
+    expect(File(binaryPath).existsSync(), isTrue, reason: binaryPath);
+  });
+
   /// Spawns the binary, completes the MCP handshake, and lists its tools.
   ///
   /// [env] is merged over the parent environment by `Process.start`, so the
@@ -62,54 +106,68 @@ void main() {
   /// to the resolver, and `startup_toggles_test.dart` proves that separately;
   /// setting it here is what makes the case immune to a developer who has the
   /// variable exported in their own shell.
+  ///
+  /// The transport is wired by hand rather than through
+  /// [StdioClientTransport] so that **stderr is drained from the first byte**.
+  /// Letting the transport own the process meant subscribing only after
+  /// `connect()` returned, which threw away the binary's own output on
+  /// exactly the runs that needed it: the Windows failure above reported a
+  /// bare timeout and nothing the process had said. An undrained pipe is also
+  /// a way to wedge a child that writes enough to fill it.
   Future<_Launch> launch({
     Map<String, String> env = const {},
     List<String> args = const [],
   }) async {
-    final transport = StdioClientTransport(
-      StdioServerParameters(
-        // The SDK running this test, not whatever `dart` is on PATH: a
-        // homebrew Dart cannot load a `hook.dill` the pinned SDK built.
-        command: Platform.resolvedExecutable,
-        args: ['run', 'bin/tfc_mcp_server.dart', ...args],
-        workingDirectory: packageRoot,
-        environment: {
-          kMcpTogglesEnvVar: '',
-          ...env,
-        },
-        stderrMode: ProcessStartMode.normal,
-      ),
+    final process = await Process.start(
+      binaryPath,
+      args,
+      workingDirectory: packageRoot,
+      environment: {
+        kMcpTogglesEnvVar: '',
+        ...env,
+      },
     );
 
+    final stderrBuffer = StringBuffer();
+    final stderrDone = process.stderr
+        .transform(utf8.decoder)
+        .forEach(stderrBuffer.write)
+        .catchError((_) {});
+
+    final transport = IOStreamTransport(
+      stream: process.stdout,
+      sink: process.stdin,
+    );
     final client = McpClient(
       const Implementation(name: 'fail-closed-test', version: '1.0.0'),
       options: McpClientOptions(capabilities: const ClientCapabilities()),
     );
 
-    final stderrBuffer = StringBuffer();
+    /// Whatever the process managed to say, attached to the failure.
+    Never failWithStderr(Object error) => fail(
+        '$error\n--- binary stderr ---\n'
+        '${stderrBuffer.isEmpty ? '(nothing)' : stderrBuffer}');
+
     try {
-      await client.connect(transport);
-      // Attached after connect: the process does not exist until start(), so
-      // there is no stream to subscribe to before then. `dart run` prints its
-      // build-hook chatter here too, which is why the assertions look for
-      // their line inside the buffer rather than expecting it alone.
-      unawaited(transport.stderr
-              ?.transform(utf8.decoder)
-              .forEach(stderrBuffer.write) ??
-          Future.value());
+      try {
+        await client.connect(transport);
+        final tools = await client.listTools();
+        // The explanation is written before the server connects its
+        // transport, so it has already been produced by the time listTools
+        // answers; this only yields to let the pipe drain into the buffer.
+        await Future<void>.delayed(const Duration(milliseconds: 200));
 
-      final tools = await client.listTools();
-      // The explanation is written before the server connects its transport,
-      // so it has already been produced by the time listTools answers; this
-      // only yields to let the pipe drain into the buffer.
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-
-      return _Launch(
-        tools.tools.map((t) => t.name).toList(),
-        stderrBuffer.toString(),
-      );
+        return _Launch(
+          tools.tools.map((t) => t.name).toList(),
+          stderrBuffer.toString(),
+        );
+      } on Object catch (e) {
+        failWithStderr(e);
+      }
     } finally {
-      await transport.close();
+      process.kill();
+      await process.exitCode;
+      await stderrDone;
     }
   }
 
