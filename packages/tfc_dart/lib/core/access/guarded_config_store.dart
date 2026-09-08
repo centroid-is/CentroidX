@@ -73,6 +73,17 @@ const Map<ConfigKind, String> kConfigWriteKeys = <ConfigKind, String>{
   // above. Until this entry existed `write(checkKind: page)` threw, which is
   // what kept the save from routing around the check.
   ConfigKind.page: 'page_editor_data',
+  // And the images those assets draw (04-09). The same key again, for the
+  // third time and for the same reason: an image is not separately
+  // permissioned from the mimic that shows it — somebody who may edit the
+  // page may put a picture on it — and the group `page_editor_data` resolves
+  // to, `configure`, is the group the old `page_editor_image:` preference
+  // rule answered as well. So the swap moved the storage and changed nobody's
+  // permissions. What the row does *not* share with the other two is history:
+  // `kHistoryExemptKinds` holds this kind, so an upload writes a
+  // `config_item` row and no `config_change` row. The audit row is still
+  // written, and its `new_value` names the image ids that moved.
+  ConfigKind.pageImage: 'page_editor_data',
 };
 
 /// The example mapping a fresh plant is seeded with.

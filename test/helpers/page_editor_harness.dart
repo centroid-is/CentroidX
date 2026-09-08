@@ -43,6 +43,8 @@ import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/route_registry.dart';
 
 import 'package:tfc/core/config/page_codec.dart' show pagesOf;
+import 'package:tfc_dart/core/access/guarded_config_store.dart'
+    show GuardedConfigStore;
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart' show ConfigStore;
 
@@ -63,9 +65,13 @@ class FakeEditorPreferences implements PreferencesApi {
   /// It sits on the preferences fake rather than being threaded through
   /// sixteen test files because that is what [readBackHomeAssets] is handed —
   /// the read-back channel moved from the blob to the rows and its signature
-  /// did not have to. Image blobs still live in [_store]: the image store is
-  /// preference-backed and is not this phase's.
+  /// did not have to.
   ConfigStore? configStore;
+
+  /// The guard over [configStore], which is what a page image is written
+  /// through since 04-09 — image blobs are `kind='page_image'` rows now, not
+  /// preferences, so they no longer live in [_store] at all.
+  GuardedConfigStore? guardedStore;
 
   @override
   Future<String?> getString(String key) async => _store[key] as String?;
@@ -133,6 +139,7 @@ Future<PageManager> editorManagerWith(
   final guarded =
       await createTestConfigStore(session: kConfiguringTestSession);
   prefs.configStore = guarded.inner;
+  prefs.guardedStore = guarded;
   return PageManager(
     prefs: prefs,
     store: guarded.inner,
@@ -152,6 +159,24 @@ Future<PageManager> editorManagerWith(
     ),
   );
 }
+
+/// The image store for [prefs]: the guard over the very rows the manager
+/// built beside it saves pages into.
+///
+/// Falls back to a store of its own when [prefs] never went through
+/// [editorManagerWith] — the editor collects orphaned images on every save,
+/// and a provider that threw there would leave that path silently untested.
+/// Idempotent: the store it makes is remembered on [prefs], so seeding blobs
+/// before the editor is built and reading them back afterwards go to one
+/// place.
+Future<PageImageStore> imageStoreOf(FakeEditorPreferences prefs) async =>
+    PageImageStore(prefs.guardedStore ??=
+        await createTestConfigStore(session: kConfiguringTestSession));
+
+/// A [PageImageStore] over a row store of its own, for the tests that only
+/// need somewhere to put bytes.
+Future<PageImageStore> testImageStore() async => PageImageStore(
+    await createTestConfigStore(session: kConfiguringTestSession));
 
 /// The editor lives inside `BaseScaffold`, which reads the current Beamer
 /// location during build, so it needs a router above it.
@@ -201,10 +226,15 @@ Widget buildEditorUnderTest(PageManager manager, {ThemeData? theme}) {
   return ProviderScope(
     overrides: [
       pageManagerProvider.overrideWith((ref) async => manager),
-      // Image blobs go where the pages go, so saveAndReadBack-style tests
-      // see pages and their image bytes in one fake store.
-      pageImageStoreProvider
-          .overrideWith((ref) async => PageImageStore(manager.prefs)),
+      // Image blobs go where the pages go — the same `ConfigStore` the
+      // manager saves rows into — so saveAndReadBack-style tests see pages
+      // and their image bytes in one place.
+      pageImageStoreProvider.overrideWith((ref) async {
+        final prefs = manager.prefs;
+        return prefs is FakeEditorPreferences
+            ? imageStoreOf(prefs)
+            : testImageStore();
+      }),
       // Keep the editor off the database / PLC / alarm stack: BaseScaffold
       // only needs these to decide between the clock and the alarm banner.
       databaseProvider.overrideWith((ref) async => null),

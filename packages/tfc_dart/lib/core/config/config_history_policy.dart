@@ -86,25 +86,6 @@ const Set<ConfigKind> kHistoryExemptKinds = {ConfigKind.pageImage};
 /// like any other.
 const Set<String> kHistoryExemptPreferenceIds = {'server_config_envelope'};
 
-/// Id **prefixes** exempt within [ConfigKind.preference].
-///
-/// One entry, and it is the C-3 storage bomb wearing its old clothes. A page
-/// image is `page_editor_image:<content hash>` — N keys, up to 5 MB raw and
-/// about 6.7 MB base64 each — and [ConfigKind.pageImage] is exempt precisely
-/// because storing both sides of one in a table that is never pruned is
-/// unaffordable. Until 04-09 ports those writes onto that kind, they are still
-/// *preferences*, and since 04-05 a preference write is a `config_item` row
-/// with a `config_change` row beside it. Without this arm, one screenshot
-/// dropped on a mimic would cost about 13 MB of permanent history, and the
-/// editor's own garbage collection (`image_store.dart`'s `removeUnreferenced`)
-/// would cost another 6.7 MB per image it tidied away.
-///
-/// A prefix and not an id because the suffix is a content hash: there is no
-/// finite set to enumerate. The same reasoning as the exempt kind, and the
-/// same conclusion — "the history of one image" is not a question anybody can
-/// ask, because the id *is* the content.
-const Set<String> kHistoryExemptPreferenceIdPrefixes = {'page_editor_image:'};
-
 /// Whether writes to `(kind, id)` are kept out of `config_change` entirely.
 ///
 /// Asked by every change-row writer immediately before it would insert. The
@@ -113,10 +94,7 @@ const Set<String> kHistoryExemptPreferenceIdPrefixes = {'page_editor_image:'};
 /// exactly like any other. Only its history is not kept.
 bool historyExempt(ConfigKind kind, String id) =>
     kHistoryExemptKinds.contains(kind) ||
-    (kind == ConfigKind.preference &&
-        (kHistoryExemptPreferenceIds.contains(id) ||
-            kHistoryExemptPreferenceIdPrefixes
-                .any((prefix) => id.startsWith(prefix))));
+    (kind == ConfigKind.preference && kHistoryExemptPreferenceIds.contains(id));
 
 /// The marker that tells a reconcile nudge from the trigger's own empty
 /// payload.

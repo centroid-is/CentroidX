@@ -411,18 +411,22 @@ void main() {
   });
 
   group('the exempt keys', () {
-    test('a page image is a row and no change row at all', () async {
-      // C-3, through the preference door. `image_store.dart` still writes
-      // images as preferences until 04-09 ports them onto ConfigKind.pageImage,
-      // and `config_change` is never pruned — so both sides of a 6.7 MB base64
-      // payload, per save and per garbage collection, would be permanent.
-      await prefs.setString(
-          'page_editor_image:9f86d081', 'aGVsbG8gd29ybGQ=');
+    test('a key that merely looks like an image keeps its history', () async {
+      // Between 04-05 and 04-09 this key was exempt by id prefix, because
+      // `image_store.dart` was still writing images as preferences and
+      // `config_change` is never pruned — both sides of a 6.7 MB base64
+      // payload, per save and per garbage collection, would have been
+      // permanent (C-3, through the preference door). 04-09 put the images on
+      // `ConfigKind.pageImage`, which is exempt as a kind, and the prefix arm
+      // came out with the writes it covered.
+      await prefs.setString('page_editor_image:9f86d081', 'aGVsbG8gd29ybGQ=');
 
       expect((await remotePreferenceRows()).single.id,
           'page_editor_image:9f86d081');
-      expect(await remoteChanges(), isEmpty);
-      // Stored, versioned and readable — only its history is not kept.
+      expect((await remoteChanges()).map((c) => c.entityId),
+          ['page_editor_image:9f86d081'],
+          reason: 'nothing writes this key any more; if something starts, its '
+              'history is a defect worth seeing rather than a silent 13 MB');
       expect(await prefs.getString('page_editor_image:9f86d081'),
           'aGVsbG8gd29ybGQ=');
     });
@@ -437,7 +441,7 @@ void main() {
 
     test('an ordinary key beside an exempt one still gets its history',
         () async {
-      await prefs.setString('page_editor_image:9f86d081', 'aGk=');
+      await prefs.setString('server_config_envelope', 'ciphertext');
       await prefs.setString('update_channel', 'beta');
 
       final changes = await remoteChanges();

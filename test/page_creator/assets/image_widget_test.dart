@@ -44,7 +44,7 @@ Future<void> pumpAsset(
 void main() {
   late PageImageStore store;
 
-  setUp(() => store = PageImageStore(FakeEditorPreferences()));
+  setUp(() async => store = await testImageStore());
 
   testWidgets('renders a placeholder glyph before an image is chosen',
       (tester) async {

@@ -51,53 +51,11 @@ void main() {
     });
   });
 
-  group('PageImageStore', () {
-    late FakeEditorPreferences prefs;
-    late PageImageStore store;
-
-    setUp(() {
-      prefs = FakeEditorPreferences();
-      store = PageImageStore(prefs);
-    });
-
-    test('round-trips bytes through a content-derived id', () async {
-      final id = await store.save(fixturePngBytes);
-      expect(id, await PageImageStore.imageIdFor(fixturePngBytes));
-      expect(await store.load(id), fixturePngBytes);
-      expect(await store.storedIds(), {id});
-    });
-
-    test('same bytes dedupe to one blob, different bytes do not', () async {
-      final a = await store.save(fixturePngBytes);
-      final b = await store.save(fixturePngBytes);
-      final c = await store.save(fixtureJpegBytes);
-      expect(a, b);
-      expect(a, isNot(c));
-      expect(await store.storedIds(), hasLength(2));
-    });
-
-    test('unknown id and corrupt payload both load as null', () async {
-      expect(await store.load('feedfacefeedfacefeedface'), null);
-      await prefs.setString('${PageImageStore.keyPrefix}bad', 'not base64!!');
-      expect(await store.load('bad'), null);
-    });
-
-    test('refuses blobs over the cap', () async {
-      final big = Uint8List(PageImageStore.maxBytes + 1);
-      await expectLater(
-          store.save(big), throwsA(isA<PageImageTooLargeException>()));
-      expect(await store.storedIds(), isEmpty);
-    });
-
-    test('removeUnreferenced deletes exactly the orphans', () async {
-      final keep = await store.save(fixturePngBytes);
-      final drop = await store.save(fixtureJpegBytes);
-      final removed = await store.removeUnreferenced({keep});
-      expect(removed, 1);
-      expect(await store.storedIds(), {keep});
-      expect(await store.load(drop), null);
-    });
-
+  // The store's own put/get/garbage-collection contract moved to
+  // `test/page_creator/image_store_test.dart` when 04-09 put image blobs on
+  // `kind='page_image'` rows. What stays here is the one member that is a
+  // pure function over page JSON and touches no store at all.
+  group('PageImageStore.referencedImageIds', () {
     test('referencedImageIds finds ids anywhere in a page tree', () {
       final asset = ImageConfig()..imageId = 'aaa111';
       final tree = {
@@ -122,7 +80,7 @@ void main() {
   group('ingestPageImage', () {
     late PageImageStore store;
 
-    setUp(() => store = PageImageStore(FakeEditorPreferences()));
+    setUp(() async => store = await testImageStore());
 
     test('measures and stores each raster format', () async {
       for (final bytes in [fixturePngBytes, fixtureJpegBytes, fixtureBmpBytes]) {
