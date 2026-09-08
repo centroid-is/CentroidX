@@ -146,6 +146,40 @@ void main() {
               'the plant onto it');
     });
 
+    test('mcp.config migrates, because the MCP server reads the shared row',
+        () {
+      // **A correction to a classification this suite once asserted.** It was
+      // abandoned on the grounds that it is device-local for the app and the
+      // shared row is the stale copy `mcpConfigMigrationProvider` deletes —
+      // true of the key's *owner*, false of its *consumer*.
+      // `tfc_mcp_server.dart`'s `_readTogglesFromDb` reads `mcp.config`
+      // (`McpConfig.kPrefKey`) from the shared `flutter_preferences` table at
+      // every server start and reads nothing else, and its documented default
+      // for a missing key is **enabled**. Abandoned, the drop would have left
+      // an operator's deliberately disabled MCP tools switched back on — and
+      // abandoning it is also what would have kept the drop gate quiet, since
+      // an unknown key refuses the drop and an abandoned one does not.
+      final c = classifyPreferenceKey('mcp.config');
+
+      expect(c.disposition, PreferenceDisposition.migrate);
+      expect(c.kind, ConfigKind.preference);
+      expect(c.id, 'mcp.config');
+      expect(kAbandonedPreferenceKeys.keys, isNot(contains('mcp.config')),
+          reason: 'abandoning a key waves the drop through; it may only be '
+              'abandoned when every consumer has been checked');
+    });
+
+    test('the legacy MCP toggle keys still land in unknown, and that is what '
+        'protects the older plant', () {
+      // The asymmetry worth knowing about: a plant still carrying the
+      // per-tool keys is protected by the drop gate refusing on unknowns,
+      // while a plant on the consolidated blob alone would have sailed
+      // through. The gates protect the older plant better than the newer one,
+      // which is the opposite of what a reader assumes.
+      expect(classifyPreferenceKey('mcp_tools_write_enabled').disposition,
+          PreferenceDisposition.unknown);
+    });
+
     test('a marker is bookkeeping, whatever else it is called', () {
       expect(classifyPreferenceKey('_migrated.key_mappings').disposition,
           PreferenceDisposition.abandon);

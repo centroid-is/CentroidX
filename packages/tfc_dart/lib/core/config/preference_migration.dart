@@ -269,6 +269,29 @@ class PreferenceMigrationResult {
 /// Named one at a time rather than matched by a pattern: every entry here is a
 /// decision somebody made, and a pattern would silently adopt the next key
 /// that happened to look like one of them.
+///
+/// ## Abandoning a key removes a safety net, so check its consumers
+///
+/// **A key may be classified abandoned only when every *consumer* has been
+/// checked — never when its *owner* has.** Grep for readers; do not reason
+/// from the key's provenance.
+///
+/// This is written here because the list got it wrong once, and the shape of
+/// the mistake is worth more than the entry that caused it. `mcp.config` was
+/// abandoned on the grounds that it is device-local for the app and the shared
+/// row is a stale copy — both true, and both about the key's *owner*.
+/// `tfc_mcp_server.dart` reads that shared row at every server start and reads
+/// nothing else, so after 04-12 drops the table it would have found no
+/// toggles, and its documented default is that missing keys mean **enabled**:
+/// an operator's deliberately disabled tools would have switched themselves
+/// back on, on a surface that reaches the plant.
+///
+/// The reason it would not have been caught is the part to remember. An
+/// **unknown** key blocks 04-12's drop by design and forces somebody to
+/// resolve it. An **abandoned** key waves the drop through. So this list is
+/// not bookkeeping — every entry asserts *nothing will miss this*, and being
+/// wrong here disarms the gate that exists to catch being wrong. The gate
+/// still runs, and still passes.
 const Map<String, String> kAbandonedPreferenceKeys = <String, String>{
   'key_mappings':
       'migrated to key_mapping rows by Phase 2; the blob is rollback '
@@ -276,9 +299,6 @@ const Map<String, String> kAbandonedPreferenceKeys = <String, String>{
   'page_editor_data':
       'migrated to page and asset rows by Phase 3; the blob is rollback '
           'insurance until 04-12 drops the table',
-  'mcp.config':
-      'device-local since Phase 1 — the shared row is the stale copy '
-          'mcpConfigMigrationProvider deletes, not a live setting',
   'startup_url':
       'device-local: which page a panel starts on is that panel\'s own, and '
           'Phase 1 SC-2 already imported it',
@@ -348,6 +368,14 @@ const Set<String> kMigratedPreferenceKeys = <String>{
   'collector_config',
   'page_editor_top_level_order',
   'server_config_envelope',
+  // **Corrects a classification this file shipped as abandoned.** The reason
+  // given was "device-local since Phase 1 — the shared row is the stale copy
+  // `mcpConfigMigrationProvider` deletes". That is true of the *app* and false
+  // of the *server*: `tfc_mcp_server.dart`'s `_readTogglesFromDb` reads
+  // `mcp.config` (`McpConfig.kPrefKey`) out of the **shared**
+  // `flutter_preferences` table and nothing else, at every server start. See
+  // [kAbandonedPreferenceKeys] for the rule that failure produced.
+  'mcp.config',
 };
 
 /// Copies every remaining known key out of `flutter_preferences` into rows,
