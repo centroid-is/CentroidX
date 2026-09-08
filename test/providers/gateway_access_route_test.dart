@@ -580,6 +580,44 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
+  // Arm 11: gateway mode WITH a database — T-17-12b's other half
+  // ---------------------------------------------------------------------------
+
+  group('gateway mode WITH a database', () {
+    test('arm 11: the relayed route is still taken when Postgres is '
+        'reachable — a route that exists will be taken, so it must not exist',
+        () async {
+      final gateway = await _gateway(_servedFamilies());
+      final db = _testDatabase();
+      final container = await _gatewayPanel(gateway, database: () async => db);
+
+      final templates =
+          (await container.read(accessTemplateStoreProvider.future))!;
+      expect(templates.runtimeType, isNot(AccessTemplateStore),
+          reason: 'a gateway branch that falls through to the local path '
+              'when a database happens to be present is the panel silently '
+              'bypassing the server-side gate (T-17-12b) — arms 1-4 cannot '
+              'see it because they override the database away');
+      expect((await templates.list()).map((t) => t.name), ['conveyor-1'],
+          reason: 'the answer must be the gateway\'s; the local database '
+              'has no templates at all');
+
+      final admin = (await container.read(accessAdminStoreProvider.future))!;
+      expect(admin.runtimeType, isNot(AccessAdminStore));
+      expect((await admin.roles()).map((r) => r.name), ['Panel Operator']);
+
+      final audit = (await container.read(auditTrailStoreProvider.future))!;
+      expect(audit.runtimeType, isNot(AuditTrailStore));
+      expect(await audit.distinctWho(), ['ST101-panel']);
+
+      final sink = await container.read(auditSinkProvider.future);
+      expect(sink, isNot(isA<DriftAuditSink>()),
+          reason: 'panel-side rows beside the server\'s rows would split '
+              'the one trail in two for every relayed action');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Arm 10: login is still unavailable, and says so
   // ---------------------------------------------------------------------------
 
