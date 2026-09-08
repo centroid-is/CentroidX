@@ -37,22 +37,22 @@ GatewayLinkReport _report(GatewayLinkKind kind) => switch (kind) {
           url: _url,
           elapsed: const Duration(seconds: 2)),
       GatewayLinkKind.unreachable => describeGatewayLink(
-          state: LinkState.reconnecting,
+          state: LinkState.down,
           url: _url,
           elapsed: const Duration(minutes: 3),
           lastDownReason: GatewayLinkReasons.transportEnded),
       GatewayLinkKind.untrustedCertificate => describeGatewayLink(
-          state: LinkState.reconnecting,
+          state: LinkState.down,
           url: _url,
           elapsed: const Duration(seconds: 20),
           lastDownReason: GatewayLinkReasons.certificateNotTrusted),
       GatewayLinkKind.credentialRefused => describeGatewayLink(
-          state: LinkState.reconnecting,
+          state: LinkState.down,
           url: _url,
           elapsed: const Duration(seconds: 20),
           stopReason: GatewayLinkReasons.credentialRefused),
       GatewayLinkKind.versionRefused => describeGatewayLink(
-          state: LinkState.reconnecting,
+          state: LinkState.down,
           url: _url,
           elapsed: const Duration(seconds: 20),
           stopReason: GatewayLinkReasons.versionRefused),

@@ -27,7 +27,7 @@ final Uri _url = Uri.parse('wss://10.50.10.11:9444');
 
 GatewayLinkReport _down({String reason = 'the transport ended'}) =>
     describeGatewayLink(
-      state: LinkState.reconnecting,
+      state: LinkState.down,
       url: _url,
       elapsed: const Duration(minutes: 1),
       lastDownReason: reason,
@@ -37,7 +37,7 @@ GatewayLinkReport _up() => describeGatewayLink(
     state: LinkState.ready, url: _url, elapsed: Duration.zero);
 
 GatewayLinkReport _refused() => describeGatewayLink(
-      state: LinkState.reconnecting,
+      state: LinkState.down,
       url: _url,
       elapsed: const Duration(minutes: 1),
       stopReason: GatewayLinkReasons.credentialRefused,
