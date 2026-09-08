@@ -16,11 +16,11 @@
 //   4. the re-run reports the table already gone and exits 0, because the
 //      runbook's week-later step has to be safe to repeat.
 //
-// **The trigger and function are installed here by hand.** 04-12 deletes
-// `AppDatabase.enableKeyedNotificationChannel`, which is what created them —
-// but a plant database migrated by earlier phases still carries what it made,
-// and cleaning that up is precisely what the tool is for. The SQL below is
-// what that method emitted.
+// **The trigger and function are installed here by hand.** 04-12 deleted the
+// keyed-notification helper on `AppDatabase` that created them — but a plant
+// database migrated by earlier phases still carries what it made, and
+// cleaning that up is precisely what the tool is for. The SQL below is what
+// that method emitted, kept here because it is now the only record of it.
 //
 // PARALLEL WORKTREES: `docker_compose.dart` hardcodes the container name and
 // both ports (5432, and the proxy on 15432). Two checkouts running integration

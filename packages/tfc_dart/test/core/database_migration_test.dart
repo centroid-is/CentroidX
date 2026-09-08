@@ -237,8 +237,8 @@ void main() {
 
       expect(source, contains("pg_notify('config_change', '')"),
           reason: 'the payload must stay the empty string. Carrying the key '
-              'in it is what enableKeyedNotificationChannel does, and it is '
-              'the wrong primitive here: N keys in one save become N '
+              'in it is what the retired keyed-notification trigger did, and '
+              'it is the wrong primitive here: N keys in one save become N '
               'payloads and N deliveries, and a large one errors the save.');
       expect(source.contains('json_build_object'), isFalse,
           reason: 'a payload built from the row is the 8000-byte hazard this '

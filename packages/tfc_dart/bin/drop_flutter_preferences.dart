@@ -77,10 +77,12 @@ const String kConfirmDropValue = 'flutter_preferences';
 /// The table this drops, and the notify function that outlives it.
 ///
 /// `DROP TABLE` takes the table's triggers with it but **not** the function
-/// they call: `enableKeyedNotificationChannel` created
+/// they call: the keyed-notification helper this repo used to carry created
 /// `notify_flutter_preferences_key_change()` as a standalone `plpgsql`
-/// function (`database_drift.dart`), and a dropped table leaves it behind as
-/// an orphan that the next engineer reading `\df` cannot account for.
+/// function, and a dropped table leaves it behind as an orphan that the next
+/// engineer reading `\df` cannot account for. The helper itself is gone from
+/// the code (04-12); what it installed is still on every plant it ran
+/// against, which is exactly why naming the function here is not optional.
 const String kDroppedTable = 'flutter_preferences';
 const String kDroppedFunction = 'notify_flutter_preferences_key_change';
 

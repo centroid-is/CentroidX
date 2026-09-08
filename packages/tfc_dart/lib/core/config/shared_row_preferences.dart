@@ -5,7 +5,6 @@ library;
 
 import 'dart:async';
 
-import 'package:meta/meta.dart' show visibleForTesting;
 
 import '../access/guarded_config_store.dart';
 import '../database.dart';
@@ -529,29 +528,6 @@ class SharedRowPreferences extends Preferences {
   // ---------------------------------------------------------------------
   // The `flutter_preferences` paths, now answered by the store
   // ---------------------------------------------------------------------
-
-  /// A no-op: there is no `SELECT * FROM flutter_preferences` here.
-  ///
-  /// The shared values are the store's snapshot, filled from the local mirror
-  /// at boot and reconciled against Postgres by the sync engine — which is
-  /// also how this store keeps working when Postgres is unreachable, where
-  /// `loadFromPostgres` threw.
-  ///
-  /// Overridden rather than left inherited because the inherited one
-  /// dereferences `database!` and would read the very table this milestone is
-  /// dropping.
-  @override
-  Future<void> loadFromPostgres() async {}
-
-  /// A no-op: the mirror is written by [ConfigStore] inside the same save.
-  ///
-  /// The copy this replaces existed because the shared store was a bag of
-  /// blobs with no local counterpart. Rows have one — `_writeMirror` — and it
-  /// is written from what Postgres actually committed rather than from what
-  /// this process believed it held.
-  @override
-  @visibleForTesting
-  Future<void> syncToLocalCache() async {}
 
   static bool _isInternal(String id) => id.startsWith(_internalIdPrefix);
 }

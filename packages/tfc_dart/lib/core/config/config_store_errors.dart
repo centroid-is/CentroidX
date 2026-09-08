@@ -14,23 +14,25 @@
 /// Every [toString] is written to be shown to an operator verbatim, because
 /// that is what the editor's snackbar will do with it.
 ///
-/// ## Why not [PreferencesException]
+/// ## Why not the old `PreferencesException`
 ///
-/// It is thrown *and swallowed* inside `Preferences.create`
-/// (`preferences.dart:238-242`), so a `catch (PreferencesException)` around a
-/// save would also catch a failure that has nothing to do with the save.
-/// Reusing it would make the editor's three catch arms indistinguishable from
-/// each other.
+/// It was thrown *and swallowed* inside `Preferences.create`, so a
+/// `catch (PreferencesException)` around a save would also have caught a
+/// failure that had nothing to do with the save — which would make the
+/// editor's three catch arms indistinguishable from each other. It is gone
+/// with the Postgres paths that raised it (04-12); the reasoning is kept
+/// because it is what these three types are shaped against.
 library;
 
 /// A write that needs Postgres, with no Postgres to write to.
 ///
-/// This is the exception SC-4 is about. Today the same situation is a silent
-/// success: `Preferences._upsertToPostgres` returns `false` when
-/// `database == null` (`preferences.dart:247-249`), every caller ignores the
-/// return value, and `key_repository.dart:878-882` shows a green *"Key
-/// mappings saved successfully!"* over a write that reached nothing. An
-/// operator then believes the plant's wiring is saved when it is not.
+/// This is the exception SC-4 is about. The situation used to be a silent
+/// success: `Preferences._upsertToPostgres` returned `false` when
+/// `database == null`, every caller ignored the return value, and
+/// `key_repository.dart:878-882` showed a green *"Key mappings saved
+/// successfully!"* over a write that reached nothing. An operator then
+/// believed the plant's wiring was saved when it was not. That writer was
+/// deleted in 04-12; this type is what replaced its return value.
 ///
 /// Thrown in two places, distinguished by [cause]:
 ///

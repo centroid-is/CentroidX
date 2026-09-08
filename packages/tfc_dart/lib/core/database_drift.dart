@@ -599,12 +599,15 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   /// and that cap does not truncate, it *errors the statement that fired the
   /// trigger*, which is to say it would fail the very save it is reporting.
   ///
-  /// That is also why [enableKeyedNotificationChannel] must **not** be reused
-  /// here. It embeds the changed key in the payload, so nine keys saved
-  /// together are nine distinct payloads and nine deliveries. It stays exactly
-  /// as it is for `alarm_man_config`, whose watcher does need to know which
-  /// row moved; this channel's receivers do not, because what follows an event
-  /// is a `config_change.id` watermark pull that is the same read either way.
+  /// That is also why the key-carrying variant this class used to have — a
+  /// trigger whose payload named the changed row — is gone rather than reused
+  /// here. It made nine keys saved together into nine distinct payloads and
+  /// nine deliveries, and this channel's receivers do not need to know which
+  /// row moved: what follows an event is a `config_change.id` watermark pull
+  /// that is the same read either way. Its one caller watched
+  /// `flutter_preferences`; both retired in 04-12. The trigger and function it
+  /// installed still exist on any plant it ever ran against, and
+  /// `bin/drop_flutter_preferences.dart` is what removes them.
   ///
   /// `AFTER INSERT` only: `config_change` is append-only, so there is no
   /// UPDATE or DELETE to report. `FOR EACH STATEMENT` rather than
@@ -1890,56 +1893,6 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   ''');
     } catch (e) {
       // really dont care if the trigger already exists
-      if (e.toString().contains('already exists')) {
-        return channelName;
-      }
-      rethrow;
-    }
-    return channelName;
-  }
-
-  /// Like [enableNotificationChannel], but the payload carries only the value
-  /// of [keyColumn] instead of the whole row.
-  ///
-  /// `pg_notify` payloads are capped at 8000 bytes, and the cap is enforced by
-  /// *erroring the statement that fired the trigger*. A row-payload trigger on
-  /// a table with large values — `flutter_preferences` holds the entire
-  /// `key_mappings` JSON in one row — would therefore make every save of that
-  /// row fail outright. This payload stays a few dozen bytes regardless of row
-  /// size: `{"action": TG_OP, "key": <keyColumn>}`.
-  Future<String> enableKeyedNotificationChannel(
-      String tableName, String keyColumn) async {
-    final channelName = 'table_${tableName}_key_changes';
-
-    await customStatement('''
-    CREATE OR REPLACE FUNCTION "notify_${tableName}_key_change"()
-    RETURNS TRIGGER AS \$\$
-    BEGIN
-      PERFORM pg_notify(
-        '$channelName',
-        json_build_object(
-          'action', TG_OP,
-          'key', CASE WHEN TG_OP = 'DELETE' THEN OLD."$keyColumn" ELSE NEW."$keyColumn" END
-        )::text
-      );
-      RETURN COALESCE(NEW, OLD);
-    END;
-    \$\$ LANGUAGE plpgsql;
-  ''');
-
-    await customStatement('''
-  DROP TRIGGER IF EXISTS "${tableName}_key_notify" ON "$tableName";
-  ''');
-
-    try {
-      await customStatement('''
-  CREATE TRIGGER "${tableName}_key_notify"
-  AFTER INSERT OR UPDATE OR DELETE ON "$tableName"
-  FOR EACH ROW
-  EXECUTE FUNCTION "notify_${tableName}_key_change"();
-  ''');
-    } catch (e) {
-      // Two processes racing DROP+CREATE: losing the race is fine.
       if (e.toString().contains('already exists')) {
         return channelName;
       }

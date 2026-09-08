@@ -5,10 +5,11 @@
 /// string to Postgres, writes it again to the device-local cache, and lands
 /// **both** the before- and after-image in one `audit_entry` row — over a
 /// megabyte, out of which nobody can tell which key changed. Its size is also
-/// the reason `enableKeyedNotificationChannel` exists at all: a row-payload
-/// `pg_notify` trigger on `flutter_preferences` would exceed the 8000-byte
-/// payload cap and error the very statement that saves it
-/// (`database_drift.dart:1588`).
+/// the reason that table was watched through a *key*-payload `pg_notify`
+/// trigger rather than a row-payload one: a row payload would have exceeded
+/// the 8000-byte cap and errored the very statement that saves it. Both the
+/// watcher and the trigger-installing helper retired in 04-12 with the table
+/// they served.
 ///
 /// One item per key fixes all of that at once, and the payload stays exactly
 /// what `KeyMappingEntry.toJson()` already produces.

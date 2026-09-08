@@ -112,9 +112,10 @@ void main() {
     /// before the test can use it — which is a property of the design, proven
     /// on purpose by the SC-6 tests, and not one a CAS test may lean on.
     ///
-    /// [sweepInterval] is an hour by default for the same reason it is in
-    /// `preferences_watch_integration_test.dart`: a test that asserts on the
-    /// notification path must not be able to pass because a poll rescued it.
+    /// [sweepInterval] is an hour by default for the reason the retired
+    /// `preferences_watch_integration_test.dart` set one: a test that asserts
+    /// on the notification path must not be able to pass because a poll
+    /// rescued it.
     Future<ConfigStore> newStation({
       bool startSync = false,
       Duration sweepInterval = const Duration(hours: 1),
