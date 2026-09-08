@@ -373,3 +373,56 @@ same release.** Plan 04-13's runbook must carry that as a hard precondition and
 not as a recommendation; a release that ships 04-05 alone is a plant-wide loss
 of alarm configuration on the first restart.
 
+
+## D-8 — the MCP server logs "Connected to PostgreSQL" when it has not connected
+
+**Found** 2026-09-08, while fixing the toggle fail-open (`d47f7633`).
+**Not fixed**: outside that fix's surface, and it is an MCP-server defect
+rather than a milestone one.
+
+`ServerDatabase.fromConfig` builds its pool through `Pool.withEndpoints`,
+which is **lazy and never throws**. So the `on Exception` arm at
+`tfc_mcp_server.dart:112-119` — the one that falls back to
+`ServerDatabase.inMemory()` — cannot fire at startup. Probed directly:
+
+```
+--db-host no-such-host.invalid --db-port 1
+→ "Connected to PostgreSQL at no-such-host.invalid:1/hmi"
+```
+
+The binary reports a connection it does not have. A real connect failure
+surfaces later, per-query, where it reads as a query bug rather than as the
+server having no database at all.
+
+Two consequences worth stating:
+
+- **The in-memory fallback is dead code.** Anything reasoning about the
+  binary's behaviour "during an outage" — including addendum 2 of
+  `.planning/.../04-CORE-REVIEW.md` — should say per-query failure, not
+  empty tables. The fail-open that addendum described was real regardless,
+  through its *first* path: a migrated plant, database reachable, simply
+  empty of MCP keys. No failure was needed to trigger it.
+- **A false "Connected" line is worse than a silent failure**, because it is
+  the line an engineer greps for when deciding whether the database is the
+  problem.
+
+**Fix direction:** either make the arm reachable (probe the connection at
+startup and let it fail loudly), or delete the arm and the message together.
+What must not survive is a log line asserting something the code has not
+established.
+
+## D-9 — audit rows are lost, not queued, when the database is unreachable
+
+**Found** 2026-09-08 alongside D-8. **Not fixed**, and deliberately ranked
+below it.
+
+With no reachable database the MCP server's audit writes go nowhere. This is
+**lost provenance during an outage, not lost privilege** — no capability
+decision is made off the failure, which was checked explicitly: tool
+registration is toggles-only, the two `!= null` gates test injected objects
+and narrow rather than widen, every `isEmpty` shapes a message, and no write
+tool consults the database for permission (they are proposals; authorization
+happens at approval, in the app).
+
+It is recorded because "the trail is complete" is a claim this milestone
+makes elsewhere, and an outage is the one window where it is not true.
