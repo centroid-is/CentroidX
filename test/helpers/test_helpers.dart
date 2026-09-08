@@ -12,6 +12,8 @@ import 'package:drift/drift.dart' show driftRuntimeOptions;
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/secure_storage/interface.dart';
+import 'package:tfc_dart/core/secure_storage/secure_storage.dart'
+    show SecureStorage;
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
@@ -42,6 +44,36 @@ class FakeSecureStorage implements MySecureStorage {
   Future<void> delete({required String key}) async {
     _store.remove(key);
   }
+}
+
+/// Gives this test a secret store that is not the machine's keychain.
+///
+/// `SecureStorage.getInstance()` answers a real OS keychain when nothing has
+/// been set: libsecret on Linux, the login keychain on macOS, and on Windows
+/// it does not answer at all — it throws `SecureStorage instance not set for
+/// this platform`. Anything reaching `preferencesProvider` reaches it, because
+/// the provider builds a `Preferences` with `SecureStorage.getInstance()`
+/// (`providers/preferences.dart:240`), so a test that never mentions a secret
+/// still depends on the machine having a keychain. That is why
+/// `preferences_provider_test.dart` passed on a developer's Mac and failed on
+/// both CI platforms we ship: seven tests on Windows, where the call throws,
+/// and one on Linux, where the call succeeds and only the `write` fails for
+/// want of `libsecret-1`.
+///
+/// The substitute is a real store, not a stub: [FakeSecureStorage] keeps what
+/// it is given and hands it back. A test asserting that a secret was written,
+/// or that it went to the keychain instead of a `config_item` row, still has
+/// something to assert against — a fake that swallowed writes would make those
+/// claims pass by meaning nothing.
+///
+/// Call it from `setUp`. A fresh empty store replaces it at teardown, so a
+/// secret written by one test is not visible to the next, and no test in this
+/// file touches the developer's own keychain either.
+FakeSecureStorage useFakeSecureStorage() {
+  final storage = FakeSecureStorage();
+  SecureStorage.setInstance(storage);
+  addTearDown(() => SecureStorage.setInstance(FakeSecureStorage()));
+  return storage;
 }
 
 /// Gives this test the device-local store that `main()` opens before

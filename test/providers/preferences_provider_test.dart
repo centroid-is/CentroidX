@@ -45,6 +45,10 @@ void main() {
     // The provider calls `createDeviceLocalPreferences()` for the startup_url
     // clean-up; seeding the singleton is cheaper than opening a file.
     setDeviceLocalPreferencesForTest(deviceStore);
+    // And it builds its `Preferences` with `SecureStorage.getInstance()`,
+    // which is the machine's keychain unless somebody says otherwise. Every
+    // test here reaches that, secret or not.
+    useFakeSecureStorage();
   });
 
   tearDown(() async {
