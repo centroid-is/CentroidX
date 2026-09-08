@@ -313,10 +313,13 @@ clean re-run.
 this:
 
 ```
-Preference migration: 12 migrated (configure: 8, administer: 3, setpoints: 1), 6 abandoned, 0 unknown
+Preference migration: 9 migrated (alarm_man_config: 1, collector_config: 1, images: 4, page_editor_top_level_order: 1, recipes: 1, server_config_envelope: 1), 6 abandoned, 0 unknown
 ```
 
-The counts will differ; the shape will not. Two things to check on it:
+The names in brackets are **families**, sorted: one per migrated setting, plus
+`images` for the uploaded page images and `recipes` for the recipe buckets,
+which are the two families that can hold more than one key. Your counts will
+differ; the shape will not. Two things to check on it:
 
 - **`0 unknown`.** If it is not zero, the line names the unknown keys in
   brackets. **Resolve them before going on** — that is section 3's work
@@ -370,10 +373,18 @@ It is served by `tfc_mcp_server`, and **the server must be told to serve it**:
 **[TRANSCRIBED]**
 
 ```bash
-tfc_mcp_server \
+# From `packages/tfc_mcp_server`, or the compiled binary of the same name.
+dart run bin/tfc_mcp_server.dart \
   --db-host 10.104.29.111 --db-name hmi --db-user centroid \
   --toggles '{"config":true,"tags":false,"alarms":false,"drawings":false,"trends":false,"plcCode":false,"proposals":false,"techDocs":false,"screenshots":false}'
 ```
+
+It speaks MCP over stdin/stdout, so you need an MCP client to call the tool —
+the station's own HMI bridge, or any MCP client you already use. The
+`CENTROID_PGHOST` / `CENTROID_PGPORT` / `CENTROID_PGDATABASE` /
+`CENTROID_PGUSER` / `CENTROID_PGPASSWORD` environment variables take
+precedence over the `--db-*` flags, so a shell that already has them set will
+override what you typed.
 
 Two things about that `--toggles` value:
 
