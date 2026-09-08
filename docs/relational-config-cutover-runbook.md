@@ -431,7 +431,7 @@ It is served by `tfc_mcp_server`, and **the server must be told to serve it**:
 # From `packages/tfc_mcp_server`, or the compiled binary of the same name.
 dart run bin/tfc_mcp_server.dart \
   --db-host 10.104.29.111 --db-name hmi --db-user centroid \
-  --toggles '{"config":true,"tags":false,"alarms":false,"drawings":false,"trends":false,"plcCode":false,"proposals":false,"techDocs":false,"screenshots":false}'
+  --toggles '{"config":true}'
 ```
 
 It speaks MCP over stdin/stdout, so you need an MCP client to call the tool —
@@ -465,13 +465,13 @@ the station's own HMI bridge, or any MCP client you already use.
 > Do **not** use the binary's own "Connected to PostgreSQL at ..." line for
 > this. See the next note: that line is printed before anything is tried.
 
-Two things about that `--toggles` value:
+Three things about that `--toggles` value:
 
-- **Name every group explicitly, as above.** Do not write `'{"config":true}'`
-  and assume the rest are off. What an *unnamed* group defaults to is a
-  capability-surface decision that has deliberately moved during this
-  milestone, and it is not something to carry in your head at 02:00. Naming
-  all nine is correct whichever way that default currently sits.
+- **Name only what you want on. Everything you do not name is off.** That is
+  the whole rule. `'{"config":true}'` serves the config tools and nothing
+  else — you do not have to list the other eight groups to keep them shut.
+  A tool group is served because somebody turned it on, never because nobody
+  turned it off.
 - **Do not assume — read it back.** The server prints every resolved toggle at
   startup, on one line, before it does anything else:
 
@@ -481,9 +481,12 @@ Two things about that `--toggles` value:
   techDocs=false, screenshots=false
   ```
 
-  That line is the check. It also names *where* the decision came from —
-  `commandLine`, `environment`, or `absent`. If it says `absent` when you
-  passed `--toggles`, something ate your argument.
+  That line is the check, and it is the one to trust over anything written
+  here: read `config=true` off it before you call the tool. It also names
+  *where* the decision came from — `commandLine`, `environment`, or `absent`.
+  If it says `absent` when you passed `--toggles`, something ate your
+  argument, and `CENTROIDX_MCP_TOGGLES` in your shell would be the first thing
+  to check.
 - **Without `--toggles` and without `CENTROIDX_MCP_TOGGLES`, the server
   offers `ping` and nothing else.** That is the intended closed start, not a
   failure. It prints a line to stderr saying so, in as many words: *"no tool
