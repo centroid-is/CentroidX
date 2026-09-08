@@ -807,24 +807,63 @@ proved against a throwaway Postgres. Section 6 is its first real execution.
 
 The window should start from a tree somebody has just watched go green. This
 is that observation, recorded so the next person does not have to take it on
-trust. All runs on macOS under the pinned Flutter SDK **3.44.9**
-(`.flutter-version`), on the `relational-config` branch.
+trust. All four suites were re-run at commit **`f190ad5e`** — the commit CI
+reported on — so the table and CI describe the same tree. All on macOS under
+the pinned Flutter SDK **3.44.9** (`.flutter-version`).
 
-**Read this before you read the table.** Every number below came off **one
-developer machine**. CI has never compiled any of this work — not one commit
-on this branch has been built by CI, neither Docker image has been produced,
-and the rig has never booted it. Green here means green *here*. It is not a
-second opinion, and nothing in this milestone has had one.
+**Read this before you read the table.** The table below is one developer
+machine. CI compiled the same commit and reported, on
+`f190ad5e`: **39 checks passed, 0 failed, 4 skipped** — the full test suite
+green on macOS, Ubuntu and Windows for the app, `tfc_dart` and the MCP server,
+plus `elinux-build` and the Windows MSIX.
 
-That distinction runs through the whole document: **the gate being armed is
-not the gate having been passed.** Section 2's commands can no longer pass
-vacuously, which is what this work delivered. Passing them against this
-plant's dump is still ahead of you.
+**Both station images build in CI, and on a pull request CI also publishes
+them** to `ghcr.io/centroid-is/centroid-hmi:pr-465` and
+`centroid-hmi-ivi:pr-465`, alongside the backend images. That is worth stating
+plainly because the eLinux image — the one carrying the station's SQLite
+preference store — was this milestone's largest untested surface, and it is no
+longer untested.
+
+**But nothing has been deployed and nothing has been booted.** Published to a
+registry is not installed on a panel. **No station has pulled either image,
+and the rig has never booted one.** Building is not booting, and that gap is
+the part that still matters when you read the rest of this document.
+
+**The cutover gate is armed and has never been passed.** No production dump
+has been run against it. That is unchanged by any of the above, and it is the
+distinction the whole document turns on: **the gate being armed is not the
+gate having been passed.** Section 2's commands can no longer pass vacuously,
+which is what this work delivered. Passing them against this plant's dump is
+still ahead of you.
+
+### What CI caught that no local run could
+
+Worth knowing, because it is the honest answer to "the tree looked green on
+the developer's machine". Six defects survived a fully green local run:
+
+1. **The MCP binary had never been able to start on Windows** — an unhandled
+   `SIGTERM` — and this repository ships a Windows MSIX. Recorded as D-11.
+2. **A test wrote secrets to the real macOS login keychain**, invisible on
+   macOS precisely because macOS is the platform where it works.
+3. **The drop test destroyed a table the migration tests need.** Not a
+   concurrency bug: macOS and Windows set `TIMESCALEDB_EXTERNAL=1`, which
+   makes the compose up/down a no-op, so one Postgres survives the whole run.
+   **A local run is structurally the Docker leg** — for the other two legs,
+   local green was not weak evidence, it was none.
+4. **A byte-compared JSON fixture checked out as CRLF on Windows**, whose own
+   error message advises a fix that breaks the other two platforms.
+5. **The D-3 tripwire compared native paths against `/`.**
+6. **A watermark test read two statements two awaits apart as atomic.**
+
+None of these touches the cutover path. They are here as the argument for the
+`[VERIFIED]` / `[TRANSCRIBED]` / `[PLANT ONLY]` marking at the top of this
+document: a thing that has run somewhere is not a thing that has run
+everywhere, and the difference is worth writing down every time.
 
 | Suite | Command | Result |
 |---|---|---|
 | App | `flutter test test/` (repo root) | **6592 passed / 3 skipped / 0 failed** |
-| tfc_dart core | `dart test test/core/` (in `packages/tfc_dart`) | **1461 passed / 8 skipped / 0 failed** |
+| tfc_dart core | `dart test test/core/` (in `packages/tfc_dart`) | **1462 passed / 8 skipped / 0 failed** |
 | MCP server | `dart test` (in `packages/tfc_mcp_server`) | **1370 passed / 1 skipped / 0 failed** |
 | tfc_dart integration | `dart test test/integration/` (in `packages/tfc_dart`) | **148 passed / 4 skipped / 0 failed** |
 
@@ -838,36 +877,38 @@ it watches, requiring each to be detected and then to stop being reported.
 
 Zero golden churn: `git status -- '*.png'` was empty after the full app run.
 
-### One open failure at the time of writing — the window must not start on it
+### The tree went red for a day — resolved, and worth knowing why
 
-**The app suite is not green as this is written: 6588 passed / 3 skipped / 4
-failed.** The figure in the table above was observed at commit `a702f29a`, and
-was 6592 / 3 / 0 then. What changed after it is commit `d2c91ea5`, *"tool
-groups are off until somebody turns them on"* — the ruling that MCP tool
-groups default to disabled rather than enabled. It is the right change and it
-is what section 4's step 8 now documents.
+Kept rather than deleted. A document that has never admitted to a red day
+teaches its reader that red days do not happen.
 
-Its side effect has not been resolved. All four failures are in
-`test/mcp/*_e2e_test.dart` — `batch_proposal_e2e_test.dart`,
-`proposal_e2e_test.dart` and `page_asset_proposal_e2e_test.dart` — and all
-four fail the same way:
+Between commits `a702f29a` and the fix, the app suite ran **6588 / 3 / 4**.
+The cause was `d2c91ea5`, *"tool groups are off until somebody turns them
+on"* — the ruling that MCP tool groups default to disabled rather than
+enabled, which is the right change and is what section 4's step 8 documents.
 
-```
-McpError -32602: Tool 'create_alarm' not found
-```
+Four tests in `test/mcp/*_e2e_test.dart` then failed identically with
+`McpError -32602: Tool 'create_alarm' not found`. They stood up an MCP server
+without naming the `proposals` group, which had been enabled by omission and
+was now off.
 
-Those tests stand up an MCP server without naming the `proposals` group, which
-used to be enabled by omission and is now off. The proposal tools are
-therefore never registered. Whether the fix is in the tests or in what the app
-hands down when it spawns a server is not settled here.
+**The fix was test-scope, and establishing that was the point.** The app's own
+spawn path was already correct — both `connectInProcess` call sites pass real
+toggles — so the proposal feature was never broken; only three test files were
+getting a capability for free. Had that not been checked first, the obvious
+"fix" of editing four tests would have been indistinguishable from papering
+over a broken feature.
 
-**What this means for you.** It is confined to the MCP proposal path — the
-route by which a suggested alarm or page edit reaches the HMI for approval —
-and touches nothing this cutover moves: no configuration store, no migration,
-no `config_item` row, no station boot path. But *"the window starts from a
-known-green tree"* is the reason this section exists, and the tree is not
-green. **Confirm this has been resolved, or consciously accepted, before the
-window.** Do not read the table above and stop there.
+**What the flip exposed is the part to carry.** The tests said
+`const McpToolToggles(proposalsEnabled: true)`, which reads as *"proposals
+on"* and meant *"everything on"* — the other eight groups were defaulting open
+behind a line that looked like a narrow grant. Nothing was wrong with the
+tests until the default moved, and nothing about them looked wrong then. If
+you meet a constructor that names one capability and lets the rest default,
+that is the same shape.
+
+Resolved: the three files now pass `McpToolToggles.allEnabled` explicitly,
+which is what they always meant, and all four tests are green.
 
 The integration run stood its throwaway Postgres up and tore it down cleanly —
 ports 5432 and 15432 were released afterwards, and the unrelated
