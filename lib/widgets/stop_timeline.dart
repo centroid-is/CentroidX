@@ -97,23 +97,30 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
   /// changing the range twice in a row starts two overlapping fetches.
   int _generation = 0;
 
-  /// The last fetched history and the latest active set, kept apart so an
-  /// active-set event can rebuild [_source] without a database round trip.
+  /// The three inputs to [_source], kept apart so a stream event can rebuild
+  /// it without a database round trip: the last database fetch, AlarmMan's
+  /// in-memory ring of cleared activations, and the latest active set. The
+  /// ring matters because the database row for a clear is written
+  /// fire-and-forget — refetching on the clear event races it and can lose
+  /// the stop for a minute; the ring has it instantly, and
+  /// [StopIntervalSource.fromAlarms] value-dedupes it against the row once
+  /// that lands.
   List<AlarmActive> _history = const [];
+  List<AlarmActive> _ring = const [];
   List<AlarmActive> _active = const [];
 
-  /// The standing subscription that makes the view live: a new activation
-  /// appears the moment it fires, not the next time the period is changed.
-  /// [_man] is who it listens to — an accepted alarm edit invalidates the
-  /// provider and builds a new AlarmMan, and a subscription left on the
-  /// orphan would go silent for good.
+  /// The standing subscriptions that make the view live: a new activation
+  /// appears the moment it fires, a cleared one closes the moment it clears —
+  /// not the next time the period is changed. [_man] is who they listen to —
+  /// an accepted alarm edit invalidates the provider and builds a new
+  /// AlarmMan, and subscriptions left on the orphan would go silent for good.
   StreamSubscription<Set<AlarmActive>>? _activeSub;
+  StreamSubscription<List<AlarmActive?>>? _historySub;
   AlarmMan? _man;
 
-  /// Identity of the last-seen active set, to tell "something new appeared"
-  /// (rebuild locally) from "something cleared" (it just became a history
-  /// row, so refetch).
-  Set<String> _activeKeys = const {};
+  /// True while a period change's fetch is in flight — the stale view stays
+  /// up, with a thin progress strip over it instead of a spinner remount.
+  bool _reloading = false;
 
   /// Live safety net: the rolling fetch window goes stale as the clock walks
   /// past it, and rows written by other stations never announce themselves.
@@ -132,6 +139,7 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
   @override
   void dispose() {
     _activeSub?.cancel();
+    _historySub?.cancel();
     _refresh?.cancel();
     super.dispose();
   }
@@ -164,12 +172,15 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
         to: window.end,
       );
       if (!mounted || generation != _generation) return;
-      // The seeded stream delivers the current set to a new listener, so the
-      // first event doubles as the initial read the `.first` await used to be.
+      // The seeded streams deliver their current value to a new listener, so
+      // the first events double as the initial read the `.first` await used
+      // to be.
       if (!identical(man, _man)) {
         _man = man;
         _activeSub?.cancel();
+        _historySub?.cancel();
         _activeSub = man.activeAlarms().listen(_onActive);
+        _historySub = man.history().listen(_onRing);
       }
       setState(() {
         // An alarm the editor marked as not a stop is out at the source:
@@ -178,8 +189,8 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
         _tree = AlarmTree.fromConfigs(
             man.config.alarms.where((a) => a.countsAsStop).toList());
         _history = history;
-        _source =
-            StopIntervalSource.fromAlarms(history: _history, active: _active);
+        _reloading = false;
+        _rebuildSource();
         _error = null;
       });
     } catch (e) {
@@ -189,35 +200,53 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
       // working chart with an error page.
       if (_tree != null) {
         debugPrint('StopTimeline refresh failed: $e');
+        setState(() => _reloading = false);
         return;
       }
-      setState(() => _error = e);
+      setState(() {
+        _reloading = false;
+        _error = e;
+      });
     }
   }
 
-  /// The live set changed. A new activation is drawn straight from the event;
-  /// a cleared one just became a history row this widget has not fetched, so
-  /// that refetches.
+  /// The live set changed: a stop that just began, or one whose ack-required
+  /// condition just dropped. Drawn straight from the event.
   void _onActive(Set<AlarmActive> active) {
     // Snapshot immediately: AlarmMan emits its own mutable set, the same
-    // instance every time.
-    final snapshot = List<AlarmActive>.of(active);
-    final keys = {
-      for (final a in snapshot)
-        '${a.alarm.config.uid}@${a.notification.timestamp.microsecondsSinceEpoch}'
-    };
-    final cleared = _activeKeys.any((k) => !keys.contains(k));
-    _activeKeys = keys;
-    _active = snapshot;
-    if (!mounted) return;
-    if (cleared) {
-      _load();
-    } else if (_tree != null) {
-      setState(() {
-        _source =
-            StopIntervalSource.fromAlarms(history: _history, active: _active);
-      });
+    // instance every time — held references alias the current state.
+    _active = List.of(active);
+    if (!mounted || _tree == null) return;
+    setState(_rebuildSource);
+  }
+
+  /// The ring of cleared activations changed: something just closed. This is
+  /// the in-memory record — it beats the database row, which is written
+  /// fire-and-forget and may not be readable yet.
+  void _onRing(List<AlarmActive?> rows) {
+    _ring = [
+      for (final row in rows)
+        if (row != null) row
+    ];
+    if (!mounted || _tree == null) return;
+    setState(_rebuildSource);
+  }
+
+  void _rebuildSource() {
+    // The ring holds the last thousand clears regardless of age; without the
+    // window filter they would inflate the header counts and the overview
+    // strip of a short period. The database fetch is already bounded.
+    final window = _fetchWindow();
+    bool overlaps(AlarmActive row) {
+      final deactivated = row.deactivated;
+      return row.notification.timestamp.isBefore(window.end) &&
+          (deactivated == null || !deactivated.isBefore(window.start));
     }
+
+    _source = StopIntervalSource.fromAlarms(
+      history: [..._history, ..._ring.where(overlaps)],
+      active: _active,
+    );
   }
 
   /// An absolute range, or null to go back to the live rolling period.
@@ -225,6 +254,7 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
     setState(() {
       _range = range;
       _error = null;
+      _reloading = true;
     });
     _load();
   }
@@ -235,6 +265,7 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
       _interval = interval;
       _range = null;
       _error = null;
+      _reloading = true;
     });
     _load();
   }
@@ -257,16 +288,28 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
       }
       return const Center(child: CircularProgressIndicator());
     }
-    return StopTimelineView(
-      config: widget.config,
-      tree: _tree!,
-      source: _source,
-      range: _range,
-      interval: _interval,
-      onRangeChanged: _setRange,
-      onIntervalChanged: _setInterval,
-      clock: widget.clock,
-    );
+    return Stack(children: [
+      StopTimelineView(
+        config: widget.config,
+        tree: _tree!,
+        source: _source,
+        range: _range,
+        interval: _interval,
+        onRangeChanged: _setRange,
+        onIntervalChanged: _setInterval,
+        clock: widget.clock,
+      ),
+      // For the moment between a period pick and its fetch the lanes still
+      // slice the old period's data; the strip says so without tearing the
+      // view down.
+      if (_reloading)
+        const Positioned(
+          left: 0,
+          right: 0,
+          top: 0,
+          child: LinearProgressIndicator(minHeight: 2),
+        ),
+    ]);
   }
 }
 
@@ -637,7 +680,9 @@ class _StopTimelineViewState extends State<StopTimelineView> {
               ),
             ),
           const Spacer(),
-          if (standing > 0) ...[
+          // Only while live: "1 standing" over last week's shift reads as
+          // part of that week.
+          if (standing > 0 && widget.range == null) ...[
             Icon(Icons.circle,
                 size: 8, color: colorForLevel(context, AlarmLevel.error)),
             const SizedBox(width: 4),
@@ -1500,6 +1545,8 @@ const _intervalPresets = <(String, Duration)>[
 ];
 
 String _durShort(Duration d) {
+  // A future-dated start (clock skew between stations) must not read "-42s".
+  if (d.isNegative) return '0s';
   if (d.inSeconds < 60) return '${d.inSeconds}s';
   if (d.inMinutes < 60) return '${d.inMinutes}m';
   // Two days is where "h" stops being how anyone thinks about it: a week-long

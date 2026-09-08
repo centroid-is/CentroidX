@@ -69,6 +69,39 @@ void main() {
       expect(source.hasOpen, isFalse);
     });
 
+    test('one alarm standing under two rules is one lane interval', () {
+      // AlarmMan keys actives by (uid, rule): a config with a warning rule
+      // and an error rule both true is two open activations for one uid.
+      // The lane series' sorted-disjoint invariant would reject them raw.
+      final source = StopIntervalSource.fromAlarms(
+        history: const [],
+        active: [
+          activation('a', from: 0, level: AlarmLevel.warning),
+          activation('a', from: 3),
+        ],
+      );
+      final series = source.seriesFor('a', now: at(30));
+      expect(series.intervals, hasLength(1));
+      expect(series.intervals.single.isOpen, isTrue);
+      expect(series.intervals.single.level, AlarmLevel.error,
+          reason: 'the merged interval carries the worst standing severity');
+      expect(series.statsIn(at(0), at(30)).total, const Duration(minutes: 30));
+    });
+
+    test('the same activation from the ring and the database is one stop',
+        () {
+      // The clear record reaches the source twice: AlarmMan\'s in-memory
+      // ring instance, and later the database row rebuilt as a fresh
+      // instance. Identity can\'t pair them; (uid, start, level) does.
+      final ringInstance = activation('a', from: 0, to: 10);
+      final dbRow = activation('a', from: 0, to: 10);
+      final source = StopIntervalSource.fromAlarms(
+        history: [dbRow, ringInstance],
+        active: const [],
+      );
+      expect(source.closed, hasLength(1));
+    });
+
     test('the live set becomes open intervals', () {
       final source = StopIntervalSource.fromAlarms(
         history: const [],

@@ -63,6 +63,7 @@ class _FakeAlarmMan implements AlarmMan {
   final List<AlarmConfig> configs;
   final List<AlarmActive> historyRows = [];
   final active = BehaviorSubject<Set<AlarmActive>>.seeded({});
+  final ring = BehaviorSubject<List<AlarmActive?>>.seeded([]);
   int historyFetches = 0;
 
   @override
@@ -80,6 +81,9 @@ class _FakeAlarmMan implements AlarmMan {
 
   @override
   Stream<Set<AlarmActive>> activeAlarms() => active.stream;
+
+  @override
+  Stream<List<AlarmActive?>> history() => ring.stream;
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -119,24 +123,23 @@ void main() {
     expect(find.text('1 standing'), findsOneWidget);
   });
 
-  testWidgets('a clearing alarm refetches the history it just became',
+  testWidgets('a clearing alarm closes from the ring, ahead of the database',
       (tester) async {
     final man = _FakeAlarmMan(configs: [door, reel]);
     final standing = activation(door, at: ago(30));
     man.active.add({standing});
     await pumpLoader(tester, man);
     expect(find.text('1 standing'), findsOneWidget);
-    final fetchesBefore = man.historyFetches;
 
-    // AlarmMan files the instance into history and drops it from the set.
-    man.historyRows.add(activation(door, at: ago(30), ended: ago(1)));
+    // AlarmMan files the instance into its ring and drops it from the set.
+    // The database row is written fire-and-forget — deliberately NOT added
+    // here: the ring alone must be enough to close the stop on screen.
+    man.ring.add([activation(door, at: ago(30), ended: ago(1))]);
     man.active.add({});
     await tester.pumpAndSettle();
 
     expect(find.text('1 standing'), findsNothing);
-    expect(man.historyFetches, greaterThan(fetchesBefore),
-        reason: 'the closed row lives in the database, not in the event');
-    // The closed stop is still on the chart, now from the history fetch.
+    // The closed stop is still on the chart, from the in-memory record.
     expect(find.text('Error 1'), findsOneWidget);
   });
 

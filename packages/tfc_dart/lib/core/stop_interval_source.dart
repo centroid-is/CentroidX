@@ -58,12 +58,18 @@ class StopIntervalSource {
     required Iterable<AlarmActive> active,
   }) {
     final closed = <StopActivation>[];
-    // By identity, not value: AlarmActive has no value equality, and it is the
-    // same instance AlarmMan moves between the two collections.
-    final seen = Set<AlarmActive>.identity();
+    // By value, not identity: the same activation reaches this from three
+    // places — the live set, AlarmMan's in-memory ring buffer, and a database
+    // row reconstructed as a fresh instance — and only (uid, start, rule
+    // level) names it in all three. History is read first, so the closed
+    // record wins over a live one.
+    final seen = <String>{};
+    String keyOf(AlarmActive e) => '${e.alarm.config.uid}'
+        '@${e.notification.timestamp.microsecondsSinceEpoch}'
+        '@${e.notification.rule.level.name}';
 
     for (final entry in history) {
-      if (!seen.add(entry)) continue;
+      if (!seen.add(keyOf(entry))) continue;
       final deactivated = entry.deactivated;
       // A history entry with no deactivation time has not actually closed;
       // treat it as open rather than inventing an end for it.
@@ -79,7 +85,7 @@ class StopIntervalSource {
 
     final open = <StopActivation>[];
     for (final entry in active) {
-      if (!seen.add(entry)) continue;
+      if (!seen.add(keyOf(entry))) continue;
       // An ack-required alarm stays in the active set after its condition
       // clears, carrying the clear time in [AlarmActive.deactivated]. The
       // machine is running again; only the paperwork is outstanding. Drawing
@@ -112,10 +118,11 @@ class StopIntervalSource {
 
   /// Activations grouped by alarm uid, each sorted by start.
   ///
-  /// This is the per-lane input: one alarm's activations cannot overlap each
-  /// other, so the result is already the sorted disjoint list
-  /// [AlarmIntervalSeries] wants. Cached for the same reason [all] is — one
-  /// lane per visible row asks for it on every clock tick.
+  /// Sorted but *not* necessarily disjoint: an alarm with several rules can
+  /// stand under two of them at once — AlarmMan keys the active set by
+  /// (uid, rule) — so [seriesFor] merges before building a series. Cached for
+  /// the same reason [all] is — one lane per visible row asks for it on every
+  /// clock tick.
   late final Map<String, List<AlarmInterval>> _byAlarm = () {
     final out = <String, List<AlarmInterval>>{};
     for (final activation in all) {
@@ -134,12 +141,17 @@ class StopIntervalSource {
     String alarmUid, {
     required DateTime now,
     List<TimeRange> excluded = const [],
-  }) =>
-      AlarmIntervalSeries(
-        byAlarm()[alarmUid] ?? const [],
-        now: now,
-        excluded: excluded,
-      );
+  }) {
+    final intervals = byAlarm()[alarmUid] ?? const [];
+    // Merged even for one alarm: two of its rules standing at once are two
+    // overlapping open intervals, which the series' sorted-disjoint
+    // invariant would reject in debug and silently double-count in release.
+    return AlarmIntervalSeries(
+      intervals.length > 1 ? mergeIntervals(intervals, now: now) : intervals,
+      now: now,
+      excluded: excluded,
+    );
+  }
 
   /// The merged union across several alarms — what a collapsed group lane
   /// draws, carrying the worst severity standing in each stretch.
