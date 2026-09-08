@@ -377,6 +377,7 @@ final class GateFixture {
     this._config,
     this._gatewayConfig,
     this._tls,
+    this._accounts,
   );
 
   /// The plant behind the gateway. Levers go straight here, never over the
@@ -439,6 +440,11 @@ final class GateFixture {
   /// under panels that are still pinning — which would read as a gateway that
   /// never came back, rather than as a fixture that changed protocol.
   final FaultTls? _tls;
+
+  /// 17-04b's user-resolver seam, forwarded to every gateway this fixture
+  /// builds. Only a case whose [GatewayConfig] names a token file needs one —
+  /// `RelayServer.start()` refuses that combination without it.
+  final UserResolver? _accounts;
 
   /// Whether this fixture's panels dial `wss`.
   bool get isTls => _tls != null;
@@ -598,7 +604,10 @@ final class GateFixture {
     var retries = 0;
     while (true) {
       final replacement = _buildGateway(served, port,
-          complaints: gatewayComplaints, config: _gatewayConfig, tls: _tls);
+          complaints: gatewayComplaints,
+          config: _gatewayConfig,
+          tls: _tls,
+          accounts: _accounts);
       try {
         await replacement.start();
         _slot.server = replacement;
@@ -747,9 +756,11 @@ RelayServer _buildGateway(
   required List<String> complaints,
   GatewayConfig? config,
   FaultTls? tls,
+  UserResolver? accounts,
 }) =>
     RelayServer(
       resolver: const PermissiveSeriesResolver(),
+      accounts: accounts,
       api: plant,
       config: _configFor(config, port, tls),
       // Collected rather than printed, and collected rather than discarded.
@@ -806,6 +817,7 @@ Future<GateFixture> gateFixture({
   bool waitForReady = true,
   Duration readyBudget = const Duration(seconds: 20),
   FaultTls? tls,
+  UserResolver? accounts,
 }) async {
   final n = clients ?? herdSize;
   if (n <= 0) {
@@ -836,7 +848,10 @@ Future<GateFixture> gateFixture({
   // replacement binds. See the library doc on why the port is fixed from the
   // first bind rather than chosen here.
   final first = _buildGateway(served, 0,
-      complaints: gatewayComplaints, config: serverConfig, tls: tls);
+      complaints: gatewayComplaints,
+      config: serverConfig,
+      tls: tls,
+      accounts: accounts);
   await first.start();
   final slot = _GatewaySlot(first);
   final port = first.port;
@@ -864,7 +879,7 @@ Future<GateFixture> gateFixture({
   }
 
   final fixture = GateFixture._(served, slot, port, proxies, herd, keys,
-      gatewayComplaints, retired, clientConfig, serverConfig, tls);
+      gatewayComplaints, retired, clientConfig, serverConfig, tls, accounts);
 
   if (waitForReady) {
     await until(

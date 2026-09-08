@@ -86,6 +86,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:test/test.dart';
+import 'package:tfc_access/tfc_access.dart' show AuthenticatedUser;
 import 'package:tfc_relay_client/src/client_config.dart';
 import 'package:tfc_relay_client/src/connection_supervisor.dart' show LinkState;
 import 'package:tfc_relay_client/src/remote_state_man.dart';
@@ -1068,11 +1069,23 @@ void main() {
       // or the arm is a claim about a fake.
       final tokens = _writeTokenFile({
         'tokens': {
-          _provisionedToken: {'stationId': 'ST101', 'role': 'view'},
+          _provisionedToken: {'username': 'ST101-panel', 'station': 'ST101'},
         },
       });
       final refusing = await gateFixture(
         clients: 1,
+        // 17-04b: the token names a user, and `start()` refuses a token file
+        // whose usernames it cannot resolve to accounts. This case never
+        // authenticates the provisioned token — the resolver exists so the
+        // gateway comes up and can refuse the mistyped one.
+        accounts: (username) => username == 'ST101-panel'
+            ? const ResolvedUser(
+                user: AuthenticatedUser(
+                    username: 'ST101-panel',
+                    roleName: 'Hall Display',
+                    stationAccount: true),
+                groups: {})
+            : null,
         keys: const {_key},
         seed: (plant) => plant.setValue(_key, _before),
         tls: good,
