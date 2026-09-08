@@ -1,14 +1,20 @@
-/// The config target, photographed: six frames, both station themes (17-13).
+/// The config target, photographed: six frames, both station themes (17-13,
+/// redesigned per owner — a card-header chip and a caption line, not a page
+/// band).
 ///
 /// The plan's human check stands in front of these twelve PNGs and answers
-/// one question — standing at frame 2, is it obvious you are editing the
-/// backend and not this screen? Everything here serves that question:
+/// one question — standing at frames 2 and 3, is it obvious you are editing
+/// the backend and not this screen? Everything here serves that question:
 ///
-///  1. `config_target_direct`         — this station, named, quiet;
-///  2. `config_target_gateway`        — the backend, named, in the attention
-///                                      treatment;
-///  3. `config_target_relay_disabled` — the relay section present, greyed and
-///                                      explained (D-10);
+///  1. `config_target_direct`         — this station, named, one quiet
+///                                      caption line;
+///  2. `config_target_gateway`        — the target chip alone: attention
+///                                      yellow, antenna, the URL. Its home —
+///                                      the card's own header line — is in
+///                                      every frame from 3 on;
+///  3. `config_target_relay_disabled` — the whole card: header naming the
+///                                      target, relay section present,
+///                                      greyed and explained (D-10);
 ///  4. `config_target_refused`        — a save the parser refused, in the
 ///                                      parser's own words;
 ///  5. `config_target_relay_refused`  — a relay-section edit refused, in
@@ -140,13 +146,16 @@ Future<void> _pumpBanner(
   Widget banner, {
   required bool dark,
 }) async {
-  await tester.binding.setSurfaceSize(const Size(760, 220));
+  // 100px of height, not the old 220: the redesign's whole claim is that
+  // each face is one line, and the frame should not flatter it with a band
+  // of empty canvas.
+  await tester.binding.setSurfaceSize(const Size(760, 100));
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.pumpWidget(
     themedGoldenHost(
       Padding(
         padding: const EdgeInsets.all(16),
-        child: banner,
+        child: Align(alignment: Alignment.topLeft, child: banner),
       ),
       dark: dark,
     ),
@@ -171,7 +180,7 @@ Future<void> _pumpSection(
         SingleChildScrollView(
           child: Padding(
             padding: const EdgeInsets.all(16),
-            child: BackendConfigSection(),
+            child: BackendConfigSection(targetUrl: _gatewayUrl),
           ),
         ),
         dark: dark,
@@ -182,6 +191,16 @@ Future<void> _pumpSection(
   expect(find.byType(CircularProgressIndicator), findsNothing,
       reason: 'the scripted read has resolved; a spinner in a golden is a '
           'promise the frame cannot keep');
+  // Every card frame carries the ACCESS-04 affordance: the header chip
+  // naming the machine this card edits. Asserted in the pump that records,
+  // so a frame that lost its subject fails instead of re-baselining.
+  expect(
+      find.descendant(
+          of: find.byKey(const Key('backend_config_header')),
+          matching: find.textContaining('10.50.10.11')),
+      findsOneWidget,
+      reason: 'the card header must name the target, or the frame records a '
+          'card that could be editing anything');
 }
 
 Future<void> _editAndSave(WidgetTester tester) async {

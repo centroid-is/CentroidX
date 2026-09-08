@@ -575,21 +575,20 @@ class ServerConfigBody extends ConsumerWidget {
     return SingleChildScrollView(
       child: Column(
         children: [
-          // Which machine this page edits, named, before anything editable.
-          // One screen, two targets — silently configuring the wrong one is
-          // the failure mode, and this row is the page's answer to it.
-          gateway.isGateway
-              ? ConfigTargetBanner.backend(name: gateway.url)
-              : ConfigTargetBanner.station(name: stationName),
-          const SizedBox(height: 16),
-
-          // Which pipe this station runs on. In gateway mode
-          // the four sections below are not siblings of it — they are
-          // irrelevant, and it is this card that says so.
+          // Which pipe this station runs on. Device-local in BOTH modes, so
+          // it sits first and no target marker sits above it — the target is
+          // a fact about the content below, and it is said there (ACCESS-04,
+          // redesigned per owner: the old page band mislabelled this card
+          // and spent a band of height on one sentence).
           TransportModeCard(key: ValueKey('transport_$refreshKey')),
           const SizedBox(height: 16),
 
           if (!gateway.isGateway) ...[
+            // The target, named, above the four station sections it
+            // describes: one quiet caption line, not a band.
+            ConfigTargetBanner.station(name: stationName),
+            const SizedBox(height: 8),
+
             // Database Configuration Section
             DatabaseConfigWidget(key: ValueKey('db_$refreshKey')),
             const SizedBox(height: 16),
@@ -607,11 +606,14 @@ class ServerConfigBody extends ConsumerWidget {
             const ImportExportCard(),
           ] else ...[
             // The backend's own configuration — the page's second target
-            // (ACCESS-04). It sits above the hidden-sections note because it
-            // is the thing an administrator opened this page for.
-            BackendConfigSection(key: ValueKey('backend_config_$refreshKey')),
-            const SizedBox(height: 16),
-            const _DirectSectionsHiddenNote(),
+            // (ACCESS-04). Its header names the machine it edits; the four
+            // direct-mode sections are simply absent, which the transport
+            // toggle above already explains (owner: a note narrating the
+            // toggle is noise).
+            BackendConfigSection(
+              key: ValueKey('backend_config_$refreshKey'),
+              targetUrl: gateway.url,
+            ),
           ],
         ],
       ),
@@ -1384,56 +1386,13 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
   }
 }
 
-/// What sits where the four direct-mode sections were.
-///
-/// An empty space would read as a page that failed to load. This says which
-/// decision removed them and how to get them back.
-///
-/// **It used to claim the station held nothing but the relay socket, and that
-/// its database settings were the gateway's. Both were false**, and the exact
-/// sentences are not quoted here because the scan in
-/// `test/core/gateway_copy_test.dart` is literal and a quotation would make it
-/// a question nobody could answer. Read them out of this file's history. The rig
-/// ran a panel in gateway mode and measured one Postgres connection to
-/// `172.18.0.6:5432` live for the whole run, carrying sign-in, preferences and
-/// the audit trail (13-RIG-E2E-EVIDENCE FIND-C); `lib/providers/database.dart`
-/// has no transport branch that could close it, and the database address is
-/// this station's own, not the gateway's. An operator who read the old note and
-/// then found a Postgres session on the panel would have had no reason to trust
-/// anything else this page said. Closing the dependency for real — access,
-/// preferences and audit over the relay — is Phase 17.
-class _DirectSectionsHiddenNote extends StatelessWidget {
-  const _DirectSectionsHiddenNote();
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const FaIcon(FontAwesomeIcons.circleInfo, size: 18),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                'This station takes its values from the relay gateway: no '
-                'OPC UA session, no Modbus socket, no collector. Those '
-                'settings belong to the gateway and are configured there.\n\n'
-                'It still opens one Postgres connection, for sign-in, '
-                'preferences and the audit trail. That database is shared '
-                'with the rest of the plant and its address is configured '
-                'elsewhere, so the section is hidden here rather than gone.\n\n'
-                'Switch back to Direct to PLCs to edit them all here.',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
+// The hidden-sections note that used to sit under the Backend Configuration
+// card is gone, by the owner's ruling: it narrated what the transport toggle
+// above already shows, and on a panel that narration cost the vertical space
+// the JSON editor needs. What it said honestly about the Postgres connection
+// is still true and still written down — in the TransportModeCard doc comment
+// above — and `test/core/gateway_copy_test.dart` keeps holding this file to
+// it. Its history (including the false claims 15-05 corrected) is in git.
 
 // ===================== Backend Configuration (gateway target) ==============
 
@@ -1474,6 +1433,10 @@ final backendConfigApiProvider = FutureProvider<BackendConfigApi>((ref) async {
   return remote.backendConfig;
 });
 
+/// The card's title line — the section named beside the machine it edits.
+/// Keyed so the header golden can photograph exactly this line.
+const Key kBackendConfigHeaderKey = Key('backend_config_header');
+
 /// The editable half of the backend's configuration document.
 const Key kBackendConfigEditorKey = Key('backend_config_editor');
 
@@ -1503,8 +1466,20 @@ const Key kBackendConfigRestartNoteKey = Key('backend_config_restart_note');
 /// nothing here touches this station's own preferences. The check, the audit
 /// row and the validation live at the far end (17-09/17-10); this card is the
 /// screen for them and adds no second policy.
+///
+/// The card's own header names [targetUrl] — the machine whose document the
+/// editor below reads and writes. That used to be a page banner above the
+/// Transport card; the owner moved it here because it is a fact about THIS
+/// card, and squeezed it to a chip because it is one fact. The header renders
+/// on the error face too: "could not read the backend's configuration" is
+/// only actionable if the operator can see WHICH backend refused.
 class BackendConfigSection extends ConsumerStatefulWidget {
-  const BackendConfigSection({super.key});
+  const BackendConfigSection({super.key, required this.targetUrl});
+
+  /// The endpoint this panel is dialling — the machine a save here changes.
+  /// A constructor argument rather than a provider watch so the widget tests
+  /// and goldens name the target as plainly as the page does.
+  final String targetUrl;
 
   @override
   ConsumerState<BackendConfigSection> createState() =>
@@ -1696,6 +1671,27 @@ class _BackendConfigSectionState extends ConsumerState<BackendConfigSection> {
     }
   }
 
+  /// The card's title line: the section named, and beside it the machine it
+  /// edits. One line — the chip is the ACCESS-04 affordance, and this row is
+  /// its home on every face of the card, the error face included.
+  Widget _header(ThemeData theme) => Wrap(
+        key: kBackendConfigHeaderKey,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 12,
+        runSpacing: 4,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const FaIcon(FontAwesomeIcons.server, size: 20),
+              const SizedBox(width: 8),
+              Text('Backend Configuration', style: theme.textTheme.titleMedium),
+            ],
+          ),
+          ConfigTargetBanner.backend(name: widget.targetUrl),
+        ],
+      );
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1704,17 +1700,32 @@ class _BackendConfigSectionState extends ConsumerState<BackendConfigSection> {
     final loadError = _loadError;
     if (loadError != null) {
       // The refusal frame, in the shape every section on this page uses: a
-      // card that cannot read what it edits has to say so, with a retry.
+      // card that cannot read what it edits has to say so, with a retry —
+      // and with the target still named, because "the backend refused" is
+      // only actionable when the operator can see which backend.
       return Card(
         child: Padding(
           padding: const EdgeInsets.all(16.0),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              FaIcon(FontAwesomeIcons.triangleExclamation,
-                  size: 48, color: theme.colorScheme.error),
+              _header(theme),
               const SizedBox(height: 16),
-              Text('Could not read the backend\'s configuration: $loadError'),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  FaIcon(FontAwesomeIcons.triangleExclamation,
+                      size: 18, color: theme.colorScheme.error),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Could not read the backend\'s configuration: '
+                      '$loadError',
+                      style: TextStyle(color: theme.colorScheme.error),
+                    ),
+                  ),
+                ],
+              ),
               const SizedBox(height: 16),
               ElevatedButton(
                 onPressed: () => _load(refresh: true),
@@ -1742,22 +1753,10 @@ class _BackendConfigSectionState extends ConsumerState<BackendConfigSection> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                const FaIcon(FontAwesomeIcons.server, size: 20),
-                const SizedBox(width: 8),
-                Text('Backend Configuration',
-                    style: theme.textTheme.titleMedium),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'These are the backend\'s own settings, read and saved over '
-              'the relay connection. This station\'s transport is the card '
-              'above, and its sign-in database is unchanged by anything '
-              'saved here.',
-              style: theme.textTheme.bodySmall,
-            ),
+            // The header carries the whole disambiguation; the paragraph
+            // that used to follow it narrated the transport toggle and is
+            // gone by the owner's ruling.
+            _header(theme),
             const SizedBox(height: 16),
             TextField(
               key: kBackendConfigEditorKey,
@@ -1784,9 +1783,8 @@ class _BackendConfigSectionState extends ConsumerState<BackendConfigSection> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Changing the ${entry.key} port or its TLS from here would '
-                'cut this screen off mid-change, so this section is changed '
-                'on the machine the backend runs on.',
+                'Changing ${entry.key} from here would cut this screen off '
+                'mid-change — edit it on the backend\'s own machine.',
                 style: theme.textTheme.bodySmall,
               ),
               const SizedBox(height: 16),
@@ -1833,9 +1831,9 @@ class _BackendConfigSectionState extends ConsumerState<BackendConfigSection> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'A save here is recorded against the account the gateway '
-                    'verified for this station ($stationName) — a station '
-                    'account, not a person.',
+                    'Saves are recorded against this station\'s verified '
+                    'account ($stationName) — a station account, not a '
+                    'person.',
                     style: theme.textTheme.bodySmall,
                   ),
                 ),
@@ -1865,9 +1863,8 @@ class _BackendConfigSectionState extends ConsumerState<BackendConfigSection> {
             const SizedBox(height: 8),
             Text(
               key: kBackendConfigRestartNoteKey,
-              'A saved configuration takes effect when the backend restarts. '
-              'The backend does not restart itself, and nothing on this '
-              'screen changes until it has.',
+              'Takes effect when the backend restarts — it does not restart '
+              'itself.',
               style: theme.textTheme.bodySmall,
             ),
           ],
