@@ -84,7 +84,11 @@ void main() {
       database: db,
       stateReader: _EmptyStateReader(),
       alarmReader: _EmptyAlarmReader(),
-      toggles: const McpToolToggles(proposalsEnabled: true),
+      // Every group, which is what this always ran with: while the
+      // constructor defaulted each field to true, naming `proposals`
+      // added nothing and the write tools it needs -- create_alarm is
+      // gated on alarms and config as well -- came from the defaults.
+      toggles: McpToolToggles.allEnabled,
       onProposal: delivered.add,
     );
 
