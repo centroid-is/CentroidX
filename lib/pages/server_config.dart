@@ -1660,12 +1660,12 @@ class _BackendConfigSectionState extends ConsumerState<BackendConfigSection> {
   }
 
   Future<void> _save() async {
-    final api = _api;
-    if (api == null) return;
+    final backendConfig = _api;
+    if (backendConfig == null) return;
     setState(() => _refusalText = null);
     try {
-      await relayedAccessErrors(() => api.write(_payload()));
-      final doc = await relayedAccessErrors(api.read);
+      await relayedAccessErrors(() => backendConfig.write(_payload()));
+      final doc = await relayedAccessErrors(backendConfig.read);
       if (!mounted) return;
       _applyDocument(doc);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1682,11 +1682,11 @@ class _BackendConfigSectionState extends ConsumerState<BackendConfigSection> {
   }
 
   Future<void> _restore() async {
-    final api = _api;
-    if (api == null) return;
+    final backendConfig = _api;
+    if (backendConfig == null) return;
     try {
-      await relayedAccessErrors(() => api.restorePrevious());
-      final doc = await relayedAccessErrors(api.read);
+      await relayedAccessErrors(() => backendConfig.restorePrevious());
+      final doc = await relayedAccessErrors(backendConfig.read);
       if (!mounted) return;
       _refusalText = null;
       _applyDocument(doc);

@@ -1040,6 +1040,11 @@ const Set<String> _kStateManWriteReceivers = {
 /// receiver name from the source rather than trusting this comment.
 const Set<String> _kOtherWriteReceivers = {
   'b',
+  // 17-13: `BackendConfigApi.write` on the Server Config page — the backend's
+  // config document over the relay, not a plant tag. The `administer` check
+  // and the audit row live server-side (17-09/17-10), and the page surfaces
+  // the refusal itself; there is no StateMan in this call.
+  'backendConfig',
   'binding',
   'buffer',
   'builder',
