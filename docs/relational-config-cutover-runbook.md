@@ -805,23 +805,41 @@ proved against a throwaway Postgres. Section 6 is its first real execution.
 The window should start from a tree somebody has just watched go green. This
 is that observation, recorded so the next person does not have to take it on
 trust. All runs on macOS under the pinned Flutter SDK **3.44.9**
-(`.flutter-version`), commit `d99c5f8b` on `relational-config`.
+(`.flutter-version`), on the `relational-config` branch.
+
+**Read this before you read the table.** Every number below came off **one
+developer machine**. CI has never compiled any of this work — not one commit
+on this branch has been built by CI, neither Docker image has been produced,
+and the rig has never booted it. Green here means green *here*. It is not a
+second opinion, and nothing in this milestone has had one.
+
+That distinction runs through the whole document: **the gate being armed is
+not the gate having been passed.** Section 2's commands can no longer pass
+vacuously, which is what this work delivered. Passing them against this
+plant's dump is still ahead of you.
 
 | Suite | Command | Result |
 |---|---|---|
 | App | `flutter test test/` (repo root) | **6592 passed / 3 skipped / 0 failed** |
 | tfc_dart core | `dart test test/core/` (in `packages/tfc_dart`) | **1461 passed / 8 skipped / 0 failed** |
 | MCP server | `dart test` (in `packages/tfc_mcp_server`) | **1365 passed / 1 skipped / 0 failed** |
-| tfc_dart integration | `dart test test/integration/` | **not run at phase close** — needs the exclusive Docker lane described in section 2 |
+| tfc_dart integration | `dart test test/integration/` (in `packages/tfc_dart`) | **148 passed / 4 skipped / 0 failed** |
 
-Both code-side gates exit 0 and were proven able to fail:
+Both code-side gates exit 0 and both were watched failing.
 `check-flutter-preferences-retired.sh --self-test` detects a planted violation
 in a `lib/` root **and** in a `packages/*/bin` root and stops reporting both
-once removed; `check-preferences-construction.sh` has no self-test flag, so it
-was proven by hand — a planted `SqlitePreferences()` construction took it to
-exit 1, and removing the file took it back to exit 0.
+once removed. `check-preferences-construction.sh --self-test` was **added at
+this close** — it had none before, so its clean result had only ever been
+proven by hand — and now plants a violation for all four constructor patterns
+it watches, requiring each to be detected and then to stop being reported.
 
 Zero golden churn: `git status -- '*.png'` was empty after the full app run.
+
+The integration run stood its throwaway Postgres up and tore it down cleanly —
+ports 5432 and 15432 were released afterwards, and the unrelated
+`baader-grafana`, `baader-timescaledb` and `baader-ticker` containers were
+untouched. That is the check to repeat if you ever run it on a machine that
+has other containers on it.
 
 **Use the pinned SDK.** `flutter` on `PATH` may be an older install — on the
 machine this was verified on, it was 3.41.9. Under it the app suite reports
