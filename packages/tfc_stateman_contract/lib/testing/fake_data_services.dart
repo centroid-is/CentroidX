@@ -294,32 +294,6 @@ class FakeTimeseries implements TimeseriesApi {
     ];
   }
 
-  /// Sample counts per [interval] bucket, newest [howMany] buckets.
-  ///
-  /// Feeds the "is this series still recording?" strip, which needs counts
-  /// rather than values — a gap in the counts is a recorder that stopped, and
-  /// it looks identical to a flat line if you only plot the values.
-  @override
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-      String tableName, Duration interval, int howMany,
-      {DateTime? since}) async {
-    // Guarded on the unit actually used: a positive sub-millisecond interval
-    // — Duration(microseconds: 500) — passes `> Duration.zero` and truncates
-    // to inMilliseconds == 0, which is a division by zero one bucket later.
-    if (interval.inMilliseconds <= 0 || howMany <= 0) return const {};
-    final counts = <DateTime, int>{};
-    for (final point in _tables[tableName] ?? const <TimeseriesData>[]) {
-      if (since != null && point.time.isBefore(since)) continue;
-      final bucket = _bucketOf(point.time, interval);
-      counts[bucket] = (counts[bucket] ?? 0) + 1;
-    }
-    final buckets = counts.keys.toList()..sort();
-    final newest = buckets.length <= howMany
-        ? buckets
-        : buckets.sublist(buckets.length - howMany);
-    return {for (final bucket in newest) bucket: counts[bucket]!};
-  }
-
   /// Everything recorded in `[from, to]`, inclusive at both ends.
   List<TimeseriesData> _window(String tableName, DateTime? from, DateTime to) =>
       [
@@ -328,18 +302,6 @@ class FakeTimeseries implements TimeseriesApi {
               (from == null || !point.time.isBefore(from)))
             point,
       ];
-
-  /// The bucket [time] falls in, floored to a multiple of [interval] from the
-  /// epoch — the same alignment `time_bucket` uses, so a bucket boundary means
-  /// the same thing here and in TimescaleDB.
-  static DateTime _bucketOf(DateTime time, Duration interval) {
-    final step = interval.inMilliseconds;
-    final millis = time.millisecondsSinceEpoch;
-    // Floor, not truncate: remainder() keeps the dividend's sign, which put a
-    // pre-1970 sample in the bucket *after* itself.
-    return DateTime.fromMillisecondsSinceEpoch((millis / step).floor() * step,
-        isUtc: true);
-  }
 
   /// The `orderBy` string is SQL-shaped because the signature is verbatim from
   /// the working code; only its direction is honoured here.

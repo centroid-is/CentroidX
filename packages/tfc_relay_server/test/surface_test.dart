@@ -121,24 +121,24 @@ const Set<String> expectedHandlerTable = {
   'browse.fetchChildren',
   'browse.fetchDetail',
   'browse.resolvePath',
-  // Phase 10 plan 03. The timeseries four, and the reason three more contract
-  // checks stopped being proven-unreachable in the commit that added them.
-  // Two of these four carry a string the database interpolates into SQL, so
-  // the same commit that made them callable put the allow-list in front of
-  // them — see `hostile_params_test.dart`.
+  // Phase 10 plan 03. The timeseries three (four until the 2026-09-07 audit
+  // cut the count method), and the reason three more contract checks stopped
+  // being proven-unreachable in the commit that added them. These carry
+  // strings the database interpolates into SQL, so the same commit that made
+  // them callable put the allow-list in front of them — see
+  // `hostile_params_test.dart`.
   'timeseries.queryTimeseriesData',
   'timeseries.queryTimeseriesDataMultiple',
   'timeseries.queryTimeseriesDataDownsampled',
-  'timeseries.countTimeseriesDataMultiple',
   // Phase 10 plan 04. The history-view eleven — the largest family and the
   // only write-shaped one in this phase that is not a preference: four of
   // these mutate rows a chart reads. Two contract checks stopped being
-  // proven-unreachable in the commit that added them, and **two of the eleven
-  // are covered by no contract check at all**
-  // (`historyViews.getGlobalRetentionHorizon`, and `timeseries` has the other
-  // one) — their cases live in `data_handlers_test.dart`, because
-  // `data_services_contract.dart:4-30` forbids an eighth data-services case
-  // upstream.
+  // proven-unreachable in the commit that added them, and one of the eleven
+  // is covered by no contract check at all
+  // (`historyViews.getGlobalRetentionHorizon`; `timeseries` used to have the
+  // other one until the audit cut it) — its case lives in
+  // `data_handlers_test.dart`, because `data_services_contract.dart:4-30`
+  // forbids an eighth data-services case upstream.
   'historyViews.createHistoryView',
   'historyViews.updateHistoryView',
   'historyViews.deleteHistoryView',

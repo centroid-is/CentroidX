@@ -295,12 +295,13 @@ abstract interface class BrowseApi {
 
 /// Historical samples, for charts.
 ///
-/// The four signatures are verbatim from `database.dart:1305` (Multiple),
-/// `:1338` (the single-series read), `:1463` (Downsampled) and `:1620`
-/// (Count) — measured at 10-11, when the phase that implements them ran the
-/// gate. The four are cited in file order rather than in the order they are
-/// declared below, and the older numbers 722/755/837/1035 in this file's
-/// history are the same four methods before `database.dart` grew.
+/// The three signatures are verbatim from `database.dart:1305` (Multiple),
+/// `:1338` (the single-series read) and `:1463` (Downsampled) — measured at
+/// 10-11, when the phase that implements them ran the gate. They are cited in
+/// file order rather than in the order they are declared below. (A fourth,
+/// `countTimeseriesDataMultiple`, was mirrored at 10-11 and deleted by the
+/// 2026-09-07 dead-code audit: its one end caller had moved to
+/// `tsCache.countSince`, leaving seven mirror layers with no reader.)
 /// Including the parameter name `tableName`. There is no method that takes a
 /// statement, an expression or a filter string: charts ask for a named series
 /// over a time range, and every argument here is a value the gateway
@@ -327,13 +328,6 @@ abstract interface class TimeseriesApi {
   /// hundreds of pixels.
   Future<List<TimeseriesData>> queryTimeseriesDataDownsampled(
       String tableName, DateTime from, DateTime to, {int maxPoints = 1000});
-
-  /// Sample counts per [interval] bucket, newest [howMany] buckets.
-  ///
-  /// Feeds the "is this series still recording?" strip, which needs counts
-  /// rather than values.
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-      String tableName, Duration interval, int howMany, {DateTime? since});
 }
 
 /// Saved history views: their keys, graphs and time windows.

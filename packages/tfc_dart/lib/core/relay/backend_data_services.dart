@@ -73,13 +73,13 @@ import '../preferences.dart' as store;
 
 /// The ceilings one timeseries answer may be, applied before the query.
 ///
-/// **The three configurable numbers are the relay server's own**
-/// (`server_config.dart:332-334`: `maxTimeseriesPoints` 6000,
-/// `maxTimeseriesBuckets` 1000, `maxTimeseriesIntervalMs` 86_400_000) and are
-/// handed in rather than re-spelled. That config class is deliberately NOT
-/// named or imported here — the name does not appear in this file, and a grep
-/// says so — so this file stays composable from a test with three literals
-/// and 13-06 owns the mapping from config onto it.
+/// **The configurable number is the relay server's own**
+/// (`server_config.dart`: `maxTimeseriesPoints` 6000) and is handed in rather
+/// than re-spelled. That config class is deliberately NOT named or imported
+/// here — the name does not appear in this file, and a grep says so — so this
+/// file stays composable from a test with literals and 13-06 owns the mapping
+/// from config onto it. (Two more ceilings, `maxBuckets` and `maxIntervalMs`,
+/// bounded the count method until the 2026-09-07 dead-code audit cut it.)
 ///
 /// [maxRows] has no counterpart in `server_config.dart` and is 10-07's
 /// `ReadLimits.maxTimeseriesRows`, carried across unchanged. It is the only
@@ -92,13 +92,9 @@ import '../preferences.dart' as store;
 final class TimeseriesLimits {
   TimeseriesLimits({
     this.maxPoints = 6000,
-    this.maxBuckets = 1000,
-    this.maxIntervalMs = 86400000,
     this.maxRows = 40000,
   }) {
     _positive('maxPoints', maxPoints);
-    _positive('maxBuckets', maxBuckets);
-    _positive('maxIntervalMs', maxIntervalMs);
     _positive('maxRows', maxRows);
   }
 
@@ -113,13 +109,6 @@ final class TimeseriesLimits {
   /// Ceiling on `maxPoints` in one downsampled read.
   final int maxPoints;
 
-  /// Ceiling on `howMany` buckets in one count — which *is* the number of
-  /// `UNION ALL` subqueries in one statement (`database.dart:1734-1743`).
-  final int maxBuckets;
-
-  /// Ceiling on the bucket width, in milliseconds, of one count.
-  final int maxIntervalMs;
-
   /// Ceiling on the rows one answer may carry, summed across its series.
   final int maxRows;
 
@@ -133,16 +122,18 @@ final class TimeseriesLimits {
   }
 
   @override
-  String toString() => 'TimeseriesLimits(maxPoints: $maxPoints, maxBuckets: '
-      '$maxBuckets, maxIntervalMs: $maxIntervalMs, maxRows: $maxRows)';
+  String toString() =>
+      'TimeseriesLimits(maxPoints: $maxPoints, maxRows: $maxRows)';
 }
 
-/// The four `Database` methods [BackendTimeseries] needs, and nothing else.
+/// The three `Database` methods [BackendTimeseries] needs, and nothing else.
 ///
-/// Signatures verbatim from `database.dart:1396`, `:1428`, `:1557` and `:1714`,
+/// Signatures verbatim from `database.dart:1396`, `:1428` and `:1557`,
 /// including the parameter names and the defaults, so
 /// [DatabaseTimeseriesSource] is a forwarding call and nothing is re-decided on
-/// the way through.
+/// the way through. (`:1714`'s count method was the fourth until the
+/// 2026-09-07 dead-code audit cut this mirror; the `database.dart` member
+/// itself is main-era and stays, flagged for the main cleanup PR.)
 abstract interface class TimeseriesSource {
   Future<List<db.TimeseriesData<dynamic>>> queryTimeseriesData(
       String tableName, DateTime to,
@@ -155,10 +146,6 @@ abstract interface class TimeseriesSource {
   Future<List<db.TimeseriesData<dynamic>>> queryTimeseriesDataDownsampled(
       String tableName, DateTime from, DateTime to,
       {int maxPoints = 1000});
-
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-      String tableName, Duration interval, int howMany,
-      {DateTime? since});
 }
 
 /// [TimeseriesSource] over the backend's own `Database`.
@@ -186,26 +173,17 @@ final class DatabaseTimeseriesSource implements TimeseriesSource {
           {int maxPoints = 1000}) =>
       database.queryTimeseriesDataDownsampled(tableName, from, to,
           maxPoints: maxPoints);
-
-  @override
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-          String tableName, Duration interval, int howMany,
-          {DateTime? since}) =>
-      database.countTimeseriesDataMultiple(tableName, interval, howMany,
-          since: since);
 }
 
 /// `TimeseriesApi` over the backend's historian, bounded before it is asked.
 ///
 /// ## Every argument is a value somebody on a socket chose
 ///
-/// The table name, the window, the point budget, the bucket width and the
-/// ordering all arrive from a connected client, and three of them reach a SQL
-/// string unescaped in the layer below: `countTimeseriesDataMultiple`
-/// interpolates `FROM "$tableName"` with no quote doubling at all
-/// (`database.dart:1739`), `tableQuery` interpolates `orderBy` into an
-/// `ORDER BY` clause where a subquery is legal grammar, and
-/// `queryTimeseriesDataDownsampled` interpolates its own quoted table.
+/// The table name, the window, the point budget and the ordering all arrive
+/// from a connected client, and they reach a SQL string unescaped in the
+/// layer below: `tableQuery` interpolates `orderBy` into an `ORDER BY` clause
+/// where a subquery is legal grammar, and `queryTimeseriesDataDownsampled`
+/// interpolates its own quoted table.
 ///
 /// So two belts, the house convention on ingress:
 ///
@@ -223,7 +201,7 @@ final class DatabaseTimeseriesSource implements TimeseriesSource {
 /// ## And bounded before the query, not after it
 ///
 /// A read that has already run has already cost what the bound exists to
-/// prevent. The three `server_config.dart` ceilings are checked against the
+/// prevent. The `server_config.dart` point ceiling is checked against the
 /// arguments before anything is asked of the database. Two checks necessarily
 /// come after, and both are stated as such: the row budget (nothing knows the
 /// row count until the rows exist) and the downsample fallback detector — see
@@ -410,49 +388,6 @@ final class BackendTimeseries implements relay.TimeseriesApi {
               'through queryTimeseriesData, or plot one member.'}');
     }
     return _project(member, tableName, series.member, rows);
-  }
-
-  /// Sample counts per [interval] bucket, newest [howMany] buckets, UTC.
-  @override
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-      String tableName, Duration interval, int howMany,
-      {DateTime? since}) async {
-    const member = 'countTimeseriesDataMultiple';
-    final reader = _reader(member);
-    final series = _resolve(member, tableName);
-    if (howMany > limits.maxBuckets) {
-      throw ArgumentError('$member refused a howMany of $howMany: this '
-          'backend\'s bucket ceiling is ${limits.maxBuckets}. howMany IS the '
-          'number of UNION ALL subqueries in one statement '
-          '(database.dart:1734-1743), so this is a length bound on generated '
-          'SQL and not a convenience limit');
-    }
-    if (howMany <= 0) {
-      throw ArgumentError('$member refused a howMany of $howMany: a request '
-          'for no buckets is a round trip the caller then waits on');
-    }
-    final intervalMs = interval.inMilliseconds;
-    if (intervalMs > limits.maxIntervalMs) {
-      throw ArgumentError('$member refused an interval of $intervalMs ms: this '
-          'backend\'s interval ceiling is ${limits.maxIntervalMs} ms. A wider '
-          'bucket than a day can only produce empty ones past any retention '
-          'horizon this plant configures, and an empty bucket reads as "the '
-          'recorder stopped"');
-    }
-    if (intervalMs < 1) {
-      throw ArgumentError('$member refused an interval of ${interval.inMicroseconds} '
-          'µs: it truncates to 0 ms, and a zero-width bucket makes every '
-          'bucket in the strip cover the same instant');
-    }
-    final counts = await reader.countTimeseriesDataMultiple(
-        series.table, interval, howMany,
-        since: since);
-    // The bucket starts are built from `since ?? DateTime.now()`
-    // (`database.dart:1721`), which is local unless the caller made it UTC.
-    // Every instant on this wire is absolute.
-    return {
-      for (final entry in counts.entries) entry.key.toUtc(): entry.value,
-    };
   }
 
   // ---------------------------------------------------------------- internals

@@ -562,8 +562,6 @@ void main() {
       expect(mapped.maxSubscriptionsPerSession,
           defaults.maxSubscriptionsPerSession);
       expect(mapped.maxTimeseriesPoints, defaults.maxTimeseriesPoints);
-      expect(mapped.maxTimeseriesBuckets, defaults.maxTimeseriesBuckets);
-      expect(mapped.maxTimeseriesIntervalMs, defaults.maxTimeseriesIntervalMs);
       expect(mapped.maxFrameBytes, defaults.maxFrameBytes);
       expect(mapped.maxPendingBytes, defaults.maxPendingBytes);
       expect(mapped.writeOutcomeTtl, defaults.writeOutcomeTtl);

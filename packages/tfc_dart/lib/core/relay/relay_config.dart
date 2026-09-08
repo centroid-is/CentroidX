@@ -81,8 +81,7 @@
 ///
 /// Every `ServerConfig` field the section does not name keeps the default the
 /// server package argued for, in that package, next to the measurement. In
-/// particular the four timeseries ceilings (`maxTimeseriesPoints`,
-/// `maxTimeseriesBuckets`, `maxTimeseriesIntervalMs`, and 13-05's
+/// particular the timeseries ceilings (`maxTimeseriesPoints` and 13-05's
 /// `TimeseriesLimits.maxRows`) are **not** exposed here: each is arithmetic
 /// derived from a panel width or a retention horizon, written out where it
 /// lives, and a knob copied into a plant config file is a knob that drifts

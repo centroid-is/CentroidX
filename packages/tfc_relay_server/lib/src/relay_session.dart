@@ -1188,8 +1188,6 @@ final class RelaySession {
         data.timeseriesQueryMultiple);
     _on(DataServiceMethods.timeseriesQueryDownsampled,
         data.timeseriesQueryDownsampled);
-    _on(DataServiceMethods.timeseriesCountMultiple,
-        data.timeseriesCountMultiple);
     _on(DataServiceMethods.historyCreateView, data.historyCreateView);
     _on(DataServiceMethods.historyUpdateView, data.historyUpdateView);
     _on(DataServiceMethods.historyDeleteView, data.historyDeleteView);

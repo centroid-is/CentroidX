@@ -127,14 +127,12 @@ abstract final class DataServiceMethods {
       'timeseries.queryTimeseriesDataMultiple';
   static const timeseriesQueryDownsampled =
       'timeseries.queryTimeseriesDataDownsampled';
-  static const timeseriesCountMultiple = 'timeseries.countTimeseriesDataMultiple';
 
   /// Every `TimeseriesApi` method, as data.
   static const timeseriesMethods = <String>{
     timeseriesQuery,
     timeseriesQueryMultiple,
     timeseriesQueryDownsampled,
-    timeseriesCountMultiple,
   };
 
   static const historyCreateView = 'historyViews.createHistoryView';

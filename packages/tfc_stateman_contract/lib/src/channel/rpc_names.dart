@@ -226,16 +226,11 @@ abstract final class HarnessMethods {
   static const timeseriesQueryDownsampled =
       '${prefix}timeseries.queryTimeseriesDataDownsampled';
 
-  /// `TimeseriesApi.countTimeseriesDataMultiple`.
-  static const timeseriesCountMultiple =
-      '${prefix}timeseries.countTimeseriesDataMultiple';
-
   /// Every [TimeseriesApi] method, as data.
   static const timeseriesMethods = <String>{
     timeseriesQuery,
     timeseriesQueryMultiple,
     timeseriesQueryDownsampled,
-    timeseriesCountMultiple,
   };
 
   /// `HistoryViewApi.createHistoryView`.

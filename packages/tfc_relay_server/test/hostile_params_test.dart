@@ -5,14 +5,15 @@
 ///
 /// ## Why this file exists at all
 ///
-/// `TimeseriesApi`'s four signatures were frozen verbatim from working code,
-/// and two of them carry a string that ends up inside a SQL statement:
+/// `TimeseriesApi`'s signatures were frozen verbatim from working code
+/// (four then; three since the 2026-09-07 audit cut the count method), and
+/// they carry strings that end up inside a SQL statement:
 ///
 ///  * `orderBy` reaches
 ///    `'SELECT $cols FROM "$tableName"$whereClause$orderByClause'`
 ///    (`database_drift.dart`'s `tableQuery`), unescaped, in a position where a
 ///    subquery is legal grammar.
-///  * `tableName` reaches `FROM "$tableName"` in
+///  * `tableName` reached `FROM "$tableName"` in the since-cut
 ///    `countTimeseriesDataMultiple` (`database.dart`) **with no
 ///    quote-doubling at all** — while `queryTimeseriesDataDownsampled`, in the
 ///    same file, does `tableName.replaceAll('"', '""')`. That is one codebase
@@ -99,13 +100,6 @@ final class _RecordingTimeseries extends FakeTimeseries {
     return const [];
   }
 
-  @override
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-      String tableName, Duration interval, int howMany,
-      {DateTime? since}) async {
-    calls.add('countTimeseriesDataMultiple($tableName, $interval, $howMany)');
-    return const {};
-  }
 }
 
 /// The handlers under test, over a source that records rather than answers.
@@ -361,12 +355,9 @@ void main() {
       final kit = _kit();
 
       await kit.refusedPreEffect(
-          () => kit.handlers.timeseriesCountMultiple(
-                  _params(DataServiceMethods.timeseriesCountMultiple, {
-                'table': 'series:',
-                'intervalMs': 60_000,
-                'howMany': 10,
-              })),
+          () => kit.handlers.timeseriesQuery(_params(
+              DataServiceMethods.timeseriesQuery,
+              {'table': 'series:', 'to': _ms(_base)})),
           'a series name that ends mid-selection',
           reason: 'a colon selects a member, so this is a caller that meant '
               'to select one and did not; answering the whole series instead '
@@ -566,98 +557,6 @@ void main() {
               'legitimate chart while still passing both refusal cases above');
     });
 
-    test('a howMany at zero or negative is refused', () async {
-      for (final howMany in [0, -1]) {
-        final kit = _kit();
-
-        await kit.refusedPreEffect(
-            () => kit.handlers.timeseriesCountMultiple(
-                    _params(DataServiceMethods.timeseriesCountMultiple, {
-                  'table': _series,
-                  'intervalMs': 60_000,
-                  'howMany': howMany,
-                })),
-            'a howMany of $howMany',
-            reason: 'the database returns `{}` for it and the strip renders '
-                'as "the recorder stopped". Answering an empty map for a '
-                'malformed request is how a bug in a chart becomes a reported '
-                'plant fault');
-      }
-    });
-
-    test('a howMany above the ceiling is refused, naming the SQL it would '
-        'build', () async {
-      final kit = _kit();
-
-      final error = await kit.refusedPreEffect(
-          () => kit.handlers.timeseriesCountMultiple(
-                  _params(DataServiceMethods.timeseriesCountMultiple, {
-                'table': _series,
-                'intervalMs': 60_000,
-                'howMany': 100_000,
-              })),
-          'a howMany of a hundred thousand',
-          reason: '`countTimeseriesDataMultiple` builds one '
-              '`SELECT COUNT(*)` per bucket and joins them with UNION ALL, so '
-              'howMany is literally the number of subqueries in one '
-              'statement. It is a length bound on generated SQL, not a '
-              'convenience limit');
-
-      expect(error.message, contains('${ServerConfig().maxTimeseriesBuckets}'));
-    });
-
-    test('an intervalMs at zero or negative is refused', () async {
-      for (final intervalMs in [0, -60_000]) {
-        final kit = _kit();
-
-        await kit.refusedPreEffect(
-            () => kit.handlers.timeseriesCountMultiple(
-                    _params(DataServiceMethods.timeseriesCountMultiple, {
-                  'table': _series,
-                  'intervalMs': intervalMs,
-                  'howMany': 10,
-                })),
-            'an intervalMs of $intervalMs',
-            reason: 'a zero-width bucket is a division by zero one bucket '
-                'later, and a negative one walks the window backwards');
-      }
-    });
-
-    test('an intervalMs above the ceiling is refused', () async {
-      final kit = _kit();
-
-      final error = await kit.refusedPreEffect(
-          () => kit.handlers.timeseriesCountMultiple(
-                  _params(DataServiceMethods.timeseriesCountMultiple, {
-                'table': _series,
-                'intervalMs': const Duration(days: 400).inMilliseconds,
-                'howMany': 10,
-              })),
-          'a bucket 400 days wide',
-          reason: 'the ceiling times the bucket ceiling is the widest window '
-              'this method can be asked to walk, and it has to stay inside '
-              'any retention horizon or the buckets are all empty by '
-              'construction');
-
-      expect(
-          error.message, contains('${ServerConfig().maxTimeseriesIntervalMs}'));
-    });
-
-    test('the ordinary strip is accepted', () async {
-      final kit = _kit();
-
-      await kit.handlers.timeseriesCountMultiple(
-          _params(DataServiceMethods.timeseriesCountMultiple, {
-        'table': _series,
-        'intervalMs': 60_000,
-        'howMany': 60,
-      }));
-
-      expect(kit.source.calls, hasLength(1),
-          reason: 'anti-vacuity: an hour of one-minute buckets is what the '
-              '"is this series still recording?" strip actually asks for, and '
-              'a guard that refused it would pass every case above');
-    });
   });
 
   group('a backwards window is refused, not answered empty', () {

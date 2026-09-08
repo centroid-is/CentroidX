@@ -539,67 +539,6 @@ void main() {
     });
   });
 
-  group('counting buckets', () {
-    test('every bucket is present, and an empty one is 0 rather than absent',
-        () async {
-      final table = freshTable('counts');
-      final db = await openWriter();
-      final reader = TimescaleReader(
-        database: () => db,
-        resolver: FixtureResolver({'D.Counted': table}),
-      );
-
-      // Four one-minute buckets ending at `anchor`; the SECOND-oldest is
-      // deliberately empty.
-      await seed(db, table, [
-        (anchor.subtract(const Duration(seconds: 200)), 1),
-        (anchor.subtract(const Duration(seconds: 190)), 2),
-        (anchor.subtract(const Duration(seconds: 100)), 3),
-        (anchor.subtract(const Duration(seconds: 40)), 4),
-        (anchor.subtract(const Duration(seconds: 20)), 5),
-      ]);
-
-      final counts = await reader.countTimeseriesDataMultiple(
-          'D.Counted', const Duration(minutes: 1), 4,
-          since: anchor);
-
-      expect(counts, hasLength(4),
-          reason: 'howMany buckets come back, contiguous, oldest first');
-      final ordered = counts.keys.toList()..sort();
-      expect(counts[ordered[0]], 2);
-      expect(counts[ordered[1]], 0,
-          reason: 'the empty middle bucket must be PRESENT with zero. An '
-              'absent bucket and a bucket with no rows are different claims, '
-              'and the "is this series still recording?" strip renders them '
-              'differently');
-      expect(counts[ordered[2]], 1);
-      expect(counts[ordered[3]], 2);
-      expect(ordered.every((t) => t.isUtc), isTrue);
-
-      // The arm that makes the assertion above mean something. `since` is
-      // UTC everywhere it arrives from the wire (`data_handlers.dart` decodes
-      // epoch milliseconds), so a UTC-only case cannot tell whether anything
-      // normalises it — and this machine's own zone decides whether the bug
-      // is even visible. A LOCAL instant is the state a contract leg or an
-      // embedder produces, and it is what the interpolation at
-      // `database.dart:1642-1646` mishandles: the bucket bounds go into the
-      // statement as bare ISO strings with NO zone, so Postgres reads them in
-      // the session's TimeZone and every bucket shifts by the caller's offset
-      // with no error anywhere.
-      final fromLocal = await reader.countTimeseriesDataMultiple(
-          'D.Counted', const Duration(minutes: 1), 4,
-          since: anchor.toLocal());
-
-      expect(fromLocal.keys.every((t) => t.isUtc), isTrue,
-          reason: 'a bucket key that is not an absolute instant puts the '
-              '"is this series still recording?" strip an hour out twice a '
-              'year, silently');
-      expect(fromLocal, counts,
-          reason: 'the same instant asked for two ways is the same four '
-              'buckets holding the same five rows');
-    });
-  });
-
   group('when the database goes away', () {
     test('the reader fails fast and answers again when it returns', () async {
       final table = freshTable('outage');

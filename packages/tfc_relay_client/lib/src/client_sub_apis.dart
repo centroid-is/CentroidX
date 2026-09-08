@@ -229,28 +229,6 @@ final class ClientTimeseriesApi implements TimeseriesApi {
         'maxPoints': maxPoints,
       }));
 
-  /// Bucket counts, keyed by the bucket's own instant.
-  ///
-  /// JSON objects key by String, so the instants travel as epoch milliseconds in
-  /// the key and are read back here — at the boundary, exactly once, the way
-  /// `historyViewGraphsToJson` handles the same problem for graph indexes.
-  @override
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-      String tableName, Duration interval, int howMany,
-      {DateTime? since}) async {
-    final raw =
-        jsonObject(await _call(DataServiceMethods.timeseriesCountMultiple, {
-      'table': tableName,
-      'intervalMs': interval.inMilliseconds,
-      'howMany': howMany,
-      'since': since == null ? null : msOf(since),
-    }));
-    return {
-      for (final entry in raw.entries)
-        timeOf(int.parse(entry.key)): (entry.value as num).toInt(),
-    };
-  }
-
   /// Samples decoded as `num`, which is the parser question the library doc is
   /// about.
   static List<TimeseriesData> points(Object? raw) => [
