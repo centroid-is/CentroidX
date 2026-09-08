@@ -367,7 +367,7 @@ void main() {
             'a deadline and the pump would be pure cost');
   });
 
-  test('the handler table is exactly the forty-four names a client may call, '
+  test('the handler table is exactly the seventy-two names a client may call, '
       'plus the one it announces', () async {
     final link = _link();
     addTearDown(link.dispose);
@@ -434,21 +434,29 @@ void main() {
           DataServiceMethods.prefSetStringList,
           DataServiceMethods.prefRemove,
           DataServiceMethods.prefClear,
+          // 17-09: the access twenty-eight, iterated from the declared set
+          // rather than restated — this file pins the ledger, and
+          // `surface_test.dart` pins the wire spelling with bare strings.
+          // Twenty-eight because the audit cut `accessTemplates.template`;
+          // a name here that surface_test does not carry fails both files.
+          ...AccessMethods.all,
           // 05-05: the hold tick, a client→server notification. It is in the
           // ledger because json_rpc_2 dispatches an un-idded frame through
           // the same table, and it is not a name a client may *call* — see
           // `surface_test.dart`, which keeps the two in separate literals.
           Methods.holdTick,
         },
-        reason: 'the wire surface is a closed set of forty-five '
+        reason: 'the wire surface is a closed set of seventy-three '
             'registrations: 03-05 added subscribe and unsubscribe, 03-08 '
             'froze it, 04-02 added the five value methods the contract leg '
             'cannot run without, 10-02 the four browse ones that retired six '
             'of the thirteen proven-unreachable checks, 10-03 the four '
             'timeseries ones that retired three more, 10-04 the eleven '
             'history-view ones that retired two more, and 10-05 the '
-            'preferences fifteen that retired the last two, and 14-12 the '
+            'preferences fifteen that retired the last two, 14-12 the '
             'acknowledge — the first operator action here that is not a '
-            'write. A handler nobody counted is surface nobody reviewed');
+            'write — and 17-09 the access twenty-eight, every one behind '
+            'the same gate. A handler nobody counted is surface nobody '
+            'reviewed');
   });
 }
