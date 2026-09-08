@@ -104,7 +104,11 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
 
   /// The standing subscription that makes the view live: a new activation
   /// appears the moment it fires, not the next time the period is changed.
+  /// [_man] is who it listens to — an accepted alarm edit invalidates the
+  /// provider and builds a new AlarmMan, and a subscription left on the
+  /// orphan would go silent for good.
   StreamSubscription<Set<AlarmActive>>? _activeSub;
+  AlarmMan? _man;
 
   /// Identity of the last-seen active set, to tell "something new appeared"
   /// (rebuild locally) from "something cleared" (it just became a history
@@ -162,7 +166,11 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
       if (!mounted || generation != _generation) return;
       // The seeded stream delivers the current set to a new listener, so the
       // first event doubles as the initial read the `.first` await used to be.
-      _activeSub ??= man.activeAlarms().listen(_onActive);
+      if (!identical(man, _man)) {
+        _man = man;
+        _activeSub?.cancel();
+        _activeSub = man.activeAlarms().listen(_onActive);
+      }
       setState(() {
         // An alarm the editor marked as not a stop is out at the source:
         // no lane, and no share of the header counts or the overview strip,
