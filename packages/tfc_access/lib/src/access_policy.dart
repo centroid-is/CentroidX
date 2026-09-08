@@ -275,11 +275,14 @@ class AccessPolicy {
   const AccessPolicy({
     TagBindingLookup? tagBindings,
     Map<String, AccessGroup> routes = const <String, AccessGroup>{},
+    Map<String, AccessGroup> cameras = const <String, AccessGroup>{},
   })  : _tagBindings = tagBindings,
-        _routes = routes;
+        _routes = routes,
+        _cameras = cameras;
 
   final TagBindingLookup? _tagBindings;
   final Map<String, AccessGroup> _routes;
+  final Map<String, AccessGroup> _cameras;
 
   // ---------------------------------------------------------------------------
   // The member vocabulary
@@ -419,6 +422,27 @@ class AccessPolicy {
     if (path == null) return AccessGroup.operate;
     return _routes[path] ?? AccessGroup.operate;
   }
+
+  /// The group required to view camera [cameraId] — to be handed a playable
+  /// URL for its stream, whichever transport serves the bytes. **Never null**
+  /// — the floor is [AccessGroup.operate].
+  ///
+  /// The same shape as [groupForRoute], for the same reasons: viewing is an
+  /// operator act, so a camera nobody graded is an operator camera; the
+  /// grading table is passed in by the composition rather than imported
+  /// (this package must not know the plant's camera list); and an entry can
+  /// only raise the requirement above the floor, never lower it past it.
+  /// There is no "unrestricted" answer for a caller to collapse into
+  /// no-check-at-all.
+  ///
+  /// The caller is the relay's camera-ticket handler (server-side, per the
+  /// 2026-09-06 ruling), which asks this **before** minting the credential a
+  /// media endpoint will later verify. The rule "who may view a camera" is
+  /// stated here, once; the ticket book that carries the answer to the media
+  /// port holds no policy — it is a credential mechanism, the carve-out the
+  /// one-master-system ruling grants the relay.
+  AccessGroup groupForCamera(String cameraId) =>
+      _cameras[cameraId] ?? AccessGroup.operate;
 
   /// The group required to perform [member] on a saved history view, or
   /// **null when the operation is open to any session, anonymous included**.

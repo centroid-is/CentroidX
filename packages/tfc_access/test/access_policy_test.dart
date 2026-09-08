@@ -211,6 +211,45 @@ void main() {
     });
   });
 
+  group('groupForCamera', () {
+    // Viewing a camera is an operator act, graded by the same shape as
+    // groupForRoute: a camera nobody raised is an operator camera, the table
+    // is injected by the composition (tfc_access must not know the plant's
+    // camera list), and grading can only raise the requirement above the
+    // floor — never lower it past it. The relay's ticket handler is the
+    // caller; the rule lives here, once, per the one-master-system ruling
+    // (Jon, 2026-09-06).
+    test('an unknown camera answers the operate floor, never null', () {
+      const policy = AccessPolicy();
+      expect(policy.groupForCamera('cam_01'), AccessGroup.operate);
+      expect(policy.groupForCamera(''), AccessGroup.operate);
+      expect(policy.groupForCamera('anything_at_all'), AccessGroup.operate);
+    });
+
+    test('a raised camera passed in by the composition answers its group', () {
+      const policy = AccessPolicy(cameras: {
+        'cam_packhall': AccessGroup.operate,
+        'cam_serverroom': AccessGroup.administer,
+      });
+      expect(policy.groupForCamera('cam_packhall'), AccessGroup.operate);
+      expect(policy.groupForCamera('cam_serverroom'), AccessGroup.administer);
+      expect(policy.groupForCamera('cam_unlisted'), AccessGroup.operate);
+    });
+
+    test('grading raises above the floor but an absent entry stays the floor',
+        () {
+      // The same property groupForTag carries: an entry can demand more than
+      // operate; absence is the floor rather than "unrestricted", so there is
+      // no null for a caller to collapse into no-check-at-all.
+      const policy = AccessPolicy(
+        cameras: {'cam_serverroom': AccessGroup.administer},
+      );
+      expect(policy.groupForCamera('cam_serverroom'), AccessGroup.administer);
+      expect(policy.groupForCamera('cam_packhall'), isA<AccessGroup>());
+      expect(policy.groupForCamera('cam_packhall'), AccessGroup.operate);
+    });
+  });
+
   group('groupForWireSurface', () {
     test("the 'tag' wire name delegates to groupForTag and floors to operate",
         () {
