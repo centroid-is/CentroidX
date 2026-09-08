@@ -12,7 +12,9 @@ import 'tool_toggles.dart';
 /// blob. After migration the legacy keys remain in the database but are
 /// no longer read.
 ///
-/// Returns [McpConfig.defaults] when no config exists yet.
+/// Returns [McpConfig.defaults] when no config exists yet — every tool group
+/// off, and the blob written back so the next read is the fast path. A device
+/// nobody has configured serves nothing until somebody configures it.
 Future<McpConfig> readMcpConfigFromPreferences(PreferencesApi prefs) async {
   final json = await prefs.getString(McpConfig.kPrefKey);
 
@@ -153,8 +155,9 @@ Tool groups:
   launch -- Claude Desktop on a laptop -- has no station to inherit that
   from, and has to say so itself.
 
-  The value is a JSON object mapping group names to booleans. Groups named
-  in it are as named; groups left out of a supplied object are enabled.
+  The value is a JSON object mapping group names to booleans. A group is
+  served only if the object says so: one left out is off, exactly like one
+  set to false, so name every group you want.
   Group names: ${McpToolToggles.allJsonKeys.join(', ')}
 
   Example: --toggles '{"tags":true,"proposals":false}'
@@ -295,14 +298,14 @@ Future<McpConfig?> _readLegacyConfigIfAny(PreferencesApi prefs) async {
   if (port != null) found = true;
 
   final toggles = McpToolToggles(
-    tagsEnabled: await readBool(McpToolToggles.kTagsEnabled) ?? true,
-    alarmsEnabled: await readBool(McpToolToggles.kAlarmsEnabled) ?? true,
-    configEnabled: await readBool(McpToolToggles.kConfigEnabled) ?? true,
-    drawingsEnabled: await readBool(McpToolToggles.kDrawingsEnabled) ?? true,
-    trendsEnabled: await readBool(McpToolToggles.kTrendsEnabled) ?? true,
-    plcCodeEnabled: await readBool(McpToolToggles.kPlcCodeEnabled) ?? true,
-    proposalsEnabled: await readBool(McpToolToggles.kProposalsEnabled) ?? true,
-    techDocsEnabled: await readBool(McpToolToggles.kTechDocsEnabled) ?? true,
+    tagsEnabled: await readBool(McpToolToggles.kTagsEnabled) ?? false,
+    alarmsEnabled: await readBool(McpToolToggles.kAlarmsEnabled) ?? false,
+    configEnabled: await readBool(McpToolToggles.kConfigEnabled) ?? false,
+    drawingsEnabled: await readBool(McpToolToggles.kDrawingsEnabled) ?? false,
+    trendsEnabled: await readBool(McpToolToggles.kTrendsEnabled) ?? false,
+    plcCodeEnabled: await readBool(McpToolToggles.kPlcCodeEnabled) ?? false,
+    proposalsEnabled: await readBool(McpToolToggles.kProposalsEnabled) ?? false,
+    techDocsEnabled: await readBool(McpToolToggles.kTechDocsEnabled) ?? false,
   );
 
   if (!found) return null;
@@ -328,18 +331,18 @@ Future<McpConfig> _migrateFromLegacyKeys(PreferencesApi prefs) async {
 
   // Read legacy toggle keys.
   final toggles = McpToolToggles(
-    tagsEnabled: await prefs.getBool(McpToolToggles.kTagsEnabled) ?? true,
-    alarmsEnabled: await prefs.getBool(McpToolToggles.kAlarmsEnabled) ?? true,
-    configEnabled: await prefs.getBool(McpToolToggles.kConfigEnabled) ?? true,
+    tagsEnabled: await prefs.getBool(McpToolToggles.kTagsEnabled) ?? false,
+    alarmsEnabled: await prefs.getBool(McpToolToggles.kAlarmsEnabled) ?? false,
+    configEnabled: await prefs.getBool(McpToolToggles.kConfigEnabled) ?? false,
     drawingsEnabled:
-        await prefs.getBool(McpToolToggles.kDrawingsEnabled) ?? true,
-    trendsEnabled: await prefs.getBool(McpToolToggles.kTrendsEnabled) ?? true,
+        await prefs.getBool(McpToolToggles.kDrawingsEnabled) ?? false,
+    trendsEnabled: await prefs.getBool(McpToolToggles.kTrendsEnabled) ?? false,
     plcCodeEnabled:
-        await prefs.getBool(McpToolToggles.kPlcCodeEnabled) ?? true,
+        await prefs.getBool(McpToolToggles.kPlcCodeEnabled) ?? false,
     proposalsEnabled:
-        await prefs.getBool(McpToolToggles.kProposalsEnabled) ?? true,
+        await prefs.getBool(McpToolToggles.kProposalsEnabled) ?? false,
     techDocsEnabled:
-        await prefs.getBool(McpToolToggles.kTechDocsEnabled) ?? true,
+        await prefs.getBool(McpToolToggles.kTechDocsEnabled) ?? false,
   );
 
   final config = McpConfig(

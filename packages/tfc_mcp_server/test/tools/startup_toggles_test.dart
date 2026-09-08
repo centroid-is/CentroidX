@@ -97,23 +97,34 @@ void main() {
       expect(startup.explanation, isNull);
     });
 
-    test('a group left out of a supplied object stays enabled', () {
-      // Present-but-partial is still a decision: the spawner sent a blob, and
-      // the blob's own defaults apply. Only a wholly absent decision closes.
+    test('a group left out of a supplied object is off', () {
+      // Present-but-partial is still a decision -- `decided` stays true, and
+      // no explanation is printed -- but the blob's own defaults are `false`
+      // now, so a group it does not name is a group it did not ask for. A
+      // spawner that wants a group on has to name it; the app always does,
+      // because it sends a full `toJson()`.
       final startup = resolveStartupToggles(envJson: '{"tags": false}');
 
       expect(startup.decided, isTrue);
-      expect(startup.toggles.tagsEnabled, isFalse);
+      expect(startup.explanation, isNull);
+      expect(startup.toggles, McpToolToggles.allDisabled);
+    });
+
+    test('a partial object still turns on what it does name', () {
+      final startup = resolveStartupToggles(envJson: '{"alarms": true}');
+
+      expect(startup.decided, isTrue);
       expect(startup.toggles.alarmsEnabled, isTrue);
+      expect(startup.toggles.tagsEnabled, isFalse);
     });
 
     test('--toggles decides when the environment is silent', () {
-      final startup = resolveStartupToggles(cliJson: '{"alarms": false}');
+      final startup = resolveStartupToggles(cliJson: '{"tags": true}');
 
       expect(startup.decided, isTrue);
       expect(startup.source, StartupToggleSource.commandLine);
-      expect(startup.toggles.alarmsEnabled, isFalse);
       expect(startup.toggles.tagsEnabled, isTrue);
+      expect(startup.toggles.alarmsEnabled, isFalse);
     });
 
     test('the environment wins over --toggles', () {
@@ -162,13 +173,20 @@ void main() {
   });
 
   group('McpToolToggles.allDisabled', () {
-    test('is not what any blob deserializes to by omission', () {
-      // The trap this whole change is about: every fromJson field defaults to
-      // true, so an empty map is all-enabled. That is correct for a blob
-      // somebody wrote, and is exactly why absence must never be read through
-      // fromJson.
-      expect(McpToolToggles.fromJson({}), McpToolToggles.allEnabled);
-      expect(McpToolToggles.fromJson({}), isNot(McpToolToggles.allDisabled));
+    test('is what an empty blob deserializes to', () {
+      // This test used to assert the opposite, and the reversal is the
+      // change. While `fromJson` defaulted every field to true, an empty map
+      // was all-enabled, and `allDisabled` existed only for the case that is
+      // not a stored preference at all -- a spawner that handed down nothing.
+      // Storage now agrees with that case instead of contradicting it.
+      expect(McpToolToggles.fromJson({}), McpToolToggles.allDisabled);
+      expect(McpToolToggles.fromJson({}), isNot(McpToolToggles.allEnabled));
+    });
+
+    test('and an explicitly all-true blob still deserializes to all-enabled',
+        () {
+      expect(McpToolToggles.fromJson(McpToolToggles.allEnabled.toJson()),
+          McpToolToggles.allEnabled);
     });
 
     test('round-trips through JSON as all-false', () {
