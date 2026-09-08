@@ -221,19 +221,6 @@ final class WriteOutcomeLog {
     return _entries[cmd];
   }
 
-  /// Whether [cmd] currently has an entry — the presence half of the
-  /// duplicate-cmd question (04-REVIEW CR-05), which must not prune-and-forget
-  /// its way into allowing one id to cover two actuations inside the window.
-  ///
-  /// **No production caller remains.** Handlers ask [entryFor] instead, because
-  /// since 05-03 presence is only half the question: the other half is whether
-  /// the entry is *this* write ([WriteOutcomeEntry.matches]), and a caller that
-  /// could only ask "is something there" would have to answer a genuine replay
-  /// with a refusal. The only surviving caller is one arm of
-  /// `tfc_relay_server`'s own suite, so this is a deletion candidate rather
-  /// than a member with a job — recorded in 18-04-SUMMARY, not acted on here.
-  bool holds(String cmd) => entryFor(cmd) != null;
-
   /// Whether this log was recording when [mintedAtMs] was minted, and whether
   /// that instant is one this source's clock can vouch for.
   ///
