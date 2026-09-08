@@ -22,6 +22,8 @@ AlarmActive alarm(
   required DateTime at,
   DateTime? ended,
   String description = '',
+  List<String> staleInputs = const [],
+  DateTime? staleSince,
 }) {
   final rule = AlarmRule(
     level: level,
@@ -43,6 +45,8 @@ AlarmActive alarm(
       expression: 'x',
       rule: rule,
       timestamp: at,
+      staleInputs: staleInputs,
+      staleSince: staleSince,
     ),
     deactivated: ended,
   );
@@ -105,6 +109,28 @@ Future<void> pumpAlarmList(
   bool dark = false,
 }) async {
   await tester.pumpWidget(alarmList(alarms, width: width, dark: dark));
+  await tester.pumpAndSettle();
+}
+
+/// The detail card alone, the way the Alarm View page and the visibility
+/// asset's pane both host it.
+Future<void> pumpAlarmDetail(
+  WidgetTester tester,
+  AlarmActive alarm, {
+  double width = 520,
+  bool dark = false,
+}) async {
+  final (light, darkTheme) = solarized();
+  await tester.pumpWidget(ProviderScope(
+    child: MaterialApp(
+      theme: dark ? darkTheme : light,
+      home: Scaffold(
+        body: Center(
+          child: SizedBox(width: width, child: ViewActiveAlarm(alarm: alarm)),
+        ),
+      ),
+    ),
+  ));
   await tester.pumpAndSettle();
 }
 

@@ -301,6 +301,13 @@ class RelayAlarmSource implements AlarmSource {
             isUtc: true),
         ruleIndex: entry.ruleIndex,
         tsSource: _tsSourceOf(entry.tsSource),
+        // The hold badge, straight off the payload: which inputs D-3 is
+        // holding this rule on, and since when. Dropping these here would
+        // re-blind the panel to exactly the rig-measured defect the fields
+        // exist for (a warning held true on a dead sensor, with no visible
+        // reason).
+        staleInputs: List<String>.of(entry.staleInputs),
+        staleSince: entry.staleSince,
       ),
       pendingAck: entry.pendingAck,
     );

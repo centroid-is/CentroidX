@@ -18,7 +18,7 @@ import 'dart:typed_data' show ByteData;
 
 import 'package:flutter/services.dart' show FontLoader;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tfc/widgets/alarm.dart' show ListActiveAlarms;
+import 'package:tfc/widgets/alarm.dart' show ListActiveAlarms, ViewActiveAlarm;
 import 'package:tfc_dart/core/alarm.dart';
 
 import 'alarm_fixture.dart';
@@ -42,6 +42,24 @@ AlarmFixture _plant() => AlarmFixture(
             at: DateTime(2026, 8, 28, 5, 0),
             ended: DateTime(2026, 8, 28, 5, 4)),
       ],
+    );
+
+/// The rig's cooler alarm as the panel now renders it: held true on a stale
+/// input since 12 seconds after onset.
+AlarmActive _cooler() => alarm(
+      'Cooler temperature',
+      level: AlarmLevel.warning,
+      at: DateTime(2026, 9, 8, 19, 18, 4),
+      staleInputs: const ['cooler.temp.avg'],
+      staleSince: DateTime(2026, 9, 8, 19, 18, 16),
+    );
+
+AlarmFixture _held() => AlarmFixture(
+      active: {
+        _cooler(),
+        alarm('Motor overload',
+            level: AlarmLevel.error, at: DateTime(2026, 9, 8, 8, 15)),
+      },
     );
 
 /// Real glyphs — without this the list captures as placeholder boxes.
@@ -115,5 +133,48 @@ void main() {
       );
     });
 
+    // The D-3 hold badge, in both themes: the row must read as "check this
+    // sensor", not as one more line of timestamp grey, and the bold badge
+    // must stay legible on the warning fill in light and dark alike (the
+    // rig-measured cooler defect, 2026-09-08).
+    testWidgets('a held alarm names its dead input in the list — light',
+        (tester) async {
+      await pumpAlarmList(tester, _held());
+
+      await expectLater(
+        find.byType(ListActiveAlarms),
+        matchesGoldenFile('goldens/alarm_list_held_input.png'),
+      );
+    });
+
+    testWidgets('a held alarm names its dead input in the list — dark',
+        (tester) async {
+      await pumpAlarmList(tester, _held(), dark: true);
+
+      await expectLater(
+        find.byType(ListActiveAlarms),
+        matchesGoldenFile('goldens/alarm_list_held_input_dark.png'),
+      );
+    });
+
+    testWidgets('the detail card states the hold and its consequence — light',
+        (tester) async {
+      await pumpAlarmDetail(tester, _cooler());
+
+      await expectLater(
+        find.byType(ViewActiveAlarm),
+        matchesGoldenFile('goldens/alarm_detail_held_input.png'),
+      );
+    });
+
+    testWidgets('the detail card states the hold and its consequence — dark',
+        (tester) async {
+      await pumpAlarmDetail(tester, _cooler(), dark: true);
+
+      await expectLater(
+        find.byType(ViewActiveAlarm),
+        matchesGoldenFile('goldens/alarm_detail_held_input_dark.png'),
+      );
+    });
   });
 }

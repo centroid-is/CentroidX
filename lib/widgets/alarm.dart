@@ -957,6 +957,22 @@ class _ListActiveAlarmsState extends ConsumerState<ListActiveAlarms> {
                               color: textColor.withAlpha(178),
                             ),
                           ),
+                          // The D-3 hold, named and dated. A held alarm can
+                          // neither clear nor re-fire, so a row without this
+                          // line is a warning the operator will wait on
+                          // forever — the rig-measured cooler defect
+                          // (2026-09-08). Bold on purpose: this is the row's
+                          // one actionable fact.
+                          if (alarm.notification.staleInputs.isNotEmpty)
+                            Text(
+                              'Input stale'
+                              '${alarm.notification.staleSince != null ? ' since ${formatTimestamp(alarm.notification.staleSince!)}' : ''}'
+                              ' — ${alarm.notification.staleInputs.join(', ')}',
+                              style: TextStyle(
+                                color: textColor,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                           if (deactivationTime != null)
                             Text(
                               'Deactivated: ${formatTimestamp(deactivationTime)}',
@@ -1199,6 +1215,24 @@ class ViewActiveAlarm extends ConsumerWidget {
               Text(
                 'Expression: ${alarm.notification.expression}',
                 style: TextStyle(color: textColor, fontWeight: FontWeight.bold),
+              ),
+            ],
+            if (alarm.notification.staleInputs.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              // The hold, and its consequence. "Cannot change state" is the
+              // sentence that stops an operator waiting for a held alarm to
+              // clear on its own: the state shown is remembered, not being
+              // re-earned, until the named input delivers again.
+              Text(
+                'Input stale'
+                '${alarm.notification.staleSince != null ? ' since ${formatTimestamp(alarm.notification.staleSince!)}' : ''}'
+                ': ${alarm.notification.staleInputs.join(', ')}. '
+                'This alarm cannot change state until the input returns — '
+                'check the sensor.',
+                style: TextStyle(
+                  color: textColor,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ],
             if (requiresAck) ...[

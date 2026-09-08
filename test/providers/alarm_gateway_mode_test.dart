@@ -112,6 +112,8 @@ rp.AlarmActiveEntry entry({
   int? activeAtMs,
   String tsSource = rp.AlarmActiveEntry.tsSourcePlant,
   bool pendingAck = false,
+  List<String> staleInputs = const [],
+  int? staleSinceMs,
 }) =>
     rp.AlarmActiveEntry(
       uid: uid,
@@ -124,6 +126,8 @@ rp.AlarmActiveEntry entry({
       activeAtMs: activeAtMs ?? backendOnset.millisecondsSinceEpoch,
       tsSource: tsSource,
       pendingAck: pendingAck,
+      staleInputs: staleInputs,
+      staleSinceMs: staleSinceMs,
     );
 
 // ------------------------------------------------------------------- fakes
@@ -539,6 +543,45 @@ void main() {
       expect(only.notification.timestamp.isUtc, isTrue);
       expect(only.notification.tsSource, AlarmTsSource.plant,
           reason: 'the payload said the plant supplied the instant');
+    });
+
+    // ----------------------------------------------------------------- 5b
+    test('the backend\'s hold badge survives the conversion the widgets read',
+        () async {
+      // The rig defect this closes (2026-09-08): "Cooler temperature" held
+      // true by D-3 on a dead cooler.temp.avg, and the panel had nowhere to
+      // even put the fact. The payload now carries it; losing it in
+      // `_activeOf` would re-blind every gateway station.
+      final transport = _RecordingTransport();
+      addTearDown(transport.close);
+      final container = _container(
+        gateway: true,
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source = await container.read(alarmManProvider.future);
+      await Future<void>.delayed(Duration.zero);
+      final heldSince = backendOnset.add(const Duration(seconds: 12));
+      transport.push([
+        entry(
+          staleInputs: const ['cooler.temp.avg'],
+          staleSinceMs: heldSince.millisecondsSinceEpoch,
+        ),
+      ]);
+      final active = await _settle(source);
+
+      final only = active.single;
+      expect(only.notification.staleInputs, ['cooler.temp.avg'],
+          reason: 'the operator\'s next act is to check this sensor by name');
+      expect(only.notification.staleSince, heldSince);
+      expect(only.notification.staleSince!.isUtc, isTrue);
+
+      // And a live entry states its liveness.
+      transport.push([entry()]);
+      final live = await _settle(source);
+      expect(live.single.notification.staleInputs, isEmpty);
+      expect(live.single.notification.staleSince, isNull);
     });
 
     // ------------------------------------------------------------------ 6

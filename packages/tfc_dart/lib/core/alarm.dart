@@ -811,6 +811,19 @@ class AlarmNotification {
   /// nobody said. See [AlarmTsSource].
   final AlarmTsSource? tsSource;
 
+  /// The keys whose bad quality is HOLDING this alarm's state, or empty.
+  ///
+  /// Filled only from the backend's `ALARM.active` payload
+  /// (`AlarmActiveEntry.staleInputs`): a non-empty list means D-3's quality
+  /// gate has suspended the rule, the boolean on screen is remembered rather
+  /// than being re-earned, and it can neither clear nor re-fire until the
+  /// named inputs return. Direct-mode notifications leave it empty — the old
+  /// evaluator has no gate and therefore no hold to report.
+  final List<String> staleInputs;
+
+  /// When the hold began, UTC, or null when [staleInputs] is empty.
+  final DateTime? staleSince;
+
   AlarmNotification(
       {required this.uid,
       required this.active,
@@ -818,7 +831,9 @@ class AlarmNotification {
       required this.rule,
       required this.timestamp,
       this.ruleIndex,
-      this.tsSource});
+      this.tsSource,
+      this.staleInputs = const [],
+      this.staleSince});
 
   /// [timestamp] with its provenance, as one value.
   ///
