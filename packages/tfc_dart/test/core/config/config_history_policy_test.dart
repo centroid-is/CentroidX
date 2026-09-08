@@ -81,9 +81,28 @@ void main() {
           isTrue);
     });
 
-    test('the two halves of the rule are named, so a reader can find them', () {
+    test('the three halves of the rule are named, so a reader can find them',
+        () {
       expect(kHistoryExemptKinds, {ConfigKind.pageImage});
       expect(kHistoryExemptPreferenceIds, {'server_config_envelope'});
+      expect(kHistoryExemptPreferenceIdPrefixes, {'page_editor_image:'});
+    });
+
+    test('a page image written as a preference is exempt too', () {
+      // 04-05 made a shared preference a `config_item` row with a
+      // `config_change` row beside it, and `image_store.dart` still writes its
+      // images as preferences until 04-09 ports them. Without the prefix arm
+      // one screenshot would cost ~13 MB of history that is never pruned —
+      // C-3, reached by a different door.
+      expect(
+          historyExempt(ConfigKind.preference,
+              'page_editor_image:9f86d081884c7d659a2feaa0c55ad015'),
+          isTrue);
+      // And the prefix is a prefix, not a substring: a key that merely
+      // mentions it is an ordinary preference with an ordinary history.
+      expect(historyExempt(ConfigKind.preference, 'my_page_editor_image:1'),
+          isFalse);
+      expect(historyExempt(ConfigKind.preference, 'page_editor_data'), isFalse);
     });
   });
 

@@ -410,6 +410,41 @@ void main() {
     });
   });
 
+  group('the exempt keys', () {
+    test('a page image is a row and no change row at all', () async {
+      // C-3, through the preference door. `image_store.dart` still writes
+      // images as preferences until 04-09 ports them onto ConfigKind.pageImage,
+      // and `config_change` is never pruned — so both sides of a 6.7 MB base64
+      // payload, per save and per garbage collection, would be permanent.
+      await prefs.setString(
+          'page_editor_image:9f86d081', 'aGVsbG8gd29ybGQ=');
+
+      expect((await remotePreferenceRows()).single.id,
+          'page_editor_image:9f86d081');
+      expect(await remoteChanges(), isEmpty);
+      // Stored, versioned and readable — only its history is not kept.
+      expect(await prefs.getString('page_editor_image:9f86d081'),
+          'aGVsbG8gd29ybGQ=');
+    });
+
+    test('the envelope ciphertext is a row and no change row', () async {
+      await prefs.setString('server_config_envelope', 'ciphertext');
+
+      expect((await remotePreferenceRows()).single.id,
+          'server_config_envelope');
+      expect(await remoteChanges(), isEmpty);
+    });
+
+    test('an ordinary key beside an exempt one still gets its history',
+        () async {
+      await prefs.setString('page_editor_image:9f86d081', 'aGk=');
+      await prefs.setString('update_channel', 'beta');
+
+      final changes = await remoteChanges();
+      expect(changes.map((c) => c.entityId), ['update_channel']);
+    });
+  });
+
   group('the guard', () {
     test('resolves the group per key, not per kind', () async {
       // `alarm_man_config` is `configure`; `collector_config` is `administer`.
