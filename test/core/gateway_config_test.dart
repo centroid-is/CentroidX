@@ -440,10 +440,6 @@ void main() {
     test('a config that is already refused advises about nothing', () {
       const cases = <String, GatewayConfig>{
         'empty': GatewayConfig(mode: TransportMode.gateway),
-        'wss with no CA root': GatewayConfig(
-          mode: TransportMode.gateway,
-          url: 'wss://plc-gw.svn:9444',
-        ),
         'unparseable': GatewayConfig(
           mode: TransportMode.gateway,
           url: 'just some words',
@@ -456,6 +452,18 @@ void main() {
         expect(entry.value.advisory, isNull,
             reason: '${entry.key} is refused, so it must not also advise');
       }
+      // 'wss with no CA root' used to sit in the refused set above. It moved
+      // sides with the one-URL flow: no longer an edit-time refusal (Save is
+      // the acquisition step), so a *hostname* dial with no trust yet is now
+      // exactly the moment the SAN advisory earns its keep — the operator is
+      // about to approve a fingerprint for a certificate that must carry
+      // that name.
+      const unpinnedByName = GatewayConfig(
+        mode: TransportMode.gateway,
+        url: 'wss://plc-gw.svn:9444',
+      );
+      expect(unpinnedByName.validationError, isNull);
+      expect(unpinnedByName.advisory, isNotNull);
       // The control: the same hostname, once it IS dialable, does advise.
       expect(byName.advisory, isNotNull);
     });

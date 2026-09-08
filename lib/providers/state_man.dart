@@ -210,7 +210,13 @@ Future<StateMan> stateMan(Ref ref) async {
       // preferences and audit over the relay) is Phase 17; until then, any
       // copy claiming this panel opens only a WebSocket is false, and a
       // source-scan test keeps the old wording from coming back.
-      final refusal = gateway.validationError;
+      // `undialable`, not `validationError`: the edit-time getter deliberately
+      // lets a wss row with no pinned trust through so the Save button can
+      // run the fetch-and-approve ceremony, but at boot there is no Save
+      // coming — a trustless row here is exactly as undialable as ever, and
+      // refusing it by name is what lands on GatewayLinkKind.notBuilt instead
+      // of on the CERTIFICATE_VERIFY_FAILED a genuine impostor also produces.
+      final refusal = gateway.undialable;
       if (refusal != null) {
         throw StateError('Gateway mode is selected but the configuration '
             'cannot be dialled: $refusal');
