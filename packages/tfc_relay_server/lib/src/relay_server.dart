@@ -624,8 +624,10 @@ final class RelayServer {
       // Short on purpose: a close reason is capped at 123 bytes and the
       // station id is the variable part (see `_Connection._clampReason`, which
       // is the belt to this brace).
+      // 17-07 spillover, mechanical only: `stationId` became `station` when
+      // 17-04b replaced `Identity` with `StationIdentity` (see relay_session).
       unawaited(session.close(CloseCodes.authExpired,
-          'credential revoked for station ${identity.stationId}'));
+          'credential revoked for station ${identity.station}'));
     }
   }
 

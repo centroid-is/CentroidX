@@ -692,8 +692,11 @@ final class RelaySession {
   /// Set once and never again — see [_hello]. On a `PermissiveTokenValidator`
   /// it is that validator's self-naming station, which is the honest answer:
   /// the gateway does know who this is, and the answer is "anybody".
-  Identity? get identity => _identity;
-  Identity? _identity;
+  // 17-07 spillover, mechanical only (flagged in 17-07-SUMMARY): `Identity`
+  // was deleted by 17-04b and this pair blocked every suite importing this
+  // file from loading. The rewrite of what surrounds it is 17-09's.
+  StationIdentity? get identity => _identity;
+  StationIdentity? _identity;
 
   /// A one-way digest of the credential this session authenticated with, when
   /// the validator produced one.
