@@ -63,18 +63,20 @@
 # a dependency-based variant.
 #
 # Usage:
-#   scripts/check-preferences-construction.sh [--quiet]
+#   scripts/check-preferences-construction.sh [--quiet|--self-test]
 #
 # Exit codes:
 #   0  no construction outside `lib/providers/`
 #   1  at least one found — the offending file and line are printed
-#   2  the check could not be run (no search roots)
+#   2  the check could not be run (no search roots), or --self-test failed
 
 set -uo pipefail
 
 quiet=0
+self_test=0
 case "${1:-}" in
   --quiet) quiet=1 ;;
+  --self-test) self_test=1 ;;
   "") ;;
   -h|--help) sed -n '3,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) printf 'check-preferences-construction: unknown option: %s\n' "$1" >&2; exit 2 ;;
@@ -172,6 +174,84 @@ hits_for() {
         allowed "$file" "$pattern" || printf '%s\n' "$line"
       done
 }
+
+# The four patterns, named once. Both the ordinary run and the self-test walk
+# this list, so a fifth pattern added here is covered by the self-test without
+# anybody remembering to extend it — which is the failure mode a hand-written
+# second copy would have.
+PATTERNS=(
+  'async|SharedPreferencesAsync[[:space:]]*\(|final a = SharedPreferencesAsync();'
+  'legacy|SharedPreferences\.getInstance[[:space:]]*\(|final b = SharedPreferences.getInstance();'
+  'sqlite|SqlitePreferences[[:space:]]*\(|final c = SqlitePreferences();'
+  'config|ConfigStore[[:space:]]*\(|final d = ConfigStore();'
+)
+
+# --- self-test -------------------------------------------------------------
+# Proves the gate can fail, and proves it for EVERY pattern rather than for one
+# of them. This script printed "clean" once while enforcing nothing, because
+# the constructor it watched had moved; a gate nobody has watched fail is a
+# gate nobody knows works. Its sibling
+# `check-flutter-preferences-retired.sh --self-test` exists for the same
+# reason, and until 04-13 this script had no equivalent — so its clean result
+# could only be trusted by whoever had last planted a violation by hand.
+if [ "$self_test" = "1" ]; then
+  planted="lib/.check_preferences_construction_selftest.dart"
+  cleanup() { rm -f "$planted"; }
+  trap cleanup EXIT
+
+  # Not in `lib/providers/`, not in the allow list, and not a comment: the
+  # three ways a real violation could hide from this gate.
+  : > "$planted"
+  for entry in "${PATTERNS[@]}"; do
+    line="${entry##*|}"
+    printf '%s
+' "$line" >> "$planted"
+  done
+
+  undetected=()
+  for entry in "${PATTERNS[@]}"; do
+    name="${entry%%|*}"
+    rest="${entry#*|}"
+    regex="${rest%%|*}"
+    if ! hits_for "$regex" "$name" | grep -qF "$planted"; then
+      undetected+=("$name")
+    fi
+  done
+  cleanup
+  trap - EXIT
+
+  if [ "${#undetected[@]}" -ne 0 ]; then
+    printf 'check-preferences-construction: SELF-TEST FAILED — planted ' >&2
+    printf 'violations were not detected for: %s. The gate is vacuous for ' >&2
+    printf 'those patterns.\n' "${undetected[*]}" >&2
+    exit 2
+  fi
+
+  # The planted lines must also STOP being reported once removed. Without this
+  # half, a self-test would pass against a gate that reported the same hit
+  # whatever the tree contained. It asserts the planted path specifically and
+  # NOT that the whole tree is clean: a real violation elsewhere is what the
+  # ordinary run is for, and folding the two together would make this arm fail
+  # for a reason that has nothing to do with whether the gate works.
+  still=""
+  for entry in "${PATTERNS[@]}"; do
+    name="${entry%%|*}"
+    rest="${entry#*|}"
+    regex="${rest%%|*}"
+    still="$still$(hits_for "$regex" "$name" | grep -F "$planted" || true)"
+  done
+  if [ -n "$still" ]; then
+    printf 'check-preferences-construction: SELF-TEST FAILED — %s is still ' >&2
+    printf 'reported after removal.\n' "$planted" >&2
+    exit 2
+  fi
+
+  printf 'check-preferences-construction: self-test passed — a planted '
+  printf 'violation was detected for all %d patterns (' "${#PATTERNS[@]}"
+  for entry in "${PATTERNS[@]}"; do printf '%s ' "${entry%%|*}"; done
+  printf ') and stopped being reported once removed.\n'
+  exit 0
+fi
 
 async_hits="$(hits_for 'SharedPreferencesAsync[[:space:]]*\(' async)"
 legacy_hits="$(hits_for 'SharedPreferences\.getInstance[[:space:]]*\(' legacy)"
