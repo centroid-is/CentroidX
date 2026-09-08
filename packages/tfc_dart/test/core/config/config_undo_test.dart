@@ -700,6 +700,226 @@ void main() {
     });
   });
 
+  group('the verdict has to still be true when the write runs', () {
+    /// A store whose snapshot is level with the remote, sync attached but
+    /// driven by hand.
+    ///
+    /// `startSync: false` is not a convenience here: these tests own the
+    /// moment the snapshot moves, and a background reconcile would close the
+    /// window they exist to open — or open one they did not ask for.
+    Future<void> levelled() async {
+      store.attachRemoteDatabase(remote, startSync: false);
+      await store.open();
+    }
+
+    /// Another station's edit, landing on the remote the way one really does:
+    /// the row and the change row that announces it.
+    Future<void> foreignEdit(ConfigItem next, {required int fromRev}) async {
+      await (remote.update(remote.configItemTable)
+            ..where((t) =>
+                t.kind.equals(next.kind.wireName) &
+                t.id.equals(next.id) &
+                t.scope.equals(next.scope.wireName)))
+          .write(ConfigItemTableCompanion(
+        payload: Value(next.payload),
+        parentId: Value(next.parentId),
+        sortIndex: Value(next.sortIndex),
+        rev: Value(fromRev + 1),
+        updatedAt: Value(DateTime.utc(2026, 9, 4, 8, 15)),
+        updatedBy: const Value('ingibjorg'),
+      ));
+    }
+
+    test('F1: an edit that sync has already applied refuses, rather than '
+        'being written over', () async {
+      final v0 = assetItem('a1', page: 'p1', ordinal: 1024, colour: 'green');
+      final v1 = assetItem('a1', page: 'p1', ordinal: 1024);
+      final v2 = assetItem('a1', page: 'p1', ordinal: 1024, colour: 'blue');
+      await seed(v1, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'act-1', before: v0, after: v1));
+      await levelled();
+
+      // The verdict, taken while the world still agrees with it.
+      final plan = await planUndo(remote, 'act-1');
+      expect(plan.isReady, isTrue);
+
+      // Station B edits the entity and this station hears about it — which is
+      // the ordinary case, not the exotic one: the notification lands in
+      // milliseconds and the confirm dialog is open for seconds.
+      await foreignEdit(v2, fromRev: 1);
+      await seedChange(changeOf(
+          actionId: 'act-2',
+          before: v1,
+          after: v2,
+          who: 'ingibjorg',
+          station: kOtherStation));
+      await store.pullChanges();
+      expect(store.itemsOf(const {ConfigKind.asset}).single.payload,
+          v2.payload,
+          reason: "the snapshot has taken B's edit, so the CAS will match it "
+              'and cannot be what refuses this undo');
+
+      // The refusal `UndoBlockReason.newerChange` exists for. Without the
+      // plan-time rev, this commits v0 straight over B's v2.
+      await expectLater(
+        executeUndo(plan,
+            store: store,
+            policy: policy,
+            sessionGroups: kAllGroups,
+            actionId: 'undo-1',
+            who: 'gudrun',
+            roleName: 'Engineer'),
+        throwsA(isA<ConfigConflict>()),
+      );
+
+      final rows = await remote.select(remote.configItemTable).get();
+      expect(rows.single.payload, v2.payload,
+          reason: "B's edit must still be there");
+      expect((await remote.select(remote.configChangeTable).get())
+          .map((r) => r.actionId), ['act-1', 'act-2'],
+          reason: 'and the undo wrote no change row');
+    });
+
+    test('F1b: undoing an insert deletes the row another station has since '
+        'edited — the same window, one step worse', () async {
+      final v1 = assetItem('a1', page: 'p1', ordinal: 1024);
+      final v2 = assetItem('a1', page: 'p1', ordinal: 1024, colour: 'blue');
+      // This time the action *created* the entity, so its inverse is a
+      // removal: B's edit is not overwritten but destroyed, and the delete arm
+      // is CAS'd on the snapshot's rev, which the pull has just made current.
+      await seed(v1, into: [local, remote]);
+      await seedChange(changeOf(actionId: 'act-1', after: v1));
+      await levelled();
+
+      final plan = await planUndo(remote, 'act-1');
+      expect(plan.isReady, isTrue);
+
+      await foreignEdit(v2, fromRev: 1);
+      await seedChange(changeOf(
+          actionId: 'act-2',
+          before: v1,
+          after: v2,
+          who: 'ingibjorg',
+          station: kOtherStation));
+      await store.pullChanges();
+
+      await expectLater(
+        executeUndo(plan,
+            store: store,
+            policy: policy,
+            sessionGroups: kAllGroups,
+            actionId: 'undo-1',
+            who: 'gudrun',
+            roleName: 'Engineer'),
+        throwsA(isA<ConfigConflict>()),
+      );
+
+      expect(await remote.select(remote.configItemTable).get(), hasLength(1),
+          reason: "B's row must not have been deleted out from under it");
+    });
+
+    test('F2: a snapshot that has not caught up refuses, rather than writing '
+        'nothing and reporting success', () async {
+      final v1 = assetItem('a1', page: 'p1', ordinal: 1024);
+      final v2 = assetItem('a1', page: 'p1', ordinal: 1024, colour: 'blue');
+      // The remote holds the action's result; this station's mirror is still
+      // at the value before it — a fresh mirror, or a notification lost inside
+      // the sweep window.
+      await seed(v2, into: [remote], rev: 2);
+      await seed(v1, into: [local]);
+      await seedChange(changeOf(actionId: 'act-1', before: v1, after: v2));
+      await levelled();
+      expect(store.itemsOf(const {ConfigKind.asset}).single.payload,
+          v1.payload,
+          reason: 'the snapshot is behind the action being undone, which is '
+              'what makes the inverse look like a no-op');
+
+      final plan = await planUndo(remote, 'act-1');
+      expect(plan.isReady, isTrue,
+          reason: 'the remote agrees with the action, so the verdict is ready '
+              '— the disagreement is between the remote and this snapshot');
+
+      await expectLater(
+        executeUndo(plan,
+            store: store,
+            policy: policy,
+            sessionGroups: kAllGroups,
+            actionId: 'undo-1',
+            who: 'gudrun',
+            roleName: 'Engineer'),
+        throwsA(isA<ConfigConflict>()),
+      );
+
+      expect((await remote.select(remote.configItemTable).get()).single.payload,
+          v2.payload,
+          reason: 'the remote is untouched: the undo neither wrote nor '
+              'pretended to');
+    });
+
+    test('F2b: a half-synced multi-entity action refuses whole, rather than '
+        'committing the half it can see', () async {
+      final a1v1 = assetItem('a1', page: 'p1', ordinal: 1024);
+      final a1v2 = assetItem('a1', page: 'p1', ordinal: 1024, colour: 'blue');
+      final a2v1 = assetItem('a2', page: 'p1', ordinal: 2048);
+      final a2v2 = assetItem('a2', page: 'p1', ordinal: 2048, colour: 'blue');
+      // The remote holds both halves of the action; the mirror has caught up
+      // with a1 and not with a2.
+      await seed(a1v2, into: [remote], rev: 2);
+      await seed(a2v2, into: [remote], rev: 2);
+      await seed(a1v2, into: [local], rev: 2);
+      await seed(a2v1, into: [local]);
+      await seedChange(changeOf(actionId: 'act-1', before: a1v1, after: a1v2));
+      await seedChange(changeOf(actionId: 'act-1', before: a2v1, after: a2v2));
+      await levelled();
+
+      final plan = await planUndo(remote, 'act-1');
+      expect(plan.isReady, isTrue);
+
+      await expectLater(
+        executeUndo(plan,
+            store: store,
+            policy: policy,
+            sessionGroups: kAllGroups,
+            actionId: 'undo-1',
+            who: 'gudrun',
+            roleName: 'Engineer'),
+        throwsA(isA<ConfigConflict>()),
+      );
+
+      // All or nothing: the entity the snapshot *could* have restored must not
+      // have been restored on its own.
+      final rows = {
+        for (final row in await remote.select(remote.configItemTable).get())
+          row.id: row.payload,
+      };
+      expect(rows['a1'], a1v2.payload);
+      expect(rows['a2'], a2v2.payload);
+    });
+
+    test('a plan whose world has not moved still writes', () async {
+      // The control. Without it the three refusals above could be passing
+      // because nothing can ever execute.
+      final v1 = assetItem('a1', page: 'p1', ordinal: 1024);
+      final v2 = assetItem('a1', page: 'p1', ordinal: 1024, colour: 'blue');
+      await seed(v2, into: [local, remote], rev: 2);
+      await seedChange(changeOf(actionId: 'act-1', before: v1, after: v2));
+      await levelled();
+
+      final plan = await planUndo(remote, 'act-1');
+      final result = await executeUndo(plan,
+          store: store,
+          policy: policy,
+          sessionGroups: kAllGroups,
+          actionId: 'undo-1',
+          who: 'gudrun',
+          roleName: 'Engineer');
+
+      expect(result.diff.changed, hasLength(1));
+      expect((await remote.select(remote.configItemTable).get()).single.payload,
+          v1.payload);
+    });
+  });
+
   group('the gate is inside execute, not at the page', () {
     test('the group is the one the original write required', () {
       expect(undoGateFor(policy, ConfigKind.asset, 'a1').group,
