@@ -341,6 +341,151 @@ void main() {
 
       await h.dispose();
     });
+
+    // -------------------------------------------------------------- arm 12
+    //
+    // The hold made visible. Measured on the SVN rig, 2026-09-08: "Cooler
+    // temperature" activated at boot on a good-quality type-default read,
+    // the sweep then staled the input, and D-3 held the alarm true — for as
+    // long as anybody watched, with nothing anywhere saying which sensor to
+    // check or since when. The hold semantics are right; the invisibility is
+    // the defect. So the suspension carries data: which RESOLVED keys are out
+    // of the good band, and the instant the hold began, over the injected
+    // clock.
+    test('suspension names the resolved keys that refused, and the instant '
+        'the hold began', () async {
+      final h = _Harness('a < 5', resolveKey: (v) => 'plc.$v');
+      await h.watcher.start();
+
+      h.values.push('plc.a', good(10.0, at: t0));
+      await settle();
+      expect(h.watcher.suspendedInputs, isEmpty);
+      expect(h.watcher.suspendedSince, isNull);
+
+      final tHold = t0.add(const Duration(minutes: 3));
+      h.clock.at = tHold;
+      h.values.push('plc.a', bad(relay.Quality.badStale, at: tHold));
+      await settle();
+
+      expect(h.watcher.suspended, isTrue);
+      expect(h.watcher.suspendedInputs, ['plc.a'],
+          reason: 'the operator\'s next act is to check a sensor, so the '
+              'banner needs the KEY, not the formula variable');
+      expect(h.watcher.suspendedSince, tHold,
+          reason: 'over the injected clock — DateTime.now() does not appear '
+              'in this suite');
+
+      h.clock.at = t0.add(const Duration(minutes: 4));
+      h.values.push('plc.a', good(10.0, at: h.clock.at));
+      await settle();
+
+      expect(h.watcher.suspendedInputs, isEmpty,
+          reason: 'recovery clears the badge');
+      expect(h.watcher.suspendedSince, isNull);
+
+      await h.dispose();
+    });
+
+    // -------------------------------------------------------------- arm 13
+    test('onSuspensionChanged fires on the edges, never per stale tick',
+        () async {
+      final h = _Harness('a > 10');
+      await h.watcher.start();
+
+      h.values.push('a', good(20.0, at: t0));
+      await settle();
+      expect(h.suspensionChanges, isEmpty,
+          reason: 'a good value is not a suspension edge');
+
+      h.values.push('a', bad(relay.Quality.badStale, at: t0));
+      await settle();
+      expect(h.suspensionChanges, [true]);
+
+      // The sweep re-badges a dead key every cycle. One hold, one callback —
+      // the same entries-not-ticks discipline `suspensions` and the log line
+      // already keep (T-14-14).
+      h.values.push('a', bad(relay.Quality.badStale, at: t0));
+      h.values.push('a', bad(relay.Quality.badCommFault, at: t0));
+      await settle();
+      expect(h.suspensionChanges, [true]);
+
+      h.values.push('a', good(20.0, at: t0));
+      await settle();
+      expect(h.suspensionChanges, [true, false],
+          reason: 'the exit is an edge too — a publisher republishing on the '
+              'entry alone would leave the badge on a recovered alarm');
+
+      await h.dispose();
+    });
+
+    // -------------------------------------------------------------- arm 14
+    //
+    // The mirror hazard. While the input is dead the alarm cannot CLEAR
+    // either, so the first verdict after a resume is a bound — "it was over
+    // by the time the sensor came back" — not a measurement of when the plant
+    // recovered. The transition says so, and the engine writes the row's
+    // `deactivated_reason` from it; presenting that instant as a measured
+    // clear would shorten a stop in the direction nobody audits.
+    test('the first transition after a resume is flagged afterSuspension; '
+        'later measured ones are not', () async {
+      final h = _Harness('a > 10');
+      await h.watcher.start();
+
+      h.values.push('a', good(20.0, at: t0));
+      await settle();
+      expect(h.transitions.single.active, isTrue);
+      expect(h.transitions.single.afterSuspension, isFalse,
+          reason: 'a transition with no suspension behind it is a measurement');
+
+      h.values.push('a', bad(relay.Quality.badStale, at: t0));
+      await settle();
+
+      final tBack = t0.add(const Duration(minutes: 30));
+      h.values.push('a', good(5.0, at: tBack));
+      await settle();
+
+      expect(h.transitions, hasLength(2));
+      expect(h.transitions.last.active, isFalse);
+      expect(h.transitions.last.afterSuspension, isTrue,
+          reason: 'the plant may have recovered at any point in the 30 '
+              'minutes nobody could see; this instant is a bound');
+
+      h.values.push('a', good(20.0, at: tBack.add(const Duration(minutes: 1))));
+      await settle();
+      expect(h.transitions.last.afterSuspension, isFalse,
+          reason: 'the gap has been re-measured; this activation was watched '
+              'happen');
+
+      await h.dispose();
+    });
+
+    // -------------------------------------------------------------- arm 15
+    test('a post-resume evaluation that does NOT transition consumes the '
+        'flag — the gap was re-measured as continuity', () async {
+      final h = _Harness('a > 10');
+      await h.watcher.start();
+
+      h.values.push('a', good(20.0, at: t0));
+      await settle();
+      h.values.push('a', bad(relay.Quality.badStale, at: t0));
+      await settle();
+
+      // Resume with the SAME verdict: no transition, but the rule has been
+      // re-measured — the state on the banner is earned again.
+      h.values.push('a', good(25.0, at: t0.add(const Duration(minutes: 10))));
+      await settle();
+      expect(h.transitions, hasLength(1));
+
+      // The clear that follows was watched happen, start to finish.
+      h.values.push('a', good(5.0, at: t0.add(const Duration(minutes: 11))));
+      await settle();
+      expect(h.transitions, hasLength(2));
+      expect(h.transitions.last.afterSuspension, isFalse,
+          reason: 'labelling a measured clear as a bound would be the same '
+              'lie in the other direction');
+
+      await h.dispose();
+    });
   });
 }
 
@@ -348,7 +493,8 @@ void main() {
 
 /// A watcher, its fake source, its fake clock and the transitions it produced.
 final class _Harness {
-  _Harness(String formula, {bool collect = true})
+  _Harness(String formula,
+      {bool collect = true, String Function(String variable)? resolveKey})
       : values = FakeBackendValueSource(),
         clock = CountingClock(t0) {
     watcher = AlarmRuleWatcher(
@@ -357,6 +503,8 @@ final class _Harness {
       ruleIndex: 7,
       clock: clock.call,
       onTransition: collect ? transitions.add : (_) {},
+      onSuspensionChanged: () => suspensionChanges.add(watcher.suspended),
+      resolveKey: resolveKey,
       logger: Logger(level: Level.off),
     );
   }
@@ -364,6 +512,10 @@ final class _Harness {
   final FakeBackendValueSource values;
   final CountingClock clock;
   final List<AlarmRuleTransition> transitions = [];
+
+  /// One snapshot of [AlarmRuleWatcher.suspended] per edge the watcher
+  /// reported — entries and exits, never ticks.
+  final List<bool> suspensionChanges = [];
   late final AlarmRuleWatcher watcher;
 
   Future<void> dispose() async {

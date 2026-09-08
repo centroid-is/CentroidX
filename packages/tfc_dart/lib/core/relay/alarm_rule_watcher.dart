@@ -91,6 +91,7 @@ final class AlarmRuleTransition {
     required this.stamp,
     required this.isFirstEvaluation,
     this.expressionText,
+    this.afterSuspension = false,
   });
 
   /// Which rule of the owning alarm this is, per D-4's `(alarm_uid,
@@ -121,10 +122,26 @@ final class AlarmRuleTransition {
   /// `false` must still be reported or the open row stays open forever.
   final bool isFirstEvaluation;
 
+  /// Whether this transition came out of the FIRST evaluation after a
+  /// suspension ended.
+  ///
+  /// The mirror of D-3's hold: while an input is out of the good band the
+  /// rule can neither fire nor clear, so the first verdict after the input
+  /// returns is a **bound** — "it was so by the time the sensor came back" —
+  /// not a measurement of when the plant actually changed. A clear carrying
+  /// this flag is written to `alarm_history` as `inferred_input_recovery`
+  /// rather than `cleared`, because a stop analysis has to be able to tell a
+  /// watched end from a reconstructed one (the same T-14-23 discipline
+  /// `inferred_restart` exists for). One evaluation consumes the flag whether
+  /// or not it transitions: an evaluation that confirms the held state has
+  /// re-measured the rule, and everything after it was watched happen.
+  final bool afterSuspension;
+
   @override
   String toString() => 'AlarmRuleTransition(rule $ruleIndex, '
       'active: $active, $stamp'
-      '${isFirstEvaluation ? ', first' : ''})';
+      '${isFirstEvaluation ? ', first' : ''}'
+      '${afterSuspension ? ', after suspension' : ''})';
 }
 
 /// Watches one alarm rule. See the library doc for why each property is here.
@@ -135,6 +152,7 @@ final class AlarmRuleWatcher {
     required this.ruleIndex,
     required DateTime Function() clock,
     required void Function(AlarmRuleTransition transition) onTransition,
+    void Function()? onSuspensionChanged,
     Duration skewWarnAfter = kAlarmSkewWarnAfter,
     String Function(String variable)? resolveKey,
     Logger? logger,
@@ -142,6 +160,7 @@ final class AlarmRuleWatcher {
         _expression = expression,
         _clock = clock,
         _onTransition = onTransition,
+        _onSuspensionChanged = onSuspensionChanged,
         _skewWarnAfter = skewWarnAfter,
         _resolveKey = resolveKey ?? _identity,
         _logger = logger ?? Logger();
@@ -152,6 +171,16 @@ final class AlarmRuleWatcher {
   final ExpressionConfig _expression;
   final DateTime Function() _clock;
   final void Function(AlarmRuleTransition transition) _onTransition;
+
+  /// Told on every EDGE of [suspended] — entry and exit, never per tick.
+  ///
+  /// The engine republishes the active set from it, because a suspension on
+  /// an active alarm changes what the banner must say ([suspendedInputs]) and
+  /// nothing else re-encodes the payload. Optional so the watcher stays
+  /// constructible alone, exactly like the transition sink is required for
+  /// the opposite reason: a watcher with no transition sink watches nothing,
+  /// but one nobody asks about suspension still gates correctly.
+  final void Function()? _onSuspensionChanged;
   final Duration _skewWarnAfter;
   final String Function(String variable) _resolveKey;
   final Logger _logger;
@@ -165,6 +194,9 @@ final class AlarmRuleWatcher {
   StreamSubscription<List<StampedValue>>? _subscription;
   bool _started = false;
   bool _suspended = false;
+  List<String> _suspendedInputs = const [];
+  DateTime? _suspendedSince;
+  bool _resumePending = false;
   int _suspensions = 0;
   int _evaluations = 0;
   bool? _last;
@@ -187,6 +219,20 @@ final class AlarmRuleWatcher {
 
   /// Whether evaluation is currently suspended because an input is not good.
   bool get suspended => _suspended;
+
+  /// The RESOLVED keys currently holding this rule suspended, or empty.
+  ///
+  /// Keys, not formula variables: the operator's next act on a held alarm is
+  /// to check a sensor, and the sensor's name is the key. Positionally these
+  /// are [subscribedKeys] entries, so they are what a panel can look up.
+  List<String> get suspendedInputs => _suspendedInputs;
+
+  /// When the current suspension began, over the injected clock, or null.
+  ///
+  /// The instant the banner renders as "input stale since …". From [_clock]
+  /// and never from a bound value: the value that caused the suspension is
+  /// precisely the one whose instant cannot be trusted.
+  DateTime? get suspendedSince => _suspendedSince;
 
   /// How many times this rule has *entered* suspension.
   ///
@@ -286,16 +332,26 @@ final class AlarmRuleWatcher {
   void _onValues(List<StampedValue> bound) {
     // ---- 1. the quality gate (D-3). State is held; nothing is emitted.
     final refusedBy = <String>[];
+    final refusedKeys = <String>[];
     for (var i = 0; i < bound.length; i++) {
-      if (!bound[i].value.quality.isGood) refusedBy.add(_variables[i]);
+      if (!bound[i].value.quality.isGood) {
+        refusedBy.add(_variables[i]);
+        refusedKeys.add(_subscribedKeys[i]);
+      }
     }
     if (refusedBy.isNotEmpty) {
+      // The key list can change while suspended (a second input dies); that
+      // is tracked so the badge stays true, but it is not a new suspension —
+      // edges are entries and exits, not membership changes (T-14-14).
+      _suspendedInputs = List.unmodifiable(refusedKeys);
       if (!_suspended) {
         _suspended = true;
         _suspensions++;
+        _suspendedSince = _clock();
         _logger.w('alarm rule $ruleIndex suspended: '
             '${refusedBy.join(', ')} not in the good band. '
             'Its state is held at ${_last ?? 'unevaluated'}.');
+        _onSuspensionChanged?.call();
       }
       return;
     }
@@ -303,7 +359,13 @@ final class AlarmRuleWatcher {
     // ---- 2. recovery, logged once for the same reason the suspension is.
     if (_suspended) {
       _suspended = false;
+      _suspendedInputs = const [];
+      _suspendedSince = null;
+      // Consumed by the next COMPLETED evaluation, below — not by this
+      // emission, which may still refuse on the formula.
+      _resumePending = true;
       _logger.i('alarm rule $ruleIndex resumed: every input is good again.');
+      _onSuspensionChanged?.call();
     }
 
     // ---- 3. convert for the boolean math (DI-7) and evaluate.
@@ -321,6 +383,12 @@ final class AlarmRuleWatcher {
       return;
     }
     _evaluations++;
+
+    // A completed evaluation consumes the resume flag whether or not it
+    // transitions: confirming the held state re-measures the rule, and every
+    // verdict after that was watched happen.
+    final afterSuspension = _resumePending;
+    _resumePending = false;
 
     // ---- 4. transition on the BOOLEAN (P-3), or on the first verdict at all.
     final isFirstEvaluation = _last == null;
@@ -349,6 +417,7 @@ final class AlarmRuleWatcher {
       active: satisfied,
       stamp: stamp,
       isFirstEvaluation: isFirstEvaluation,
+      afterSuspension: afterSuspension,
       expressionText:
           satisfied ? _expression.value.formatWithValues(bindings) : null,
     ));

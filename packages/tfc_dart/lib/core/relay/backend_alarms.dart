@@ -242,6 +242,17 @@ final class _ActiveAlarm {
   /// column that means "somebody saw this".
   bool clearedStampInferred = false;
 
+  /// Why [clearedStamp] is a reconstruction, when [clearedStampInferred] and
+  /// a reason more specific than `inferred_restart` both apply.
+  ///
+  /// Null on a measured clear and on the restart adoption (whose close keeps
+  /// saying `inferred_restart`). Set to `inferred_input_recovery` when the
+  /// clearing verdict was the first after a D-3 suspension: the plant may
+  /// have recovered at any point while the input was dead, so the instant is
+  /// a bound, and the row has to say WHICH kind of bound or a stop analysis
+  /// reads a sensor outage as a backend restart.
+  String? clearedInferredReason;
+
   /// The `alarm_history` row this activation was opened as.
   ///
   /// Null until the INSERT comes back, and null forever when the engine was
@@ -255,7 +266,15 @@ final class _ActiveAlarm {
   /// closes captures this object.
   int? historyId;
 
-  relay.AlarmActiveEntry toEntry() => relay.AlarmActiveEntry(
+  /// [staleInputs]/[staleSinceMs] are the engine's to supply: they live on
+  /// the rule's WATCHER, not on this entry, because the hold is a fact about
+  /// the rule's inputs right now and this object is a fact about one
+  /// activation. See `AlarmEngine._wireEntry`.
+  relay.AlarmActiveEntry toEntry({
+    List<String> staleInputs = const [],
+    int? staleSinceMs,
+  }) =>
+      relay.AlarmActiveEntry(
         uid: alarm.uid,
         ruleIndex: ruleIndex,
         level: rule.level.name,
@@ -271,6 +290,8 @@ final class _ActiveAlarm {
         // engine composed with no writer — never invented, because a panel
         // would follow an invented id to a query that returns nothing.
         historyId: historyId == null ? null : '$historyId',
+        staleInputs: staleInputs,
+        staleSinceMs: staleSinceMs,
       );
 }
 
@@ -344,6 +365,14 @@ final class AlarmEngine implements AlarmAcknowledger {
   final Map<(String, int), _ActiveAlarm> _active = {};
   final List<_RuleBinding> _rules = [];
 
+  /// [_rules] keyed by D-4's identity, for the publish path.
+  ///
+  /// Filled alongside [_rules] in [_buildWatchers] and never afterwards. The
+  /// wire entry for an active alarm carries its rule's CURRENT suspension
+  /// state, which lives on the watcher — this is the join, O(1) per entry
+  /// instead of a scan per entry per publication.
+  final Map<(String, int), _RuleBinding> _bindingIndex = {};
+
   /// Open `alarm_history` rows waiting for their rule's first post-restart
   /// evaluation, keyed by D-4's identity.
   ///
@@ -393,7 +422,7 @@ final class AlarmEngine implements AlarmAcknowledger {
   /// asks — "what is on the banner" — which is the same question
   /// [relay.AlarmKeys.active] answers, and the two must never disagree.
   Set<relay.AlarmActiveEntry> get active =>
-      {for (final entry in _published) entry.toEntry()};
+      {for (final entry in _published) _wireEntry(entry)};
 
   /// The entries a panel is entitled to see: everything active that nobody has
   /// acknowledged yet.
@@ -420,10 +449,11 @@ final class AlarmEngine implements AlarmAcknowledger {
   /// How many rules are currently suspended because an input is not good
   /// (CD-6).
   ///
-  /// A counter and a log line. A `PIPE.`-namespace key carrying the same fact
-  /// was the nicer option and is deferred rather than half-built: it needs a
-  /// reserved key, a declaration on `BackendLiveValues` and a place on the
-  /// panel, and none of those are this plan's.
+  /// Consumed by [_onSuspensionEdge]'s log line — the aggregate an operator
+  /// greps for when three rules go quiet at once — and readable by anything
+  /// composing this engine. The per-rule fact travels further: an entry on
+  /// the banner carries its own `staleInputs` on the wire, so a panel needs
+  /// no second query to say WHY a held alarm is held.
   int get suspendedRuleCount =>
       _rules.where((binding) => binding.watcher.suspended).length;
 
@@ -706,7 +736,7 @@ final class AlarmEngine implements AlarmAcknowledger {
       for (var index = 0; index < alarm.rules.length; index++) {
         final rule = alarm.rules[index];
         try {
-          _rules.add(_RuleBinding(
+          final binding = _RuleBinding(
             alarm,
             rule,
             index,
@@ -720,8 +750,11 @@ final class AlarmEngine implements AlarmAcknowledger {
               logger: _logger,
               onTransition: (transition) =>
                   _onTransition(alarm, rule, transition),
+              onSuspensionChanged: () => _onSuspensionEdge(alarm.uid, index),
             ),
-          ));
+          );
+          _rules.add(binding);
+          _bindingIndex[(alarm.uid, index)] = binding;
         } catch (error, stack) {
           _logger.e(
               'alarm "${alarm.uid}" rule $index could not be constructed and '
@@ -732,6 +765,32 @@ final class AlarmEngine implements AlarmAcknowledger {
         }
       }
     }
+  }
+
+  /// `cleared` for a clear this engine watched happen; the input-recovery
+  /// bound for one it could only infer. See [AlarmRuleTransition.afterSuspension].
+  static String _clearReason(AlarmRuleTransition transition) =>
+      transition.afterSuspension
+          ? AlarmHistoryWriter.reasonInferredInputRecovery
+          : AlarmHistoryWriter.reasonCleared;
+
+  /// One rule crossed a suspension edge — entered the hold or left it.
+  ///
+  /// Two duties, both edge-not-tick (T-14-14):
+  ///
+  ///  * **The aggregate log line**, consuming [suspendedRuleCount]: when
+  ///    three rules go quiet at once, "3 of 9" is the sentence an operator
+  ///    greps for, and no per-rule line adds up to it.
+  ///  * **Republish when a banner entry changed shape.** The active SET did
+  ///    not move — a hold moves nothing, that is its whole point — but the
+  ///    entry's `staleInputs`/`staleSinceMs` did, and nothing else re-encodes
+  ///    the payload. A suspension on a rule with nothing published changes
+  ///    nothing a panel can see, so nothing is fanned out for it.
+  void _onSuspensionEdge(String alarmUid, int ruleIndex) {
+    _logger.i('alarm suspension edge: $suspendedRuleCount of '
+        '${_rules.length} alarm rule(s) suspended on a not-good input.');
+    final entry = _active[(alarmUid, ruleIndex)];
+    if (entry != null && !entry.acknowledged) _publishActive();
   }
 
   /// One rule changed its mind. Update the set, and publish if anything moved.
@@ -781,7 +840,8 @@ final class AlarmEngine implements AlarmAcknowledger {
             held,
             held.clearedStamp ?? transition.stamp,
             held.clearedStampInferred
-                ? AlarmHistoryWriter.reasonInferredRestart
+                ? (held.clearedInferredReason ??
+                    AlarmHistoryWriter.reasonInferredRestart)
                 : AlarmHistoryWriter.reasonCleared);
       }
       final entry = _ActiveAlarm(
@@ -802,10 +862,11 @@ final class AlarmEngine implements AlarmAcknowledger {
           // The operator silenced it while the condition was still true, so
           // the row was left open; the plant has now ended the stop, and the
           // row closes at the plant's instant as `cleared` — a measurement,
-          // not the consequence of somebody pressing a button.
+          // not the consequence of somebody pressing a button. Unless the
+          // verdict is the first after a suspension, in which case the
+          // instant is a bound and the reason says so.
           _active.remove(identity);
-          _closeRow(
-              existing, transition.stamp, AlarmHistoryWriter.reasonCleared);
+          _closeRow(existing, transition.stamp, _clearReason(transition));
           // `changed` stays FALSE on purpose: this entry left the published
           // set when it was acknowledged, so nothing a panel can see moves
           // here and no fan-out is owed.
@@ -819,6 +880,14 @@ final class AlarmEngine implements AlarmAcknowledger {
             // closes the row at THIS instant, because this is when the stop
             // actually ended.
             existing.clearedStamp = transition.stamp;
+            if (transition.afterSuspension) {
+              // The held clear is a bound, and it must still say so when the
+              // acknowledgement finally closes the row — hours later, long
+              // after the transition that knew is gone.
+              existing.clearedStampInferred = true;
+              existing.clearedInferredReason =
+                  AlarmHistoryWriter.reasonInferredInputRecovery;
+            }
             // And remembered DURABLY (CR-02). Until this call the badge lived
             // in this process's memory and nowhere else, so a restart — which
             // happens on every alarm_man_config or key_mappings save — closed
@@ -831,10 +900,12 @@ final class AlarmEngine implements AlarmAcknowledger {
           }
         } else {
           _active.remove(identity);
-          // The measured clear. `cleared` and not `inferred_restart`: this
-          // engine watched the condition go false and knows when.
-          _closeRow(
-              existing, transition.stamp, AlarmHistoryWriter.reasonCleared);
+          // The measured clear, `cleared` — unless the verdict is the first
+          // after a D-3 suspension, in which case this engine did NOT watch
+          // the condition go false: it watched the sensor come back with the
+          // condition already over, and `inferred_input_recovery` is what
+          // keeps that tellable from a measurement (T-14-23).
+          _closeRow(existing, transition.stamp, _clearReason(transition));
           changed = true;
         }
       }
@@ -1153,7 +1224,8 @@ final class AlarmEngine implements AlarmAcknowledger {
           entry,
           entry.clearedStamp ?? receipt,
           entry.clearedStampInferred
-              ? AlarmHistoryWriter.reasonInferredRestart
+              ? (entry.clearedInferredReason ??
+                  AlarmHistoryWriter.reasonInferredRestart)
               : AlarmHistoryWriter.reasonAcknowledged);
     }
 
@@ -1221,11 +1293,27 @@ final class AlarmEngine implements AlarmAcknowledger {
   /// thing that explains the rest, so it is the last thing to drop off the
   /// list. Ties break on `(uid, ruleIndex)` so the payload is deterministic and
   /// an unchanged set never re-encodes differently.
+  /// [_ActiveAlarm.toEntry], joined with its rule's live suspension state.
+  ///
+  /// The join is here and not on the entry because the hold belongs to the
+  /// WATCHER: it can begin and end many times while one activation stands,
+  /// and it exists for rules with no activation at all. An entry whose rule
+  /// is not suspended states its liveness explicitly — empty, null — so a
+  /// panel can tell "not held" from "sent by a build that predates the field".
+  relay.AlarmActiveEntry _wireEntry(_ActiveAlarm entry) {
+    final watcher = _bindingIndex[(entry.alarm.uid, entry.ruleIndex)]?.watcher;
+    if (watcher == null || !watcher.suspended) return entry.toEntry();
+    return entry.toEntry(
+      staleInputs: watcher.suspendedInputs,
+      staleSinceMs: watcher.suspendedSince?.toUtc().millisecondsSinceEpoch,
+    );
+  }
+
   void _publishActive() {
     // `_published`, never `_active.values`: an acknowledged entry is still
     // tracked — its `alarm_history` row is open and this engine is the only
     // thing that can close it — and it is deliberately not on any banner.
-    final all = [for (final entry in _published) entry.toEntry()]
+    final all = [for (final entry in _published) _wireEntry(entry)]
       ..sort((a, b) {
         final byOnset = a.activeAtMs.compareTo(b.activeAtMs);
         if (byOnset != 0) return byOnset;

@@ -485,6 +485,159 @@ void main() {
     });
   });
 
+  group('AlarmEngine makes the D-3 hold visible on the wire', () {
+    // The rig measurement these arms encode, 2026-09-08: at backend boot the
+    // OPC UA server answered the initial read of a dead node with 0.0 at GOOD
+    // quality, `cooler.temp.avg < 0.1` fired within 700 ms, the sweep staled
+    // the input at +12.5 s, and D-3 held the warning true — correctly, and
+    // invisibly, for as long as anybody watched. The hold is right; a hold
+    // nobody can see is the alarm-shaped version of the silent staleness this
+    // milestone exists to remove.
+
+    // --------------------------------------------------------------- arm S1
+    test('an activation from a good type-default read, then a dead input: '
+        'the published entry says HELD, on which key, since when', () async {
+      final h = await _Harness.create([
+        _alarm('cooler', ['a < 0.1'], level: AlarmLevel.warning),
+      ]);
+      await h.engine.start();
+
+      // The boot window: the dead node's one good-quality default reading.
+      h.values.push('a', good(0.0, at: t0));
+      await settle();
+      expect(h.engine.active, hasLength(1));
+      final live = h.engine.active.single;
+      expect(live.staleInputs, isEmpty,
+          reason: 'no input is stale yet; the badge must not cry wolf');
+      expect(live.staleSinceMs, isNull);
+
+      // The sweep ages the key. The set has not changed — but what the banner
+      // must SAY about it has, so the wire moves.
+      final before = h.publisher.records.length;
+      final tHold = t0.add(const Duration(seconds: 12));
+      h.clock.at = tHold;
+      h.values.push('a', bad(relay.Quality.badStale, at: tHold));
+      await settle();
+
+      expect(h.publisher.records.length, before + 1,
+          reason: 'a suspension on a PUBLISHED alarm re-encodes the payload');
+      final held = _decode(h.publisher.records.last.value).entries.single;
+      expect(held.staleInputs, ['a'],
+          reason: 'the operator\'s next act is to check this sensor by name');
+      expect(held.staleSinceMs, tHold.millisecondsSinceEpoch,
+          reason: 'over the injected clock, as data — the panel must render '
+              '"since 12:00:12" without consulting its own clock');
+      expect(held.activeAtMs, t0.millisecondsSinceEpoch,
+          reason: 'the onset is untouched; the hold is a fact ABOUT the '
+              'entry, not a new entry');
+
+      // And the observation surface a reader polls agrees with the wire.
+      expect(h.engine.active.single.staleInputs, ['a']);
+
+      await h.dispose();
+    });
+
+    // --------------------------------------------------------------- arm S2
+    test('recovery clears the badge on the wire, without touching the onset',
+        () async {
+      final h = await _Harness.create([
+        _alarm('cooler', ['a < 0.1'], level: AlarmLevel.warning),
+      ]);
+      await h.engine.start();
+
+      h.values.push('a', good(0.0, at: t0));
+      await settle();
+      h.clock.at = t0.add(const Duration(seconds: 12));
+      h.values.push('a',
+          bad(relay.Quality.badStale, at: t0.add(const Duration(seconds: 12))));
+      await settle();
+
+      // The sensor returns and the condition still holds: same boolean, live
+      // badge gone, one republication.
+      final before = h.publisher.records.length;
+      h.values
+          .push('a', good(0.05, at: t0.add(const Duration(minutes: 30))));
+      await settle();
+
+      expect(h.publisher.records.length, before + 1);
+      final entry = _decode(h.publisher.records.last.value).entries.single;
+      expect(entry.staleInputs, isEmpty,
+          reason: 'a badge that survives recovery teaches operators to '
+              'ignore the badge');
+      expect(entry.staleSinceMs, isNull);
+      expect(entry.activeAtMs, t0.millisecondsSinceEpoch);
+
+      await h.dispose();
+    });
+
+    // --------------------------------------------------------------- arm S3
+    test('a suspension with nothing on the banner moves nothing on the wire',
+        () async {
+      final h = await _Harness.create([
+        _alarm('cooler', ['a < 0.1'], level: AlarmLevel.warning),
+      ]);
+      await h.engine.start();
+
+      // Rule evaluated false — nothing published beyond the first verdict.
+      h.values.push('a', good(10.0, at: t0));
+      await settle();
+      expect(h.engine.active, isEmpty);
+
+      final before = h.publisher.records.length;
+      h.values.push('a',
+          bad(relay.Quality.badStale, at: t0.add(const Duration(seconds: 12))));
+      await settle();
+
+      expect(h.publisher.records.length, before,
+          reason: 'no visible entry changed shape; fanning out an identical '
+              'payload on every sweep cycle would be noise, not news');
+      expect(h.engine.suspendedRuleCount, 1,
+          reason: 'the aggregate still counts it — the hold is real, it is '
+              'just not on a banner');
+
+      await h.dispose();
+    });
+
+    // --------------------------------------------------------------- arm S4
+    //
+    // `suspendedRuleCount` predates these arms and had no consumer at all —
+    // an accessor that looks like coverage and is not. Its consumer is the
+    // engine's own edge log: the aggregate an operator greps for when three
+    // rules go quiet at once.
+    test('the suspension edge is logged with the aggregate count, once per '
+        'edge', () async {
+      final h = await _Harness.create([
+        _alarm('cooler', ['a < 0.1'], level: AlarmLevel.warning),
+      ]);
+      await h.engine.start();
+
+      h.values.push('a', good(0.0, at: t0));
+      await settle();
+      h.values.push('a',
+          bad(relay.Quality.badStale, at: t0.add(const Duration(seconds: 12))));
+      h.values.push('a',
+          bad(relay.Quality.badStale, at: t0.add(const Duration(seconds: 22))));
+      await settle();
+
+      final aggregate = h.logs
+          .where((line) => line.contains('1 of 1 alarm rule(s) suspended'))
+          .toList();
+      expect(aggregate, hasLength(1),
+          reason: 'once per EDGE — a line per sweep tick is the '
+              'logger-hot-path stall T-14-14 measured');
+
+      h.values.push('a', good(0.0, at: t0.add(const Duration(minutes: 1))));
+      await settle();
+      expect(
+          h.logs.where(
+              (line) => line.contains('0 of 1 alarm rule(s) suspended')),
+          hasLength(1),
+          reason: 'the exit edge carries the aggregate too');
+
+      await h.dispose();
+    });
+  });
+
   group('AlarmActiveEntry agrees with AlarmTsSource across the package '
       'boundary', () {
     // `tfc_relay_protocol` must not import `tfc_dart`, so the two wire strings

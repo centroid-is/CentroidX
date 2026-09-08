@@ -485,6 +485,47 @@ void main() {
     });
 
     // ------------------------------------------------------------------ 2 --
+    test(
+        'arm 2b: a clear whose verdict is the first after a suspension closes '
+        'as inferred_input_recovery, at the recovery instant', () async {
+      // The SVN rig's cooler alarm, run forward to the day the sensor comes
+      // back: activation on a good reading, the input dies (D-3 holds, row
+      // stays open — correctly), then the input returns with the condition
+      // over. The engine never watched the condition go false; writing
+      // `cleared` here would date the stop's end to whenever maintenance got
+      // to the cabinet, and writing `inferred_restart` would blame a backend
+      // that never went down.
+      final h = await Harness.create([alarmConfig('CN04.MOT01', ['a > 10'])]);
+      await h.engine.start();
+
+      h.values.push('a', good(20.0, at: plantOnset));
+      await h.settleAll();
+      final openedId = (await historyRows()).single['id'];
+
+      h.values.push('a',
+          bad(relay.Quality.badStale, at: plantOnset.add(const Duration(seconds: 12))));
+      await h.settleAll();
+      expect((await historyRows()).single['deactivated_at'], isNull,
+          reason: 'the hold is not a clear — the row stays open');
+
+      h.values.push('a', good(1.0, at: plantClear));
+      await h.settleAll();
+
+      final row = (await historyRows()).single;
+      expect(row['id'], openedId);
+      expect(row['active'], isFalse);
+      expect(row['deactivated_reason'],
+          AlarmHistoryWriter.reasonInferredInputRecovery,
+          reason: 'a bound must be tellable from a measurement (T-14-23), '
+              'and a sensor outage tellable from a restart');
+      expect(parseStored(row['deactivated_at']), plantClear,
+          reason: 'the best-known bound: the instant the sensor came back');
+      expect(parseStored(row['created_at']), plantOnset,
+          reason: 'the onset is untouched');
+
+      await h.dispose();
+    });
+
     test('arm 2: clearing UPDATEs that row — there is never a second one',
         () async {
       final h = await Harness.create([alarmConfig('CN04.MOT01', ['a > 10'])]);

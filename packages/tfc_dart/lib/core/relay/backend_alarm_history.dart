@@ -166,6 +166,18 @@ final class AlarmHistoryWriter {
   /// current `alarm_man_config` at all, so no evaluation will ever come.
   static const String reasonInferredConfigChange = 'inferred_config_change';
 
+  /// The condition went false on the FIRST evaluation after a D-3
+  /// suspension, so this instant is when the SENSOR came back, not when the
+  /// plant recovered. A bound, not a measurement.
+  ///
+  /// Distinct from [reasonInferredRestart] on purpose: both are
+  /// reconstructions, but "the backend was down" and "the input was dead"
+  /// send a maintainer to different cabinets. Named on the SVN rig's
+  /// cooler-alarm evidence (2026-09-08), where an alarm held true on a stale
+  /// input for the whole of its life — the clear it will eventually get is
+  /// exactly this kind.
+  static const String reasonInferredInputRecovery = 'inferred_input_recovery';
+
   /// Every reason a row may be closed with, spelled once.
   ///
   /// A stop analysis has to be able to tell a measured clear from a
@@ -177,6 +189,7 @@ final class AlarmHistoryWriter {
     reasonAcknowledged,
     reasonInferredRestart,
     reasonInferredConfigChange,
+    reasonInferredInputRecovery,
   };
 
   // ---------------------------------------------------------- the statements

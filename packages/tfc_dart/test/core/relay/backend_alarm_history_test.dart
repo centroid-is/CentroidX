@@ -158,19 +158,25 @@ void main() {
     });
 
     test(
-        'arm 11b: the four deactivation reasons are spelled once, and they are '
-        'the four D-4 names', () {
+        'arm 11b: the five deactivation reasons are spelled once — D-4\'s '
+        'four, plus the input-recovery bound', () {
       expect(AlarmHistoryWriter.reasons, <String>{
         'cleared',
         'acknowledged',
         'inferred_restart',
         'inferred_config_change',
+        'inferred_input_recovery',
       });
       // A stop analysis has to be able to tell a measured clear from a
       // reconstructed one; two spellings of one reason would make that
       // impossible to query for and nobody would notice until the numbers were
-      // already wrong.
-      expect(AlarmHistoryWriter.reasons, hasLength(4));
+      // already wrong. `inferred_input_recovery` joined the roster on the SVN
+      // rig's cooler-alarm evidence (2026-09-08): a clear whose verdict is the
+      // FIRST after a D-3 suspension is bounded by when the sensor returned,
+      // not by when the plant recovered, and writing it as `cleared` would
+      // shorten a stop in the direction nobody audits — while writing it as
+      // `inferred_restart` would report a sensor outage as a backend restart.
+      expect(AlarmHistoryWriter.reasons, hasLength(5));
     });
   });
 }
