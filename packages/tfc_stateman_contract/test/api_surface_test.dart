@@ -113,17 +113,18 @@ const Set<String> expectedBrowseApi = {
   'resolvePath',
 };
 
-/// Four named queries over a named series and a time range.
+/// Three named queries over a named series and a time range.
 ///
 /// This set is the reason a client cannot make the database do arbitrary work:
-/// every argument these four take is a value the gateway validates, and there
-/// is no fifth method that takes a statement, an expression or a filter
-/// string. A `query` method added here would be an unexpected name.
+/// every argument these three take is a value the gateway validates, and there
+/// is no fourth method that takes a statement, an expression or a filter
+/// string. A `query` method added here would be an unexpected name. (A fourth
+/// name, `countTimeseriesDataMultiple`, was cut by the 2026-09-07 dead-code
+/// audit — no end caller anywhere.)
 const Set<String> expectedTimeseriesApi = {
   'queryTimeseriesData',
   'queryTimeseriesDataMultiple',
   'queryTimeseriesDataDownsampled',
-  'countTimeseriesDataMultiple',
 };
 
 /// The eleven history-view methods, names mirrored verbatim from the database
@@ -327,7 +328,7 @@ void main() {
       });
     }
 
-    test('the whole surface is 81 members over nine types, 79 distinct names',
+    test('the whole surface is 80 members over nine types, 78 distinct names',
         () {
       final actual = <String>{
         for (final type in wireTypes) ...declaredMemberNames(type),
@@ -343,16 +344,19 @@ void main() {
       // 49 until Phase 17, then +4 StateManApi getters and +29 access
       // methods; 81 since the access audit cut accessTemplates.template —
       // no caller anywhere, including its own store; remote implementations
-      // derive it from list().
+      // derive it from list(). 80 since the 2026-09-07 dead-code audit cut
+      // timeseries.countTimeseriesDataMultiple the same way — no end caller
+      // anywhere, seven mirror layers deep.
       final total = wireTypes
           .map((type) => declaredMemberNames(type).length)
           .fold<int>(0, (sum, length) => sum + length);
-      expect(total, 81,
+      expect(total, 80,
           reason: 'the count is written down so a same-size swap — one member '
               'removed, another added — cannot slip through as a coincidence. '
-              '81 = 49 before Phase 17, plus four StateManApi getters, plus '
-              'the twenty-eight access methods behind them after the audit '
-              'cut accessTemplates.template');
+              '80 = 49 before Phase 17, plus four StateManApi getters, plus '
+              'the twenty-eight access methods behind them after the access '
+              'audit cut accessTemplates.template, minus the dead-code '
+              'audit\'s countTimeseriesDataMultiple');
 
       // The union is SHORTER than the sum, and the gap is named rather than
       // left as an arithmetic surprise: BackendConfigApi.read and .write share
@@ -360,10 +364,10 @@ void main() {
       // happen to share a verb, kept apart on the wire by the
       // `backendConfig.` family segment. Asserting both numbers is what stops
       // a future collision from being absorbed silently by the set.
-      expect(actual, hasLength(79),
+      expect(actual, hasLength(78),
           reason: 'exactly two names appear on two types — read and write, on '
               'StateManApi and BackendConfigApi. A third collision would drop '
-              'this to 78 while the per-type tables above still passed, so it '
+              'this to 77 while the per-type tables above still passed, so it '
               'is counted here on purpose');
       expect(
           expectedStateManApi

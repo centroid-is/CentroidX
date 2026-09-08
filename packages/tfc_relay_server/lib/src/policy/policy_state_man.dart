@@ -865,15 +865,6 @@ final class _PolicyTimeseries implements TimeseriesApi {
     return _source.queryTimeseriesDataDownsampled(tableName, from, to,
         maxPoints: maxPoints);
   }
-
-  @override
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-      String tableName, Duration interval, int howMany,
-      {DateTime? since}) async {
-    if (!_visible(tableName)) return const {};
-    return _source.countTimeseriesDataMultiple(tableName, interval, howMany,
-        since: since);
-  }
 }
 
 /// Saved history views, **with the hiding rule applied** (10-04).

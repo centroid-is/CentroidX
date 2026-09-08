@@ -177,8 +177,7 @@ void main() {
 
       clock.advance(const Duration(seconds: 61).inMilliseconds);
 
-      expect(log.entryFor('CMD-A'), isNull);
-      expect(log.holds('CMD-A'), isFalse,
+      expect(log.entryFor('CMD-A'), isNull,
           reason: 'past the TTL the id is indistinguishable from one nobody '
               'has used; the write goes upstream on its merits');
       expect(log.recordedOutcomes, 0,

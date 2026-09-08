@@ -816,13 +816,4 @@ final class _SeedGatedTimeseries implements relay.TimeseriesApi {
     return _inner.queryTimeseriesDataDownsampled(tableName, from, to,
         maxPoints: maxPoints);
   }
-
-  @override
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-      String tableName, Duration interval, int howMany,
-      {DateTime? since}) async {
-    await _settle();
-    return _inner.countTimeseriesDataMultiple(tableName, interval, howMany,
-        since: since);
-  }
 }

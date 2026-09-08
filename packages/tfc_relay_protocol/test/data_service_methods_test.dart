@@ -1,6 +1,7 @@
 /// The data-service wire names, counted against the interfaces they name.
 ///
-/// [DataServiceMethods] is the whole request surface of Phase 10: thirty-four
+/// [DataServiceMethods] is the whole request surface of Phase 10 (less the
+/// audit-cut count method): thirty-three
 /// names the gateway registers and the client sends. It lives in this package
 /// because both ends import this package and neither imports the other — the
 /// server's production `lib/` may not name the contract kit
@@ -144,13 +145,16 @@ void main() {
               'would never demand a handler for');
     });
 
-    test('the whole wire surface of the data services is 34 names', () {
-      expect(DataServiceMethods.all, hasLength(34),
-          reason: 'thirty-four is the entire request surface Phase 10 adds to '
-              'the gateway: 4 browse + 4 timeseries + 11 historyViews + 15 '
-              'preferences. Every name is a thing any connected client may '
-              'invoke, so the count moving is an access-control decision and '
-              'it should print when it does');
+    test('the whole wire surface of the data services is 33 names', () {
+      expect(DataServiceMethods.all, hasLength(33),
+          reason: 'thirty-three is the entire request surface the data '
+              'services add to the gateway: 4 browse + 3 timeseries + 11 '
+              'historyViews + 15 preferences. (Phase 10 shipped 34; the '
+              '2026-09-07 dead-code audit cut timeseries.'
+              'countTimeseriesDataMultiple — no end caller anywhere.) Every '
+              'name is a thing any connected client may invoke, so the count '
+              'moving is an access-control decision and it should print when '
+              'it does');
     });
 
     test('the data-service names and the access names do not collide', () {

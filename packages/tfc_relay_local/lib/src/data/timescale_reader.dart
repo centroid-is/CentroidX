@@ -571,46 +571,6 @@ final class TimescaleReader implements TimeseriesApi {
     ];
   }
 
-  @override
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-      String tableName, Duration interval, int howMany,
-      {DateTime? since}) async {
-    final db = _database();
-    final series = _resolve(tableName);
-
-    // **The only method in this family with no contract coverage at all**
-    // (`allContractChecks` has three timeseries checks and none of them count
-    // buckets), and the only one whose table name reaches SQL with *no*
-    // quote-doubling: `'SELECT COUNT(*) as count FROM "$tableName"'` at
-    // `database.dart:1645`, where `queryTimeseriesDataDownsampled` at least
-    // does `replaceAll('"', '""')`. Nothing upstream will notice if this is
-    // wrong, so the resolver above and the cases in `timeseries_read_test.dart`
-    // are the only things that will. The plan's own table-name validation is
-    // the belt on the other side: 8b-01 rejects any name carrying a quote,
-    // semicolon, backslash or control character before it can be collected.
-    //
-    // A member address counts the same rows as the bare series — one row per
-    // sample, whichever member a chart later plots — so the member is not
-    // consulted here and no column is named.
-    //
-    // The buckets are delegated: the shipped arithmetic is contiguous,
-    // oldest-first, and issues one `SELECT COUNT(*)` per bucket joined with
-    // `UNION ALL`, so **an empty bucket comes back as 0 rather than as an
-    // absent key**. That is a property worth keeping rather than reinventing:
-    // an absent bucket and a bucket with no rows are different claims, and a
-    // strip drawing a gap where there was silence is the line that stops in
-    // mid-air.
-    //
-    // The one thing that is NOT delegated is the instant. The bucket bounds
-    // are interpolated as bare ISO strings with no zone
-    // (`database.dart:1642-1646`), so a local-time `since` would be read in
-    // whatever the session's TimeZone happens to be — every bucket shifted,
-    // no error anywhere. Normalising to UTC here makes the string carry its
-    // own zone.
-    return db.countTimeseriesDataMultiple(series.table, interval, howMany,
-        since: (since ?? DateTime.now()).toUtc());
-  }
-
   // ---------------------------------------------------------------- internals
 
   ts.Database _database() {
@@ -832,7 +792,7 @@ final class TimescaleReader implements TimeseriesApi {
 
   /// Postgres identifier quoting, doubling any embedded quote — the same
   /// treatment `queryTimeseriesDataDownsampled` gives its table name at
-  /// `database.dart:1483` and `countTimeseriesDataMultiple` gives its none.
+  /// `database.dart:1483`.
   static String _quoted(String identifier) =>
       '"${identifier.replaceAll('"', '""')}"';
 }

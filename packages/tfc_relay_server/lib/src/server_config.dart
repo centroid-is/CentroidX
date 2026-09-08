@@ -203,28 +203,6 @@ final class ServerConfig {
   /// the reason stated there.
   final int maxTimeseriesPoints;
 
-  /// Ceiling on `howMany` buckets in one `countTimeseriesDataMultiple`.
-  ///
-  /// **A length bound on generated SQL**, not a convenience limit.
-  /// `countTimeseriesDataMultiple` builds one `SELECT COUNT(*) … WHERE time >=
-  /// … AND time < …` per bucket and joins them with `UNION ALL`
-  /// (`database.dart`), so `howMany` *is* the number of subqueries in one
-  /// statement. The strip it feeds — "is this series still recording?" — is a
-  /// sparkline needing at least two pixels a bucket on a 1920 px panel, which
-  /// is 960; this rounds up.
-  final int maxTimeseriesBuckets;
-
-  /// Ceiling on the bucket width, in milliseconds, of one
-  /// `countTimeseriesDataMultiple`.
-  ///
-  /// One day. [maxTimeseriesBuckets] buckets a day wide is about 2.7 years of
-  /// window, which is past any retention horizon this plant configures — so a
-  /// wider bucket than this can only ever produce empty ones, and an empty
-  /// bucket reads as "the recorder stopped". The floor is 1 ms and lives in
-  /// the handler: `Duration(microseconds: 500)` is positive and truncates to
-  /// `inMilliseconds == 0`, which is a division by zero one bucket later.
-  final int maxTimeseriesIntervalMs;
-
   /// The smallest `maxPoints` a downsampled query may ask for.
   ///
   /// **Three, and it is not a knob**, because it is a property of the code
@@ -449,8 +427,6 @@ final class ServerConfig {
     this.maxKeysPerSubscribe = 2000,
     this.maxSubscriptionsPerSession = 32,
     this.maxTimeseriesPoints = 6000,
-    this.maxTimeseriesBuckets = 1000,
-    this.maxTimeseriesIntervalMs = 86_400_000,
     this.maxFrameBytes = 1024 * 1024,
     this.maxPendingBytes = 8 * 1024 * 1024,
     this.writeOutcomeTtl = const Duration(seconds: 60),

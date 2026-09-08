@@ -164,22 +164,6 @@ final class _FakeTimeseries implements TimeseriesSource {
     ];
   }
 
-  @override
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-      String tableName, Duration interval, int howMany,
-      {DateTime? since}) async {
-    asks.add(_Ask('countTimeseriesDataMultiple', tableName));
-    final end = since ?? DateTime.utc(2026, 8, 13, 12);
-    return {
-      for (var i = howMany - 1; i >= 0; i--)
-        // Deliberately LOCAL, the way a Postgres driver hands a timestamp back
-        // when nothing normalises it: the adapter owes the UTC.
-        end.subtract(interval * (i + 1)).toLocal():
-            _window(tableName, end.subtract(interval * (i + 1)),
-                    end.subtract(interval * i))
-                .length,
-    };
-  }
 }
 
 /// A minute apart, ascending, starting at [base].
@@ -651,50 +635,6 @@ void main() {
       expect(fake.asks, isEmpty);
     });
 
-    test('a howMany over the configured bucket ceiling is refused by name',
-        () async {
-      final fake = _FakeTimeseries();
-      await expectLater(
-          () => _timeseries(fake, limits: TimeseriesLimits(maxBuckets: 1000))
-              .countTimeseriesDataMultiple(
-                  _table, const Duration(minutes: 1), 50000),
-          throwsA(isA<ArgumentError>().having((e) => '${e.message}', 'message',
-              allOf(contains('howMany'), contains('1000'), contains('50000')))));
-      expect(fake.asks, isEmpty,
-          reason: 'howMany IS the number of UNION ALL subqueries in one '
-              'statement (database.dart:1734-1743)');
-    });
-
-    test('a bucket wider than the configured interval ceiling is refused by '
-        'name', () async {
-      final fake = _FakeTimeseries();
-      await expectLater(
-          () => _timeseries(fake,
-                  limits: TimeseriesLimits(maxIntervalMs: 86400000))
-              .countTimeseriesDataMultiple(
-                  _table, const Duration(days: 400), 10),
-          throwsA(isA<ArgumentError>().having((e) => '${e.message}', 'message',
-              allOf(contains('interval'), contains('86400000')))));
-      expect(fake.asks, isEmpty);
-    });
-
-    test('a bucket that truncates to zero milliseconds is refused', () async {
-      await expectLater(
-          () => _timeseries(_FakeTimeseries()).countTimeseriesDataMultiple(
-              _table, const Duration(microseconds: 500), 10),
-          throwsA(isA<ArgumentError>()));
-    });
-
-    test('the bucket instants come back UTC', () async {
-      final fake = _FakeTimeseries()..seed(_table, _minutely(_base, 20));
-      final counts = await _timeseries(fake).countTimeseriesDataMultiple(
-          _table, const Duration(minutes: 5), 4,
-          since: DateTime.utc(2026, 8, 13, 7));
-      expect(counts.keys.every((t) => t.isUtc), isTrue,
-          reason: 'a bucket label an hour out puts the "is this series still '
-              'recording?" strip on the wrong shift');
-    });
-
     test('a source that answers past the budget it was given is refused, not '
         'passed on', () async {
       final fake = _FakeTimeseries()
@@ -781,10 +721,9 @@ void main() {
               .queryTimeseriesData('flutter_preferences', _base),
           throwsA(isA<ArgumentError>()));
       expect(fake.asks, isEmpty,
-          reason: 'T-13-05-b: countTimeseriesDataMultiple interpolates its '
-              'table name into SQL with no escaping at all '
-              '(database.dart:1739), so a name the resolver never approved '
-              'must not reach the source');
+          reason: 'T-13-05-b: the layer below interpolates client strings '
+              'into SQL (database_drift.dart\'s tableQuery), so a name the '
+              'resolver never approved must not reach the source');
     });
 
     test('a malformed series name throws rather than resolving to nothing',
@@ -899,8 +838,6 @@ void main() {
               none.queryTimeseriesDataMultiple([_table], _base),
           'queryTimeseriesDataDownsampled': () => none
               .queryTimeseriesDataDownsampled(_table, _base, _base),
-          'countTimeseriesDataMultiple': () => none.countTimeseriesDataMultiple(
-              _table, const Duration(minutes: 1), 10),
         };
         for (final entry in calls.entries) {
           await expectLater(

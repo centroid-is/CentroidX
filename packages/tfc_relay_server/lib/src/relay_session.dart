@@ -1188,8 +1188,6 @@ final class RelaySession {
         data.timeseriesQueryMultiple);
     _on(DataServiceMethods.timeseriesQueryDownsampled,
         data.timeseriesQueryDownsampled);
-    _on(DataServiceMethods.timeseriesCountMultiple,
-        data.timeseriesCountMultiple);
     _on(DataServiceMethods.historyCreateView, data.historyCreateView);
     _on(DataServiceMethods.historyUpdateView, data.historyUpdateView);
     _on(DataServiceMethods.historyDeleteView, data.historyDeleteView);
@@ -1610,25 +1608,18 @@ final class RelaySession {
   /// `is Map` guard below covers the shape json_rpc_2 would otherwise refuse
   /// on our behalf with `invalidParams`.
   ///
-  /// **Stamped with [_monotonicNow] and not [_now]** — and *no test can tell*,
-  /// which is worth saying out loud rather than leaving for somebody to
-  /// discover. `ConflatingSendBuffer.recordAck` declares a `nowMs` parameter
-  /// and never reads it: it went dead in 16-08's own `51d6941c`, the fix that
-  /// removed the duplicate window reset so the recovery branch in
-  /// `_deliveryVerdict` would be reachable. Swapping this argument for [_now]
-  /// leaves the whole suite green — measured, not assumed.
-  ///
-  /// It is still [_monotonicNow], because the argument for it does not depend
-  /// on anything observing it. The window this feeds is closed by
-  /// `buffer.poll(nowMs)` under `TickEngine.tickOnce(now())`, and
-  /// `relay_server.dart` injects that same engine clock here as
-  /// `monotonicNow`. Two clocks either side of one subtraction is how a
-  /// wall-clock step becomes an eviction — the failure `clock_offset.dart` and
-  /// `HeartbeatPump._now` are both already about — so the day the parameter
-  /// becomes live (§5.2's `ackedMovedAtMs` is the obvious candidate) this call
-  /// site is already right. Whoever next opens `send_buffer.dart` should
-  /// either implement that field or delete the parameter; a dead argument that
-  /// looks load-bearing is how the wrong clock gets chosen quietly.
+  /// **No clock crosses this call.** `ConflatingSendBuffer.recordAck` once
+  /// declared a `nowMs` parameter that nothing read — dead since 16-08's own
+  /// `51d6941c`, the fix that removed the duplicate window reset so the
+  /// recovery branch in `_deliveryVerdict` would be reachable — and its own
+  /// doc asked the next visitor to implement §5.2's `ackedMovedAtMs` or
+  /// delete the parameter. Deleted: a dead argument that looks load-bearing
+  /// is how the wrong clock gets chosen quietly. If that field ever becomes
+  /// live, the instant to hand it is [_monotonicNow] and not [_now] — the
+  /// window this feeds is closed by `buffer.poll(nowMs)` under
+  /// `TickEngine.tickOnce(now())`, and two clocks either side of one
+  /// subtraction is how a wall-clock step becomes an eviction (the failure
+  /// `clock_offset.dart` and `HeartbeatPump._now` are both already about).
   ///
   /// No sanitize pass: `PingParams` accepts `int` and nothing else, so the
   /// `1e999` → `Infinity` poison is dropped at the decode rather than being
@@ -1639,13 +1630,12 @@ final class RelaySession {
     if (raw is Map) {
       final ack = PingParams.fromJson(raw.cast<String, Object?>()).ack;
       if (ack.isNotEmpty) {
-        final at = _monotonicNow();
         for (final entry in ack.entries) {
           // Scoping is `recordAck`'s rule 3 and stays there: an ack naming a
           // subscription this session does not hold creates no entry, so the
           // map cannot be grown by whatever a peer puts in an ack on a path
           // that runs every heartbeat.
-          buffer.recordAck(entry.key, entry.value, at);
+          buffer.recordAck(entry.key, entry.value);
         }
       }
     }

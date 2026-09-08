@@ -56,13 +56,11 @@ void main() {
 
       expect(backend.touchedSql, isFalse,
           reason: 'the resolver is the only thing between a client string '
-              'and a FROM clause. countTimeseriesDataMultiple interpolates '
-              'its table name with no quote-doubling at all '
-              '(database.dart:1645), so a refusal that happens after the '
+              'and a FROM clause, so a refusal that happens after the '
               'statement is built is not a guard against it');
     });
 
-    test('the same holds on all four methods', () async {
+    test('the same holds on all three methods', () async {
       await expectLater(reader.queryTimeseriesData('nope', to),
           throwsA(isA<UnknownSeries>()));
       await expectLater(reader.queryTimeseriesDataMultiple(['nope'], to),
@@ -70,14 +68,10 @@ void main() {
       await expectLater(
           reader.queryTimeseriesDataDownsampled('nope', from, to),
           throwsA(isA<UnknownSeries>()));
-      await expectLater(
-          reader.countTimeseriesDataMultiple(
-              'nope', const Duration(minutes: 1), 4),
-          throwsA(isA<UnknownSeries>()));
 
       expect(backend.touchedSql, isFalse,
           reason: 'a filter fitted to the single-series path and forgotten '
-              'on the other three hands the historian to the next chart');
+              'on the other two hands the historian to the next chart');
     });
 
     test('one bad name in a batch refuses the batch', () async {

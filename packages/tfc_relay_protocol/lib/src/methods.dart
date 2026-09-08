@@ -127,14 +127,12 @@ abstract final class DataServiceMethods {
       'timeseries.queryTimeseriesDataMultiple';
   static const timeseriesQueryDownsampled =
       'timeseries.queryTimeseriesDataDownsampled';
-  static const timeseriesCountMultiple = 'timeseries.countTimeseriesDataMultiple';
 
   /// Every `TimeseriesApi` method, as data.
   static const timeseriesMethods = <String>{
     timeseriesQuery,
     timeseriesQueryMultiple,
     timeseriesQueryDownsampled,
-    timeseriesCountMultiple,
   };
 
   static const historyCreateView = 'historyViews.createHistoryView';
@@ -363,4 +361,23 @@ abstract final class CloseCodes {
   static const heartbeatTimeout = 4003;
   static const backpressureOverrun = 4004;
   static const protocolMismatch = 4005;
+
+  /// The peer completed the upgrade and never said `hello` inside
+  /// `ServerConfig.preHelloDeadline`.
+  ///
+  /// Reconnect and complete the handshake: the credential was never the
+  /// problem, because it was never presented. Not [heartbeatTimeout], because
+  /// `ConnectionClose` — the gateway's own close ledger — records codes, not
+  /// sentences, and 4003 would send an engineer looking at a heartbeat that
+  /// was never due.
+  static const preHelloTimeout = 4006;
+
+  /// The gateway was already holding `ServerConfig.maxUnhelloedSessions`
+  /// connections that had not said `hello`.
+  ///
+  /// Reconnect with backoff. This is transient and it is about the gateway's
+  /// load, not about this peer's credential — which is exactly what
+  /// [authExpired] would have said instead, sending a panel to re-authenticate
+  /// a token that is perfectly good.
+  static const unhelloedBudget = 4007;
 }

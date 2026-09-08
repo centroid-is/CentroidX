@@ -368,43 +368,6 @@ final class DataHandlers {
             maxPoints: maxPoints)));
   }
 
-  /// Sample counts per bucket, newest `howMany` buckets.
-  ///
-  /// **JSON objects key by String and these keys are instants**, so they
-  /// travel as epoch milliseconds — converted here, at the boundary, exactly
-  /// once (`served_state_man.dart:546-551`). The client reads them back with
-  /// `int.parse` inside its own decoder, where nothing is catching, so a key
-  /// converted twice or left as an ISO string is an exception on the panel
-  /// rather than a refusal on the wire.
-  Future<Object?> timeseriesCountMultiple(rpc.Parameters params) async {
-    const method = DataServiceMethods.timeseriesCountMultiple;
-    final table = _series(params, 'table', method);
-    final intervalMs = _requiredInt(params, 'intervalMs', method,
-        atLeast: 1,
-        atMost: config.maxTimeseriesIntervalMs,
-        why: 'a bucket narrower than a millisecond truncates to zero and is a '
-            'division by zero one bucket later; a bucket wider than a day '
-            'spans more window than any retention horizon here holds, so '
-            'every bucket comes back empty and the strip reads as "the '
-            'recorder stopped"');
-    final howMany = _requiredInt(params, 'howMany', method,
-        atLeast: 1,
-        atMost: config.maxTimeseriesBuckets,
-        why: 'this method builds one SELECT COUNT(*) per bucket and joins '
-            'them with UNION ALL, so it is the number of subqueries in one '
-            'statement rather than a page size');
-    final since = _instant(params, 'since', method);
-    final counts = await _sized(
-        method,
-        () => source.timeseries.countTimeseriesDataMultiple(
-            table, Duration(milliseconds: intervalMs), howMany,
-            since: since));
-    return {
-      for (final entry in counts.entries)
-        '${entry.key.millisecondsSinceEpoch}': entry.value,
-    };
-  }
-
   // ----------------------------------------------------------- history views
 
   /// Saves a view and answers its id.

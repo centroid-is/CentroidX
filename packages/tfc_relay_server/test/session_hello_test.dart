@@ -395,13 +395,12 @@ void main() {
           DataServiceMethods.browseFetchChildren,
           DataServiceMethods.browseFetchDetail,
           DataServiceMethods.browseResolvePath,
-          // 10-03: the timeseries four. Constants here for the same reason
-          // the browse four are — this file pins the ledger, not the wire
-          // spelling.
+          // 10-03: the timeseries three (four until the 2026-09-07 audit cut
+          // the count method). Constants here for the same reason the browse
+          // four are — this file pins the ledger, not the wire spelling.
           DataServiceMethods.timeseriesQuery,
           DataServiceMethods.timeseriesQueryMultiple,
           DataServiceMethods.timeseriesQueryDownsampled,
-          DataServiceMethods.timeseriesCountMultiple,
           // 10-04: the history-view eleven, the largest family and the only
           // write-shaped one this phase that is not a preference.
           DataServiceMethods.historyCreateView,

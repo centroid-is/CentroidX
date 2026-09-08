@@ -381,7 +381,6 @@ final class ServedStateMan {
     _on(HarnessMethods.timeseriesQuery, _timeseriesQuery);
     _on(HarnessMethods.timeseriesQueryMultiple, _timeseriesQueryMultiple);
     _on(HarnessMethods.timeseriesQueryDownsampled, _timeseriesQueryDownsampled);
-    _on(HarnessMethods.timeseriesCountMultiple, _timeseriesCountMultiple);
 
     _on(HarnessMethods.historyCreateView, _historyCreateView);
     _on(HarnessMethods.historyUpdateView, _historyUpdateView);
@@ -809,22 +808,6 @@ final class ServedStateMan {
               _at(params['from'].value)!,
               _at(params['to'].value)!,
               maxPoints: params['maxPoints'].asInt)));
-
-  Future<Object?> _timeseriesCountMultiple(rpc.Parameters params) =>
-      _answer(HarnessMethods.timeseriesCountMultiple, () async {
-        final counts = await api.timeseries.countTimeseriesDataMultiple(
-            params['table'].asString,
-            Duration(milliseconds: params['intervalMs'].asInt),
-            params['howMany'].asInt,
-            since: _at(params['since'].valueOr(null)));
-        // JSON objects key by String and these keys are instants, so they
-        // travel as epoch milliseconds — converted here, at the boundary,
-        // exactly once.
-        return {
-          for (final entry in counts.entries)
-            '${entry.key.millisecondsSinceEpoch}': entry.value,
-        };
-      });
 
   // history views
 

@@ -250,15 +250,6 @@ final class _RecordingTimeseries extends FakeTimeseries {
     return super.queryTimeseriesDataDownsampled(tableName, from, to,
         maxPoints: maxPoints);
   }
-
-  @override
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-      String tableName, Duration interval, int howMany,
-      {DateTime? since}) {
-    asked.add(tableName);
-    return super.countTimeseriesDataMultiple(tableName, interval, howMany,
-        since: since);
-  }
 }
 
 /// A resolver that maps the two real tags and refuses everything else — **to a
@@ -748,9 +739,9 @@ Future<Object?> _askBrowse(
       return {'listed': listed, 'path': chain, 'detail': detail};
     }, key);
 
-/// All four timeseries methods, as one comparable answer.
+/// All three timeseries methods, as one comparable answer.
 ///
-/// Four rather than one, and the reason is browse's: a filter fitted to
+/// Three rather than one, and the reason is browse's: a filter fitted to
 /// `queryTimeseriesData` and forgotten on `queryTimeseriesDataMultiple` hides
 /// a series from one chart and hands its history to the next, and the
 /// multi-series path is the one every real chart with more than one line
@@ -783,20 +774,10 @@ Future<Object?> _askTimeseries(
             'maxPoints': 100,
           },
           what: 'the downsampled series for $key');
-      final counts =
-          await station.request(DataServiceMethods.timeseriesCountMultiple,
-              params: {
-                'table': key,
-                'intervalMs': const Duration(minutes: 1).inMilliseconds,
-                'howMany': 10,
-                'since': _ms(_tsBase),
-              },
-              what: 'the recording strip for $key');
       return {
         'one': one,
         'many': many,
         'downsampled': downsampled,
-        'counts': counts,
       };
     }, key);
 

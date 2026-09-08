@@ -23,28 +23,28 @@
 ///    unencodable, at which point the peer drops it and a caller with no
 ///    deadline waits forever (the 02-05 hang).
 ///
-/// **10-03** adds the timeseries four. Their arguments are not decoration: two
-/// of the four frozen signatures carry a string that upstream interpolates
-/// straight into SQL (`database_drift.dart`'s `tableQuery`, `database.dart`'s
-/// `countTimeseriesDataMultiple`), so what those bodies *refuse* is as much of
-/// the surface as what they answer. The hostile half lives in
-/// `hostile_params_test.dart`; what is here is the ordinary shape of an answer
-/// and the one refusal that is about size rather than about shape.
+/// **10-03** adds the timeseries methods (four then; three since the
+/// 2026-09-07 audit cut the count method). Their arguments are not
+/// decoration: the frozen signatures carry strings that upstream interpolates
+/// straight into SQL (`database_drift.dart`'s `tableQuery`), so what those
+/// bodies *refuse* is as much of the surface as what they answer. The hostile
+/// half lives in `hostile_params_test.dart`; what is here is the ordinary
+/// shape of an answer and the one refusal that is about size rather than
+/// about shape.
 ///
-/// **10-04** adds the history-view eleven, and two of the cases below carry a
-/// weight no other case in this file does.
+/// **10-04** adds the history-view eleven, and one of the cases below carries
+/// a weight no other case in this file does.
 ///
-/// The contract kit covers nine of the eleven through two checks. It covers
-/// **neither** `historyViews.getGlobalRetentionHorizon` **nor**
-/// `timeseries.countTimeseriesDataMultiple`, and it may not be made to:
-/// `data_services_contract.dart:4-30` is an explicit scope boundary forbidding
-/// an eighth data-services case there, on the argument that a weak version of a
-/// Phase 10 property frozen as contract is harder to correct than an honest
-/// silence. So for those two methods **this file is the only judge there is**.
-/// A gateway could answer both of them wrong — a horizon an hour off, a bucket
-/// map keyed the wrong way — and every leg of the contract suite would stay
-/// green. Each of the two cases says so at its own site, because the sentence
-/// is only useful where somebody is about to edit the thing.
+/// The contract kit covers nine of the eleven through two checks. It does
+/// **not** cover `historyViews.getGlobalRetentionHorizon`, and it may not be
+/// made to: `data_services_contract.dart:4-30` is an explicit scope boundary
+/// forbidding an eighth data-services case there, on the argument that a weak
+/// version of a Phase 10 property frozen as contract is harder to correct
+/// than an honest silence. So for that method **this file is the only judge
+/// there is**. A gateway could answer it wrong — a horizon an hour off — and
+/// every leg of the contract suite would stay green. The case says so at its
+/// own site, because the sentence is only useful where somebody is about to
+/// edit the thing.
 library;
 
 import 'package:json_rpc_2/error_code.dart' as rpc_error;
@@ -617,46 +617,6 @@ void main() {
               'one an operator reads as the current value, and a downsample '
               'that drops it shows the plant as it was with no indication of '
               'when');
-    });
-  });
-
-  // **No contract check covers this method either.** It is the second of the
-  // two — `historyViews.getGlobalRetentionHorizon` is the other — and for the
-  // same reason: `data_services_contract.dart:4-30` forbids an eighth
-  // data-services case upstream, and none of the seven that exist calls it. So
-  // the case below is not one judgement among several; it is the only one. A
-  // bucket map keyed the wrong way passes every leg of the contract suite and
-  // fails on a panel, inside a decoder that is not catching.
-  group('timeseries.countTimeseriesDataMultiple — uncovered upstream, judged '
-      'here', () {
-    test('answers a map keyed by the bucket instant as epoch milliseconds',
-        () async {
-      final kit = _kit(timeseries: FakeTimeseries()..seed(_series, _minutely(5)));
-
-      final answer = _object(await kit.handlers.timeseriesCountMultiple(
-          _params(DataServiceMethods.timeseriesCountMultiple, {
-        'table': _series,
-        'intervalMs': const Duration(minutes: 1).inMilliseconds,
-        'howMany': 10,
-        'since': _ms(_base),
-      })));
-
-      expect(answer, isNotEmpty,
-          reason: 'five samples a minute apart fall in five one-minute '
-              'buckets; an empty strip reads as "the recorder stopped"');
-      for (final key in answer.keys) {
-        expect(int.tryParse(key), isNotNull,
-            reason: 'JSON objects key by String and these keys are instants, '
-                'so they travel as epoch milliseconds — converted at the '
-                'boundary exactly once, which is what the client\'s '
-                '`int.parse(entry.key)` expects. A key converted twice, or '
-                'left as an ISO string, throws inside the client\'s decoder '
-                'where nothing is catching');
-      }
-      expect(answer.values, everyElement(isA<int>()));
-      expect(answer.keys.map(int.parse).toList()..sort(),
-          [for (var i = 0; i < 5; i++) _ms(_base.add(Duration(minutes: i)))],
-          reason: 'the buckets are the minutes the samples landed in');
     });
   });
 

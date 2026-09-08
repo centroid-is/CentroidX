@@ -148,7 +148,6 @@ import 'dart:convert';
 
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
-import 'close_codes.dart';
 import 'error_reporter.dart';
 import 'frame_encoder.dart';
 import 'lag_monitor.dart';
@@ -470,7 +469,7 @@ final class TickEngine {
       // an un-helloed session and the `continue` costs nothing.
       if (!session.helloed) {
         if (chargedMs > preHelloMs) {
-          unawaited(session.close(GatewayCloseCodes.preHelloTimeout,
+          unawaited(session.close(CloseCodes.preHelloTimeout,
               'no hello within the $preHelloMs ms pre-hello deadline'));
         }
         continue;

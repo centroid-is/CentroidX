@@ -236,36 +236,9 @@ void main() {
       expect(samples, isA<List<TimeseriesData>>());
       expect(windowQueries().single, contains('"$physicalTable"'),
           reason: 'a fix fitted to queryTimeseriesData and forgotten on the '
-              'other three is the shape 10-07 already had to correct once');
+              'other two is the shape 10-07 already had to correct once');
     });
 
-    test('countTimeseriesDataMultiple takes it too', () async {
-      // The bucket counts are delegated to `Database`, which builds one real
-      // `SELECT COUNT(*)` per bucket and runs it — against a memory backend
-      // that has no such table. So the call dies at SQLite, *after* the
-      // statement has been built and recorded, and the statement is the
-      // subject: which table name the seam chose. What the counts themselves
-      // come back as is `timeseries_read_test.dart`'s db lane.
-      await expectLater(
-          panel.timeseries.countTimeseriesDataMultiple(
-              wireSeries, const Duration(minutes: 10), 3),
-          throwsA(anything),
-          reason: 'no such table in an in-memory SQLite is the expected end '
-              'of this call; a *silent* success would mean no statement was '
-              'built at all');
-
-      expect(backend.statements.any((s) => s.contains('"$physicalTable"')),
-          isTrue,
-          reason: 'the one method in the family with no contract coverage at '
-              'all (`timescale_reader.dart:539-541`), so this is the only '
-              'thing that will notice. Before the fix the seam handed it '
-              '"$physicalTable" as a WIRE NAME and it never resolved at all — '
-              'UnknownSeries, and no statement');
-      expect(backend.statements.any((s) => s.contains('"$wireSeries"')), isFalse,
-          reason: 'and the plant key must never reach a FROM clause: that is '
-              'the pre-cutover table the application collector wrote, which '
-              'this gateway does not own');
-    });
   });
 
   group('the seam does not lose the refusals it is supposed to keep', () {

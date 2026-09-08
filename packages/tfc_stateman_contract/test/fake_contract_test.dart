@@ -271,40 +271,6 @@ void main() {
       expect(source.openHandedOutStreams, 0);
     });
 
-    test('a sub-millisecond bucket interval is refused, not divided by', () {
-      // WR-09. `interval <= Duration.zero` passes for
-      // Duration(microseconds: 500), which then truncates to
-      // inMilliseconds == 0 and throws UnsupportedError one bucket later.
-      final source = FakeStateMan(staleAfter: _staleAfter);
-      addTearDown(source.dispose);
-      source.seedTimeseries('rate', [
-        TimeseriesData(1.0, DateTime.utc(2026, 8, 14)),
-      ]);
-
-      expect(
-          source.timeseries.countTimeseriesDataMultiple(
-              'rate', const Duration(microseconds: 500), 5),
-          completion(isEmpty));
-    });
-
-    test('a pre-epoch sample buckets before itself, never after', () async {
-      // remainder() keeps the dividend's sign, so flooring toward negative
-      // infinity is the difference between a bucket and a bucket in the
-      // future.
-      final source = FakeStateMan(staleAfter: _staleAfter);
-      addTearDown(source.dispose);
-      final sample = DateTime.utc(1969, 12, 31, 23, 59, 30);
-      source.seedTimeseries('rate', [TimeseriesData(1.0, sample)]);
-
-      final counts = await source.timeseries
-          .countTimeseriesDataMultiple('rate', const Duration(minutes: 1), 5);
-
-      expect(counts, hasLength(1));
-      expect(counts.keys.single.isAfter(sample), isFalse,
-          reason: 'the bucket ${counts.keys.single} starts after the sample '
-              'it contains, so a chart draws the point before its own bar');
-    });
-
     test('feeding a hold costs no upstream write attempts', () async {
       // Trap 3. Ten ticks a second through `write` would mint ten cmds a
       // second into the strict `_mintedCmds` set and inflate the attempt

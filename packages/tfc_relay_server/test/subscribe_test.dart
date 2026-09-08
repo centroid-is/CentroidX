@@ -484,13 +484,13 @@ void main() {
       DataServiceMethods.browseFetchChildren,
       DataServiceMethods.browseFetchDetail,
       DataServiceMethods.browseResolvePath,
-      // Phase 10 plan 03, the timeseries four. Same rule, same commit: the
+      // Phase 10 plan 03, the timeseries three (four until the 2026-09-07
+      // audit cut the count method). Same rule, same commit: the
       // handler bodies, this ledger and the contract legs' gap lists move
       // together or the suite is red between two commits.
       DataServiceMethods.timeseriesQuery,
       DataServiceMethods.timeseriesQueryMultiple,
       DataServiceMethods.timeseriesQueryDownsampled,
-      DataServiceMethods.timeseriesCountMultiple,
       // Phase 10 plan 04, the history-view eleven. Same rule, same commit.
       DataServiceMethods.historyCreateView,
       DataServiceMethods.historyUpdateView,

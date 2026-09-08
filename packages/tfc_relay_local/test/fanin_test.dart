@@ -639,10 +639,4 @@ final class _AbsentHistory implements TimeseriesApi {
           String tableName, DateTime from, DateTime to,
           {int maxPoints = 1000}) async =>
       const [];
-
-  @override
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-          String tableName, Duration interval, int howMany,
-          {DateTime? since}) async =>
-      const {};
 }

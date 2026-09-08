@@ -695,15 +695,6 @@ final class _SeedGatedTimeseries implements TimeseriesApi {
     return _inner.queryTimeseriesDataDownsampled(tableName, from, to,
         maxPoints: maxPoints);
   }
-
-  @override
-  Future<Map<DateTime, int>> countTimeseriesDataMultiple(
-      String tableName, Duration interval, int howMany,
-      {DateTime? since}) async {
-    await _settle();
-    return _inner.countTimeseriesDataMultiple(tableName, interval, howMany,
-        since: since);
-  }
 }
 
 /// A link that counts **bursts** of upstream reads rather than reads.

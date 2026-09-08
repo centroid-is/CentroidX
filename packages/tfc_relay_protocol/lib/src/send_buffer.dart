@@ -248,7 +248,7 @@ final class ConflatingSendBuffer {
   ///     allocation on a path that runs every heartbeat.
   ///  4. **Reset on re-establishment**, via [dropSub]: a generation's acks say
   ///     nothing about its successor.
-  void recordAck(String sub, int reported, int nowMs) {
+  void recordAck(String sub, int reported) {
     final d = _delivery[sub];
     if (d == null) return; // rule 3
     final clamped = reported > d.sentSeq ? d.sentSeq : reported; // rule 1
