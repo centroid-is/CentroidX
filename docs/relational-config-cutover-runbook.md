@@ -178,6 +178,32 @@ Note the two different environment variables: the pages one is
 wrong one leaves the right one absent, and `CENTROIDX_REQUIRE_REAL_BLOB=1`
 will say so rather than quietly using the fixture.
 
+### DO NOT RUN THE THIRD COMMAND ON THE PLANT SERVER
+
+The third one is different from the other two in a way that will bite you.
+"Against a real Postgres" does not mean the plant's — it means **one it
+stands up for itself**. Before the tests run it does `docker compose up` from
+`packages/tfc_dart/test/integration`, and afterwards `docker compose down`.
+
+That throwaway database **binds ports 5432 and 15432 on the host**. 5432 is
+the port the plant's own Postgres listens on.
+
+So:
+
+- **Run all three gate commands on a developer machine**, with the dump files
+  copied over from section 1. That is what they are for.
+- **Do not run them on the plant server**, or on anything that has a Postgres
+  of its own on 5432.
+- The container name and both ports are hardcoded, so **only one checkout may
+  run this at a time**. Two at once bind the same ports and each tears the
+  other's database down mid-run — which shows up as connection resets that
+  look exactly like a resilience bug and are not one.
+- Docker must be running, or the command fails on the compose step before it
+  has tested anything.
+
+The first two commands have none of this — no Docker, no ports, no database.
+They will run anywhere.
+
 ### THE EVIDENCE RULE — exit code 0 is not acceptance
 
 Each of these tests prints its source in the test group's name. **You accept
@@ -448,8 +474,8 @@ this check's output is something to argue with. Neither is acceptable, so the
 two are named.
 
 The drop tool in section 6 carries **the same two-id allow-list**, in code,
-with the same three narrowing clauses. This document and that gate agree on
-purpose. If they ever disagree, **follow the tool** — it is the one that
+narrowed the same three ways — invariant, kind and scope. This document and
+that gate agree on purpose. If they ever disagree, **follow the tool** — it is the one that
 refuses.
 
 ---
