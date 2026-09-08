@@ -1,8 +1,8 @@
 /// An image on the page: PNG, JPEG, BMP or SVG.
 ///
 /// The asset holds only a content-hash id; the bytes live in the
-/// [PageImageStore] (one preference key per image) so the page JSON stays
-/// small. Images arrive through the config pane (file picker / paste button)
+/// [PageImageStore] (one `kind='page_image'` row per image) so the page JSON
+/// stays small. Images arrive through the config pane (file picker / paste button)
 /// or by pasting straight onto the editor canvas — see `_handlePaste` in
 /// `lib/pages/page_editor.dart`.
 library;
