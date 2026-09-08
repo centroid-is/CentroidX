@@ -51,6 +51,8 @@ void main() {
           'tsSource',
           'pendingAck',
           'historyId',
+          'staleInputs',
+          'staleSinceMs',
         },
         reason: 'these names cross a wire between two independently deployed '
             'halves; a rename is a silent plant failure, not a test failure',
@@ -68,6 +70,8 @@ void main() {
       expect(AlarmActiveEntry.kTsSource, 'tsSource');
       expect(AlarmActiveEntry.kPendingAck, 'pendingAck');
       expect(AlarmActiveEntry.kHistoryId, 'historyId');
+      expect(AlarmActiveEntry.kStaleInputs, 'staleInputs');
+      expect(AlarmActiveEntry.kStaleSinceMs, 'staleSinceMs');
     });
 
     // ------------------------------------------------------------------ 2
@@ -152,6 +156,63 @@ void main() {
       expect(round.entries, entries);
       expect(round.truncated, isFalse);
       expect(round.omitted, 0);
+    });
+
+    // ------------------------------------------------------------------ 7
+    //
+    // The staleness badge. An alarm held true by D-3's quality gate while its
+    // input is dead is a warning that can never clear, and before these two
+    // fields existed nothing on any panel could say why — the alarm-shaped
+    // version of the invisible-staleness bug this milestone exists to remove
+    // (measured on the SVN rig, 2026-09-08: "Cooler temperature" latched at
+    // boot on a good-quality type-default read, then suspended holding true,
+    // with no operator-visible reason).
+    test('staleInputs and staleSinceMs round trip, and an entry with neither '
+        'says so explicitly', () {
+      final stale = AlarmActiveEntry(
+        uid: 'cooler-temp',
+        ruleIndex: 0,
+        level: 'warning',
+        title: 'Cooler temperature',
+        description: 'Cooler temperature out of bounds',
+        activeAtMs: 1788696000000,
+        tsSource: AlarmActiveEntry.tsSourcePlant,
+        staleInputs: const ['cooler.temp.avg'],
+        staleSinceMs: 1788696012500,
+      );
+
+      final decoded = AlarmActiveEntry.fromJson(stale.toJson());
+      expect(decoded, stale);
+      expect(decoded.staleInputs, ['cooler.temp.avg']);
+      expect(decoded.staleSinceMs, 1788696012500);
+      expect(decoded.staleSince, DateTime.utc(2026, 9, 6, 12, 0, 12, 500));
+      expect(decoded.staleSince!.isUtc, isTrue,
+          reason: 'a local-time round trip is the bug that makes two panels '
+              'disagree about when the sensor died');
+
+      // A live entry states its liveness — every field, always, including
+      // the empty list and the null, so a person reading a frame off the wire
+      // can tell "not stale" from "built by code that predates the field".
+      final live = sample();
+      expect(live.staleInputs, isEmpty);
+      expect(live.staleSinceMs, isNull);
+      expect(live.staleSince, isNull);
+      expect(live.toJson().containsKey('staleInputs'), isTrue);
+      expect(live.toJson().containsKey('staleSinceMs'), isTrue);
+    });
+
+    // ------------------------------------------------------------------ 8
+    test('a payload from a backend that predates the staleness fields decodes '
+        'as not-stale, not as refused', () {
+      // Deployment skew is the ordinary case, not the edge case: a panel with
+      // this build must keep rendering a banner from a backend without it.
+      final old = sample().toJson()
+        ..remove('staleInputs')
+        ..remove('staleSinceMs');
+
+      final decoded = AlarmActiveEntry.fromJson(old);
+      expect(decoded.staleInputs, isEmpty);
+      expect(decoded.staleSinceMs, isNull);
     });
 
     // ------------------------------------------------------------------ 6

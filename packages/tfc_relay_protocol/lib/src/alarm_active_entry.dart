@@ -82,6 +82,8 @@ final class AlarmActiveEntry {
   static const String kTsSource = 'tsSource';
   static const String kPendingAck = 'pendingAck';
   static const String kHistoryId = 'historyId';
+  static const String kStaleInputs = 'staleInputs';
+  static const String kStaleSinceMs = 'staleSinceMs';
 
   /// The wire spelling of "every contributing value carried a plant instant,
   /// and this is the newest of them".
@@ -132,6 +134,8 @@ final class AlarmActiveEntry {
     required String tsSource,
     bool pendingAck = false,
     String? historyId,
+    List<String> staleInputs = const [],
+    int? staleSinceMs,
   }) {
     if (!tsSources.contains(tsSource)) {
       throw ArgumentError.value(tsSource, 'tsSource',
@@ -150,6 +154,8 @@ final class AlarmActiveEntry {
       tsSource: tsSource,
       pendingAck: pendingAck,
       historyId: historyId,
+      staleInputs: List<String>.unmodifiable(staleInputs),
+      staleSinceMs: staleSinceMs,
     );
   }
 
@@ -165,6 +171,8 @@ final class AlarmActiveEntry {
     required this.tsSource,
     required this.pendingAck,
     required this.historyId,
+    required this.staleInputs,
+    required this.staleSinceMs,
   });
 
   /// The alarm definition's uid. Half of the identity `AckAlarmParams` uses.
@@ -218,9 +226,33 @@ final class AlarmActiveEntry {
   /// Null throughout 14-05, which does not persist; 14-06 fills it.
   final String? historyId;
 
+  /// The keys this entry's rule reads that are NOT in the good band right now.
+  ///
+  /// Empty is the ordinary state: every input is good and the boolean on the
+  /// banner was earned by an evaluation. Non-empty means D-3's quality gate has
+  /// suspended the rule and is HOLDING the state shown — the alarm can neither
+  /// clear nor re-fire until these inputs return, so the operator's next
+  /// useful act is to check the named sensor, and the banner has to say which.
+  /// Measured on the SVN rig, 2026-09-08: a warning latched true on a dead
+  /// input, invisible, for as long as anyone watched.
+  final List<String> staleInputs;
+
+  /// When the hold began: milliseconds since the Unix epoch, UTC, or null when
+  /// [staleInputs] is empty.
+  ///
+  /// The same shape as [activeAtMs], for the same P-7 reason: an instant
+  /// inside a list payload has nowhere else to live, and a panel must render
+  /// "input stale since 19:18" without consulting its own clock or time zone.
+  final int? staleSinceMs;
+
   /// [activeAtMs] as a UTC `DateTime`.
   DateTime get activeAt =>
       DateTime.fromMillisecondsSinceEpoch(activeAtMs, isUtc: true);
+
+  /// [staleSinceMs] as a UTC `DateTime`, or null when the entry is live.
+  DateTime? get staleSince => staleSinceMs == null
+      ? null
+      : DateTime.fromMillisecondsSinceEpoch(staleSinceMs!, isUtc: true);
 
   /// Every field, always — including the nulls.
   ///
@@ -239,6 +271,8 @@ final class AlarmActiveEntry {
         kTsSource: tsSource,
         kPendingAck: pendingAck,
         kHistoryId: historyId,
+        kStaleInputs: List<String>.of(staleInputs),
+        kStaleSinceMs: staleSinceMs,
       };
 
   /// Decodes one entry, refusing an uninterpretable [kTsSource] by name.
@@ -265,6 +299,13 @@ final class AlarmActiveEntry {
       tsSource: tsSource,
       pendingAck: json[kPendingAck] as bool? ?? false,
       historyId: json[kHistoryId] as String?,
+      // Absent on a backend older than this field. Empty and null mean
+      // "not stale", which is also the only thing an old backend could have
+      // said — deployment skew must not invent a dead sensor.
+      staleInputs: [
+        for (final input in (json[kStaleInputs] as List?) ?? const []) '$input',
+      ],
+      staleSinceMs: (json[kStaleSinceMs] as num?)?.toInt(),
     );
   }
 
@@ -319,7 +360,12 @@ final class AlarmActiveEntry {
     for (var i = 0; i < group.length; i++) {
       if (other.group[i] != group[i]) return false;
     }
+    if (other.staleInputs.length != staleInputs.length) return false;
+    for (var i = 0; i < staleInputs.length; i++) {
+      if (other.staleInputs[i] != staleInputs[i]) return false;
+    }
     return other.uid == uid &&
+        other.staleSinceMs == staleSinceMs &&
         other.ruleIndex == ruleIndex &&
         other.level == level &&
         other.title == title &&
@@ -344,10 +390,14 @@ final class AlarmActiveEntry {
         tsSource,
         pendingAck,
         historyId,
+        Object.hashAll(staleInputs),
+        staleSinceMs,
       );
 
   @override
   String toString() => 'AlarmActiveEntry($uid#$ruleIndex, $level, '
       '${activeAt.toIso8601String()} $tsSource'
-      '${pendingAck ? ', pendingAck' : ''})';
+      '${pendingAck ? ', pendingAck' : ''}'
+      '${staleInputs.isEmpty ? '' : ', HELD on stale ${staleInputs.join('+')}'
+          ' since ${staleSince!.toIso8601String()}'})';
 }
