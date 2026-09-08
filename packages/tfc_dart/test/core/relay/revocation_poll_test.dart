@@ -326,13 +326,38 @@ void main() {
           reason: 'sabotage (d): a bare reload() re-parses every tick');
     });
 
-    test('the tick is guarded and cancelled on shutdown', () {
-      // A throwing tick must not take the backend down (reload()'s own rule),
-      // and a timer surviving shutdown is a process that never exits.
-      expect(main, contains('reloadTokensIfChanged'));
-      expect(RegExp(r'revocation', caseSensitive: false).hasMatch(main), isTrue,
-          reason: 'the poll and its timer are named so the shutdown cancel is '
-              'greppable');
+    test('the tick is guarded — the poll call sits inside a try/catch', () {
+      // A throwing tick must not take the backend down (reload()'s own rule): a
+      // rotation that produced a broken file, or a database that blinked, logs
+      // and continues. Sabotage (h) removes the try and this goes red.
+      final callIndex = main.indexOf('reloadTokensIfChanged');
+      expect(callIndex, greaterThan(0));
+      // The nearest `try {` before the call, and the nearest `catch` after it,
+      // must both exist within the same periodic-tick body.
+      final before = main.substring(0, callIndex);
+      final after = main.substring(callIndex);
+      expect(before.lastIndexOf('try {'), greaterThan(before.lastIndexOf('});')),
+          reason: 'the poll call must be inside a try opened within the tick '
+              'body, not before some earlier statement');
+      expect(after.contains('catch'), isTrue,
+          reason: 'and a catch that logs and continues follows it');
+    });
+
+    test('the revocation timer is cancelled on shutdown', () {
+      // A timer surviving shutdown is a process that never exits — this file
+      // learned that once with the config-watch restart timer. Sabotage (i)
+      // removes the cancel and this goes red.
+      expect(main, contains('_revocationTimer'),
+          reason: 'the timer is top-level so _shutdown can reach it');
+      final shutdownStart = main.indexOf('void _shutdown(');
+      expect(shutdownStart, greaterThan(0));
+      // The cancel must appear inside _shutdown's body, before the next
+      // top-level declaration.
+      final shutdownBody = main.substring(
+          shutdownStart, main.indexOf('void main()', shutdownStart));
+      expect(shutdownBody.contains('_revocationTimer?.cancel()'), isTrue,
+          reason: 'the poll timer is cancelled synchronously in _shutdown — no '
+              'await, no close(), so the shutdown-structure arm still holds');
     });
   });
 
