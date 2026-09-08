@@ -83,10 +83,11 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 // alternative is a bare `-32005` in an assertion — a number that stops meaning
 // "forbidden" the day somebody renumbers the table, with nothing failing.
 import 'package:tfc_relay_server/src/error_codes.dart' show ServerErrorCodes;
+import 'package:tfc_access/tfc_access.dart'
+    show AccessGroup, AccessSession, AuthenticatedUser;
 import 'package:tfc_relay_server/tfc_relay_server.dart'
     show
-        Identity,
-        Role,
+        StationIdentity,
         TokenAccepted,
         TokenRejected,
         TokenValidator,
@@ -178,24 +179,46 @@ final class RefusingSecureStorage implements MySecureStorage {
   Future<void> delete({required String key}) async => _refuse('delete');
 }
 
-/// Two stations, two roles, judged off the token in the `hello`.
+/// Two stations, two authorities, judged off the token in the `hello`.
 ///
 /// **This is why the fixture needs a validator at all.**
 /// `PermissiveTokenValidator` — the default, and the one every other leg in
-/// this workspace runs on — answers `Role.operate` for everybody, deliberately
-/// and honestly: "everyone may do everything" is what it means and `operate` is
-/// that written down. So a view-role session does not exist without a validator
-/// that mints one, and arm 6 would have had nothing to measure.
+/// this workspace runs on — answers the operate group for everybody,
+/// deliberately and honestly: "everyone may do everything" is what it means.
+/// So a view-only session does not exist without a validator that mints one,
+/// and arm 6 would have had nothing to measure.
 ///
-/// Refusing an unknown token rather than defaulting it: a fixture whose default
-/// is `operate` would let a panel that forgot its token pass arm 6 for the
-/// wrong reason.
+/// 17-04b's user model: the token names an account, and the groups on the
+/// session are what the server resolved for that account — here spelled as
+/// literals because this fixture IS the resolver. An empty group set is the
+/// wall display's whole authority.
+///
+/// Refusing an unknown token rather than defaulting it: a fixture whose
+/// default is operate would let a panel that forgot its token pass arm 6 for
+/// the wrong reason.
 final class RoleTokenValidator implements TokenValidator {
   const RoleTokenValidator();
 
-  static const Map<String, Identity> _stations = <String, Identity>{
-    kOperateToken: Identity(stationId: 'PACK-02', role: Role.operate),
-    kViewToken: Identity(stationId: 'CANTEEN-01', role: Role.view),
+  static const AuthenticatedUser _packUser = AuthenticatedUser(
+      username: 'PACK-02-panel',
+      roleName: 'Panel Operator',
+      stationAccount: true);
+  static const AuthenticatedUser _canteenUser = AuthenticatedUser(
+      username: 'CANTEEN-01-display',
+      roleName: 'Hall Display',
+      stationAccount: true);
+
+  static const Map<String, StationIdentity> _stations =
+      <String, StationIdentity>{
+    kOperateToken: StationIdentity(
+        user: _packUser,
+        station: 'PACK-02',
+        session:
+            AccessSession(user: _packUser, groups: {AccessGroup.operate})),
+    kViewToken: StationIdentity(
+        user: _canteenUser,
+        station: 'CANTEEN-01',
+        session: AccessSession(user: _canteenUser, groups: {})),
   };
 
   @override
