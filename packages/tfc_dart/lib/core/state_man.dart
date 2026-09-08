@@ -213,7 +213,13 @@ class OpcUAConfig implements ServerConfigEntry {
 
   @override
   String toString() {
-    return 'OpcUAConfig(endpoint: $endpoint, username: $username, password: $password, sslCert: $sslCert, sslKey: $sslKey, enabled: $enabled, secureChannelLifetimeMs: $secureChannelLifetimeMs, publishingIntervalMs: $publishingIntervalMs)';
+    // The password and private key are never printed — a decoded config gets
+    // logged in enough places (and, since 17-10, travels the wire redacted)
+    // that a toString carrying the literal was a standing credential leak.
+    // Flagged by the 2026-09-07 access-surface audit; closed with 17-10.
+    final pw = (password == null || password!.isEmpty) ? 'null' : '<redacted>';
+    final key = (sslKey == null || sslKey!.isEmpty) ? 'null' : '<redacted>';
+    return 'OpcUAConfig(endpoint: $endpoint, username: $username, password: $pw, sslCert: $sslCert, sslKey: $key, enabled: $enabled, secureChannelLifetimeMs: $secureChannelLifetimeMs, publishingIntervalMs: $publishingIntervalMs)';
   }
 
   factory OpcUAConfig.fromJson(Map<String, dynamic> json) =>
