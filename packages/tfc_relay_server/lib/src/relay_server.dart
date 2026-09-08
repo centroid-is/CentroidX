@@ -43,6 +43,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'alarm_ack_sink.dart';
 import 'auth/file_token_validator.dart';
+import 'auth/session_login_validator.dart';
 import 'error_reporter.dart';
 import 'handle_table.dart';
 import 'health/cert_health_state_man.dart';
@@ -677,14 +678,28 @@ final class RelayServer {
   /// [reloadTokens] gives, for the same reason.
   Future<bool> reloadTokensIfChanged() async {
     final live = validator;
-    if (live is! FileTokenValidator) {
-      throw StateError('this gateway\'s validator is a ${live.runtimeType}, '
-          'which does not read a file and so cannot tell whether one '
-          'changed. Configure ServerConfig.auth, or drive the reload yourself '
-          'through reloadTokens()');
-    }
-    final changed = await live.reloadIfChanged();
-    _sweepRevoked(live);
+    // The decorator that admits credential-less hellos (increment A of the
+    // no-station-file ruling) is accepted beside the bare file validator, so
+    // the backend's existing poll keeps ticking the day the composition
+    // wraps its validator. Its `reloadIfChanged` delegates to the wrapped
+    // file when one is still configured and answers an honest false when
+    // none is — and the sweep below runs either way, which is what keeps a
+    // database-only demotion taking effect (the digest guards the parse,
+    // never the sweep).
+    // One suspension point, structurally (auth_test pins the count): the
+    // branch picks which reload runs, and the single wait below is the only
+    // thing the sweep is ordered behind.
+    final (RevocableTokenValidator swept, Future<bool> Function() reload) =
+        switch (live) {
+      FileTokenValidator() => (live, live.reloadIfChanged),
+      SessionLoginValidator() => (live, live.reloadIfChanged),
+      _ => throw StateError('this gateway\'s validator is a '
+          '${live.runtimeType}, which does not read a file and so cannot '
+          'tell whether one changed. Configure ServerConfig.auth, or '
+          'drive the reload yourself through reloadTokens()'),
+    };
+    final changed = await reload();
+    _sweepRevoked(swept);
     return changed;
   }
 
