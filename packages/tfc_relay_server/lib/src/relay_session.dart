@@ -31,8 +31,13 @@ import 'dart:typed_data';
 import 'package:json_rpc_2/error_code.dart' as rpc_errors;
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:stream_channel/stream_channel.dart';
+// Narrowed to the two sink names on purpose: the master system's vocabulary
+// (groups, sessions, records) must not become ambient in this file — the
+// session routes and registers, the policy decorator decides.
+import 'package:tfc_access/tfc_access.dart' show AuditSink, NullAuditSink;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
+import 'access_handlers.dart';
 import 'alarm_ack_sink.dart';
 import 'alarm_handlers.dart';
 import 'auth/identity.dart';
@@ -106,6 +111,31 @@ final class _LastSeen {
   }
 }
 
+/// The two access families whose backend halves attribute every audit row to
+/// a session — the ones `composeBackendRelay` deliberately does **not** wire
+/// (17-06): at compose time there is no identity to attribute to, and
+/// constructing them with an invented one would be the false attribution
+/// D-11 forbids.
+typedef IdentityAccessFamilies = ({
+  AccessTemplateApi accessTemplates,
+  AccessAdminApi accessAdmin,
+});
+
+/// Builds the per-identity halves of the access surface, invoked exactly once
+/// per session, at `hello`, with the resolver-verified [StationIdentity].
+///
+/// The seam 17-11 fills from the moved stores
+/// (`BackendAccessTemplates`/`BackendAccessAdmin` take
+/// `session: () => identity.session, station: identity.station` — their own
+/// contract, per 17-06-SUMMARY deviation 1). This package cannot name those
+/// classes — `tfc_dart` depends on it, not the reverse — so the construction
+/// crosses as a callback, exactly as [TokenValidator] and [KeyPolicy] do.
+///
+/// Null means the shared source's own families answer, which for the shipped
+/// backend is 17-03b's refuse-by-name — **fail closed, never a stub**.
+typedef AccessScopeFactory = IdentityAccessFamilies Function(
+    StationIdentity identity);
+
 /// One client session.
 final class RelaySession {
   RelaySession._(
@@ -169,6 +199,8 @@ final class RelaySession {
     TokenValidator validator = const PermissiveTokenValidator(),
     KeyPolicy policy = const AccessPolicyKeyPolicy(),
     AlarmAckSink? alarmAcks,
+    AuditSink audit = const NullAuditSink(),
+    AccessScopeFactory? accessFor,
     required SeriesResolver resolver,
     List<String> serverSupported = const [protocolVersion],
     WriteOutcomeLog? writeOutcomes,
@@ -224,8 +256,32 @@ final class RelaySession {
     )
       .._onError = onError
       .._health = health
+      // Before `_start()`, which is what evaluates the late `api` these two
+      // feed. Assigned in the cascade, [_onError]'s style: they are wiring
+      // details of the server, not part of what a session *is*, and every
+      // by-hand session in this package's suite leaves them defaulted.
+      .._audit = audit
+      .._accessFor = accessFor
       .._start();
   }
+
+  /// Where this session's authorization verdicts become rows (D-05).
+  ///
+  /// Threaded into the policy decorator below; [NullAuditSink] on a session
+  /// built by hand, `RelayServer`'s injected sink in production. The trail is
+  /// an account of decisions and never a precondition for making them, which
+  /// is why the default discards rather than throws.
+  AuditSink _audit = const NullAuditSink();
+
+  /// See [AccessScopeFactory]. Consulted exactly once, in `_hello`, beside
+  /// the identity assignment it depends on.
+  AccessScopeFactory? _accessFor;
+
+  /// What [_accessFor] built for this session's identity, or null before
+  /// `hello` — and null forever when no factory was supplied, in which case
+  /// the shared source's own families answer (refuse-by-name on the shipped
+  /// backend).
+  IdentityAccessFamilies? _scoped;
 
   /// This session's health overlay, or null on a session built by hand.
   ///
@@ -416,10 +472,23 @@ final class RelaySession {
   /// can build the write predicate from its `canWrite`, which keeps the
   /// null-identity decision in exactly one place.
   late final PolicyStateMan api = PolicyStateMan(
-    source: _source,
+    // The one divergence from handing [_source] straight in, and it is four
+    // getters wide: the scoping view answers the session's per-identity
+    // template/admin families once `_hello` has built them, and forwards
+    // everything else — including `audit` and `backendConfig`, which are
+    // sessionless (17-06) — untouched. It sits UNDER the decorator on
+    // purpose, so the policy gate applies to a scoped family exactly as it
+    // applies to the shared one; a scoped family handed to a handler
+    // directly would be a family the gate never sees.
+    source: _IdentityScopedSource(_source, () => _scoped),
     policy: policy,
     resolver: resolver,
     tally: _seriesTally,
+    sink: _audit,
+    // The session's one error seam, so a sink failure lands where every
+    // other failure this session produces lands. Falls back to the
+    // decorator's own default when the server wired no handler.
+    onAuditError: _onError ?? reportToStderr,
     // Late-read, the `epochOf` / `ownerOf` idiom below: the identity is minted
     // by `_hello`, which cannot have run when this object is built.
     identityOf: () => _identity,
@@ -1002,6 +1071,15 @@ final class RelaySession {
       },
     );
     _registerDataServices(data);
+    // 17-09: the access twenty-eight, built beside `DataHandlers` and, like
+    // it, handed **`api` — the decorator — and never `_source`**. That one
+    // word is the whole difference between a gated family and an ungated
+    // one, and `access_handlers_test.dart` pins it structurally AND
+    // behaviourally because the mistake is invisible at runtime until
+    // somebody has the wrong permissions. Not held on a field: unlike
+    // `_values` and `_data` this object owns no state with a lifetime, so
+    // there is nothing for `_teardown` to release.
+    _registerAccessFamilies(AccessHandlers(source: api));
     // After the registrations, and outside them: registering a method and
     // attaching a listener are two different acts, and only one of them is the
     // access-control decision `_registerDataServices` documents.
@@ -1137,6 +1215,57 @@ final class RelaySession {
     _on(DataServiceMethods.prefSetStringList, data.prefSetStringList);
     _on(DataServiceMethods.prefRemove, data.prefRemove);
     _on(DataServiceMethods.prefClear, data.prefClear);
+  }
+
+  /// The access families, **named one registration at a time** — 17-09.
+  ///
+  /// [_registerDataServices]' rule, unchanged: the registration is the
+  /// access-control decision (T-02-22), so the list of what this peer
+  /// answers stays in the place a reviewer reads. Twenty-eight lines, in
+  /// `AccessMethods` order, so the block reads as the wire surface an access
+  /// review walks — and through [_on] like everything else, with no second
+  /// path, because `_on` is what applies the handshake gate and the error
+  /// armor. `peer.registerMethod` here would be an **ungated** access
+  /// method, which is the largest privilege hole this wire could grow.
+  ///
+  /// The table reopened at forty-four names (14-12's `ackAlarm` was the
+  /// forty-fourth callable) and closes again at seventy-two: nine template,
+  /// eleven admin, three audit reads, five config. There is no
+  /// `accessTemplates.template` — the audit cut it (no caller anywhere,
+  /// its own store included) — and no `audit.record`: the relay writes its
+  /// own rows server-side, and a wire method a client could write a row
+  /// through would be a forgery surface, not a trail.
+  void _registerAccessFamilies(AccessHandlers access) {
+    _on(AccessMethods.templateList, access.templateList);
+    _on(AccessMethods.templateBindings, access.templateBindings);
+    _on(AccessMethods.templateKeysBoundTo, access.templateKeysBoundTo);
+    _on(AccessMethods.templateCreate, access.templateCreate);
+    _on(AccessMethods.templateUpdate, access.templateUpdate);
+    _on(AccessMethods.templateRename, access.templateRename);
+    _on(AccessMethods.templateDelete, access.templateDelete);
+    _on(AccessMethods.templateBind, access.templateBind);
+    _on(AccessMethods.templateUnbind, access.templateUnbind);
+    _on(AccessMethods.adminRoles, access.adminRoles);
+    _on(AccessMethods.adminListUsers, access.adminListUsers);
+    _on(AccessMethods.adminCreateRole, access.adminCreateRole);
+    _on(AccessMethods.adminUpdateRole, access.adminUpdateRole);
+    _on(AccessMethods.adminDeleteRole, access.adminDeleteRole);
+    _on(AccessMethods.adminRenameRole, access.adminRenameRole);
+    _on(AccessMethods.adminCreateUser, access.adminCreateUser);
+    _on(AccessMethods.adminDeleteUser, access.adminDeleteUser);
+    _on(AccessMethods.adminSetUserRole, access.adminSetUserRole);
+    _on(AccessMethods.adminSetUserStationAccount,
+        access.adminSetUserStationAccount);
+    _on(AccessMethods.adminSetUserPassword, access.adminSetUserPassword);
+    _on(AccessMethods.auditEntries, access.auditEntries);
+    _on(AccessMethods.auditMemberCountsByAction,
+        access.auditMemberCountsByAction);
+    _on(AccessMethods.auditDistinctWho, access.auditDistinctWho);
+    _on(AccessMethods.configRead, access.configRead);
+    _on(AccessMethods.configValidate, access.configValidate);
+    _on(AccessMethods.configWrite, access.configWrite);
+    _on(AccessMethods.configPrevious, access.configPrevious);
+    _on(AccessMethods.configRestorePrevious, access.configRestorePrevious);
   }
 
   /// The client's end vanished — a graceful close, a reset, a yanked cable.
@@ -1339,6 +1468,12 @@ final class RelaySession {
           // not using.
           _identity = identity;
           _credentialDigest = credentialDigest;
+          // Beside the identity, and only ever here: the per-identity
+          // template/admin families are constructed once, for the verified
+          // station (D-11). The once-only guard above is what makes "once"
+          // true for this line too — a batched hello that could replace the
+          // identity could replace the families the audit rows attribute to.
+          _scoped = _accessFor?.call(identity);
       }
     }
 
@@ -1678,4 +1813,94 @@ final class RelaySession {
     buffer.drain();
     if (!_done.isCompleted) _done.complete();
   }
+}
+
+/// The session's source, with the two identity-scoped families swapped in —
+/// and everything else forwarded untouched.
+///
+/// Sits **under** the policy decorator, deliberately: the decorator's family
+/// gates read `source.accessTemplates` through a thunk evaluated per call,
+/// after the gate, so a scoped family served from here is graded exactly as
+/// the shared one would be. Putting the scoping *above* the decorator — say,
+/// handing the factory's families to `AccessHandlers` directly — would be a
+/// family the gate never sees, which is the one-word bypass this whole file
+/// spends its comments warning about.
+///
+/// Hand-written forwarding, no `noSuchMethod`, on `PolicyStateMan`'s own
+/// argument: a member added to `StateManApi` in a later phase must be a
+/// compile error here, so somebody decides whether it needs scoping, rather
+/// than a silent pass-through nobody reviewed. Eighteen members; sixteen
+/// forward.
+///
+/// [_scopedOf] is read late, per call — the `identityOf` idiom — because
+/// this object is built before `_hello` mints anything. Before the handshake
+/// it answers the shared source's families, which the handshake gate keeps
+/// unreachable from the wire anyway; `audit` and `backendConfig` always
+/// forward, because those two are sessionless (17-06 wired the audit family
+/// at composition; 17-10 owns config).
+final class _IdentityScopedSource implements StateManApi {
+  _IdentityScopedSource(this._inner, this._scopedOf);
+
+  final StateManApi _inner;
+  final IdentityAccessFamilies? Function() _scopedOf;
+
+  @override
+  AccessTemplateApi get accessTemplates =>
+      _scopedOf()?.accessTemplates ?? _inner.accessTemplates;
+
+  @override
+  AccessAdminApi get accessAdmin =>
+      _scopedOf()?.accessAdmin ?? _inner.accessAdmin;
+
+  @override
+  AuditApi get audit => _inner.audit;
+
+  @override
+  BackendConfigApi get backendConfig => _inner.backendConfig;
+
+  @override
+  ValueListenable<DynamicValue> listen(String key) => _inner.listen(key);
+
+  @override
+  Stream<DynamicValue> subscribe(String key) => _inner.subscribe(key);
+
+  @override
+  DynamicValue? read(String key) => _inner.read(key);
+
+  @override
+  Future<DynamicValue> readFresh(String key) => _inner.readFresh(key);
+
+  @override
+  Future<Map<String, DynamicValue>> readMany(List<String> keys) =>
+      _inner.readMany(keys);
+
+  @override
+  Future<WriteResult> write(String key, Object? value,
+          {Object? expect, String? cmd}) =>
+      _inner.write(key, value, expect: expect, cmd: cmd);
+
+  @override
+  Future<List<WriteResult>> writeStatus(List<String> cmds) =>
+      _inner.writeStatus(cmds);
+
+  @override
+  Future<HoldHandle> holdToRun(String key) => _inner.holdToRun(key);
+
+  @override
+  List<String> get keys => _inner.keys;
+
+  @override
+  BrowseApi get browse => _inner.browse;
+
+  @override
+  TimeseriesApi get timeseries => _inner.timeseries;
+
+  @override
+  HistoryViewApi get historyViews => _inner.historyViews;
+
+  @override
+  PreferencesApi get preferences => _inner.preferences;
+
+  @override
+  Future<void> dispose() => _inner.dispose();
 }
