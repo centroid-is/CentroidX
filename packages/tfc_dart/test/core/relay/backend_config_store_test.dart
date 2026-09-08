@@ -90,15 +90,15 @@ void main() {
   late BackendConfigStore store;
 
   Map<String, Object?> baseConfig() => {
-        'opcua': [
-          {
+        'opcua': <Object?>[
+          <String, Object?>{
             'endpoint': 'opc.tcp://10.104.29.11:4840',
             'username': 'hmi',
             'password': _storedPassword,
             'ssl_key': _storedKeyB64,
             'server_alias': 'ST101',
           },
-          {
+          <String, Object?>{
             'endpoint': 'opc.tcp://10.104.29.12:4840',
             'server_alias': 'ST201',
           },
