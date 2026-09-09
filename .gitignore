@@ -59,3 +59,6 @@ soak-report.json
 # Binary artifacts
 *.zip
 ATV320_Installation_manual_EN_NVE41289_09.pdf
+
+# Load-bench python venv (README says how to create it)
+tools/load-bench/.venv/
