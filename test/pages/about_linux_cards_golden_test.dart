@@ -1,11 +1,12 @@
-/// Goldens for the two cards at the head of the About Linux page.
+/// Goldens for the card at the head of the About Linux page.
 ///
-/// These replaced four stacked blocks — a 18px-padded hostname banner with the
+/// It replaced four stacked blocks — a 18px-padded hostname banner with the
 /// addresses as a second row of chips, then one card each for Kernel,
-/// Operating System and Support End. Together they filled most of a panel with
-/// four short strings, and pushed the Date & Time section — the part an
-/// operator acts on — below the fold. The PNGs are the record of what that
-/// costs now: one identity band and one four-row table.
+/// Operating System and Support End — which were then two cards, an identity
+/// band and a facts table with a gap between them. They are now one card:
+/// tinted header band for the hostname and its addresses, label/value rows
+/// under it for what the machine is running. The PNGs are the record of what
+/// that costs — and of the band no longer carrying a Switch machine action.
 ///
 /// Both themes, because `colorScheme.outline` is unset in either scheme and a
 /// card that reads fine on light can lose its edge entirely on dark.
@@ -21,33 +22,29 @@ import 'package:tfc/theme.dart' show solarized;
 
 import '../helpers/golden_fonts.dart';
 
-/// Wide enough for the switch-machine button beside a real hostname, and no
-/// taller than the cards need — the frame is about how little room they take.
-const Size _viewport = Size(720, 310);
+/// A panel's width, and no taller than the card needs — the frame is about
+/// how little room it takes.
+const Size _viewport = Size(720, 280);
 
 /// A station's real strings: the hostname convention from the plant, a build
 /// string long enough to prove the Build row ellipsizes rather than wrapping
-/// to four lines, and two addresses so the identity band is exercised with
-/// more than one.
-Widget _cards({bool dark = false, bool switchable = true}) {
+/// to four lines, and two addresses so the header band is exercised with more
+/// than one.
+Widget _card({bool dark = false}) {
   final (light, darkTheme) = solarized();
   return MaterialApp(
     debugShowCheckedModeBanner: false,
     theme: dark ? darkTheme : light,
-    home: Scaffold(
+    home: const Scaffold(
       body: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
           children: [
-            AboutIdentityCard(
+            AboutSystemCard(
               hostname: 'SVN-NES-OT-CL02',
-              activeIPs: const ['10.104.29.10', '10.50.10.11'],
-              onSwitchConnection: switchable ? () {} : null,
-            ),
-            const SizedBox(height: 12),
-            const AboutSystemFactsCard(
+              activeIPs: ['10.104.29.10', '10.50.10.11'],
               osPretty: 'Debian GNU/Linux 12 (bookworm)',
               kernel: 'Linux 6.1.0-18-amd64',
               kernelVersion:
@@ -78,27 +75,31 @@ void main() {
   setUpAll(loadGoldenFonts);
 
   testWidgets('identity and facts, light', (tester) async {
-    await _pump(tester, _cards());
+    await _pump(tester, _card());
     await _expectGolden(tester, 'about_linux_cards_light.png');
   });
 
   testWidgets('identity and facts, dark', (tester) async {
-    await _pump(tester, _cards(dark: true));
+    await _pump(tester, _card(dark: true));
     await _expectGolden(tester, 'about_linux_cards_dark.png');
   });
 
-  testWidgets('no switch action on a station with only a local bus',
+  testWidgets('the header band carries no switch-machine action',
       (tester) async {
-    // `onSwitchConnection` is null when DbusGate has nothing to switch to, and
-    // the band must not leave a hole where the button was.
-    await _pump(tester, _cards(switchable: false));
-    await _expectGolden(tester, 'about_linux_cards_no_switch.png');
+    // The page auto-connects to the local bus and no longer offers to point
+    // itself at another station's, so the band is identity only. Asserted
+    // rather than left to the eye: a stray action here is the one thing the
+    // PNG diff is least likely to make anyone look twice at.
+    await _pump(tester, _card());
+    expect(find.text('Switch machine'), findsNothing);
+    expect(find.byType(TextButton), findsNothing);
   });
 
   testWidgets('a host that reports almost nothing still renders',
       (tester) async {
     // hostname1 on a minimal image answers GetAll with very little. Every row
-    // is conditional, so the card must not become an empty box with padding.
+    // is conditional, so the body must collapse away rather than becoming an
+    // empty box with padding under the band.
     await _pump(
       tester,
       MaterialApp(
@@ -111,9 +112,9 @@ void main() {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               mainAxisSize: MainAxisSize.min,
               children: [
-                AboutIdentityCard(hostname: '', activeIPs: []),
-                SizedBox(height: 12),
-                AboutSystemFactsCard(
+                AboutSystemCard(
+                  hostname: '',
+                  activeIPs: [],
                   osPretty: '',
                   kernel: 'Linux 6.1.0-18-amd64',
                   kernelVersion: '',
