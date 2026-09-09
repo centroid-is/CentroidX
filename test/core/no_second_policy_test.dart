@@ -38,6 +38,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import '../helpers/path_separators.dart';
+
 /// The roots swept, matching `scripts/sweep-write-paths.sh` and
 /// `no_duplicate_access_stores_test.dart`: a second policy is a second policy
 /// whichever process it hides in.
@@ -69,7 +71,7 @@ List<String> _sweptFiles() {
       // one-master-policy law would have passed by sweeping nothing. Of the
       // several scans carrying this bug tonight, this is the one that mattered
       // most: it guards an owner hard requirement.
-      final path = entity.path.replaceAll(r'\', '/');
+      final path = withForwardSlashes(entity.path);
       if (!path.endsWith('.dart')) continue;
       if (root == 'packages' && !path.contains('/lib/')) continue;
       files.add(path);

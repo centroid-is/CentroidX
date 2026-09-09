@@ -41,6 +41,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import '../helpers/path_separators.dart';
+
 /// The roots `scripts/sweep-write-paths.sh` searches, and for the same reason:
 /// a write path is a write path whichever process runs it, so a copy hidden in
 /// a relay package must be as visible here as one in `lib/`.
@@ -78,7 +80,7 @@ List<String> _sweptFiles() {
       // separator, so on Windows `contains('/lib/')` matched nothing and this
       // scan silently swept ZERO package files — the worst failure a census
       // can have, because an empty sweep agrees with every claim.
-      final path = entity.path.replaceAll(r'\', '/');
+      final path = withForwardSlashes(entity.path);
       if (!path.endsWith('.dart')) continue;
       if (root == 'packages' && !path.contains('/lib/')) continue;
       files.add(path);

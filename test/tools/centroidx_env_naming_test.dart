@@ -39,6 +39,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import '../helpers/path_separators.dart';
+
 /// Directory basenames never descended into.
 ///
 /// Build output and tool caches contain copies of source — a stale
@@ -169,9 +171,8 @@ String _basename(String path) {
 
 /// Repo-relative path with forward slashes, so the same string compares equal
 /// on all three CI runners.
-String _relative(Directory root, String path) => path
-    .substring(root.path.length + 1)
-    .replaceAll(r'\', '/');
+String _relative(Directory root, String path) =>
+    withForwardSlashes(path.substring(root.path.length + 1));
 
 /// The extension including the leading dot, lowercased; empty for a file with
 /// no extension (`Dockerfile`) or a leading-dot name (`.gitignore`).

@@ -50,6 +50,7 @@ import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
+import '../helpers/path_separators.dart';
 import '../helpers/test_helpers.dart';
 
 /// Where `AccessTemplateStore` lives since plan 17-02 moved it into `tfc_dart`,
@@ -805,7 +806,7 @@ void main() {
         // Separators normalised — the expectation below spells its path with
         // forward slashes, and listSync gives backslashes on Windows.
         if (code.contains('access_key_binding')) {
-          offenders.add(entity.path.replaceAll(r'\', '/'));
+          offenders.add(withForwardSlashes(entity.path));
         }
       }
 

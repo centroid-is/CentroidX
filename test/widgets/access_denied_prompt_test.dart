@@ -44,6 +44,7 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 
+import '../helpers/path_separators.dart';
 import '../helpers/test_helpers.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
@@ -1109,7 +1110,7 @@ class _WriteSite {
 List<String> _libDartFiles() => Directory('lib')
     .listSync(recursive: true)
     .whereType<File>()
-    .map((f) => f.path.replaceAll(r'\', '/'))
+    .map((f) => withForwardSlashes(f.path))
     .where((p) => p.endsWith('.dart'))
     .toList()
   ..sort();

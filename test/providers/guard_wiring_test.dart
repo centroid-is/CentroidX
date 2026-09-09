@@ -36,6 +36,8 @@ import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
 
+import '../helpers/path_separators.dart';
+
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
@@ -619,7 +621,7 @@ Set<String> _filesUsingTheSystemWritePath() {
     // Separators normalised: the constant this is compared against spells its
     // paths with forward slashes, and listSync hands back backslashes on
     // Windows.
-    final path = entity.path.replaceAll(r'\', '/');
+    final path = withForwardSlashes(entity.path);
     if (!path.endsWith('.dart') || path.endsWith('.g.dart')) continue;
     final code = entity
         .readAsLinesSync()

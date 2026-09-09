@@ -23,6 +23,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import '../helpers/path_separators.dart';
+
 /// One `lib/` file and the line that offended, so a failure names the place
 /// instead of printing an empty list.
 typedef _Hit = ({String path, int line, String text});
@@ -46,7 +48,7 @@ List<({String path, List<String> lines})> _readLib() {
       // 'lib/providers/state_man.dart', which never match a Windows
       // backslash path.
       .map((f) =>
-          (path: f.path.replaceAll(r'\', '/'), lines: f.readAsLinesSync()))
+          (path: withForwardSlashes(f.path), lines: f.readAsLinesSync()))
       .toList(growable: false);
 }
 
