@@ -32,6 +32,7 @@ import 'package:tfc_dart/core/state_man.dart';
 
 import 'package:tfc/pages/server_config.dart';
 import 'package:tfc/providers/preferences.dart';
+import 'package:tfc/providers/preferences_local_store.dart';
 
 import '../helpers/test_helpers.dart';
 
@@ -39,7 +40,7 @@ import '../helpers/test_helpers.dart';
 Future<StateManConfig> _persistedConfig(WidgetTester tester) async {
   final container =
       ProviderScope.containerOf(tester.element(find.byType(ServerConfigBody)));
-  final prefs = await container.read(preferencesProvider.future);
+  final prefs = await container.read(localStorePreferencesProvider.future);
   return StateManConfigStorage.fromPrefs(prefs);
 }
 

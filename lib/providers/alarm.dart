@@ -6,7 +6,9 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:tfc_dart/core/alarm.dart';
 import '../core/relay_alarm_source.dart';
 import 'gateway.dart';
+import 'database.dart';
 import 'preferences.dart';
+import 'preferences_local_store.dart';
 import 'state_man.dart';
 part 'alarm.g.dart';
 
@@ -89,7 +91,13 @@ Future<AlarmSource> alarmMan(Ref ref) async {
           'do not fall back to evaluating the rules here.');
     }
     final source = await RelayAlarmSource.create(
-        transport: transport, preferences: prefs);
+      transport: transport,
+      preferences: prefs,
+      // Null on a station with no Postgres of its own, and on every browser.
+      // The alarm *history* is still local in gateway mode (D-11); when it
+      // moves onto the wire this argument is what stops being needed.
+      database: await ref.watch(databaseProvider.future),
+    );
     // `RelayAlarmSource.close` had no caller anywhere before CR-01, so every
     // rebuild — a key-mappings save, an alarm edit, which invalidates this
     // provider by name (`alarm_editor.dart:245`) — left a live subscription,
@@ -103,7 +111,10 @@ Future<AlarmSource> alarmMan(Ref ref) async {
   // root that supplies it for a panel: `packages/tfc_dart/lib/core/alarm.dart`
   // spells the literal nowhere, so an alarm instant can only ever be the
   // plant's word or a reading someone handed in on purpose (14-07, D-2).
-  return await AlarmMan.create(prefs, stateMan, clock: DateTime.now);
+  // Direct mode: the evaluator runs here, against this station's own store.
+  return await AlarmMan.create(
+      await ref.read(localStorePreferencesProvider.future), stateMan,
+      clock: DateTime.now);
 }
 
 /// The alarm list of whichever [AlarmMan] is current, or `null` when there is

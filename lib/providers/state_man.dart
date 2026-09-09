@@ -9,12 +9,6 @@ import 'package:rxdart/rxdart.dart';
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
 import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc_dart/core/state_man_types.dart';
-// The one remaining edge to the FFI half, and it is `StateManConfigStorage`
-// alone: reading this station's config needs the drift-backed `Preferences`,
-// because `secret:` and `saveToDb:` live on that class and not on
-// `PreferencesApi`. Everything else in this file now names the types file.
-// See `direct_transport.dart` for the transport half of the same split.
-import 'package:tfc_dart/core/state_man.dart' show StateManConfigStorage;
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart'
     show ClientConfig, RemoteStateMan;
@@ -23,8 +17,10 @@ import '../core/relay_alarm_source.dart';
 import '../core/value_freshness.dart';
 import 'access.dart';
 import 'direct_transport.dart';
+import 'state_man_config_read.dart';
 import 'gateway.dart';
 import 'access_policy.dart';
+import 'preference_changes.dart';
 import 'preferences.dart';
 import 'value_freshness.dart';
 
@@ -40,7 +36,7 @@ part 'state_man.g.dart';
 /// `configure` key). An operator editing key mappings still goes through the
 /// guarded object, because that write is not this one.
 Future<KeyMappings> fetchKeyMappings(PreferencesApi prefs,
-    {Preferences? systemWrites}) async {
+    {PreferencesApi? systemWrites}) async {
   var keyMappingsJson = await prefs.getString('key_mappings');
   if (keyMappingsJson == null) {
     final defaultKeyMappings = KeyMappings(nodes: {
@@ -144,7 +140,7 @@ Future<StateMan> stateMan(Ref ref) async {
   // policy classes as `configure` and `administer` — so on the guarded object
   // they would be denials at boot.
   final systemPrefs = await ref.read(systemPreferencesProvider.future);
-  final config = await StateManConfigStorage.fromPrefs(systemPrefs);
+  final config = await ref.read(stateManConfigProvider.future);
 
   final keyMappings = await fetchKeyMappings(prefs, systemWrites: systemPrefs);
 
@@ -166,7 +162,9 @@ Future<StateMan> stateMan(Ref ref) async {
   // Applications are serialized through [pendingApply] so two rapid saves
   // cannot interleave their diffs out of order.
   var pendingApply = Future<void>.value();
-  final listener = prefs.onPreferencesChanged.listen(
+  // Through the transport-aware stream, not the store: the drift-backed one
+  // and the relayed one both announce edits and neither type is the other.
+  final listener = ref.read(preferenceChangesProvider.stream).listen(
     (key) {
       if (key == 'key_mappings') {
         pendingApply = pendingApply.then((_) async {

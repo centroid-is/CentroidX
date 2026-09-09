@@ -111,7 +111,7 @@ class Recipe {
 /// [writeRecipes] — the Save button — is deliberately not given the same
 /// treatment. See it.
 Future<List<Recipe>> readRecipes(
-    Preferences prefs, Preferences systemWrites, String bucket) async {
+    PreferencesApi prefs, PreferencesApi systemWrites, String bucket) async {
   final prefKey = '$bucket.recipes';
   if (!(await prefs.containsKey(prefKey))) {
     await systemWrites.setString(prefKey, jsonEncode(<Recipe>[]));
@@ -128,7 +128,7 @@ Future<List<Recipe>> readRecipes(
 /// it must land in the audit trail with a name against it. It shares a key
 /// with [readRecipes]' seed and must never share its path.
 Future<void> writeRecipes(
-    Preferences prefs, String bucket, List<Recipe> recipes) async {
+    PreferencesApi prefs, String bucket, List<Recipe> recipes) async {
   await prefs.setString('$bucket.recipes', jsonEncode(recipes));
 }
 

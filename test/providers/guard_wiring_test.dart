@@ -431,7 +431,9 @@ void main() {
       // having been written at all.
       expect(await prefs.getString('key_mappings'), isNotNull);
       expect(
-          await prefs.getString('state_man_config', secret: true), isNotNull);
+          await (prefs as Preferences)
+              .getString('state_man_config', secret: true),
+          isNotNull);
       expect(await prefs.getString('page_editor_data'), isNotNull);
       expect(await prefs.getString('alarm_man_config'), isNotNull);
     });
@@ -731,7 +733,8 @@ class _Wiring {
   AccessSessionController get session =>
       container.read(accessSessionProvider.notifier);
 
-  Future<Preferences> get prefs => container.read(preferencesProvider.future);
+  Future<PreferencesApi> get prefs =>
+      container.read(preferencesProvider.future);
   Future<StateMan> get stateMan => container.read(stateManProvider.future);
 }
 

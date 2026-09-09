@@ -53,21 +53,34 @@ final authProviderProvider = FutureProvider<AuthProvider?>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef AuthProviderRef = FutureProviderRef<AuthProvider?>;
-String _$auditSinkHash() => r'8c60017008841289ac9c8809af9b989e2d0c58d1';
+String _$auditSinkHash() => r'8d71ca5cb4903d61bc1840f881d2d25293edb994';
 
-/// Where audit rows go.
+/// Where audit rows go. Three cases, and each gets a different sink:
 ///
-/// [NullAuditSink] when there is no database. That covers two real cases: the
-/// boot window before the connection is open, and a station commissioned with
-/// no Postgres at all. Losing the trail there is preferable to failing to
-/// boot — an HMI that will not start because it cannot write an audit row is a
-/// stopped line.
+///  1. **Gateway mode** → [ServerAuditedSink]. The trail lives at the far
+///     end: every relayed operation is audited server-side by the backend's
+///     policy decorator, attributed to the identity the server verified at
+///     `hello` and stamped `origin: 'relay'` (D-05/D-11) — and the wire
+///     deliberately has no method a client could write a row through, because
+///     a client-supplied row is a forgery surface. This case must **not**
+///     fall into [NullAuditSink]: a null sink on a gateway panel is a trail
+///     that looks like a trail and records nothing, which is worse than no
+///     trail at all (criterion 3). The named type is how a test tells the
+///     cases apart.
+///  2. **Direct mode, no database** → [NullAuditSink]. The two real cases
+///     this always covered: the boot window before the connection is open,
+///     and a station commissioned with no Postgres at all. Losing the trail
+///     there is preferable to failing to boot — an HMI that will not start
+///     because it cannot write an audit row is a stopped line. It **is** a
+///     gap, and [NullAuditSink] is silent by design: a direct station running
+///     without a database is *knowingly* running without a trail.
+///  3. **Direct mode, database present** → [DriftAuditSink], which names
+///     every row it loses.
 ///
-/// But it **is** a gap, and it is the kind of gap nobody notices, because a
-/// missing row looks exactly like an action that never happened. What makes it
-/// visible is the sink's own error logging: [DriftAuditSink] names every row it
-/// loses. [NullAuditSink] is silent by design, so a station running without a
-/// database is knowingly running without a trail.
+/// `ref.watch` on the transport, never `ref.read`: this provider is
+/// `keepAlive`, and `alarm.dart:45` records what a `ref.read` behind a
+/// `keepAlive` cost — a stale transport whose stream closed rather than
+/// errored, so nothing reported it.
 ///
 /// Copied from [auditSink].
 @ProviderFor(auditSink)
@@ -170,7 +183,7 @@ final firstUserWindowOpenProvider = FutureProvider<bool>.internal(
 // ignore: unused_element
 typedef FirstUserWindowOpenRef = FutureProviderRef<bool>;
 String _$accessSessionControllerHash() =>
-    r'0f098b0b48288af2118f071429fe5fc63085fc8f';
+    r'dba38723f83bd7f66b3aff5b47cc66c973ee6902';
 
 /// Who is standing at this panel, and what they may do.
 ///

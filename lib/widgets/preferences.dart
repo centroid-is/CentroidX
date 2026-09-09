@@ -21,6 +21,7 @@ import '../core/update_channel.dart';
 import '../providers/gateway.dart';
 import '../providers/mcp_bridge.dart';
 import '../providers/preferences.dart';
+import '../providers/preferences_local_store.dart';
 import '../providers/theme.dart';
 import '../theme.dart';
 import 'package:tfc_dart/core/preferences.dart';
@@ -622,7 +623,7 @@ class _DatabaseConfigEditorState extends ConsumerState<_DatabaseConfigEditor> {
   Widget build(BuildContext context) {
     // Use AsyncValue directly instead of FutureBuilder to avoid
     // Future identity changes that destroy ExpansionTile state on rebuild.
-    final prefsAsync = ref.watch(preferencesProvider);
+    final prefsAsync = ref.watch(localStorePreferencesProvider);
 
     return prefsAsync.when(
       loading: () => const Padding(
@@ -907,7 +908,7 @@ class _PreferencesKeysWidgetState extends ConsumerState<PreferencesKeysWidget>
   @override
   Widget build(BuildContext context) {
     super.build(context); // AutomaticKeepAliveClientMixin
-    final prefsAsync = ref.watch(preferencesProvider);
+    final prefsAsync = ref.watch(localStorePreferencesProvider);
 
     return prefsAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
@@ -1033,7 +1034,7 @@ class _PreferencesKeysWidgetState extends ConsumerState<PreferencesKeysWidget>
                             // Reload data and invalidate provider
                             _loading = true;
                             _loadData(prefs);
-                            ref.invalidate(preferencesProvider);
+                            ref.invalidate(localStorePreferencesProvider);
                           }
                         },
                       );

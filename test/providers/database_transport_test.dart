@@ -33,6 +33,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:tfc/core/gateway_config.dart';
+import 'package:tfc/core/relayed_preferences.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc_dart/core/database.dart';
@@ -189,9 +190,12 @@ void main() {
 
       final prefs = await h.ref.read(preferencesProvider.future);
 
-      // The screen the owner was looking at reads `prefs.database` for its
-      // "Connected" line; in gateway mode there must be nothing to read.
-      expect(prefs.database, isNull);
+      // Stronger than the assertion this replaced. It used to read
+      // `prefs.database` and require null — a drift-backed store that happened
+      // to hold nothing. In gateway mode the shared store is the GATEWAY's,
+      // reached over the socket, so there is no local database for the value
+      // to be null: the type itself is the answer.
+      expect(prefs, isA<RelayedPreferences>());
       expect(h.touched(), isFalse,
           reason: 'a keepAlive provider that merely WATCHES databaseProvider '
               'connects the plant even when no screen asks; gateway mode must '
@@ -222,7 +226,7 @@ void main() {
       );
 
       final prefs = await h.ref.read(preferencesProvider.future);
-      expect(prefs.database, isNull);
+      expect(prefs, isA<RelayedPreferences>());
       expect(h.touched(), isFalse);
     });
 
@@ -234,7 +238,8 @@ void main() {
       );
 
       final prefs = await h.ref.read(preferencesProvider.future);
-      expect(prefs.database, isNull); // null answer, honest null carried
+      expect((prefs as Preferences).database,
+          isNull); // null answer, honest null carried
       expect(h.touched(), isTrue,
           reason: 'direct mode must keep watching databaseProvider on the '
               'same seam it always did — a "fix" that severed both modes '

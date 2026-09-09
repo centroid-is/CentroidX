@@ -6,7 +6,7 @@ part of 'preferences.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$preferencesHash() => r'45e3d61307d2d3d676e2fccc382f535a3c27435f';
+String _$preferencesHash() => r'dc99c11767cb2c9a10a12a5e64ba596d295694ff';
 
 /// The shared configuration store, **guarded**.
 ///
@@ -16,7 +16,7 @@ String _$preferencesHash() => r'45e3d61307d2d3d676e2fccc382f535a3c27435f';
 ///
 /// Copied from [preferences].
 @ProviderFor(preferences)
-final preferencesProvider = FutureProvider<Preferences>.internal(
+final preferencesProvider = FutureProvider<PreferencesApi>.internal(
   preferences,
   name: r'preferencesProvider',
   debugGetCreateSourceHash:
@@ -27,8 +27,8 @@ final preferencesProvider = FutureProvider<Preferences>.internal(
 
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
-typedef PreferencesRef = FutureProviderRef<Preferences>;
-String _$systemPreferencesHash() => r'e714d27544ea2c138954a1959976e55ada6cbaf5';
+typedef PreferencesRef = FutureProviderRef<PreferencesApi>;
+String _$systemPreferencesHash() => r'25476b8213a731afafd3e31b3b2f0c1f3e29132e';
 
 /// The unchecked write path, for the defaults the app writes for itself.
 ///
@@ -50,7 +50,7 @@ String _$systemPreferencesHash() => r'e714d27544ea2c138954a1959976e55ada6cbaf5';
 ///
 /// Copied from [systemPreferences].
 @ProviderFor(systemPreferences)
-final systemPreferencesProvider = FutureProvider<Preferences>.internal(
+final systemPreferencesProvider = FutureProvider<PreferencesApi>.internal(
   systemPreferences,
   name: r'systemPreferencesProvider',
   debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
@@ -62,6 +62,6 @@ final systemPreferencesProvider = FutureProvider<Preferences>.internal(
 
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
-typedef SystemPreferencesRef = FutureProviderRef<Preferences>;
+typedef SystemPreferencesRef = FutureProviderRef<PreferencesApi>;
 // ignore_for_file: type=lint
 // ignore_for_file: subtype_of_sealed_class, invalid_use_of_internal_member, invalid_use_of_visible_for_testing_member, deprecated_member_use_from_same_package

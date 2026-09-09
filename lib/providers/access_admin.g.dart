@@ -6,7 +6,7 @@ part of 'access_admin.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$accessAdminStoreHash() => r'4ff52b68f97b454dfbec2754a4d3f17d89467fb2';
+String _$accessAdminStoreHash() => r'4821004d5d2610cefc3884cf2eff6be1a923b071';
 
 /// The `users`-gated CRUD over `app_role` and `app_user`, or null when this
 /// station has no database.

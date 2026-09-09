@@ -7,6 +7,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 import 'package:tfc/pages/server_config.dart';
 import 'package:tfc/widgets/duration_field.dart';
 import 'package:tfc/providers/preferences.dart';
+import 'package:tfc/providers/preferences_local_store.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
@@ -43,7 +44,7 @@ Future<void> pickUnit(
 Future<StateManConfig> _persistedConfig(WidgetTester tester) async {
   final container =
       ProviderScope.containerOf(tester.element(find.byType(ServerConfigBody)));
-  final prefs = await container.read(preferencesProvider.future);
+  final prefs = await container.read(localStorePreferencesProvider.future);
   return StateManConfigStorage.fromPrefs(prefs);
 }
 

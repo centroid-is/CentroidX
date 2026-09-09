@@ -14,6 +14,7 @@ import '../providers/chat.dart';
 import '../providers/llm.dart';
 import '../providers/navigator_key.dart';
 import '../providers/preferences.dart';
+import '../providers/preferences_local_store.dart';
 import 'batch_proposal_summary.dart';
 import 'chat_overlay.dart';
 import 'chat_skill_chips.dart';
@@ -185,7 +186,7 @@ class _ChatWidgetState extends ConsumerState<ChatWidget> {
             }).toList(),
             onChanged: (value) async {
               if (value == null) return;
-              final prefs = await ref.read(preferencesProvider.future);
+              final prefs = await ref.read(localStorePreferencesProvider.future);
               await prefs.setString(kSelectedProvider, value.name);
               ref.invalidate(selectedLlmProviderProvider);
             },
@@ -349,7 +350,7 @@ class _ChatWidgetState extends ConsumerState<ChatWidget> {
               label: 'Save',
               buttonKey: const ValueKey<String>('chat-api-key-save'),
               onPressed: () async {
-                final prefs = await ref.read(preferencesProvider.future);
+                final prefs = await ref.read(localStorePreferencesProvider.future);
 
                 final newKey = keyController.text.trim();
                 if (newKey.isNotEmpty && !newKey.contains('\u2022')) {

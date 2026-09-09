@@ -40,6 +40,7 @@ import '../providers/gateway.dart';
 import '../providers/gateway_link.dart';
 import '../providers/state_man.dart';
 import '../providers/preferences.dart';
+import '../providers/preferences_local_store.dart';
 import '../providers/database.dart';
 // TODO not the best place but cross platform
 import 'package:package_info_plus/package_info_plus.dart';
@@ -244,11 +245,15 @@ class ServerConfigBody extends ConsumerWidget {
             StateManConfigEditor(
               key: ValueKey('stateman_$refreshKey'),
               source: LocalPrefsConfigSource(
-                prefs: () => ref.read(preferencesProvider.future),
+                // The direct arm, so the concrete store by name: this is the
+                // path that keeps the config in secure storage. Gateway mode
+                // takes `GatewayConfigSource` below and never reaches here.
+                prefs: () => ref.read(localStorePreferencesProvider.future),
                 onApplied: () => ref.invalidate(stateManProvider),
               ),
               onResetSavedConfig: () async {
-                final prefs = await ref.read(preferencesProvider.future);
+                final prefs =
+                    await ref.read(localStorePreferencesProvider.future);
                 await prefs.remove(StateManConfig.configKey, secret: true);
               },
             ),
@@ -1373,7 +1378,10 @@ class _ImportExportCardState extends ConsumerState<ImportExportCard> {
     decrypted.remove('database');
 
     final stateMan = StateManConfig.fromJson(decrypted);
-    final prefs = await ref.read(preferencesProvider.future);
+    // The import/export card rewrites certificate material into the store that
+    // keeps it, which is the direct station's own. Gateway mode configures the
+    // backend through GatewayConfigSource and never comes through here.
+    final prefs = await ref.read(localStorePreferencesProvider.future);
 
     // Exports scrub certificates down to a placeholder. Where this client
     // already holds real certificates for the same server, keep them — the
@@ -1446,7 +1454,9 @@ class _ImportExportCardState extends ConsumerState<ImportExportCard> {
   /// StateManConfig with cert paths scrubbed, plus the database config.
   /// Shared by the file export and the database export.
   Future<Map<String, dynamic>> _collectExportJson(WidgetRef ref) async {
-    final prefs = await ref.read(preferencesProvider.future);
+    // Export writes the certificate material out of the store that keeps it,
+    // so the concrete one by name — the same reason the import side does.
+    final prefs = await ref.read(localStorePreferencesProvider.future);
     final stateMan = await StateManConfigStorage.fromPrefs(prefs);
     final db = await DatabaseConfig.fromPrefs();
     final jsonMap = _scrubCertPaths(stateMan.toJson());

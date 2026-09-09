@@ -4,6 +4,7 @@ import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/state_man_types.dart';
 
 import 'collector.dart';
+import 'preferences_local_store.dart';
 import 'state_man.dart';
 
 /// Builds the panel's own sessions: OPC UA, Modbus/UMAS and M2400, plus the
@@ -43,3 +44,14 @@ Future<StateMan> createOpcUaStateMan({
         config: config,
         keyMappings: keyMappings,
         deviceClients: deviceClients);
+
+/// The direct station's config, out of secure storage.
+///
+/// `secret: true` is the whole reason this is here and not in
+/// `state_man_config_read.dart`: it is a member of the drift-backed
+/// `Preferences` and of nothing else, and a browser has neither the class nor
+/// anywhere to keep a secret.
+Future<StateManConfig> readDirectStateManConfig(Ref ref) async {
+  final prefs = await ref.read(localStorePreferencesProvider.future);
+  return StateManConfigStorage.fromPrefs(prefs);
+}

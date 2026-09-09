@@ -31,3 +31,11 @@ Future<StateMan> createOpcUaStateMan({
     throw StateManException(
         'No OPC UA client exists in a browser build. This factory is the '
         'direct-mode default and nothing in a web build should reach it.');
+
+/// Refused: there is no direct station here to have a config, and no secure
+/// storage to have kept one in. `readStateManConfig` never calls this — it
+/// branches on the transport first — so reaching it is a wiring fault.
+Future<StateManConfig> readDirectStateManConfig(Ref ref) =>
+    throw StateManException(
+        'There is no direct-mode configuration in a browser: the gateway holds '
+        'the plant and the secrets, and serves the document over the socket.');

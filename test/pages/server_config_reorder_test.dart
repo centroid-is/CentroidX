@@ -16,6 +16,7 @@ import 'package:shared_preferences_platform_interface/in_memory_shared_preferenc
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:tfc/pages/server_config.dart';
 import 'package:tfc/providers/preferences.dart';
+import 'package:tfc/providers/preferences_local_store.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
@@ -175,7 +176,7 @@ Future<void> pumpSection(WidgetTester tester, StateManConfig config,
 Future<StateManConfig> persistedConfig(WidgetTester tester) async {
   final container =
       ProviderScope.containerOf(tester.element(find.byType(ServerConfigBody)));
-  final prefs = await container.read(preferencesProvider.future);
+  final prefs = await container.read(localStorePreferencesProvider.future);
   return StateManConfigStorage.fromPrefs(prefs);
 }
 

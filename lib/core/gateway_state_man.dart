@@ -80,8 +80,51 @@ class GatewayStateMan implements StateMan {
     required this.config,
     required KeyMappings keyMappings,
     this.alias = '',
+    bool ownsRemote = true,
   })  : _remote = remote,
-        _keyMappings = keyMappings;
+        _keyMappings = keyMappings,
+        _ownsRemote = ownsRemote;
+
+  /// Whether [close] disposes the client, or only lets go of it.
+  ///
+  /// False when the client was handed in by [attach] — then the socket belongs
+  /// to `relayClientProvider`, which is upstream of the preferences this class
+  /// is built from, and disposing it here would take the panel's configuration
+  /// store down with the values.
+  final bool _ownsRemote;
+
+  /// Wraps a client this object did **not** build, and points it at the keys
+  /// [keyMappings] describes.
+  ///
+  /// This is the production path, and [create] below is now only for tests
+  /// that want a client built for them. The direction is forced by where the
+  /// key mapping lives: on a panel whose configuration is served by the
+  /// gateway, the mapping arrives over the very socket whose key set it is
+  /// supposed to choose. So the socket is opened first with no keys
+  /// (`relayClientProvider`), the mapping is read over it, and the page is set
+  /// here.
+  ///
+  /// [ownsRemote] is false for the same reason: the client outlives this
+  /// object, because the preferences store is built on it.
+  static Future<GatewayStateMan> attach({
+    required RemoteStateMan remote,
+    required StateManConfig config,
+    required KeyMappings keyMappings,
+    String alias = '',
+  }) async {
+    // `subscriptionKeys` and not an inline set literal: `ALARM.active` is
+    // never in `key_mappings`, and dropping it renders as an alarm banner that
+    // silently never updates. `alarm_gateway_mode_test.dart` reads this
+    // statement's source to keep that true.
+    await remote.setKeys(subscriptionKeys(keyMappings));
+    return GatewayStateMan(
+      remote: remote,
+      config: config,
+      keyMappings: keyMappings,
+      alias: alias,
+      ownsRemote: false,
+    );
+  }
 
   /// Points a client at [uri] and wraps it.
   ///
@@ -208,7 +251,11 @@ class GatewayStateMan implements StateMan {
   String alias;
 
   /// Empty: this process holds no OPC UA session. See the library doc.
-  @override
+  ///
+  /// Not a [StateMan] member and so not an override — a list of live OPC UA
+  /// sessions is not something the interface can promise. Kept here because
+  /// the browse and diagnostic widgets reach it through `opcUaSessionsOf`,
+  /// which answers this when it is handed a gateway-mode panel.
   List<ClientWrapper> get clients => const [];
 
   /// Empty: this process holds no Modbus or M2400 socket. See the library doc.
@@ -353,7 +400,11 @@ class GatewayStateMan implements StateMan {
   @override
   Future<void> close() async {
     await _subsChanged.close();
-    await _remote.dispose();
+    // Only when this object built the client. Under [attach] the socket is
+    // `relayClientProvider`'s, and it is also what the preferences store reads
+    // through — disposing it from here would close the panel's configuration
+    // store as a side effect of rebuilding its values.
+    if (_ownsRemote) await _remote.dispose();
   }
 
   @override

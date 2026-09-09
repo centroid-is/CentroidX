@@ -22,6 +22,7 @@ import '../widgets/bit_mask_grid.dart';
 import '../widgets/key_mapping_sections.dart';
 import '../providers/access_templates.dart';
 import '../providers/preferences.dart';
+import '../providers/preferences_local_store.dart';
 import '../providers/state_man.dart';
 import '../providers/database.dart';
 import 'access_templates_section.dart';
@@ -818,7 +819,7 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     });
 
     try {
-      final prefs = await ref.read(preferencesProvider.future);
+      final prefs = await ref.read(localStorePreferencesProvider.future);
       _keyMappings = await KeyMappings.fromPrefs(prefs);
       _invalidateDerived();
       _savedJson = _currentJson();
@@ -865,8 +866,8 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       // then; `ref` for an ordinary Save, where no container was ever taken.
       // Either way the read happens now, so an invalidated preferencesProvider
       // hands back the live instance rather than a closed one.
-      final prefs = await (_container?.read(preferencesProvider.future) ??
-          ref.read(preferencesProvider.future));
+      final prefs = await (_container?.read(localStorePreferencesProvider.future) ??
+          ref.read(localStorePreferencesProvider.future));
       // Unfocusing above may have committed a rename, so re-encode.
       _invalidateDerived();
       final json = _currentJson();
@@ -2247,7 +2248,7 @@ class _KeyMappingsImportExportCard extends ConsumerWidget {
     // `origin: 'mcp'`. That is named in the copy below, not only here.
     // ---------------------------------------------------------------------
     try {
-      final prefs = await ref.read(preferencesProvider.future);
+      final prefs = await ref.read(localStorePreferencesProvider.future);
       final keyMappings = await KeyMappings.fromPrefs(prefs);
       final jsonString =
           const JsonEncoder.withIndent('  ').convert(keyMappings.toJson());
@@ -2344,7 +2345,7 @@ class _KeyMappingsImportExportCard extends ConsumerWidget {
       );
       if (!confirm) return;
 
-      final prefs = await ref.read(preferencesProvider.future);
+      final prefs = await ref.read(localStorePreferencesProvider.future);
       await prefs.setString('key_mappings', jsonEncode(imported.toJson()));
       // Applied incrementally by the stateManProvider preferences listener;
       // it self-invalidates only if the import touches Modbus/M2400 keys.

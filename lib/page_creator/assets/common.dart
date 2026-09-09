@@ -21,6 +21,7 @@ import 'package:tfc_dart/core/boolean_expression.dart';
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
 import '../../providers/state_man.dart';
 import '../../providers/preferences.dart';
+import '../../providers/state_man_config_read.dart';
 import '../../widgets/boolean_expression.dart';
 import '../../widgets/bit_mask_grid.dart';
 import '../../widgets/key_mapping_sections.dart';
@@ -1328,8 +1329,7 @@ class _KeyMappingEntryDialogState extends ConsumerState<KeyMappingEntryDialog> {
 
   Future<void> _loadConfig() async {
     try {
-      final prefs = await ref.read(preferencesProvider.future);
-      final config = await StateManConfigStorage.fromPrefs(prefs);
+      final config = await ref.read(stateManConfigProvider.future);
       if (mounted) {
         setState(() {
           _config = config;

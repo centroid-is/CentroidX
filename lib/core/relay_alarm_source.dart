@@ -72,7 +72,8 @@ import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/alarm.dart' as shared;
 import 'package:tfc_dart/core/alarm_stamp.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
-import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_dart/core/database.dart' show Database;
+import 'package:tfc_dart/core/preferences_api.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as rp;
 
@@ -110,6 +111,7 @@ class RelayAlarmSource implements AlarmSource {
   RelayAlarmSource._({
     required AlarmTransport transport,
     required this.preferences,
+    required this.database,
     required this.config,
   })  : _transport = transport,
         alarms = config.alarms.map((e) => Alarm(config: e)).toSet(),
@@ -125,7 +127,8 @@ class RelayAlarmSource implements AlarmSource {
   /// depends on which page happened to be open.
   static Future<RelayAlarmSource> create({
     required AlarmTransport transport,
-    required Preferences preferences,
+    required PreferencesApi preferences,
+    Database? database,
   }) async {
     final configJson = await preferences.getString('alarm_man_config');
     final config = configJson == null
@@ -135,6 +138,7 @@ class RelayAlarmSource implements AlarmSource {
     final source = RelayAlarmSource._(
       transport: transport,
       preferences: preferences,
+      database: database,
       config: config,
     );
     source._listen();
@@ -143,7 +147,20 @@ class RelayAlarmSource implements AlarmSource {
   }
 
   final AlarmTransport _transport;
-  final Preferences preferences;
+
+  /// The store the alarm configuration is read from and acknowledged into.
+  /// Whatever the transport supplies: this station's own in direct mode, the
+  /// gateway's over the socket in gateway mode.
+  final PreferencesApi preferences;
+
+  /// This station's own database, when it has one.
+  ///
+  /// Handed in rather than reached through [preferences], which used to hold
+  /// it: in gateway mode the shared store is the gateway's and has no local
+  /// database behind it at all, so the old spelling stopped meaning anything.
+  /// Null is a real answer — the panel then has no local alarm history, and
+  /// [getRecentAlarms] says so by returning nothing rather than guessing.
+  final Database? database;
 
   @override
   final AlarmManConfig config;
@@ -446,9 +463,10 @@ class RelayAlarmSource implements AlarmSource {
     DateTime? from,
     DateTime? to,
   }) async {
-    if (preferences.database == null) return [];
+    final local = database;
+    if (local == null) return [];
 
-    final db = preferences.database!.db;
+    final db = local.db;
 
     final query = db.select(db.alarmHistory);
     if (from != null || to != null) {

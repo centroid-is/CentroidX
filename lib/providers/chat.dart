@@ -16,6 +16,7 @@ import 'package:tfc_dart/core/preferences.dart' show Preferences;
 
 import 'database.dart' show databaseProvider;
 import 'preferences.dart' show preferencesProvider;
+import 'preferences_local_store.dart' show localStorePreferencesProvider;
 
 import '../chat/tool_filter.dart';
 import '../mcp/mcp_lifecycle_state.dart';
@@ -236,7 +237,7 @@ class ChatNotifier extends Notifier<ChatState> {
   /// Called when chat becomes visible. If a legacy `chat.history` key
   /// exists, migrates it into a single conversation first.
   Future<void> loadConversations() async {
-    final prefs = await ref.read(preferencesProvider.future);
+    final prefs = await ref.read(localStorePreferencesProvider.future);
 
     // Migrate legacy history if present
     await _migrateLegacyHistory(prefs);
@@ -293,7 +294,7 @@ class ChatNotifier extends Notifier<ChatState> {
 
   /// Loads messages for a specific conversation from preferences.
   Future<void> loadConversation(String id) async {
-    final prefs = await ref.read(preferencesProvider.future);
+    final prefs = await ref.read(localStorePreferencesProvider.future);
     final json = await prefs.getString('$kConversationPrefix$id');
 
     var messages = <ChatMessage>[];
@@ -335,7 +336,7 @@ class ChatNotifier extends Notifier<ChatState> {
     }
 
     final json = jsonEncode(messages.map((m) => m.toJson()).toList());
-    final prefs = await ref.read(preferencesProvider.future);
+    final prefs = await ref.read(localStorePreferencesProvider.future);
     await prefs.setString('$kConversationPrefix$id', json);
   }
 
@@ -364,7 +365,7 @@ class ChatNotifier extends Notifier<ChatState> {
       final removed = conversations.sublist(kMaxConversations);
       conversations = conversations.sublist(0, kMaxConversations);
       // Clean up messages for removed conversations
-      final prefs = await ref.read(preferencesProvider.future);
+      final prefs = await ref.read(localStorePreferencesProvider.future);
       for (final old in removed) {
         await prefs.remove('$kConversationPrefix${old.id}');
       }
@@ -398,7 +399,7 @@ class ChatNotifier extends Notifier<ChatState> {
   /// If the deleted conversation is active, switches to another.
   /// If no conversations remain, creates a new one.
   Future<void> deleteConversation(String id) async {
-    final prefs = await ref.read(preferencesProvider.future);
+    final prefs = await ref.read(localStorePreferencesProvider.future);
 
     // Remove messages
     await prefs.remove('$kConversationPrefix$id');
@@ -441,7 +442,7 @@ class ChatNotifier extends Notifier<ChatState> {
   ///
   /// Creates a fresh empty conversation afterwards.
   Future<void> clearAllConversations() async {
-    final prefs = await ref.read(preferencesProvider.future);
+    final prefs = await ref.read(localStorePreferencesProvider.future);
 
     // Remove all conversation messages
     for (final conv in state.conversations) {
@@ -541,7 +542,7 @@ class ChatNotifier extends Notifier<ChatState> {
   // ─── Internal helpers ──────────────────────────────────────────────
 
   Future<void> _saveConversationList() async {
-    final prefs = await ref.read(preferencesProvider.future);
+    final prefs = await ref.read(localStorePreferencesProvider.future);
     final json =
         jsonEncode(state.conversations.map((c) => c.toJson()).toList());
     await prefs.setString(kConversationList, json);
@@ -553,7 +554,7 @@ class ChatNotifier extends Notifier<ChatState> {
     final id = state.activeConversationId;
     if (id == null || id == _lastSavedActiveId) return;
     _lastSavedActiveId = id;
-    final prefs = await ref.read(preferencesProvider.future);
+    final prefs = await ref.read(localStorePreferencesProvider.future);
     await prefs.setString(kActiveConversation, id);
   }
 
@@ -878,7 +879,7 @@ class ChatNotifier extends Notifier<ChatState> {
     );
     // Clear persisted messages for active conversation
     if (activeId != null) {
-      ref.read(preferencesProvider.future).then((prefs) {
+      ref.read(localStorePreferencesProvider.future).then((prefs) {
         prefs.remove('$kConversationPrefix$activeId');
       });
     }

@@ -6,11 +6,13 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../core/gateway_config.dart';
 import '../core/preferences.dart';
+import '../core/relayed_preferences.dart';
 import '../core/startup_url.dart';
 import 'access.dart';
 import 'access_policy.dart';
 import 'database.dart';
 import 'gateway.dart';
+import 'relay_client.dart';
 
 part 'preferences.g.dart';
 
@@ -35,7 +37,7 @@ PreferencesApi createDeviceLocalPreferences() =>
 /// here is what puts a check and an audit row on every configuration write in
 /// the app without changing a single call site.
 @Riverpod(keepAlive: true)
-Future<Preferences> preferences(Ref ref) async {
+Future<PreferencesApi> preferences(Ref ref) async {
   // The transport branch, and it must sit HERE, not merely inside
   // `databaseProvider`: this provider is `keepAlive` and watched by
   // everything, so a watch on `databaseProvider` is what used to pull the
@@ -56,8 +58,30 @@ Future<Preferences> preferences(Ref ref) async {
   } catch (_) {
     gateway = GatewayConfig.defaults;
   }
-  final db =
-      gateway.isGateway ? null : await ref.watch(databaseProvider.future);
+
+  // Gateway mode: the shared store IS the gateway's, read and written over the
+  // same socket the values come down. Not a local mirror of it — the mirror is
+  // only ever filled by a direct-mode run, so a station that has only ever run
+  // in gateway mode (and every browser, every time) would boot with no key
+  // mappings and no pages.
+  //
+  // Nothing is guarded on this side. `GuardedPreferences` puts a check and an
+  // audit row in front of every write on a direct station because that station
+  // is talking to its own database and nothing else would. Over the relay the
+  // gateway does it — it refuses on the far side and writes the audit row
+  // against the station's verified account — and a second check here would be
+  // a client asking itself for permission.
+  if (gateway.isGateway) {
+    final client = await ref.watch(relayClientProvider.future);
+    if (client == null) {
+      throw StateError('Gateway mode is selected but no relay client was '
+          'built. relayClientProvider answers null only outside gateway mode, '
+          'so this is a wiring fault and not a configuration one.');
+    }
+    return RelayedPreferences(client.preferences);
+  }
+
+  final db = await ref.watch(databaseProvider.future);
   final localCache = createDeviceLocalPreferences();
 
   final inner = await Preferences.create(db: db, localCache: localCache);
@@ -112,7 +136,7 @@ Future<Preferences> preferences(Ref ref) async {
 /// a test that overrides the store gets. A cast would turn that into a crash
 /// in every such test for no gain.
 @Riverpod(keepAlive: true)
-Future<Preferences> systemPreferences(Ref ref) async {
+Future<PreferencesApi> systemPreferences(Ref ref) async {
   final prefs = await ref.watch(preferencesProvider.future);
   return prefs is GuardedPreferences ? prefs.systemWrites : prefs;
 }
