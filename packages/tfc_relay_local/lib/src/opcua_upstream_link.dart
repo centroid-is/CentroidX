@@ -51,6 +51,7 @@ import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'epoch.dart';
+import 'opcua_write_typing.dart';
 import 'upstream_link.dart';
 import 'write_translation.dart';
 
@@ -465,8 +466,13 @@ final class OpcUaUpstreamLink implements UpstreamLink {
     final node = _nodes[key];
     if (client == null || node == null) return;
     try {
-      await client.read(node).timeout(_probeDeadline);
+      final sample = await client.read(node).timeout(_probeDeadline);
       _decodeProbed[key] = _epoch;
+      // The probe already asked for the DataType attribute (`client.read`
+      // reads four attributes, `client.dart:605-612`), so the type the write
+      // path needs is sitting in the answer. Harvesting it here is what makes
+      // the write path's lookup free for every subscribed key.
+      _rememberWriteType(key, sample.typeId);
     } on TimeoutException {
       // Unanswered is not evidence; do not mark, so a later establish asks.
     } catch (error) {
@@ -513,6 +519,8 @@ final class OpcUaUpstreamLink implements UpstreamLink {
       // (T-08-10). `ClientWrapper` does not bound it either, so the bound is
       // applied here rather than by editing tfc_dart.
       final sample = await client.read(_nodes[ref.key]!).timeout(deadline);
+      // Free, and on the path a write-only key would otherwise never take.
+      _rememberWriteType(ref.key, sample.typeId);
       final translated = translateOpcUaSample(
         sample,
         arrivedAt: DateTime.now().toUtc(),
@@ -584,12 +592,45 @@ final class OpcUaUpstreamLink implements UpstreamLink {
           cmd: cmd,
           answer: const WriteDeadlineExpired(requestSent: false));
     }
+    // **The Variant's type, from the tag rather than from the number.**
+    //
+    // A whole-array write does not come through here: it is a read-modify-write
+    // whose `whole` carries the element types the server itself sent, and
+    // `DynamicValue.operator []=` keeps the element's existing typeId
+    // (`dynamic_value.dart:226`). So the shaping applies to the scalar path
+    // only, which is also the only path that ever lacked a type.
+    //
+    // **One budget across both crossings**, WR-05's rule: the DataType read
+    // and the write are two round trips and the caller typed one deadline. On
+    // every write after the first for a key the read does not happen at all,
+    // so the budget is the write's alone.
+    final budget = DeadlineBudget(deadline);
+    // Read ONCE, before the first await. `_arrayIndices` is rewritten by
+    // `resolve`, so re-reading it after the DataType round trip could take the
+    // scalar branch having shaped nothing — a null-check throw dressed up as an
+    // upstream error.
+    final index = _arrayIndices[ref.key];
+    ua.DynamicValue? shaped;
+    if (index == null) {
+      final target = await _writeTargetType(ref.key, budget.remaining);
+      switch (shapeOpcUaWrite(value.value, targetType: target)) {
+        case TypedWriteReady(value: final typed):
+          shaped = typed;
+        case TypedWriteRefused(code: final code, message: final message):
+          // REJECTED, and it is a claim with evidence: the refusal happens
+          // before the one crossing, so nothing was sent and the tag still
+          // holds what it held. `unknown` here would tell an operator to worry
+          // about a write that never left this process, and `applied` would be
+          // a lie about a number the tag cannot represent.
+          return WriteRejected(cmd, WriteReason(code, message: message),
+              at: DateTime.now().millisecondsSinceEpoch);
+      }
+    }
     // ONE crossing into the plant, and no retry shape anywhere near it. The
     // three-state outcome is what makes a re-send the operator's decision, and
     // readback is the only confirmation.
     WriteAnswer answer;
     try {
-      final index = _arrayIndices[ref.key];
       if (index != null) {
         // The read-modify-write the shipped StateMan does
         // (`state_man.dart:2033-2039`), and the reason the guard above only
@@ -604,8 +645,8 @@ final class OpcUaUpstreamLink implements UpstreamLink {
         await client.write(_nodes[ref.key]!, whole).timeout(deadline);
       } else {
         await client
-            .write(_nodes[ref.key]!, _toBindingValue(value))
-            .timeout(deadline);
+            .write(_nodes[ref.key]!, shaped!)
+            .timeout(budget.remaining);
       }
       answer = WriteAcknowledged(at: DateTime.now().millisecondsSinceEpoch);
     } on TimeoutException {
@@ -622,21 +663,69 @@ final class OpcUaUpstreamLink implements UpstreamLink {
         protocol: UpstreamProtocol.opcUa, cmd: cmd, answer: answer);
   }
 
-  /// The relay's value, as something the binding will serialise.
+  /// Each key's DataType, and the epoch it was learned under.
   ///
-  /// **An `int` carries no deducible OPC UA type** — the binding throws
-  /// `'Unable to auto deduce type'` rather than guessing between Int16, Int32,
-  /// Int64 and the unsigned family (`opcua_serializer.dart:334`), and it is
-  /// right to. Int32 is the assumption this adapter makes, and it is written
-  /// down here rather than buried: a plant tag that is genuinely Int16 or a
-  /// UInt32 needs the type in its keymapping entry, which is a mapping-model
-  /// change and therefore not this plan's. Until then a write of the wrong
-  /// width comes back as `BadTypeMismatch` from the server — a named refusal,
-  /// which is the safe way for this assumption to be wrong.
-  ua.DynamicValue _toBindingValue(DynamicValue value) => ua.DynamicValue(
-        value: value.value,
-        typeId: value.value is int ? ua.NodeId.int32 : null,
-      );
+  /// **Per key per epoch**, exactly like [_decodeProbed] and for the same
+  /// reason spelled out there: a node's DataType cannot change while the
+  /// address space stands, and the one moment it can is a reprogram, which is
+  /// an epoch bump by definition. So the answer is read at most once per key
+  /// per download and is free thereafter — the cost argument against reading
+  /// the tag's own type, amortised away.
+  final Map<String, ({String epoch, ua.NodeId typeId})> _writeTypes =
+      <String, ({String epoch, ua.NodeId typeId})>{};
+
+  /// How many DataType reads the write path has had to make for itself.
+  ///
+  /// Zero on a plant whose written keys are also subscribed — the decode probe
+  /// and [read] both hand this cache the answer for nothing. A number that
+  /// tracks the write count means the cache is not holding, which is the shape
+  /// a per-write round trip would have.
+  int get writeTypeReads => _writeTypeReads;
+  int _writeTypeReads = 0;
+
+  void _rememberWriteType(String key, ua.NodeId? typeId) {
+    if (typeId == null) return;
+    _writeTypes[key] = (epoch: _epoch, typeId: typeId);
+  }
+
+  /// The DataType of [key]'s node, or null when it could not be learned.
+  ///
+  /// Null is a legitimate answer and [shapeOpcUaWrite] documents what it does
+  /// with one. It is deliberately NOT an error: a DataType read that times out
+  /// says the session is unwell, and turning that into a refused write would
+  /// replace a plant problem with a gateway one. The fallback shaping is still
+  /// range-checked, so the failure mode it can reach is the server's own named
+  /// `Bad_TypeMismatch` and never a silently narrowed number.
+  Future<ua.NodeId?> _writeTargetType(String key, Duration deadline) async {
+    final cached = _writeTypes[key];
+    if (cached != null && cached.epoch == _epoch) return cached.typeId;
+    final client = _client;
+    final node = _nodes[key];
+    if (client == null || node == null) return null;
+    try {
+      _writeTypeReads++;
+      // The DataType attribute alone — not `client.read`, which also fetches
+      // Description, DisplayName and the Value. This runs on a key nobody
+      // subscribed, and pulling a whole value across just to learn its type
+      // would be a second read of the plant on the write path.
+      final request = <ua.NodeId, List<ua.AttributeId>>{
+        node: <ua.AttributeId>[ua.AttributeId.UA_ATTRIBUTEID_DATATYPE],
+      };
+      // On ONE line, and that is not formatting: `freeze_test.dart:1225`'s
+      // sweep is line-based, and a crossing whose `.timeout(` sits on a
+      // different physical line reads to it as an unbounded await.
+      final answer = await client.readAttribute(request).timeout(deadline);
+      final typeId = answer[node]?.typeId;
+      _rememberWriteType(key, typeId);
+      return typeId;
+    } catch (error) {
+      // Recorded, not raised. The write itself is about to happen and will
+      // produce its own three-state outcome; this is a note about why the
+      // shaping had to fall back.
+      _recordError(error);
+      return null;
+    }
+  }
 
   /// Slices a whole-array sample down to the one element a key mapped with an
   /// `array_index` is about, keeping the sample's quality and source time.

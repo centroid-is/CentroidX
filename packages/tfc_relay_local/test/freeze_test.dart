@@ -326,7 +326,20 @@ const int declaredRetainedTimers = 2;
 /// 200-server bench's Guid/ByteString/LocalizedText/Range keys sat at 258
 /// forever without it. It is a **read**, once per key per epoch, never
 /// retried on transient failure inside the probe itself.
-const int declaredUpstreamAwaitSites = 11;
+///
+/// **Twelve since the write-typing fix.** `OpcUaUpstreamLink._writeTargetType`
+/// reads one node's **DataType attribute** before shaping a write, because an
+/// OPC UA Variant with no type is not a write at all and a Dart `int` does not
+/// say whether the tag is an Int16 or a UInt32 — a guess is either a
+/// `Bad_TypeMismatch` or, measured, a silently narrowed number reported
+/// applied. It is a **read**, at most once per key **per epoch** (a DataType
+/// cannot change while the address space stands), and free for any key the
+/// decode probe or [OpcUaUpstreamLink.read] has already touched. Freeze 4's
+/// write-site count is unmoved, which is the number that would catch a retry.
+/// It is also the reason `readAttribute` joined the needle at
+/// [_upstreamCall] — the crossing existed either way; the choice was whether
+/// it would be countable.
+const int declaredUpstreamAwaitSites = 12;
 
 /// Lines under `lib/` that cross into the plant **without** the word `await`.
 ///
@@ -1222,8 +1235,17 @@ List<String> mentionsOf(Directory directory, String needle) {
 }
 
 /// An awaited call to something an upstream answers.
+/// `readAttribute` is in the needle since the write-typing fix, and it is the
+/// one widening this sweep has taken: `OpcUaUpstreamLink._writeTargetType`
+/// asks a node for its DataType before shaping a write, which is a genuine
+/// crossing into the plant and `\.read\(` cannot see it — `.readAttribute(`
+/// does not match, because the needle requires the `(` to follow the verb.
+/// Adding the crossing without adding the needle would have put a bounded read
+/// on the write path where neither sweep could count it, which is precisely
+/// the drift these two numbers exist to stop. `browse` is still out; see
+/// [unawaitedUpstreamSites]' closing paragraph for whose obligation that is.
 final RegExp _upstreamCall =
-    RegExp(r'\.\s*(awaitConnect|connect|read|write)\s*\(');
+    RegExp(r'\.\s*(awaitConnect|connect|readAttribute|read|write)\s*\(');
 
 /// Every line under [directory] that awaits an upstream call.
 List<String> upstreamAwaitSites(Directory directory) {

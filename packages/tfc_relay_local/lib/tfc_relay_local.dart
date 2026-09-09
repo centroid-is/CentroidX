@@ -53,6 +53,11 @@ export 'src/local_state_man.dart';
 export 'src/m2400_upstream_link.dart';
 export 'src/modbus_upstream_link.dart';
 export 'src/opcua_upstream_link.dart';
+// The write path's typing, exported for its own sake: `shapeOpcUaWrite` decides
+// what type a write carries into the plant, which is the difference between a
+// write and no write, and a table with that much riding on it is judged
+// per-type by a suite that does not need a server on a socket to run.
+export 'src/opcua_write_typing.dart';
 export 'src/pipe_health.dart';
 export 'src/string_encoding.dart';
 export 'src/upstream_link.dart';

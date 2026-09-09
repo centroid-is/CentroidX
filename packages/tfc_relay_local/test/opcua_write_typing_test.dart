@@ -206,6 +206,68 @@ void main() {
     }
   });
 
+  group('the tag is asked its type once per key per epoch, and no more', () {
+    // The cost argument against reading the tag's own DataType, measured. It
+    // is a real round trip and it happens once; a number that tracked the
+    // write count would mean a per-write round trip on the plant's hot path.
+    final target = typeMatrix[4]; // DINT
+
+    Future<WriteResult> writeOnce(UpstreamRef ref, Object v) => link.write(
+          ref,
+          DynamicValue(
+              value: v,
+              quality: Quality.good,
+              sourceTime: DateTime.now().toUtc()),
+          cmd: cmd,
+          deadline: generous,
+        );
+
+    test('ten writes to one key cost one DataType read', () async {
+      final key = keyFor(target);
+      final ref = link.resolve(key, mappingFor(key))!;
+      for (var i = 0; i < 10; i++) {
+        expect(await writeOnce(ref, i), isA<WriteApplied>());
+      }
+      expect(link.writeTypeReads, 1,
+          reason: 'a DataType cannot change while the address space stands, so '
+              'asking again is asking a PLC a question it already answered');
+      expect(fixture.writeCount(key), 10);
+    });
+
+    test('a subscribed key costs ZERO — the decode probe already asked',
+        () async {
+      final key = keyFor(target);
+      final ref = link.resolve(key, mappingFor(key))!;
+      // One sample proves the monitored item is up, which means the probe that
+      // rides beside it has completed.
+      await link.subscribe(ref).first;
+      expect(await writeOnce(ref, 7), isA<WriteApplied>());
+      expect(link.writeTypeReads, 0,
+          reason: '`client.read` fetches the DataType attribute alongside the '
+              'value, so the probe hands the write path the answer for free');
+    });
+
+    test('a new epoch asks again, because a download can change the type',
+        () async {
+      final key = keyFor(target);
+      expect(await writeOnce(link.resolve(key, mappingFor(key))!, 1),
+          isA<WriteApplied>());
+      expect(link.writeTypeReads, 1);
+
+      link.debugBumpEpoch();
+      // The bump makes every outstanding handle stale, so the key is
+      // re-resolved exactly as a composer would after a `reprogrammed`.
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(await writeOnce(link.resolve(key, mappingFor(key))!, 2),
+          isA<WriteApplied>());
+
+      expect(link.writeTypeReads, 2,
+          reason: 'a reprogram is the one moment a tag genuinely can change '
+              "type, and a cache that outlived it would type the plant's new "
+              'address space from the old one');
+    });
+  });
+
   group('a value the tag cannot hold is rejected, never narrowed', () {
     // Each row: the tag, and a value outside its range. The server would
     // answer Good to every one of these if the gateway narrowed them first,
