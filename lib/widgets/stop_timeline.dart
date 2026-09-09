@@ -116,7 +116,12 @@ class _StopTimelineState extends ConsumerState<StopTimeline> {
   /// AlarmMan, and subscriptions left on the orphan would go silent for good.
   StreamSubscription<Set<AlarmActive>>? _activeSub;
   StreamSubscription<List<AlarmActive?>>? _historySub;
-  AlarmMan? _man;
+  // `AlarmSource`, not `AlarmMan`: `alarmManProvider` yields the interface
+  // now, so a gateway panel — which has no `AlarmMan` and must not build one —
+  // drives this widget through the relay. The three members used below
+  // (`activeAlarms`, `history`, `getRecentAlarms`) are the whole of what this
+  // file ever needed, and all three are on the interface.
+  AlarmSource? _man;
 
   /// True while a period change's fetch is in flight — the stale view stays
   /// up, with a thin progress strip over it instead of a spinner remount.
