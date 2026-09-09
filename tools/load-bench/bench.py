@@ -363,6 +363,7 @@ class Bench:
         self.hazard_seen = {"nonfinite_null": 0, "finite": 0, "raw_nonfinite": 0}
         self._id = 0
         self._pending = {}
+        self.frame_errors = 0
 
     def key_for(self, sub, handle):
         return self.handle_map.get((sub, int(handle)))
@@ -433,7 +434,7 @@ class Bench:
                 st.bad_since = None
         st.last_q = q
 
-    def record(self, key, v, q, t, now):
+    def record(self, key, v, q, t, now, snapshot=False):
         st = self.keys[key]
         st.count += 1
         st.last_v = v
@@ -442,7 +443,10 @@ class Bench:
             st.first_at = now
         st.last_at = now
         self.record_quality(key, q, now)
-        if t is not None and q < BAD_FLOOR:
+        # Snapshot values carry the source stamp of whenever they last changed
+        # (a boot-time constant is minutes old and honestly so) — only PUSHED
+        # changes measure the pipe's latency.
+        if not snapshot and t is not None and q < BAD_FLOOR:
             lat = now * 1000.0 - t
             (self.latency_ua if key.startswith("ua") else self.latency_mb).append(lat)
         self.check_honesty(key, v, q)
@@ -597,15 +601,43 @@ async def amain(args):
         recv_task = None
 
         async def recv_loop():
-            async for raw in ws:
-                bench.on_frame(raw)
+            # A frame the bench cannot parse must be NAMED, never allowed to
+            # silently kill the reader — a dead reader looks exactly like a
+            # dead gateway, and that lie cost a shakeout run.
+            try:
+                async for raw in ws:
+                    try:
+                        bench.on_frame(raw)
+                    except Exception as e:
+                        bench.frame_errors += 1
+                        if bench.frame_errors <= 5:
+                            print(f"FRAME ERROR ({e!r}) on: {raw[:300]}")
+            finally:
+                print(f"RECV LOOP EXITED (frames Ok, errors={bench.frame_errors})")
 
         recv_task = asyncio.create_task(recv_loop())
 
         hello = await bench.rpc(ws, "hello", {
             "protocol": PROTOCOL, "supported": [PROTOCOL],
             "client": {"name": "load-bench", "version": "1"}})
-        print(f"HELLO: server={hello.get('server')}")
+        hb_ms = (hello.get("capabilities") or {}).get("heartbeatDeadlineMs") or 6000
+        print(f"HELLO: server={hello.get('server')} heartbeatDeadlineMs={hb_ms}")
+
+        # The gateway REAPS a session that sends nothing for heartbeatDeadlineMs
+        # (close 4003) — protocol-level pongs do not count, only app frames.
+        # Ping at a third of the deadline, carrying the per-sub ack map, which
+        # also feeds the server's delivery-lag detector (the honest thing for a
+        # load bench to do: a client that never acks can never be judged slow).
+        async def heartbeat():
+            while True:
+                await asyncio.sleep(hb_ms / 3000.0)
+                try:
+                    await bench.rpc(ws, "ping", {"ack": dict(bench.seq)})
+                except Exception as e:
+                    print(f"HEARTBEAT failed: {e!r}")
+                    return
+
+        hb_task = asyncio.create_task(heartbeat())
 
         t0 = time.time()
         chunk = 400
@@ -620,7 +652,7 @@ async def amain(args):
                 key = bench.key_for(sub, h)
                 if key:
                     bench.record(key, wire.get("v"), wire.get("q", Q_GOOD),
-                                 wire.get("t"), now)
+                                 wire.get("t"), now, snapshot=True)
             for key, rej in (res.get("rejected") or {}).items():
                 bench.rejected[key] = rej.get("kind")
         print(f"SUBSCRIBE: {len(all_keys)} keys in {time.time()-t0:.1f}s, "
@@ -683,6 +715,13 @@ async def amain(args):
                     fleet_ps.append(psutil.Process(p.pid))
                 await asyncio.gather(*(read_until_ready(sp, 1)
                                        for _, _, _, sp in new_targets))
+                # A restarted server's tick restarts at 0, so its counters
+                # legitimately jump backwards ONCE — reset the monotonicity
+                # baselines rather than reporting the restart as a lie.
+                for _, name, _, _ in new_targets:
+                    for key, st in bench.keys.items():
+                        if key.startswith(name + "."):
+                            st.prev_num = None
                 print(f"RESTART t={elapsed:.0f}s: relaunched "
                       f"{[n for _, n, _, _ in new_targets]} on their old ports")
             try:
@@ -712,6 +751,7 @@ async def amain(args):
                cpu_series, args)
         ok = verdict_ok(bench, all_keys)
 
+        hb_task.cancel()
         await ws.close()
         recv_task.cancel()
         return 0 if ok else 1
@@ -792,6 +832,21 @@ def report(bench, ua_info, mb_info, killed, restarted_at, rss_series, cpu_series
                 continue
             print(f"  {name}.{sfx:18s} n={st.count:5d} q={st.last_q:4d} "
                   f"v={str(st.last_v)[:70]!r}")
+
+    # Keys that only ever answered uncertainNotYetKnown (258): the gateway
+    # accepted the subscription, the upstream value never became decodable,
+    # and NOTHING was logged. Not silence on the wire — but a key that can
+    # never resolve deserves an error quality, and today it does not get one.
+    never = [k for k, st in bench.keys.items()
+             if st.count <= 1 and st.last_q == 258]
+    if never:
+        by_sfx = {}
+        for k in never:
+            by_sfx.setdefault(k.split(".", 1)[1], []).append(k)
+        print("\nNEVER-RESOLVED keys (stuck at uncertainNotYetKnown=258, no "
+              "error quality, no gateway log line):")
+        for sfx, ks in sorted(by_sfx.items()):
+            print(f"  .{sfx}: {len(ks)} servers")
 
     # constant/dead freshness verdicts across the whole fleet
     const_bad = [f"ua{i:02d}" for i in range(len(ua_info))
