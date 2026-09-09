@@ -83,6 +83,26 @@ void main() {
       expect(qualityForOpcUaErrorText('some sentence nobody taught this'),
           relay.Quality.badCommFault);
     });
+
+    test(
+        'the binding\'s own decode failures are errorTypeMismatch — '
+        'waiting will not teach it Guid', () {
+      // The exact texts the pinned binding throws when a variant's declared
+      // DataType has no payload mapping (`common.dart:170`) and when an
+      // ExtensionObject's binary encoding is unknown to it
+      // (`opcua_serializer.dart:322`). The 200-server bench measured what the
+      // old mapping did with these: badCommFault, a transient label on a
+      // permanent condition — and on the subscribe path, nothing at all.
+      expect(
+          qualityForOpcUaErrorText('Unsupported nodeId type: '
+              'NodeId(namespace: 0, identifier: 14)'),
+          relay.Quality.errorTypeMismatch);
+      expect(
+          qualityForOpcUaErrorText('Unsupported binary encoding id: '
+              'NodeId(namespace: 0, identifier: 886) for AttributeId '
+              'UA_ATTRIBUTEID_DATATYPEDEFINITION'),
+          relay.Quality.errorTypeMismatch);
+    });
   });
 
   group('translateOpcUaSample: the one crossing point', () {
