@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import bisect
 import datetime as dt
 import json
 import math
@@ -37,6 +38,7 @@ import statistics
 import subprocess
 import sys
 import time
+from array import array
 
 import psutil
 import websockets
@@ -57,6 +59,38 @@ PROTOCOL = "2026-08-13"
 Q_GOOD = 192
 Q_BAD_NONFINITE = 524
 BAD_FLOOR = 512          # badStale 516, badCommFault 522, error* 770+ all >= this
+
+# Latency histogram buckets (ms). LOG-ish, not linear, deliberately: under
+# load, end-to-end latency spans decades — a healthy pipe sits at 10-200 ms
+# while an overloaded one produces a tail into seconds. Linear buckets either
+# blur the healthy region or amputate the tail; the tail IS the finding, so
+# it gets buckets of its own (500-1000, 1-2 s, 2-5 s, >5 s) instead of being
+# collapsed into a single max.
+HIST_EDGES_MS = [5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+
+
+def hist_bucket(ms: float) -> int:
+    """Bucket index for a latency: 0 = <=5 ms ... len(HIST_EDGES_MS) = >5 s."""
+    return bisect.bisect_left(HIST_EDGES_MS, ms)
+
+
+def hist_labels() -> list[str]:
+    labels = [f"<={HIST_EDGES_MS[0]}"]
+    labels += [f"{a}-{b}" for a, b in zip(HIST_EDGES_MS, HIST_EDGES_MS[1:])]
+    labels.append(f">{HIST_EDGES_MS[-1]}")
+    return labels
+
+
+def print_hist(counts: list[int], indent: str = "  "):
+    total = sum(counts)
+    if total == 0:
+        print(indent + "(no samples)")
+        return
+    width = 40
+    peak = max(counts)
+    for label, c in zip(hist_labels(), counts):
+        bar = "#" * (round(c / peak * width) if peak else 0)
+        print(f"{indent}{label:>10} ms {c:>9} {c/total*100:6.2f}%  {bar}")
 
 
 # --------------------------------------------------------------------------
@@ -130,12 +164,14 @@ def spawn_fleet(args):
             continue
         p = spawn("ua_server.py", ["--count", str(count), "--offset", str(off),
                                    "--seed", str(args.seed), "--hz", str(args.hz),
-                                   "--fast-hz", str(args.fast_hz)])
+                                   "--fast-hz", str(args.fast_hz),
+                                   "--replicate", str(args.replicate_ua)])
         procs.append(ServerProc(p, "ua", [f"ua{n:02d}" for n in range(off, off + count)]))
         off += count
     for n in range(bulk, args.ua):
         extra = ["--count", "1", "--offset", str(n), "--seed", str(args.seed),
-                 "--hz", str(args.hz), "--fast-hz", str(args.fast_hz)]
+                 "--hz", str(args.hz), "--fast-hz", str(args.fast_hz),
+                 "--replicate", str(args.replicate_ua)]
         p = spawn("ua_server.py", extra)
         sp = ServerProc(p, "ua", [f"ua{n:02d}"])
         procs.append(sp)
@@ -147,12 +183,14 @@ def spawn_fleet(args):
         p = spawn("mb_server.py", ["--count", str(mb_bulk), "--offset", "0",
                                    "--seed", str(args.seed), "--hz", str(args.hz),
                                    "--fast-hz", str(args.fast_hz),
-                                   "--word-order", args.word_order])
+                                   "--word-order", args.word_order,
+                                   "--replicate", str(args.replicate_mb)])
         procs.append(ServerProc(p, "mb", [f"mb{n:02d}" for n in range(mb_bulk)]))
     for n in range(mb_bulk, args.mb):
         extra = ["--count", "1", "--offset", str(n), "--seed", str(args.seed),
                  "--hz", str(args.hz), "--fast-hz", str(args.fast_hz),
-                 "--word-order", args.word_order]
+                 "--word-order", args.word_order,
+                 "--replicate", str(args.replicate_mb)]
         p = spawn("mb_server.py", extra)
         sp = ServerProc(p, "mb", [f"mb{n:02d}"])
         procs.append(sp)
@@ -165,10 +203,12 @@ def spawn_fleet(args):
 # Config generation
 # --------------------------------------------------------------------------
 
-def make_key_mappings(ua_info, mb_info):
+def make_key_mappings(ua_info, mb_info, replicate_ua=1, replicate_mb=1):
     nodes = {}
+    ua_nodes = UA.replicated_nodes(replicate_ua)
+    mb_keys = MB.replicated_keys(replicate_mb)
     for name, info in ua_info.items():
-        for node in UA.NODE_MATRIX:
+        for node in ua_nodes:
             nodes[f"{name}.{node}"] = {
                 "opcua_node": {
                     "namespace": info["ns"],
@@ -178,7 +218,7 @@ def make_key_mappings(ua_info, mb_info):
                 },
             }
     for name, info in mb_info.items():
-        for key, (cat, rtype, addr, dtype, mask, shift, gen) in MB.MB_KEYS.items():
+        for key, (cat, rtype, addr, dtype, mask, shift, gen) in mb_keys.items():
             entry = {
                 "modbus_node": {
                     "server_alias": name,
@@ -341,7 +381,7 @@ async def start_gateway(dart, config_path, log_path):
 
 class KeyState:
     __slots__ = ("count", "last_v", "last_q", "last_t", "first_at", "last_at",
-                 "qual_events", "bad_since", "prev_num")
+                 "qual_events", "bad_since", "prev_num", "worst_lat")
 
     def __init__(self):
         self.count = 0
@@ -353,6 +393,7 @@ class KeyState:
         self.qual_events = []      # (wall, q) transitions
         self.bad_since = None
         self.prev_num = None       # for monotonicity checks
+        self.worst_lat = 0.0       # worst pushed-change latency (ms) — the tail, named
 
 
 class Bench:
@@ -369,8 +410,45 @@ class Bench:
         self.seq_gaps = 0
         self.resyncs = 0
         self.status_events = []    # (wall, alias, state)
-        self.latency_ua = []       # ms, only keys with their own source ts
-        self.latency_mb = []
+        # Latency samples as packed doubles (a 40k-key run collects millions;
+        # Python float objects would cost ~5x the RAM) + online histogram
+        # counts so the tail is never lost to a truncated sort.
+        self.latency_ua = array("d")   # ms, only keys with their own source ts
+        self.latency_mb = array("d")
+        self.hist_ua = [0] * (len(HIST_EDGES_MS) + 1)
+        self.hist_mb = [0] * (len(HIST_EDGES_MS) + 1)
+        # Gateway tick observations: the tick notification fires every tick
+        # (nominal period in hello capabilities.tickMs). serverTime deltas
+        # measure the gateway's own tick cadence — if the per-tick work
+        # (conflate + encode-once) outgrows the period, these stretch BEFORE
+        # client latency does. arrival-serverTime is delivery delay (same
+        # host, same clock).
+        self.tick_gaps = array("d")     # ms between consecutive serverTime stamps
+        self.tick_delays = array("d")   # ms, arrival wall - serverTime
+        self._last_tick_server_time = None
+        self.tick_nominal_ms = None
+        self.pipe_series = {}      # PIPE.* key -> list[(wall, value)]
+        # Kill-arm servers are known BEFORE the run: their keys are excluded
+        # from the latency histograms and the conflation ratio, because a
+        # reconnecting link legitimately re-emits initial reads with honest
+        # OLD source stamps (measured: a 160 s "latency" that was no such
+        # thing) and a dead server legitimately delivers nothing. The
+        # kill/restart arm gets its own KPI (time-to-visible-bad) instead.
+        self.lat_exclude = ()      # server-name prefixes, e.g. ("ua23.", "mb24.")
+        self.changes_ua_clean = 0  # UA changes on never-killed servers only
+        # Latency and conflation are measured AFTER a warmup: right after
+        # subscribe, every link pushes its initial reads carrying honest OLD
+        # source stamps (a boot-time constant is minutes old and honestly
+        # so) — measured once as a fake 6.8 s "latency" on Dead/Constant at
+        # t=0. That is not pipe lag, so it does not go in the histogram.
+        # +inf until the measure loop starts: frames arriving during setup
+        # (subscribe ramps, extra clients attaching) must never count — a
+        # 19-panel attach wave once inflated "delivered" by 47%.
+        self.warmup_until = float("inf")
+        self.warmup_len = 0.0
+        self.measure_start = None
+        self.evicted_at = None     # wall time the GATEWAY closed us (4004 etc.)
+        self.evict_reason = None
         self.violations = []       # determinism/honesty violations, named
         self.hazard_seen = {"nonfinite_null": 0, "finite": 0, "raw_nonfinite": 0}
         self._id = 0
@@ -405,12 +483,25 @@ class Bench:
         params = msg.get("params", {})
         if method == "u":
             self.on_update(params)
+        elif method == "tick":
+            self.on_tick(params)
         elif method == "resync":
             self.resyncs += 1
         elif method == "status":
             self.status_events.append((time.time(), params.get("alias"),
                                        params.get("state")))
-        # tick/bye/others: nothing to do for the bench
+        # bye/others: nothing to do for the bench
+
+    def on_tick(self, p):
+        st = p.get("serverTime")
+        if st is None:
+            return
+        now_ms = time.time() * 1000.0
+        prev = self._last_tick_server_time
+        self._last_tick_server_time = st
+        if prev is not None and st > prev:
+            self.tick_gaps.append(st - prev)
+        self.tick_delays.append(now_ms - st)
 
     def on_update(self, p):
         now = time.time()
@@ -426,14 +517,20 @@ class Bench:
             key = self.key_for(sub, h)
             if key is None:
                 continue
+            if key.startswith("PIPE."):
+                self.pipe_series.setdefault(key, []).append((now, wire.get("v")))
+                continue
             self.changes += 1
+            if key[0] == "u" and now >= self.warmup_until \
+                    and not key.startswith(self.lat_exclude):
+                self.changes_ua_clean += 1   # conflation-ratio numerator (UA, never-killed)
             v = wire.get("v")
             q = wire.get("q", Q_GOOD)
             t = wire.get("t", batch_t)
             self.record(key, v, q, t, now)
         for h, q in (p.get("q") or {}).items():
             key = self.key_for(sub, h)
-            if key is not None:
+            if key is not None and not key.startswith("PIPE."):
                 self.record_quality(key, int(q), now)
 
     def record_quality(self, key, q, now):
@@ -458,18 +555,30 @@ class Bench:
         # Snapshot values carry the source stamp of whenever they last changed
         # (a boot-time constant is minutes old and honestly so) — only PUSHED
         # changes measure the pipe's latency.
-        if not snapshot and t is not None and q < BAD_FLOOR:
+        if not snapshot and t is not None and q < BAD_FLOOR \
+                and now >= self.warmup_until \
+                and not key.startswith(self.lat_exclude):
             lat = now * 1000.0 - t
-            (self.latency_ua if key.startswith("ua") else self.latency_mb).append(lat)
+            if key.startswith("ua"):
+                self.latency_ua.append(lat)
+                self.hist_ua[hist_bucket(lat)] += 1
+            else:
+                self.latency_mb.append(lat)
+                self.hist_mb[hist_bucket(lat)] += 1
+            if lat > st.worst_lat:
+                st.worst_lat = lat
         self.check_honesty(key, v, q)
 
     # ---- honesty: values must come from the generators' closed sets ----
 
     def check_honesty(self, key, v, q):
-        name, _, suffix = key.partition(".")
-        seed = (self.ua_info.get(name) or self.mb_info.get(name, {})).get("seed")
-        if seed is None:
+        name, _, node = key.partition(".")
+        base_seed = (self.ua_info.get(name) or self.mb_info.get(name, {})).get("seed")
+        if base_seed is None:
             return
+        # Replica keys (Int16_c3) derive their seed the same way the servers do.
+        suffix, r = UA.parse_replica(node)
+        seed = UA.replica_seed(base_seed, r)
         st = self.keys[key]
         bad = None
         if name.startswith("ua"):
@@ -526,6 +635,122 @@ def pct(sorted_vals, p):
 
 
 # --------------------------------------------------------------------------
+# Extra fan-out clients (the encode-once claim, measured)
+# --------------------------------------------------------------------------
+
+# An update frame starts '{"jsonrpc":"2.0","method":"u","params":{"sub":...,
+# "seq":N,...' (frame_encoder.dart builds it by concatenation, field order
+# fixed). A load client only needs (sub, seq) to ack honestly — full JSON
+# parsing of every frame in N clients would make the BENCH the bottleneck and
+# the fan-out measurement a lie.
+LOAD_SEQ_RE = re.compile(r'"method":"u","params":\{"sub":("[^"]+"|\d+),"seq":(\d+)')
+# The wire is BINARY frames (protocol rule: always Uint8List) — the same
+# pattern compiled for bytes, so no client decodes megabytes just to ack.
+LOAD_SEQ_RE_B = re.compile(LOAD_SEQ_RE.pattern.encode())
+
+
+class LoadClient:
+    """A deliberately cheap extra panel: hello, subscribe to everything, ack
+    heartbeats, count what arrives. It exists so the GATEWAY's marginal cost
+    per client can be measured — encode-once fan-out predicts the 20th panel
+    is nearly free; per-client encoding predicts linear CPU growth."""
+
+    def __init__(self, idx):
+        self.idx = idx
+        self.frames = 0
+        self.bytes = 0
+        self.ws = None
+        self.seq = {}
+        self._id = 0
+        self._pending = {}
+        self._task = None
+
+    async def _rpc(self, method, params):
+        self._id += 1
+        fut = asyncio.get_running_loop().create_future()
+        self._pending[self._id] = fut
+        await self.ws.send(json.dumps({"jsonrpc": "2.0", "id": self._id,
+                                       "method": method, "params": params}))
+        return await asyncio.wait_for(fut, 120)
+
+    def _on_frame(self, raw):
+        self.frames += 1
+        self.bytes += len(raw)
+        binary = isinstance(raw, (bytes, bytearray))
+        m = (LOAD_SEQ_RE_B if binary else LOAD_SEQ_RE).search(raw[:120])
+        if m:
+            sub = m.group(1)
+            if binary:
+                sub = sub.decode()
+            self.seq[sub.strip('"')] = int(m.group(2))
+            return
+        # Everything else is rare (responses, tick, resync, status) or small —
+        # full parse is affordable there. NOTE json_rpc_2 puts "result" BEFORE
+        # "id", so no prefix sniff for '"id"' can work; that mistake ate a
+        # hello response whole.
+        msg = json.loads(raw)
+        if "id" in msg and ("result" in msg or "error" in msg):
+            fut = self._pending.pop(msg["id"], None)
+            if fut and not fut.done():
+                if "error" in msg:
+                    fut.set_exception(RuntimeError(str(msg["error"])))
+                else:
+                    fut.set_result(msg.get("result"))
+
+    async def start(self, gw_port, all_keys, hb_ms):
+        self.ws = await websockets.connect(
+            f"ws://127.0.0.1:{gw_port}", max_size=64 * 1024 * 1024,
+            ping_interval=None)
+
+        errors = [0]
+
+        async def pump():
+            # A silenced parse error here once ate a hello response whole —
+            # the wire is binary frames and the first regex was str-only.
+            # Errors are NAMED (first few) and counted, never swallowed.
+            try:
+                async for raw in self.ws:
+                    try:
+                        self._on_frame(raw)
+                    except Exception as e:
+                        errors[0] += 1
+                        if errors[0] <= 3:
+                            print(f"LOAD CLIENT {self.idx} frame error: {e!r}")
+                    if self.frames % 50 == 0:
+                        await asyncio.sleep(0)   # let the heartbeat run
+            except Exception as e:
+                print(f"LOAD CLIENT {self.idx} pump ended: {e!r}")
+
+        self._task = asyncio.create_task(pump())
+        await self._rpc("hello", {"protocol": PROTOCOL, "supported": [PROTOCOL],
+                                  "client": {"name": f"load-client-{self.idx}",
+                                             "version": "1"}})
+        chunk = max(400, math.ceil(len(all_keys) / 32))  # session cap: 32 subs
+        for i in range(0, len(all_keys), chunk):
+            await self._rpc("subscribe", {"sub": f"lc{i//chunk}",
+                                          "keys": all_keys[i:i + chunk]})
+
+        async def heartbeat():
+            while True:
+                await asyncio.sleep(hb_ms / 3000.0)
+                try:
+                    await self._rpc("ping", {"ack": dict(self.seq)})
+                except Exception:
+                    return
+
+        self._hb = asyncio.create_task(heartbeat())
+
+    async def stop(self):
+        for t in (getattr(self, "_hb", None), self._task):
+            if t:
+                t.cancel()
+        try:
+            await self.ws.close()
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
 
@@ -562,8 +787,13 @@ async def amain(args):
     try:
         # ---- 1. fleet ----
         t0 = time.time()
+        n_ua_keys = len(UA.NODE_MATRIX) * args.replicate_ua
+        n_mb_keys = len(MB.MB_KEYS) * args.replicate_mb
         print(f"SPAWN: {args.ua} OPC UA + {args.mb} Modbus servers "
-              f"({args.kill} of each as separate kill-arm processes)")
+              f"({args.kill} of each as separate kill-arm processes); "
+              f"matrix x{args.replicate_ua} UA / x{args.replicate_mb} MB = "
+              f"{n_ua_keys} keys/UA server, {n_mb_keys} keys/MB server, "
+              f"{args.ua * n_ua_keys + args.mb * n_mb_keys} total")
         procs, kill_targets = spawn_fleet(args)
         started.extend(p.popen for p in procs)
         await asyncio.gather(*(read_until_ready(p, len(p.names)) for p in procs))
@@ -580,11 +810,28 @@ async def amain(args):
         print(f"SPAWN: fleet up in {time.time()-t0:.1f}s, "
               f"{len(ua_info)} ua + {len(mb_info)} mb, fleet RSS {fleet_rss/1e9:.2f} GB")
 
+        # Drain fleet stdout FOREVER (plain daemon threads — the shared
+        # executor would deadlock on 50 blocking readlines). Two reasons: a
+        # full pipe eventually BLOCKS a server mid-print, and the LAG lines
+        # ("sync tick took > budget") are the fleet's own confession that it
+        # could not offer its nominal rate — invisible until now.
+        import threading
+        lag_counts = {"ua": 0, "mb": 0}
+
+        def _drain_fleet(proc):
+            for line in proc.popen.stdout:
+                if line.startswith("LAG"):
+                    lag_counts[proc.kind] += 1
+
+        for p in procs:
+            threading.Thread(target=_drain_fleet, args=(p,), daemon=True).start()
+
         # ---- 2. generated artifacts ----
         keymap_path = os.path.join(GEN, "key-mappings.json")
         config_path = os.path.join(GEN, "gateway-config.json")
         page_path = os.path.join(GEN, "page_editor_data.json")
-        mappings = make_key_mappings(ua_info, mb_info)
+        mappings = make_key_mappings(ua_info, mb_info,
+                                     args.replicate_ua, args.replicate_mb)
         with open(keymap_path, "w") as f:
             json.dump(mappings, f, indent=1)
         with open(config_path, "w") as f:
@@ -605,6 +852,11 @@ async def amain(args):
 
         # ---- 4. subscribe ----
         bench = Bench(args, ua_info, mb_info)
+        bench.fleet_lag = lag_counts
+        # Kill-arm servers are decided at spawn: exclude their keys from the
+        # latency/conflation KPIs up front (they get the time-to-visible-bad
+        # KPI instead — see Bench.lat_exclude).
+        bench.lat_exclude = tuple(f"{name}." for _, name, _, _ in kill_targets)
         for k in all_keys:
             bench.keys[k] = KeyState()
         ws = await websockets.connect(f"ws://127.0.0.1:{gw_port}",
@@ -625,6 +877,16 @@ async def amain(args):
                         if bench.frame_errors <= 5:
                             print(f"FRAME ERROR ({e!r}) on: {raw[:300]}")
             finally:
+                code = getattr(ws, "close_code", None)
+                reason = getattr(ws, "close_reason", "") or ""
+                if code not in (None, 1000):
+                    # The gateway closed US — backpressure eviction (4004),
+                    # heartbeat reap (4003)... The design sheds a client
+                    # rather than queue for it; the bench's job is to say
+                    # WHEN that happened and window every KPI before it.
+                    bench.evicted_at = time.time()
+                    bench.evict_reason = f"{code} {reason}"
+                    print(f"CLIENT EVICTED by the gateway: close {code} {reason!r}")
                 print(f"RECV LOOP EXITED (frames Ok, errors={bench.frame_errors})")
 
         recv_task = asyncio.create_task(recv_loop())
@@ -632,8 +894,11 @@ async def amain(args):
         hello = await bench.rpc(ws, "hello", {
             "protocol": PROTOCOL, "supported": [PROTOCOL],
             "client": {"name": "load-bench", "version": "1"}})
-        hb_ms = (hello.get("capabilities") or {}).get("heartbeatDeadlineMs") or 6000
-        print(f"HELLO: server={hello.get('server')} heartbeatDeadlineMs={hb_ms}")
+        caps = hello.get("capabilities") or {}
+        hb_ms = caps.get("heartbeatDeadlineMs") or 6000
+        bench.tick_nominal_ms = caps.get("tickMs")
+        print(f"HELLO: server={hello.get('server')} heartbeatDeadlineMs={hb_ms} "
+              f"tickMs={bench.tick_nominal_ms}")
 
         # The gateway REAPS a session that sends nothing for heartbeatDeadlineMs
         # (close 4003) — protocol-level pongs do not count, only app frames.
@@ -652,7 +917,13 @@ async def amain(args):
         hb_task = asyncio.create_task(heartbeat())
 
         t0 = time.time()
-        chunk = 400
+        # The gateway holds AT MOST 32 subscriptions per session (measured:
+        # -32602 at the 33rd) — and the bench needs one spare for the PIPE
+        # diagnostics sub. 400 keys/sub until that would exceed 31 subs, then
+        # exactly ceil(keys/31): at 40k keys that is ~1300-key subscribes,
+        # which is itself informative — a real client wanting the whole plant
+        # has no smaller option.
+        chunk = max(400, math.ceil(len(all_keys) / 31))
         for i in range(0, len(all_keys), chunk):
             sub = f"bench{i//chunk}"
             keys = all_keys[i:i + chunk]
@@ -667,16 +938,52 @@ async def amain(args):
                                  wire.get("t"), now, snapshot=True)
             for key, rej in (res.get("rejected") or {}).items():
                 bench.rejected[key] = rej.get("kind")
-        print(f"SUBSCRIBE: {len(all_keys)} keys in {time.time()-t0:.1f}s, "
+        subscribe_s = time.time() - t0
+        print(f"SUBSCRIBE: {len(all_keys)} keys in {subscribe_s:.1f}s, "
               f"{len(bench.rejected)} rejected")
         if bench.rejected:
             sample = list(bench.rejected.items())[:10]
             print(f"  rejected sample: {sample}")
 
+        # The gateway's own diagnostics as value keys: event_loop_lag_ms is
+        # the tick engine's measured lateness — the leading indicator the
+        # curve exists to catch. Best effort: if the harness rejects them,
+        # say so and carry on measuring from the outside.
+        pipe_keys = ["PIPE.event_loop_lag_ms", "PIPE.effective_hz",
+                     "PIPE.pending_keys", "PIPE.egress_kbps"]
+        try:
+            res = await bench.rpc(ws, "subscribe", {"sub": "pipe", "keys": pipe_keys})
+            for key, h in res["handles"].items():
+                bench.handle_map[("pipe", int(h))] = key
+            pj = res.get("rejected") or {}
+            if pj:
+                print(f"PIPE keys rejected: {list(pj)}")
+        except Exception as e:
+            print(f"PIPE keys unavailable ({e!r}) — tick metrics still measured "
+                  f"from the wire")
+
+        # ---- 4b. extra fan-out clients (encode-once claim) ----
+        load_clients = []
+        if args.clients > 1:
+            t0 = time.time()
+            for i in range(args.clients - 1):
+                lc = LoadClient(i + 1)
+                await lc.start(gw_port, all_keys, hb_ms)
+                load_clients.append(lc)
+            print(f"LOAD CLIENTS: {args.clients - 1} extra panels subscribed to "
+                  f"all {len(all_keys)} keys in {time.time() - t0:.1f}s")
+
         # ---- 5. measure ----
+        bench.warmup_len = min(10.0, args.duration * 0.2)
+        bench.measure_start = time.time()
+        bench.warmup_until = bench.measure_start + bench.warmup_len
+        print(f"MEASURE: {args.duration:.0f}s, latency/conflation counted after "
+              f"a {bench.warmup_len:.0f}s warmup (initial reads carry honest "
+              f"old source stamps — they are not pipe lag)")
         gw_ps = psutil.Process(gateway.pid)
         fleet_ps = [psutil.Process(p.popen.pid) for p in procs]
-        for ps in fleet_ps + [gw_ps]:
+        me_ps = psutil.Process()      # the measuring client itself: if IT
+        for ps in fleet_ps + [gw_ps, me_ps]:   # saturates, latency numbers lie
             ps.cpu_percent(None)
         rss_series = []          # (t, gw_rss, fleet_rss)
         cpu_series = []
@@ -690,14 +997,20 @@ async def amain(args):
         next_report = 10.0
 
         def fleet_stats():
-            rss = cpu = 0
+            # (total rss, summed cpu%, HOTTEST single process cpu%). The
+            # hottest matters: asyncua is single-threaded per process, so one
+            # host pegged at 100% means the FLEET is the cap even while the
+            # summed figure looks comfortable.
+            rss = cpu = hot = 0
             for ps in fleet_ps:
                 try:
                     rss += ps.memory_info().rss
-                    cpu += ps.cpu_percent(None)
+                    c = ps.cpu_percent(None)
                 except psutil.Error:
-                    pass
-            return rss, cpu
+                    continue
+                cpu += c
+                hot = max(hot, c)
+            return rss, cpu, hot
 
         while (elapsed := time.time() - start) < args.duration:
             await asyncio.sleep(1.0)
@@ -741,42 +1054,68 @@ async def amain(args):
                 gw_cpu = gw_ps.cpu_percent(None)
             except psutil.Error:
                 raise RuntimeError("gateway process died mid-run; see " + gw_log)
-            f_rss, f_cpu = fleet_stats()
+            f_rss, f_cpu, f_hot = fleet_stats()
+            cl_cpu = me_ps.cpu_percent(None)
             rss_series.append((elapsed, gw_rss, f_rss))
-            cpu_series.append((elapsed, gw_cpu, f_cpu))
+            cpu_series.append((elapsed, gw_cpu, f_cpu, cl_cpu, f_hot))
             if elapsed >= next_report:
                 next_report += 10.0
                 rate = (bench.changes - last_changes) / 10.0
                 last_changes = bench.changes
                 lat = sorted(bench.latency_ua[-20000:])
+                tg = sorted(bench.tick_gaps[-600:])
                 print(f"t={elapsed:5.0f}s changes/s={rate:7.0f} "
                       f"updates={bench.updates} gaps={bench.seq_gaps} "
                       f"ua-lat p50={pct(lat,50):6.0f}ms p95={pct(lat,95):6.0f}ms "
+                      f"tick p95={pct(tg,95):5.0f}ms "
                       f"gwRSS={gw_rss/1e6:6.0f}MB gwCPU={gw_cpu:5.0f}% "
-                      f"fleetRSS={f_rss/1e9:5.2f}GB fleetCPU={f_cpu:5.0f}%")
+                      f"fleetRSS={f_rss/1e9:5.2f}GB fleetCPU={f_cpu:5.0f}% "
+                      f"clientCPU={cl_cpu:4.0f}%")
 
         # ---- 6. verdict ----
         print("\n" + "=" * 78)
         print("VERDICT")
         print("=" * 78)
-        report(bench, ua_info, mb_info, killed, restarted_at, rss_series,
-               cpu_series, args)
+        summary = report(bench, ua_info, mb_info, killed, restarted_at, rss_series,
+                         cpu_series, args, load_clients)
+        summary["subscribe_s"] = round(subscribe_s, 1)
         ok = verdict_ok(bench, all_keys)
+        summary["ok"] = ok
 
         hb_task.cancel()
+        for lc in load_clients:
+            await lc.stop()
         await ws.close()
         recv_task.cancel()
-        return 0 if ok else 1
+        return (0 if ok else 1), summary
     finally:
         cleanup()
 
 
-def report(bench, ua_info, mb_info, killed, restarted_at, rss_series, cpu_series, args):
+def pcts_of(vals):
+    """{p50, p95, p99, max, n} of an unsorted sample array."""
+    s = sorted(vals)
+    return {"p50": pct(s, 50), "p95": pct(s, 95), "p99": pct(s, 99),
+            "max": pct(s, 100), "n": len(s)}
+
+
+def report(bench, ua_info, mb_info, killed, restarted_at, rss_series, cpu_series,
+           args, load_clients=()):
+    summary = {
+        "label": f"{len(bench.keys)}k x{args.clients}c",
+        "total_keys": len(bench.keys),
+        "clients": args.clients,
+        "r_ua": args.replicate_ua, "r_mb": args.replicate_mb,
+        "ua_servers": args.ua, "mb_servers": args.mb,
+        "duration": args.duration,
+    }
     silent = [k for k, st in bench.keys.items() if st.count == 0
               and k not in bench.rejected]
     total = len(bench.keys)
     print(f"keys: {total} subscribed, {total - len(silent) - len(bench.rejected)} "
           f"delivered, {len(bench.rejected)} rejected, {len(silent)} SILENT")
+    summary["silent"] = len(silent)
+    summary["rejected"] = len(bench.rejected)
     if bench.rejected:
         kinds = {}
         for k, kind in bench.rejected.items():
@@ -794,15 +1133,101 @@ def report(bench, ua_info, mb_info, killed, restarted_at, rss_series, cpu_series
     print(f"\ntraffic: {bench.changes} value changes in {args.duration}s "
           f"({bench.changes/args.duration:.0f}/s), {bench.updates} update frames, "
           f"{bench.seq_gaps} seq gaps, {bench.resyncs} resyncs")
-    for label, lats in (("opcua (device-stamped)", bench.latency_ua),
-                        ("modbus (gateway-stamped — Modbus HAS no device "
-                         "timestamp; ts_source is the read instant, and that "
-                         "is the honest claim)", bench.latency_mb)):
-        s = sorted(lats)
-        print(f"latency {label}: n={len(s)} p50={pct(s,50):.0f}ms "
-              f"p95={pct(s,95):.0f}ms p99={pct(s,99):.0f}ms max={pct(s,100):.0f}ms")
+    summary["changes"] = bench.changes
+    summary["changes_per_s"] = bench.changes / args.duration
+    summary["seq_gaps"] = bench.seq_gaps
+    summary["resyncs"] = bench.resyncs
 
-    # memory over time: first vs last quarter slope
+    # ---- KPI: conflation ratio (offered vs deliverable vs delivered) ----
+    # Computed over OPC UA keys on never-killed servers only: their offered
+    # rate is a pure function of the config (deterministic generators), so
+    # the ratio needs no instrumentation on the far side. Modbus is excluded
+    # from this KPI on purpose — its delivery clock is the gateway's own 1 Hz
+    # poll (which re-emits unchanged values, finding 5), so delivered/offered
+    # there measures the poller, not conflation.
+    #
+    # Two denominators, because two different things get called "loss":
+    #   offered      = source changes/s (Fast counts at fast_hz)
+    #   deliverable  = after LEGITIMATE conflation: a 20 Hz key through a
+    #                  100 ms tick delivers at most 1000/tickMs changes/s of
+    #                  latest-value — by design, not a deficiency.
+    # delivered/deliverable < ~0.95 means the pipe is FALLING BEHIND —
+    # shedding whole ticks — which is the cliff this bench exists to find.
+    killed_ua = sum(1 for p in bench.lat_exclude if p.startswith("ua"))
+    clean_ua = args.ua - killed_ua
+    tick_ms = bench.tick_nominal_ms or 100
+    sync_rate = len(UA.SYNC_NODES) * args.hz
+    fast_deliverable = min(args.fast_hz, 1000.0 / tick_ms)
+    offered_ua = clean_ua * args.replicate_ua * (sync_rate + args.fast_hz)
+    deliverable_ua = clean_ua * args.replicate_ua * (sync_rate + fast_deliverable)
+    end_wall = bench.evicted_at or (bench.measure_start + args.duration)
+    measured_s = max(1e-9, end_wall - (bench.measure_start + bench.warmup_len))
+    delivered_ua = bench.changes_ua_clean / measured_s
+    conf = delivered_ua / deliverable_ua if deliverable_ua else float("nan")
+    if bench.evicted_at:
+        evict_t = bench.evicted_at - bench.measure_start
+        print(f"\nCLIENT EVICTED at t={evict_t:.0f}s ({bench.evict_reason}) — "
+              f"the gateway sheds a client it cannot serve rather than queue "
+              f"for it. Every KPI below covers ONLY the {measured_s:.0f}s "
+              f"before the eviction.")
+        summary["evicted_at_s"] = round(evict_t, 1)
+        summary["evict_reason"] = bench.evict_reason
+    print(f"\nconflation (OPC UA, {clean_ua} never-killed servers x "
+          f"{args.replicate_ua} copies, {measured_s:.0f}s measured):")
+    print(f"  offered at source:            {offered_ua:8.0f} changes/s")
+    print(f"  deliverable after conflation: {deliverable_ua:8.0f} changes/s "
+          f"(Fast {args.fast_hz:.0f} Hz -> {fast_deliverable:.0f}/s per key at "
+          f"tick {tick_ms} ms — by design; model has ~10% headroom error: the "
+          f"fleet's sleep-after-work loops undershoot their Hz)")
+    print(f"  actually delivered:           {delivered_ua:8.0f} changes/s "
+          f"= {conf*100:.1f}% of deliverable "
+          f"{'(KEEPING UP)' if conf >= 0.80 else '<-- FALLING BEHIND: shedding, not conflating'}")
+    summary["offered_ua"] = offered_ua
+    summary["deliverable_ua"] = deliverable_ua
+    summary["delivered_ua"] = delivered_ua
+    summary["conflation_pct"] = conf * 100
+
+    # ---- KPI: end-to-end latency histograms ----
+    for label, lats, hist, tag in (
+            ("opcua (device-stamped)", bench.latency_ua, bench.hist_ua, "ua"),
+            ("modbus (gateway-stamped — Modbus HAS no device timestamp; "
+             "ts_source is the read instant, and that is the honest claim)",
+             bench.latency_mb, bench.hist_mb, "mb")):
+        p = pcts_of(lats)
+        print(f"\nlatency {label}: n={p['n']} p50={p['p50']:.0f}ms "
+              f"p95={p['p95']:.0f}ms p99={p['p99']:.0f}ms max={p['max']:.0f}ms")
+        print_hist(hist)
+        summary[f"lat_{tag}"] = p
+        summary[f"hist_{tag}"] = list(hist)
+    worst = sorted(((st.worst_lat, k) for k, st in bench.keys.items()
+                    if st.worst_lat > 0), reverse=True)[:8]
+    if worst and worst[0][0] > HIST_EDGES_MS[-3]:   # tail worth naming: >500 ms
+        print("  worst single-key latencies (the tail, named):")
+        for lat, k in worst:
+            print(f"    {lat:8.0f} ms  {k}")
+
+    # ---- KPI: gateway tick (the leading indicator) ----
+    # serverTime gap between consecutive tick notifications = the gateway's
+    # own cadence. If per-tick work (conflate + encode-once over every
+    # changed key) outgrows the period, this stretches BEFORE latency does.
+    tg = pcts_of(bench.tick_gaps)
+    td = pcts_of(bench.tick_delays)
+    print(f"\ngateway tick: nominal {bench.tick_nominal_ms} ms; measured gap "
+          f"p50={tg['p50']:.0f} p95={tg['p95']:.0f} p99={tg['p99']:.0f} "
+          f"max={tg['max']:.0f} ms (n={tg['n']})")
+    print(f"  tick delivery delay (serverTime -> client arrival, same host): "
+          f"p50={td['p50']:.0f} p95={td['p95']:.0f} p99={td['p99']:.0f} "
+          f"max={td['max']:.0f} ms")
+    summary["tick_gap"] = tg
+    summary["tick_delay"] = td
+    summary["tick_nominal_ms"] = bench.tick_nominal_ms
+    for pk, series in sorted(bench.pipe_series.items()):
+        vals = [v for _, v in series if isinstance(v, (int, float))]
+        if vals:
+            print(f"  {pk}: last={vals[-1]} max={max(vals)} mean={statistics.mean(vals):.1f}")
+            summary.setdefault("pipe", {})[pk] = {"max": max(vals), "last": vals[-1]}
+
+    # ---- memory over time: first vs last quarter slope ----
     if len(rss_series) > 8:
         q = len(rss_series) // 4
         gw_first = statistics.mean(r[1] for r in rss_series[:q])
@@ -811,10 +1236,66 @@ def report(bench, ua_info, mb_info, killed, restarted_at, rss_series, cpu_series
         print(f"\ngateway RSS: {rss_series[0][1]/1e6:.0f} -> {rss_series[-1][1]/1e6:.0f} MB "
               f"(quartile means {gw_first/1e6:.0f} -> {gw_last/1e6:.0f}; "
               f"slope ≈ {(gw_last-gw_first)/1e6/max(span_h,1e-9)*0.75:.0f} MB/h)")
+        gw_cpu_mean = statistics.mean(c[1] for c in cpu_series)
+        gw_cpu_max = max(c[1] for c in cpu_series)
+        fleet_cpu_mean = statistics.mean(c[2] for c in cpu_series)
+        client_cpu_mean = statistics.mean(c[3] for c in cpu_series)
+        fleet_hot_mean = statistics.mean(c[4] for c in cpu_series)
+        fleet_hot_max = max(c[4] for c in cpu_series)
+        ncores = psutil.cpu_count() or 1
         print(f"fleet RSS end: {rss_series[-1][2]/1e9:.2f} GB; "
-              f"gateway CPU mean {statistics.mean(c[1] for c in cpu_series):.0f}% "
-              f"(of one core), fleet CPU mean "
-              f"{statistics.mean(c[2] for c in cpu_series):.0f}%")
+              f"gateway CPU mean {gw_cpu_mean:.0f}% max {gw_cpu_max:.0f}% "
+              f"(of one core), fleet CPU mean {fleet_cpu_mean:.0f}% "
+              f"(hottest single process mean {fleet_hot_mean:.0f}% max "
+              f"{fleet_hot_max:.0f}% — asyncua is single-threaded, so ~100% "
+              f"here means the FLEET is the cap), "
+              f"bench client CPU mean {client_cpu_mean:.0f}% "
+              f"({ncores} cores on this machine)")
+        if fleet_hot_mean > 85:
+            print("  MEASUREMENT SUSPECT: a fleet process ran near a full "
+                  "core — the source may not have offered its nominal rate")
+            summary["fleet_suspect"] = True
+        lag = getattr(bench, "fleet_lag", None)
+        if lag is not None:
+            print(f"  fleet LAG ticks (a source loop missed its Hz budget): "
+                  f"ua={lag['ua']} mb={lag['mb']}"
+                  + ("  <-- the fleet under-offered; conflation % reads low "
+                     "for the fleet's fault, not the pipe's"
+                     if lag["ua"] + lag["mb"] > 10 else ""))
+            summary["fleet_lag_ua"] = lag["ua"]
+            summary["fleet_lag_mb"] = lag["mb"]
+        summary["fleet_cpu_hottest_mean"] = fleet_hot_mean
+        summary["fleet_cpu_hottest_max"] = fleet_hot_max
+        # Honesty: if fleet + gateway + client want more cores than exist,
+        # every number above was measured on a contended machine.
+        want = (gw_cpu_mean + fleet_cpu_mean + client_cpu_mean) / 100.0
+        if want > ncores * 0.75:
+            print(f"  MEASUREMENT SUSPECT: processes wanted ~{want:.1f} cores of "
+                  f"{ncores} — the fleet was competing with the gateway; treat "
+                  f"latency at this size as an upper bound, not a measurement")
+            summary["contended"] = True
+        if client_cpu_mean > 80:
+            print("  MEASUREMENT SUSPECT: the measuring client itself neared a "
+                  "full core; arrival timestamps may lag the wire")
+            summary["client_suspect"] = True
+        summary["gw_cpu_mean"] = gw_cpu_mean
+        summary["gw_cpu_max"] = gw_cpu_max
+        summary["fleet_cpu_mean"] = fleet_cpu_mean
+        summary["client_cpu_mean"] = client_cpu_mean
+        summary["gw_rss_start_mb"] = rss_series[0][1] / 1e6
+        summary["gw_rss_end_mb"] = rss_series[-1][1] / 1e6
+        summary["gw_rss_slope_mb_h"] = (gw_last - gw_first) / 1e6 / max(span_h, 1e-9) * 0.75
+        summary["fleet_rss_end_gb"] = rss_series[-1][2] / 1e9
+
+    if load_clients:
+        rates = [lc.frames / args.duration for lc in load_clients]
+        mbps = sum(lc.bytes for lc in load_clients) / args.duration / 1e6
+        print(f"\nfan-out clients: {len(load_clients)} extra panels, "
+              f"{statistics.mean(rates):.0f} frames/s each (min {min(rates):.0f}), "
+              f"{mbps:.1f} MB/s total egress to them")
+        summary["load_client_frames_s"] = statistics.mean(rates)
+        summary["load_client_min_frames_s"] = min(rates)
+        summary["load_egress_mb_s"] = mbps
 
     # hazard node
     hz = bench.hazard_seen
@@ -875,17 +1356,43 @@ def report(bench, ua_info, mb_info, killed, restarted_at, rss_series, cpu_series
     print(f"Dead-at-source final qualities: {dead_qs} "
           f"(the rig scar: initial read is 0.0 GOOD; does it stay that way?)")
 
-    # kill arm
+    # ---- KPI: time-to-visible-bad (the product's core claim, measured) ----
+    # SIGKILL wall time -> the first moment the CLIENT could tell each key had
+    # gone bad. One number per killed key, reported as a distribution: "fresh
+    # or visibly stale" is only true if the TAIL of this distribution is
+    # short, not just its median.
     if killed:
         print("\nkill/restart arm:")
+        all_det = []
+        all_rec = []
+        undetected = 0
+        already_bad = 0
+
+        def q_at(st, t):
+            q = Q_GOOD
+            for ts, qq in st.qual_events:
+                if ts > t:
+                    break
+                q = qq
+            return q
+
         for name, t_kill in killed.items():
             keys = [k for k in bench.keys if k.startswith(name + ".")]
             det = []
             for k in keys:
                 st = bench.keys[k]
+                if q_at(st, t_kill) >= BAD_FLOOR:
+                    # Already visibly bad BEFORE the kill (Dead at 516, Guid
+                    # at 771, Illegal...) — freshness cannot lie about a key
+                    # it already marked bad, so it is not in this KPI.
+                    already_bad += 1
+                    continue
                 ev = [t for t, q in st.qual_events if q >= BAD_FLOOR and t >= t_kill]
                 if ev:
                     det.append(min(ev) - t_kill)
+                else:
+                    undetected += 1
+            all_det.extend(det)
             if det:
                 print(f"  {name}: killed; {len(det)}/{len(keys)} keys went bad, "
                       f"first {min(det):.1f}s median {statistics.median(det):.1f}s "
@@ -901,12 +1408,26 @@ def report(bench, ua_info, mb_info, killed, restarted_at, rss_series, cpu_series
                           if q < BAD_FLOOR and t >= restarted_at]
                     if ev:
                         rec.append(min(ev) - restarted_at)
+                all_rec.extend(rec)
                 if rec:
                     print(f"      recovered {len(rec)}/{len(keys)} keys, first "
                           f"{min(rec):.1f}s median {statistics.median(rec):.1f}s "
                           f"after restart")
                 else:
                     print(f"      NOT RECOVERED after restart <-- check reconnect")
+        if all_det:
+            p = pcts_of([d * 1000 for d in all_det])
+            print(f"  time-to-visible-bad across ALL {len(all_det)} killed keys "
+                  f"that were good at kill time: "
+                  f"p50={p['p50']:.0f}ms p95={p['p95']:.0f}ms p99={p['p99']:.0f}ms "
+                  f"max={p['max']:.0f}ms "
+                  f"({already_bad} already visibly bad before the kill)"
+                  + (f"  ({undetected} good keys NEVER went visibly bad "
+                     f"<-- FRESHNESS LIED)" if undetected else ""))
+            summary["ttvb"] = p
+            summary["ttvb_undetected"] = undetected
+        if all_rec:
+            summary["recovery"] = pcts_of([r * 1000 for r in all_rec])
 
     if bench.violations:
         print(f"\nDETERMINISM VIOLATIONS ({len(bench.violations)}, first 20):")
@@ -919,6 +1440,8 @@ def report(bench, ua_info, mb_info, killed, restarted_at, rss_series, cpu_series
         print(f"\nstatus notifications: {len(bench.status_events)} "
               f"(link up/down announcements reached the client)")
 
+    return summary
+
 
 def verdict_ok(bench, all_keys):
     silent = [k for k, st in bench.keys.items()
@@ -926,9 +1449,101 @@ def verdict_ok(bench, all_keys):
     # Illegal keys are EXPECTED to be bad — but bad is an arrival, not silence.
     hard_silent = [k for k in silent]
     ok = not hard_silent and bench.hazard_seen["raw_nonfinite"] == 0
-    print("\nRESULT: " + ("PASS (no silent keys, sanitizer held)" if ok
-                          else "FAIL — see above"))
+    verdict = "PASS (no silent keys, sanitizer held)" if ok else "FAIL — see above"
+    if bench.evicted_at:
+        verdict += (" — but DEGRADED: the gateway evicted the client "
+                    f"({bench.evict_reason}); KPIs cover the pre-eviction window")
+    print("\nRESULT: " + verdict)
     return ok
+
+
+def replicates_for(keys_per_server: int) -> tuple[int, int]:
+    """--keys-per-server K -> whole matrix copies. UA matrix is 28 keys, MB is
+    19, so a server carries round(K/28) resp. round(K/19) copies — the ACTUAL
+    per-server key count is the nearest whole-matrix multiple, printed at
+    spawn. Copies, never padding: the matrix is the bench's value."""
+    return (max(1, round(keys_per_server / len(UA.NODE_MATRIX))),
+            max(1, round(keys_per_server / len(MB.MB_KEYS))))
+
+
+def print_comparison(results):
+    """Every KPI side by side per configuration — one table a human reads
+    against itself, not five separate sections."""
+    if len(results) < 2:
+        return
+    labels = [f"{r['total_keys']}keys/{r['clients']}cl" for r in results]
+    w = max(14, max(len(l) for l in labels) + 2)
+
+    def row(name, fmt, get):
+        cells = []
+        for r in results:
+            try:
+                v = get(r)
+                cells.append(("-" if v is None else fmt.format(v)).rjust(w))
+            except (KeyError, TypeError):
+                cells.append("-".rjust(w))
+        print(f"{name:<34}" + "".join(cells))
+
+    print("\n" + "=" * 78)
+    print("CURVE COMPARISON (KEYS is the x-axis; server count and rates fixed)")
+    print("=" * 78)
+    print(f"{'':<34}" + "".join(l.rjust(w) for l in labels))
+    row("total keys", "{:.0f}", lambda r: r["total_keys"])
+    row("ws clients", "{:.0f}", lambda r: r["clients"])
+    row("monitored items/UA server", "{:.0f}", lambda r: r["r_ua"] * len(UA.NODE_MATRIX))
+    row("delivered changes/s", "{:.0f}", lambda r: r["changes_per_s"])
+    row("conflation: delivered/deliverable", "{:.1f}%", lambda r: r["conflation_pct"])
+    row("UA latency p50 ms", "{:.0f}", lambda r: r["lat_ua"]["p50"])
+    row("UA latency p95 ms", "{:.0f}", lambda r: r["lat_ua"]["p95"])
+    row("UA latency p99 ms", "{:.0f}", lambda r: r["lat_ua"]["p99"])
+    row("UA latency max ms", "{:.0f}", lambda r: r["lat_ua"]["max"])
+    row("tick gap p50 ms", "{:.0f}", lambda r: r["tick_gap"]["p50"])
+    row("tick gap p95 ms", "{:.0f}", lambda r: r["tick_gap"]["p95"])
+    row("tick gap max ms", "{:.0f}", lambda r: r["tick_gap"]["max"])
+    row("event_loop_lag max ms", "{:.0f}",
+        lambda r: r.get("pipe", {}).get("PIPE.event_loop_lag_ms", {}).get("max"))
+    row("time-to-visible-bad p50 ms", "{:.0f}", lambda r: r["ttvb"]["p50"])
+    row("time-to-visible-bad p95 ms", "{:.0f}", lambda r: r["ttvb"]["p95"])
+    row("time-to-visible-bad max ms", "{:.0f}", lambda r: r["ttvb"]["max"])
+    row("gateway CPU mean %", "{:.0f}", lambda r: r["gw_cpu_mean"])
+    row("gateway CPU max %", "{:.0f}", lambda r: r["gw_cpu_max"])
+    row("gateway RSS end MB", "{:.0f}", lambda r: r["gw_rss_end_mb"])
+    row("fleet CPU mean %", "{:.0f}", lambda r: r["fleet_cpu_mean"])
+    row("fleet hottest proc mean %", "{:.0f}", lambda r: r["fleet_cpu_hottest_mean"])
+    row("fleet RSS end GB", "{:.2f}", lambda r: r["fleet_rss_end_gb"])
+    row("bench client CPU mean %", "{:.0f}", lambda r: r["client_cpu_mean"])
+    row("subscribe time s", "{:.1f}", lambda r: r["subscribe_s"])
+    row("silent keys", "{:.0f}", lambda r: r["silent"])
+    row("seq gaps", "{:.0f}", lambda r: r["seq_gaps"])
+    row("evicted (backpressure)?", "{}",
+        lambda r: f"at {r['evicted_at_s']:.0f}s" if "evicted_at_s" in r else "no")
+    row("contended machine?", "{}", lambda r: "YES" if r.get("contended") else "no")
+
+    print("\nUA latency histograms side by side (% of samples per bucket):")
+    print(f"{'bucket ms':>12}" + "".join(l.rjust(w) for l in labels))
+    for i, label in enumerate(hist_labels()):
+        cells = []
+        for r in results:
+            h = r.get("hist_ua") or []
+            tot = sum(h) or 1
+            c = h[i] if i < len(h) else 0
+            cells.append((f"{c/tot*100:6.2f}% ({c})").rjust(w))
+        print(f"{label:>12}" + "".join(cells))
+    print(f"{'n':>12}" + "".join(
+        str(sum(r.get("hist_ua") or [0])).rjust(w) for r in results))
+
+
+def parse_curve(spec: str):
+    """'2500,10000x1,10000x5' -> [(2500,1),(10000,1),(10000,5)]."""
+    out = []
+    for part in spec.split(","):
+        part = part.strip()
+        if "x" in part:
+            keys, clients = part.split("x")
+            out.append((int(keys), int(clients)))
+        else:
+            out.append((int(part), 1))
+    return out
 
 
 def main():
@@ -948,8 +1563,46 @@ def main():
     ap.add_argument("--word-order", choices=["abcd", "cdab"], default="abcd")
     ap.add_argument("--dart", default=None, help="dart executable "
                     "(default: ~/flutter-sdks/3.44.9/bin/dart, else PATH)")
+    ap.add_argument("--keys-per-server", type=int, default=None,
+                    help="approximate keys per server; realised as whole matrix "
+                         "copies (see README). Default: one matrix copy "
+                         f"({len(UA.NODE_MATRIX)} UA / {len(MB.MB_KEYS)} MB keys)")
+    ap.add_argument("--clients", type=int, default=1,
+                    help="total concurrent WebSocket clients (1 measuring + "
+                         "N-1 subscribe-everything panels; encode-once fan-out "
+                         "probe)")
+    ap.add_argument("--curve", default=None,
+                    help="comma list of TOTAL key counts, each optionally "
+                         "xCLIENTS (e.g. '2500,10000,40000,10000x5,10000x20'): "
+                         "runs each config against a FRESH fleet+gateway, then "
+                         "prints every KPI side by side")
     args = ap.parse_args()
-    rc = asyncio.run(amain(args))
+
+    if args.curve:
+        results = []
+        rc = 0
+        for total_keys, clients in parse_curve(args.curve):
+            per_server = max(1, round(total_keys / (args.ua + args.mb)))
+            args.replicate_ua, args.replicate_mb = replicates_for(per_server)
+            args.clients = clients
+            actual = args.ua * args.replicate_ua * len(UA.NODE_MATRIX) + \
+                args.mb * args.replicate_mb * len(MB.MB_KEYS)
+            print("\n" + "#" * 78)
+            print(f"# CURVE POINT: ~{total_keys} keys requested -> {actual} actual "
+                  f"({args.replicate_ua}x UA / {args.replicate_mb}x MB matrix "
+                  f"copies), {clients} client(s)")
+            print("#" * 78)
+            point_rc, summary = asyncio.run(amain(args))
+            rc = rc or point_rc
+            results.append(summary)
+        print_comparison(results)
+        sys.exit(rc)
+
+    if args.keys_per_server:
+        args.replicate_ua, args.replicate_mb = replicates_for(args.keys_per_server)
+    else:
+        args.replicate_ua = args.replicate_mb = 1
+    rc, _ = asyncio.run(amain(args))
     sys.exit(rc)
 
 

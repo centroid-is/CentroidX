@@ -17,6 +17,65 @@ python3 -m venv .venv && .venv/bin/pip install asyncua "pymodbus==3.12.1" websoc
 Smaller while iterating: `.venv/bin/python bench.py --ua 5 --mb 5 --duration 30`.
 Self-tests (the bench must not lie): `.venv/bin/python -m unittest test_bench -v`.
 
+## Scaling KEY COUNT (`--keys-per-server`) and the curve
+
+The first run was wide and shallow — 200 servers x ~23 keys. Real PLCs carry
+far more keys each, and the parts of the pipe that can hit a cliff scale with
+KEYS, not servers: conflation is per-key-per-tick, the JSON encode is
+per-frame over all changed keys, and encode-once fan-out serialises
+everything before any client gets anything.
+
+`--keys-per-server K` scales by REPLICATING the type matrix — never by
+padding with identical doubles, because the matrix is the reason the bench
+has value at every size. `K` maps onto whole matrix copies:
+
+    UA copies = round(K / 28)   (28 nodes per matrix copy)
+    MB copies = round(K / 19)   (19 keys per copy)
+
+so the realised per-server key count is the nearest whole-matrix multiple
+(printed at spawn). Copy `r >= 1` suffixes every name `_c{r}` and derives its
+seed as `seed + 7919*r` — every copy stays deterministic and distinct, and
+the honesty checks derive the same seed on the client side. Modbus copies
+live at register strides (+512 holding / +8 input / +16 bits per copy); each
+copy's Illegal key stays beyond the datastore up to 117 copies, asserted.
+
+`--curve "2500,10000,40000,10000x5,10000x20"` runs each config (TOTAL keys,
+optionally xCLIENTS) against a FRESH fleet + gateway, then prints every KPI
+side by side: latency histograms, conflation ratio, time-to-visible-bad,
+tick durations, CPU/RSS of gateway AND fleet. Hold `--ua/--mb/--hz/--fast-hz`
+fixed so keys (or clients) is the only variable.
+
+`--clients N` keeps one measuring client and adds N-1 cheap
+subscribe-everything panels (ack honestly, count frames) — the encode-once
+fan-out probe: per-client encoding would show as roughly linear gateway CPU
+growth per added panel; encode-once predicts the 20th panel is nearly free.
+
+## The KPIs a run reports (and why these)
+
+- **Latency histogram** (log-ish buckets ≤5 … >5000 ms): latency under load
+  spans decades; linear buckets blur the healthy region or amputate the
+  tail, and the tail is the finding. Worst single keys are NAMED.
+- **Conflation ratio** (OPC UA, never-killed servers only): offered at
+  source vs deliverable-after-legitimate-conflation (a 20 Hz key through a
+  100 ms tick delivers ≤10/s by design) vs actually delivered.
+  delivered/deliverable < ~95 % = the pipe is FALLING BEHIND — shedding
+  ticks, not conflating. Modbus is excluded: its delivery clock is the
+  gateway's own 1 Hz poll, so the ratio there would measure the poller.
+- **Gateway tick**: serverTime gaps between consecutive `tick` notifications
+  = the gateway's own cadence; if per-tick work outgrows the period this
+  stretches BEFORE latency does (the leading indicator). Plus the gateway's
+  own `PIPE.event_loop_lag_ms` / `effective_hz` when subscribable.
+- **Time-to-visible-bad**: SIGKILL -> the client can SEE each key is bad,
+  as a distribution over every killed key (p50/p95/p99/max), not a single
+  figure — "fresh or visibly stale" is the product's core claim and it is
+  only true if the TAIL is short.
+- **Honesty flags**: fleet CPU beside gateway CPU (if they compete for
+  cores, the run says MEASUREMENT SUSPECT rather than quoting numbers
+  straight), and the measuring client's own CPU (a saturated bench client
+  lies about arrival times). Kill-arm servers are excluded from latency and
+  conflation KPIs — a reconnecting link re-emits initial reads with honest
+  OLD stamps (measured once as a fake 160 s "latency").
+
 The gateway is run from `packages/tfc_relay_local` with the pinned SDK
 (`~/flutter-sdks/3.44.9/bin/dart`, override with `--dart`). That package must
 resolve (`dart pub get` + the native-assets cache — see the worktree setup

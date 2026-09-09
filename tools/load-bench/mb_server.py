@@ -79,9 +79,38 @@ MB_KEYS = {
     "Illegal":   ("illegal-address",   "holdingRegister", 60000, "uint16", None, None, None),
 }
 
-HR_SIZE = 400          # holding registers 0..399, so 60000 is genuinely illegal
-IR_SIZE = 100
-BIT_SIZE = 16
+# --------------------------------------------------------------------------
+# Matrix replication (same scheme as ua_server: whole copies, never padding).
+# Replica r's registers live at base + r*BLOCK_*; its Illegal address is
+# 60000 + r, which stays beyond the datastore as long as
+# BLOCK_HR * replicate <= 60000 (replicate <= 117, asserted).
+# --------------------------------------------------------------------------
+
+from ua_server import replica_seed, replica_node_name, parse_replica  # stdlib-only import
+
+BLOCK_HR = 512
+BLOCK_IR = 8
+BLOCK_BIT = 16
+MAX_REPLICATE = 60000 // BLOCK_HR    # 117: keeps every replica's Illegal illegal
+
+
+def replica_address(register_type: str, address: int, r: int) -> int:
+    if address == 60000:                      # Illegal: distinct, all beyond store
+        return 60000 + r
+    return address + r * {"holdingRegister": BLOCK_HR, "inputRegister": BLOCK_IR,
+                          "coil": BLOCK_BIT, "discreteInput": BLOCK_BIT}[register_type]
+
+
+def replicated_keys(replicate: int) -> dict:
+    """Full key dict for `replicate` matrix copies: name (suffixed for r>=1)
+    -> (category, register_type, replica_address, data_type, mask, shift, gen)."""
+    assert replicate <= MAX_REPLICATE, f"replicate {replicate} > {MAX_REPLICATE}"
+    out = {}
+    for r in range(replicate):
+        for key, (cat, rtype, addr, dtype, mask, shift, gen) in MB_KEYS.items():
+            out[replica_node_name(key, r)] = (
+                cat, rtype, replica_address(rtype, addr, r), dtype, mask, shift, gen)
+    return out
 
 
 def encode_words(value, kind: str, word_order: str) -> list[int]:
@@ -111,17 +140,21 @@ def free_port() -> int:
     return port
 
 
-def build_context(seed: int, word_order: str):
+def build_context(seed: int, word_order: str, replicate: int = 1):
     from pymodbus.datastore import (ModbusDeviceContext,
                                     ModbusSequentialDataBlock,
                                     ModbusServerContext)
-    hr = [0] * HR_SIZE
-    hr[16] = gen_dead(seed)
+    hr = [0] * (BLOCK_HR * replicate)
+    co = [0] * (BLOCK_BIT * replicate)
     packed = STRING_LATIN1.encode("latin-1")
     if len(packed) % 2:
         packed += b"\x00"
-    for i in range(0, len(packed), 2):
-        hr[300 + i // 2] = int.from_bytes(packed[i:i + 2], "big")
+    for r in range(replicate):
+        base = r * BLOCK_HR
+        hr[base + 16] = gen_dead(replica_seed(seed, r))
+        for i in range(0, len(packed), 2):
+            hr[base + 300 + i // 2] = int.from_bytes(packed[i:i + 2], "big")
+        co[r * BLOCK_BIT + 1] = 1                       # CoilConst=1 per replica
     # MEASURED off-by-one (pymodbus 3.12.1): wire address n reads the block's
     # init-list index n+1 — the legacy zero_mode=False skew. setValues and the
     # server's reads share the skew, so ticked values line up either way; only
@@ -130,28 +163,31 @@ def build_context(seed: int, word_order: str):
     # address high.
     device = ModbusDeviceContext(
         hr=ModbusSequentialDataBlock(0, [0] + hr),
-        ir=ModbusSequentialDataBlock(0, [0] + [0] * IR_SIZE),
-        co=ModbusSequentialDataBlock(0, [0] + [0, 1] + [0] * (BIT_SIZE - 2)),  # CoilConst=1
-        di=ModbusSequentialDataBlock(0, [0] + [0] * BIT_SIZE),
+        ir=ModbusSequentialDataBlock(0, [0] + [0] * (BLOCK_IR * replicate)),
+        co=ModbusSequentialDataBlock(0, [0] + co),
+        di=ModbusSequentialDataBlock(0, [0] + [0] * (BLOCK_BIT * replicate)),
     )
     return ModbusServerContext(devices=device, single=True), device
 
 
-def tick_sync(device, seed: int, tick: int, word_order: str):
+def tick_sync(device, seed: int, tick: int, word_order: str, replicate: int = 1):
     """One base tick. setValues(fc, addr, values): fc 3 holding, 4 input,
     1 coils, 2 discrete."""
-    device.setValues(3, 0, encode_words(gen_huint16(seed, tick), "uint16", word_order))
-    device.setValues(3, 1, encode_words(gen_hint16(seed, tick), "int16", word_order))
-    device.setValues(3, 2, encode_words(gen_hint32(seed, tick), "int32", word_order))
-    device.setValues(3, 4, encode_words(gen_huint32(seed, tick), "uint32", word_order))
-    device.setValues(3, 6, encode_words(gen_hfloat32(seed, tick), "float32", word_order))
-    device.setValues(3, 8, encode_words(gen_hfloat64(seed, tick), "float64", word_order))
-    device.setValues(3, 12, [gen_packed(seed, tick)])
-    device.setValues(3, 13, [gen_scaled(seed, tick)])
-    device.setValues(3, 14, [gen_counter16(seed, tick)])
-    device.setValues(4, 0, [gen_iuint16(seed, tick)])
-    device.setValues(1, 0, [1 if gen_coil0(seed, tick) else 0])
-    device.setValues(2, 0, [1 if gen_disc0(seed, tick) else 0])
+    for r in range(replicate):
+        s = replica_seed(seed, r)
+        h = r * BLOCK_HR
+        device.setValues(3, h + 0, encode_words(gen_huint16(s, tick), "uint16", word_order))
+        device.setValues(3, h + 1, encode_words(gen_hint16(s, tick), "int16", word_order))
+        device.setValues(3, h + 2, encode_words(gen_hint32(s, tick), "int32", word_order))
+        device.setValues(3, h + 4, encode_words(gen_huint32(s, tick), "uint32", word_order))
+        device.setValues(3, h + 6, encode_words(gen_hfloat32(s, tick), "float32", word_order))
+        device.setValues(3, h + 8, encode_words(gen_hfloat64(s, tick), "float64", word_order))
+        device.setValues(3, h + 12, [gen_packed(s, tick)])
+        device.setValues(3, h + 13, [gen_scaled(s, tick)])
+        device.setValues(3, h + 14, [gen_counter16(s, tick)])
+        device.setValues(4, r * BLOCK_IR + 0, [gen_iuint16(s, tick)])
+        device.setValues(1, r * BLOCK_BIT + 0, [1 if gen_coil0(s, tick) else 0])
+        device.setValues(2, r * BLOCK_BIT + 0, [1 if gen_disc0(s, tick) else 0])
 
 
 async def main() -> int:
@@ -168,9 +204,14 @@ async def main() -> int:
                          "endianness); cdab exists to prove the difference shows.")
     ap.add_argument("--port", type=int, default=None,
                     help="fixed port (restart arm only; requires --count 1)")
+    ap.add_argument("--replicate", type=int, default=1,
+                    help="matrix copies per server (replica r suffixes _c{r}, "
+                         "registers at +r*block strides; max %d)" % MAX_REPLICATE)
     args = ap.parse_args()
     if args.port is not None and args.count != 1:
         ap.error("--port requires --count 1")
+    if not (1 <= args.replicate <= MAX_REPLICATE):
+        ap.error(f"--replicate must be in 1..{MAX_REPLICATE}")
 
     from pymodbus.server import ModbusTcpServer
 
@@ -179,7 +220,7 @@ async def main() -> int:
         n = args.offset + i
         name = f"{args.prefix}{n:02d}"
         seed = args.seed + n
-        context, device = build_context(seed, args.word_order)
+        context, device = build_context(seed, args.word_order, args.replicate)
         last_err = None
         for _ in range(3):   # free-port draw race: redraw, never a literal
             port = args.port if args.port is not None else free_port()
@@ -219,7 +260,7 @@ async def main() -> int:
             t0 = loop.time()
             tick += 1
             for name, seed, server, device, task in servers:
-                tick_sync(device, seed, tick, args.word_order)
+                tick_sync(device, seed, tick, args.word_order, args.replicate)
             elapsed = loop.time() - t0
             if elapsed > 1.0 / args.hz:
                 print(f"LAG sync tick took {elapsed:.3f}s", flush=True)
@@ -231,7 +272,9 @@ async def main() -> int:
             t0 = loop.time()
             fast_tick += 1
             for name, seed, server, device, task in servers:
-                device.setValues(3, 15, [gen_fast(seed, fast_tick)])
+                for r in range(args.replicate):
+                    device.setValues(3, r * BLOCK_HR + 15,
+                                     [gen_fast(replica_seed(seed, r), fast_tick)])
             await asyncio.sleep(max(0.0, 1.0 / args.fast_hz - (loop.time() - t0)))
 
     loops = [asyncio.create_task(sync_loop()), asyncio.create_task(fast_loop())]
