@@ -40,6 +40,7 @@ import 'package:tfc_access/tfc_access.dart'
     show AccessGroup, AccessPolicy, AccessSession, AuthenticatedUser;
 import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/access/drift_audit_sink.dart';
+import 'package:tfc_dart/core/access/local_auth_provider.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
@@ -508,6 +509,23 @@ void main() {
               'group set — D-06 fail-closed');
     });
 
+    test('a token file composition wires the sign-in verifier — increment B: '
+        'the decorator wraps at start() and a person can sign in over the '
+        'socket', () async {
+      final user = await _seedStation('ST101-panel', 'Shift Leader');
+      final composed = compose(
+        stateman: _relaySection(
+            source: 'token_file', tokenFile: _tokenFile(user, 'ST101')),
+      );
+      expect(composed.server.loginVerifier, isA<LocalAuthProvider>(),
+          reason: 'session.login verifies through the SAME AuthProvider seam '
+              'the panel used in direct mode, over the backend\'s own '
+              'AccessRepository — one master access system, no second '
+              'verification path. Without this the gateway refuses every '
+              'sign-in by name and the ruling\'s increment B never reaches '
+              'the plant');
+    });
+
     test('the per-identity template and admin families are built by the '
         'factory, as the real backend classes', () {
       final composed = compose(
@@ -637,6 +655,12 @@ void main() {
       expect(composed.server.accounts, isNull,
           reason: 'a `none` credential source names no accounts to resolve; a '
               'resolver here would be answering a question nobody asked');
+      expect(composed.server.loginVerifier, isNull,
+          reason: 'and no sign-in verifier either: with no account cache the '
+              'login handler could resolve nothing, and RelayServer.start '
+              'gates the credential-less-admission wrap on the verifier — '
+              'null here is what keeps a `none` gateway\'s hello surface '
+              'byte-identical to what it was');
       // The audit sink is real whether or not credentials are configured: the
       // trail is not a function of who authenticated.
       expect(composed.server.audit, isA<DriftAuditSink>());

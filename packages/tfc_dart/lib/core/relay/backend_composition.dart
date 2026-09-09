@@ -48,13 +48,20 @@ library;
 
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart'
-    show AccessGroup, AccessPolicy, AccessRole, AuditSink, AuthenticatedUser;
+    show
+        AccessGroup,
+        AccessPolicy,
+        AccessRole,
+        AuditSink,
+        AuthProvider,
+        AuthenticatedUser;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
     show AccessAdminApi, AccessTemplateApi, BackendConfigApi;
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 
 import '../access/access_repository.dart';
 import '../access/drift_audit_sink.dart';
+import '../access/local_auth_provider.dart';
 import '../database.dart';
 import '../pipe_main_endpoint.dart';
 import '../preferences.dart';
@@ -520,6 +527,24 @@ BackendRelayComposition composeBackendRelay({
           : null;
   final UserResolver? accounts = accountCache?.resolve;
 
+  // Increment B of the 2026-09-08 no-station-file ruling: the seam
+  // `session.login` verifies through, filled with the SAME
+  // `LocalAuthProvider` over the SAME `AccessRepository` the panel used in
+  // direct mode. One master access system — the wire adds no second
+  // verification path, and `no_second_policy_test.dart` stays green because
+  // this is authentication (who), not authorization (what). Built exactly
+  // when there are accounts to resolve against: a `none` or `validator`
+  // deployment names no usernames, and a verifier with nothing behind it
+  // would be answering a question nobody asked — the same condition
+  // [accountCache] is gated on, so the two are null together, and
+  // `RelayServer.start` gates the credential-less-admission wrap on this
+  // being non-null. The Argon2id derivation it runs is heavy (measured: a
+  // `createUser` blew an 8 s budget under load), which is exactly why it
+  // lives on the post-hello login path and not in `validate`.
+  final AuthProvider? loginVerifier = accountCache == null
+      ? null
+      : LocalAuthProvider(AccessRepository(database.db), logger: logger);
+
   // The per-identity template, admin and config families (D-11): built once
   // per verified station at `hello`, never at compose time — a family
   // constructed here with an invented session would write rows naming somebody
@@ -635,6 +660,7 @@ BackendRelayComposition composeBackendRelay({
       audit: auditSink,
       accounts: accounts,
       accessFor: scopeFactory,
+      loginVerifier: loginVerifier,
       onError: onError,
     );
   } else {
@@ -648,6 +674,10 @@ BackendRelayComposition composeBackendRelay({
       audit: auditSink,
       accounts: accounts,
       accessFor: scopeFactory,
+      // Refused above unless `config.suppliesOwnValidator`, which is the
+      // `validator` credential source — a deployment that names its own
+      // check has no `token_file` accounts, so this is null here anyway.
+      loginVerifier: loginVerifier,
       onError: onError,
     );
   }
