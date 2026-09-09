@@ -273,6 +273,29 @@ void main() {
       });
     }
 
+    // The ABSTRACT namespace-0 types, which are what a real server reports for
+    // a node whose DataType attribute was never set — `BaseDataType` is
+    // open62541's own default, and `Number`/`Integer`/`Enumeration` are legal
+    // on a live address space. They are named types, so a table that switched
+    // on the enum without thinking about them would try to encode one, and the
+    // binding's `nodeIdToPayloadType(...)!` would throw a bare null-check from
+    // inside the FFI layer. Each falls back like an unknown type.
+    for (final abstractType in <ua.Namespace0Id>[
+      ua.Namespace0Id.basedataType,
+      ua.Namespace0Id.number,
+      ua.Namespace0Id.integer,
+      ua.Namespace0Id.uinteger,
+      ua.Namespace0Id.enumeration,
+    ]) {
+      test('${abstractType.name} is abstract, so the runtime type decides', () {
+        final tag = ua.NodeId.fromNumeric(0, abstractType.value);
+        expect(ready(1.5, targetType: tag).typeId, ua.NodeId.double);
+        expect(ready(7, targetType: tag).typeId, fallbackIntegerType);
+        expect(refused(5000000000, targetType: tag).code,
+            writeValueOutOfRangeCode);
+      });
+    }
+
     test('a namespace-0 type this table does not shape takes the same road',
         () {
       // Guid is a real namespace-0 scalar the binding's `_payloadTypes` cannot
