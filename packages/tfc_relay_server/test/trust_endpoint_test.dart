@@ -59,11 +59,23 @@ Future<({RelayServer server, String rootPem, String rootPath})> _gateway(
     keyPem: leafKeyPem(),
     rootPem: ca.certPem,
   );
+  // A CONSECUTIVE PAIR, not port 0. The trust listener binds `wss port + 1`
+  // by design — the client has only the URL the operator typed to derive it
+  // from — so an ephemeral main port makes the neighbour a lottery: the OS
+  // hands out `p`, something unrelated already owns `p + 1`, and the bind dies
+  // with "Address already in use" in a run that has nothing to do with trust.
+  // That is not flakiness to be retried away; it is what asking for a port you
+  // did not reserve means. So reserve both, then release them and hand the
+  // base to the gateway. The race that remains (something grabs one in the
+  // microseconds between release and bind) is the same one every
+  // reserve-then-bind faces and is vastly narrower than gambling on p + 1.
+  final base = await _freeConsecutivePair();
   final server = RelayServer(
     resolver: const PermissiveSeriesResolver(),
     api: FakeStateMan(),
     config: ServerConfig(
       tick: ServerConfig.minTick,
+      port: base,
       tls: TlsConfig(chainPath: fixture.chainPath, keyPath: fixture.keyPath),
       trust: TrustConfig(caPath: fixture.rootPath!),
     ),
@@ -72,6 +84,31 @@ Future<({RelayServer server, String rootPem, String rootPath})> _gateway(
   addTearDown(server.close);
   await server.start();
   return (server: server, rootPem: ca.certPem, rootPath: fixture.rootPath!);
+}
+
+/// A port `p` where both `p` and `p + 1` are free, for the `+1` convention.
+///
+/// Binds `p` ephemerally, then explicitly binds `p + 1` to prove the
+/// neighbour is actually available rather than assuming it, and releases
+/// both. Retries because the second bind legitimately fails when the OS
+/// happens to hand out a port whose neighbour is taken.
+Future<int> _freeConsecutivePair() async {
+  for (var attempt = 0; attempt < 40; attempt++) {
+    final first = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    ServerSocket? second;
+    try {
+      second = await ServerSocket.bind(
+          InternetAddress.loopbackIPv4, first.port + 1);
+    } on SocketException {
+      await first.close();
+      continue;
+    }
+    final port = first.port;
+    await first.close();
+    await second.close();
+    return port;
+  }
+  throw StateError('no consecutive free port pair after 40 attempts');
 }
 
 /// One plain-HTTP GET, returning status and body.

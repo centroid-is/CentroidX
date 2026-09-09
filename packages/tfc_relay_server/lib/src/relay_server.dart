@@ -57,7 +57,6 @@ import 'session_sink.dart';
 import 'tick_engine.dart';
 import 'tls/trust.dart';
 import 'token_validator.dart';
-import 'write_outcome_log.dart';
 import 'ws_channel.dart';
 
 /// Writes one already-encoded frame to [socket].

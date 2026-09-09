@@ -152,7 +152,7 @@ void main() {
     // that has gone missing altogether, which is the *other* way this deletion
     // could have been wrong and the one that breaks every reconnection in the
     // plant. Naming both surviving keys makes the arm fail in both directions.
-    final session = ((raw as Map)['session'] as Map).cast<String, Object?>();
+    final session = (raw['session'] as Map).cast<String, Object?>();
     expect(session.keys, unorderedEquals(<String>['id', 'epoch']),
         reason: 'the hello response emitted ${session.keys.toList()}. `id` and '
             '`epoch` are load-bearing — the client feeds `epoch` straight into '

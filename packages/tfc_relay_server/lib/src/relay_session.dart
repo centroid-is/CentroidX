@@ -55,7 +55,6 @@ import 'session_handlers.dart';
 import 'subscription_registry.dart';
 import 'token_validator.dart';
 import 'value_handlers.dart';
-import 'write_outcome_log.dart';
 
 /// The moment the last inbound frame arrived, updated by a tap on the read
 /// side.
