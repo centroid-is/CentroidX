@@ -333,6 +333,16 @@ final class RelaySession {
   /// sources here would mint sessions the next sweep tick retires.
   UserResolver? _loginAccounts;
 
+  /// The anonymous identity this session was admitted as, or null when it was
+  /// admitted with a station credential.
+  ///
+  /// `session.logout` returns to **this object** rather than minting a fresh
+  /// one, so a sign-out cannot change what the panel may do. Its group set is
+  /// the master system's answer at the instant the session began, which is
+  /// the same lifetime a station session's grants have (`key_policy.dart`:
+  /// policy is static per session, and only a close moves it).
+  StationIdentity? _anonymous;
+
   /// This session's health overlay, or null on a session built by hand.
   ///
   /// Held so [_ping] can touch its deadline. Assigned in the cascade above
@@ -980,12 +990,12 @@ final class RelaySession {
       String method, Future<Object?> Function(rpc.Parameters) handler) {
     _registered.add(method);
     peer.registerMethod(method, (rpc.Parameters params) async {
-      // The awaiting-sign-in condition rides beside the handshake gate for
-      // the same reason it rides inside `_gated`: a session nobody signed in
-      // on has no hold to feed either, and a refusal with no id to answer is
-      // dropped-and-counted the same way a pre-hello one is.
-      if (_gate.checkRequest(method) is! GateAllow ||
-          _identity == SessionLoginValidator.awaitingSignIn) {
+      // Only the handshake gate now. The anonymous condition that used to
+      // ride beside it is gone with the rest of the third state: a session
+      // nobody has signed in on is a graded identity like any other, and the
+      // notifications this guards — hold ticks — are refused or accepted by
+      // the policy inside the handler, exactly as they are for a station.
+      if (_gate.checkRequest(method) is! GateAllow) {
         _ungatedNotifications++;
         if (!_complainedUngated) {
           _complainedUngated = true;
@@ -1159,12 +1169,15 @@ final class RelaySession {
       // is what makes the drop free.
       notify: (method, params) {
         if (_closed || peer.isClosed || _sessionId == null) return;
-        // The awaiting-sign-in session is helloed, so the `_sessionId` guard
-        // above no longer covers it — and the disclosure argument is the
-        // same: preference keys are the gateway's configuration vocabulary,
-        // and nobody has signed in on this socket. Dropped, not queued, for
-        // the reason the pre-hello drop gives.
-        if (_identity == SessionLoginValidator.awaitingSignIn) return;
+        // No anonymous drop here any more, and that is a consequence of the
+        // grading rather than a relaxation decided on its own. The drop
+        // existed because an unauthenticated session could not read a
+        // preference at all, so telling it a key had changed disclosed a
+        // vocabulary it had no other way to see. An anonymous session may now
+        // read those keys — the policy says so, on both transports — and
+        // withholding the notification would leave a panel holding a stale
+        // `key_mappings` with no way to learn it, which is the reload path
+        // `stateManProvider` depends on.
         peer.sendNotification(method, params);
       },
     );
@@ -1395,7 +1408,6 @@ final class RelaySession {
     final action = _gate.checkRequest(method);
     switch (action) {
       case GateAllow():
-        _refuseWhileAwaitingSignIn(method);
         return await work();
       case GateReject(:final kind):
         throw rpc.RpcException(
@@ -1424,51 +1436,6 @@ final class RelaySession {
         // because that is what makes the switch total.
         return await work();
     }
-  }
-
-  /// Refuses [method] while this session's identity is the awaiting-sign-in
-  /// sentinel — the second stage of the gate, and the fail-closed half of
-  /// the credential-less admission `SessionLoginValidator` makes.
-  ///
-  /// **Why the empty group set is not enough on its own.** The sentinel's
-  /// session holds no groups, so every write question already answers no —
-  /// but reads are deliberately ungated on this wire (`key_policy.dart`,
-  /// §11's deferral: `canSee` filters, there is no read gate), so a session
-  /// graded only by its groups could still subscribe to every tag, read
-  /// every preference and walk the browse tree while nobody has signed in.
-  /// "Nobody yet" is an *authentication* state, and it is answered here, at
-  /// the same single choke point the handshake gate uses — before params
-  /// are decoded, ahead of every handler, covering a method added next year
-  /// by construction. It grades no key and names no group, which is what
-  /// keeps it the credential mechanism's business rather than a second
-  /// policy (`no_second_policy_test.dart`'s constitution).
-  ///
-  /// `hello` is exempt because the first hello runs while `_identity` is
-  /// still null (and a second one is the gate's `already_helloed` refusal
-  /// before this is ever consulted); `ping` is exempt because a panel
-  /// sitting at the sign-in screen is waiting, not broken, and reaping it
-  /// for silence would darken every idle station. `session.login` and
-  /// `session.logout` are exempt because they are the two methods the
-  /// awaiting state exists FOR: the login is how it ends, and the logout is
-  /// idempotent on nobody so a panel that cannot know whether a reconnect
-  /// already reset the far end may always send it.
-  ///
-  /// The refusal is `unauthorized` with a stable `awaiting_sign_in` marker:
-  /// what a panel does with it is show the sign-in screen, not an error.
-  void _refuseWhileAwaitingSignIn(String method) {
-    if (method == Methods.hello ||
-        method == Methods.ping ||
-        method == Methods.sessionLogin ||
-        method == Methods.sessionLogout) {
-      return;
-    }
-    if (_identity != SessionLoginValidator.awaitingSignIn) return;
-    throw rpc.RpcException(
-        ServerErrorCodes.unauthorized,
-        '$method refused: awaiting_sign_in — nobody has signed in on this '
-        'session, and a session nobody signed in on may do nothing but '
-        'wait. Sign in first',
-        data: _substitute(method));
   }
 
   /// Answers [method], with every failure turned into an encodable error.
@@ -1574,7 +1541,12 @@ final class RelaySession {
   /// it — `session_login_ws_test.dart` drives a distinctive secret through
   /// every refusal path and sweeps.
   Future<Object?> _sessionLogin(rpc.Parameters params) async {
-    if (_identity != SessionLoginValidator.awaitingSignIn) {
+    // `isAnonymous`, not a comparison against a sentinel object: the anonymous
+    // identity now carries a group set read from the database, so there is no
+    // single instance left to compare with — and the question being asked is
+    // the master system's own ("is anybody signed in on this session"), which
+    // is the one `AccessSession.isElevated` answers for the app bar too.
+    if (!(_identity?.isAnonymous ?? false)) {
       throw _notSignInable();
     }
     final verifier = _loginVerifier;
@@ -1615,7 +1587,7 @@ final class RelaySession {
     // field: two logins racing through a slow verifier both pass the guard
     // at the top in one turn, and the assignment happens in another. The
     // loser costs itself a refusal, never the session.
-    if (_identity != SessionLoginValidator.awaitingSignIn) {
+    if (!(_identity?.isAnonymous ?? false)) {
       throw _notSignInable();
     }
 
@@ -1728,7 +1700,7 @@ final class RelaySession {
   /// ticks — the feed's whole safety property is that it STOPS.
   Future<Object?> _sessionLogout(rpc.Parameters params) async {
     final current = _identity;
-    if (current == null || current == SessionLoginValidator.awaitingSignIn) {
+    if (current == null || current.isAnonymous) {
       // Already nobody. No row: there is nobody to attribute one to.
       return null;
     }
@@ -1749,9 +1721,17 @@ final class RelaySession {
       actionId: newActionId(),
       origin: 'relay',
     ));
-    _identity = SessionLoginValidator.awaitingSignIn;
+    // Back to the identity this session was admitted as, and NOT a freshly
+    // minted one: the group set is the master system's answer at the moment a
+    // session begins (`key_policy.dart`, policy is static per session), so a
+    // sign-out that re-read the row would let a logout widen — or narrow —
+    // what the panel may do without a reconnect. `_anonymous` is non-null on
+    // exactly the sessions that can reach this line, because a station
+    // credential is refused above and a login is only reachable from
+    // anonymous.
+    _identity = _anonymous;
     _credentialDigest = null;
-    _scoped = null;
+    _scoped = _accessFor?.call(_anonymous!);
     subscriptions.clear();
     return null;
   }
@@ -1858,15 +1838,20 @@ final class RelaySession {
           // the identity could replace the families the audit rows attribute
           // to.
           //
-          // Never for the awaiting-sign-in sentinel: the factory builds
-          // stores whose audit rows attribute to the identity it was called
-          // with, and nobody is not an identity a row may name (D-11). The
-          // gate holds every access method away from an awaiting session
-          // anyway; leaving `_scoped` null keeps the shared source's
-          // refuse-by-name behind it, fail closed twice over.
-          _scoped = identity == SessionLoginValidator.awaitingSignIn
-              ? null
-              : _accessFor?.call(identity);
+          // Built for the anonymous identity too, which is the reversal D-11
+          // asked for on the old reading: "nobody is not an identity a row may
+          // name" was true of the sentinel, whose `who` was a self-naming
+          // string that meant nothing to the trail. It is not true of
+          // anonymous, whose `who` is `anonymous` — the exact string every
+          // direct-mode guard already writes for a not-signed-in action. So an
+          // anonymous action over the socket lands in the same trail, spelled
+          // the same way, as the same action at a panel; leaving `_scoped`
+          // null would instead refuse the access family by name, which is the
+          // method-shaped refusal outside the policy that this change removes.
+          _scoped = _accessFor?.call(identity);
+          // Remembered so `session.logout` can return to it. See there for why
+          // it is this object rather than a fresh mint.
+          if (identity.isAnonymous) _anonymous = identity;
       }
     }
 
@@ -1916,12 +1901,12 @@ final class RelaySession {
             // The verified account's username, so the panel's attribution
             // prose can name the account instead of a machine id (the rig
             // rendered a bare container id). Advisory display material —
-            // see `HelloCapabilities.account` — and OMITTED for the
-            // awaiting-sign-in sentinel: nobody is not an account, and
-            // printing the sentinel's self-naming string as one would be
-            // the lie its names exist to prevent. `_identity` is non-null
-            // here by the credential-first ordering above.
-            if (_identity != SessionLoginValidator.awaitingSignIn)
+            // see `HelloCapabilities.account` — and OMITTED while nobody is
+            // signed in: anonymous is not an account, and a panel that
+            // printed `anonymous` in its attribution prose would be naming a
+            // user nobody authenticated as. `_identity` is non-null here by
+            // the credential-first ordering above.
+            if (!_identity!.isAnonymous)
               HelloCapabilities.account: _identity!.user.username,
           },
           sessionId: id,

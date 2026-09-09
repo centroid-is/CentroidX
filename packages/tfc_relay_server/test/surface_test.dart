@@ -101,9 +101,10 @@ const Set<String> expectedHandlerTable = {
   'ping',
   // Increment B of the 2026-09-08 no-station-file ruling: interactive
   // sign-in over the socket, and its way back down. The forty-fifth and
-  // forty-sixth names, and — with hello and ping — two of the only four the
-  // awaiting-sign-in gate exempts (`awaiting_sign_in_test.dart` pins the
-  // exemption list as a partition, both directions). The password crosses
+  // forty-sixth names. They used to be two of only four a credential-less
+  // session could reach; that exemption list is gone with the blanket gate
+  // it belonged to, and what an anonymous session may reach is now the
+  // policy's answer (`anonymous_session_test.dart`). The password crosses
   // inside these frames only; `session_login_ws_test.dart` sweeps every
   // refusal path and every audit row for it.
   'session.login',

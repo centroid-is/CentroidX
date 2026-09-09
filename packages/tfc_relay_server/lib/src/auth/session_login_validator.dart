@@ -4,24 +4,40 @@
 /// concluded that it is not required."*
 ///
 /// **What it admits is deliberately nobody.** A hello presenting no
-/// credential at all is accepted — that is the one new thing — and the
-/// identity it is accepted *as* is [awaitingSignIn]: a self-naming sentinel
-/// with the **empty group set** and no credential digest. Empty groups alone
-/// are not the fail-closed story on this wire (reads are deliberately
-/// ungated, §11's deferral), so `relay_session.dart` holds a session carrying
-/// this identity to `hello` and `ping` alone until a sign-in replaces it.
-/// The sign-in itself — a person's `app_user` username and password, verified
-/// server-side through the same seam `LocalAuthProvider` already implements —
-/// is a later increment; until it lands, an awaiting session is a sign-in
-/// screen with a live socket and nothing else.
+/// credential at all is accepted, and the identity it is accepted *as* is the
+/// **anonymous** one — [StationIdentity.anonymous], carrying whatever
+/// [anonymous] answers and no credential digest. That is the same identity a
+/// not-signed-in panel holds in direct mode, and from here on it is graded by
+/// the same `AccessPolicy`, on the same surfaces, with the same refusals.
+///
+/// **This used to be a third state, and deleting that is the change.** The
+/// identity was a `const` sentinel holding nothing, and because holding
+/// nothing is not fail-closed on a wire whose reads are deliberately ungated
+/// (§11's deferral), `relay_session.dart` bolted a blanket method-level gate
+/// on top: everything refused but `hello`, `ping` and the two session-auth
+/// names. It worked, and it cost two things. It made "what may a panel do
+/// with nobody signed in" a question with two different answers depending on
+/// the transport, one of which the master system could not see. And it closed
+/// a ring: a panel reads `key_mappings` **in order to build** the client it
+/// would have to sign in through, so it could not boot — measured on the rig
+/// on 2026-09-09, where a credential-less session was admitted, could reach
+/// `session.login`, and was refused the one preference it needed to get
+/// there.
+///
+/// The gate is gone. What refuses an anonymous session now is the policy, and
+/// only the policy: `key_mappings` still takes `configure` to write and it
+/// still says so by name. What an anonymous session may *read* is what a
+/// walk-up panel may read, which on both transports is everything — that was
+/// already true and is `_PolicyPreferences`' documented rule, not a widening
+/// made here.
 ///
 /// **Why admitting-with-nothing is not the D-06 refusal.** D-06 refuses to
 /// admit an *unknown account* with an empty set, because in the trail that is
 /// indistinguishable from an account whose role deliberately grants nothing.
-/// Here no account was named at all: the emptiness is the designed,
-/// self-describing state of "nobody yet", and the sentinel's names say so
-/// everywhere they can be printed. The two states cannot be confused because
-/// only one of them has a username that is anyone's.
+/// Here no account was named at all, and the identity says so: its `who` is
+/// `anonymous`, the same string every direct-mode guard writes for the same
+/// state. The two cannot be confused because only one of them has a username
+/// that is anyone's.
 ///
 /// **The migration posture is a decorator.** While a deployment still has a
 /// token file, [stations] wraps its `FileTokenValidator` and every hello that
@@ -31,11 +47,11 @@
 /// refused with a message naming sign-in as the replacement. That is D-06's
 /// own migration manner: refuse and name the replacement, never translate.
 ///
-/// **What the sweep does with nobody.** [stillValid] answers true for the
-/// sentinel, always: a panel sitting at the sign-in screen holds nothing a
-/// sweep could revoke, and the sweep visits every live session on every poll
-/// tick. Everything else stays fail-closed — an identity this validator
-/// cannot account for is not honoured.
+/// **What the sweep does with nobody.** [stillValid] answers true for an
+/// anonymous identity, always: there is no credential and no account row
+/// behind it, so there is nothing to revoke, and the sweep visits every live
+/// session on every poll tick. Everything else stays fail-closed — an identity
+/// this validator cannot account for is not honoured.
 ///
 /// Like `file_token_validator.dart`, every string literal in this file is
 /// written around the seven `AccessGroup` names and the two seed role names:
@@ -53,18 +69,9 @@ import '../token_validator.dart';
 import 'file_token_validator.dart';
 import 'identity.dart';
 
-/// The role name the awaiting-sign-in sentinel carries.
-///
-/// Names itself, for [kPermissiveRoleName]'s reason: it lands in
-/// `AccessSession.roleName`, in `StationIdentity.toString`, and in any audit
-/// row a misrouted caller ever attributes to it. "Awaiting sign-in" reads as
-/// the state it is; a neutral name would read as a role somebody created.
-/// Deliberately **not** a row in `app_role` and deliberately never resolved:
-/// nobody is not an account.
-const String kAwaitingSignInRoleName = 'Awaiting sign-in (nobody)';
-
-/// Admits a credential-less hello as [awaitingSignIn]; delegates a presented
-/// station credential to the wrapped file validator while one exists.
+/// Admits a credential-less hello as the anonymous identity; delegates a
+/// presented station credential to the wrapped file validator while one
+/// exists.
 final class SessionLoginValidator implements RevocableTokenValidator {
   /// [stations] is the deployment's `FileTokenValidator`, while it still has
   /// one — the migration posture. Null is the end state: no file, and a
@@ -82,7 +89,19 @@ final class SessionLoginValidator implements RevocableTokenValidator {
   /// third provenance [stillValid] accounts for. Null in a deployment that
   /// serves no interactive sign-in, and then a login-minted identity is
   /// never honoured — fail closed, since nothing could have minted one.
-  SessionLoginValidator({this.stations, this.accounts});
+  /// [anonymous] answers what a session with nobody signed in may do, and it
+  /// is the ONLY thing this class knows about permissions — it is a function
+  /// it calls, never a set it can spell. Direct mode's source is the
+  /// `Operator` row (`AccessRepository.anonymousGroups`); the backend
+  /// composition is what points this at the same one.
+  ///
+  /// **Null is fail-closed and is the default.** A gateway that has wired no
+  /// source admits a credential-less hello as an identity holding nothing, so
+  /// every write question the policy asks about it answers no. That is a
+  /// deliberate default rather than a missing feature: the alternative — a
+  /// built-in set — would be this file grading, which is the one thing it may
+  /// never do.
+  SessionLoginValidator({this.stations, this.accounts, this.anonymous});
 
   /// The wrapped file validator, or null once the deployment has crossed
   /// over. Public because `RelayServer.reloadTokensIfChanged` needs the
@@ -93,35 +112,34 @@ final class SessionLoginValidator implements RevocableTokenValidator {
   /// tick, or null when this gateway serves no sign-in. See the constructor.
   final UserResolver? accounts;
 
-  /// The station string of the sentinel. Self-naming: it reaches close
-  /// reasons and logs, and must never read as a station somebody configured.
-  static const String station = 'no-station-awaiting-sign-in';
+  /// What a session with nobody signed in holds. See the constructor.
+  final Set<AccessGroup> Function()? anonymous;
 
-  static const AuthenticatedUser _nobody = AuthenticatedUser(
-    username: 'nobody-awaiting-sign-in',
-    roleName: kAwaitingSignInRoleName,
-    // A panel rather than a person, the same honest labelling
-    // `PermissiveTokenValidator` argues for: the socket belongs to a wall
-    // screen, and nothing about being nobody gives it an inactivity window.
-    stationAccount: true,
-  );
+  /// The identity a credential-less hello is admitted as, built fresh so the
+  /// group set is whatever the source says **now**.
+  ///
+  /// Built per call rather than cached: the source reads a row an operator can
+  /// edit while the gateway runs, and a cached identity would keep admitting
+  /// panels on the grants that row held at boot. Direct mode has the same
+  /// property by construction — it reads the row at the moment it builds the
+  /// session — and `AccessSession.anonymous` asks callers to do exactly that.
+  StationIdentity anonymousIdentity() => StationIdentity.anonymous(
+        groups: anonymous?.call() ?? const {},
+        station: station,
+      );
 
-  /// Who a session is until somebody signs in: nobody, holding nothing.
+  /// The station string an anonymous session speaks for. Self-naming: it
+  /// reaches close reasons, logs and audit rows, and must never read as a
+  /// station somebody configured.
   ///
-  /// The `AccessSession` names [_nobody] as its user rather than leaving the
-  /// user null, and that is load-bearing: a null-user `AccessSession` answers
-  /// `roleName` with the direct-mode anonymous role — the one that means "an
-  /// unattended panel may do what that role grants". A relay session nobody
-  /// signed in on means the opposite, and must never print as that role.
-  ///
-  /// The group set is empty and const: there is structurally nothing here
-  /// that could grant, which is `StationIdentity`'s own argument about
-  /// credentials applied to permissions.
-  static const StationIdentity awaitingSignIn = StationIdentity(
-    user: _nobody,
-    station: station,
-    session: AccessSession(user: _nobody, groups: {}),
-  );
+  /// There is nothing better available. A station label is what a credential
+  /// carries, and this session presented none — the hello's `client` PeerInfo
+  /// is the panel's own claim about itself and grading or attributing on a
+  /// self-declared name is exactly what the credential mechanism exists to
+  /// prevent. So an anonymous action's trail row names the state rather than a
+  /// machine, and tracing it back to a panel is the socket's business, not the
+  /// trail's.
+  static const String station = 'no-station-signed-in';
 
   @override
   Future<TokenVerdict> validate(HelloParams params) async {
@@ -130,7 +148,12 @@ final class SessionLoginValidator implements RevocableTokenValidator {
       // The admission this class exists for. No digest: no credential was
       // presented, and a digest here would be a claim about a secret that
       // does not exist.
-      return const TokenAccepted(awaitingSignIn);
+      //
+      // Not `const` any more, and that is the change: the identity carries a
+      // group set read from the database at this instant, so what an
+      // unauthenticated panel may do is the master system's live answer
+      // rather than a compile-time one.
+      return TokenAccepted(anonymousIdentity());
     }
     final delegate = stations;
     if (delegate == null) {
@@ -159,10 +182,19 @@ final class SessionLoginValidator implements RevocableTokenValidator {
 
   @override
   bool stillValid(StationIdentity identity, Uint8List? credentialDigest) {
-    if (identity == awaitingSignIn) {
-      // Nobody holds nothing; there is nothing to revoke. Closing the
+    if (identity.isAnonymous) {
+      // Nobody signed in; there is no credential and no account row behind
+      // this session, so there is nothing a sweep could revoke. Closing the
       // sign-in screen once per poll tick would make the gateway unusable
       // before anyone could sign in.
+      //
+      // **What this does NOT do is re-resolve the group set.** An operator
+      // who unticks a group on the `Operator` row changes what the NEXT
+      // anonymous hello holds, not what a live one does — `key_policy.dart`
+      // records policy as static per session, and the only thing that moves
+      // a live session is a close. That is the same posture a station
+      // session has, and it is stated here rather than discovered: a site
+      // narrowing anonymous mid-shift has to bounce the panels.
       return true;
     }
     if (credentialDigest == null) {

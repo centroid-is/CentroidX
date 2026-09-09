@@ -8,7 +8,7 @@
 /// `SessionLoginValidator` admits a hello that presents **no credential at
 /// all**, and what it admits is deliberately nobody: a self-naming sentinel
 /// identity with the **empty group set**, which the session-level
-/// awaiting-sign-in gate (`awaiting_sign_in_test.dart`) then holds to
+/// policy then grades (`anonymous_session_test.dart`), which used to hold to
 /// liveness alone. The sign-in that turns nobody into somebody is a later
 /// increment; this file is the credential mechanism's half.
 ///
@@ -154,38 +154,50 @@ void main() {
               'provisioned credential must be able to reach the sign-in '
               'screen, which lives on the far side of the handshake');
       final accepted = verdict as TokenAccepted;
-      expect(accepted.identity, SessionLoginValidator.awaitingSignIn);
+      expect(accepted.identity.isAnonymous, isTrue,
+          reason: 'admitted AS the anonymous identity — the same one a '
+              'not-signed-in panel holds in direct mode, and from here on '
+              'graded by the same AccessPolicy rather than held to a state '
+              'the master system cannot see');
       expect(accepted.credentialDigest, isNull,
           reason: 'no credential was presented, so there is nothing for a '
               'revocation sweep to hold — a digest here would be a claim '
               'about a secret that does not exist');
       for (final group in AccessGroup.values) {
         expect(accepted.identity.session.can(group), isFalse,
-            reason: 'fail closed: a session nobody signed in on holds '
-                '${group.name} the moment somebody grants it by signing in, '
-                'and not one second before');
+            reason: 'no anonymous source was wired on this validator, and '
+                'the default is EMPTY. That is the fail-closed default and '
+                'it is the whole reason `anonymous` is a constructor '
+                'argument: a built-in set would be this file grading, and a '
+                'gateway that granted ${group.name} because nobody wired the '
+                'source would look perfectly healthy from every screen');
       }
     });
 
     test('an empty-string token is the same admission', () async {
       final verdict = await SessionLoginValidator().validate(_helloWith(''));
       expect(verdict, isA<TokenAccepted>());
-      expect((verdict as TokenAccepted).identity,
-          SessionLoginValidator.awaitingSignIn);
+      expect((verdict as TokenAccepted).identity.isAnonymous, isTrue);
     });
 
-    test('the sentinel names itself as nobody everywhere it can be printed',
+    test('it reads as direct mode\'s anonymous everywhere it can be printed',
         () {
-      final identity = SessionLoginValidator.awaitingSignIn;
-      // The username reaches audit rows' `who`; the role name reaches
-      // `toString`, close reasons and the trail. Both must read as "nobody
-      // signed in", never as a station or a role somebody created.
-      expect(identity.user.username, contains('nobody'));
-      expect(identity.session.roleName.toLowerCase(), contains('sign-in'));
-      expect(identity.toString(), isNot(contains('Operator')),
-          reason: 'an AccessSession with a null user answers as the Operator '
-              'role — direct mode\'s anonymous. A relay session nobody '
-              'signed in on must never read as that; it holds nothing');
+      final identity = SessionLoginValidator().anonymousIdentity();
+      // **This arm is inverted on purpose, and the inversion is the change.**
+      // It used to demand the opposite — that the identity must NEVER read as
+      // Operator, because it was a third state that held nothing and saying
+      // "Operator" would have overstated it. Anonymous IS Operator, by
+      // construction and on both transports (`AccessSession.anonymous`, whose
+      // doc says so in the same words), so reading as anything else is what
+      // would now be wrong: it would put two vocabularies in one trail column
+      // for one state.
+      expect(identity.user.username, StationIdentity.anonymousWho,
+          reason: 'the `who` an audit row records, and every direct-mode '
+              'guard already writes this exact string for this state');
+      expect(identity.session.roleName, kOperatorRoleName);
+      expect(identity.session.isElevated, isFalse,
+          reason: 'nobody is signed in, which is what makes session.login '
+              'reachable — the direct-mode transition, not a new one');
     });
   });
 
@@ -244,15 +256,14 @@ void main() {
   });
 
   group('stillValid — the sweep', () {
-    test('the sentinel is always still valid: a panel at the sign-in screen '
+    test('an anonymous identity is always still valid: a panel at the '
+        'sign-in screen '
         'holds nothing a sweep could revoke', () async {
       final bare = SessionLoginValidator();
-      expect(bare.stillValid(SessionLoginValidator.awaitingSignIn, null),
-          isTrue);
+      expect(bare.stillValid(bare.anonymousIdentity(), null), isTrue);
       final wrapped =
           SessionLoginValidator(stations: await _fileValidator(_seedUsers()));
-      expect(wrapped.stillValid(SessionLoginValidator.awaitingSignIn, null),
-          isTrue,
+      expect(wrapped.stillValid(wrapped.anonymousIdentity(), null), isTrue,
           reason: 'with or without a wrapped file: the sweep walks every '
               'live session on every tick, and closing the sign-in screen '
               'once per poll would make the gateway unusable before anyone '

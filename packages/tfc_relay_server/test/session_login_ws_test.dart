@@ -10,10 +10,11 @@
 ///  1. **Authorisation is enforced server-side.** A person's username and
 ///     password cross the wire; the SERVER verifies them through the
 ///     `AuthProvider` seam and answers with the resolved user + role +
-///     groups. The panel decides nothing. The identity assignment lifts the
-///     awaiting gate, so the session may then do what the role grants.
-///  2. **Fail closed, in every direction.** Bad credentials leave the
-///     sentinel in place. A verifier throw leaves it in place AND is
+///     groups. The panel decides nothing. The identity assignment ELEVATES
+///     the session from anonymous, so it may then do what the role grants —
+///     the direct-mode transition, not a relay-only one.
+///  2. **Fail closed, in every direction.** Bad credentials leave the session
+///     anonymous. A verifier throw leaves it in place AND is
 ///     distinguishable from a wrong password (`user_source_unavailable` vs
 ///     `bad_credentials`) — a database blip must not read as somebody
 ///     mistyping. A gateway composed without a verifier refuses by name.
@@ -29,10 +30,17 @@
 ///  5. **The sweep judges signed-in people.** Demote or delete the account
 ///     in the database and the live session closes with 4001 on the next
 ///     poll tick — ACCESS-01 surviving the WebSocket, not switched off by it.
-///  6. **`session.logout` returns the session to the sentinel** — never to a
-///     direct-mode-shaped anonymous — and is idempotent on a session that is
-///     already nobody, because the panel cannot know whether a reconnect
-///     already reset the far end.
+///  6. **`session.logout` returns the session to the anonymous identity it
+///     was admitted as** — which IS the direct-mode-shaped anonymous now, and
+///     holds what that holds — and is idempotent on a session that is already
+///     nobody, because the panel cannot know whether a reconnect already
+///     reset the far end.
+///
+/// Several arms below used to prove "nobody is signed in" by showing a READ
+/// was refused. A read is not refused any more, so each of them now proves it
+/// with a WRITE the policy declines for want of a group. That is a stronger
+/// control, not a weaker one: it measures the boundary the master system
+/// draws rather than a session state only this wire ever had.
 @Tags(['ws'])
 library;
 
@@ -158,7 +166,7 @@ Map<String, Object?> stationHello(String token) => HelloParams(
     ).toJson();
 
 /// Minimal per-identity fakes for the factory arm —
-/// `awaiting_sign_in_test.dart`'s shapes, private copies by house style.
+/// `anonymous_session_test.dart`'s shapes, private copies by house style.
 AccessTemplateApi recordingTemplates() => _Templates();
 AccessAdminApi recordingAdmin() => _Admin();
 
@@ -237,11 +245,17 @@ void main() {
       await fixture.ready;
       await fixture.hello();
 
-      // The anti-vacuity control: before the login, the gate refuses.
-      final before = await fixture.refusal(DataServiceMethods.prefGetAll,
-          params: const <String, Object?>{},
-          what: 'a read before anybody signed in');
-      expect(before.message, contains(SessionAuthMarkers.awaitingSignIn));
+      // The anti-vacuity control. It used to be a READ, refused by the
+      // blanket gate; a read is not refused any more — anonymous may read
+      // here exactly as it may at a walk-up panel — so the control is now a
+      // WRITE, refused by the policy for want of a group. That is a better
+      // control than the one it replaces: it measures the boundary the
+      // master system actually draws, rather than a session state only this
+      // wire had.
+      final before = await fixture.refusal(DataServiceMethods.prefSetString,
+          params: const {'key': 'key_mappings', 'value': '{"nodes":{}}'},
+          what: 'a shared-config WRITE before anybody signed in');
+      expect(before.code, ServerErrorCodes.forbidden);
 
       final raw = await fixture.request(Methods.sessionLogin,
           params: _login('jon', _secret, station: 'PACK-02'),
@@ -306,11 +320,13 @@ void main() {
       expect(failed.single.who, 'jon');
       expect(failed.single.origin, 'relay');
 
-      // Fail closed: the session still holds nothing.
-      final still = await fixture.refusal(DataServiceMethods.prefGetAll,
-          params: const <String, Object?>{},
-          what: 'a read after a refused sign-in');
-      expect(still.message, contains(SessionAuthMarkers.awaitingSignIn));
+      // Fail closed: the session still holds nothing, so the policy still
+      // refuses the write. A refused password must not leave a session one
+      // grant better off than it started.
+      final still = await fixture.refusal(DataServiceMethods.prefSetString,
+          params: const {'key': 'key_mappings', 'value': '{"nodes":{}}'},
+          what: 'a shared-config WRITE after a refused sign-in');
+      expect(still.code, ServerErrorCodes.forbidden);
     });
 
     test('an unknown username reads EXACTLY like a wrong password', () async {
@@ -554,7 +570,7 @@ void main() {
   });
 
   group('session.logout', () {
-    test('returns the session to the sentinel: the gate closes again, the '
+    test('returns the session to anonymous: the grants go with the person, '
         'trail says who left, and a second logout is a no-op', () async {
       final source = _engineeringSource();
       final sink = _RecordingSink();
@@ -569,18 +585,20 @@ void main() {
       await fixture.request(Methods.sessionLogin,
           params: _login('jon', _secret, station: 'PACK-02'),
           what: 'the sign-in');
-      await fixture.request(DataServiceMethods.prefGetAll,
-          params: const <String, Object?>{}, what: 'the signed-in control');
+      await fixture.request(DataServiceMethods.prefSetString,
+          params: const {'key': 'key_mappings', 'value': '{"nodes":{}}'},
+          what: 'the signed-in control — the engineer holds the group');
 
       await fixture.request(Methods.sessionLogout,
           params: const <String, Object?>{}, what: 'the sign-out');
-      final refused = await fixture.refusal(DataServiceMethods.prefGetAll,
-          params: const <String, Object?>{},
-          what: 'a read after the sign-out');
-      expect(refused.message, contains(SessionAuthMarkers.awaitingSignIn),
-          reason: 'logout returns to the sentinel, never to a '
-              'direct-mode-shaped anonymous — nobody is signed in, and the '
-              'session may do nothing but wait');
+      final refused = await fixture.refusal(DataServiceMethods.prefSetString,
+          params: const {'key': 'key_mappings', 'value': '{"nodes":{}}'},
+          what: 'the same write after the sign-out');
+      expect(refused.code, ServerErrorCodes.forbidden,
+          reason: 'logout returns the session to the anonymous identity it '
+              'was admitted as — which is exactly a direct-mode-shaped '
+              'anonymous now, and holds what that holds. The grants the '
+              'person had are gone with them');
 
       final logouts =
           sink.rows.where((row) => row.itemKey == 'logout').toList();
@@ -693,12 +711,16 @@ void main() {
       );
       await fixture.ready;
       await fixture.hello();
-      expect(built, isEmpty,
-          reason: 'increment A\'s arm, still true: nothing is built for '
-              'nobody');
+      expect(built.map((identity) => identity.user.username),
+          [StationIdentity.anonymousWho],
+          reason: 'built for anonymous at hello now — its audit rows '
+              'attribute to `anonymous`, the same string direct mode writes '
+              'for the same state, so one action lands in one trail '
+              'whichever transport made it');
       await fixture.request(Methods.sessionLogin,
           params: _login('jon', _secret), what: 'the sign-in');
-      expect(built.map((identity) => identity.user.username), ['jon'],
+      expect(built.map((identity) => identity.user.username),
+          [StationIdentity.anonymousWho, 'jon'],
           reason: 'the factory constructs stores whose audit rows attribute '
               'to the identity it was called with — that identity now '
               'exists, and it is the verified person');

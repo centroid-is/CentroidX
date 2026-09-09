@@ -59,6 +59,80 @@ final class StationIdentity {
     required this.session,
   });
 
+  /// Nobody is signed in — the identity a credential-less hello is admitted
+  /// as, and the direct-mode anonymous session's counterpart on this wire.
+  ///
+  /// **This is the third state's replacement, and the point is that it is not
+  /// a third state.** A gateway used to hold such a session to `hello`, `ping`
+  /// and the two session-auth names by a blanket, method-level refusal that
+  /// the policy never saw — so "what may a panel do with nobody signed in"
+  /// had two different answers depending on the transport, and the socket's
+  /// answer could not be reasoned about in the master system's terms at all.
+  /// It also closed a ring: a panel reads `key_mappings` in order to build the
+  /// very client it would have to sign in through (measured on the rig,
+  /// 2026-09-09). Here the question is asked once, of `AccessPolicy`, exactly
+  /// as `AccessSession.anonymous` asks it at a walk-up panel.
+  ///
+  /// [groups] is passed in and is **customer data**, never a constant here:
+  /// direct mode reads it from the `Operator` row (`AccessRepository.
+  /// anonymousGroups`), and editing that row changes what an unauthenticated
+  /// panel may do. See [AccessSession.anonymous], which says the same thing
+  /// and names the footgun. Passing an empty set is the fail-closed answer for
+  /// a gateway that has wired no source, and it is what makes every write
+  /// question on this wire answer no.
+  ///
+  /// **The session's `user` is null and the identity's is not**, and that
+  /// asymmetry is deliberate rather than an oversight of the type:
+  ///
+  ///  * `AccessSession.user == null` **is** what anonymous means to the master
+  ///    system — `isElevated` reads it, `roleName` falls back to `Operator`
+  ///    through it, and a session that named a user here would be elevated by
+  ///    construction and could never be signed in on.
+  ///  * [StationIdentity.user] is what an audit row's `who` column records,
+  ///    and that column is not nullable. `'anonymous'` is the string every
+  ///    direct-mode surface already writes there (four private `_anonymousWho`
+  ///    constants across `tfc_dart`'s guards), so an anonymous action over the
+  ///    socket lands in the same trail, spelled the same way, as the same
+  ///    action at a panel. A relay-specific spelling would split one column in
+  ///    two and nobody would notice until they filtered on it.
+  factory StationIdentity.anonymous({
+    required Set<AccessGroup> groups,
+    required String station,
+  }) =>
+      StationIdentity(
+        user: const AuthenticatedUser(
+          username: anonymousWho,
+          roleName: kOperatorRoleName,
+          // A panel, not a person — so nothing about being nobody hands this
+          // an inactivity window. `AccessSession.anonymous` makes the same
+          // call by leaving `expiresAt` null: anonymous is the state a
+          // session times out *into*, and a state that expired into itself
+          // would be a panel that logged nobody out forever.
+          stationAccount: true,
+        ),
+        station: station,
+        session: AccessSession.anonymous(groups),
+      );
+
+  /// The `who` an anonymous action is attributed to, matching direct mode.
+  ///
+  /// Spelled here because `tfc_access` publishes no constant for it and the
+  /// four copies in `tfc_dart` are all private. Hoisting them into one public
+  /// constant is the right cleanup and is deliberately not done in the change
+  /// that needed the fifth: it touches four guards on the app's write path.
+  static const String anonymousWho = 'anonymous';
+
+  /// True when nobody is signed in on this session.
+  ///
+  /// Reads the master system's own predicate rather than comparing against a
+  /// sentinel object. That matters for more than tidiness: the anonymous
+  /// identity now carries a group set read out of the database, so it cannot
+  /// be a `const` compared with `==` — and a comparison that silently stopped
+  /// matching would reopen sign-in on a session that already had somebody on
+  /// it. `isElevated` is the same question `AccessSession` answers for the
+  /// app bar, so the two transports cannot drift on what "signed in" means.
+  bool get isAnonymous => !session.isElevated;
+
   /// The `app_user` row this panel authenticates as, resolved by the server.
   ///
   /// This is what an audit row's `who` column records (D-11, improved by the
