@@ -134,9 +134,13 @@ final class _RecordingAdmin implements AccessAdminApi {
   Future<List<AccessRole>> roles() async =>
       [AccessRole.fromDb(name: tag, groupsJson: '[]', seeded: false)];
   @override
-  Future<List<AuthenticatedUser>> listUsers() async => [
-        AuthenticatedUser(
-            username: tag, roleName: 'Panel Operator', stationAccount: true),
+  Future<List<UserSummary>> listUsers() async => [
+        UserSummary(
+            username: tag,
+            roleName: 'Panel Operator',
+            stationAccount: true,
+            createdAt: DateTime.utc(2026, 3, 4, 5, 6),
+            lastLoginAt: DateTime.utc(2026, 3, 5, 6, 7)),
       ];
   @override
   Future<void> createRole(AccessRole role, {String? reason}) async =>

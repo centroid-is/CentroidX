@@ -109,10 +109,15 @@ final AccessTemplate _template =
 final AccessRole _role =
     AccessRole(name: 'Line Lead', groups: const {AccessGroup.operate});
 
-const AuthenticatedUser _user = AuthenticatedUser(
+final UserSummary _user = UserSummary(
   username: 'ST101-panel',
   roleName: 'Panel Operator',
   stationAccount: true,
+  // Both timestamps set, so the round trip proves 17-08's F-1 crosses: the
+  // roster row used to be an `AuthenticatedUser`, which had nowhere to put a
+  // date, and every account rendered as 1970 on a gateway station.
+  createdAt: DateTime.utc(2026, 4, 1, 7, 30),
+  lastLoginAt: DateTime.utc(2026, 9, 8, 6, 15),
 );
 
 final AuditRecord _auditRow = AuditRecord(
@@ -201,9 +206,13 @@ final List<_Member> _members = <_Member>[
   _Member(
     AccessMethods.adminListUsers,
     (a) => a.admin.listUsers(),
-    () => [authenticatedUserToJson(_user)],
-    check: (decoded) => expect(
-        (decoded! as List<AuthenticatedUser>).single.username, _user.username),
+    () => [userSummaryToJson(_user)],
+    check: (decoded) {
+      final row = (decoded! as List<UserSummary>).single;
+      expect(row.username, _user.username);
+      expect(row.createdAt, _user.createdAt);
+      expect(row.lastLoginAt, _user.lastLoginAt);
+    },
   ),
   _Member(AccessMethods.adminCreateRole, (a) => a.admin.createRole(_role),
       () => null),
@@ -445,7 +454,7 @@ final class _ServedAccessGateway {
     _on(
         AccessMethods.adminListUsers,
         (p) async =>
-            [for (final u in await fake.listUsers()) authenticatedUserToJson(u)]);
+            [for (final u in await fake.listUsers()) userSummaryToJson(u)]);
     _on(AccessMethods.adminCreateRole, (p) async {
       await fake.createRole(accessRoleFromJson(_obj(p['role'].asMap)),
           reason: reasonOf(p));

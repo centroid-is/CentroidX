@@ -554,13 +554,38 @@ void main() {
       expect(await templates.keysBoundTo('T'), isA<List<String>>());
       expect(await admin.roles(), isNotEmpty,
           reason: 'the seeded roles are in a fresh schema');
-      expect(await admin.listUsers(), isA<List<AuthenticatedUser>>());
+      expect(await admin.listUsers(), isA<List<relay.UserSummary>>());
       expect(await audit.entries(const relay.AuditQueryParams()),
           isA<List<AuditRecord>>());
       expect(await audit.memberCountsByAction(const ['a']),
           isA<Map<String, int>>());
       expect(await audit.distinctWho(), isA<List<String>>());
     });
+  });
+
+  // 17-08 F-1 — the roster row carries the two columns the screen renders.
+  test('listUsers answers the row\'s own createdAt, not a sentinel — the '
+      'gateway users screen read 1970 for every account before this',
+      () async {
+    final before = DateTime.now().toUtc();
+    await admin.createRole(
+        const AccessRole(name: 'R_ts', groups: {AccessGroup.operate}));
+    await admin.createUser(const relay.NewUserParams(
+        subject: 'u_ts',
+        password: 'a sufficiently long pw',
+        grantedRole: 'R_ts'));
+
+    final row = (await admin.listUsers())
+        .firstWhere((u) => u.username == 'u_ts');
+    expect(row.createdAt, isNotNull,
+        reason: 'null here is what the panel renders as 1970');
+    expect(row.createdAt!.isBefore(before), isFalse,
+        reason: 'the account was created after this test started, so a '
+            'created date before it is the sentinel leaking back in');
+    expect(row.lastLoginAt, isNull,
+        reason: 'a brand new account has never signed in, which the screen '
+            'renders as "never"');
+    expect(row.roleName, 'R_ts');
   });
 
   // The wire cut, its own arm rather than a members-table row.
@@ -589,7 +614,7 @@ void main() {
     expect(await templates.bindings(), containsPair('k.read', 'Readable'));
     expect(await templates.keysBoundTo('Readable'), ['k.read']);
     expect((await admin.roles()).map((r) => r.name), contains('Operator'));
-    expect(await admin.listUsers(), isA<List<AuthenticatedUser>>());
+    expect(await admin.listUsers(), isA<List<relay.UserSummary>>());
     expect(await audit.entries(const relay.AuditQueryParams()), isNotEmpty,
         reason: 'the two writes above each left a row');
     expect(await audit.distinctWho(), contains('ST101-panel'));

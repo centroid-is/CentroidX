@@ -78,10 +78,10 @@ final class _FakeAccessAdmin implements AccessAdminApi {
   }
 
   @override
-  Future<List<AuthenticatedUser>> listUsers() async {
+  Future<List<UserSummary>> listUsers() async {
     reached.add('listUsers');
     return const [
-      AuthenticatedUser(
+      UserSummary(
           username: 'jon', roleName: 'User Admin', stationAccount: false),
     ];
   }

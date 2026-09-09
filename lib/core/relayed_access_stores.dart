@@ -64,16 +64,22 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
 // The protocol-error to domain-exception mapping
 // -----------------------------------------------------------------------------
 
-/// What the wire cannot say. `AccessAdminApi.listUsers` answers
-/// `AuthenticatedUser` — four fields, no timestamps and no credential — so a
-/// gateway-mode `AppUserData` has nowhere honest to get `createdAt` from.
-/// This sentinel is that absence, surfaced rather than invented: epoch zero
-/// is not a date any account was created at. 17-08's F-1 queues the real fix
-/// (a `UserSummary` DTO with nullable epoch-ms timestamps); until it lands,
-/// the users screen in gateway mode renders this as 1970 rather than a
-/// fabricated recent date, and `lastLoginAt` stays null — which the screen
-/// already renders as "never", the honest floor for a fact the wire does not
-/// carry.
+/// What the wire could not say, before 17-08's F-1 closed the gap.
+///
+/// `AccessAdminApi.listUsers` used to answer `AuthenticatedUser` — a *session
+/// identity*, four fields, no timestamps — so a gateway-mode `AppUserData` had
+/// nowhere honest to get `createdAt` from and every account on the users screen
+/// rendered as 1970-01-01. It now answers [UserSummary], which carries both
+/// timestamps, and the sentinel is no longer reached against a backend of this
+/// build.
+///
+/// It is kept, and still means "not a date any account was created at",
+/// because `AppUserData.createdAt` is non-nullable and [UserSummary.createdAt]
+/// is: a panel on this build talking to a backend that predates the DTO gets a
+/// null, and epoch zero is how that absence stays visible instead of being
+/// filled in with a plausible recent date. `lastLoginAt` needs no sentinel —
+/// it is nullable all the way down, and the screen already renders null as
+/// "never".
 final DateTime kUnknownOverTheWire =
     DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
 
@@ -281,12 +287,16 @@ final class RelayedAccessAdminStore implements AccessAdminStore {
             username: user.username,
             roleName: user.roleName,
             // No credential crosses this wire in either direction —
-            // `AuthenticatedUser` has nowhere to put one — and an empty
-            // digest can never verify. Nothing renders these two columns.
+            // `UserSummary` has nowhere to put one — and an empty digest can
+            // never verify. Nothing renders these two columns.
             passwordHash: '',
             salt: '',
-            createdAt: kUnknownOverTheWire,
-            lastLoginAt: null,
+            // Both real since 17-08's F-1. The fallback is for a backend older
+            // than the DTO, which sends no timestamp at all; see
+            // [kUnknownOverTheWire] for why that stays visible as 1970 rather
+            // than being filled in.
+            createdAt: user.createdAt ?? kUnknownOverTheWire,
+            lastLoginAt: user.lastLoginAt,
             stationAccount: user.stationAccount,
           ),
       ]);

@@ -218,21 +218,28 @@ final class BackendAccessAdmin implements relay.AccessAdminApi {
   @override
   Future<List<AccessRole>> roles() async => _require('roles').roles();
 
-  /// Answered as [AuthenticatedUser] — the type with **no password-specific
+  /// Answered as [relay.UserSummary] — the type with **no password-specific
   /// fields at all**, so no hash can reach this wire by somebody forgetting to
-  /// strip it. The row's `createdAt` / `lastLoginAt` (rendered by the app's
-  /// users table) do not fit this shape; that is a known wire gap recorded for
-  /// 17-08 rather than a `UserSummary` invented here. `displayName` is null
-  /// because `app_user` has no such column.
+  /// strip it.
+  ///
+  /// It answered [AuthenticatedUser] until 17-08's F-1 closed the wire gap that
+  /// left with: a session identity has nowhere to put `created_at` or
+  /// `last_login_at`, so a gateway station's users screen drew epoch zero in
+  /// the created column for every account. Both columns are now carried, and
+  /// `passwordHash` / `salt` still are not — there is nowhere to put them.
+  ///
+  /// `displayName` is null because `app_user` has no such column.
   @override
-  Future<List<AuthenticatedUser>> listUsers() async {
+  Future<List<relay.UserSummary>> listUsers() async {
     final rows = await _require('listUsers').listUsers();
     return [
       for (final row in rows)
-        AuthenticatedUser(
+        relay.UserSummary(
           username: row.username,
           roleName: row.roleName,
           stationAccount: row.stationAccount,
+          createdAt: row.createdAt,
+          lastLoginAt: row.lastLoginAt,
         ),
     ];
   }

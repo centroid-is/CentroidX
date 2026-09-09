@@ -668,10 +668,10 @@ final class ClientAccessAdminApi implements AccessAdminApi {
       ];
 
   @override
-  Future<List<AuthenticatedUser>> listUsers() async => [
+  Future<List<UserSummary>> listUsers() async => [
         for (final row
             in jsonArray(await _send(AccessMethods.adminListUsers, const {})))
-          authenticatedUserFromJson(jsonObject(row)),
+          userSummaryFromJson(jsonObject(row)),
       ];
 
   @override

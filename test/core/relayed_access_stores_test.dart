@@ -130,12 +130,12 @@ final class _RecordingAdminApi implements AccessAdminApi {
   NewUserParams? createdUser;
   SetUserPasswordParams? passwordReset;
   ({String subject, String newRole, String? reason})? roleMove;
-  List<AuthenticatedUser> users = const [];
+  List<UserSummary> users = const [];
 
   @override
   Future<List<AccessRole>> roles() async => const [];
   @override
-  Future<List<AuthenticatedUser>> listUsers() async => users;
+  Future<List<UserSummary>> listUsers() async => users;
   @override
   Future<void> createRole(AccessRole role, {String? reason}) async {}
   @override
@@ -351,16 +351,20 @@ void main() {
     });
 
     test(
-        'listUsers surfaces what the wire cannot say rather than inventing '
-        'it: sentinel createdAt, null lastLoginAt, empty credential columns',
+        'listUsers carries both timestamps across and still carries no '
+        'credential',
         () async {
+      final created = DateTime.utc(2026, 4, 1, 7, 30);
+      final lastLogin = DateTime.utc(2026, 9, 8, 6, 15);
       final api = _RecordingAdminApi()
-        ..users = const [
-          AuthenticatedUser(
+        ..users = [
+          UserSummary(
               username: 'ST101-panel',
               roleName: 'Panel Operator',
               displayName: 'ST101',
-              stationAccount: true),
+              stationAccount: true,
+              createdAt: created,
+              lastLoginAt: lastLogin),
         ];
       final store = RelayedAccessAdminStore(api: api);
 
@@ -369,14 +373,35 @@ void main() {
       expect(row.username, 'ST101-panel');
       expect(row.roleName, 'Panel Operator');
       expect(row.stationAccount, isTrue);
-      expect(row.createdAt, kUnknownOverTheWire,
-          reason: 'the wire has no createdAt (17-08 F-1); epoch zero is a '
-              'visible absence, a plausible recent date would be a lie');
-      expect(row.lastLoginAt, isNull,
-          reason: 'null is the honest floor and the screen already renders '
-              'it as "never"');
+      expect(row.createdAt, created,
+          reason: 'the created column is the whole of 17-08 F-1: it read '
+              '1970-01-01 on every gateway station before the wire carried it');
+      expect(row.lastLoginAt, lastLogin);
       expect(row.passwordHash, isEmpty);
       expect(row.salt, isEmpty);
+    });
+
+    test(
+        'a backend that sends no createdAt still renders as a visible absence, '
+        'never as a plausible date', () async {
+      final api = _RecordingAdminApi()
+        ..users = const [
+          // What a backend older than the DTO answers: no timestamp keys at
+          // all, which decode to null.
+          UserSummary(
+              username: 'ST101-panel',
+              roleName: 'Panel Operator',
+              stationAccount: true),
+        ];
+      final store = RelayedAccessAdminStore(api: api);
+
+      final row = (await store.listUsers()).single;
+      expect(row.createdAt, kUnknownOverTheWire,
+          reason: 'epoch zero is a visible absence; a plausible recent date '
+              'would be a lie about an account nobody can date');
+      expect(row.lastLoginAt, isNull,
+          reason: 'null is the honest floor and the screen renders it as '
+              '"never"');
     });
   });
 
