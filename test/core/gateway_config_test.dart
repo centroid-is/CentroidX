@@ -504,9 +504,6 @@ void main() {
       const hosts = [
         // Ordinary addresses.
         '10.50.10.11', '127.0.0.1', '0.0.0.0', '255.255.255.255',
-        // Leading zeros are what a hand-typed address looks like, and are
-        // addresses to the OS.
-        '01.02.03.04', '1.2.3.04', '010.1.1.1',
         // Not addresses.
         '256.1.1.1', '1.2.3', '1.2.3.4.5', '999.1.1.1', '1.2.3.-4',
         // The four the spelling this replaced got wrong, and why: int.tryParse
@@ -526,6 +523,29 @@ void main() {
       /// neither surface this predicate feeds is reachable with it — but it is
       /// written down here rather than left for somebody to rediscover.
       const knownDivergence = {':::'};
+
+      /// Leading-zero forms, which the OS resolver classifies **differently on
+      /// different platforms** — so they cannot be compared against it.
+      ///
+      /// BSD/macOS `inet_aton` accepts them (historically octal); glibc's
+      /// `inet_pton` refuses them precisely because `010` is ambiguous. This
+      /// arm was written on macOS and asserted "leading zeros are addresses to
+      /// the OS" as if universal; CI found it on ubuntu AND windows with
+      /// `"01.02.03.04"`, where the OS says no and this predicate says yes.
+      ///
+      /// The cases stay pinned — dropping them would lose the coverage — but
+      /// against OUR OWN stated classification rather than an oracle that
+      /// moves under the test. Which way the predicate calls them barely
+      /// matters (both surfaces it feeds degrade gracefully either way); that
+      /// it answers the SAME way on every platform is the property.
+      const leadingZeroForms = {'01.02.03.04', '1.2.3.04', '010.1.1.1'};
+
+      for (final host in leadingZeroForms) {
+        expect(isIpLiteralHost(host), isTrue,
+            reason: '"$host" must classify identically on every platform. If '
+                'this changes, the advisory and the SAN hint change with it '
+                'and they must never disagree with each other');
+      }
 
       for (final host in [...hosts, ...knownDivergence]) {
         final os = InternetAddress.tryParse(host) != null;
