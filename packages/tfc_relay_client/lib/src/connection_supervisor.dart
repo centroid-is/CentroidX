@@ -741,6 +741,24 @@ final class ConnectionSupervisor {
       if (error.message.contains(SessionAuthMarkers.awaitingSignIn)) {
         _awaitingSignIn = true;
         _lastDownReason = null;
+        // Re-announce the state we are already in, so anything that keys off
+        // the link re-evaluates now that `awaitingSignIn` is true.
+        //
+        // **Why an explicit re-emit and not a new state.** This branch keeps
+        // the link in `resyncing` on purpose — socket up, hello answered,
+        // nothing subscribed — and `_enter` de-duplicates, so entering
+        // `resyncing` again emits nothing. That silence had a cost measured on
+        // the rig: `RemoteStateMan` starts its heartbeat from this stream, the
+        // stream never fired when a session became awaiting, the pump never
+        // beat, and the gateway closed the session on its own deadline
+        // (`4003 — no heartbeat for 6098 ms`). The panel reconnected, went
+        // awaiting, fell silent and was reaped again, every six seconds,
+        // which is not long enough for anyone to type a password.
+        //
+        // Listeners must therefore tolerate the same state twice. That is
+        // already true of `_onLinkState`, whose work is idempotent by
+        // construction (both heartbeat calls are, and `_wasReady` is a latch).
+        if (!_states.isClosed) _states.add(_state);
         // Not `ready` and not `down`: the value barrier stays shut, nothing
         // is retried, and the connection is held. The state stays
         // `resyncing` — socket up, hello answered — which is the honest
