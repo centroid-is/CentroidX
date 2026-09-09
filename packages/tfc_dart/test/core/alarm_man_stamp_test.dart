@@ -201,7 +201,7 @@ String _alarmSourceWithoutComments() {
 void main() {
   group('AlarmMan stamps both edges from the plant', () {
     late _FakeClientApi fake;
-    late StateMan stateMan;
+    late OpcUaStateMan stateMan;
     late Preferences preferences;
     late _FixedClock clock;
 
@@ -209,7 +209,7 @@ void main() {
       Preferences.clearSecretCache();
       clock = _FixedClock(receipt);
       fake = _FakeClientApi();
-      stateMan = await StateMan.create(
+      stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: _mappings(),
         deviceClients: const [],

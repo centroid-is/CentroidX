@@ -10,6 +10,7 @@ import 'package:tfc_dart/core/state_man.dart'
         KeyMappings,
         ModbusConfig,
         ModbusPollGroupConfig,
+        OpcUaStateMan,
         StateMan,
         StateManConfig,
         StateManException;
@@ -370,7 +371,7 @@ void main() {
         pollGroups: [ModbusPollGroupConfig(name: 'default', intervalMs: 750)],
       );
       final km = KeyMappings(nodes: {});
-      stateMan = await StateMan.create(
+      stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: [], modbus: [cfg]),
         keyMappings: km,
         deviceClients: buildModbusDeviceClients([cfg], km),
@@ -391,7 +392,7 @@ void main() {
         pollGroups: [ModbusPollGroupConfig(name: 'default', intervalMs: 500)],
       );
       final km = KeyMappings(nodes: {});
-      final sm = await StateMan.create(
+      final sm = await OpcUaStateMan.create(
         config: StateManConfig(opcua: [], modbus: [cfg]),
         keyMappings: km,
         deviceClients: buildModbusDeviceClients([cfg], km),

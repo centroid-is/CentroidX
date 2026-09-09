@@ -444,8 +444,16 @@ class GuardedStateMan implements StateMan {
   @override
   set keyMappings(KeyMappings value) => _inner.keyMappings = value;
 
-  @override
-  List<ClientWrapper> get clients => _inner.clients;
+  /// Live OPC UA sessions, when this guard happens to wrap a real one.
+  ///
+  /// Not a [StateMan] member and deliberately not an override: a panel in
+  /// gateway mode holds no session and a browser cannot hold one at all. The
+  /// browse and diagnostic widgets that ask for this must already cope with an
+  /// empty list, because that is what gateway mode has always handed them.
+  List<ClientWrapper> get clients {
+    final inner = _inner;
+    return inner is OpcUaStateMan ? inner.clients : const [];
+  }
 
   @override
   List<DeviceClient> get deviceClients => _inner.deviceClients;

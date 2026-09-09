@@ -99,7 +99,7 @@ void main() {
       'a superseded _monitorLoop waking from backoff must not tear down the '
       'live stream of the loop that replaced it', () async {
     final fake = StealScriptClientApi();
-    final sm = await StateMan.create(
+    final sm = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []),
       keyMappings: KeyMappings(nodes: {'k': entryFor('HANG')}),
     );

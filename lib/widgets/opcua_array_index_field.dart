@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/opcua_sessions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open62541/open62541_types.dart' show NodeId, DynamicValue;
 import 'package:tfc_dart/core/state_man.dart';
@@ -87,13 +88,13 @@ class OpcUaArrayIndexFieldState extends ConsumerState<OpcUaArrayIndexField> {
       if (stateMan == null) throw Exception('Server connections not ready');
 
       ClientWrapper? wrapper;
-      for (final w in stateMan.clients) {
+      for (final w in opcUaSessionsOf(stateMan)) {
         if (w.config.serverAlias == widget.serverAlias) {
           wrapper = w;
           break;
         }
       }
-      wrapper ??= stateMan.clients.isEmpty ? null : stateMan.clients.first;
+      wrapper ??= opcUaSessionsOf(stateMan).isEmpty ? null : opcUaSessionsOf(stateMan).first;
       if (wrapper == null) throw Exception('No OPC UA client available');
 
       final nodeId = int.tryParse(id) != null

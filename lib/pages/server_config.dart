@@ -1584,7 +1584,7 @@ class _ImportExportCardState extends ConsumerState<ImportExportCard> {
     // and breaks the trust the PLC was configured with.
     StateManConfig? current;
     try {
-      current = await StateManConfig.fromPrefs(prefs);
+      current = await StateManConfigStorage.fromPrefs(prefs);
     } catch (_) {
       // No (or unreadable) saved config — nothing to reuse.
     }
@@ -1650,7 +1650,7 @@ class _ImportExportCardState extends ConsumerState<ImportExportCard> {
   /// Shared by the file export and the database export.
   Future<Map<String, dynamic>> _collectExportJson(WidgetRef ref) async {
     final prefs = await ref.read(preferencesProvider.future);
-    final stateMan = await StateManConfig.fromPrefs(prefs);
+    final stateMan = await StateManConfigStorage.fromPrefs(prefs);
     final db = await DatabaseConfig.fromPrefs();
     final jsonMap = _scrubCertPaths(stateMan.toJson());
     jsonMap['database'] = db.toJson();

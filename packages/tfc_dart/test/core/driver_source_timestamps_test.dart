@@ -35,7 +35,10 @@ import 'package:jbtm/src/m2400_field_parser.dart';
 import 'package:jbtm/src/m2400_fields.dart';
 import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:tfc_dart/core/opcua_value_translation.dart';
-import 'package:tfc_dart/core/state_man.dart' show StateMan;
+import 'package:tfc_dart/core/state_man.dart'
+    show
+        OpcUaStateMan,
+        StateMan;
 import 'package:test/test.dart';
 
 /// An arrival instant deliberately nowhere near any device instant, so a stamp
@@ -122,7 +125,7 @@ void main() {
         ..statusCode = opcUaUncertainLastUsableValue
         ..sourceTimestamp = _t(3);
 
-      final masked = StateMan.applyBitMask(stamped, 0x02, 1);
+      final masked = OpcUaStateMan.applyBitMask(stamped, 0x02, 1);
 
       expect(masked.value, true, reason: 'single-bit mask yields a bool');
       expect(masked.sourceTimestamp, _t(3));
@@ -134,7 +137,7 @@ void main() {
         ..statusCode = opcUaStatusCodeGood
         ..sourceTimestamp = _t(4);
 
-      final masked = StateMan.applyBitMask(stamped, 0x0C, 2);
+      final masked = OpcUaStateMan.applyBitMask(stamped, 0x0C, 2);
 
       expect(masked.value, 3);
       expect(masked.sourceTimestamp, _t(4));

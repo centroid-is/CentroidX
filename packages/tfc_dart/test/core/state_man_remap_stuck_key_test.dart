@@ -69,7 +69,7 @@ void main() {
   test('re-pointing a key that is stuck in subscribe-retry makes it live '
       'and keeps it live', () async {
     final fake = TwoNodeClientApi();
-    final sm = await StateMan.create(
+    final sm = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []),
       keyMappings: KeyMappings(nodes: {'k': entryFor('BAD')}),
     );

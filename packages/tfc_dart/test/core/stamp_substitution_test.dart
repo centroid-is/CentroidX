@@ -49,7 +49,10 @@ import 'package:tfc_dart/core/alarm_stamp.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:tfc_dart/core/opcua_value_translation.dart';
-import 'package:tfc_dart/core/state_man.dart' show StateMan;
+import 'package:tfc_dart/core/state_man.dart'
+    show
+        OpcUaStateMan,
+        StateMan;
 import 'package:tfc_dart/core/umas_types.dart' show TypedVariableValue;
 import 'package:test/test.dart';
 
@@ -288,7 +291,7 @@ void main() {
       // stamps nothing, but it is exactly what a masked OPC UA key depends on,
       // and dropping it would be a silent regression with no arm on it.
       final source = _serverStamped()..statusCode = 0;
-      final masked = StateMan.applyBitMask(source, 0x0002, 1);
+      final masked = OpcUaStateMan.applyBitMask(source, 0x0002, 1);
 
       expect(masked.sourceTimestamp, _plantClock);
       expect(masked.statusCode, 0);

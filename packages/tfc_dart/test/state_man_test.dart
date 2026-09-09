@@ -483,7 +483,7 @@ void main() {
 
     group('StateMan.addSubscription integration', () {
       test('addSubscription wires stream correctly', () async {
-        final stateMan = await StateMan.create(
+        final stateMan = await OpcUaStateMan.create(
           config: StateManConfig(opcua: []),
           keyMappings: KeyMappings(nodes: {}),
         );
@@ -817,7 +817,7 @@ void main() {
         'no client matches', () async {
       // Create StateMan with no OPC-UA clients but a key mapping that
       // references an OPC-UA node — simulates startup without PLC.
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {
           'pump.speed': KeyMappingEntry(
@@ -853,7 +853,7 @@ void main() {
     });
 
     test('read() throws StateManException (not StateError) when no client matches', () async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {
           'pump.speed': KeyMappingEntry(
@@ -871,7 +871,7 @@ void main() {
     });
 
     test('write() throws StateManException (not StateError) when no client matches', () async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {
           'pump.speed': KeyMappingEntry(
@@ -889,7 +889,7 @@ void main() {
     });
 
     test('_getClientWrapper throws StateManException with helpful message', () async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {
           'pump.speed': KeyMappingEntry(

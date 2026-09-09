@@ -143,7 +143,7 @@ void main() {
   // ------------------------------------------------- arms 1-3: what is gone
 
   test('arm 1: bin/main.dart constructs no second StateMan', () {
-    final offenders = _linesContaining(code[_mainPath]!, 'StateMan.create(');
+    final offenders = _linesContaining(code[_mainPath]!, 'OpcUaStateMan.create(');
 
     expect(offenders, isEmpty,
         reason: 'ALRM-01. The composition root used to build a second '

@@ -10,7 +10,7 @@
 ///
 /// **Why the shape is `data → builders → [Gateway]` and not a constructor with
 /// twenty arguments.** `data_acquisition_isolate.dart` reads its configuration
-/// out of preferences and builds `StateMan.create` from it; the plant already
+/// out of preferences and builds `OpcUaStateMan.create` from it; the plant already
 /// has `StateManConfig`, `OpcUAConfig`, `ModbusConfig` and `M2400Config` on
 /// disk in that shape. Inventing a third convention would mean a migration for
 /// a file that is already written, so the per-protocol builders below
@@ -39,6 +39,7 @@ import 'package:tfc_dart/core/state_man.dart'
         KeyMappings,
         M2400DeviceClientAdapter,
         ModbusConfig,
+        OpcUaStateMan,
         StateManConfig;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_relay_server/tfc_relay_server.dart';

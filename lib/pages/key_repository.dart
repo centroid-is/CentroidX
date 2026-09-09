@@ -822,7 +822,7 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       _keyMappings = await KeyMappings.fromPrefs(prefs);
       _invalidateDerived();
       _savedJson = _currentJson();
-      _stateManConfig = await StateManConfig.fromPrefs(prefs);
+      _stateManConfig = await StateManConfigStorage.fromPrefs(prefs);
       _rebuildAliasLists();
     } catch (e) {
       _error = e.toString();

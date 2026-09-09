@@ -33,7 +33,7 @@
 ///
 /// ## Assumption A5, recorded rather than decided
 ///
-/// `StateMan.create(useIsolate: true)` is the app's default and keeps the
+/// `OpcUaStateMan.create(useIsolate: true)` is the app's default and keeps the
 /// blocking FFI off the event loop the `LagMonitor` measures. The gateway's hot
 /// path, though, is one isolate encoding once and fanning out (design §5), so
 /// every isolate boundary is a copy. [useIsolate] is therefore a constructor

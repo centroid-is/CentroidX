@@ -160,7 +160,7 @@ void main() async {
   if (statemanConfigFilePath == null) {
     throw Exception("Stateman Config file path needs to be set");
   }
-  final smConfig = await StateManConfig.fromFile(statemanConfigFilePath);
+  final smConfig = await StateManConfigStorage.fromFile(statemanConfigFilePath);
 
   final keyMappings = await KeyMappings.fromPrefs(prefs, createDefault: false);
 

@@ -94,7 +94,7 @@ typedef StateManFactory = Future<StateMan> Function({
 /// unit test. Those two properties have no other way to be observed, and both
 /// of them failing looks like nothing at all until it is a plant.
 final stateManFactoryProvider =
-    Provider<StateManFactory>((ref) => StateMan.create);
+    Provider<StateManFactory>((ref) => OpcUaStateMan.create);
 
 /// How the gateway-mode [StateMan] is built.
 ///
@@ -140,7 +140,7 @@ Future<StateMan> stateMan(Ref ref) async {
   // policy classes as `configure` and `administer` — so on the guarded object
   // they would be denials at boot.
   final systemPrefs = await ref.read(systemPreferencesProvider.future);
-  final config = await StateManConfig.fromPrefs(systemPrefs);
+  final config = await StateManConfigStorage.fromPrefs(systemPrefs);
 
   final keyMappings = await fetchKeyMappings(prefs, systemWrites: systemPrefs);
 

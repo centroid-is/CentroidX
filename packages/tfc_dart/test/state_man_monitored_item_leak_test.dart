@@ -85,12 +85,12 @@ class LeakCountingClientApi implements ClientApi {
 
 void main() {
   group('StateMan._monitor — monitored items must not accumulate', () {
-    late StateMan stateMan;
+    late OpcUaStateMan stateMan;
     late LeakCountingClientApi fake;
 
     setUp(() async {
       fake = LeakCountingClientApi();
-      stateMan = await StateMan.create(
+      stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {
           'silent.node': KeyMappingEntry(
@@ -172,7 +172,7 @@ void main() {
         // an answered error is the case that still walks the ladder.
         final erroring =
             LeakCountingClientApi(streamError: 'BadDeviceFailure');
-        final sm = await StateMan.create(
+        final sm = await OpcUaStateMan.create(
           config: StateManConfig(opcua: []),
           keyMappings: KeyMappings(nodes: {
             'silent.node': KeyMappingEntry(
@@ -251,7 +251,7 @@ void main() {
         // refusing new connections -- and it is the difference between a
         // transient overlap of two and unbounded growth.
         fake = LeakCountingClientApi(deleteDelay: const Duration(minutes: 5));
-        final sm = await StateMan.create(
+        final sm = await OpcUaStateMan.create(
           config: StateManConfig(opcua: []),
           keyMappings: KeyMappings(nodes: {
             'silent.node': KeyMappingEntry(

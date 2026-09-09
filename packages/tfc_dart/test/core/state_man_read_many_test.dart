@@ -32,7 +32,7 @@ void main() {
   test('readMany returns a value for every OPC UA key on one server',
       () async {
     final fake = ReadAttrClientApi();
-    final sm = await StateMan.create(
+    final sm = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []),
       keyMappings: KeyMappings(nodes: {
         'a': KeyMappingEntry(

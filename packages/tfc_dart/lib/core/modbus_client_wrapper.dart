@@ -6,8 +6,8 @@ import 'package:modbus_client/modbus_client.dart';
 import 'package:modbus_client_tcp/modbus_client_tcp.dart';
 import 'package:rxdart/rxdart.dart';
 
-import 'conn_meta.dart' show RollingRate;
-import 'state_man.dart' show ConnectionStatus;
+import 'rolling_rate.dart' show RollingRate;
+import 'state_man_types.dart' show ConnectionStatus;
 
 // =============================================================================
 // Data types and configuration classes

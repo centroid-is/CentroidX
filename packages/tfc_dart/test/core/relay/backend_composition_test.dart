@@ -59,7 +59,11 @@ import 'package:tfc_dart/core/relay/backend_writes.dart';
 import 'package:tfc_dart/core/relay/key_mapping_series_resolver.dart';
 import 'package:tfc_dart/core/relay/relay_config.dart';
 import 'package:tfc_dart/core/state_man.dart'
-    show KeyMappings, KeyMappingEntry, OpcUANodeConfig;
+    show
+        KeyMappingEntry,
+        KeyMappings,
+        OpcUANodeConfig,
+        OpcUaStateMan;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' show WriteRejected;
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 
@@ -1037,7 +1041,7 @@ void main() {
     });
 
     // REPLACED BY 14-08, deliberately. What used to stand here required
-    // `StateMan.create(`, `AlarmMan.create(` and `activeAlarms().listen(` to
+    // `OpcUaStateMan.create(`, `AlarmMan.create(` and `activeAlarms().listen(` to
     // still be PRESENT in bin/main.dart — a Phase 13 arm whose only job was to
     // stop the relay work "tidying away" a block that was not its to touch. It
     // was doing that job right up to this plan, which is the plan that deletes

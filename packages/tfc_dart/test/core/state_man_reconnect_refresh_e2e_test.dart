@@ -79,7 +79,7 @@ void main() {
       'after a node dies and the connection recovers, the surviving keys are '
       'still refreshed', () async {
     final fake = NodeScriptedClientApi();
-    final sm = await StateMan.create(
+    final sm = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []),
       keyMappings: KeyMappings(nodes: {
         for (final k in ['dead', 'alive1', 'alive2'])

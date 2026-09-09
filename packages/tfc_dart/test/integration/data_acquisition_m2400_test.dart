@@ -85,7 +85,7 @@ void main() {
           ),
         });
 
-        final stateMan = await StateMan.create(
+        final stateMan = await OpcUaStateMan.create(
           config: StateManConfig(opcua: [], jbtm: [m2400Config]),
           keyMappings: keyMappings,
           deviceClients: deviceClients,
@@ -157,7 +157,7 @@ void main() {
           ),
         });
 
-        final stateMan = await StateMan.create(
+        final stateMan = await OpcUaStateMan.create(
           config: StateManConfig(opcua: [], jbtm: configs),
           keyMappings: keyMappings,
           deviceClients: deviceClients,
@@ -222,7 +222,7 @@ void main() {
           ),
         });
 
-        final stateMan = await StateMan.create(
+        final stateMan = await OpcUaStateMan.create(
           config: StateManConfig(opcua: [], jbtm: [m2400Config]),
           keyMappings: keyMappings,
           deviceClients: deviceClients,
