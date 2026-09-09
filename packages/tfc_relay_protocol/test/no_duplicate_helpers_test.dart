@@ -243,7 +243,14 @@ void main() {
               'A second entry needs a ruling of its own, written where this '
               'message is');
       final resolved =
-          walk.where((f) => f.path.endsWith(fakeStateManSuffix)).toList();
+          // `/`-normalised: the allowlist keys are written with forward
+          // slashes, and `File.path` uses the platform separator, so this
+          // `endsWith` matched nothing on Windows and the arm below reddened
+          // about an allowlisted path that was present all along.
+          walk
+              .where((f) =>
+                  f.path.replaceAll(r'\', '/').endsWith(fakeStateManSuffix))
+              .toList();
       expect(resolved, hasLength(1),
           reason: 'the allowlisted path "$fakeStateManSuffix" matched '
               '${resolved.length} files in the walk. Zero means the entry is '
