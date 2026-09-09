@@ -203,6 +203,36 @@ Database _testDatabase() {
 Future<Database?> _throwingDatabase() async =>
     throw StateError('postgres unreachable: connection refused');
 
+/// A StateMan with **no relay client behind it** — the defect state.
+class _ClientlessStateMan extends Fake implements StateMan {
+  @override
+  String resolveKey(String key) => key;
+}
+
+/// A gateway-mode container whose StateMan has no relay client, plus a
+/// perfectly working database sitting right there.
+///
+/// The point of the second half: the local route is *available*, so a provider
+/// that quietly fell back to it would answer, and answer plausibly. That is
+/// the failure this pair of arms exists to refuse.
+Future<ProviderContainer> _gatewayPanelWithoutAClient() async {
+  final store = InMemoryPreferences();
+  await writeGatewayConfig(
+      store,
+      const GatewayConfig(
+          mode: TransportMode.gateway, url: 'wss://gateway.invalid:9443'));
+  final container = ProviderContainer(
+    overrides: [
+      localPreferencesProvider.overrideWithValue(store),
+      databaseProvider.overrideWith((ref) async => _testDatabase()),
+      stationNameProvider.overrideWithValue('phase18-panel'),
+      stateManProvider.overrideWith((ref) async => _ClientlessStateMan()),
+    ],
+  );
+  addTearDown(container.dispose);
+  return container;
+}
+
 void main() {
   // ---------------------------------------------------------------------------
   // Gap A — timeseries
@@ -291,6 +321,51 @@ void main() {
               'configured, and the boot window before the connection opens. '
               'What it must never mean again is "this panel is a gateway '
               'panel"');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Both gaps — the refuse-by-name discipline
+  // ---------------------------------------------------------------------------
+
+  group('a gateway station whose StateMan has no relay client', () {
+    test('timeseriesSourceProvider refuses by name — it does not answer null, '
+        'and it does not take the database sitting next to it', () async {
+      final container = await _gatewayPanelWithoutAClient();
+
+      await expectLater(
+        container.read(timeseriesSourceProvider.future),
+        throwsA(isA<UnsupportedError>()),
+        reason: 'a route that exists will be taken. Null here would put every '
+            'chart back on "no data yet" — the exact silence this change '
+            'removed — and a fall-through to the working database would put '
+            'the local route back on a station that must not have one, where '
+            'it would go on answering plausibly for months',
+      );
+    });
+
+    test('historyViewsProvider refuses by name for the same reason', () async {
+      final container = await _gatewayPanelWithoutAClient();
+
+      await expectLater(
+        container.read(historyViewsProvider.future),
+        throwsA(isA<UnsupportedError>()),
+        reason: 'null here is the empty picker again, by a different route',
+      );
+    });
+
+    test('the refusal names the file to fix, not the exception type', () async {
+      final container = await _gatewayPanelWithoutAClient();
+
+      await expectLater(
+        container.read(historyViewsProvider.future),
+        throwsA(predicate((Object e) =>
+            '$e'.contains('lib/providers/state_man.dart') &&
+            '$e'.contains('do not fall back to the database'))),
+        reason: 'the message is the whole value of refusing rather than '
+            'returning: whoever hits it has to be told where the defect is '
+            'and what the wrong fix would be',
+      );
     });
   });
 

@@ -71,6 +71,13 @@ final class _RecordingTimeseriesApi implements rp.TimeseriesApi {
     return rows[tableName] ?? const [];
   }
 
+  /// **Answers a SHORT map on purpose.** A table with no rows is simply absent
+  /// from the answer, which is what the far end really does: the gateway's
+  /// policy filter drops a series this station may not see, and a backend
+  /// older than `data_handlers.dart:334-348` answered whatever its reader
+  /// found. A fake that echoed the request back would make the "one entry per
+  /// requested table" property untestable — the adapter could key off the
+  /// answer and every arm would still pass.
   @override
   Future<Map<String, List<rp.TimeseriesData>>> queryTimeseriesDataMultiple(
       List<String> tableNames, DateTime to,
@@ -82,7 +89,8 @@ final class _RecordingTimeseriesApi implements rp.TimeseriesApi {
     final boom = failure;
     if (boom != null) throw boom;
     return {
-      for (final table in tableNames) table: rows[table] ?? const [],
+      for (final table in tableNames)
+        if (rows[table] != null) table: rows[table]!,
     };
   }
 
