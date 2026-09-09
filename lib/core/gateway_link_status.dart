@@ -162,6 +162,49 @@ enum GatewayLinkKind {
   notBuilt,
 }
 
+/// Whether a gateway panel in this link state could carry a sign-in.
+///
+/// The one honest answer to "can anybody sign in at this panel", asked of the
+/// only surface that knows. A gateway panel verifies credentials server-side
+/// over the socket (`RemoteStateMan.sessionLogin`), so a sign-in can succeed
+/// exactly when the socket can carry one — and this file's kinds are already
+/// the closed vocabulary for that. `lib/widgets/access_gate.dart` is the
+/// caller; `lib/access_routes.dart` says what it is used for.
+///
+/// **[GatewayLinkKind.connecting] answers true, deliberately.** A first
+/// attempt still inside its patience window is a panel that is probably about
+/// to work, and treating it as "nobody can sign in" would swing Server Config
+/// open for the first fifteen seconds of every healthy gateway boot. When the
+/// window closes without a session, `describeGatewayLink` reports
+/// [GatewayLinkKind.unreachable] instead and this answers false — which is the
+/// recovery case arriving on its own, fifteen seconds late and on the honest
+/// condition rather than on a blanket exemption.
+///
+/// **A null report answers true**, the closed answer. Null is gateway mode
+/// with `stateManProvider` still building, or direct mode where the question
+/// does not arise; neither is evidence that a sign-in is impossible, and an
+/// unresolved provider must never be the thing that opens a page.
+///
+/// The four terminal and near-terminal kinds all answer false because none of
+/// them can carry a credential: a refused token, a refused protocol version, a
+/// certificate this panel will not trust and a client that was never built are
+/// each a panel where `sessionLogin` has nowhere to go. Those are also exactly
+/// the faults Server Config fixes.
+bool gatewayLinkCanAuthenticate(GatewayLinkReport? report) {
+  if (report == null) return true;
+  switch (report.kind) {
+    case GatewayLinkKind.connected:
+    case GatewayLinkKind.connecting:
+      return true;
+    case GatewayLinkKind.unreachable:
+    case GatewayLinkKind.untrustedCertificate:
+    case GatewayLinkKind.credentialRefused:
+    case GatewayLinkKind.versionRefused:
+    case GatewayLinkKind.notBuilt:
+      return false;
+  }
+}
+
 /// One sentence, and the kind it reports under.
 ///
 /// Private, because it is a *prose* distinction and the public vocabulary is

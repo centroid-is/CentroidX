@@ -537,4 +537,66 @@ void main() {
       }
     });
   });
+
+  group('gatewayLinkCanAuthenticate', () {
+    // A gateway panel verifies credentials server-side over the socket, so
+    // "can anybody sign in here" is "can the socket carry one". This is the
+    // half of the Server Config exemption that `AccessAuthority` alone cannot
+    // answer -- see `lib/access_routes.dart`.
+
+    GatewayLinkReport reportOfKind(GatewayLinkKind kind) => GatewayLinkReport(
+          kind: kind,
+          headline: 'headline',
+          detail: 'detail',
+          url: Uri.parse('wss://10.50.10.11:9444/'),
+        );
+
+    test('a null report is the closed answer', () {
+      // Direct mode, or gateway mode with the client still building. Neither
+      // is evidence that a sign-in is impossible, and an unresolved provider
+      // must never be the thing that opens a page.
+      expect(gatewayLinkCanAuthenticate(null), isTrue);
+    });
+
+    test('connected and connecting can carry a sign-in', () {
+      expect(
+        gatewayLinkCanAuthenticate(reportOfKind(GatewayLinkKind.connected)),
+        isTrue,
+      );
+      expect(
+        gatewayLinkCanAuthenticate(reportOfKind(GatewayLinkKind.connecting)),
+        isTrue,
+        reason: 'a first attempt inside its patience window is a panel about '
+            'to work; treating it as unreachable would swing Server Config '
+            'open for the first fifteen seconds of every healthy boot',
+      );
+    });
+
+    test('every kind with no usable socket under it cannot', () {
+      for (final kind in const [
+        GatewayLinkKind.unreachable,
+        GatewayLinkKind.untrustedCertificate,
+        GatewayLinkKind.credentialRefused,
+        GatewayLinkKind.versionRefused,
+        GatewayLinkKind.notBuilt,
+      ]) {
+        expect(
+          gatewayLinkCanAuthenticate(reportOfKind(kind)),
+          isFalse,
+          reason: '$kind has nowhere for sessionLogin to go',
+        );
+      }
+    });
+
+    test('the seven kinds are partitioned, with nothing unclassified', () {
+      // The switch is exhaustive by the compiler; this is the count, so that
+      // an eighth kind arriving has to be sorted deliberately rather than
+      // inheriting whichever side someone happened to add it to.
+      final open = GatewayLinkKind.values
+          .where((k) => gatewayLinkCanAuthenticate(reportOfKind(k)))
+          .toSet();
+      expect(open, {GatewayLinkKind.connected, GatewayLinkKind.connecting});
+      expect(GatewayLinkKind.values.length, 7);
+    });
+  });
 }

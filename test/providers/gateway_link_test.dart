@@ -568,6 +568,41 @@ void main() {
       expect(report.sanHint, isNull);
     });
 
+    test('relayCanAuthenticateProvider follows the link, and is true in '
+        'direct mode', () async {
+      // The seam the Server Config exemption is keyed on. The rule itself is
+      // `gatewayLinkCanAuthenticate` (unit-tested over all seven kinds in
+      // `test/core/gateway_link_status_test.dart`); this arm is that the
+      // provider really reads the link rather than a constant, which is the
+      // half a pure test cannot see.
+      final direct =
+          await _panel(const GatewayConfig(mode: TransportMode.direct));
+      final directSub = direct.listen<bool>(
+          relayCanAuthenticateProvider, (_, __) {},
+          fireImmediately: true);
+      addTearDown(directSub.close);
+      await _untilTrue(() => direct.read(gatewayLinkProvider).hasValue);
+      expect(direct.read(relayCanAuthenticateProvider), isTrue,
+          reason: 'a direct station has no link to ask about, and the answer '
+              'must not be the one that opens a page');
+
+      final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = socket.port;
+      await socket.close();
+
+      final gateway = await _panel(GatewayConfig(
+          mode: TransportMode.gateway, url: 'ws://127.0.0.1:$port'));
+      final gatewaySub = gateway.listen<bool>(
+          relayCanAuthenticateProvider, (_, __) {},
+          fireImmediately: true);
+      addTearDown(gatewaySub.close);
+
+      await _untilTrue(() => !gateway.read(relayCanAuthenticateProvider));
+      expect(gateway.read(relayCanAuthenticateProvider), isFalse,
+          reason: 'nobody can sign in over a closed port, which is what keeps '
+              'Server Config reachable on a mistyped gateway URL');
+    });
+
     test('a wss dial that cannot be verified reads as a certificate refusal',
         () async {
       // No TLS server and no leaf: `_refusalReason` maps every

@@ -22,7 +22,7 @@
 /// **The decision comes from [resolveAccessGate] and is not re-derived here.**
 /// A second copy of "locked when…" is how a lock ends up on a control that
 /// works, the first time one of the two copies is edited.
-/// [allowWhenRepositoryUnavailable] is false with no parameter to change it:
+/// [allowWhenNobodyCanSignIn] is false with no parameter to change it:
 /// the one route that stays open through a database outage is Server Config,
 /// for the reasons `access_gate.dart` sets out at length, and none of them is
 /// about setting a plant's clock.
@@ -67,7 +67,7 @@ bool groupAllowed(WidgetRef ref, AccessGroup group) =>
       group: group,
       authority: ref.watch(accessAuthorityProvider),
       session: ref.watch(accessSessionProvider),
-      allowWhenRepositoryUnavailable: false,
+      allowWhenNobodyCanSignIn: false,
     ) ==
     AccessGateState.allowed;
 
@@ -94,7 +94,7 @@ Future<bool> guardGroupAction(
         group: group,
         authority: ref.read(accessAuthorityProvider),
         session: ref.read(accessSessionProvider),
-        allowWhenRepositoryUnavailable: false,
+        allowWhenNobodyCanSignIn: false,
       ) ==
       AccessGateState.allowed) {
     return true;

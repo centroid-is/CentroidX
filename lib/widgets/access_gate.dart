@@ -11,6 +11,7 @@ import 'package:tfc_access/tfc_access.dart';
 
 import '../core/access_authority.dart';
 import '../providers/access.dart';
+import '../providers/gateway_link.dart';
 import 'access_sign_in_dialog.dart';
 import 'base_scaffold.dart';
 
@@ -62,7 +63,7 @@ enum AccessGateState {
 /// — and the second is the case that matters, because without this a typo turns
 /// into an on-site recovery. `PROJECT.md` is explicit that the realistic failure
 /// here is accident and shift confusion, not a malicious insider. So
-/// [allowWhenRepositoryUnavailable] is passed true for exactly one route
+/// [allowWhenNobodyCanSignIn] is passed true for exactly one route
 /// (`kServerConfigRoute`) and false everywhere else.
 ///
 /// **No authority, the other five stay shut.** The argument above is entirely
@@ -81,14 +82,33 @@ enum AccessGateState {
 /// to stop therefore cannot arise on a relay authority: every elevated gateway
 /// session in memory was minted by the server during this run.
 ///
-/// **The Server Config exemption fires on relay too, and permanently.** It is
-/// keyed on "no local repository", which a gateway panel satisfies for its
-/// whole life. That is deliberate rather than an accident of the refactor: the
-/// panel cannot tell a healthy gateway from a mistyped URL — `relaySignIn`
-/// exists whenever a client was *constructed*, which is exactly the state a
-/// wrong URL leaves — so gating Server Config on `administer` here would brick
-/// a station on the one page that can fix it. It is also what this code already
-/// did before the fix, so nothing widens.
+/// **The Server Config exemption does NOT fire on a healthy relay, and that
+/// is the whole of [relayCanAuthenticate].** For one revision it did: the
+/// exemption was keyed on "no local repository", which a gateway panel
+/// satisfies *for its whole life* — `databaseProvider` returns before reading
+/// a row whenever the transport is gateway — so a condition written for a
+/// transient Postgres outage became a permanent open door on every gateway
+/// panel, on the one page that edits the transport, the gateway address, the
+/// database settings and every PLC endpoint. Server Config was reachable at a
+/// gateway panel with nobody signed in.
+///
+/// The argument that put it there was not wrong, only asked of the wrong
+/// witness. It said the panel cannot tell a healthy gateway from a mistyped
+/// URL, because `relaySignIn` exists whenever a client was *constructed* —
+/// which is exactly the state a wrong URL leaves. True of `relaySignIn`, and
+/// false of the panel: `gatewayLinkProvider` has told it apart since phase 15,
+/// in seven kinds. [relayCanAuthenticate] is that report reduced to the one
+/// bit this function needs (`gatewayLinkCanAuthenticate`), and it makes the
+/// exemption fire on the honest condition — **nobody can sign in here** —
+/// rather than on "there is no local repository", which was only ever a proxy
+/// for it and stopped being one.
+///
+/// So a reachable gateway gates Server Config on `administer` like every other
+/// raised route, and a gateway that cannot carry a credential opens it, which
+/// is the mistyped-URL recovery the paragraph above is about. The recovery
+/// arrives about fifteen seconds later than it used to — the patience window
+/// `describeGatewayLink` spends before it will call a link unreachable — and
+/// that is the entire cost of closing the door.
 ///
 /// **Loading is neither.** `AsyncLoading` is [AccessGateState.waiting], so a
 /// slow connection is never mistaken for a missing one. That matters more for
@@ -104,16 +124,19 @@ enum AccessGateState {
 /// UaExpert or `psql` walks around every guard. Bricking a plant's station over
 /// a typo is the likelier and worse failure.
 ///
-/// The parameter is named for the condition it enforces. It is deliberately not
-/// `allowWhenUnconfigured`: it fires on *any* station with no local repository
-/// — unconfigured, unreachable and gateway alike — and a name claiming the
-/// narrower condition would be the same defect class as a mitigation sentence
-/// that describes its own hole.
+/// The parameter is named for the condition it enforces, and has now been
+/// wrong in both directions. `allowWhenUnconfigured` claimed a condition
+/// narrower than the code enforced; `allowWhenRepositoryUnavailable` claimed
+/// one broader than the code should ever have enforced, and that name is what
+/// made a permanent gateway exemption read as a database outage. It fires when
+/// nothing on this station can verify a credential — an absent authority, or a
+/// relay authority with no link under it — and the name says exactly that.
 AccessGateState resolveAccessGate({
   required AccessGroup group,
   required AsyncValue<AccessAuthority> authority,
   required AsyncValue<AccessSession> session,
-  required bool allowWhenRepositoryUnavailable,
+  required bool allowWhenNobodyCanSignIn,
+  bool relayCanAuthenticate = true,
 }) {
   // Anonymous holds `operate`, so an unraised route must cost neither a frame
   // nor a lock — not even while the providers behind the other branches are
@@ -134,11 +157,23 @@ AccessGateState resolveAccessGate({
   final authority0 =
       authority.hasError ? AccessAuthority.none : authority.requireValue;
 
-  // The exemption, before the session and for both no-repository authorities:
-  // Server Config is where a wrong Postgres address and a wrong gateway URL are
-  // both fixed, and neither can be fixed from a page that demands the very
-  // sign-in it has just broken.
-  if (authority0 != AccessAuthority.local && allowWhenRepositoryUnavailable) {
+  // Can anything here verify a credential? [AccessAuthority.none] says no by
+  // itself. [AccessAuthority.relay] says "the gateway can" — a claim with a
+  // wire under it, and [relayCanAuthenticate] is whether that wire is there.
+  // [AccessAuthority.local] is the one that needs no second question: the gate
+  // never looked past the repository's existence in direct mode and still does
+  // not, so direct stations behave exactly as they did.
+  final nobodyCanSignIn = switch (authority0) {
+    AccessAuthority.none => true,
+    AccessAuthority.local => false,
+    AccessAuthority.relay => !relayCanAuthenticate,
+  };
+
+  // The exemption, before the session and for every authority that cannot
+  // verify anybody: Server Config is where a wrong Postgres address and a
+  // wrong gateway URL are both fixed, and neither can be fixed from a page
+  // that demands the very sign-in it has just broken.
+  if (nobodyCanSignIn && allowWhenNobodyCanSignIn) {
     return AccessGateState.allowed;
   }
 
@@ -349,7 +384,7 @@ const Key kAccessGateWaitingKey = Key('access-gate-waiting');
 /// pass through, so gating there means every way in meets the same decision.
 ///
 /// The gate knows nothing about paths, `kRaisedRoutes` or `RouteRegistry`:
-/// [group] and [allowWhenRepositoryUnavailable] are handed in at the route
+/// [group] and [allowWhenNobodyCanSignIn] are handed in at the route
 /// table, where the path is already spelled out. That is what lets this widget
 /// land beside the route declarations without touching them, and it means the
 /// gate has no way to fail open through a lookup miss.
@@ -361,7 +396,7 @@ class AccessGate extends ConsumerWidget {
     required this.group,
     required this.title,
     required this.child,
-    this.allowWhenRepositoryUnavailable = false,
+    this.allowWhenNobodyCanSignIn = false,
     this.openSignIn = showAccessSignInDialog,
   });
 
@@ -377,10 +412,15 @@ class AccessGate extends ConsumerWidget {
   /// run its `initState`, its queries or its subscriptions behind a lock.
   final Widget child;
 
-  /// Whether an unavailable access repository opens this route. Defaults to
+  /// Whether a station where nobody can sign in opens this route. Defaults to
   /// false, so a caller that forgets it gets the strict behaviour; see
   /// [resolveAccessGate] for why exactly one route passes it true.
-  final bool allowWhenRepositoryUnavailable;
+  ///
+  /// The other half of that condition — whether a relay authority has a link
+  /// under it — is not a parameter: the widget watches
+  /// [relayCanAuthenticateProvider] itself, so a caller cannot pass a stale
+  /// answer or a different one from the menu badge's.
+  final bool allowWhenNobodyCanSignIn;
 
   /// How the locked page opens the sign-in prompt. Injectable for the same
   /// reason `AccessStatusAction` makes it injectable.
@@ -392,7 +432,10 @@ class AccessGate extends ConsumerWidget {
       group: group,
       authority: ref.watch(accessAuthorityProvider),
       session: ref.watch(accessSessionProvider),
-      allowWhenRepositoryUnavailable: allowWhenRepositoryUnavailable,
+      allowWhenNobodyCanSignIn: allowWhenNobodyCanSignIn,
+      // Watched, not read: a gateway that comes up under a panel showing an
+      // exempt Server Config must close it again without a navigation.
+      relayCanAuthenticate: ref.watch(relayCanAuthenticateProvider),
     );
 
     switch (state) {

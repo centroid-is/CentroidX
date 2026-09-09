@@ -283,3 +283,27 @@ final gatewayLinkProvider = StreamProvider<GatewayLinkReport?>((ref) {
 
   return controller.stream;
 });
+
+/// Whether a sign-in could reach an authority from this panel right now.
+///
+/// True in direct mode and on a healthy gateway; false on a gateway panel
+/// whose link cannot carry a credential — a wrong URL, an unreachable
+/// address, a refused certificate, a refused token, a client that never got
+/// built. `resolveAccessGate` reads it, and `lib/access_routes.dart` sets out
+/// what it is for: the Server Config exemption is keyed on "nobody can sign in
+/// here", and on a gateway panel this is the half of that question the
+/// authority alone cannot answer.
+///
+/// **A `Provider` over [gatewayLinkProvider] rather than a second computation
+/// of the same fact.** The route gate and the menu badge both ask here, so the
+/// lock on the menu entry and the gate on the page cannot disagree about a
+/// dead link — which is the same rule `routeAllowedWhenNobodyCanSignIn`
+/// enforces for the path half of the question.
+///
+/// **Cheap in direct mode.** [gatewayLinkProvider] reads the device-local
+/// transport row and emits null without ever watching `stateManProvider`
+/// unless the station is in gateway mode, so a direct panel does not build an
+/// OPC UA session to answer this.
+final relayCanAuthenticateProvider = Provider<bool>((ref) {
+  return gatewayLinkCanAuthenticate(ref.watch(gatewayLinkProvider).valueOrNull);
+});

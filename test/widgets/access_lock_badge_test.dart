@@ -6,7 +6,7 @@
 /// `Size.zero`, never by `findsNothing` on the icon, because an invisible
 /// widget that still takes 8 px of gap would pass the second and fail the
 /// first. The second is that the badge and the gate cannot drift: the badge
-/// calls `resolveAccessGate` and `routeAllowedWhenRepositoryUnavailable`
+/// calls `resolveAccessGate` and `routeAllowedWhenNobodyCanSignIn`
 /// rather than keeping its own copy of "locked when…", so the repository
 /// cases here are the same truth table plan 02-02 pinned, re-asserted through
 /// a widget.
@@ -26,6 +26,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/access_routes.dart';
 import 'package:tfc/core/access_authority.dart';
 import 'package:tfc/providers/access.dart';
+import 'package:tfc/providers/gateway_link.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/access_lock_badge.dart';
 import 'package:tfc_access/tfc_access.dart';
@@ -160,6 +161,7 @@ Widget _host({
   AccessSession? session,
   bool hangingSession = false,
   Future<AccessAuthority> Function() repository = _presentRepository,
+  bool? relayCanAuthenticate,
 }) {
   return ProviderScope(
     overrides: [
@@ -167,6 +169,9 @@ Widget _host({
           ? _HangingSession()
           : _FixedSession(session ?? _anonymous())),
       accessAuthorityProvider.overrideWith((ref) => repository()),
+      if (relayCanAuthenticate != null)
+        relayCanAuthenticateProvider
+            .overrideWith((ref) => relayCanAuthenticate),
     ],
     child: MaterialApp(
       home: Scaffold(
@@ -414,6 +419,60 @@ void main() {
       expect(_lockGlyph, findsNothing,
           reason: 'the gateway verified this session; the missing database is '
               'not a reason to lock the page');
+    });
+
+    testWidgets(
+        'Server Config wears a lock on a healthy gateway panel, and the gate '
+        'agrees', (tester) async {
+      // The badge and the route gate share both halves of the exemption: the
+      // path predicate and `relayCanAuthenticateProvider`. A badge that kept
+      // its own copy of either is how a lock ends up on a page that opens.
+      await tester.pumpWidget(_host(
+        path: kServerConfigRoute,
+        repository: _relayAuthority,
+        relayCanAuthenticate: true,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(_lockGlyph, findsOneWidget,
+          reason: 'a gateway panel has no repository by design; that must no '
+              'longer read as a database outage');
+    });
+
+    testWidgets(
+        'Server Config loses its lock when the gateway link cannot carry a '
+        'sign-in', (tester) async {
+      await tester.pumpWidget(_host(
+        path: kServerConfigRoute,
+        repository: _relayAuthority,
+        relayCanAuthenticate: false,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(_badgeSize(tester), Size.zero);
+      expect(_lockGlyph, findsNothing,
+          reason: 'the page that fixes a mistyped gateway URL must not wear a '
+              'lock the operator cannot pass');
+    });
+
+    testWidgets(
+        'an unreachable gateway link unlocks Server Config and nothing else',
+        (tester) async {
+      for (final path in kRaisedRoutes.keys) {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpWidget(_host(
+          path: path,
+          repository: _relayAuthority,
+          relayCanAuthenticate: false,
+        ));
+        await tester.pumpAndSettle();
+
+        expect(
+          _lockGlyph,
+          path == kServerConfigRoute ? findsNothing : findsOneWidget,
+          reason: path,
+        );
+      }
     });
 
     testWidgets('the two causes of unavailable give the same badge, per route',

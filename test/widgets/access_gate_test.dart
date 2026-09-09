@@ -18,6 +18,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/access_authority.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/providers/access.dart';
+import 'package:tfc/providers/gateway_link.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/access_gate.dart';
 import 'package:tfc/widgets/access_sign_in_dialog.dart';
@@ -97,7 +98,7 @@ void main() {
           group: AccessGroup.operate,
           authority: _authorityLoading(),
           session: _sessionLoading(),
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         ),
         AccessGateState.allowed,
       );
@@ -110,7 +111,7 @@ void main() {
             group: AccessGroup.operate,
             authority: authority,
             session: _sessionError(),
-            allowWhenRepositoryUnavailable: false,
+            allowWhenNobodyCanSignIn: false,
           ),
           AccessGateState.allowed,
         );
@@ -127,7 +128,7 @@ void main() {
               group: group,
               authority: _authorityLoading(),
               session: _anonymous(),
-              allowWhenRepositoryUnavailable: flag,
+              allowWhenNobodyCanSignIn: flag,
             ),
             AccessGateState.waiting,
             reason: 'a slow connection must not be read as a missing one '
@@ -144,14 +145,14 @@ void main() {
           group: AccessGroup.configure,
           authority: _authorityLoading(),
           session: _elevated(const {AccessGroup.operate, AccessGroup.configure}),
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         ),
         AccessGateState.waiting,
       );
     });
 
     test(
-        'no authority with allowWhenRepositoryUnavailable: true is '
+        'no authority with allowWhenNobodyCanSignIn: true is '
         'allowed, in both causes, for every group', () {
       _unauthenticatedStations.forEach((cause, authority) {
         for (final group in _raisableGroups) {
@@ -160,7 +161,7 @@ void main() {
               group: group,
               authority: authority,
               session: _anonymous(),
-              allowWhenRepositoryUnavailable: true,
+              allowWhenNobodyCanSignIn: true,
             ),
             AccessGateState.allowed,
             reason: '$group, $cause',
@@ -170,7 +171,7 @@ void main() {
     });
 
     test(
-        'no authority with allowWhenRepositoryUnavailable: false is '
+        'no authority with allowWhenNobodyCanSignIn: false is '
         'denied, in both causes, for every group including administer', () {
       _unauthenticatedStations.forEach((cause, authority) {
         for (final group in _raisableGroups) {
@@ -179,7 +180,7 @@ void main() {
               group: group,
               authority: authority,
               session: _anonymous(),
-              allowWhenRepositoryUnavailable: false,
+              allowWhenNobodyCanSignIn: false,
             ),
             AccessGateState.denied,
             reason: '$group, $cause',
@@ -200,7 +201,7 @@ void main() {
             authority: authority,
             session:
                 _elevated(const {AccessGroup.operate, AccessGroup.configure}),
-            allowWhenRepositoryUnavailable: false,
+            allowWhenNobodyCanSignIn: false,
           ),
           AccessGateState.denied,
           reason: cause,
@@ -217,13 +218,13 @@ void main() {
               group: group,
               authority: _authorityError(),
               session: _anonymous(),
-              allowWhenRepositoryUnavailable: flag,
+              allowWhenNobodyCanSignIn: flag,
             ),
             resolveAccessGate(
               group: group,
               authority: _none(),
               session: _anonymous(),
-              allowWhenRepositoryUnavailable: flag,
+              allowWhenNobodyCanSignIn: flag,
             ),
             reason: 'the rule does not care why the station can authenticate '
                 'nobody ($group, flag $flag)',
@@ -242,7 +243,7 @@ void main() {
             group: AccessGroup.administer,
             authority: authority,
             session: _anonymous(),
-            allowWhenRepositoryUnavailable: true,
+            allowWhenNobodyCanSignIn: true,
           ),
           AccessGateState.allowed,
           reason: 'server config must open — $cause',
@@ -256,7 +257,7 @@ void main() {
               group: group,
               authority: authority,
               session: _anonymous(),
-              allowWhenRepositoryUnavailable: false,
+              allowWhenNobodyCanSignIn: false,
             ),
             AccessGateState.denied,
             reason: 'the other five must stay locked — $group, $cause',
@@ -273,7 +274,7 @@ void main() {
           group: AccessGroup.configure,
           authority: _local(),
           session: _sessionLoading(),
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         ),
         AccessGateState.waiting,
       );
@@ -285,7 +286,7 @@ void main() {
           group: AccessGroup.configure,
           authority: _local(),
           session: _sessionError(),
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         ),
         AccessGateState.denied,
       );
@@ -298,7 +299,7 @@ void main() {
           authority: _local(),
           session:
               _elevated(const {AccessGroup.operate, AccessGroup.configure}),
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         ),
         AccessGateState.allowed,
       );
@@ -311,7 +312,7 @@ void main() {
           authority: _local(),
           session:
               _elevated(const {AccessGroup.operate, AccessGroup.configure}),
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         ),
         AccessGateState.denied,
       );
@@ -319,7 +320,7 @@ void main() {
 
     test(
         'the exemption goes inert the moment a local repository exists: '
-        'allowWhenRepositoryUnavailable: true with an anonymous session is '
+        'allowWhenNobodyCanSignIn: true with an anonymous session is '
         'denied', () {
       for (final group in _raisableGroups) {
         expect(
@@ -327,7 +328,7 @@ void main() {
             group: group,
             authority: _local(),
             session: _anonymous(),
-            allowWhenRepositoryUnavailable: true,
+            allowWhenNobodyCanSignIn: true,
           ),
           AccessGateState.denied,
           reason: 'server config is gated like everything else once the '
@@ -342,13 +343,13 @@ void main() {
         group: AccessGroup.administer,
         authority: _local(),
         session: _elevated(const {AccessGroup.operate}),
-        allowWhenRepositoryUnavailable: false,
+        allowWhenNobodyCanSignIn: false,
       );
       final anonymous = resolveAccessGate(
         group: AccessGroup.administer,
         authority: _local(),
         session: _anonymous(),
-        allowWhenRepositoryUnavailable: false,
+        allowWhenNobodyCanSignIn: false,
       );
       expect(elevated, AccessGateState.denied);
       expect(elevated, anonymous,
@@ -370,7 +371,7 @@ void main() {
             group: group,
             authority: _relay(),
             session: _elevated({AccessGroup.operate, group}),
-            allowWhenRepositoryUnavailable: false,
+            allowWhenNobodyCanSignIn: false,
           ),
           AccessGateState.allowed,
           reason: 'the gateway verified this session server-side ($group)',
@@ -387,13 +388,13 @@ void main() {
           group: AccessGroup.configure,
           authority: _relay(),
           session: _elevated(const {AccessGroup.operate, AccessGroup.configure}),
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         ),
         isNot(resolveAccessGate(
           group: AccessGroup.configure,
           authority: _none(),
           session: _elevated(const {AccessGroup.operate, AccessGroup.configure}),
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         )),
       );
     });
@@ -406,7 +407,7 @@ void main() {
             group: group,
             authority: _relay(),
             session: _anonymous(),
-            allowWhenRepositoryUnavailable: false,
+            allowWhenNobodyCanSignIn: false,
           ),
           AccessGateState.denied,
           reason: 'signing in is what opens these, on any transport ($group)',
@@ -420,7 +421,7 @@ void main() {
           group: AccessGroup.administer,
           authority: _relay(),
           session: _elevated(const {AccessGroup.operate, AccessGroup.configure}),
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         ),
         AccessGateState.denied,
       );
@@ -432,7 +433,7 @@ void main() {
           group: AccessGroup.configure,
           authority: _relay(),
           session: _sessionLoading(),
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         ),
         AccessGateState.waiting,
       );
@@ -441,15 +442,52 @@ void main() {
           group: AccessGroup.configure,
           authority: _relay(),
           session: _sessionError(),
-          allowWhenRepositoryUnavailable: false,
+          allowWhenNobodyCanSignIn: false,
         ),
         AccessGateState.denied,
       );
     });
 
     test(
-        'Server Config stays open on a gateway panel whatever the session — a '
-        'wrong gateway URL is fixed on that page and nowhere else', () {
+        'Server Config is GATED on a reachable gateway panel — the exemption '
+        'is for a station nobody can sign in at, and this is not one', () {
+      expect(
+        resolveAccessGate(
+          group: AccessGroup.administer,
+          authority: _relay(),
+          session: _anonymous(),
+          allowWhenNobodyCanSignIn: true,
+          relayCanAuthenticate: true,
+        ),
+        AccessGateState.denied,
+        reason: 'a gateway panel has no repository by design and permanently, '
+            'so an exemption keyed on that was an open Server Config on every '
+            'gateway panel, for its whole life',
+      );
+    });
+
+    test(
+        'Server Config opens on a reachable gateway panel for a session that '
+        'actually holds administer', () {
+      expect(
+        resolveAccessGate(
+          group: AccessGroup.administer,
+          authority: _relay(),
+          session: _elevated(
+            const {AccessGroup.operate, AccessGroup.administer},
+          ),
+          allowWhenNobodyCanSignIn: true,
+          relayCanAuthenticate: true,
+        ),
+        AccessGateState.allowed,
+        reason: 'the exemption is inert; the relayed session decides, exactly '
+            'as it does for every other raised route',
+      );
+    });
+
+    test(
+        'Server Config stays open when the gateway link cannot carry a '
+        'sign-in — the mistyped-URL recovery, on the honest condition', () {
       for (final session in [
         _anonymous(),
         _elevated(const {AccessGroup.operate, AccessGroup.configure}),
@@ -461,11 +499,93 @@ void main() {
             group: AccessGroup.administer,
             authority: _relay(),
             session: session,
-            allowWhenRepositoryUnavailable: true,
+            allowWhenNobodyCanSignIn: true,
+            relayCanAuthenticate: false,
           ),
           AccessGateState.allowed,
-          reason: 'the panel cannot tell a healthy gateway from a mistyped '
-              'one, so this exemption is permanent there',
+          reason: 'nobody can sign in over a link that will not come up, so '
+              'the page that fixes the URL must stay reachable',
+        );
+      }
+    });
+
+    test(
+        'an unreachable gateway link opens Server Config and nothing else — '
+        'the recovery does not widen into the other raised routes', () {
+      for (final group in [
+        AccessGroup.configure,
+        AccessGroup.administer,
+        AccessGroup.users,
+      ]) {
+        expect(
+          resolveAccessGate(
+            group: group,
+            authority: _relay(),
+            session: _anonymous(),
+            allowWhenNobodyCanSignIn: false,
+            relayCanAuthenticate: false,
+          ),
+          AccessGateState.denied,
+        );
+      }
+    });
+
+    test('relayCanAuthenticate defaults to true, the closed answer', () {
+      expect(
+        resolveAccessGate(
+          group: AccessGroup.administer,
+          authority: _relay(),
+          session: _anonymous(),
+          allowWhenNobodyCanSignIn: true,
+        ),
+        AccessGateState.denied,
+        reason: 'a call site that forgets the parameter must gate, not open',
+      );
+    });
+  });
+
+  group('resolveAccessGate — relayCanAuthenticate touches only relay', () {
+    test('no authority is exempt whatever the link says', () {
+      for (final linkUsable in [true, false]) {
+        expect(
+          resolveAccessGate(
+            group: AccessGroup.administer,
+            authority: _none(),
+            session: _anonymous(),
+            allowWhenNobodyCanSignIn: true,
+            relayCanAuthenticate: linkUsable,
+          ),
+          AccessGateState.allowed,
+          reason: 'a direct station with no reachable Postgres has no link to '
+              'ask about; the outage exemption this was always for still fires',
+        );
+      }
+    });
+
+    test('a local authority is gated whatever the link says — direct mode is '
+        'untouched by this change', () {
+      for (final linkUsable in [true, false]) {
+        expect(
+          resolveAccessGate(
+            group: AccessGroup.administer,
+            authority: _local(),
+            session: _anonymous(),
+            allowWhenNobodyCanSignIn: true,
+            relayCanAuthenticate: linkUsable,
+          ),
+          AccessGateState.denied,
+        );
+        expect(
+          resolveAccessGate(
+            group: AccessGroup.administer,
+            authority: _local(),
+            session: _elevated(
+              const {AccessGroup.operate, AccessGroup.administer},
+            ),
+            allowWhenNobodyCanSignIn: true,
+            relayCanAuthenticate: linkUsable,
+          ),
+          AccessGateState.allowed,
         );
       }
     });
@@ -686,7 +806,7 @@ void main() {
     });
     tearDown(() => RouteRegistry().menuItems.clear());
 
-    test('allowWhenRepositoryUnavailable defaults to false', () {
+    test('allowWhenNobodyCanSignIn defaults to false', () {
       // A caller that forgets the flag gets the strict behaviour. The
       // permissive direction has to be asked for, at the one route that needs
       // it.
@@ -695,7 +815,7 @@ void main() {
         title: 'Page Editor',
         child: SizedBox.shrink(),
       );
-      expect(gate.allowWhenRepositoryUnavailable, isFalse);
+      expect(gate.allowWhenNobodyCanSignIn, isFalse);
     });
 
     test('group is required and has no default', () {
@@ -875,12 +995,12 @@ void main() {
     });
 
     testWidgets(
-        'allowWhenRepositoryUnavailable: true renders the child with no '
+        'allowWhenNobodyCanSignIn: true renders the child with no '
         'repository', (tester) async {
       final router = buildAccessGateRouter(const AccessGate(
         group: AccessGroup.administer,
         title: 'Server Config',
-        allowWhenRepositoryUnavailable: true,
+        allowWhenNobodyCanSignIn: true,
         child: _GatedPage(),
       ));
       await tester.pumpWidget(buildAccessGateShell(
@@ -896,7 +1016,7 @@ void main() {
     });
 
     testWidgets(
-        'allowWhenRepositoryUnavailable: true renders the lock once a '
+        'allowWhenNobodyCanSignIn: true renders the lock once a '
         'repository exists', (tester) async {
       // The exemption is inert the moment a repository answers — a second
       // `pumpWidget` in the test above would tear the Beamer delegate down
@@ -904,7 +1024,7 @@ void main() {
       final router = buildAccessGateRouter(const AccessGate(
         group: AccessGroup.administer,
         title: 'Server Config',
-        allowWhenRepositoryUnavailable: true,
+        allowWhenNobodyCanSignIn: true,
         child: _GatedPage(),
       ));
       await tester.pumpWidget(buildAccessGateShell(
@@ -918,6 +1038,54 @@ void main() {
       expect(find.byType(AccessLockedBody), findsOneWidget);
       expect(find.text(_kGatedChildText), findsNothing);
       expect(_childInits, 0);
+    });
+
+    testWidgets(
+        'the gate reads relayCanAuthenticateProvider: a healthy gateway panel '
+        'locks Server Config with nobody signed in', (tester) async {
+      // The wiring, not the rule. `resolveAccessGate` can be exactly right and
+      // the page still open if the widget never asks the provider — which is
+      // how the original defect reached a rig.
+      final router = buildAccessGateRouter(const AccessGate(
+        group: AccessGroup.administer,
+        title: 'Server Config',
+        allowWhenNobodyCanSignIn: true,
+        child: _GatedPage(),
+      ));
+      await tester.pumpWidget(buildAccessGateShell(
+        router: router,
+        session: _FixedSession(
+            AccessSession.anonymous(const {AccessGroup.operate})),
+        authority: _relayAuthority,
+        relayCanAuthenticate: true,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AccessLockedBody), findsOneWidget);
+      expect(find.text(_kGatedChildText), findsNothing);
+      expect(_childInits, 0);
+    });
+
+    testWidgets(
+        'a gateway panel whose link cannot carry a sign-in still opens Server '
+        'Config — the mistyped-URL recovery, end to end', (tester) async {
+      final router = buildAccessGateRouter(const AccessGate(
+        group: AccessGroup.administer,
+        title: 'Server Config',
+        allowWhenNobodyCanSignIn: true,
+        child: _GatedPage(),
+      ));
+      await tester.pumpWidget(buildAccessGateShell(
+        router: router,
+        session: _FixedSession(
+            AccessSession.anonymous(const {AccessGroup.operate})),
+        authority: _relayAuthority,
+        relayCanAuthenticate: false,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text(_kGatedChildText), findsOneWidget);
+      expect(find.byType(AccessLockedBody), findsNothing);
     });
   });
 }
@@ -1134,11 +1302,18 @@ Widget buildAccessGateShell({
   required BeamerDelegate router,
   required AccessSessionController session,
   required Future<AccessAuthority> Function() authority,
+  bool? relayCanAuthenticate,
 }) {
   return ProviderScope(
     overrides: [
       accessSessionProvider.overrideWith(() => session),
       accessAuthorityProvider.overrideWith((ref) => authority()),
+      // Left alone unless a test says otherwise: unoverridden it resolves to
+      // true, the closed answer, which is what every direct-mode case here
+      // wants and what a gateway panel with a healthy link reports.
+      if (relayCanAuthenticate != null)
+        relayCanAuthenticateProvider
+            .overrideWith((ref) => relayCanAuthenticate),
     ],
     child: BeamerProvider(
       routerDelegate: router,
