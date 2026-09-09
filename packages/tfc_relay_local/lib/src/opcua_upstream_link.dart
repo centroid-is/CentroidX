@@ -419,7 +419,73 @@ final class OpcUaUpstreamLink implements UpstreamLink {
             monitored.key, qualityForOpcUaErrorText(error.toString()));
       },
     );
+    // **The decode probe — because the monitor path CANNOT say "undecodable".**
+    // The binding's monitor callback wraps its whole decode in a catch whose
+    // only act is a write to stderr (`client.dart`, `_safeErr("Error
+    // converting data for: …")`): a Guid/ByteString/LocalizedText/Range tag
+    // produces neither a sample nor an `onError`, ever, and the key sits at
+    // `uncertainNotYetKnown` for the life of the process. The 200-server
+    // bench measured exactly that, on 4 of 28 type-matrix keys per server.
+    // The READ path does propagate the throw, so one bounded read per key per
+    // epoch is how this link learns the fact the subscription never will.
+    unawaited(_probeDecode(monitored.key));
   }
+
+  /// Keys already decode-probed, by the epoch they were probed under.
+  ///
+  /// One probe per key **per epoch**, not per establish: a reconnect inside an
+  /// epoch is the same address space by definition, and re-probing fifty keys
+  /// on every flap is a read storm against a PLC at its slowest. A reprogram
+  /// (epoch bump) is the one moment a tag's type can genuinely change, so a
+  /// new epoch probes again. A TRANSIENT probe failure does not mark the key
+  /// — the question was not answered, and the next establish may ask again.
+  final Map<String, String> _decodeProbed = <String, String>{};
+
+  /// One bounded read whose only job is to catch what the monitor swallows.
+  ///
+  /// Publishes **error-band verdicts and nothing else**:
+  ///
+  ///  * `errorTypeMismatch` — the binding threw its decode-failure sentence
+  ///    ([qualityForOpcUaErrorText] knows it by name). Non-transient; the
+  ///    subscription will never deliver, and 258 would be a standing lie.
+  ///  * `errorConfig` — the probe met `BadNodeIdUnknown`; the same verdict the
+  ///    monitor-create path would reach, published a beat earlier. Harmless
+  ///    and consistent.
+  ///  * anything transient — **nothing is published**. A slow PLC, a timeout,
+  ///    a comm hiccup: those belong to the link machinery, and a probe that
+  ///    painted every un-arrived key red at boot would replace a quiet lie
+  ///    with a loud one. This is the polarity the tests pin from both sides.
+  ///
+  /// A successful probe also publishes nothing: the value it read is the
+  /// monitor's to deliver, with the monitor's quality and source time.
+  Future<void> _probeDecode(String key) async {
+    if (_disposed) return;
+    if (_decodeProbed[key] == _epoch) return;
+    final client = _client;
+    final node = _nodes[key];
+    if (client == null || node == null) return;
+    try {
+      await client.read(node).timeout(_probeDeadline);
+      _decodeProbed[key] = _epoch;
+    } on TimeoutException {
+      // Unanswered is not evidence; do not mark, so a later establish asks.
+    } catch (error) {
+      final quality = qualityForOpcUaErrorText(error.toString());
+      if (!quality.isError) return;
+      _decodeProbed[key] = _epoch;
+      // Once per key per epoch by construction (the map above), and
+      // `_publishDegraded` refuses the duplicate anyway — this is the
+      // "once per key, never per sample" discipline; a hot-path repeat of
+      // either the event or the record is its own denial of service.
+      _recordError(error);
+      _publishDegraded(key, quality);
+    }
+  }
+
+  /// The bound on one decode probe. Generous on purpose: the probe rides the
+  /// same session as fifty monitored-item creates on a PLC that may have just
+  /// restarted, and a tight deadline here would misread slow as unanswered.
+  static const Duration _probeDeadline = Duration(seconds: 10);
 
   @override
   Future<DynamicValue> read(UpstreamRef ref,
