@@ -66,6 +66,7 @@ import 'package:tfc/core/secure_storage/other.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 import 'package:tfc/widgets/proposal_banner.dart';
+import 'package:tfc/widgets/onscreen_keyboard.dart';
 import 'package:tfc/marionette/route_logger.dart';
 import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
@@ -939,6 +940,11 @@ class MyApp extends ConsumerWidget {
       },
     );
 
-    return BeamerProvider(routerDelegate: routerDelegate, child: app);
+    // Escape drops focus from whatever text field is up, which is what takes
+    // the flutter-elinux on-screen keyboard back down. Above everything, so
+    // it covers every page, pane and dialog.
+    return OnscreenKeyboardEscape(
+      child: BeamerProvider(routerDelegate: routerDelegate, child: app),
+    );
   }
 }

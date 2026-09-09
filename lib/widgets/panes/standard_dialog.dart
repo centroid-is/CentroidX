@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../onscreen_keyboard.dart';
 import '../resizable_overlay_frame.dart';
 import 'pane_chrome.dart';
 
@@ -504,6 +505,9 @@ class _FloatingDialogShellState extends State<_FloatingDialogShell> {
         event.logicalKey != LogicalKeyboardKey.escape) {
       return false;
     }
+    // A field in the dialog has the on-screen keyboard up: this Escape takes
+    // the keyboard down and nothing else. The dialog closes on the next one.
+    if (escapeDismissesKeyboard(event)) return false;
     // Only the newest dialog reacts, so Escape peels the stack one at a time.
     if (FloatingDialogs._stack.isEmpty ||
         FloatingDialogs._stack.last != widget.id) {
