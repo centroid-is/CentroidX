@@ -57,8 +57,32 @@ const _workers = 40;
 const _firehose = 0xf0;
 const _blockBytes = 1024;
 
+/// How many seconds of storm to run, or null when nobody asked for one.
+final _stormSeconds = int.tryParse(Platform.environment['STORM_PROBE'] ?? '');
+
+/// Why this file did not run, or null when it did.
+///
+/// **The missing capability is not a platform's.** Every mechanism this file
+/// uses — loopback sockets, `SO_LINGER`, the flap timer — works on all three
+/// runners. What is missing is permission to spend it: one run opens well over
+/// three hundred thousand sockets across a minute of wall clock, and its
+/// verdict is a measurement rather than a threshold. That is not something any
+/// lane should pay for on every push, and it is not something to hide behind a
+/// bare `skip:` either — hence a named reason that says what is not being
+/// judged while it is off.
+///
+/// What stops being judged: whether a reset reaches every client, at a rate
+/// high enough to see a one-in-fifty-thousand miss. `composition_test.dart`
+/// still judges that once per run, and its `pairsRetiredWithLiveClient`
+/// assertion still judges the proxy's half of it on every push.
+String? get _stormSkipReason => _stormSeconds == null
+    ? 'STORM_PROBE is not set, so the storm did not run and no statement is '
+        'being made about how often a reset fails to reach a client. This is '
+        'a soak, not a platform gate: set STORM_PROBE=<seconds> to run it.'
+    : null;
+
 void main() {
-  final seconds = int.tryParse(Platform.environment['STORM_PROBE'] ?? '');
+  final seconds = _stormSeconds;
 
   test('a reset reaches every client, or says which ones it did not reach',
       () async {
@@ -151,9 +175,7 @@ void main() {
             'produced it, not the runner and not the budget');
   },
       timeout: Timeout(Duration(seconds: (seconds ?? 0) + 120)),
-      skip: seconds == null
-          ? 'soak: set STORM_PROBE=<seconds> to run (see the library doc)'
-          : null);
+      skip: _stormSkipReason);
 }
 
 final class _Rig {
