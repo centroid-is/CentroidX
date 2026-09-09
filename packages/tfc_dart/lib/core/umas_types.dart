@@ -1117,9 +1117,14 @@ Uint8List encodeVariableValue(dynamic value, UmasDataTypeRef dataType) {
           message: 'Expected int for ${dataType.name}, got ${value.runtimeType}',
         );
       }
-      // Dart's int is 64-bit signed on the VM; full LINT range fits
-      // natively. checkRange still useful to make the contract explicit.
-      checkRange('LINT', value, -0x8000000000000000, 0x7FFFFFFFFFFFFFFF);
+      // No range check, and there is nothing to check: a Dart int on the VM
+      // IS the LINT range, so the bound could never be crossed. It used to be
+      // written out anyway, to state the contract — but `0x7FFFFFFFFFFFFFFF`
+      // is not representable in JavaScript, and dart2js rejects the literal at
+      // compile time, so the always-true assertion was the one thing in this
+      // file stopping the web build. The contract is stated here instead,
+      // where it costs nothing: LINT is [-2^63, 2^63-1], which is exactly
+      // what `setInt64` accepts below.
       final bytes = Uint8List(8);
       ByteData.sublistView(bytes).setInt64(0, value, Endian.little);
       return bytes;
