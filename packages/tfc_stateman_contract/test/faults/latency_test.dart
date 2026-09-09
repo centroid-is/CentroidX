@@ -216,7 +216,17 @@ void main() {
 
     expect(
       delayed.inMicroseconds,
-      inInclusiveRange((_longDelay * 2).inMicroseconds,
+      // `- _floorSlack`, like `_expectAdditiveRoundTrip` and the short-delay
+      // arm. This arm was the one place the derived floor allowance never
+      // reached, and CI found it exactly the way the constant's own doc
+      // predicts: **399,612 us against a 400,000 us floor, short by 388 us**,
+      // with the message blaming a direction that had not gone missing. The
+      // stopwatch and the two `Future.delayed` calls do not share an origin,
+      // so the observed total can round marginally under the sum. Two
+      // milliseconds still catches the failure this floor exists for — a
+      // missing direction is a 200 ms shortfall here, a hundred times the
+      // allowance.
+      inInclusiveRange((_longDelay * 2 - _floorSlack).inMicroseconds,
           (_longDelay * 2 + _slack).inMicroseconds),
       reason: 'the same socket measured ${delayed.inMilliseconds} ms after '
           'latency was set on the running proxy. The lever has to reach the '
