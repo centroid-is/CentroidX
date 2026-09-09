@@ -38,6 +38,7 @@ import 'dart:io';
 import 'package:stream_channel/stream_channel.dart';
 import 'package:test/test.dart';
 import 'package:tfc_relay_client/src/ws_transport.dart';
+import 'package:tfc_relay_client/src/dial/pinned_dialer_io.dart';
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart' show within;
 import 'package:web_socket_channel/web_socket_channel.dart';
 

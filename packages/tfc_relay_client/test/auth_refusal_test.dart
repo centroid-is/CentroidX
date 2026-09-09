@@ -54,6 +54,7 @@ import 'package:tfc_relay_client/src/freshness_watchdog.dart';
 import 'package:tfc_relay_client/src/readiness_barrier.dart';
 import 'package:tfc_relay_client/src/subscription_state.dart';
 import 'package:tfc_relay_client/src/ws_transport.dart';
+import 'package:tfc_relay_client/src/dial/pinned_dialer_io.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
 
