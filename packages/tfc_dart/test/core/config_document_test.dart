@@ -374,5 +374,34 @@ void main() {
       expect(parsed.opcua.first.endpoint, 'opc.tcp://edited:4840');
       expect(parsed.modbus.single.pollGroups.single.name, 'default');
     });
+
+    test('arm 14: rawSection answers an unmodeled top-level section '
+        'verbatim, and null for a name the document does not carry', () {
+      // Phase 3's read-only card renders the relay section's actual
+      // content — the display path must see exactly what encode() will
+      // reproduce, or the screen shows one thing and the wire carries
+      // another.
+      final doc = ConfigDocument.parse(_saltedDocument());
+      expect(
+          doc.rawSection('x_future_section'),
+          {
+            'aggregator': [1, 2, 3]
+          },
+          reason: 'the section as it arrived, not a re-parse');
+      expect(
+          doc.rawSection('relay'),
+          {
+            'port': 9443,
+            'tls': {'cert_file': '/etc/centroid/relay.pem'},
+            'token_file': '/etc/centroid/relay-tokens.json',
+            'x_relay_unknown': true,
+          },
+          reason: 'the read-only card renders exactly what encode() will '
+              'reproduce');
+      expect(doc.rawSection('no_such_section'), isNull);
+      expect(doc.rawSection('opcua'), isA<List<dynamic>>(),
+          reason: 'the modeled sections answer too — the raw tree is one '
+              'tree');
+    });
   });
 }

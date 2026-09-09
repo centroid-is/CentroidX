@@ -44,7 +44,9 @@ import '../helpers/test_helpers.dart';
 // ---------------------------------------------------------------------------
 
 const _banner = Key('config_target_banner');
-const _editor = Key('backend_config_editor');
+// `backend_config_editor` still exists — it now keys the typed
+// StateManConfigEditor rather than a textarea; the swap arm lives in
+// server_config_gateway_editor_test.dart.
 const _relayField = Key('backend_config_relay_field');
 const _save = Key('backend_config_save');
 const _restore = Key('backend_config_restore');
@@ -190,6 +192,11 @@ Future<
   WidgetTester tester, {
   ScriptedBackendConfig? api,
 }) async {
+  // The typed editor (phase 3) is a page of section cards, not one
+  // textarea; a taller surface keeps these arms about behaviour instead of
+  // scroll mechanics.
+  await tester.binding.setSurfaceSize(const Size(900, 2400));
+  addTearDown(() => tester.binding.setSurfaceSize(null));
   final backend = api ?? ScriptedBackendConfig();
   final shared = await createTestPreferences();
   await pumpAndLoad(
@@ -230,27 +237,36 @@ Future<
   return (api: backend, shared: shared);
 }
 
-/// Types [text] into the backend editor and taps the card's own save button.
-Future<void> _editAndSave(WidgetTester tester, String text) async {
-  await tester.enterText(find.byKey(_editor), text);
+/// The benign edit every save arm makes through the TYPED form (phase 3
+/// retarget: the raw textarea is demoted to the Advanced expansion, so
+/// "edit and save" means what it means to an operator — expand the server
+/// card, change a field, press the ONE save button).
+const _editedEndpoint = 'opc.tcp://10.104.20.10:4841';
+
+Future<void> _editAndSave(WidgetTester tester,
+    {String endpoint = _editedEndpoint}) async {
+  await tester.scrollUntilVisible(
+    find.text('ST101'),
+    200,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await settle(tester);
+  await tester.tap(find.text('ST101'));
+  await settle(tester);
+  await tester.scrollUntilVisible(
+    find.widgetWithText(TextField, 'Endpoint URL'),
+    200,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await settle(tester);
+  await tester.enterText(
+      find.widgetWithText(TextField, 'Endpoint URL'), endpoint);
   await settle(tester);
   await tester.ensureVisible(find.byKey(_save));
+  await settle(tester);
   await tester.tap(find.byKey(_save));
   await settle(tester);
 }
-
-/// The live config with one benign edit, relay section deliberately absent:
-/// the page owns re-attaching the live relay section, and asserting it did is
-/// arm 2's second half.
-String _editedOpcuaOnly() => jsonEncode({
-      'opcua': [
-        <String, Object?>{
-          'endpoint': 'opc.tcp://10.104.20.10:4840',
-          'server_alias': 'ST101',
-          'publishing_interval_ms': 400,
-        },
-      ],
-    });
 
 void main() {
   setUp(() {
@@ -307,7 +323,7 @@ void main() {
     final localBefore = await fixture.shared
         .getString(StateManConfig.configKey, secret: true);
 
-    await _editAndSave(tester, _editedOpcuaOnly());
+    await _editAndSave(tester);
 
     expect(fixture.api.writes, hasLength(1),
         reason: 'the save must reach the backend');
@@ -315,12 +331,13 @@ void main() {
         jsonDecode(fixture.api.writes.single) as Map<String, Object?>;
     expect(
         ((written['opcua'] as List).first
-            as Map<String, Object?>)['publishing_interval_ms'],
-        400,
+            as Map<String, Object?>)['endpoint'],
+        _editedEndpoint,
         reason: 'the edit the operator typed is what crossed');
     expect((written['relay'] as Map<String, Object?>?)?['port'], 9443,
-        reason: 'the page re-attaches the live relay section verbatim — a '
-            'document sent without it would be refused for the wrong reason');
+        reason: 'the document re-attaches the live relay section verbatim '
+            '(ConfigDocument carries it whole) — a document sent without it '
+            'would be refused for the wrong reason');
 
     final localAfter = await fixture.shared
         .getString(StateManConfig.configKey, secret: true);
@@ -401,7 +418,7 @@ void main() {
         tester, api: ScriptedBackendConfig(writeRefusal: null));
     fixture.api.writeRefusal = _parserRefusal;
 
-    await _editAndSave(tester, _editedOpcuaOnly());
+    await _editAndSave(tester);
 
     expect(find.byKey(_refusal), findsOneWidget);
     // Scoped to the refusal row: the editor's own text also carries the
@@ -438,7 +455,7 @@ void main() {
         api: ScriptedBackendConfig(
             hasPrevious: true, writeRefusal: _parserRefusal));
 
-    await _editAndSave(tester, _editedOpcuaOnly());
+    await _editAndSave(tester);
     expect(find.byKey(_refusal), findsOneWidget,
         reason: 'the refusal must be on screen for this to be the arm it '
             'claims to be');
@@ -463,7 +480,7 @@ void main() {
     final fixture = await _pumpGateway(tester);
     fixture.api.writeRefusal = _relayRefusal;
 
-    await _editAndSave(tester, _editedOpcuaOnly());
+    await _editAndSave(tester);
 
     expect(find.byKey(_refusal), findsOneWidget);
     expect(find.textContaining('not remotely editable'), findsOneWidget,
@@ -481,7 +498,7 @@ void main() {
       'on restart', (tester) async {
     await _pumpGateway(tester);
 
-    await _editAndSave(tester, _editedOpcuaOnly());
+    await _editAndSave(tester);
 
     expect(find.byKey(_restartNote), findsOneWidget);
     expect(find.textContaining('when the backend restarts'), findsWidgets,
@@ -650,9 +667,17 @@ void main() {
             readRefusal: rpc.RpcException(
                 -32011, 'the relay is not accepting this station')));
 
-    expect(find.textContaining('Could not read the backend'), findsOneWidget,
+    // Phase 3 retarget: a document-level read refusal now renders on the
+    // EDITOR's error face ('Could not read the configuration: …'), while
+    // the chrome keeps its own face for a relay client that cannot be
+    // built. Both spell the refusal 'Could not read the', and both must
+    // carry the far end's sentence verbatim.
+    expect(find.textContaining('Could not read the'), findsOneWidget,
         reason: 'this arm is only the error-face arm if the error face is '
             'on screen');
+    expect(find.textContaining('the relay is not accepting this station'),
+        findsOneWidget,
+        reason: 'the far end\'s own words, not a paraphrase');
     expect(
         find.descendant(
             of: find.byType(BackendConfigSection),

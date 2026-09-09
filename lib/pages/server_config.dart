@@ -18,13 +18,12 @@ import 'package:cryptography_flutter/cryptography_flutter.dart' as crypto_fl;
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
-    show BackendConfigApi, BackendConfigDocument;
+    show BackendConfigApi;
 
 import '../core/config_source.dart';
 import '../core/gateway_config.dart';
 import '../core/gateway_state_man.dart';
 import '../core/gateway_trust.dart';
-import '../core/relayed_access_stores.dart' show relayedAccessErrors;
 import '../core/server_config_db.dart';
 import '../widgets/config/state_man_config_editor.dart';
 import '../theme.dart';
@@ -894,6 +893,16 @@ const Key kBackendConfigRestartNoteKey = Key('backend_config_restart_note');
 /// The backend's `StateManConfig`, editable from a gateway-mode panel —
 /// except for the section that carries the edit (ACCESS-04, D-10).
 ///
+/// **Phase 3 of quick/20260908-unify-config-ui:** the body is the SAME
+/// [StateManConfigEditor] direct mode renders, over a [GatewayConfigSource]
+/// — the owner's ruling ("backend configuration should be exactly the same
+/// ui page as server config in direct to plcs, it is the same data"). The
+/// raw JSON textarea 17-13 shipped is demoted into the editor's
+/// "Advanced — edit as JSON" expansion, not deleted. This widget keeps only
+/// the gateway dressing AROUND the editor: the header chip naming the
+/// machine, the station-account attribution (ACCESS-06), and the error face
+/// for a relay client that cannot be built at all.
+///
 /// Reads come from `backendConfig.read`, saves go to `backendConfig.write`;
 /// nothing here touches this station's own preferences. The check, the audit
 /// row and the validation live at the far end (17-09/17-10); this card is the
@@ -905,7 +914,7 @@ const Key kBackendConfigRestartNoteKey = Key('backend_config_restart_note');
 /// card, and squeezed it to a chip because it is one fact. The header renders
 /// on the error face too: "could not read the backend's configuration" is
 /// only actionable if the operator can see WHICH backend refused.
-class BackendConfigSection extends ConsumerStatefulWidget {
+class BackendConfigSection extends ConsumerWidget {
   const BackendConfigSection({super.key, required this.targetUrl});
 
   /// The endpoint this panel is dialling — the machine a save here changes.
@@ -913,195 +922,10 @@ class BackendConfigSection extends ConsumerStatefulWidget {
   /// and goldens name the target as plainly as the page does.
   final String targetUrl;
 
-  @override
-  ConsumerState<BackendConfigSection> createState() =>
-      _BackendConfigSectionState();
-}
-
-class _BackendConfigSectionState extends ConsumerState<BackendConfigSection> {
-  BackendConfigApi? _api;
-  BackendConfigDocument? _doc;
-
-  /// Why the backend's config could not be read, or null.
-  String? _loadError;
-  bool _isLoading = true;
-
-  /// The refusal of the last save or restore, verbatim from the far end —
-  /// the parser's sentence for an invalid document, D-10's for a relay-
-  /// section edit. This card composes no refusal prose of its own: a
-  /// paraphrase is a second place the two refusals could start reading the
-  /// same.
-  String? _refusalText;
-
-  final _editorController = TextEditingController();
-
-  /// The editable text as it was last loaded, for the save button's unsaved
-  /// diff.
-  String _loadedEditableText = '';
-
-  /// The read-only sections of the live document, decoded, re-attached
-  /// verbatim on save so the document that crosses is whole. Only sections
-  /// the operator's editable text does not itself carry are re-attached — a
-  /// differing `relay` typed into the editor crosses as typed and is refused
-  /// by name at the far end, which is the honest path for it.
-  Map<String, Object?> _readOnlyLive = const {};
-
-  /// One controller per read-only section's disabled field, owned here so
-  /// they are disposed rather than re-minted every build.
-  final Map<String, TextEditingController> _readOnlyControllers = {};
-
-  @override
-  void initState() {
-    super.initState();
-    _editorController.addListener(() => setState(() {}));
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _editorController.dispose();
-    for (final controller in _readOnlyControllers.values) {
-      controller.dispose();
-    }
-    super.dispose();
-  }
-
   /// The operator-facing sentence for [error]. A protocol refusal carries the
   /// far end's message; anything else is shown as what it is.
   static String _describe(Object error) =>
       error is rpc.RpcException ? error.message : error.toString();
-
-  Future<void> _load({bool refresh = false}) async {
-    if (refresh) ref.invalidate(backendConfigApiProvider);
-    setState(() {
-      _isLoading = true;
-      _loadError = null;
-    });
-    try {
-      final api = await ref.read(backendConfigApiProvider.future);
-      final doc = await relayedAccessErrors(api.read);
-      if (!mounted) return;
-      _api = api;
-      _applyDocument(doc);
-    } on Object catch (e) {
-      _loadError = _describe(e);
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  /// Splits [doc] into the editable text and the read-only sections.
-  ///
-  /// The document travels as text; splitting it needs a decode, and the
-  /// re-encode below is the same trade 17-10's redaction already made —
-  /// showing the read-only sections greyed wins over preserving the byte
-  /// layout of a file the backend re-parses anyway.
-  void _applyDocument(BackendConfigDocument doc) {
-    _doc = doc;
-    Map<String, Object?>? decoded;
-    try {
-      final raw = jsonDecode(doc.configJson);
-      if (raw is Map<String, dynamic>) decoded = raw;
-    } on FormatException {
-      decoded = null;
-    }
-    if (decoded == null) {
-      // A document this station cannot decode is still the backend's truth:
-      // show it whole and let the far end's parser own any refusal.
-      _readOnlyLive = const {};
-      for (final controller in _readOnlyControllers.values) {
-        controller.dispose();
-      }
-      _readOnlyControllers.clear();
-      _loadedEditableText = doc.configJson;
-    } else {
-      const encoder = JsonEncoder.withIndent('  ');
-      final readOnly = doc.readOnlySections.toSet();
-      final editable = <String, Object?>{
-        for (final entry in decoded.entries)
-          if (!readOnly.contains(entry.key)) entry.key: entry.value,
-      };
-      _readOnlyLive = <String, Object?>{
-        for (final entry in decoded.entries)
-          if (readOnly.contains(entry.key)) entry.key: entry.value,
-      };
-      for (final entry in _readOnlyLive.entries) {
-        _readOnlyControllers
-            .putIfAbsent(entry.key, TextEditingController.new)
-            .text = encoder.convert(entry.value);
-      }
-      _readOnlyControllers.removeWhere((name, controller) {
-        if (_readOnlyLive.containsKey(name)) return false;
-        controller.dispose();
-        return true;
-      });
-      _loadedEditableText = encoder.convert(editable);
-    }
-    _editorController.text = _loadedEditableText;
-    setState(() {});
-  }
-
-  bool get _hasUnsavedChanges =>
-      _doc != null && _editorController.text != _loadedEditableText;
-
-  /// The document that crosses: the operator's editable sections plus the
-  /// live read-only sections they cannot have typed. `putIfAbsent`, not a
-  /// blind spread — a read-only section the operator somehow smuggled into
-  /// the editable text must cross as typed and be refused by name at the far
-  /// end, not be silently papered over here.
-  String _payload() {
-    final text = _editorController.text;
-    try {
-      final edited = jsonDecode(text);
-      if (edited is! Map<String, dynamic>) return text;
-      final merged = <String, Object?>{...edited};
-      for (final entry in _readOnlyLive.entries) {
-        merged.putIfAbsent(entry.key, () => entry.value);
-      }
-      return jsonEncode(merged);
-    } on FormatException {
-      // Not decodable here — sent as typed, so the refusal the operator
-      // reads is the parser's own sentence rather than this card's guess.
-      return text;
-    }
-  }
-
-  Future<void> _save() async {
-    final backendConfig = _api;
-    if (backendConfig == null) return;
-    setState(() => _refusalText = null);
-    try {
-      await relayedAccessErrors(() => backendConfig.write(_payload()));
-      final doc = await relayedAccessErrors(backendConfig.read);
-      if (!mounted) return;
-      _applyDocument(doc);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Saved to the backend. It applies the new '
-              'configuration when it restarts.'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } on Object catch (e) {
-      if (!mounted) return;
-      setState(() => _refusalText = _describe(e));
-    }
-  }
-
-  Future<void> _restore() async {
-    final backendConfig = _api;
-    if (backendConfig == null) return;
-    try {
-      await relayedAccessErrors(() => backendConfig.restorePrevious());
-      final doc = await relayedAccessErrors(backendConfig.read);
-      if (!mounted) return;
-      _refusalText = null;
-      _applyDocument(doc);
-    } on Object catch (e) {
-      if (!mounted) return;
-      setState(() => _refusalText = _describe(e));
-    }
-  }
 
   /// The card's title line: the section named, and beside it the machine it
   /// edits. One line — the chip is the ACCESS-04 affordance, and this row is
@@ -1120,141 +944,27 @@ class _BackendConfigSectionState extends ConsumerState<BackendConfigSection> {
               Text('Backend Configuration', style: theme.textTheme.titleMedium),
             ],
           ),
-          ConfigTargetBanner.backend(name: widget.targetUrl),
+          ConfigTargetBanner.backend(name: targetUrl),
         ],
       );
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final stationName = ref.watch(stationNameProvider);
+    final apiAsync = ref.watch(backendConfigApiProvider);
 
-    final loadError = _loadError;
-    if (loadError != null) {
-      // The refusal frame, in the shape every section on this page uses: a
-      // card that cannot read what it edits has to say so, with a retry —
-      // and with the target still named, because "the backend refused" is
-      // only actionable when the operator can see which backend.
-      return Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _header(theme),
-              const SizedBox(height: 16),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  FaIcon(FontAwesomeIcons.triangleExclamation,
-                      size: 18, color: theme.colorScheme.error),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Could not read the backend\'s configuration: '
-                      '$loadError',
-                      style: TextStyle(color: theme.colorScheme.error),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              ElevatedButton(
-                onPressed: () => _load(refresh: true),
-                child: const Text('Retry'),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    final doc = _doc;
-    if (doc == null || _isLoading) {
-      return const Card(
-        child: Padding(
-          padding: EdgeInsets.all(16),
-          child: Center(child: CircularProgressIndicator()),
-        ),
-      );
-    }
-
-    return Card(
+    // The gateway dressing: which machine, and who a save is recorded
+    // against. It stays up on every face — a refusal from an unnamed
+    // machine sends the operator to the wrong one (17-13 arm 14).
+    final headerCard = Card(
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // The header carries the whole disambiguation; the paragraph
-            // that used to follow it narrated the transport toggle and is
-            // gone by the owner's ruling.
             _header(theme),
-            const SizedBox(height: 16),
-            TextField(
-              key: kBackendConfigEditorKey,
-              controller: _editorController,
-              maxLines: null,
-              decoration: const InputDecoration(
-                labelText: 'Backend configuration (JSON)',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 16),
-            for (final entry in _readOnlyControllers.entries) ...[
-              TextField(
-                key: entry.key == 'relay'
-                    ? kBackendConfigRelayFieldKey
-                    : Key('backend_config_readonly_${entry.key}'),
-                controller: entry.value,
-                enabled: false,
-                maxLines: null,
-                decoration: InputDecoration(
-                  labelText: '${entry.key} — read-only from here',
-                  border: const OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Changing ${entry.key} from here would cut this screen off '
-                'mid-change — edit it on the backend\'s own machine.',
-                style: theme.textTheme.bodySmall,
-              ),
-              const SizedBox(height: 16),
-            ],
-            if (_refusalText != null) ...[
-              Row(
-                key: kBackendConfigRefusalKey,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.error_outline,
-                      size: 18, color: theme.colorScheme.error),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _refusalText!,
-                      style: TextStyle(color: theme.colorScheme.error),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-            ],
-            if (doc.hasPrevious) ...[
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      key: kBackendConfigRestoreKey,
-                      onPressed: _restore,
-                      icon: const FaIcon(FontAwesomeIcons.clockRotateLeft,
-                          size: 14),
-                      label: const Text('Restore previous configuration'),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-            ],
+            const SizedBox(height: 12),
             Row(
               key: kBackendConfigAttributionKey,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1271,37 +981,72 @@ class _BackendConfigSectionState extends ConsumerState<BackendConfigSection> {
                 ),
               ],
             ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    key: kBackendConfigSaveKey,
-                    onPressed: _hasUnsavedChanges ? _save : null,
-                    icon: FaIcon(FontAwesomeIcons.floppyDisk,
-                        size: 16,
-                        color: _hasUnsavedChanges ? null : Colors.grey),
-                    label: Text(_hasUnsavedChanges
-                        ? 'Save Configuration'
-                        : 'All Changes Saved'),
-                    style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        backgroundColor:
-                            _hasUnsavedChanges ? null : Colors.grey),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(
-              key: kBackendConfigRestartNoteKey,
-              'Takes effect when the backend restarts — it does not restart '
-              'itself.',
-              style: theme.textTheme.bodySmall,
-            ),
           ],
         ),
       ),
+    );
+
+    final body = apiAsync.when(
+      loading: () => const Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      ),
+      // The relay client itself could not be built (no gateway StateMan,
+      // provider refusal). Document-level read refusals render inside the
+      // editor, which keeps the far end's sentence verbatim.
+      error: (error, _) => Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  FaIcon(FontAwesomeIcons.triangleExclamation,
+                      size: 18, color: theme.colorScheme.error),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Could not read the backend\'s configuration: '
+                      '${_describe(error)}',
+                      style: TextStyle(color: theme.colorScheme.error),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () => ref.invalidate(backendConfigApiProvider),
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      data: (api) => StateManConfigEditor(
+        // The 17-13 key, kept: it names the editable half of the backend's
+        // document — which is now the whole typed editor, not a textarea.
+        key: kBackendConfigEditorKey,
+        source: GatewayConfigSource(api: api),
+        saveButtonKey: kBackendConfigSaveKey,
+        refusalRowKey: kBackendConfigRefusalKey,
+        restoreButtonKey: kBackendConfigRestoreKey,
+        applyNoteKey: kBackendConfigRestartNoteKey,
+        readOnlySectionKey: (section) => section == 'relay'
+            ? kBackendConfigRelayFieldKey
+            : Key('backend_config_readonly_$section'),
+      ),
+    );
+
+    return Column(
+      children: [
+        headerCard,
+        const SizedBox(height: 16),
+        body,
+      ],
     );
   }
 }

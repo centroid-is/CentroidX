@@ -129,7 +129,14 @@ Future<void> dragCard(WidgetTester tester,
   // teleport can outrun the list's hit testing.
   await gesture.moveBy(const Offset(0, 12));
   await tester.pump(const Duration(milliseconds: 20));
-  final travel = end.dy - start.dy - 12;
+  // A small overshoot past the destination handle's center, in the travel
+  // direction: dropping EXACTLY on the center is borderline between two
+  // slots, and which side wins moved with page layout once before (the
+  // phase-3 Advanced card changed the clamped scroll under the last
+  // section by a handful of pixels). 16px is well inside the destination
+  // slot, so it cannot overshoot into the one beyond.
+  final overshoot = end.dy >= start.dy ? 16.0 : -16.0;
+  final travel = end.dy - start.dy - 12 + overshoot;
   for (var i = 1; i <= 4; i++) {
     await gesture.moveBy(Offset(0, travel / 4));
     await tester.pump(const Duration(milliseconds: 20));
