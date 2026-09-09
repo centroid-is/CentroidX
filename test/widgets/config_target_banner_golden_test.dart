@@ -56,6 +56,10 @@ import '../helpers/themed_golden_host.dart';
 /// with itself by machine.
 const _station = 'SVN-ST101';
 
+/// The account the gateway verified, as the attribution row names it — a
+/// readable account, not the machine id the panel used to print.
+const _verifiedAccount = 'rig-panel-eng';
+
 /// The endpoint frame 2 names — the machine the operator is about to edit.
 const _gatewayUrl = 'wss://10.50.10.11:9443';
 
@@ -167,6 +171,11 @@ Future<void> _pumpSection(
       overrides: [
         backendConfigApiProvider.overrideWith((ref) async => backend),
         stationNameProvider.overrideWithValue(_station),
+        // The attribution names the account the SERVER verified, from the
+        // hello answer — not this panel's hostname (a container id on the
+        // rig). Overridden so the frame shows that behaviour honestly.
+        gatewayVerifiedAccountProvider
+            .overrideWith((ref) async => _verifiedAccount),
       ],
       child: themedGoldenHost(
         SingleChildScrollView(
