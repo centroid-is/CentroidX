@@ -743,4 +743,45 @@ void main() {
       expect(source, isNot(contains('dart:ui')));
     });
   });
+
+  group('the no-password marker', () {
+    test('isPasswordless recognises it and nothing else', () {
+      expect(isPasswordless(kNoPasswordMarker), isTrue);
+      expect(isPasswordless(''), isFalse,
+          reason: 'an empty column is not a decision anybody made');
+      expect(isPasswordless('none'), isFalse,
+          reason: 'a whole-string match: there is nothing to parse, so there '
+              'is nothing to get half right');
+      expect(isPasswordless('pbkdf2-sha256\$10\$abc'), isFalse);
+    });
+
+    test('it contains a \$, so it is never read as a legacy bare hash', () {
+      // A `$`-less value is a legacy base64 PBKDF2 hash. A marker without one
+      // would be derived against as if it were a hash of something.
+      expect(kNoPasswordMarker, contains(r'$'));
+    });
+
+    test('decoding it fails, so forgetting the check locks out rather than '
+        'lets in', () {
+      expect(PasswordHash.tryDecode(kNoPasswordMarker, saltB64: ''), isNull);
+      expect(() => PasswordHash.decode(kNoPasswordMarker, saltB64: ''),
+          throwsFormatException,
+          reason: '`none` is not a PasswordHashAlgorithm, and that is the '
+              'safety property: the failure direction is refusal');
+    });
+
+    test('no real encoding can collide with it', () {
+      for (final hash in [
+        const PasswordHash(hashB64: 'aGk=', saltB64: 'c2E=', iterations: 10),
+        const PasswordHash.argon2id(
+            hashB64: 'aGk=',
+            saltB64: 'c2E=',
+            memoryKib: 32768,
+            iterations: 3,
+            parallelism: 4),
+      ]) {
+        expect(isPasswordless(hash.encode()), isFalse);
+      }
+    });
+  });
 }

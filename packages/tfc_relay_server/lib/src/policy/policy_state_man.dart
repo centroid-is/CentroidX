@@ -1571,7 +1571,7 @@ final class _PolicyAccessAdmin with _GroupGate implements AccessAdminApi {
 
   /// **Gated, unlike the store's read** — see the class doc.
   @override
-  Future<List<AuthenticatedUser>> listUsers() {
+  Future<List<UserSummary>> listUsers() {
     _requireGroup(_groupFor('listUsers'), AccessMethods.adminListUsers,
         'no accounts were listed',
         itemKey: 'listUsers');

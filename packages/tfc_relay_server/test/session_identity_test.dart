@@ -706,7 +706,7 @@ final class _ScopedAdmin implements AccessAdminApi {
   @override
   Future<List<AccessRole>> roles() async => const [];
   @override
-  Future<List<AuthenticatedUser>> listUsers() async => const [];
+  Future<List<UserSummary>> listUsers() async => const [];
   @override
   Future<void> createRole(AccessRole role, {String? reason}) async {}
   @override

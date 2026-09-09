@@ -1052,6 +1052,66 @@ void main() {
       expect(store!.calls.where((c) => c.startsWith('createUser')), isEmpty);
     });
 
+    testWidgets('ticking "no password" creates an account that signs in on '
+        'its username alone', (tester) async {
+      await makeUser('admin', 'Engineering');
+      await pumpSection(tester, overrides());
+      await openCreate(tester);
+      await tester.enterText(
+          find.byKey(kAccessUserUsernameFieldKey), 'line');
+
+      // No warning until the choice is made — a sentence that arrives when the
+      // box is ticked is read, one that was always there is not.
+      expect(find.byKey(kAccessUserNoPasswordWarningKey), findsNothing);
+      await tester.tap(find.byKey(kAccessUserNoPasswordToggleKey));
+      await tester.pumpAndSettle();
+      expect(find.byKey(kAccessUserNoPasswordWarningKey), findsOneWidget);
+
+      await tester.tap(find.byKey(kAccessUserCreateConfirmKey));
+      await tester.pumpAndSettle();
+
+      final row = await userNamed('line');
+      expect(row, isNotNull);
+      expect(isPasswordless(row!.passwordHash), isTrue);
+      expect(row.salt, isEmpty);
+    });
+
+    testWidgets('ticking it clears what was typed rather than only disabling '
+        'the fields', (tester) async {
+      await makeUser('admin', 'Engineering');
+      await pumpSection(tester, overrides());
+      await openCreate(tester);
+      await fillCreate(tester, username: 'line', password: 'typed then ticked');
+
+      await tester.tap(find.byKey(kAccessUserNoPasswordToggleKey));
+      await tester.pumpAndSettle();
+      // Unticking must not hand the old password back: it was cleared, not
+      // hidden.
+      await tester.tap(find.byKey(kAccessUserNoPasswordToggleKey));
+      await tester.pumpAndSettle();
+
+      expect(
+          tester
+              .widget<TextField>(find.byKey(kAccessUserPasswordFieldKey))
+              .controller!
+              .text,
+          isEmpty);
+    });
+
+    testWidgets('a blank password with the box unticked is still refused — '
+        'an open account is a choice, not an unfinished form', (tester) async {
+      await makeUser('admin', 'Engineering');
+      await pumpSection(tester, overrides());
+      await openCreate(tester);
+      await fillCreate(tester, username: 'line', password: '');
+
+      await tester.tap(find.byKey(kAccessUserCreateConfirmKey));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessUserBlankPasswordKey), findsOneWidget);
+      expect(await userNamed('line'), isNull);
+    });
+
     testWidgets('passwords that do not match are refused with their own '
         'sentence', (tester) async {
       await makeUser('admin', 'Engineering');
@@ -1331,6 +1391,26 @@ void main() {
             'scope: an admin types the new password directly',
       );
       expect(find.text(kAccessUserSetPasswordTitle('bjorn')), findsOneWidget);
+    });
+
+    testWidgets('ticking "no password" removes the password rather than '
+        'setting one, and the roster then marks the account', (tester) async {
+      await makeUser('bjorn', 'Shift Leader');
+      await pumpSection(tester, overrides());
+
+      expect(find.byKey(kAccessUserNoPasswordBadgeKey('bjorn')), findsNothing,
+          reason: 'it has a password to start with');
+
+      await openSetPassword(tester, 'bjorn');
+      await tester.tap(find.byKey(kAccessUserNoPasswordToggleKey));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserPasswordConfirmKey));
+      await tester.pumpAndSettle();
+
+      expect(isPasswordless((await userNamed('bjorn'))!.passwordHash), isTrue);
+      expect(find.byKey(kAccessUserNoPasswordBadgeKey('bjorn')), findsOneWidget,
+          reason: 'a roster that drew an open account like a protected one '
+              'would hide the thing an administrator opened it to check');
     });
 
     testWidgets('a blank password is refused with its own sentence',

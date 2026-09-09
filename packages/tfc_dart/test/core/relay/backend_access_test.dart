@@ -554,13 +554,61 @@ void main() {
       expect(await templates.keysBoundTo('T'), isA<List<String>>());
       expect(await admin.roles(), isNotEmpty,
           reason: 'the seeded roles are in a fresh schema');
-      expect(await admin.listUsers(), isA<List<AuthenticatedUser>>());
+      expect(await admin.listUsers(), isA<List<relay.UserSummary>>());
       expect(await audit.entries(const relay.AuditQueryParams()),
           isA<List<AuditRecord>>());
       expect(await audit.memberCountsByAction(const ['a']),
           isA<Map<String, int>>());
       expect(await audit.distinctWho(), isA<List<String>>());
     });
+  });
+
+  // 17-08 F-1 — the roster row carries the two columns the screen renders.
+  test('listUsers answers the row\'s own createdAt, not a sentinel — the '
+      'gateway users screen read 1970 for every account before this',
+      () async {
+    final before = DateTime.now().toUtc();
+    await admin.createRole(
+        const AccessRole(name: 'R_ts', groups: {AccessGroup.operate}));
+    await admin.createUser(const relay.NewUserParams(
+        subject: 'u_ts',
+        password: 'a sufficiently long pw',
+        grantedRole: 'R_ts'));
+
+    final row = (await admin.listUsers())
+        .firstWhere((u) => u.username == 'u_ts');
+    expect(row.createdAt, isNotNull,
+        reason: 'null here is what the panel renders as 1970');
+    expect(row.createdAt!.isBefore(before), isFalse,
+        reason: 'the account was created after this test started, so a '
+            'created date before it is the sentinel leaking back in');
+    expect(row.lastLoginAt, isNull,
+        reason: 'a brand new account has never signed in, which the screen '
+            'renders as "never"');
+    expect(row.roleName, 'R_ts');
+  });
+
+  // The passwordless account, over the gateway path rather than the direct one.
+  test('an empty password crosses the wire and creates an account that signs '
+      'in on its username alone, marked so on the roster', () async {
+    await admin.createRole(
+        const AccessRole(name: 'R_np', groups: {AccessGroup.operate}));
+    await admin.createUser(const relay.NewUserParams(
+        subject: 'line', password: '', grantedRole: 'R_np'));
+
+    // The row itself: the marker, not an empty column and not a hash.
+    final stored = await AccessRepository(db).user('line');
+    expect(stored, isNotNull);
+    expect(isPasswordless(stored!.passwordHash), isTrue);
+    expect(stored.salt, isEmpty);
+
+    // And what the panel is told, which is the half a gateway station sees.
+    final row = (await admin.listUsers()).firstWhere((u) => u.username == 'line');
+    expect(row.hasPassword, isFalse,
+        reason: 'a panel cannot mark an open account it is not told about');
+    expect((await admin.listUsers()).every((u) => u.username == 'line' || u.hasPassword),
+        isTrue,
+        reason: 'and it must not mark the protected ones');
   });
 
   // The wire cut, its own arm rather than a members-table row.
@@ -589,7 +637,7 @@ void main() {
     expect(await templates.bindings(), containsPair('k.read', 'Readable'));
     expect(await templates.keysBoundTo('Readable'), ['k.read']);
     expect((await admin.roles()).map((r) => r.name), contains('Operator'));
-    expect(await admin.listUsers(), isA<List<AuthenticatedUser>>());
+    expect(await admin.listUsers(), isA<List<relay.UserSummary>>());
     expect(await audit.entries(const relay.AuditQueryParams()), isNotEmpty,
         reason: 'the two writes above each left a row');
     expect(await audit.distinctWho(), contains('ST101-panel'));

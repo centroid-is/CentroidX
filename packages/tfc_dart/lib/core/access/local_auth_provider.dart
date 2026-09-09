@@ -76,7 +76,15 @@ class LocalAuthProvider implements AuthProvider {
     // Nothing to hide on this branch: an empty username is not a username
     // somebody might or might not have, so short-circuiting it leaks nothing
     // and saves a pointless derivation.
-    if (name.isEmpty || password.isEmpty) return null;
+    //
+    // An empty *password* is no longer short-circuited here. It used to be,
+    // and it could not be once a passwordless account became a thing an
+    // administrator can create: leaving the box blank is exactly how such an
+    // account signs in, and refusing it before the row is read would make the
+    // feature unreachable. An empty password against an account that *has* one
+    // still fails, below, and against no account at all it still costs a dummy
+    // derivation.
+    if (name.isEmpty) return null;
 
     final row = await repository.user(name);
 
@@ -110,23 +118,51 @@ class LocalAuthProvider implements AuthProvider {
       return null;
     }
 
-    final stored = decodeStoredHash(row.passwordHash, saltB64: row.salt);
-    if (stored == null) {
-      // A hash column mangled by hand. Not a credential failure in spirit, but
-      // it is one in effect, and it must not take the login screen down with a
-      // FormatException.
-      _logger.w(
-        'The stored password hash for "$name" could not be decoded — the row '
-        'has been edited outside the app. Treating the login as failed.',
-      );
-      return null;
-    }
+    // An account with no password signs in on its username alone. Nothing is
+    // derived and nothing is compared, because there is nothing to compare
+    // against: whatever was typed into the password box is ignored, including
+    // a wrong guess, because a wrong guess at a password that does not exist
+    // is not a failed credential.
+    //
+    // Asked *before* the decode, and the ordering is the safety property: the
+    // marker is not a [PasswordHashAlgorithm], so [decodeStoredHash] answers
+    // null for it and the branch below would refuse the login. Forgetting this
+    // check therefore locks the account out rather than letting anybody in —
+    // see [kNoPasswordMarker].
+    //
+    // Stated plainly, because it is the whole risk of the feature: **anybody
+    // standing at the panel can sign in as this account and hold its role.**
+    // That is what it is for — a line operator should not type on a wet
+    // touchscreen — and it is why the users screen marks these accounts and
+    // why the first-user window refuses to create one.
+    final PasswordHash? stored;
+    if (isPasswordless(row.passwordHash)) {
+      stored = null;
+    } else {
+      // An account that *has* a password is not opened by leaving the box
+      // blank. Refused before the derivation: there is no credential to check,
+      // and an empty guess is not one.
+      if (password.isEmpty) return null;
 
-    final ok = await PasswordHasher.verify(
-      password: password,
-      stored: stored,
-    );
-    if (!ok) return null;
+      final decoded = decodeStoredHash(row.passwordHash, saltB64: row.salt);
+      if (decoded == null) {
+        // A hash column mangled by hand. Not a credential failure in spirit,
+        // but it is one in effect, and it must not take the login screen down
+        // with a FormatException.
+        _logger.w(
+          'The stored password hash for "$name" could not be decoded — the row '
+          'has been edited outside the app. Treating the login as failed.',
+        );
+        return null;
+      }
+
+      final ok = await PasswordHasher.verify(
+        password: password,
+        stored: decoded,
+      );
+      if (!ok) return null;
+      stored = decoded;
+    }
 
     final role = await repository.role(row.roleName);
     if (role == null) {
@@ -144,7 +180,10 @@ class LocalAuthProvider implements AuthProvider {
 
     await repository.touchLastLogin(row.username, DateTime.now().toUtc());
 
-    if (PasswordHasher.needsRehash(stored)) {
+    // Never for a passwordless account: there is no plaintext in hand and no
+    // hash to carry forward, and `stored` is null precisely so this cannot be
+    // reached with nothing to rehash.
+    if (stored != null && PasswordHasher.needsRehash(stored)) {
       // The migration, and the only moment it can happen: the password is in
       // hand exactly once, here, and never again. Nothing asks anybody for
       // anything and nobody is told.
