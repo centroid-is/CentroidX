@@ -686,7 +686,14 @@ List<String> _codeLines(List<File> files, Pattern pattern) {
       final line = lines[i];
       if (line.trimLeft().startsWith('//')) continue;
       if (pattern.allMatches(line).isNotEmpty) {
-        hits.add('${file.path}:${i + 1}: ${line.trim()}');
+        // `/`-normalised at the ONE place hits are minted. `File.path` uses
+        // the platform separator, every census arm below asks
+        // `contains('<package>/lib/src/<file>.dart')`, and on Windows those
+        // matched nothing: nine arms reddened about helpers that were present,
+        // at the right sites, all along — the sweep found the code and the
+        // comparison lost it. Same fix, same reason, as the allowlist arm.
+        hits.add('${file.path.replaceAll(r'\', '/')}:${i + 1}: '
+            '${line.trim()}');
       }
     }
   }
