@@ -331,6 +331,11 @@ class AlarmMan {
                   e.notification.rule == alarmNotification.rule) {
                 e.pendingAck = true;
                 e.notification.active = false;
+                // The condition cleared *now*; the ack, whenever it comes, is
+                // paperwork. Recording the clear time here is what lets the
+                // downtime analysis end the stop when the machine restarted
+                // rather than when somebody got around to pressing OK.
+                e.deactivated = DateTime.now();
                 break;
               }
             }
@@ -381,6 +386,10 @@ class AlarmMan {
   }
 
   void ackAlarm(AlarmActive alarm) {
+    // Guarded: an instance that already left the active set (double-tap on
+    // the ack button, a stale reference from the history list) must not be
+    // pushed into the history a second time.
+    if (!_activeAlarms.contains(alarm)) return;
     _removeActiveAlarm(alarm);
     _activeAlarmsController.add(_activeAlarms);
   }
@@ -441,7 +450,15 @@ class AlarmMan {
 
   void _removeActiveAlarm(AlarmActive alarm) {
     alarm.notification.active = false;
-    alarm.deactivated = DateTime.now();
+    // `??=`: an ack-required alarm already carries its clear time from the
+    // moment the condition dropped; stamping again here would silently turn
+    // "cleared at 03:12, acked at 07:40" into four and a half hours of
+    // invented downtime.
+    alarm.deactivated ??= DateTime.now();
+    // Leaving the set means there is nothing left to acknowledge. Clearing
+    // the flag (before the row is written) is what keeps a restored history
+    // row from ever growing an ack button again.
+    alarm.pendingAck = false;
     _history.add(alarm);
     _activeAlarms.remove(alarm);
     _historyController.add(_history.buffer);
