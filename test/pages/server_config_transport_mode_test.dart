@@ -515,6 +515,33 @@ void main() {
               'operator would have no way to clear it. The station-token '
               'work deletes the field and the value together');
     });
+
+    testWidgets('a saved gateway station with NO token file — the '
+        'signed-in-over-the-socket shape — does not show the field at all',
+        (tester) async {
+      // Defect 3, the other polarity: once sign-in over the socket works, a
+      // panel needs no credential file, and the legacy field must disappear
+      // for everyone not actively holding one. The rig still holds one (the
+      // arm above), so this is hide-when-unused, not delete-for-all.
+      final prefs = InMemoryPreferences();
+      await writeGatewayConfig(
+        prefs,
+        const GatewayConfig(
+          mode: TransportMode.gateway,
+          url: 'wss://centroidx-backend:9443',
+          caPem: _approvedPem,
+        ),
+      );
+      await pumpAndLoad(
+        tester,
+        buildTestableServerConfig(localPreferences: prefs),
+      );
+
+      expect(find.text('Station credential file (legacy)'), findsNothing,
+          reason: 'no token file in play, no field: an unanswerable, '
+              'on-its-way-out question must not sit on the card of a panel '
+              'that signs in over the socket');
+    });
   });
 
   group('saving', () {
