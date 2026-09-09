@@ -99,7 +99,13 @@ void main() {
     };
     historyScan = <String, String>{
       for (final file in _historyScanRoots.expand(_dartFilesUnder))
-        file.path: _stripComments(file.readAsStringSync()),
+        // `/`-normalised: `File.path` uses the platform separator, so on
+        // Windows every key came back with backslashes and each
+        // `contains('bin/main.dart')` assertion below missed — the scan read
+        // the right files and the map could not be searched. Found by CI on
+        // windows-latest only.
+        file.path.replaceAll(r'\', '/'):
+            _stripComments(file.readAsStringSync()),
     };
   });
 

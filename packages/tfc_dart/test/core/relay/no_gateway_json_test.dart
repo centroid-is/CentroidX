@@ -127,7 +127,11 @@ void main() {
     // number is the line number in the file an operator opens.
     code = <String, String>{
       for (final file in _scanned())
-        file.path: _stripComments(file.readAsStringSync()),
+        // `/`-normalised for the same reason as the other structure scans:
+        // `File.path` uses the platform separator, so a `contains('a/b.dart')`
+        // assertion silently misses every key on Windows.
+        file.path.replaceAll(r'\', '/'):
+            _stripComments(file.readAsStringSync()),
     };
   });
 
