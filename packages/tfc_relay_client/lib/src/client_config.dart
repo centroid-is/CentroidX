@@ -57,6 +57,8 @@
 /// it, and the recovery path that was supposed to be automatic never runs.
 library;
 
+import 'dial/trust_capability.dart';
+
 /// The knobs a `RemoteStateMan` is constructed with.
 ///
 /// Named arguments with defaults, in `ServerConfig`'s style — the caller sets
@@ -401,6 +403,33 @@ final class ClientConfig {
   /// misconfigured, once per attempt, forever, and the engineer sent to look
   /// at it starts with the wrong question.
   void checkDialable(Uri uri) {
+    // The browser's rules are different in both directions, and stricter
+    // overall. It cannot pin — there is no API to add a trust root, to pin
+    // one, or to read the peer certificate — so `wss` with no root is the
+    // *only* thing it can do, and a configured root is a claim it cannot
+    // honour. And it must never dial plaintext: whether the browser stops a
+    // `ws://` dial depends on how the page was served, not on anything
+    // configured here, so a page opened over `http://` would put the station
+    // credential and every plant write on the wire in the clear.
+    if (!kCanPinTrustRoot) {
+      if (uri.scheme != 'wss') {
+        throw ArgumentError('a browser client dials wss:// only, and this is '
+            '$uri. Plaintext would put the station credential and every write '
+            'on the wire in the clear, and whether the browser refuses it '
+            'depends on how the page was served rather than on this config. '
+            'Serve the page over https and dial wss.');
+      }
+      if (tls != null) {
+        throw ArgumentError('a root certificate was configured for a browser '
+            'client dialling $uri, and a browser cannot use one: there is no '
+            'API to add a trust root, to pin, or to read the peer '
+            'certificate. The gateway has to be trusted by the machine\'s own '
+            'store — a publicly-trusted certificate, or the plant root '
+            'provisioned into it. Clear this field so the configuration stops '
+            'claiming a pin that does not exist.');
+      }
+      return;
+    }
     if (uri.scheme == 'wss' && tls == null) {
       throw ArgumentError('this panel is configured to dial $uri but no '
           'rootCertPath was given: an encrypted dial with no pinned root '

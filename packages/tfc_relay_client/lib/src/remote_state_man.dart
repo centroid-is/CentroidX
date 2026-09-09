@@ -60,7 +60,6 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
@@ -70,6 +69,7 @@ import 'client_config.dart';
 import 'client_sub_apis.dart';
 import 'clock_offset.dart';
 import 'connection_supervisor.dart';
+import 'dial/pinned_dialer.dart';
 import 'deadline.dart';
 import 'failure_taxonomy.dart';
 import 'freshness_watchdog.dart';
@@ -111,48 +111,16 @@ final class RemoteStateMan implements StateManApi {
     // support call about an attack that is not happening.
     config.checkDialable(uri);
 
-    // One per panel, built here, closed in [dispose] (T-06-22).
+    // One per panel, built here, closed in [dispose] (T-06-22), and platform-
+    // chosen: on a station it carries a `SecurityContext` over the plant's
+    // private CA, in a browser it cannot pin at all and says so. Everything
+    // that made this `dart:io` lives in `dial/pinned_dialer_io.dart` now — see
+    // `dial/pinned_dialer.dart` for why the dial is the one thing in this
+    // package that genuinely differs by platform.
     //
-    // Not one per attempt. `SecurityContext` parses the root PEM when it is
-    // built, and an `HttpClient` owns a connection pool; a panel on a flapping
-    // link redials all shift, so a context built inside the dial would re-read
-    // the file and leak a pool per attempt — on the one code path that already
-    // only runs when something is wrong. Held here rather than in
-    // `ConnectionSupervisor` because that class's `dial:` seam is documented
-    // as "one attempt in, one `ConnectAttempt` out": hanging an object with a
-    // lifetime off it would make it something else.
-    final tls = config.tls;
-    if (tls != null) {
-      // The provisioned root and nothing else. With `withTrustedRoots: false`
-      // the machine's own store is never consulted, so a rogue root installed
-      // on the station cannot vouch for anything claiming to be the gateway
-      // (T-06-20) — which is also why our own gateway is refused by a client
-      // that skips this (SEC-02's system-roots arm). The root arrives one of
-      // two ways — a mounted file, or the PEM text the trust-acquisition flow
-      // pinned after the operator approved its fingerprint — and both land on
-      // the same context: the pin does not know or care how it was
-      // provisioned, which is what `tls_pem_pin_test.dart`'s foreign-CA arm
-      // holds it to.
-      final context = SecurityContext(withTrustedRoots: false);
-      final pem = tls.rootCertPem;
-      if (pem != null) {
-        context.setTrustedCertificatesBytes(utf8.encode(pem));
-      } else {
-        context.setTrustedCertificates(tls.rootCertPath!);
-      }
-      _pinned = HttpClient(
-        context: context,
-      )
-        // The second bound under the abandoned dial.
-        // `IOWebSocketChannel.connect` applies `connectTimeout` as a
-        // `Future.timeout`, which abandons the connect rather than cancelling
-        // it, leaving roughly three descriptors per attempt that nothing
-        // reclaims (06-07: fds 36→64 over six seconds of redials). The
-        // backoff does not bound that — at the 30 s cap a panel pointed at a
-        // gateway that swallows handshakes accumulates for the whole fault —
-        // and `HttpClient.connectionTimeout` *cancels*.
-        ..connectionTimeout = config.connectTimeout;
-    }
+    // Not one per attempt: building the trust material is what is expensive
+    // and what leaks, and a panel on a flapping link redials all shift.
+    _dialer = PinnedDialer(config.tls, connectionTimeout: config.connectTimeout);
 
     if (keys.isNotEmpty) {
       _subscriptions[page] =
@@ -321,7 +289,7 @@ final class RemoteStateMan implements StateManApi {
   /// Built once in the constructor and closed in [dispose]. Nothing reassigns
   /// it: a second one would mean a second parse of the root PEM and a second
   /// connection pool, which is the flapping-link leak T-06-22 names.
-  HttpClient? _pinned;
+  late final PinnedDialer _dialer;
 
   late final ConnectionSupervisor _supervisor;
   late final StreamSubscription<LinkState> _transitions;
@@ -553,6 +521,19 @@ final class RemoteStateMan implements StateManApi {
           for (final key in store.keys)
             if (store.peek(key) != null) key,
       ];
+
+  /// The keys this client's page subscription is currently asking for.
+  ///
+  /// Distinct from [keys], which answers "what has a value arrived for" — a
+  /// cache reading. This one is the *request*: what the client has told the
+  /// gateway to send, whether or not any of it has landed yet. Empty on a
+  /// client that has not been given a page.
+  ///
+  /// Exists so "the page the panel subscribed is the page its mapping
+  /// describes" can be asserted against the object rather than against the
+  /// source of the function that computes it.
+  Set<String> get subscribedKeys =>
+      Set<String>.unmodifiable(_subscriptions[_page]?.keys ?? const <String>{});
 
   /// Replaces the key set of this client's page subscription.
   ///
@@ -1500,8 +1481,7 @@ final class RemoteStateMan implements StateManApi {
     // panel closing must not wait on a socket to a gateway that may already be
     // gone — the same argument `_releaseHolds` makes at the top of this
     // method. Cleared so a second dispose is still a no-op.
-    _pinned?.close(force: true);
-    _pinned = null;
+    _dialer.close();
 
     for (final store in _stores.values) {
       store.dispose();
@@ -1516,9 +1496,8 @@ final class RemoteStateMan implements StateManApi {
   /// `dial:` seam insists on — with the two things only this class knows
   /// closed over: the pinned client built in the constructor, and the ceiling
   /// on how long a dial may take before the schedule takes over.
-  Future<ConnectAttempt> _dialGateway(Uri uri) => connect(
+  Future<ConnectAttempt> _dialGateway(Uri uri) => _dialer.dial(
         uri,
-        client: _pinned,
         connectTimeout: config.connectTimeout,
       );
 

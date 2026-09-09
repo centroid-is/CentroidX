@@ -131,6 +131,30 @@ void main() {
   });
 
   group('the supervisor compiles without dart:io', () {
+    test('every file but the dial arm names dart:io nowhere in code', () {
+      // Widened from `connection_supervisor.dart` alone once the dial moved
+      // behind `dial/pinned_dialer.dart`. The whole package now compiles for
+      // the web — measured, `dart compile js` on `tfc_relay_client` produces
+      // ~850 KB — and the property worth guarding is no longer "the state
+      // machine is portable" but "everything except the dial is".
+      final offenders = <String, List<(int, String)>>{};
+      for (final entity in src.listSync(recursive: true)) {
+        if (entity is! File || !entity.path.endsWith('.dart')) continue;
+        if (entity.path.endsWith('pinned_dialer_io.dart')) continue;
+        final hits = mentionsIn(entity, _banned);
+        if (hits.isNotEmpty) offenders[entity.path] = hits;
+      }
+      expect(offenders, isEmpty,
+          reason: 'found $_banned outside the dial seam: '
+              '${offenders.keys.join(', ')}. '
+              'The dial is the one thing in this package that genuinely '
+              'differs by platform — a browser owns its trust store and cannot '
+              'be handed a SecurityContext — and `dial/pinned_dialer.dart` is '
+              'the seam for it. Anything else that reaches for `dart:io` makes '
+              'the whole package uncompilable on web for the sake of one '
+              'symbol.');
+    });
+
     test('connection_supervisor.dart names dart:io nowhere in code', () {
       final hits = mentionsIn(supervisor, _banned);
 
@@ -171,26 +195,32 @@ void main() {
               'what is clean, not the file');
     });
 
-    test('the ban is scoped to the supervisor on purpose, and the neighbour '
-        'proves it', () {
-      // `remote_state_man.dart` is S11: `HttpClient` + `SecurityContext`, with
-      // no browser equivalent because the browser owns TLS and cannot be
-      // handed a private CA root. Deliberate, documented debt, out of this
-      // phase's scope. Asserting it here does two things at once: it records
-      // the scope decision where somebody widening the sweep will read it, and
-      // it is a second control needle — the machinery finds `dart:io` in code
-      // when `dart:io` is in code.
-      final neighbour =
-          File('${src.path}${Platform.pathSeparator}remote_state_man.dart');
-      expect(neighbour.existsSync(), isTrue,
-          reason: 'the neighbour this pin is deliberately not sweeping is not '
-              'there, so the scope arm below is about nothing');
-      expect(mentionsIn(neighbour, _banned), isNotEmpty,
-          reason: 'remote_state_man.dart no longer names $_banned in code. '
-              'That is good news and it retires this arm: either widen the pin '
-              'to cover it, or delete this case. What it must not become is a '
-              'sweep that is scoped to one file for a reason that has stopped '
-              'being true');
+    test('the one file that may name dart:io still does', () {
+      // This arm used to say the opposite. It named `remote_state_man.dart` as
+      // the neighbour the sweep deliberately did NOT cover — `HttpClient` +
+      // `SecurityContext`, "deliberate, documented debt" — and it told whoever
+      // read it what to do if that ever stopped being true: *widen the pin to
+      // cover it, or delete this case*. The debt is paid, so the pin is wider
+      // (see the sweep above) and this is what is left of the arm: the control
+      // needle.
+      //
+      // The dial is genuinely platform-specific and always will be. A browser
+      // owns its trust store, offers no API to add a root to it, and cannot be
+      // handed a `SecurityContext`. So exactly one file in this package may
+      // name `dart:io`, and it is the io arm of the dial seam. That it still
+      // does is what proves the machinery finds `dart:io` in code when
+      // `dart:io` is in code.
+      final dialArm = File('${src.path}${Platform.pathSeparator}dial'
+          '${Platform.pathSeparator}pinned_dialer_io.dart');
+      expect(dialArm.existsSync(), isTrue,
+          reason: 'the io arm of the dial seam is not there, so the control '
+              'needle is about nothing and the sweep above cannot be trusted');
+      expect(mentionsIn(dialArm, _banned), isNotEmpty,
+          reason: '${dialArm.path} no longer names $_banned in code. Either '
+              'the dial stopped needing it — in which case sweep this file '
+              'too and delete this case — or the reading is broken, in which '
+              'case the whole sweep above is reporting clean because it reads '
+              'nothing');
     });
 
     test('the same machinery finds a planted import and ignores a commented '
