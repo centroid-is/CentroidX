@@ -588,6 +588,29 @@ void main() {
     expect(row.roleName, 'R_ts');
   });
 
+  // The passwordless account, over the gateway path rather than the direct one.
+  test('an empty password crosses the wire and creates an account that signs '
+      'in on its username alone, marked so on the roster', () async {
+    await admin.createRole(
+        const AccessRole(name: 'R_np', groups: {AccessGroup.operate}));
+    await admin.createUser(const relay.NewUserParams(
+        subject: 'line', password: '', grantedRole: 'R_np'));
+
+    // The row itself: the marker, not an empty column and not a hash.
+    final stored = await AccessRepository(db).user('line');
+    expect(stored, isNotNull);
+    expect(isPasswordless(stored!.passwordHash), isTrue);
+    expect(stored.salt, isEmpty);
+
+    // And what the panel is told, which is the half a gateway station sees.
+    final row = (await admin.listUsers()).firstWhere((u) => u.username == 'line');
+    expect(row.hasPassword, isFalse,
+        reason: 'a panel cannot mark an open account it is not told about');
+    expect((await admin.listUsers()).every((u) => u.username == 'line' || u.hasPassword),
+        isTrue,
+        reason: 'and it must not mark the protected ones');
+  });
+
   // The wire cut, its own arm rather than a members-table row.
   test('template(name) is cut from the wire and refuses by name, database '
       'or no database', () async {
