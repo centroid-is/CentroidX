@@ -682,6 +682,50 @@ void main() {
       expect(only.notification.rule.level, AlarmLevel.warning);
     });
 
+    // ------------------------------------------------------------------ 5b
+    //
+    // **Found by sabotage, 2026-09-09.** Arm 5 above covers a uid the local
+    // config has never heard of, so a `_activeOf` that preferred the local
+    // title falls straight through to the payload's and the arm stays green.
+    // Mutating `title: entry.title` to a lookup in `alarms` survived the whole
+    // suite. [knownAlarm]'s title is spelled 'Local title, one restart behind'
+    // for exactly this arm — the fixture was built for it and the arm was
+    // never written.
+    test('a KNOWN entry still renders the backend\'s words, not the local ones',
+        () async {
+      final transport = _RecordingTransport();
+      addTearDown(transport.close);
+      final container = _container(
+        gateway: true,
+        // The panel knows this uid, and knows it by a different name.
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source = await container.read(alarmManProvider.future);
+      await Future<void>.delayed(Duration.zero);
+      transport.push([
+        entry(
+            uid: 'CN04.MOT01',
+            title: 'Motor overload',
+            description: 'the drive tripped',
+            level: 'error'),
+      ]);
+      final active = await _settle(source);
+
+      final only = active.single;
+      expect(only.alarm.config.title, 'Motor overload',
+          reason: 'the two copies are not the same age: preferences are '
+              're-read on a restart, so a panel that has been up since before '
+              'the last configuration change would otherwise draw a live '
+              'alarm under a name nobody in the plant uses any more');
+      expect(only.alarm.config.description, 'the drive tripped');
+      expect(only.alarm.config.title,
+          isNot(equals(knownAlarm().title)),
+          reason: 'stated as a contrast so the arm cannot pass by the two '
+              'titles happening to agree');
+    });
+
     // ------------------------------------------------------------------ 6b
     test('a truncated list is reported rather than presented as complete',
         () async {
