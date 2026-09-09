@@ -110,9 +110,14 @@ const String kAccessUsersHeadline = 'Accounts';
 
 /// One line under the title. Says what an account is and what holding one
 /// means, before a list of names arrives.
+///
+/// It no longer says "and a password". An account may have none — it is marked
+/// in the list when it does not — and a sentence stating a rule the screen
+/// itself breaks three rows down is worse than no sentence.
 const String kAccessUsersSubtitle =
-    'An account is a username, a password and exactly one role. What it may do '
-    'is whatever that role grants, and changing the role changes it at once.';
+    'An account is a username and exactly one role, with or without a '
+    'password. What it may do is whatever that role grants, and changing the '
+    'role changes it at once.';
 
 /// The read failed, or the store could not be built.
 ///
@@ -708,7 +713,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
                     // roster for open accounts should find it without
                     // crossing the row.
                     if (isPasswordless(user.passwordHash)) ...[
-                      const SizedBox(width: 6),
+                      const SizedBox(width: 8),
                       Tooltip(
                         message:
                             kAccessUserNoPasswordBadgeTooltip(user.username),
