@@ -40,3 +40,4 @@ export 'src/state_man_api.dart';
 export 'src/write_outcome_log.dart';
 export 'src/access_api.dart';
 export 'src/hold_registry.dart';
+export 'src/session_auth.dart';

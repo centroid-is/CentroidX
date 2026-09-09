@@ -69,6 +69,24 @@ abstract final class Methods {
 
   static const ping = 'ping';
 
+  /// Interactive sign-in on an already-helloed session — the method that
+  /// ends the awaiting-sign-in state (`SessionLoginParams` in,
+  /// `SessionLoginResult` out). Post-hello **by construction**: the
+  /// handshake gate refuses it before `hello` like every other name, and the
+  /// Argon2id verification it triggers runs off the hello path, where
+  /// `TokenValidator.validate`'s no-event-loop-await constraint does not
+  /// bind. Spelled `family.method` like the access names, because "login"
+  /// bare would read as a tenth session verb and this is an *authentication*
+  /// act, not a value operation.
+  static const sessionLogin = 'session.login';
+
+  /// The way back down: returns a signed-in session to the awaiting-sign-in
+  /// sentinel — never to a direct-mode-shaped anonymous, which is a concept
+  /// this wire does not have. Idempotent on a session that is already
+  /// nobody, because the panel that calls it cannot know whether a reconnect
+  /// already reset the far end.
+  static const sessionLogout = 'session.logout';
+
   /// The hold-to-run deadman feed — client→server, one frame per tick period
   /// while a button is held, carrying [HoldTickParams] and no id.
   ///
