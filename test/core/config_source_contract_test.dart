@@ -387,6 +387,29 @@ void main() {
         expect(source.applySemantics, h.expectedApplySemantics);
         expect(source.hasLiveStatus, h.expectedHasLiveStatus);
       });
+
+      test('readRaw answers the stored text verbatim, even when it will '
+          'not parse', () async {
+        // The parseable case: byte-equal to what is stored/served.
+        final source = await h.build(seeded());
+        final raw = await source.readRaw();
+        expect(raw.text, seeded(),
+            reason: 'the raw view is the document as stored, not a '
+                're-encoding');
+        expect(raw.readOnlySections, h.expectedReadOnlySections);
+
+        // The escape-hatch case (phase 3): the stored document does not
+        // decode as an object, so read() refuses with the parser's own
+        // sentence — and readRaw still answers the text whole, exactly as
+        // stored, because the panel's raw recovery editor is the
+        // alternative to SSH.
+        final broken = await h.build('[1, 2, 3]');
+        await expectLater(broken.read(), throwsFormatException);
+        final rawBroken = await broken.readRaw();
+        expect(rawBroken.text, '[1, 2, 3]',
+            reason: 'the document is the source\'s truth even when it will '
+                'not decode: answered whole, verbatim');
+      });
     });
   }
 
@@ -421,6 +444,25 @@ void main() {
           jsonEncode(StateManConfig(opcua: [OpcUAConfig()]).toJson()),
           reason: 'the seeded default must be persisted exactly as '
               'fromPrefs persists it');
+    });
+
+    test('readRaw on an empty store seeds and persists the same default '
+        'read() seeds', () async {
+      Preferences.clearSecretCache();
+      final storage = _MemStorage();
+      final prefs = Preferences(database: null, secureStorage: storage);
+      final source = LocalPrefsConfigSource(prefs: () async => prefs);
+
+      final raw = await source.readRaw();
+      expect(raw.text,
+          jsonEncode(StateManConfig(opcua: [OpcUAConfig()]).toJson()),
+          reason: 'raw and typed reads must agree about what an '
+              'unconfigured station holds');
+      expect(
+          await prefs.getString(StateManConfig.configKey, secret: true),
+          raw.text,
+          reason: 'and the seed is persisted, exactly as read() persists '
+              'it');
     });
 
     test('validate carries StateManConfig.fromJson\'s own message', () async {
