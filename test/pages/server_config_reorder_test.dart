@@ -275,13 +275,17 @@ void main() {
     });
 
     testWidgets('a reorder counts as an unsaved change', (tester) async {
+      // The save button is the page's ONE unsaved indicator (phase 2 of
+      // quick/20260908-unify-config-ui): armed = "Save Configuration",
+      // clean = "All Changes Saved". The old orange pill is gone.
       await pumpSection(tester, _threeOpcuaServers());
 
-      expect(find.textContaining('Unsaved'), findsNothing);
+      expect(find.text('Save Configuration'), findsNothing);
 
       await dragCard(tester, from: 2, to: 0);
 
-      expect(find.textContaining('Unsaved'), findsAtLeastNWidgets(1));
+      await reveal(tester, find.text('Save Configuration'));
+      expect(find.text('Save Configuration'), findsOneWidget);
     });
 
     testWidgets('card state follows its server across a reorder',
