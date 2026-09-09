@@ -98,6 +98,12 @@ void main() {
       expect(built.link.peek(ref)!.quality, Quality.errorTypeMismatch,
           reason: 'the verdict must be cached, not only streamed — a page '
               'opened later reads peek');
+      expect(built.link.lastError, contains('Unsupported nodeId type'),
+          reason: 'the reason must reach the link health surface '
+              '(PIPE.upstream.<alias>.last_error) — a quality with no '
+              'sentence behind it sends the engineer to the PLC with a '
+              'flashlight. Added after a sabotage pass found _recordError '
+              'removable without reddening anything.');
     });
 
     test(

@@ -115,24 +115,34 @@ void main() {
     expect(refusals.single.code, ModbusResponseCode.illegalDataAddress);
   });
 
-  test('a transport failure is NOT a refusal — nothing came back, and the '
-      'far end said nothing', () async {
+  test('neither silence nor a busy device is a refusal — only the codes '
+      'where the device declined the request\'s SHAPE', () async {
     final built = build();
     addTearDown(built.wrapper.dispose);
+    // Silence first — briefly, deliberately under the wrapper's three-
+    // consecutive-failures half-open threshold, because tripping the
+    // reconnect loop would make this case about backoff instead.
     built.mock.onSend = (_) => ModbusResponseCode.requestTimeout;
 
     final refusals = <ModbusAddressRefusal>[];
     built.wrapper.refusals.listen(refusals.add);
     built.wrapper.subscribe(spec).listen((_) {});
     built.wrapper.connect();
-    await Future<void>.delayed(const Duration(milliseconds: 150));
-
+    await Future<void>.delayed(const Duration(milliseconds: 50));
     expect(refusals, isEmpty,
         reason: 'grading silence as an affirmative refusal is the same lie '
             'with the polarity flipped: the link machinery owns transports');
 
+    // Then an ANSWERED exception that is still not a refusal: deviceBusy is
+    // a statement about the moment, not the register map.
+    built.mock.onSend = (_) => ModbusResponseCode.deviceBusy;
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    expect(refusals, isEmpty,
+        reason: 'a busy device recovers by waiting — exactly what a refusal '
+            'never does, and exactly why the two must not share a grade');
+
     // The live control that proves the observer works: the same wrapper, the
-    // same subscription, and the answer changes from silence to a refusal.
+    // same subscription, and the answer changes to a refusal.
     built.mock.onSend = (_) => ModbusResponseCode.illegalDataAddress;
     await Future<void>.delayed(const Duration(milliseconds: 150));
     expect(refusals, hasLength(1));
