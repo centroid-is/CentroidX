@@ -89,6 +89,7 @@ final class OpcUaServerFixture {
     required this.port,
     required this.valueKeys,
     required this.writeKeys,
+    required this.typedWriteKeys,
     required this.structKeys,
     required this.treePaths,
     required this.methodPaths,
@@ -107,6 +108,17 @@ final class OpcUaServerFixture {
 
   /// Keys served by data-source nodes: writable, countable, failable.
   final List<String> writeKeys;
+
+  /// Keys served by data-source nodes whose **DataType attribute is set**.
+  ///
+  /// [writeKeys] leaves the attribute at open62541's permissive default, which
+  /// is `BaseDataType` — a node that accepts an Int32 where the plant has a
+  /// REAL and never says a word. That is the wrong instrument for judging the
+  /// write path's typing: a plant tag has exactly one type, the server enforces
+  /// it, and a gateway that guesses gets `Bad_TypeMismatch` or, worse, a
+  /// silently converted number. Each entry is key → the seed value, whose
+  /// [DynamicValue.typeId] becomes the node's declared DataType.
+  final Map<String, DynamicValue> typedWriteKeys;
 
   /// **8b-03.** Keys served as **structured values** with a server-registered
   /// custom type: key → member name → initial scalar value.
@@ -197,6 +209,7 @@ final class OpcUaServerFixture {
   static Future<OpcUaServerFixture> start({
     Iterable<String> valueKeys = const <String>[],
     Iterable<String> writeKeys = const <String>[],
+    Map<String, DynamicValue> typedWriteKeys = const <String, DynamicValue>{},
     Map<String, Map<String, Object>> structKeys =
         const <String, Map<String, Object>>{},
     Iterable<String> treePaths = const <String>[],
@@ -225,6 +238,7 @@ final class OpcUaServerFixture {
       port: built.port,
       valueKeys: values,
       writeKeys: writes,
+      typedWriteKeys: typedWriteKeys,
       structKeys: structKeys,
       treePaths: tree,
       methodPaths: methods,
@@ -280,30 +294,46 @@ final class OpcUaServerFixture {
       _plainValues[key] = seed;
     }
     for (final key in writeKeys) {
-      _writeCounts.putIfAbsent(key, () => 0);
-      _writeLog.putIfAbsent(key, () => <DynamicValue>[]);
-      _sourceValues.putIfAbsent(key, () => fixtureValue(0, name: key));
-      _server.addDataSourceVariableNode(
-        fixtureNodeId(key),
-        browseName: key,
-        onRead: () {
-          if (_failingReads.contains(key)) {
-            // A throw out of the read callback becomes UA_STATUSCODE_
-            // BADINTERNALERROR on the wire (`server.dart:318-320`), which is
-            // exactly the 0x80020000 08-01's probe measured. That is a Bad
-            // status on a node that still exists — the other half of the
-            // quality table from a deleted node's BadNodeIdUnknown.
-            throw StateError('fixture: read of $key is failing on purpose');
-          }
-          return _sourceValues[key]!;
-        },
-        onWrite: (value) async {
-          _writeCounts[key] = (_writeCounts[key] ?? 0) + 1;
-          _writeLog[key]!.add(value);
-          _sourceValues[key] = value;
-        },
-      );
+      _addDataSourceNode(key, fixtureValue(0, name: key));
     }
+    for (final entry in typedWriteKeys.entries) {
+      // The seed's own typeId is the node's declared DataType — that is the
+      // whole difference between this loop and the one above.
+      _addDataSourceNode(entry.key, entry.value,
+          typeId: entry.value.typeId);
+    }
+  }
+
+  /// One data-source node: writable, countable, failable.
+  ///
+  /// [typeId] null keeps open62541's permissive `BaseDataType` default (what
+  /// [writeKeys] has always produced); non-null publishes the node's DataType
+  /// attribute, which is what makes the server enforce a type on write.
+  void _addDataSourceNode(String key, DynamicValue seed, {NodeId? typeId}) {
+    _writeCounts.putIfAbsent(key, () => 0);
+    _writeLog.putIfAbsent(key, () => <DynamicValue>[]);
+    _sourceValues.putIfAbsent(key, () => seed);
+    _server.addDataSourceVariableNode(
+      fixtureNodeId(key),
+      browseName: key,
+      typeId: typeId,
+      onRead: () {
+        if (_failingReads.contains(key)) {
+          // A throw out of the read callback becomes UA_STATUSCODE_
+          // BADINTERNALERROR on the wire (`server.dart:318-320`), which is
+          // exactly the 0x80020000 08-01's probe measured. That is a Bad
+          // status on a node that still exists — the other half of the
+          // quality table from a deleted node's BadNodeIdUnknown.
+          throw StateError('fixture: read of $key is failing on purpose');
+        }
+        return _sourceValues[key]!;
+      },
+      onWrite: (value) async {
+        _writeCounts[key] = (_writeCounts[key] ?? 0) + 1;
+        _writeLog[key]!.add(value);
+        _sourceValues[key] = value;
+      },
+    );
   }
 
   /// One struct member, with its OPC UA type derived from the initial value
@@ -388,7 +418,14 @@ final class OpcUaServerFixture {
   /// reports that instant, so a write followed by a wait produces a value
   /// whose source time is provably older than its arrival.
   void setValue(String key, Object? value) {
-    final shaped = fixtureValue(value, name: key);
+    // A typed node keeps its declared type: re-seeding it through
+    // [fixtureValue]'s int→Int32 rule would make the node serve a value whose
+    // type disagrees with its own DataType attribute, and every read after
+    // that would be measuring the fixture rather than the code.
+    final declared = typedWriteKeys[key]?.typeId;
+    final shaped = declared == null
+        ? fixtureValue(value, name: key)
+        : DynamicValue(value: value, typeId: declared, name: key);
     if (_sourceValues.containsKey(key)) {
       _sourceValues[key] = shaped;
       return;
