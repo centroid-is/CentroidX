@@ -39,7 +39,7 @@ library;
 
 import 'dart:async';
 
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:postgres/postgres.dart' show Endpoint;
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/data_acquisition_isolate.dart';

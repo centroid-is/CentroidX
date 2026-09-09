@@ -12,7 +12,7 @@ import 'common.dart';
 import 'dart:async';
 import 'package:logger/logger.dart';
 import '../../providers/state_man.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import '../../widgets/graph.dart';
 import '../../widgets/hit_boundary.dart';
 import '../../widgets/panes/pane_chrome.dart';

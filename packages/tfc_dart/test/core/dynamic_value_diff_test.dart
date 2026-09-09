@@ -10,7 +10,7 @@
 import 'dart:collection' show LinkedHashMap;
 import 'dart:io' show File;
 
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:test/test.dart';
 import 'package:tfc_access/tfc_access.dart' show AuditRecord;
 import 'package:tfc_dart/core/access/dynamic_value_diff.dart';

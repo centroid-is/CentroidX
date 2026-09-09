@@ -33,7 +33,7 @@ import 'package:jbtm/src/m2400.dart';
 import 'package:jbtm/src/m2400_dynamic_value.dart';
 import 'package:jbtm/src/m2400_field_parser.dart';
 import 'package:jbtm/src/m2400_fields.dart';
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:tfc_dart/core/opcua_value_translation.dart';
 import 'package:tfc_dart/core/state_man.dart' show StateMan;
 import 'package:test/test.dart';

@@ -27,7 +27,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:rxdart/rxdart.dart' show BehaviorSubject;
 import 'package:tfc/core/value_freshness.dart';
 import 'package:tfc/page_creator/assets/led.dart';

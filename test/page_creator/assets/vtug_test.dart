@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc/page_creator/assets/festo.dart';
 import 'package:tfc/page_creator/assets/vtug.dart';
 import 'package:tfc/painter/festo/valve_symbol.dart';

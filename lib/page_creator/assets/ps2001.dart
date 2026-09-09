@@ -19,7 +19,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 import '../../painter/beckhoff/ps2001.dart' show Ps2001FaceState;
 import '../../theme.dart' show HmiStateColors;

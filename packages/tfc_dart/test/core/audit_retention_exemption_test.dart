@@ -10,7 +10,7 @@
 import 'dart:async';
 
 import 'package:logger/logger.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:test/test.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/drift_audit_sink.dart';

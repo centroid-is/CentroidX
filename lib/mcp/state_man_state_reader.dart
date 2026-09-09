@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io' as io;
 
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_mcp_server/tfc_mcp_server.dart'
     show ServerAliasProvider, StateReader;

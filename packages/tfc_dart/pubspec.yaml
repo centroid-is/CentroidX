@@ -88,7 +88,7 @@ dependency_overrides:
       # PIPE-11's source timestamps. Keep in step with the root
       # pubspec.yaml; every open62541 override in this repo carries this
       # same SHA.
-      ref: 0251aa099d1779c2ab0c4f408123d63c8b6c0e12
+      ref: 2ff18e4ee0af759cba4258a02648889bbbd526ae
   postgres:
     git:
       url: https://github.com/centroid-is/postgresql-dart.git

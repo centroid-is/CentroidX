@@ -8,7 +8,7 @@ import 'package:tfc/widgets/number_slider.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:json_annotation/json_annotation.dart';
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:rxdart/rxdart.dart';
 import '../../theme.dart';
 import '../../widgets/hit_boundary.dart';

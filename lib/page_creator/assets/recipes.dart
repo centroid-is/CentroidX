@@ -15,7 +15,7 @@ import 'package:tfc/widgets/state_value_builder.dart';
 import 'package:tfc/widgets/tag_access_guard.dart';
 import 'package:tfc_dart/converter/dynamic_value_converter.dart';
 
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 part 'recipes.g.dart';
 

@@ -152,16 +152,23 @@ dependency_overrides:
   open62541:
     git:
       url: https://github.com/centroid-is/open62541_dart.git
-      # `monitor-quality-sourcetime`: 1.5.7+3 (main) plus the relay-quality
-      # work rebased onto it — DynamicValue.statusCode / .sourceTimestamp and
+      # `web-types`: `monitor-quality-sourcetime` — 1.5.7+3 (main) plus the
+      # relay-quality work, i.e. DynamicValue.statusCode / .sourceTimestamp and
       # the opt-in `deliverBadStatus` on monitor()/monitoredItems(), which
-      # PIPE-11 needs for real source timestamps. Pinned to a SHA, not the
-      # branch: pubspec.lock is gitignored here. Every open62541 override in
-      # this repo carries THIS SHA (root, centroid-hmi, packages/tfc_dart,
-      # packages/jbtm, packages/tfc_relay_local) — two packages in one
-      # process resolving two different open62541 builds is not a state this
-      # repository should ever be in.
-      ref: 0251aa099d1779c2ab0c4f408123d63c8b6c0e12
+      # PIPE-11 needs for real source timestamps — plus the NodeId split that
+      # gives the package an FFI-free `open62541_types.dart`. That barrel is
+      # what makes a web build possible at all: `DynamicValue` used to reach
+      # `dart:ffi` through node_id.dart, which is a hard compile error under
+      # dart2js. Import `open62541_types.dart` for values, `open62541.dart`
+      # only where a real OPC UA client is used.
+      #
+      # Pinned to a SHA, not the branch: pubspec.lock is gitignored here. Every
+      # open62541 override in this repo carries THIS SHA (root, centroid-hmi,
+      # packages/tfc_dart, packages/jbtm, packages/tfc_relay_local,
+      # packages/tfc_mcp_server) — two packages in one process resolving two
+      # different open62541 builds is not a state this repository should ever
+      # be in.
+      ref: 2ff18e4ee0af759cba4258a02648889bbbd526ae
   postgres:
     git:
       url: https://github.com/centroid-is/postgresql-dart.git
