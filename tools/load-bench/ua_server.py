@@ -127,14 +127,18 @@ def free_port() -> int:
     return port
 
 
-async def build_server(name: str, seed: int):
-    """One asyncua server with the full matrix. Returns (server, ctx dict)."""
+async def build_server(name: str, seed: int, fixed_port: int | None = None):
+    """One asyncua server with the full matrix. Returns (server, ctx dict).
+
+    [fixed_port] exists for ONE caller: the bench's restart arm, which brings a
+    killed server back on the port it originally drew (a rebooting PLC keeps
+    its address). Everyone else gets an ephemeral draw."""
     from asyncua import Server, ua
     from asyncua.common.structures104 import new_struct, new_struct_field, new_enum
 
     last_err = None
     for _ in range(3):  # free-port draw race: redraw and retry, never a literal
-        port = free_port()
+        port = fixed_port if fixed_port is not None else free_port()
         server = Server()
         await server.init()
         server.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
@@ -161,6 +165,31 @@ async def build_server(name: str, seed: int):
     ])
     types = await server.load_data_type_definitions()
     BenchStruct = types["BenchStruct"]
+
+    # ---- WORKAROUND for a REAL native crash in the pinned open62541_dart ----
+    # asyncua's standard address space gives every base DataType node (e.g.
+    # ns=0;i=294 DateTime) a DataTypeDefinition attribute whose answer is
+    # status GOOD with an EMPTY variant. That is spec-legal. The pinned
+    # binding's readAttribute auto-schema follow-up then dereferences
+    # `value.type` (NULL for an empty variant) and SEGVs the whole client
+    # process — measured 2026-09-09, si_addr=0xc, client.dart:873. TwinCAT
+    # never triggers it because it answers BadAttributeIdInvalid instead.
+    # Until the binding null-checks, prune the empty attributes so asyncua
+    # answers BadAttributeIdInvalid too, which the binding tolerates.
+    # The bench's custom BenchMode/BenchStruct definitions are real (non-empty)
+    # and are NOT pruned — struct/enum type learning still goes down the
+    # DataTypeDefinition path.
+    from asyncua.ua import AttributeIds
+    pruned = 0
+    for nd in server.iserver.aspace._nodes.values():
+        a = nd.attributes.get(AttributeIds.DataTypeDefinition)
+        if a is not None and (a.value is None or a.value.Value.Value is None):
+            del nd.attributes[AttributeIds.DataTypeDefinition]
+            pruned += 1
+    print(f"WORKAROUND {name}: pruned {pruned} empty DataTypeDefinition "
+          f"attributes (Good+empty-variant answer SEGVs the pinned "
+          f"open62541_dart client natively — see tools/load-bench/README.md)",
+          flush=True)
 
     V = ua.Variant
     T = ua.VariantType
@@ -305,13 +334,17 @@ async def main() -> int:
     ap.add_argument("--fast-hz", type=float, default=20.0, help="Fast node update rate")
     ap.add_argument("--prefix", default="ua", help="server name prefix")
     ap.add_argument("--offset", type=int, default=0, help="first server index (names + seeds)")
+    ap.add_argument("--port", type=int, default=None,
+                    help="fixed port (restart arm only; requires --count 1)")
     args = ap.parse_args()
+    if args.port is not None and args.count != 1:
+        ap.error("--port requires --count 1")
 
     servers = []
     for i in range(args.count):
         n = args.offset + i
         name = f"{args.prefix}{n:02d}"
-        server, ctx = await build_server(name, args.seed + n)
+        server, ctx = await build_server(name, args.seed + n, fixed_port=args.port)
         servers.append((server, ctx))
         print(f"SERVER {name} opc.tcp://127.0.0.1:{ctx['port']} ns={ctx['idx']} seed={args.seed + n}",
               flush=True)

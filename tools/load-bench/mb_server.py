@@ -166,7 +166,11 @@ async def main() -> int:
                     help="register-pair order for 32/64-bit values. The gateway "
                          "decodes ABCD only today (UpstreamLinkConfig exposes no "
                          "endianness); cdab exists to prove the difference shows.")
+    ap.add_argument("--port", type=int, default=None,
+                    help="fixed port (restart arm only; requires --count 1)")
     args = ap.parse_args()
+    if args.port is not None and args.count != 1:
+        ap.error("--port requires --count 1")
 
     from pymodbus.server import ModbusTcpServer
 
@@ -178,7 +182,7 @@ async def main() -> int:
         context, device = build_context(seed, args.word_order)
         last_err = None
         for _ in range(3):   # free-port draw race: redraw, never a literal
-            port = free_port()
+            port = args.port if args.port is not None else free_port()
             server = ModbusTcpServer(context, address=("127.0.0.1", port))
             try:
                 task = asyncio.create_task(server.serve_forever())
