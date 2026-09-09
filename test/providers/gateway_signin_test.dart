@@ -150,6 +150,18 @@ void main() {
         reason: 'a persisted gateway session would be the panel asserting an '
             'identity across a restart with no server session behind it — '
             'exactly the client-supplied identity D-11 forbids');
+
+    // And it STAYS unpersisted through activity: `poke()` extends a live
+    // session and, in direct mode, re-persists it — the `_persist` gateway
+    // guard is what keeps an operator's every pointer-down from writing the
+    // session to disk on a gateway panel. Without this arm, removing that
+    // guard reddens nothing (the sign-in path never calls `_persist`), so
+    // this is the sabotage control for it.
+    container.read(accessSessionProvider.notifier).poke();
+    await Future<void>.delayed(Duration.zero);
+    expect(await local.getString(kAccessSessionPrefKey), isNull,
+        reason: 'activity must not persist a gateway session either — the '
+            'guard is on _persist, not only on the sign-in path');
   });
 
   test('bad credentials map to badCredentials — and to nothing else',
