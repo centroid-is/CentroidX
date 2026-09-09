@@ -35,7 +35,10 @@ import '../widgets/gateway_link_status_row.dart';
 import '../widgets/preferences.dart';
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
 import 'package:tfc_dart/core/state_man.dart';
-import 'package:tfc_dart/core/database.dart';
+// The settings type only — `core/database.dart` would pull the drift-backed
+// runtime, and with it `dart:ffi`. This page edits the config, it never opens
+// a connection. See `core/database_config.dart`.
+import 'package:tfc_dart/core/database_config.dart';
 import '../providers/access.dart' show stationNameProvider;
 import '../providers/gateway.dart';
 import '../providers/gateway_link.dart';

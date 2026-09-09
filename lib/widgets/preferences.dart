@@ -24,7 +24,8 @@ import '../providers/preferences.dart';
 import '../providers/theme.dart';
 import '../theme.dart';
 import 'package:tfc_dart/core/preferences.dart';
-import 'package:tfc_dart/core/database.dart';
+// The settings type only — see the note in `pages/server_config.dart`.
+import 'package:tfc_dart/core/database_config.dart';
 
 /// Appearance settings section for the preferences page.
 ///

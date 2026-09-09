@@ -45,25 +45,43 @@ class Preferences implements PreferencesApi {
   /// [MySecureStorage] backend; writing to secure storage directly behind
   /// its back leaves the cache stale (call [clearSecretCache] if you must
   /// do that, e.g. in tests).
+  ///
+  /// A swap of the [SecureStorage] instance drops it: [_secrets] compares the
+  /// generation that filled the map against the current one and clears on a
+  /// mismatch. `SecureStorage.setInstance` used to call [clearSecretCache]
+  /// directly, which made the secret store import this library — and with it
+  /// the drift-backed database, and so `dart:ffi`. See
+  /// `secure_storage/secure_storage.dart`.
   static final Map<String, Future<String?>> _secretCache = {};
+  static int _secretCacheGeneration = SecureStorage.generation;
+
+  /// The secret cache, emptied first if it belongs to a previous
+  /// [SecureStorage] instance.
+  static Map<String, Future<String?>> get _secrets {
+    if (_secretCacheGeneration != SecureStorage.generation) {
+      _secretCache.clear();
+      _secretCacheGeneration = SecureStorage.generation;
+    }
+    return _secretCache;
+  }
 
   /// Clears the process-wide secret cache. Intended for tests, which create
   /// independent [Preferences] instances backed by fresh fake storages.
   static void clearSecretCache() => _secretCache.clear();
 
   Future<String?> _readSecret(String key) {
-    final cached = _secretCache[key];
+    final cached = _secrets[key];
     if (cached != null) {
       return cached;
     }
     final future = secureStorage.read(key: key);
-    _secretCache[key] = future;
+    _secrets[key] = future;
     // Never cache a failed read: evict so the next caller retries the
     // keychain. The error itself still propagates to whoever awaits the
     // returned future.
     future.then((_) {}, onError: (Object _) {
-      if (identical(_secretCache[key], future)) {
-        _secretCache.remove(key);
+      if (identical(_secrets[key], future)) {
+        _secrets.remove(key);
       }
     });
     return future;
@@ -71,12 +89,12 @@ class Preferences implements PreferencesApi {
 
   Future<void> _writeSecret(String key, String value) async {
     await secureStorage.write(key: key, value: value);
-    _secretCache[key] = Future.value(value);
+    _secrets[key] = Future.value(value);
   }
 
   Future<void> _deleteSecret(String key) async {
     await secureStorage.delete(key: key);
-    _secretCache.remove(key);
+    _secrets.remove(key);
   }
 
   Preferences(
