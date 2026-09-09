@@ -554,6 +554,74 @@ final class RemoteStateMan implements StateManApi {
             if (store.peek(key) != null) key,
       ];
 
+  /// Replaces the key set of this client's page subscription.
+  ///
+  /// **Why this exists.** The constructor takes the keys a panel is showing,
+  /// which assumes the panel already knows them. On a client whose key
+  /// mappings arrive *over this same socket* — a browser, or any panel that no
+  /// longer keeps its own copy of the plant's configuration — that is a
+  /// circle: the mapping cannot be read until the client exists, and the
+  /// client could not be told what to watch until the mapping was read. So a
+  /// client is built with no keys (which the constructor already documents as
+  /// legitimate), the mapping is read over it, and the page is set here.
+  ///
+  /// **This is the ordinary re-establish path, not a new one.** The server
+  /// treats a `subscribe` naming a live subscription as a re-establishment —
+  /// one entry, one seq, a fresh snapshot, a new generation
+  /// (`session_handlers.dart`) — which is exactly what a gap recovery and a
+  /// server-announced resync already do. So the values that follow are a
+  /// snapshot of the new key set and never a delta against the old one, and
+  /// keys that left the set stop arriving rather than lingering at their last
+  /// number.
+  ///
+  /// Safe before the link is up. A failed establish is complained about and
+  /// left unestablished, and the next `hello` re-establishes from
+  /// [_subscriptions] — which by then holds the new set.
+  ///
+  /// An empty [keys] releases the subscription: the server refuses an empty
+  /// one anyway ("a name the client waits on forever"), so there is nothing to
+  /// hold. Streams already handed out by [subscribe] stay open and stop
+  /// updating, which is what a page showing nothing should look like.
+  Future<void> setKeys(Set<String> keys) async {
+    _refuseIfDisposed(Methods.subscribe);
+    final wanted = <String>{...keys};
+    final existing = _subscriptions[_page];
+
+    // Re-file the key index first, so a value arriving mid-change is routed by
+    // the set the caller asked for rather than the one being replaced.
+    _subOf.removeWhere((key, sub) => sub == _page && !wanted.contains(key));
+    for (final key in wanted) {
+      _subOf[key] = _page;
+    }
+
+    if (wanted.isEmpty) {
+      if (existing == null) return;
+      _subscriptions.remove(_page);
+      _storeFor(_page).clear();
+      // Best effort, and deliberately not awaited into a throw: if the link is
+      // down there is no session holding the subscription to release, and a
+      // client that cannot reach the gateway must not fail a local page change
+      // over it.
+      try {
+        await _request(Methods.unsubscribe, {'sub': _page});
+      } catch (_) {
+        // The session that held it is gone, or going.
+      }
+      return;
+    }
+
+    if (existing == null) {
+      _subscriptions[_page] = SubscriptionState(subId: _page, keys: wanted);
+    } else {
+      existing.keys
+        ..clear()
+        ..addAll(wanted);
+    }
+    // The same entry point a server-announced resync uses, so there is one
+    // establishment path and not two.
+    await _supervisor.resync.onResync(_page);
+  }
+
   /// A broadcast view of the same node, for stream-consuming code.
   ///
   /// A view and never a second source of truth. Returned synchronously so
