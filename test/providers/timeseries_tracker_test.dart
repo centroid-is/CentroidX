@@ -84,7 +84,17 @@ final class _FakeSource implements TimeseriesSource {
 }
 
 void main() {
-  final DateTime now = DateTime.utc(2026, 9, 9, 12);
+  /// **The wall clock, not a frozen instant.**
+  ///
+  /// `TimeseriesCache.prune` cuts at `DateTime.now()` minus the window, and
+  /// the push listener prunes on every row it receives. Anchored at a literal
+  /// — this file opened at `DateTime.utc(2026, 9, 9, 12)` — the pushed row is
+  /// inside the 60-minute window for the first hour after that instant and
+  /// outside it forever after, so the direct-mode arm passed the morning it
+  /// was written and went red that afternoon, on nothing but the clock.
+  ///
+  /// A station pushes rows stamped now, so the test does too.
+  final DateTime now = DateTime.now().toUtc();
 
   /// A tracker over [source], torn down with the test.
   TimeseriesKeyTracker trackerOver(_FakeSource source) {
