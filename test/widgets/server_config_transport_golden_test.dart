@@ -68,6 +68,7 @@ import 'package:tfc_dart/core/preferences.dart';
 
 import '../helpers/test_helpers.dart';
 import '../helpers/themed_golden_host.dart';
+import '../helpers/golden_tolerance.dart';
 
 /// Tall enough that the whole page is laid out and painted at once — the
 /// sections live in a SingleChildScrollView, and anything below the fold
@@ -130,6 +131,12 @@ Future<PreferencesApi> _savedGatewayStation() async {
 }
 
 void main() {
+  // Same reason as the app-bar strip: a whole transport card of antialiased
+  // text drifts at the 0.01% default between this machine and CI's macOS
+  // runner, while reproducing exactly here. A real change to the card is far
+  // larger than this margin.
+  useTolerantGoldenComparator(tolerance: 0.002);
+
   setUp(() {
     final binding = TestWidgetsFlutterBinding.ensureInitialized();
     SharedPreferences.setMockInitialValues({});

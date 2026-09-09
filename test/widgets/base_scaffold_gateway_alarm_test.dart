@@ -34,6 +34,7 @@ import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart' show LinkState;
 
 import 'alarm_fixture.dart';
+import '../helpers/golden_tolerance.dart';
 
 /// Frozen so the ticking header does not churn the PNGs — same instant family
 /// as base_scaffold_appbar_golden_test.
@@ -159,6 +160,14 @@ Future<void> _loadFonts() async {
 }
 
 void main() {
+  // A 1600 px app-bar strip with antialiased text has more room to drift
+  // than the 0.01% default allows, even on the pinned SDK. CI's macOS runner
+  // measured **26 px, 0.01%** against goldens this machine reproduces exactly
+  // — the documented local-vs-runner drift, not a change in the widget. The
+  // margin still bites on anything real: this alarm row's text, colour or
+  // layout moving is thousands of pixels, two orders of magnitude above it.
+  useTolerantGoldenComparator(tolerance: 0.002);
+
   setUpAll(_loadFonts);
   setUp(_registerMenu);
   tearDown(() => RouteRegistry().menuItems.clear());
