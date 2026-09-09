@@ -245,6 +245,13 @@ final class ConfigDocument {
   /// gateway mode). Informational here — preservation does not depend on it.
   final List<String> readOnlySections;
 
+  /// The raw content of top-level section [name], exactly as it arrived —
+  /// the display path for the read-only cards (`relay`), so the screen
+  /// renders exactly what [encode] will reproduce. Answers null for a
+  /// section the document does not carry. The three modeled sections answer
+  /// their raw lists as read; the entry lists supersede those on [encode].
+  Object? rawSection(String name) => _top[name];
+
   /// The full document. Content-faithful, format-conceding: untouched
   /// entries keep their exact key set and values, but the document is
   /// re-indented — a form edit is an edit, and the gateway store already

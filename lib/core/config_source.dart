@@ -34,11 +34,23 @@ enum ApplySemantics {
   restartToApply,
 }
 
+/// The document as raw text, plus which sections the UI must present
+/// read-only — the escape-hatch view for a document that will not decode,
+/// where [ConfigSource.read] can only refuse. The panel's raw recovery
+/// editor is the alternative to SSH.
+typedef RawConfig = ({String text, List<String> readOnlySections});
+
 /// Where the ONE document is read from and written to. The transport decides
 /// this and nothing else — presentation is the same form either way.
 abstract interface class ConfigSource {
   /// The document plus which sections the UI must present read-only.
   Future<ConfigDocument> read();
+
+  /// The document as stored/served, verbatim — even (especially) when it
+  /// will not parse as a [ConfigDocument]. The screen shows it whole and
+  /// lets the operator repair it; [read] answering a refusal must never
+  /// mean the document cannot be seen.
+  Future<RawConfig> readRaw();
 
   /// The authoritative check, in operator sentences. Gateway: the backend's
   /// own validate() (parser + relay compare + sentinel resolution). Direct:
@@ -86,8 +98,10 @@ final class LocalPrefsConfigSource implements ConfigSource {
   /// widget layer stays transport-agnostic.
   final void Function()? _onApplied;
 
-  @override
-  Future<ConfigDocument> read() async {
+  /// The stored document string, seeded with fromPrefs' exact default when
+  /// the key is absent — shared by [read] and [readRaw] so the typed and
+  /// raw views cannot disagree about what an unconfigured station holds.
+  Future<String> _readRawString() async {
     final prefs = await _prefs();
     var raw = await prefs.getString(StateManConfig.configKey, secret: true);
     if (raw == null) {
@@ -98,8 +112,16 @@ final class LocalPrefsConfigSource implements ConfigSource {
       await prefs.setString(StateManConfig.configKey, raw,
           secret: true, saveToDb: false);
     }
-    return ConfigDocument.parse(raw);
+    return raw;
   }
+
+  @override
+  Future<ConfigDocument> read() async =>
+      ConfigDocument.parse(await _readRawString());
+
+  @override
+  Future<RawConfig> readRaw() async =>
+      (text: await _readRawString(), readOnlySections: const <String>[]);
 
   @override
   Future<ConfigValidation> validate(ConfigDocument doc) async {
@@ -162,6 +184,15 @@ final class GatewayConfigSource implements ConfigSource {
     final document = await relayedAccessErrors(_api.read);
     return ConfigDocument.parse(document.configJson,
         readOnlySections: document.readOnlySections);
+  }
+
+  @override
+  Future<RawConfig> readRaw() async {
+    final document = await relayedAccessErrors(_api.read);
+    return (
+      text: document.configJson,
+      readOnlySections: document.readOnlySections,
+    );
   }
 
   @override

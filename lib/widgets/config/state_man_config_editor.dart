@@ -29,6 +29,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:basic_utils/basic_utils.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:modbus_client/modbus_client.dart' show ModbusEndianness;
 import 'package:tfc_dart/core/config_document.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
@@ -43,6 +44,36 @@ import '../panes/standard_dialog.dart';
 /// The placeholder byte string legacy configs carry where a certificate or
 /// key was never provided. Shared with the page's import/export card.
 const kCertPlaceholder = "todo";
+
+// The editor-owned affordance keys (phase 3 of quick/20260908-unify-config-ui).
+// The gateway page passes its own 17-13 spellings (`kBackendConfig*`) for the
+// affordances its suites already find; these are the defaults everywhere else.
+
+/// The honest-absence line: rendered when the source has no live per-server
+/// status (`hasLiveStatus == false`), INSTEAD of a grey chip that could be
+/// mistaken for "not connected".
+const Key kConfigStatusAbsenceKey = Key('config_status_absence');
+
+/// The "Advanced — edit as JSON" expansion, collapsed by default.
+const Key kConfigAdvancedJsonTileKey = Key('config_advanced_json_tile');
+
+/// The raw JSON text field inside the Advanced expansion.
+const Key kConfigAdvancedJsonFieldKey = Key('config_advanced_json_field');
+
+/// The button that re-parses the Advanced text into the ONE document.
+const Key kConfigAdvancedJsonApplyKey = Key('config_advanced_json_apply');
+
+/// The raw text field of the recovery face — the stored document, shown
+/// whole when it will not decode.
+const Key kConfigRawRecoveryFieldKey = Key('config_raw_recovery_field');
+
+/// The button that re-parses the recovery text into a fresh document.
+const Key kConfigRawRecoveryApplyKey = Key('config_raw_recovery_apply');
+
+/// Default keys for the affordances a host page may re-key.
+const Key kConfigEditorRefusalKey = Key('config_editor_refusal');
+const Key kConfigEditorRestoreKey = Key('config_editor_restore');
+const Key kConfigEditorApplyNoteKey = Key('config_editor_apply_note');
 
 // ===================== Certificate Generator (unchanged) =====================
 class CertificateGenerator extends StatefulWidget {
@@ -643,9 +674,14 @@ class _SaveConfigButton extends StatelessWidget {
   final bool hasUnsavedChanges;
   final VoidCallback onSave;
 
+  /// The button's own key, so a host page can pin its existing spelling on
+  /// it (gateway mode passes `kBackendConfigSaveKey`).
+  final Key? buttonKey;
+
   const _SaveConfigButton({
     required this.hasUnsavedChanges,
     required this.onSave,
+    this.buttonKey,
   });
 
   @override
@@ -654,6 +690,7 @@ class _SaveConfigButton extends StatelessWidget {
       children: [
         Expanded(
           child: ElevatedButton.icon(
+            key: buttonKey,
             onPressed: hasUnsavedChanges ? onSave : null,
             icon: FaIcon(FontAwesomeIcons.floppyDisk,
                 size: 16, color: hasUnsavedChanges ? null : Colors.grey),
@@ -682,6 +719,9 @@ class _JbtmServerConfigCard extends StatefulWidget {
   /// See [_ServerConfigCard.reorderIndex].
   final int? reorderIndex;
 
+  /// See [_ServerConfigCard.liveStatusKnown].
+  final bool liveStatusKnown;
+
   const _JbtmServerConfigCard({
     super.key,
     required this.server,
@@ -691,6 +731,7 @@ class _JbtmServerConfigCard extends StatefulWidget {
     this.connectionStream,
     this.stateManLoading = false,
     this.reorderIndex,
+    this.liveStatusKnown = true,
   });
 
   @override
@@ -779,12 +820,19 @@ class _JbtmServerConfigCardState extends State<_JbtmServerConfigCard> {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ConnectionStatusChip(
-              status: _connectionStatus,
-              stateManLoading: widget.stateManLoading,
-              disabled: !widget.server.enabled,
-            ),
-            const SizedBox(width: 4),
+            // Honest absence (phase 3): where live status cannot be known
+            // (gateway mode — the backend's client health is not on the
+            // wire), no chip renders at all rather than a grey "Not active"
+            // that reads as "not connected". A disabled server is a config
+            // fact, knowable on any transport, so its chip stays.
+            if (widget.liveStatusKnown || !widget.server.enabled) ...[
+              ConnectionStatusChip(
+                status: _connectionStatus,
+                stateManLoading: widget.stateManLoading,
+                disabled: !widget.server.enabled,
+              ),
+              const SizedBox(width: 4),
+            ],
             _ServerEnabledToggle(
               enabled: widget.server.enabled,
               onChanged: (value) => _updateServer(enabled: value),
@@ -917,6 +965,9 @@ class _ModbusServerConfigCard extends StatefulWidget {
   /// See [_ServerConfigCard.reorderIndex].
   final int? reorderIndex;
 
+  /// See [_ServerConfigCard.liveStatusKnown].
+  final bool liveStatusKnown;
+
   const _ModbusServerConfigCard({
     super.key,
     required this.server,
@@ -928,6 +979,7 @@ class _ModbusServerConfigCard extends StatefulWidget {
     this.effectiveStatusStream,
     this.stateManLoading = false,
     this.reorderIndex,
+    this.liveStatusKnown = true,
   });
 
   @override
@@ -1129,13 +1181,16 @@ class _ModbusServerConfigCardState extends State<_ModbusServerConfigCard> {
           children: [
             // TD-004 (v1.1.x): surface UMAS session health when
             // umasEnabled is on. Falls back to pure TCP otherwise.
-            ConnectionStatusChip(
-              status: _connectionStatus,
-              effectiveStatus: _umasEnabled ? _effectiveStatus : null,
-              stateManLoading: widget.stateManLoading,
-              disabled: !widget.server.enabled,
-            ),
-            const SizedBox(width: 4),
+            // Honest absence (phase 3): see the JBTM card's chip.
+            if (widget.liveStatusKnown || !widget.server.enabled) ...[
+              ConnectionStatusChip(
+                status: _connectionStatus,
+                effectiveStatus: _umasEnabled ? _effectiveStatus : null,
+                stateManLoading: widget.stateManLoading,
+                disabled: !widget.server.enabled,
+              ),
+              const SizedBox(width: 4),
+            ],
             _ServerEnabledToggle(
               enabled: widget.server.enabled,
               onChanged: (value) =>
@@ -1480,6 +1535,14 @@ class _ServerConfigCard extends StatefulWidget {
   /// [_ServerCardLeading].
   final int? reorderIndex;
 
+  /// Whether live per-server status can be known on this transport
+  /// (`ConfigSource.hasLiveStatus`). When false the chip does not render at
+  /// all — a grey "Not active" beside a server the backend may be connected
+  /// to right now would be a lie, and the editor renders one honest-absence
+  /// line instead ([kConfigStatusAbsenceKey]). A disabled server's chip
+  /// stays: that is a config fact, knowable on any transport.
+  final bool liveStatusKnown;
+
   const _ServerConfigCard({
     super.key,
     required this.server,
@@ -1491,6 +1554,7 @@ class _ServerConfigCard extends StatefulWidget {
     this.effectiveStatusStream,
     this.stateManLoading = false,
     this.reorderIndex,
+    this.liveStatusKnown = true,
   });
 
   @override
@@ -1837,13 +1901,16 @@ class _ServerConfigCardState extends State<_ServerConfigCard> {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ConnectionStatusChip(
-              status: _connectionStatus,
-              effectiveStatus: _effectiveStatus,
-              stateManLoading: widget.stateManLoading,
-              disabled: !widget.server.enabled,
-            ),
-            const SizedBox(width: 4),
+            // Honest absence (phase 3): see [liveStatusKnown].
+            if (widget.liveStatusKnown || !widget.server.enabled) ...[
+              ConnectionStatusChip(
+                status: _connectionStatus,
+                effectiveStatus: _effectiveStatus,
+                stateManLoading: widget.stateManLoading,
+                disabled: !widget.server.enabled,
+              ),
+              const SizedBox(width: 4),
+            ],
             _ServerEnabledToggle(
               enabled: widget.server.enabled,
               onChanged: (value) => _updateServer(enabled: value),
@@ -2049,6 +2116,11 @@ class StateManConfigEditor extends ConsumerStatefulWidget {
     super.key,
     required this.source,
     this.onResetSavedConfig,
+    this.saveButtonKey,
+    this.refusalRowKey,
+    this.restoreButtonKey,
+    this.applyNoteKey,
+    this.readOnlySectionKey,
   });
 
   /// Where the document lives. The transport decides this and nothing else.
@@ -2060,6 +2132,18 @@ class StateManConfigEditor extends ConsumerStatefulWidget {
   /// config file from a panel).
   final Future<void> Function()? onResetSavedConfig;
 
+  /// Host-page spellings for the affordances existing suites already find
+  /// (the gateway page passes its 17-13 `kBackendConfig*` keys). Defaults
+  /// are the editor-owned `kConfigEditor*` constants.
+  final Key? saveButtonKey;
+  final Key? refusalRowKey;
+  final Key? restoreButtonKey;
+  final Key? applyNoteKey;
+
+  /// The key for a read-only section's disabled field, by section name
+  /// (gateway maps `relay` to `kBackendConfigRelayFieldKey`).
+  final Key Function(String section)? readOnlySectionKey;
+
   @override
   ConsumerState<StateManConfigEditor> createState() =>
       _StateManConfigEditorState();
@@ -2070,13 +2154,45 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
 
   /// The document as last read or written — dirty is `encode() != this`,
   /// which the minimal-diff rule makes exact: an edit typed back to its
-  /// original value compares clean again.
+  /// original value compares clean again. Null while nothing loaded, AND
+  /// after the raw recovery editor replaced a document the store could not
+  /// parse — there is then no known-saved counterpart, so the document is
+  /// unsaved by definition (see [_hasUnsavedChanges]).
   String? _savedEncoded;
   bool _isLoading = false;
   String? _error;
+
+  /// The far end's refusal (or the local parser's), verbatim — rendered in
+  /// the refusal row until the next attempt. This widget composes no refusal
+  /// prose of its own: a paraphrase is a second place two different
+  /// refusals could start reading the same (17-13).
+  String? _refusal;
+
+  /// `source.hasPrevious()` as of the last load/save — which is
+  /// `read().hasPrevious`, never `previous()` (17-10 deviation 4). Drives
+  /// the restore button.
+  bool _hasPrevious = false;
+
+  /// The stored text, fetched when [ConfigSource.read] refused to parse it —
+  /// the escape hatch for a document that will not decode. Non-null switches
+  /// the error face into the raw recovery editor.
+  RawConfig? _rawRecovery;
+  String? _recoveryError;
+
+  /// The Advanced — edit as JSON expansion's own state. The controller is
+  /// (re)seeded from `doc.encode()` every time the tile OPENS, so the raw
+  /// view always starts from the ONE document, unsaved form edits included.
+  final _advancedController = TextEditingController();
+  final _recoveryController = TextEditingController();
+  String? _advancedError;
+
   final _opcuaKeys = _RowKeys();
   final _jbtmKeys = _RowKeys();
   final _modbusKeys = _RowKeys();
+
+  /// One controller per read-only section's disabled field, owned here so
+  /// they are disposed rather than re-minted every build.
+  final Map<String, TextEditingController> _readOnlyControllers = {};
 
   @override
   void initState() {
@@ -2084,21 +2200,71 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
     _load();
   }
 
+  @override
+  void dispose() {
+    _advancedController.dispose();
+    _recoveryController.dispose();
+    for (final controller in _readOnlyControllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  /// The operator-facing sentence for [error]. A protocol refusal carries
+  /// the far end's message; anything else is shown as what it is.
+  static String _describe(Object error) =>
+      error is rpc.RpcException ? error.message : error.toString();
+
+  /// Re-points [_doc] and everything derived from it. The single place a
+  /// new document enters this state, whether from load, the Advanced
+  /// expansion or the raw recovery editor.
+  void _adoptDocument(ConfigDocument doc, {required String? savedEncoded}) {
+    _doc = doc;
+    _savedEncoded = savedEncoded;
+    _opcuaKeys.reset(doc.opcua.length);
+    _jbtmKeys.reset(doc.jbtm.length);
+    _modbusKeys.reset(doc.modbus.length);
+    const encoder = JsonEncoder.withIndent('  ');
+    for (final name in doc.readOnlySections) {
+      final content = doc.rawSection(name);
+      _readOnlyControllers.putIfAbsent(name, TextEditingController.new).text =
+          content == null ? '' : encoder.convert(content);
+    }
+    _readOnlyControllers.removeWhere((name, controller) {
+      if (doc.readOnlySections.contains(name)) return false;
+      controller.dispose();
+      return true;
+    });
+  }
+
   Future<void> _load() async {
     setState(() {
       _isLoading = true;
       _error = null;
+      _refusal = null;
+      _rawRecovery = null;
+      _recoveryError = null;
     });
 
     try {
       final doc = await widget.source.read();
-      _doc = doc;
-      _savedEncoded = doc.encode();
-      _opcuaKeys.reset(doc.opcua.length);
-      _jbtmKeys.reset(doc.jbtm.length);
-      _modbusKeys.reset(doc.modbus.length);
+      _adoptDocument(doc, savedEncoded: doc.encode());
+      _hasPrevious = await widget.source.hasPrevious();
+    } on FormatException catch (e) {
+      // The stored document is the source's truth even when it will not
+      // decode: fetch it whole for the raw recovery editor. The
+      // alternative is SSH — the exact regression the escape hatch exists
+      // to prevent.
+      _error = e.message;
+      try {
+        final raw = await widget.source.readRaw();
+        _rawRecovery = raw;
+        _recoveryController.text = raw.text;
+      } catch (inner) {
+        _error = _describe(inner);
+      }
     } catch (e) {
-      _error = e.toString();
+      _error = _describe(e);
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -2108,14 +2274,38 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
 
   bool get _hasUnsavedChanges {
     final doc = _doc;
+    if (doc == null) return false;
     final saved = _savedEncoded;
-    if (doc == null || saved == null) return false;
+    // A document adopted from the raw recovery editor has no known-saved
+    // counterpart: unsaved by definition, so the fix can be saved at all.
+    if (saved == null) return true;
     return doc.encode() != saved;
   }
+
+  /// What a successful save MEANS on this transport, said where it happens —
+  /// from [ConfigSource.applySemantics], never hardcoded per page.
+  String get _savedCopy => switch (widget.source.applySemantics) {
+        ApplySemantics.appliedOnSave => 'Configuration saved successfully!',
+        ApplySemantics.restartToApply =>
+          'Saved to the backend. It applies the new configuration when it '
+              'restarts.',
+      };
+
+  /// The persistent footer under the save button. Direct mode has none on
+  /// purpose: a save there is applied on the spot (the source invalidates
+  /// the live StateMan), and a restart note would teach operators to
+  /// restart things that need no restart.
+  String? get _applyNote => switch (widget.source.applySemantics) {
+        ApplySemantics.appliedOnSave => null,
+        ApplySemantics.restartToApply =>
+          'Takes effect when the backend restarts — it does not restart '
+              'itself.',
+      };
 
   Future<void> _save() async {
     final doc = _doc;
     if (doc == null) return;
+    setState(() => _refusal = null);
 
     try {
       // The authoritative check, at the source, before anything is written:
@@ -2124,36 +2314,96 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
       final validation = await widget.source.validate(doc);
       if (!validation.ok) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-                content: Text(
-                    'Configuration refused: ${validation.problems.join(' ')}'),
-                backgroundColor: Theme.of(context).colorScheme.error),
-          );
+          // The refuser's own sentences, verbatim, in the refusal row —
+          // where they stay readable, unlike a snackbar that scrolls away.
+          setState(() => _refusal = validation.problems.join(' '));
         }
         return;
       }
 
       await widget.source.write(doc);
       _savedEncoded = doc.encode();
+      // A write may create the far end's one-level .previous.
+      _hasPrevious = await widget.source.hasPrevious();
       setState(() {});
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Configuration saved successfully!'),
-              backgroundColor: Colors.green),
+          SnackBar(
+              content: Text(_savedCopy), backgroundColor: Colors.green),
         );
       }
     } catch (e) {
-      if (!context.mounted) return;
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('Failed to save configuration: $e'),
-              backgroundColor: Theme.of(context).colorScheme.error),
-        );
-      }
+      if (!mounted) return;
+      setState(() => _refusal = _describe(e));
+    }
+  }
+
+  Future<void> _restore() async {
+    setState(() => _refusal = null);
+    try {
+      await widget.source.restorePrevious();
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      // The far end's refusal, verbatim — restorePrevious may refuse by
+      // name (17-10 deviation 4), and its sentence is the operator's.
+      setState(() => _refusal = _describe(e));
+    }
+  }
+
+  /// Re-parses the Advanced expansion's text into the ONE document. Asks
+  /// first when the form holds unsaved edits — the paste replaces the whole
+  /// document, those edits included.
+  Future<void> _applyAdvancedJson() async {
+    final doc = _doc;
+    if (doc == null) return;
+    if (_hasUnsavedChanges) {
+      final confirmed = await showConfirmDialog(
+        context: context,
+        title: 'Replace the whole document?',
+        message: 'The form holds unsaved edits. Applying this JSON replaces '
+            'the whole document with what is written here — including those '
+            'edits, unless the text still carries them.',
+        confirmLabel: 'Replace',
+      );
+      if (!confirmed || !mounted) return;
+    }
+    try {
+      final parsed = ConfigDocument.parse(_advancedController.text,
+          readOnlySections: doc.readOnlySections);
+      setState(() {
+        _adoptDocument(parsed, savedEncoded: _savedEncoded);
+        _advancedError = null;
+      });
+    } on FormatException catch (e) {
+      // The parser's own words. The form document is untouched — a refused
+      // apply must not half-adopt anything.
+      setState(() => _advancedError = e.message);
+    } catch (e) {
+      setState(() => _advancedError = e.toString());
+    }
+  }
+
+  /// Re-parses the raw recovery editor's text into a fresh document. The
+  /// stored document is the broken one, so the result is unsaved by
+  /// definition ([_savedEncoded] stays null) and the save button arms.
+  void _applyRecoveryJson() {
+    final recovery = _rawRecovery;
+    if (recovery == null) return;
+    try {
+      final parsed = ConfigDocument.parse(_recoveryController.text,
+          readOnlySections: recovery.readOnlySections);
+      setState(() {
+        _adoptDocument(parsed, savedEncoded: null);
+        _error = null;
+        _rawRecovery = null;
+        _recoveryError = null;
+      });
+    } on FormatException catch (e) {
+      setState(() => _recoveryError = e.message);
+    } catch (e) {
+      setState(() => _recoveryError = e.toString());
     }
   }
 
@@ -2247,6 +2497,7 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
           effectiveStatusStream: wrapper?.effectiveStatusStream,
           stateManLoading: stateManAsync?.isLoading ?? false,
           reorderIndex: reorderable ? index : null,
+          liveStatusKnown: widget.source.hasLiveStatus,
         );
       },
     );
@@ -2290,6 +2541,7 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
           connectionStream: adapter?.connectionStream,
           stateManLoading: stateManAsync?.isLoading ?? false,
           reorderIndex: reorderable ? index : null,
+          liveStatusKnown: widget.source.hasLiveStatus,
         );
       },
     );
@@ -2337,6 +2589,7 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
           effectiveStatusStream: adapter?.effectiveStatusStream,
           stateManLoading: stateManAsync?.isLoading ?? false,
           reorderIndex: reorderable ? index : null,
+          liveStatusKnown: widget.source.hasLiveStatus,
         );
       },
     );
@@ -2381,30 +2634,199 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
     );
   }
 
+  /// The read-only sections, rendered from the document itself: present,
+  /// disabled and explained (D-10). The content is `rawSection`'s — exactly
+  /// what `encode()` will reproduce — so the screen cannot show one thing
+  /// while the wire carries another.
+  List<Widget> _readOnlySectionCards(ConfigDocument doc, ThemeData theme) => [
+        for (final name in doc.readOnlySections) ...[
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    key: widget.readOnlySectionKey?.call(name) ??
+                        Key('config_readonly_$name'),
+                    controller: _readOnlyControllers[name],
+                    enabled: false,
+                    maxLines: null,
+                    decoration: InputDecoration(
+                      labelText: '$name — read-only from here',
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Changing $name from here would cut this screen off '
+                    'mid-change — edit it on the backend\'s own machine.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+      ];
+
+  /// The escape hatch, demoted and not deleted: a build whose form cannot
+  /// model a top-level section is otherwise back to SSH. It edits the SAME
+  /// [ConfigDocument] the form edits — opening serialises the current
+  /// document, applying re-parses into it — so the two views cannot
+  /// silently diverge.
+  Widget _advancedJsonCard(ConfigDocument doc, ThemeData theme) => Card(
+        child: ExpansionTile(
+          key: kConfigAdvancedJsonTileKey,
+          leading: const FaIcon(FontAwesomeIcons.code, size: 16),
+          title: const Text('Advanced — edit as JSON'),
+          subtitle: Text(
+            'The same document the form edits, whole — for sections this '
+            'build has no form for, or for pasting a known-good document.',
+            style: theme.textTheme.bodySmall,
+          ),
+          onExpansionChanged: (open) {
+            if (open) _advancedController.text = doc.encode();
+            setState(() => _advancedError = null);
+          },
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          children: [
+            TextField(
+              key: kConfigAdvancedJsonFieldKey,
+              controller: _advancedController,
+              maxLines: null,
+              style: theme.textTheme.bodySmall,
+              decoration: const InputDecoration(
+                labelText: 'Configuration document (JSON)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            if (_advancedError != null) ...[
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.error_outline,
+                      size: 16, color: theme.colorScheme.error),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _advancedError!,
+                      style: TextStyle(color: theme.colorScheme.error),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                key: kConfigAdvancedJsonApplyKey,
+                onPressed: _applyAdvancedJson,
+                icon: const Icon(Icons.check, size: 16),
+                label: const Text('Apply JSON'),
+              ),
+            ),
+          ],
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
 
     if (_error != null) {
+      final recovery = _rawRecovery;
       return Card(
         child: Padding(
           padding: const EdgeInsets.all(16.0),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              FaIcon(FontAwesomeIcons.triangleExclamation,
-                  size: 64, color: Theme.of(context).colorScheme.error),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  FaIcon(FontAwesomeIcons.triangleExclamation,
+                      size: 18, color: theme.colorScheme.error),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Could not read the configuration: $_error',
+                      style: TextStyle(color: theme.colorScheme.error),
+                    ),
+                  ),
+                ],
+              ),
               const SizedBox(height: 16),
-              Text('Error loading configuration: $_error'),
-              const SizedBox(height: 16),
-              ElevatedButton(onPressed: _load, child: const Text('Retry')),
-              if (widget.onResetSavedConfig != null)
-                ElevatedButton(
-                    onPressed: () =>
-                        widget.onResetSavedConfig!().then((_) => _load()),
-                    child: const Text('Delete saved configuration')),
+              if (recovery != null) ...[
+                // The escape hatch for a document that will not decode: the
+                // stored text, whole and repairable from the panel.
+                Text(
+                  'The stored document is shown whole below, exactly as the '
+                  'source holds it. Fix it here and apply, or paste a '
+                  'known-good document.',
+                  style: theme.textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  key: kConfigRawRecoveryFieldKey,
+                  controller: _recoveryController,
+                  maxLines: null,
+                  style: theme.textTheme.bodySmall,
+                  decoration: const InputDecoration(
+                    labelText: 'Stored document (raw)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                if (_recoveryError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _recoveryError!,
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    ElevatedButton.icon(
+                      key: kConfigRawRecoveryApplyKey,
+                      onPressed: _applyRecoveryJson,
+                      icon: const Icon(Icons.check, size: 16),
+                      label: const Text('Apply JSON'),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton(
+                        onPressed: _load, child: const Text('Retry')),
+                    if (widget.onResetSavedConfig != null) ...[
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                          onPressed: () => widget.onResetSavedConfig!()
+                              .then((_) => _load()),
+                          child: const Text('Delete saved configuration')),
+                    ],
+                  ],
+                ),
+              ] else ...[
+                Row(
+                  children: [
+                    ElevatedButton(
+                        onPressed: _load, child: const Text('Retry')),
+                    if (widget.onResetSavedConfig != null) ...[
+                      const SizedBox(width: 8),
+                      ElevatedButton(
+                          onPressed: () => widget.onResetSavedConfig!()
+                              .then((_) => _load()),
+                          child: const Text('Delete saved configuration')),
+                    ],
+                  ],
+                ),
+              ],
             ],
           ),
         ),
@@ -2423,8 +2845,36 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
     final stateManAsync =
         widget.source.hasLiveStatus ? ref.watch(stateManProvider) : null;
 
+    final applyNote = _applyNote;
+
     return Column(
       children: [
+        if (!widget.source.hasLiveStatus) ...[
+          // The honest absence: no chips render below, and this line says
+          // why — never a grey chip that reads as "not connected" beside a
+          // server the backend may be connected to right now.
+          Row(
+            key: kConfigStatusAbsenceKey,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.info_outline,
+                  size: 16,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Connection status is not visible over the relay — the '
+                  'backend\'s client health does not cross the wire yet, so '
+                  'nothing here claims connected or disconnected.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                      color:
+                          theme.colorScheme.onSurface.withValues(alpha: 0.7)),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ],
         _section(
           title: 'OPC-UA Servers',
           icon: FontAwesomeIcons.server,
@@ -2455,12 +2905,64 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
           list: () => _modbusList(doc, stateManAsync),
         ),
         const SizedBox(height: 16),
+        // The read-only sections (gateway's `relay`, D-10): present,
+        // disabled, explained — never silently absent.
+        ..._readOnlySectionCards(doc, theme),
+        // The demoted JSON escape hatch, collapsed by default, both modes.
+        _advancedJsonCard(doc, theme),
+        const SizedBox(height: 16),
+        if (_refusal != null) ...[
+          Row(
+            key: widget.refusalRowKey ?? kConfigEditorRefusalKey,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.error_outline,
+                  size: 18, color: theme.colorScheme.error),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _refusal!,
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (_hasPrevious) ...[
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  key: widget.restoreButtonKey ?? kConfigEditorRestoreKey,
+                  onPressed: _restore,
+                  icon:
+                      const FaIcon(FontAwesomeIcons.clockRotateLeft, size: 14),
+                  label: const Text('Restore previous configuration'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ],
         // The ONE save button, for the ONE document — and the one unsaved
         // indicator on the page.
         _SaveConfigButton(
           hasUnsavedChanges: _hasUnsavedChanges,
           onSave: _save,
+          buttonKey: widget.saveButtonKey,
         ),
+        if (applyNote != null) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              applyNote,
+              key: widget.applyNoteKey ?? kConfigEditorApplyNoteKey,
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
+        ],
       ],
     );
   }

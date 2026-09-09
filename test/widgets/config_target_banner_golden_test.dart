@@ -122,17 +122,6 @@ class _ScriptedBackend implements BackendConfigApi {
   Future<void> restorePrevious({String? reason}) async {}
 }
 
-/// A benign edit, so the save button is live before frames 4 and 5 press it.
-String _editedOpcua() => jsonEncode({
-      'opcua': [
-        <String, Object?>{
-          'endpoint': 'opc.tcp://10.104.20.10:4840',
-          'server_alias': 'ST101',
-          'publishing_interval_ms': 400,
-        },
-      ],
-    });
-
 /// Pumps like the page tests do: bounded explicit frames, never
 /// `pumpAndSettle` — an indeterminate spinner mid-load would hang it.
 Future<void> _settle(WidgetTester tester) async {
@@ -168,7 +157,10 @@ Future<void> _pumpSection(
   _ScriptedBackend backend, {
   required bool dark,
 }) async {
-  await tester.binding.setSurfaceSize(const Size(760, 1150));
+  // Phase 3: the section's body is the typed StateManConfigEditor — three
+  // section cards, the relay card, the Advanced expansion and the save row
+  // — so the frame is a page, not a band.
+  await tester.binding.setSurfaceSize(const Size(900, 2150));
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.pumpWidget(
     ProviderScope(
@@ -203,11 +195,21 @@ Future<void> _pumpSection(
           'card that could be editing anything');
 }
 
+/// Phase 3 retarget: the benign edit goes through the TYPED form — expand
+/// the server card, change the endpoint, press the ONE save button — exactly
+/// as an operator would, because the raw textarea is demoted to the Advanced
+/// expansion.
 Future<void> _editAndSave(WidgetTester tester) async {
-  await tester.enterText(
-      find.byKey(const Key('backend_config_editor')), _editedOpcua());
+  await tester.tap(find.text('ST101'));
+  await _settle(tester);
+  await tester.ensureVisible(
+      find.widgetWithText(TextField, 'Endpoint URL'));
+  await _settle(tester);
+  await tester.enterText(find.widgetWithText(TextField, 'Endpoint URL'),
+      'opc.tcp://10.104.20.10:4841');
   await _settle(tester);
   await tester.ensureVisible(find.byKey(const Key('backend_config_save')));
+  await _settle(tester);
   await tester.tap(find.byKey(const Key('backend_config_save')));
   await _settle(tester);
 }

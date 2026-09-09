@@ -84,6 +84,11 @@ void main() {
 
       // Find Add Server buttons -- the Modbus one is the last one
       final addButtons = find.text('Add Server');
+      // The Advanced-JSON card (phase 3) added scroll extent below this
+      // section, so the placeholder scroll above can push the section
+      // header off the top; bring the button itself into view first.
+      await tester.ensureVisible(addButtons.last);
+      await settle(tester);
       // Tap the last Add Server button (belongs to Modbus section)
       await tester.tap(addButtons.last);
       await settle(tester);

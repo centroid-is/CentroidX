@@ -404,8 +404,14 @@ void main() {
     expect(find.text('ST101'), findsOneWidget,
         reason: 'the form still holds the document as read');
     expect(fixture.api.writes, isEmpty);
-    // The save face stays clean: a refused apply changed nothing.
-    expect(find.text('All Changes Saved'), findsOneWidget);
+    // The save face stays clean: a refused apply changed nothing. Scoped
+    // to the section — the Transport card's save button wears the same
+    // face.
+    expect(
+        find.descendant(
+            of: find.byType(BackendConfigSection),
+            matching: find.text('All Changes Saved')),
+        findsOneWidget);
   });
 
   testWidgets(
