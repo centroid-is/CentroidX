@@ -3,7 +3,7 @@ import 'dart:collection';
 
 import 'package:logger/logger.dart';
 import 'package:meta/meta.dart';
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:modbus_client/modbus_client.dart' show ModbusEndianness;
 import 'package:modbus_client_tcp/modbus_client_tcp.dart' show ModbusClientTcp;
 import 'package:rxdart/rxdart.dart' show BehaviorSubject;

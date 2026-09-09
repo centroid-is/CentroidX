@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/material.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:tfc/widgets/panes/color_picker_dialog.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:rxdart/rxdart.dart';
 import 'package:tfc_dart/core/fuzzy_match.dart';
 

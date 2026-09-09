@@ -22,7 +22,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 import '../../painter/festo/valve_symbol.dart';
 import '../../painter/festo/vtug.dart' show CteuLed, CteuLedState;

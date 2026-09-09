@@ -1,7 +1,7 @@
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:tfc_dart/core/state_man.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 OpcUAConfig _opcua(String alias, {bool enabled = true}) => OpcUAConfig()
   ..endpoint = 'opc.tcp://$alias:4840'

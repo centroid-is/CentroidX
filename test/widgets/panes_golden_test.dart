@@ -27,7 +27,7 @@ import 'package:tfc/page_creator/assets/analog_box.dart'
     show AnalogBoxConfig, AnalogBoxPane;
 import 'package:tfc/page_creator/assets/conveyor.dart'
     show conveyorTrendColors, kConveyorFreqSeries, kConveyorCurrentSeries;
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc/page_creator/assets/io_pane.dart';
 import 'package:tfc/page_creator/assets/sensor.dart'
     show

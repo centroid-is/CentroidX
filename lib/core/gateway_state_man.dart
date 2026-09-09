@@ -68,7 +68,7 @@ import 'dart:async';
 import 'dart:collection';
 
 import 'package:logger/logger.dart';
-import 'package:open62541/open62541.dart' as ua;
+import 'package:open62541/open62541_types.dart' as ua;
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as rp;

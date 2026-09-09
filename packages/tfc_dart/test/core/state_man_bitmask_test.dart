@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:tfc_dart/core/state_man.dart'
     show KeyMappingEntry, KeyMappings, ModbusNodeConfig, ModbusRegisterType, StateMan;
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;

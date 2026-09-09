@@ -34,7 +34,7 @@ import 'dart:async';
 
 import 'package:logger/logger.dart';
 import 'package:meta/meta.dart' show visibleForTesting;
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc_access/tfc_access.dart';
 
 import '../state_man.dart';

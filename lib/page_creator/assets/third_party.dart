@@ -4,7 +4,7 @@ import 'dart:math' show pi;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:json_annotation/json_annotation.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc/converter/color_converter.dart';
 import 'package:tfc/theme.dart' show HmiColorRole, HmiStateColors;
 

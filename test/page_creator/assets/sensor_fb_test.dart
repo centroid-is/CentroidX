@@ -2,7 +2,7 @@ import 'dart:collection';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc_dart/core/collector.dart' show CollectEntry;
 import 'package:tfc/page_creator/assets/sensor.dart';
 import 'package:tfc/widgets/panes/pane_chrome.dart';

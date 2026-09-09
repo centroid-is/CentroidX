@@ -4,7 +4,7 @@ import 'dart:collection' show LinkedHashMap;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc/page_creator/assets/conveyor.dart';
 import 'package:tfc/page_creator/assets/led.dart';
 import 'package:tfc/page_creator/assets/number.dart';

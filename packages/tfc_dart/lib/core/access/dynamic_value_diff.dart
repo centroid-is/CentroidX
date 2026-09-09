@@ -32,7 +32,7 @@ library;
 
 import 'dart:collection' show LinkedHashMap;
 
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc_access/tfc_access.dart' show AuditRecord;
 
 /// One member of a struct write that changed, ready to become one audit row.

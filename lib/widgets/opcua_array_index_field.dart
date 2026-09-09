@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:open62541/open62541.dart' show NodeId, DynamicValue;
+import 'package:open62541/open62541_types.dart' show NodeId, DynamicValue;
 import 'package:tfc_dart/core/state_man.dart';
 import '../providers/state_man.dart';
 

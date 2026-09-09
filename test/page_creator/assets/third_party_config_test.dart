@@ -5,7 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc_dart/core/collector.dart' show CollectEntry;
 import 'package:tfc/converter/color_converter.dart';
 import 'package:tfc/page_creator/assets/common.dart';
