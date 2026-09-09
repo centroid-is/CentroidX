@@ -263,10 +263,13 @@ class ServerConfigBody extends ConsumerWidget {
           ],
           const SizedBox(height: 8),
 
-          // Database Configuration Section. Gateway mode renders its own
-          // face — the station opens no direct database connection, and the
-          // card says exactly that instead of offering credentials nothing
-          // dials.
+          // Database Configuration Section. The SAME editable card in both
+          // transports (owner's ruling: "i dont see a reason why we cannot
+          // change or see database config") — these are this station's own
+          // settings, held in device-local secure storage, and they are what
+          // it runs on the moment the transport goes back to Direct. Gateway
+          // mode changes one thing inside it: nothing dials, so nothing
+          // claims a connection state.
           DatabaseConfigWidget(key: ValueKey('db_$refreshKey')),
           const SizedBox(height: 16),
 
@@ -314,19 +317,23 @@ class RefreshKey extends _$RefreshKey {
 /// **A mode switch, not a fifth section.** In gateway mode this panel opens no
 /// OPC UA session, no Modbus socket and no collector, so three of the four
 /// sections below it are not another thing to configure — they are inert. This
-/// card therefore sits above them and `ServerConfigBody` hides them behind it.
+/// card therefore sits above them, and every one of them stays in its slot and
+/// says what it is under this transport.
 ///
-/// **The fourth is Postgres, and it is still open.** A gateway-mode panel holds
-/// one Postgres connection, for sign-in, preferences and the audit trail. That
-/// is measured rather than assumed: the rig ran a panel in gateway mode and
-/// found the connection to `172.18.0.6:5432` live throughout
-/// (13-RIG-E2E-EVIDENCE FIND-C), and `lib/providers/database.dart` has no
-/// transport branch that could close it. The database section is hidden anyway
-/// because the address it configures is a *plant* setting an operator standing
-/// at a gateway panel is not the person to change — not because nothing uses
-/// it. Moving access, preferences and audit onto the relay is Phase 17; until
-/// then this doc says what the panel actually opens, and
-/// `test/core/gateway_copy_test.dart` keeps the old wording from coming back.
+/// **The fourth is Postgres.** The rig ran a panel in gateway mode and found a
+/// connection to `172.18.0.6:5432` live throughout (13-RIG-E2E-EVIDENCE
+/// FIND-C); `providers/database.dart` has since grown the transport branch
+/// that closes it, and `providers/preferences.dart` carries the same branch
+/// one level up so nothing pulls the pool back in by watching. The database
+/// card is nonetheless **shown and editable in both transports** — the owner's
+/// ruling, at the rig: "i dont see a reason why we cannot change or see
+/// database config". The settings are this station's own, they are read from
+/// and written to device-local secure storage by `DatabaseConfig.fromPrefs`,
+/// and they are what the station runs on the moment somebody switches back to
+/// Direct. What the card must not do in gateway mode is dial, or claim a
+/// connection state it is not in; `lib/widgets/preferences.dart` holds that
+/// line, and `test/core/gateway_copy_test.dart` keeps the old false wording
+/// from coming back.
 ///
 /// **Device-local, and that is why it does not save where its neighbours do.**
 /// Every other section on this page writes through `preferencesProvider`, the
@@ -624,55 +631,125 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
               const FaIcon(FontAwesomeIcons.networkWired, size: 20),
               const SizedBox(width: 8),
               Text('Transport', style: theme.textTheme.titleMedium),
+              const SizedBox(width: 16),
+              // Device-local, said as a property OF the control rather than
+              // as a paragraph above it. It used to be two full lines of
+              // prose at the top of the card ("way too bloated", the owner,
+              // standing at the rig): true, but not an instruction — nothing
+              // an operator does about it, and it was crowding out the one
+              // sentence they must act on. The full statement, and why the
+              // row must never travel through `preferencesProvider`, is in
+              // this class's doc comment and in
+              // `test/pages/server_config_transport_card_test.dart`.
+              Expanded(
+                child: Text(
+                  'This station only — never imported or synced.',
+                  textAlign: TextAlign.right,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color:
+                        theme.colorScheme.onSurface.withValues(alpha: 0.65),
+                  ),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 12),
-          Text(
-            'This setting belongs to this station only. It is never '
-            'exported, imported or synced from another machine.',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 12),
-          SegmentedButton<TransportMode>(
-            segments: const [
-              ButtonSegment(
-                value: TransportMode.direct,
-                label: Text('Direct to PLCs'),
-                icon: FaIcon(FontAwesomeIcons.plug, size: 14),
-              ),
-              ButtonSegment(
-                value: TransportMode.gateway,
-                label: Text('Relay gateway'),
-                icon: FaIcon(FontAwesomeIcons.towerBroadcast, size: 14),
-              ),
-            ],
-            selected: {_edited.mode},
-            onSelectionChanged: (selection) =>
-                _edit(_edited.copyWith(mode: selection.first)),
+          // **The transport, as ONE control.** The mode and the place the
+          // mode dials are one decision, so they are one row: choosing
+          // "Relay gateway" opens the address beside the segment that asked
+          // for it, not two rows further down under a paragraph. The owner's
+          // words, at the rig: "the toggle and the gateway address belong on
+          // the same row".
+          //
+          // `minHeight` is the field's own height, applied in BOTH
+          // transports: a direct station's row is the same height as a
+          // gateway station's, so flipping the toggle reveals the address
+          // without the card growing under the finger that flipped it, and
+          // the empty half of the row in direct mode reads as space rather
+          // than as something missing.
+          //
+          // The breakpoint is measured, not chosen: the widest of the two
+          // segment label sets is ~345 logical pixels, and an address field
+          // narrower than ~280 cannot show `centroidx-backend:9443` — the
+          // name this plant actually dials — without ellipsising it. 345 +
+          // 12 + 280 = 637, so below 640 the two stack. The page's other
+          // breakpoints (500 for the Import/Export header, 400 in the
+          // editor) are about different content and would leave this row
+          // squeezed for the whole 500–640 band.
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final toggle = SegmentedButton<TransportMode>(
+                segments: const [
+                  ButtonSegment(
+                    value: TransportMode.direct,
+                    label: Text('Direct to PLCs'),
+                    icon: FaIcon(FontAwesomeIcons.plug, size: 14),
+                  ),
+                  ButtonSegment(
+                    value: TransportMode.gateway,
+                    label: Text('Relay gateway'),
+                    icon: FaIcon(FontAwesomeIcons.towerBroadcast, size: 14),
+                  ),
+                ],
+                selected: {_edited.mode},
+                onSelectionChanged: (selection) =>
+                    _edit(_edited.copyWith(mode: selection.first)),
+              );
+              final address = _edited.isGateway
+                  ? TextField(
+                      controller: _urlController,
+                      decoration: const InputDecoration(
+                        labelText: 'Gateway address and port',
+                        // The examples are the helper now. The line that
+                        // used to sit under this field — "IP address or
+                        // host name, and the port. wss unless you type a
+                        // scheme." — said what the hint shows and what the
+                        // saved value spells (`wss://…`, filled in by
+                        // [normalizeGatewayAddress] and read back into this
+                        // controller), and it cost a row of the card on
+                        // every gateway panel in the plant. A scheme that
+                        // cannot be dialled is still refused by name, below.
+                        hintText: '10.50.10.11:9443  or  '
+                            'centroidx-backend:9443',
+                        border: OutlineInputBorder(),
+                      ),
+                      // Normalised on the way in, not on the way out:
+                      // everything that reads this row — the refusal below,
+                      // the trust fetch, the boot path — sees the URL it
+                      // will actually dial, so no second spelling of "what
+                      // did the operator mean" can appear.
+                      onChanged: (value) => _edit(
+                          _edited.copyWith(url: normalizeGatewayAddress(value))),
+                    )
+                  : null;
+              if (address != null && constraints.maxWidth < 640) {
+                // Narrow panel: the same two controls, stacked, with the
+                // toggle left where it sits when there is room beside it.
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Align(alignment: Alignment.centerLeft, child: toggle),
+                    const SizedBox(height: 12),
+                    address,
+                  ],
+                );
+              }
+              return ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 56),
+                child: Row(
+                  children: [
+                    toggle,
+                    if (address != null) ...[
+                      const SizedBox(width: 12),
+                      Expanded(child: address),
+                    ],
+                  ],
+                ),
+              );
+            },
           ),
           const SizedBox(height: 12),
           if (_edited.isGateway) ...[
-            TextField(
-              controller: _urlController,
-              decoration: const InputDecoration(
-                labelText: 'Gateway address and port',
-                hintText: '10.50.10.11:9443  or  centroidx-backend:9443',
-                // Kept short deliberately: at 760px — the narrowest panel
-                // this page is shot at — a longer line ellipsises, and a
-                // helper the operator cannot finish reading is worse than a
-                // terse one.
-                helperText: 'IP address or host name, and the port. '
-                    'wss unless you type a scheme.',
-                border: OutlineInputBorder(),
-              ),
-              // Normalised on the way in, not on the way out: everything that
-              // reads this row — the refusal below, the trust fetch, the boot
-              // path — sees the URL it will actually dial, so no second
-              // spelling of "what did the operator mean" can appear.
-              onChanged: (value) => _edit(
-                  _edited.copyWith(url: normalizeGatewayAddress(value))),
-            ),
-            const SizedBox(height: 12),
             // The trust line — what replaced the "PEM path" field ("how do I
             // obtain pem path, and what is that"). Three states, one visible
             // at a time: pinned material with its fingerprint and a Forget;
@@ -841,31 +918,55 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
           // right here — but calling that state "All Changes Saved" would be
           // a lie about work the operator has just done and can still see on
           // screen.
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: canSave ? _save : null,
-                  icon: FaIcon(FontAwesomeIcons.floppyDisk,
-                      size: 16, color: canSave ? unsavedInk : Colors.grey),
-                  label: Text(switch ((_hasUnsavedChanges, refusal)) {
-                    (false, _) => 'All Changes Saved',
-                    (true, final String _) => 'Cannot save yet',
-                    (true, _) => 'Save Configuration',
-                  }),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    foregroundColor: canSave ? unsavedInk : null,
-                    backgroundColor: canSave ? unsavedFill : Colors.grey,
-                  ),
+          //
+          // The ONE line of prose left in this card rides beside it rather
+          // than under it. Of the three sentences this card used to carry,
+          // this is the one an operator acts on — the panel does not change
+          // transport until it is restarted, and a save that looked like it
+          // took effect immediately is the misreading the line exists to
+          // prevent. It sits in the same row as the button that causes it.
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final button = ElevatedButton.icon(
+                onPressed: canSave ? _save : null,
+                icon: FaIcon(FontAwesomeIcons.floppyDisk,
+                    size: 16, color: canSave ? unsavedInk : Colors.grey),
+                label: Text(switch ((_hasUnsavedChanges, refusal)) {
+                  (false, _) => 'All Changes Saved',
+                  (true, final String _) => 'Cannot save yet',
+                  (true, _) => 'Save Configuration',
+                }),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 20, vertical: 16),
+                  foregroundColor: canSave ? unsavedInk : null,
+                  backgroundColor: canSave ? unsavedFill : Colors.grey,
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Changing the transport takes effect when the HMI restarts.',
-            style: Theme.of(context).textTheme.bodySmall,
+              );
+              final note = Text(
+                'Changing the transport takes effect when the HMI restarts.',
+                style: theme.textTheme.bodySmall,
+              );
+              // Same 640 as the control row above, for the same reason and
+              // so the card has one shape per width rather than two.
+              if (constraints.maxWidth < 640) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    note,
+                    const SizedBox(height: 8),
+                    button,
+                  ],
+                );
+              }
+              return Row(
+                children: [
+                  Expanded(child: note),
+                  const SizedBox(width: 16),
+                  button,
+                ],
+              );
+            },
           ),
           ],
         ),
@@ -1111,12 +1212,15 @@ class BackendConfigSection extends ConsumerWidget {
 ///
 /// It occupies the same slot in both transports, because the page has one
 /// shape — but on a gateway station it renders a statement instead of four
-/// buttons, the shape `DatabaseConfigWidget` already uses. The reason is not
-/// cosmetic: every path in here reads and writes THIS station's own
-/// preferences and its own certificates, and on a gateway station those rows
-/// are not what the panel runs on. An "Import File" that reported success
-/// while changing nothing the backend reads is precisely the failure mode
-/// this page exists to prevent, one target further along.
+/// buttons. It is now the ONLY card on the page that does: the database card
+/// stayed editable in both transports by the owner's ruling, because its
+/// settings are still this station's own and it runs on them the moment the
+/// transport goes back to Direct. The difference here is that these are not
+/// settings but ACTIONS, and the actions genuinely do nothing a gateway
+/// station wants: every path reads and writes THIS station's own preferences
+/// and its own certificates. An "Import File" that reported success while
+/// changing nothing the backend reads is precisely the failure mode this page
+/// exists to prevent, one target further along.
 class ImportExportCard extends ConsumerStatefulWidget {
   const ImportExportCard({super.key});
 
@@ -1127,8 +1231,10 @@ class ImportExportCard extends ConsumerStatefulWidget {
 }
 
 /// The import/export card on a gateway-mode station: a statement, not a set
-/// of buttons. Mirrors the database card's gateway face — same slot, same
-/// muted voice, same reason (the stored rows apply only in direct mode).
+/// of buttons. Same slot, muted voice — the treatment the database card used
+/// to share before it went back to being editable in both transports, and the
+/// reason it no longer does: a setting can be stored for later, but a button
+/// that acts on nothing the panel reads cannot.
 class _GatewayImportExportCard extends StatelessWidget {
   const _GatewayImportExportCard();
 

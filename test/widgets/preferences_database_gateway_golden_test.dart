@@ -1,10 +1,16 @@
 /// Golden images of the database card on a gateway-mode station — under the
 /// real station themes, in both brightnesses.
 ///
-/// One frame, shot twice. The card is the honest replacement for the
-/// "Status: Connected" line the owner watched a gateway panel render: a
-/// statement in muted `onSurface`, no status stream, no editor, no census
-/// button. The dark half is not decoration: the card's muted colour is
+/// One frame, shot twice — the card as an operator finds it, collapsed. What
+/// replaced the "Status: Connected" line the owner watched a gateway panel
+/// render is a statement in muted `onSurface`: no status stream and no census
+/// button, because neither has anything real behind it here. The settings
+/// themselves are NOT gone — the chevron opens them, and they are editable in
+/// this transport like any other (the owner's second ruling: "i dont see a
+/// reason why we cannot change or see database config"); the open face is
+/// photographed by `server_config_transport_parity_golden_test.dart`, on the
+/// page, where an operator meets it. The dark half is not decoration: the
+/// card's muted colour is
 /// `onSurface` with alpha precisely because neither Solarized scheme sets
 /// `colorScheme.outline` (project memory `solarized-outline-is-invisible`),
 /// and only a dark image can show that the sentence is actually legible on

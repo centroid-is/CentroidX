@@ -519,28 +519,39 @@ class _DatabaseConfigWidgetState extends ConsumerState<DatabaseConfigWidget> {
 
   @override
   Widget build(BuildContext context) {
-    // The transport decides what this section may claim. In gateway mode the
-    // station opens no direct database connection — `databaseProvider` and
-    // `preferencesProvider` both branch before dialling — so there is no
-    // status to report and no pool to census. A status line must be true or
-    // absent: rendering "Disconnected" in red here would read as a fault on
-    // a healthy panel, and rendering "Connected" was the lie this branch
-    // exists to remove.
+    // **The same card in both transports, editable in both.** The owner's
+    // ruling, at the rig: "i dont see a reason why we cannot change or see
+    // database config". These are this station's OWN settings — read from and
+    // written to device-local secure storage by `DatabaseConfig.fromPrefs` /
+    // `toPrefs`, never over the relay — and they are what the station runs on
+    // the moment somebody switches the transport back to Direct. A panel that
+    // could not show or edit them was stranded at exactly that moment.
+    //
+    // What the transport still decides is what this card may CLAIM. In
+    // gateway mode nothing dials: `databaseProvider` returns null before it
+    // reads the row, and `preferencesProvider` carries the same branch one
+    // level up so nothing pulls the pool in by watching. So there is no
+    // connection state to report and no pool to census, and the editor's
+    // `dialling` flag is false. A status line must be true or absent: rendering "Disconnected"
+    // in red would read as a fault on a healthy panel, and rendering
+    // "Connected" was the lie that branch exists to remove.
     final gatewayAsync = ref.watch(gatewayConfigProvider);
     if (gatewayAsync.isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
     final gateway = gatewayAsync.valueOrNull ?? GatewayConfig.defaults;
-    if (gateway.isGateway) {
-      return const _GatewayDatabaseCard();
-    }
     if (_loading || _config == null) {
       return const Center(child: CircularProgressIndicator());
     }
     return _DatabaseConfigEditor(
       config: _config!,
+      dialling: !gateway.isGateway,
       onSave: (newConfig) async {
         await newConfig.toPrefs();
+        // Safe in both transports: in gateway mode this provider answers null
+        // on its own transport branch without opening anything, and nothing
+        // in gateway mode watches it — the invalidate is a no-op there rather
+        // than a dial.
         ref.invalidate(databaseProvider);
         // Reload config after save so the editor reflects new values
         _loadConfig();
@@ -549,45 +560,27 @@ class _DatabaseConfigWidgetState extends ConsumerState<DatabaseConfigWidget> {
   }
 }
 
-/// The database card on a gateway-mode station: a statement, not a status.
-///
-/// No connection-state stream (there is no station-side connection to
-/// describe), no editor (the stored row applies only in direct mode, and an
-/// editable credentials form under a transport that never dials it invites
-/// exactly the confusion the owner reported), and no census button (the
-/// census reads the pool this station does not hold). The neutral colour is
-/// `onSurface` with alpha rather than `colorScheme.outline`, which neither
-/// Solarized scheme sets and which disappears on dark.
-class _GatewayDatabaseCard extends StatelessWidget {
-  const _GatewayDatabaseCard();
-
-  @override
-  Widget build(BuildContext context) {
-    final onSurface = Theme.of(context).colorScheme.onSurface;
-    final muted = onSurface.withValues(alpha: 0.65);
-    return Card(
-      child: ListTile(
-        leading: FaIcon(FontAwesomeIcons.database, size: 20, color: muted),
-        title: const Text('Database Configuration'),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Text(
-            'Not used in gateway mode. This station opens no direct database '
-            'connection — the backend owns the database. The settings stored '
-            'here apply only when the transport is set to Direct.',
-            style: TextStyle(color: muted),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _DatabaseConfigEditor extends ConsumerStatefulWidget {
   final DatabaseConfig config;
   final ValueChanged<DatabaseConfig> onSave;
 
-  const _DatabaseConfigEditor({required this.config, required this.onSave});
+  /// Whether this station is the one dialling these settings — true in
+  /// direct mode, false in gateway mode, where the backend owns the database
+  /// and this panel opens no pool of its own.
+  ///
+  /// It gates what the card SAYS, never what it lets an operator change: the
+  /// row is device-local and applies whenever the transport is Direct, so it
+  /// stays editable either way. False means no connection-state stream is
+  /// subscribed (there is none to describe), no census button (the census
+  /// reads a pool this station does not hold), and a neutral statement in
+  /// place of a green/red claim.
+  final bool dialling;
+
+  const _DatabaseConfigEditor({
+    required this.config,
+    required this.onSave,
+    this.dialling = true,
+  });
 
   @override
   ConsumerState<_DatabaseConfigEditor> createState() =>
@@ -622,7 +615,25 @@ class _DatabaseConfigEditorState extends ConsumerState<_DatabaseConfigEditor> {
   Widget build(BuildContext context) {
     // Use AsyncValue directly instead of FutureBuilder to avoid
     // Future identity changes that destroy ExpansionTile state on rebuild.
-    final prefsAsync = ref.watch(preferencesProvider);
+    //
+    // **Watched only where it is needed**, which is the transport that
+    // dials: the shared store is this card's source for ONE thing, the
+    // connection stream in the two `StreamBuilder`s below. Everything else
+    // it renders comes from `widget.config` and goes back out through
+    // `widget.onSave` to device-local secure storage. And `preferencesProvider`
+    // is not a cheap read — it builds the guarded store, the access policy and
+    // the audit sink, and those reach `databaseProvider` — so watching it from
+    // a gateway panel would drag the whole chain up to render a card that
+    // needs none of it. `preferences_database_section_test.dart` asserts the
+    // provider is never touched in gateway mode, and that arm is what noticed.
+    final AsyncValue<Preferences?> prefsAsync = widget.dialling
+        ? ref.watch(preferencesProvider)
+        : const AsyncValue<Preferences?>.data(null);
+    // The neutral voice for everything this card says when it is not the one
+    // dialling. `onSurface` with alpha, never `colorScheme.outline`: neither
+    // Solarized scheme sets that and it disappears on dark.
+    final muted =
+        Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.65);
 
     return prefsAsync.when(
       loading: () => const Padding(
@@ -641,29 +652,43 @@ class _DatabaseConfigEditorState extends ConsumerState<_DatabaseConfigEditor> {
               const Text('Database Configuration'),
               // Reaching the connection census through psql is exactly what
               // stops working when the server runs out of connections, so the
-              // way in has to be here, in an app that already holds one.
-              IconButton(
-                icon: const Icon(Icons.info_outline, size: 18),
-                visualDensity: VisualDensity.compact,
-                tooltip: 'Connection statistics',
-                onPressed: () => showDatabaseStatsPane(context),
-              ),
+              // way in has to be here, in an app that already holds one — and
+              // only where one is held. In gateway mode the census would
+              // report on a pool this station does not have.
+              if (widget.dialling)
+                IconButton(
+                  icon: const Icon(Icons.info_outline, size: 18),
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Connection statistics',
+                  onPressed: () => showDatabaseStatsPane(context),
+                ),
             ],
           ),
-          subtitle: StreamBuilder<bool>(
-            stream: prefs.database?.connectionState,
-            initialData: false,
-            builder: (context, connectionSnapshot) {
-              final isConnected = connectionSnapshot.data ?? false;
-              return Text(
-                'Status: ${isConnected ? "Connected" : "Disconnected"}',
-                style: TextStyle(
-                  color: isConnected ? Colors.green : Colors.red,
-                  fontWeight: FontWeight.w500,
+          subtitle: widget.dialling
+              ? StreamBuilder<bool>(
+                  stream: prefs?.database?.connectionState,
+                  initialData: false,
+                  builder: (context, connectionSnapshot) {
+                    final isConnected = connectionSnapshot.data ?? false;
+                    return Text(
+                      'Status: ${isConnected ? "Connected" : "Disconnected"}',
+                      style: TextStyle(
+                        color: isConnected ? Colors.green : Colors.red,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    );
+                  },
+                )
+              // Not a status, because there is nothing to have a status: this
+              // station dials nothing in gateway mode. It says what the
+              // settings ARE for instead, which is the one thing an operator
+              // standing here needs to know before changing them.
+              : Text(
+                  'Not dialled in gateway mode — the backend owns the '
+                  'database. These settings apply when the transport is '
+                  'Direct.',
+                  style: TextStyle(color: muted),
                 ),
-              );
-            },
-          ),
           initiallyExpanded: false, // Default to folded
           children: [
             Padding(
@@ -671,46 +696,80 @@ class _DatabaseConfigEditorState extends ConsumerState<_DatabaseConfigEditor> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  StreamBuilder<bool>(
-                    stream: prefs.database?.connectionState,
-                    initialData: false,
-                    builder: (context, snapshot) {
-                      return Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: (snapshot.data ?? false)
-                              ? Colors.green.withOpacity(0.1)
-                              : Colors.red.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: (snapshot.data ?? false)
-                                ? Colors.green
-                                : Colors.red,
+                  if (!widget.dialling)
+                    // The same fact as the subtitle, in the place the green
+                    // or red box would be, so the operator who opened the
+                    // card is not left looking for a status that is missing.
+                    // Muted `onSurface`, never `colorScheme.outline`: neither
+                    // Solarized scheme sets it and it vanishes on dark
+                    // (project memory solarized-outline-is-invisible).
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: muted),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.info_outline, size: 16, color: muted),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              // One line, because the subtitle two rows
+                              // above already says when these settings
+                              // apply and this is only here to occupy —
+                              // honestly — the place the green or red box
+                              // takes in the transport that dials.
+                              'No connection from this station — nothing '
+                              'here is dialling.',
+                              style: TextStyle(fontSize: 12, color: muted),
+                            ),
                           ),
-                        ),
-                        child: Row(
-                          children: [
-                            FaIcon(
-                              (snapshot.data ?? false)
-                                  ? FontAwesomeIcons.checkCircle
-                                  : FontAwesomeIcons.exclamationCircle,
+                        ],
+                      ),
+                    ),
+                  if (widget.dialling)
+                    StreamBuilder<bool>(
+                      stream: prefs?.database?.connectionState,
+                      initialData: false,
+                      builder: (context, snapshot) {
+                        return Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: (snapshot.data ?? false)
+                                ? Colors.green.withOpacity(0.1)
+                                : Colors.red.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
                               color: (snapshot.data ?? false)
                                   ? Colors.green
                                   : Colors.red,
-                              size: 16,
                             ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                'Connection Status: ${snapshot.data ?? false ? "Connected" : "Disconnected"}',
-                                style: const TextStyle(fontSize: 12),
+                          ),
+                          child: Row(
+                            children: [
+                              FaIcon(
+                                (snapshot.data ?? false)
+                                    ? FontAwesomeIcons.checkCircle
+                                    : FontAwesomeIcons.exclamationCircle,
+                                color: (snapshot.data ?? false)
+                                    ? Colors.green
+                                    : Colors.red,
+                                size: 16,
                               ),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Connection Status: ${snapshot.data ?? false ? "Connected" : "Disconnected"}',
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
                   const SizedBox(height: 16),
                   TextField(
                     controller: hostController,

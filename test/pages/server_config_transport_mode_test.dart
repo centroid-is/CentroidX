@@ -241,11 +241,17 @@ void main() {
       // this fixture stands up no backend for it to read — the parity arms in
       // server_config_transport_parity_test.dart do that with one.)
       expect(find.text('Database Configuration'), findsOneWidget,
-          reason: 'the database card stays in its slot and says, in gateway '
-              'mode, that the station opens no connection of its own — a '
-              'missing card cannot say anything');
-      expect(find.textContaining('Not used in gateway mode'), findsWidgets,
-          reason: 'and it is the gateway face of the card, not the editor');
+          reason: 'the database card stays in its slot, and in gateway mode '
+              'it is the same editable card — the owner, at the rig: "i dont '
+              'see a reason why we cannot change or see database config". '
+              'What it drops there is the claim, not the settings; the arms '
+              'for that are in server_config_transport_card_test.dart');
+      expect(find.textContaining('Not used in gateway mode'), findsOneWidget,
+          reason: 'import/export is the card that genuinely does nothing '
+              'here — its paths write this station\'s own certificates, and '
+              'an "Import File" that reported success while changing nothing '
+              'the backend reads is this page\'s own failure mode. One card '
+              'says it now, not two');
       expect(find.text('Import / Export'), findsOneWidget,
           reason: 'so does import/export: same slot, and its own honest face');
 

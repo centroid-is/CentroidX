@@ -9,6 +9,14 @@
 /// describe (gateway mode), never red-"Disconnected" as though a working
 /// station were faulty.
 ///
+/// What the transport does NOT decide is whether the settings can be seen and
+/// changed. The card spent one revision as a placard in gateway mode, and the
+/// owner overruled that at the rig — "i dont see a reason why we cannot
+/// change or see database config" — because the row is this station's own,
+/// device-local, and is what it runs on the moment the transport goes back to
+/// Direct. So the gateway arm below now pairs the missing CLAIM with the
+/// present FIELDS: dropping either half is a different defect.
+///
 /// The gateway arm runs with `databaseProvider` overridden to THROW and a
 /// touch recorder (17-12's technique): the section must render without ever
 /// reaching for it. The direct arm is the live control — a station in direct
@@ -69,7 +77,7 @@ void main() {
   });
 
   testWidgets(
-      'gateway mode: the section renders a statement, no status claim, '
+      'gateway mode: the section is editable, claims no status, '
       'and never touches the database provider', (tester) async {
     var touched = false;
     final local = await _gatewayLocal();
@@ -87,10 +95,24 @@ void main() {
     await tester.pumpAndSettle();
 
     // The card is still there — the operator can find where the setting
-    // lives — but it carries the honest sentence instead of a claim.
+    // lives — and it carries the honest sentence instead of a claim.
     expect(find.text('Database Configuration'), findsOneWidget);
     expect(find.textContaining('the backend owns the database'),
         findsOneWidget);
+
+    // And the settings themselves are reachable and editable, which is the
+    // half the owner's ruling added. A card that said the honest thing and
+    // showed nothing would pass every other assertion in this arm.
+    await tester.tap(find.text('Database Configuration'));
+    await tester.pumpAndSettle();
+    for (final label in const ['Host', 'Port', 'Database', 'Username']) {
+      expect(find.widgetWithText(TextField, label), findsOneWidget);
+    }
+    expect(find.text('Save Database Config'), findsOneWidget);
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Host'), '10.104.29.60');
+    await tester.pumpAndSettle();
+    expect(find.text('10.104.29.60'), findsOneWidget);
 
     // "Connected" must be true or absent. In gateway mode there is no
     // station-side connection to describe, so no status line at all — and

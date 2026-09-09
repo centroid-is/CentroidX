@@ -32,6 +32,7 @@ import 'package:tfc/core/gateway_config.dart';
 import 'package:tfc/core/gateway_link_status.dart';
 import 'package:tfc/pages/server_config.dart';
 import 'package:tfc/providers/gateway_link.dart';
+import 'package:tfc/widgets/preferences.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/state_man.dart';
@@ -102,8 +103,16 @@ Future<PreferencesApi> _gatewayStation() async {
   return prefs;
 }
 
-Future<void> _prepare(WidgetTester tester) async {
-  await tester.binding.setSurfaceSize(_viewport);
+/// The narrow panel, for the one shot that has to show the transport row
+/// stacking. 600 rather than the 480 an eLinux panel can be run at because
+/// the golden font makes the two segment labels ~50% wider than Roboto does
+/// (`roboto-mono`, `golden-theme-and-font-family`), and 480 photographs the
+/// font harness overflowing rather than the page degrading. Either width is
+/// under the card's 640 break, which is the branch being photographed.
+const Size _narrowViewport = Size(600, 2100);
+
+Future<void> _prepare(WidgetTester tester, {Size viewport = _viewport}) async {
+  await tester.binding.setSurfaceSize(viewport);
   // 1:1 pixels — these goldens are for reading, not for pixel archaeology.
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
@@ -127,8 +136,9 @@ Future<void> _pumpDirect(WidgetTester tester, {required bool dark}) async {
   );
 }
 
-Future<void> _pumpGateway(WidgetTester tester, {required bool dark}) async {
-  await _prepare(tester);
+Future<void> _pumpGateway(WidgetTester tester,
+    {required bool dark, Size viewport = _viewport}) async {
+  await _prepare(tester, viewport: viewport);
   await pumpAndLoad(
     tester,
     buildTestableServerConfig(
@@ -201,5 +211,38 @@ void main() {
   testWidgets('gateway — the whole page, dark', (tester) async {
     await _pumpGateway(tester, dark: true);
     await _expectGolden(tester, 'server_config_gateway_dark.png');
+  });
+
+  // The database card, OPEN, in the transport that used to replace it with a
+  // placard. The owner's ruling — "i dont see a reason why we cannot change or
+  // see database config" — is a claim about what is inside this tile, and no
+  // whole-page shot can show it: the tile is collapsed on arrival in both
+  // transports. Both brightnesses because what changed inside it is a muted
+  // statement where a green/red box goes, and muted is the treatment that
+  // disappears on one scheme if it is taken from the wrong token.
+  for (final dark in [false, true]) {
+    testWidgets(
+        'gateway — the database card, open and editable, '
+        '${dark ? 'dark' : 'light'}', (tester) async {
+      await _pumpGateway(tester, dark: dark, viewport: const Size(900, 2600));
+      await tester.tap(find.text('Database Configuration'));
+      await tester.pumpAndSettle();
+      await expectLater(
+        find.byType(DatabaseConfigWidget),
+        matchesGoldenFile(
+            'goldens/server_config_db_gateway_${dark ? 'dark' : 'light'}.png'),
+      );
+    });
+  }
+
+  // The narrow face, gateway only: it is the transport that has two controls
+  // in the row, so it is the only one whose layout has anything to degrade.
+  // What this image is for is the stacked branch of the transport card — the
+  // toggle on one line and the address under it, at full width, with the
+  // restart note above the save button instead of beside it.
+  testWidgets('gateway — a narrow panel stacks the transport row',
+      (tester) async {
+    await _pumpGateway(tester, dark: false, viewport: _narrowViewport);
+    await _expectGolden(tester, 'server_config_gateway_narrow_light.png');
   });
 }
