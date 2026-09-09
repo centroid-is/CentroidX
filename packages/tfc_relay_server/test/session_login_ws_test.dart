@@ -188,7 +188,12 @@ final class _Admin implements AccessAdminApi {
   @override
   Future<List<AccessRole>> roles() async => const [];
   @override
-  Future<List<AuthenticatedUser>> listUsers() async => const [];
+  // `UserSummary`, not `AuthenticatedUser`: #471 moved the roster onto a wire
+  // DTO carrying real created/last-seen dates. This fake was written on a
+  // branch cut before that landed, and the two met for the first time in the
+  // merge — a signature collision no conflict marker shows, because neither
+  // side edited the other's line.
+  Future<List<UserSummary>> listUsers() async => const [];
   @override
   Future<void> createRole(AccessRole role, {String? reason}) async {}
   @override
