@@ -21,6 +21,7 @@ export 'src/messages.dart';
 export 'src/pipe_keys.dart';
 export 'src/alarm_keys.dart';
 export 'src/alarm_active_entry.dart';
+export 'src/alarm_history.dart';
 export 'src/freshness.dart';
 export 'src/write_result.dart';
 export 'src/hold_handle.dart';

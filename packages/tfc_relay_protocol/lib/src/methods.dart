@@ -57,6 +57,36 @@ abstract final class Methods {
   /// moved.
   static const ackAlarm = 'ackAlarm';
 
+  /// A panel asking for `alarm_history` rows, carrying [AlarmHistoryParams]
+  /// and answered with [AlarmHistoryEntry.encodeList].
+  ///
+  /// Spelled in full for [ackAlarm]'s reason: this is one frame per page load,
+  /// not a hot path, so there is no byte budget to buy and a readable name is
+  /// worth more in a log than four saved characters.
+  ///
+  /// **Why an RPC when [AlarmKeys.active] is a value key.** D-9's argument for
+  /// the active set was that it is *state*, and conflation, fan-out and
+  /// snapshot-on-reconnect are the right semantics for state. History is not
+  /// state: it is a **query with arguments** — a row ceiling and a time window
+  /// — and a conflated key cannot carry arguments, cannot serve two panels
+  /// asking about two different windows, and has nowhere to say that a window
+  /// is not answerable. Same reasoning as [ackAlarm], arrived at from the other
+  /// direction: keys are for state, RPCs are for things needing an addressee
+  /// and an answer.
+  ///
+  /// **It is a read, and it is gated as one.** The acknowledge is gated by the
+  /// `canWrite` answer because it is an operator action; this is not. It is
+  /// gated by whether the station may *see* [AlarmKeys.active] — the same
+  /// visibility answer every other read on this wire goes through, and the same
+  /// one that decides whether the station gets a banner at all. A station that
+  /// may watch alarms happen may read what happened.
+  ///
+  /// **The answer is refused rather than emptied.** An empty history and a
+  /// history nobody could read look identical on screen, and the whole reason
+  /// this name exists is that a gateway-mode panel was showing the second as
+  /// the first.
+  static const alarmHistory = 'alarmHistory';
+
   /// The cached read — no round trip, answered from what the gateway last
   /// heard. `StateManApi.read`'s name, because it is the same concept.
   static const read = 'read';
