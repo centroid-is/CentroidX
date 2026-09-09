@@ -40,7 +40,7 @@ Future<StateManConfig> _persistedConfig(WidgetTester tester) async {
   final container =
       ProviderScope.containerOf(tester.element(find.byType(ServerConfigBody)));
   final prefs = await container.read(preferencesProvider.future);
-  return StateManConfig.fromPrefs(prefs);
+  return StateManConfigStorage.fromPrefs(prefs);
 }
 
 void main() {

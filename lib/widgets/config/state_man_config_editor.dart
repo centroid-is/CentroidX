@@ -35,6 +35,7 @@ import 'package:tfc_dart/core/config_document.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
+import '../../core/opcua_sessions.dart';
 import '../../core/config_source.dart';
 import '../../providers/state_man.dart';
 import '../connection_status_chip.dart';
@@ -2420,7 +2421,7 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
         final server = entry.value;
         ClientWrapper? wrapper;
         if (stateMan != null) {
-          wrapper = stateMan.clients.cast<ClientWrapper?>().firstWhere(
+          wrapper = opcUaSessionsOf(stateMan).cast<ClientWrapper?>().firstWhere(
                 (w) =>
                     (server.serverAlias != null &&
                         server.serverAlias!.isNotEmpty &&
