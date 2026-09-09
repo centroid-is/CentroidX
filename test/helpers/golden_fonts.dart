@@ -38,6 +38,12 @@ String? packageRoot(String package) {
 /// Registers the text and icon fonts golden frames need.
 Future<void> loadGoldenFonts() async {
   await _load('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  // Under the app's own themes `fontFamily` is 'roboto-mono', not 'Roboto', so
+  // a themed frame that registers only the latter renders every string as Ahem
+  // boxes. Registering both is what `base_scaffold_appbar_golden_test.dart`
+  // does with its private loader; this is the same two lines, in the shared
+  // helper, so the next themed golden does not have to rediscover it.
+  await _load('roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
 
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
   if (flutterRoot != null) {
@@ -51,5 +57,10 @@ Future<void> loadGoldenFonts() async {
         '$faRoot/lib/fonts/Font-Awesome-7-Free-Solid-900.otf');
     await _load('packages/font_awesome_flutter/FontAwesomeRegular',
         '$faRoot/lib/fonts/Font-Awesome-7-Free-Regular-400.otf');
+    // Brands is a separate face, and the Linux penguin on the About page is
+    // in it — without this the identity card renders a blank tofu box where
+    // the distro logo should be.
+    await _load('packages/font_awesome_flutter/FontAwesomeBrands',
+        '$faRoot/lib/fonts/Font-Awesome-7-Brands-Regular-400.otf');
   }
 }

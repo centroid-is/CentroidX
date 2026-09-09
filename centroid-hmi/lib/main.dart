@@ -483,7 +483,30 @@ RoutesLocationBuilder createLocationBuilder(
   // reads ungated on purpose, so this gate is the whole of the enforcement for
   // reading it. Left open on purpose:
   //
-  //  - '/advanced/about-linux' reads system information and changes nothing.
+  //  - '/advanced/about-linux', whose gate is on its controls rather than on
+  //    the route. That line used to read "reads system information and changes
+  //    nothing", which stopped being true when the Date & Time section landed:
+  //    the page sets the clock, the timezone and the NTP servers over D-Bus,
+  //    and Reboot / Power Off had only a confirm dialog in front of them. None
+  //    of those is a tag or a preference, so neither `GuardedStateMan` nor
+  //    `GuardedPreferences` covered them and they reached polkit — which the
+  //    station rule grants the container unconditionally — with nothing having
+  //    asked who was standing at the panel.
+  //
+  //    Raising the route was rejected: reading the hostname, the addresses and
+  //    whether the clock is synchronised is operate-level work, and a locked
+  //    page is how a station whose historised samples are timestamped an hour
+  //    out goes unnoticed. So the four writing controls require `administer`
+  //    through `guardGroupAction` (`lib/widgets/group_access_guard.dart`) and
+  //    the reading half is unguarded, which is the split
+  //    `system_clock_section.dart` was already documented as having and now
+  //    actually enforces.
+  //
+  //    The cost, stated rather than softened: this is a page-local gate, so a
+  //    future control added to About Linux does not inherit it the way a route
+  //    gate would have. `SystemClockSection.settingsAllowed` is required with
+  //    no default for that reason — the compiler is what catches the next
+  //    caller.
   //  - '/advanced/history-view', AppRoutes.historyView and
   //    AppRoutes.alarmView are read surfaces, and read permissions are
   //    explicitly out of scope (docs/access-control-spec.md §Scope, §11).

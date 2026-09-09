@@ -146,6 +146,8 @@ Future<void> pumpSection(
   FakeTimeSync? timeSync,
   List<String> storedServers = const [],
   Future<void> Function(List<String>)? onServersChanged,
+  bool settingsAllowed = true,
+  Future<bool> Function()? onBeforeChange,
 }) async {
   await tester.pumpWidget(MaterialApp(
     home: Scaffold(
@@ -155,6 +157,8 @@ Future<void> pumpSection(
           timeSync: timeSync,
           storedServers: storedServers,
           onServersChanged: onServersChanged ?? (_) async {},
+          settingsAllowed: settingsAllowed,
+          onBeforeChange: onBeforeChange,
         ),
       ),
     ),
@@ -486,5 +490,153 @@ void main() {
     expect(timeSync.pushes, [
       ['second.example', 'first.example']
     ]);
+  });
+
+  group('access gate', () {
+    testWidgets('the status half renders for a session that may change nothing',
+        (tester) async {
+      // The point of gating the controls instead of the route: an operator
+      // with no permissions still gets to see whether the clock is right.
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: SystemClockSection(
+              timeDate: FakeTimeDate(),
+              timeSync: FakeTimeSync(status: syncStatus()),
+              settingsAllowed: false,
+              onBeforeChange: () async => false,
+            ),
+          ),
+        ),
+      ));
+      await tester.pump();
+
+      expect(find.text('15:32:31'), findsOneWidget);
+      expect(find.text('Synchronized'), findsOneWidget);
+      expect(find.textContaining('Atlantic/Reykjavik'), findsWidgets);
+    });
+
+    testWidgets('locked controls draw a lock and stay tappable',
+        (tester) async {
+      await pumpSection(
+        tester,
+        timeDate: FakeTimeDate(),
+        timeSync: FakeTimeSync(status: syncStatus()),
+        settingsAllowed: false,
+        onBeforeChange: () async => false,
+      );
+
+      // Time zone, NTP switch and the server Edit button. A greyed control
+      // would teach the operator the panel is broken; the lock says which
+      // permission is missing and the refusal offers the way through.
+      expect(find.byIcon(Icons.lock_outline), findsNWidgets(3));
+      expect(
+        tester.widget<ListTile>(find.widgetWithText(ListTile, 'Time zone')).onTap,
+        isNotNull,
+      );
+    });
+
+    testWidgets('a refused timezone change never opens the picker',
+        (tester) async {
+      // Guarding at the write instead would list six hundred timezones, let
+      // the operator search them, take their choice and only then refuse.
+      final timeDate = FakeTimeDate();
+      var asked = 0;
+      await pumpSection(
+        tester,
+        timeDate: timeDate,
+        settingsAllowed: false,
+        onBeforeChange: () async {
+          asked++;
+          return false;
+        },
+      );
+
+      await tester.tap(find.text('Time zone'));
+      await tester.pumpAndSettle();
+
+      expect(asked, 1);
+      expect(find.text('Search'), findsNothing);
+      expect(timeDate.timezoneCalls, isEmpty);
+    });
+
+    testWidgets('a refused NTP toggle never reaches the host', (tester) async {
+      final timeDate = FakeTimeDate();
+      await pumpSection(
+        tester,
+        timeDate: timeDate,
+        settingsAllowed: false,
+        onBeforeChange: () async => false,
+      );
+
+      await tester.tap(find.byType(SwitchListTile));
+      await tester.pumpAndSettle();
+
+      expect(timeDate.ntpCalls, isEmpty);
+      // And the switch is back where it was, because nothing moved.
+      expect(tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
+          isTrue);
+    });
+
+    testWidgets('a refused server edit neither pushes nor stores the list',
+        (tester) async {
+      // The bug this pins: the stored list used to be committed after the
+      // write regardless of whether the write happened.
+      final timeSync = FakeTimeSync(status: syncStatus());
+      final stored = <List<String>>[];
+      await pumpSection(
+        tester,
+        timeDate: FakeTimeDate(),
+        timeSync: timeSync,
+        storedServers: const ['first.example'],
+        onServersChanged: (servers) async => stored.add(servers),
+        settingsAllowed: false,
+        onBeforeChange: () async => false,
+      );
+
+      await tester.tap(find.text('Edit'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Add server'), findsNothing);
+      expect(timeSync.pushes, isEmpty);
+      expect(stored, isEmpty);
+    });
+
+    testWidgets('an allowed session is asked once and then proceeds',
+        (tester) async {
+      // The guard must not become a second confirmation an engineer clicks
+      // through on every change.
+      final timeDate = FakeTimeDate();
+      var asked = 0;
+      await pumpSection(
+        tester,
+        timeDate: timeDate,
+        onBeforeChange: () async {
+          asked++;
+          return true;
+        },
+      );
+
+      await tester.tap(find.byType(SwitchListTile));
+      await tester.pumpAndSettle();
+
+      expect(asked, 1);
+      expect(timeDate.ntpCalls, [false]);
+      expect(find.byIcon(Icons.lock_outline), findsNothing);
+    });
+  });
+
+  testWidgets('the NTP pill names the file that outlives the HMI',
+      (tester) async {
+    // The runtime list this page edits dies with timesyncd; the pill is the
+    // only place in the UI that says where the persistent one lives.
+    await pumpSection(
+      tester,
+      timeDate: FakeTimeDate(),
+      timeSync: FakeTimeSync(status: syncStatus()),
+    );
+
+    expect(find.textContaining('/etc/systemd/timesyncd.conf'), findsWidgets);
+    expect(find.textContaining('ssh'), findsOneWidget);
   });
 }
