@@ -74,7 +74,11 @@ List<String> _sweptFiles() {
     if (!dir.existsSync()) continue;
     for (final entity in dir.listSync(recursive: true, followLinks: false)) {
       if (entity is! File) continue;
-      final path = entity.path;
+      // `/`-normalised at the source: `File.path` uses the platform
+      // separator, so on Windows `contains('/lib/')` matched nothing and this
+      // scan silently swept ZERO package files — the worst failure a census
+      // can have, because an empty sweep agrees with every claim.
+      final path = entity.path.replaceAll(r'\', '/');
       if (!path.endsWith('.dart')) continue;
       if (root == 'packages' && !path.contains('/lib/')) continue;
       files.add(path);

@@ -42,7 +42,11 @@ List<({String path, List<String> lines})> _readLib() {
       .listSync(recursive: true)
       .whereType<File>()
       .where((f) => f.path.endsWith('.dart'))
-      .map((f) => (path: f.path, lines: f.readAsLinesSync()))
+      // `/`-normalised: the assertions below name paths like
+      // 'lib/providers/state_man.dart', which never match a Windows
+      // backslash path.
+      .map((f) =>
+          (path: f.path.replaceAll(r'\', '/'), lines: f.readAsLinesSync()))
       .toList(growable: false);
 }
 

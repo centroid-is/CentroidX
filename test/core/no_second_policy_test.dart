@@ -62,7 +62,14 @@ List<String> _sweptFiles() {
     if (!dir.existsSync()) continue;
     for (final entity in dir.listSync(recursive: true, followLinks: false)) {
       if (entity is! File) continue;
-      final path = entity.path;
+      // `/`-normalised at the source. `File.path` uses the platform
+      // separator, so on Windows `contains('/lib/')` matched NOTHING and this
+      // scan swept zero package files — and arm 9's anti-vacuity floor is
+      // written in terms of files visited, so the whole gate for the
+      // one-master-policy law would have passed by sweeping nothing. Of the
+      // several scans carrying this bug tonight, this is the one that mattered
+      // most: it guards an owner hard requirement.
+      final path = entity.path.replaceAll(r'\', '/');
       if (!path.endsWith('.dart')) continue;
       if (root == 'packages' && !path.contains('/lib/')) continue;
       files.add(path);
