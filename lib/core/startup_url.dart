@@ -1,4 +1,4 @@
-import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_dart/core/preferences_api.dart';
 
 import '../models/menu_item.dart';
 
