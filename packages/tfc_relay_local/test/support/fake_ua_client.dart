@@ -53,6 +53,17 @@ final class FakeUaClient implements ua.ClientApi {
   /// Thrown by [connect] when set, to exercise the failure path.
   Object? connectFailure;
 
+  /// Thrown by every [read] while set, to exercise the undecodable-type path.
+  ///
+  /// The pinned binding's decode failures arrive as **strings** ('Unsupported
+  /// nodeId type: …', thrown at `common.dart:170`) — and under
+  /// `useIsolate: true` every error is a string by construction, because the
+  /// isolate marshals them as `e.toString()`. A case that wants the decode
+  /// probe to see what the bench's Guid/ByteString/LocalizedText/Range keys
+  /// produce sets this to that exact sentence. Unlike [connectFailure] it is
+  /// NOT one-shot: an undecodable type fails every read, not the next one.
+  Object? readFailure;
+
   // ----------------------------------------------------------- the evidence
 
   /// How many times [delete] was called. **The WR-03 observable**: one means
@@ -106,6 +117,8 @@ final class FakeUaClient implements ua.ClientApi {
   Future<ua.DynamicValue> read(ua.NodeId nodeId) async {
     reads.add(nodeId);
     if (readDelay > Duration.zero) await Future<void>.delayed(readDelay);
+    final failure = readFailure;
+    if (failure != null) throw failure;
     return answers['$nodeId'] ?? ua.DynamicValue(value: null);
   }
 

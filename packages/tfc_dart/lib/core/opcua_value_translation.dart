@@ -123,6 +123,23 @@ relay.Quality qualityForOpcUaErrorText(String text) {
   }
   if (text.contains('BadAttributeIdInvalid')) return relay.Quality.errorConfig;
   if (text.contains('BadTypeMismatch')) return relay.Quality.errorTypeMismatch;
+  // **The binding's own decode failures, by their exact sentences.** The
+  // pinned binding throws `'Unsupported nodeId type: …'` when a variant's
+  // declared DataType has no payload mapping (`common.dart:170` — the bench's
+  // Guid/ByteString/LocalizedText/Range keys), and `'Unsupported binary
+  // encoding id: …'` when an ExtensionObject's encoding is unknown to it
+  // (`opcua_serializer.dart:322`). Both are statements about THIS binding and
+  // THAT type, not about the link: waiting will not fix either, so the
+  // transient default below would be the wrong instruction. [relay.Quality
+  // .errorTypeMismatch] rather than `errorConfig`, because the tag exists and
+  // the mapping found it — what disagrees is the type the server serves and
+  // the types this side can decode, which is 771's exact sentence: "the leaf
+  // could not be decoded, so it reads null; the code is what stops that null
+  // looking like an absent reading."
+  if (text.contains('Unsupported nodeId type') ||
+      text.contains('Unsupported binary encoding id')) {
+    return relay.Quality.errorTypeMismatch;
+  }
   return relay.Quality.badCommFault;
 }
 

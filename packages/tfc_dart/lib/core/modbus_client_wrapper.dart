@@ -92,11 +92,64 @@ final class ModbusSample {
   String toString() => 'ModbusSample($value @ ${readAt.toIso8601String()})';
 }
 
+/// The device answered a protocol exception that REFUSES the address space —
+/// `IllegalDataAddress` and its two siblings — for one subscribed register.
+///
+/// **This is affirmative information, not a failure to communicate.** The
+/// slave parsed the request and said no: the register map is wrong, and no
+/// amount of waiting changes what the device just stated. The 200-server
+/// bench measured what dropping this cost — a key at `uncertainNotYetKnown`
+/// for the life of the process while the far end was explicitly telling the
+/// truth on every poll.
+///
+/// Emitted on [ModbusClientWrapper.refusals] **once per transition, never per
+/// poll tick**: a permanently refused register in a 20 Hz group would
+/// otherwise be its own denial of service against the log and every consumer
+/// downstream (this repo has been bitten by hot-path logging before). A
+/// successful read of the same register clears the latch, so a refusal after
+/// a recovery is a new fact and is named again.
+final class ModbusAddressRefusal {
+  const ModbusAddressRefusal({
+    required this.key,
+    required this.code,
+    required this.at,
+  });
+
+  /// The subscription key ([ModbusRegisterSpec.key]) the refused batch served.
+  ///
+  /// A batch is one coalesced range read, so one exception PDU can refuse
+  /// several keys at once — each gets its own event, because each is its own
+  /// value on somebody's screen. A healthy register coalesced into a refused
+  /// range is genuinely not being served either; that is a true statement
+  /// about it, not collateral damage.
+  final String key;
+
+  /// Which exception the device answered.
+  final ModbusResponseCode code;
+
+  /// When the refusing response came off the socket (host clock — Modbus has
+  /// no device timestamp, same as [ModbusSample.readAt]).
+  final DateTime at;
+
+  @override
+  String toString() => 'ModbusAddressRefusal($key: ${code.name} @ '
+      '${at.toIso8601String()})';
+}
+
 /// Holds the runtime state for a single subscribed register.
 class _RegisterSubscription {
   final ModbusRegisterSpec spec;
   final ModbusElement element;
   final BehaviorSubject<ModbusSample> sample$;
+
+  /// The refusal this register is currently under, or null.
+  ///
+  /// The transition latch behind [ModbusClientWrapper.refusals]: set when a
+  /// batch answer refuses this element with a code it does not already carry,
+  /// cleared by the next successful read. The per-tick repetition of a steady
+  /// refusal is absorbed here, which is what keeps the stream (and the log)
+  /// once-per-key instead of once-per-sample.
+  ModbusResponseCode? lastRefusal;
 
   _RegisterSubscription({
     required this.spec,
@@ -288,6 +341,30 @@ class ModbusClientWrapper {
       code == ModbusResponseCode.requestTxFailed ||
       code == ModbusResponseCode.requestRxFailed;
 
+  /// Whether [code] is the device REFUSING the request's shape — an answer
+  /// about the configuration, not about the moment.
+  ///
+  /// The three standard exceptions where the slave parsed the request and
+  /// declined it by construction: the function is not supported, the address
+  /// range does not exist, the quantity/value field is malformed. Waiting
+  /// changes none of them; somebody must fix the register map. Everything
+  /// else the device can answer (`deviceBusy`, `acknowledge`,
+  /// `deviceFailure`, the gateway codes) is a statement about *now* and keeps
+  /// the existing skip-and-wait behaviour — grading a busy device as a config
+  /// error would tell an operator to stop waiting for a register that is
+  /// seconds from coming back.
+  static bool _isAffirmativeRefusal(ModbusResponseCode code) =>
+      code == ModbusResponseCode.illegalFunction ||
+      code == ModbusResponseCode.illegalDataAddress ||
+      code == ModbusResponseCode.illegalDataValue;
+
+  /// Registers the device has refused by name — see [ModbusAddressRefusal].
+  ///
+  /// One event per key per transition; a steady refusal repeats nothing here.
+  Stream<ModbusAddressRefusal> get refusals => _refusals.stream;
+  final StreamController<ModbusAddressRefusal> _refusals =
+      StreamController<ModbusAddressRefusal>.broadcast();
+
   /// Drops the current socket so [_connectionLoop] reconnects.
   void _forceReconnect(String why) {
     _consecutiveReadFailures = 0;
@@ -404,6 +481,9 @@ class ModbusClientWrapper {
     }
     if (!_status.isClosed) {
       _status.close();
+    }
+    if (!_refusals.isClosed) {
+      _refusals.close();
     }
   }
 
@@ -800,6 +880,15 @@ class ModbusClientWrapper {
       // time would date every reading by the whole tick.
       final freshlyRead = Map<ModbusElement, DateTime>.identity();
 
+      // Elements whose batch the device REFUSED this tick (an affirmative
+      // exception answer, never a transport failure), with when. Kept apart
+      // from [freshlyRead] because they are opposite facts: one is "a
+      // reading exists", the other is "the device said this reading can
+      // never exist as asked".
+      final refused =
+          Map<ModbusElement, ({ModbusResponseCode code, DateTime at})>
+              .identity();
+
       for (final elemGroup in group._cachedGroups) {
         if (_disposed || connectionStatus != ConnectionStatus.connected) break;
 
@@ -815,14 +904,25 @@ class ModbusClientWrapper {
 
           if (result != ModbusResponseCode.requestSucceed) {
             _lastError = 'Poll group "${group.name}": ${result.name}';
-            _log.w(
-                'Poll group "${group.name}" batch read failed: ${result.name}');
-            // Only transport failures count toward half-open detection. A
-            // protocol exception (illegalDataAddress, deviceBusy, ...) is
-            // proof the peer is alive and answering; it means the register
-            // map is wrong, not the socket.
-            if (_isTransportFailure(result)) _consecutiveReadFailures++;
-            // Last-known values remain in BehaviorSubjects (SCADA behavior)
+            if (_isAffirmativeRefusal(result)) {
+              // The device answered: the request's shape is refused. Named
+              // per subscription below, ONCE per transition — the log line
+              // moves there too, because a refused register in a fast group
+              // logging every tick is the hot-path failure this repo has
+              // already paid for once.
+              for (final element in elemGroup) {
+                refused[element] = (code: result, at: readAt);
+              }
+            } else {
+              _log.w(
+                  'Poll group "${group.name}" batch read failed: ${result.name}');
+              // Only transport failures count toward half-open detection. A
+              // protocol exception (deviceBusy, deviceFailure, ...) is
+              // proof the peer is alive and answering; it means the moment
+              // is wrong, not the socket.
+              if (_isTransportFailure(result)) _consecutiveReadFailures++;
+              // Last-known values remain in BehaviorSubjects (SCADA behavior)
+            }
           } else {
             _consecutiveReadFailures = 0;
             for (final element in elemGroup) {
@@ -852,9 +952,34 @@ class ModbusClientWrapper {
       // BehaviorSubject keeps the last good value for new listeners (the SCADA
       // behaviour), but no new event is emitted, so nothing downstream --
       // above all the collector -- records a reading that never happened.
+      //
+      // A subscription whose batch was REFUSED is different in kind: the
+      // device affirmatively said no, and that is named on [refusals] — once
+      // per transition, with the tick-rate repetition absorbed by the
+      // per-subscription latch. A successful read clears the latch, so a
+      // refusal returning after a recovery is a new fact and is named again.
       for (final sub in group._subscriptions) {
+        final refusal = refused[sub.element];
+        if (refusal != null) {
+          if (sub.lastRefusal != refusal.code) {
+            sub.lastRefusal = refusal.code;
+            _log.w('Register "${sub.spec.key}" (address ${sub.spec.address}) '
+                'refused by the device: ${refusal.code.name} — the register '
+                'map is wrong, waiting will not fix it (logged once per '
+                'transition)');
+            if (!_refusals.isClosed) {
+              _refusals.add(ModbusAddressRefusal(
+                key: sub.spec.key,
+                code: refusal.code,
+                at: refusal.at,
+              ));
+            }
+          }
+          continue;
+        }
         final readAt = freshlyRead[sub.element];
         if (readAt == null) continue;
+        sub.lastRefusal = null;
         if (!sub.sample$.isClosed) {
           sub.sample$.add(ModbusSample(
             value: _coerceValue(sub.element.value, sub.spec.dataType),

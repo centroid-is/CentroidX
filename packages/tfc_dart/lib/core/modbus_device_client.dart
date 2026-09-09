@@ -44,6 +44,17 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   /// The underlying Modbus transport wrapper.
   final ModbusClientWrapper wrapper;
 
+  /// Registers the device has refused by name — the wrapper's
+  /// [ModbusClientWrapper.refusals], re-exposed unchanged.
+  ///
+  /// The seam `ModbusUpstreamLink.wrapping` consumes: a refused address must
+  /// come out of the pipe as a *quality* an operator reads, and the link is
+  /// the layer that mints qualities. Spec keys and gateway keys are the same
+  /// strings on this adapter (`buildSpecsFromKeyMappings` keys the specs by
+  /// the mapping's own key), so no translation happens here on purpose — a
+  /// second vocabulary at this seam is how the two ends drift.
+  Stream<ModbusAddressRefusal> get registerRefusals => wrapper.refusals;
+
   /// Optional alias for display/logging purposes.
   final String? serverAlias;
 
