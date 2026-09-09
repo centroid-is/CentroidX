@@ -97,9 +97,9 @@
 /// answers nothing.** Not "asks it for nothing" — the relay is preferred on
 /// every read, and asking is how the copy gets refreshed; what boot must never
 /// do is *depend* on the answer. The boundary in
-/// `device_local_preferences.dart` is untouched —
-/// neither key is device-local, and `device_local_preferences_test.dart` still
-/// pins both of them to the shared side.
+/// `device_local_preferences.dart` is untouched — neither key is device-local,
+/// and `device_local_preferences_test.dart` still pins both of them to the
+/// shared side.
 ///
 /// With the slot empty a boot key reads and writes the mirror; with the slot
 /// filled it reads and writes the backend **and writes the result through to
