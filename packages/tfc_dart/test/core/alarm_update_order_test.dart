@@ -31,8 +31,13 @@ void main() {
     return prefs;
   }
 
+  // `clock` became required when the relay work gave every deactivation a
+  // resolved provenance stamp (`resolveAlarmStamp`) instead of a bare
+  // `DateTime.now()`. This arm is about list ORDER, not about instants, so it
+  // passes the real clock rather than a fixture one — a frozen clock here
+  // would pin nothing this file asserts and would read as if it did.
   Future<AlarmMan> alarmManWith(Preferences prefs) =>
-      AlarmMan.create(prefs, _NoStateMan());
+      AlarmMan.create(prefs, _NoStateMan(), clock: DateTime.now);
 
   /// The uids in `alarm_man_config` as it is stored right now.
   ///
