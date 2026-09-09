@@ -1114,7 +1114,11 @@ class ViewActiveAlarm extends ConsumerWidget {
     final (backgroundColor, textColor) = alarm.notification.getColors(context);
     final isActive = alarm.notification.active;
     final requiresAck = alarm.notification.rule.acknowledgeRequired;
-    final canAck = !isActive && alarm.pendingAck && alarm.deactivated == null;
+    // `pendingAck` is cleared by AlarmMan the moment an instance leaves the
+    // active set, so it alone says "cleared, awaiting ack". The deactivation
+    // time no longer distinguishes anything: it is stamped when the condition
+    // drops, ack pending or not.
+    final canAck = !isActive && alarm.pendingAck;
 
     return Card(
       color: backgroundColor,

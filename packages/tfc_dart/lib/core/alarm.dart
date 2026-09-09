@@ -464,6 +464,11 @@ class AlarmMan implements AlarmSource {
                   e.notification.rule == alarmNotification.rule) {
                 e.pendingAck = true;
                 e.notification.active = false;
+                // The condition cleared *now*; the ack, whenever it comes, is
+                // paperwork. Recording the clear time here is what lets the
+                // downtime analysis end the stop when the machine restarted
+                // rather than when somebody got around to pressing OK.
+                e.deactivated = DateTime.now();
                 break;
               }
             }
@@ -539,6 +544,10 @@ class AlarmMan implements AlarmSource {
   /// reported, and no value in the plant carries the instant it happened at.
   @override
   Future<void> ackAlarm(AlarmActive alarm) async {
+    // Guarded (#467): an instance that already left the active set (double-tap
+    // on the ack button, a stale reference from the history list) must not be
+    // pushed into the history a second time.
+    if (!_activeAlarms.contains(alarm)) return;
     _removeActiveAlarm(
       alarm,
       resolveAlarmStamp(sourceTimes: const [], clock: _clock),
@@ -560,13 +569,48 @@ class AlarmMan implements AlarmSource {
     alarms.removeWhere((e) => e.config.uid == alarm.uid);
   }
 
+  /// Replaces the alarm carrying [alarm]'s uid, leaving it where it was.
+  ///
+  /// In place, not remove-then-append. Nothing sorts the alarm editor's list:
+  /// it is `config.alarms` in stored order, and `alarms` -- a LinkedHashSet,
+  /// so insertion order -- behind it. Appending moved every alarm the
+  /// operator edited to the bottom of the list, and because [_saveConfig]
+  /// rewrites the whole `alarm_man_config` blob the move was persisted, so it
+  /// survived the reload the editor does right after saving.
+  ///
+  /// An alarm whose uid is not here yet is appended, which is how the
+  /// proposal flow creates one: the editor routes both create and update
+  /// through this method.
   @override
   void updateAlarm(AlarmConfig alarm) {
-    config.alarms.removeWhere((e) => e.uid == alarm.uid);
-    config.alarms.add(alarm);
+    final index = config.alarms.indexWhere((e) => e.uid == alarm.uid);
+    if (index == -1) {
+      config.alarms.add(alarm);
+    } else {
+      config.alarms[index] = alarm;
+    }
     _saveConfig();
-    alarms.removeWhere((e) => e.config.uid == alarm.uid);
-    alarms.add(Alarm(config: alarm));
+    _replaceLiveAlarm(alarm);
+  }
+
+  /// Swaps the live [Alarm] for one rebuilt from [alarm], at the position it
+  /// already held in [alarms].
+  ///
+  /// A Set has no index to assign through, so the order is restored by
+  /// rebuilding it. [Alarm] has no `==`, so identity applies and the
+  /// replacement never collides with the entry it replaces.
+  void _replaceLiveAlarm(AlarmConfig alarm) {
+    final replacement = Alarm(config: alarm);
+    if (!alarms.any((e) => e.config.uid == alarm.uid)) {
+      alarms.add(replacement);
+      return;
+    }
+    final rebuilt = alarms
+        .map((e) => e.config.uid == alarm.uid ? replacement : e)
+        .toList();
+    alarms
+      ..clear()
+      ..addAll(rebuilt);
   }
 
   /// See the top-level [filterAlarms] — the behaviour lives there so a
@@ -591,7 +635,17 @@ class AlarmMan implements AlarmSource {
   /// an acknowledgement.
   void _removeActiveAlarm(AlarmActive alarm, AlarmStamp stamp) {
     alarm.notification.active = false;
-    alarm.deactivated = stamp.at;
+    // `??=` (#467): an ack-required alarm already carries its clear time from
+    // the moment the condition dropped; stamping again here would silently
+    // turn "cleared at 03:12, acked at 07:40" into four and a half hours of
+    // invented downtime. The value when it IS unset stays this station's
+    // resolved stamp rather than a bare `DateTime.now()`, so the provenance
+    // the relay work introduced survives the fix.
+    alarm.deactivated ??= stamp.at;
+    // Leaving the set means there is nothing left to acknowledge. Clearing
+    // the flag (before the row is written) is what keeps a restored history
+    // row from ever growing an ack button again.
+    alarm.pendingAck = false;
     _history.add(alarm);
     _activeAlarms.remove(alarm);
     _historyController.add(_history.buffer);

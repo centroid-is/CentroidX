@@ -463,7 +463,7 @@ void main() {
 
     tearDown(() => RouteRegistry().menuItems.clear());
 
-    testWidgets('the page, elevated, with the honesty note collapsed',
+    testWidgets('the page, elevated, with the honesty note at its foot',
         (tester) async {
       await withClock(Clock.fixed(_frozen), () async {
         const size = Size(900, 1120);
@@ -480,10 +480,10 @@ void main() {
         // frame that had not decided yet.
         expect(find.byKey(kAccessAdminHonestySummaryKey), findsOneWidget);
         expect(find.byKey(kAccessAdminLoadingKey), findsNothing);
-        // Collapsed, which is the settled default. An `ExpansionTile` caught
-        // mid-expansion would make this baseline a function of how many frames the
-        // harness pumped.
-        expect(find.byKey(kAccessAdminHonestyRecordsKey), findsNothing);
+        // One sentence, with nothing to open. The note used to be an
+        // `ExpansionTile`, and one caught mid-expansion would have made this
+        // baseline a function of how many frames the harness pumped.
+        expect(find.byType(ExpansionTile), findsNothing);
 
         // Both lists rendered rather than either terminal state.
         expect(find.byKey(kAccessRolesSectionKey), findsOneWidget);

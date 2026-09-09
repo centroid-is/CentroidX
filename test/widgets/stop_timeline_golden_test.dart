@@ -225,6 +225,67 @@ void main() {
           matchesGoldenFile('goldens/stop_timeline_scoped.png'));
     }, skip: !Platform.isMacOS);
 
+    testWidgets('an alarm standing since yesterday', (tester) async {
+      // The bar reaches the window edge and stops there — it used to paint
+      // straight across the label column — and the detail row names the day
+      // it started, because "Since 12:22:00" alone reads as today.
+      final sinceYesterday = StopIntervalSource(
+        closed: const [],
+        open: [
+          StopActivation(
+            alarmUid: 'seal-temperature-out-of-band',
+            interval: AlarmInterval(
+                start: now.subtract(const Duration(hours: 26)),
+                end: null,
+                level: AlarmLevel.error),
+          ),
+        ],
+      );
+      await pump(
+          tester,
+          MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: muted().$2,
+            home: Scaffold(
+              body: Center(
+                child: SizedBox(
+                  width: 900,
+                  height: 420,
+                  child: StopTimelineView(
+                    config: StopTimelineSpec(),
+                    tree: AlarmTree.fromConfigs(alarms),
+                    source: sinceYesterday,
+                    onRangeChanged: (_) {},
+                    onIntervalChanged: (_) {},
+                    clock: now,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const Size(960, 480));
+      final label = tester
+          .getRect(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.tapAt(Offset(label.right + 120, label.center.dy));
+      await tester.pumpAndSettle();
+      await expectLater(find.byType(StopTimelineView),
+          matchesGoldenFile('goldens/stop_timeline_standing_since_yesterday.png'));
+    }, skip: !Platform.isMacOS);
+
+    testWidgets('a week-long picked range labels the days', (tester) async {
+      // Seven midnight ticks all reading "00:00" said nothing; they name
+      // their day instead.
+      await pump(
+          tester,
+          harness(StopTimelineSpec(), Brightness.dark,
+              range: DateTimeRange(
+                  start: DateTime(2026, 8, 22, 14),
+                  end: DateTime(2026, 8, 29, 14))),
+          const Size(960, 480));
+      await expectLater(find.byType(StopTimelineView),
+          matchesGoldenFile('goldens/stop_timeline_week_range.png'));
+    }, skip: !Platform.isMacOS);
+
     testWidgets('strip height drops the brush and detail row', (tester) async {
       await pump(
           tester,

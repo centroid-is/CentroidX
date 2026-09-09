@@ -17,8 +17,8 @@
 ///    reads as broken,
 ///  * that a window too short for two variable-height lists scrolls rather
 ///    than clipping, and
-///  * the honesty note: what it says collapsed, what it says expanded, and
-///    that it says the same thing to every session that can see the page.
+///  * the honesty note: what its one sentence says, and that it says the same
+///    thing to every session that can see the page.
 ///
 /// The store is real, over a real in-memory database, for the reason
 /// `access_roles_section_test.dart` gives: "the roles rendered" is then read
@@ -353,22 +353,19 @@ void main() {
   // -------------------------------------------------------------------------
   // The honesty note
   //
-  // PROJECT.md's `## What This Is Not` and spec §8 both require this paragraph
-  // in *"the admin screen's own help text"*, and this is that screen. The
-  // claims below are about the copy as much as about the widget, because a
-  // softened version of this paragraph is the failure mode it exists to
-  // prevent: a site reading "the HMI has access control" and moving network
-  // segmentation down the list.
+  // PROJECT.md's `## What This Is Not` and spec §8 both require this claim in
+  // *"the admin screen's own help text"*, and this is that screen. The claims
+  // below are about the copy as much as about the widget, because a softened
+  // version of this sentence is the failure mode it exists to prevent: a site
+  // reading "the HMI has access control" and moving network segmentation down
+  // the list.
+  //
+  // It is one sentence now, rather than the four-paragraph expandable note it
+  // shipped as. What survives here are the claims about what it says; what
+  // went are the claims about paragraphs it no longer has.
   // -------------------------------------------------------------------------
 
   group('the honesty note', () {
-    /// Opens the note. Its collapsed state is the settled default — see the
-    /// comment on the note itself, which 06-11's goldens depend on.
-    Future<void> expand(WidgetTester tester) async {
-      await tester.tap(find.byKey(kAccessAdminHonestySummaryKey));
-      await tester.pumpAndSettle();
-    }
-
     testWidgets('sits at the foot of the page, below both sections',
         (tester) async {
       await pumpBody(tester, overrides());
@@ -376,42 +373,47 @@ void main() {
       final users = tester.getBottomLeft(find.byKey(kAccessUsersSectionKey)).dy;
       final note = tester.getTopLeft(find.byKey(kAccessAdminHonestyKey)).dy;
       expect(note, greaterThanOrEqualTo(users),
-          reason: '06-CONTEXT: one short expandable note at the foot of the '
-              'page');
+          reason: '06-CONTEXT: one short note at the foot of the page');
     });
 
-    testWidgets('collapsed, it shows the summary and none of the body',
-        (tester) async {
+    testWidgets('the whole note is on screen in the first frame, with nothing '
+        'to open', (tester) async {
       await pumpBody(tester, overrides());
 
       expect(find.text(kAccessAdminHonestySummary), findsOneWidget);
-      for (final key in const [
-        kAccessAdminHonestyRecordsKey,
-        kAccessAdminHonestyCredentialsKey,
-        kAccessAdminHonestyDangerKey,
-        kAccessAdminHonestyWhenKey,
-      ]) {
-        expect(find.byKey(key), findsNothing,
-            reason: 'the note ships collapsed, so a golden of the page does '
-                'not depend on a frame count');
-      }
+      // The note this replaced kept four paragraphs behind a tap. A warning
+      // that has to be opened is a warning the panel does not give.
+      expect(find.byType(ExpansionTile), findsNothing,
+          reason: 'nothing to expand, so nothing to miss — and no frame count '
+              'for the goldens to depend on');
     });
 
-    test('the collapsed title is itself an honest summary', () {
-      // The one line a reader who never expands the note has been told. It has
-      // to entail the whole thing rather than tease it, or the collapsed state
-      // is a lie about the expanded one.
+    test('the sentence makes all three claims', () {
+      // What the screen does, what it is not, and what the control actually
+      // is. The third is the one PROJECT.md's failure mode turns on — somebody
+      // concluding the HMI has logins and deprioritising segmentation — so it
+      // is not the clause that may be trimmed next.
       expect(kAccessAdminHonestySummary, contains('records who changed what'));
       expect(kAccessAdminHonestySummary,
           contains('guardrail, not a security boundary'));
+      expect(kAccessAdminHonestySummary,
+          contains('segmentation is the control'));
+    });
+
+    test('the two tools that walk past this screen are named', () {
+      // "Can be bypassed" is the vague version this clause replaces: an
+      // engineer who reads "UaExpert or psql" knows at once that the guardrail
+      // is inside the Dart process and nowhere else.
+      expect(kAccessAdminHonestySummary, contains('UaExpert'));
+      expect(kAccessAdminHonestySummary, contains('psql'));
     });
 
     test('it does not contradict first_user.dart', () {
-      // `first_user.dart`'s `_kHonesty` is the one place this text already
+      // `first_user.dart`'s `_kHonesty` is the one other place this text
       // exists in UI copy: "Signing in records who changed what. It is a
-      // guardrail, not a security boundary." This note is the longer form of
-      // that sentence and the summary is the same claim, so the two screens
-      // cannot be read as saying different things.
+      // guardrail, not a security boundary." Both halves of it are in this
+      // sentence, so the two screens cannot be read as saying different
+      // things.
       const shorter = 'Signing in records who changed what. It is a guardrail, '
           'not a security boundary.';
       expect(shorter, contains('records who changed what'));
@@ -421,67 +423,15 @@ void main() {
           contains('guardrail, not a security boundary'));
     });
 
-    testWidgets('expanded, every paragraph renders', (tester) async {
+    testWidgets('it cannot be ellipsised to one line', (tester) async {
       await pumpBody(tester, overrides());
-      await expand(tester);
 
-      expect(find.byKey(kAccessAdminHonestyRecordsKey), findsOneWidget);
-      expect(find.byKey(kAccessAdminHonestyCredentialsKey), findsOneWidget);
-      expect(find.byKey(kAccessAdminHonestyDangerKey), findsOneWidget);
-      expect(find.byKey(kAccessAdminHonestyWhenKey), findsOneWidget);
-    });
-
-    testWidgets('no paragraph can be ellipsised to one line', (tester) async {
-      await pumpBody(tester, overrides());
-      await expand(tester);
-
-      for (final key in const [
-        kAccessAdminHonestyRecordsKey,
-        kAccessAdminHonestyCredentialsKey,
-        kAccessAdminHonestyDangerKey,
-        kAccessAdminHonestyWhenKey,
-      ]) {
-        final text = tester.widget<Text>(find.byKey(key));
-        expect(text.maxLines, isNull,
-            reason: 'a warning the eye skips because it was cut to one line '
-                'has not been given');
-        expect(text.overflow, TextOverflow.visible);
-      }
-    });
-
-    test('the three station-held credentials are each named', () {
-      // PROJECT.md names them: "the OPC UA session, the Postgres password, and
-      // the D-Bus credential behind system settings". A paragraph that said
-      // "some credentials" would be the vague version this one exists to
-      // replace.
-      expect(kAccessAdminHonestyCredentials, contains('OPC UA'));
-      expect(kAccessAdminHonestyCredentials, contains('Postgres'));
-      expect(kAccessAdminHonestyCredentials, contains('D-Bus'));
-      expect(kAccessAdminHonestyCredentials, contains('the station, never a '
-          'person'));
-    });
-
-    test('the danger is named in PROJECT.md\'s own terms', () {
-      expect(kAccessAdminHonestyDanger, contains('segmentation'));
-      expect(kAccessAdminHonestyDanger, contains('logins'));
-      expect(kAccessAdminHonestyDanger,
-          contains('The danger is not the guardrail'));
-    });
-
-    test('it says when this stops being true, in the good direction', () {
-      expect(kAccessAdminHonestyWhen, contains('relay'));
-      expect(kAccessAdminHonestyWhen, contains('good direction'));
-    });
-
-    testWidgets('the three credentials and the segmentation sentence are on '
-        'screen once expanded', (tester) async {
-      await pumpBody(tester, overrides());
-      await expand(tester);
-
-      expect(find.textContaining('OPC UA'), findsOneWidget);
-      expect(find.textContaining('Postgres'), findsOneWidget);
-      expect(find.textContaining('D-Bus'), findsOneWidget);
-      expect(find.textContaining('segmentation'), findsOneWidget);
+      final text =
+          tester.widget<Text>(find.byKey(kAccessAdminHonestySummaryKey));
+      expect(text.maxLines, isNull,
+          reason: 'a warning the eye skips because it was cut to one line has '
+              'not been given');
+      expect(text.overflow, TextOverflow.visible);
     });
 
     testWidgets('it reads the same to a configure-only session as to a users '
@@ -491,34 +441,17 @@ void main() {
       // logins" is at least as likely to be the engineer who cannot open this
       // page's controls as the one who can.
       await pumpBody(tester, overrides());
-      await expand(tester);
-      final elevated = [
-        for (final k in const [
-          kAccessAdminHonestyRecordsKey,
-          kAccessAdminHonestyCredentialsKey,
-          kAccessAdminHonestyDangerKey,
-          kAccessAdminHonestyWhenKey,
-        ])
-          tester.widget<Text>(find.byKey(k)).data,
-      ];
+      final elevated =
+          tester.widget<Text>(find.byKey(kAccessAdminHonestySummaryKey)).data;
 
-      // A bare frame between the two pumps. `pumpWidget` reuses elements when
-      // the root widget type is unchanged, so without this the second page
-      // inherits the first one's *expanded* ExpansionTile and `expand` closes
-      // it again.
+      // A bare frame between the two pumps: `pumpWidget` reuses elements when
+      // the root widget type is unchanged, and a stale subtree would make the
+      // second reading a copy of the first.
       await tester.pumpWidget(const SizedBox.shrink());
       session = _configureOnly();
       await pumpBody(tester, overrides());
-      await expand(tester);
-      final lesser = [
-        for (final k in const [
-          kAccessAdminHonestyRecordsKey,
-          kAccessAdminHonestyCredentialsKey,
-          kAccessAdminHonestyDangerKey,
-          kAccessAdminHonestyWhenKey,
-        ])
-          tester.widget<Text>(find.byKey(k)).data,
-      ];
+      final lesser =
+          tester.widget<Text>(find.byKey(kAccessAdminHonestySummaryKey)).data;
 
       expect(lesser, elevated);
     });
@@ -536,10 +469,9 @@ void main() {
 
     testWidgets('there is no dismiss control and no link out', (tester) async {
       await pumpBody(tester, overrides());
-      await expand(tester);
 
       // No "don't show again" — that would be a preference key, a
-      // `configure`-classified write, hiding the one paragraph the spec
+      // `configure`-classified write, hiding the one sentence the spec
       // requires. And no "learn more": the station that most needs this is the
       // one that cannot open a document.
       expect(find.textContaining('Dismiss'), findsNothing);

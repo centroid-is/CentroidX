@@ -53,6 +53,21 @@ in before these are installed. For contrast,
 `org.freedesktop.NetworkManager.settings.modify.system` should already
 return `0`.
 
+## Who the HMI lets near these actions
+
+The rule below grants the container blanket rights, so polkit is not the thing
+that decides whether the operator standing at the panel may move the clock —
+the HMI is. Since the About Linux page's controls were gated, changing the
+time, the timezone or the NTP servers, and rebooting or powering off the
+station, all require the `administer` access group; the status half of the page
+stays readable to anyone, because "is the clock right?" is an operator
+question. The route itself is deliberately not gated. See
+`lib/widgets/group_access_guard.dart` and the `/advanced/about-linux` note in
+`centroid-hmi/lib/main.dart`'s route table.
+
+A refusal writes an audit row and shows the denial prompt; it never reaches
+D-Bus, so nothing in this document's polkit path is involved.
+
 ## Why a rule rather than a polkit agent
 
 The obvious alternative is to run an authentication agent so the operator can
@@ -70,7 +85,10 @@ cannot write. The HMI works around this by storing the operator's list in
 device-local preferences and re-applying it on start; see
 `ntpServersPrefsKey` in `lib/core/system_clock.dart`. If you would rather the
 host own the list, set `NTP=` in `timesyncd.conf` through provisioning — the
-page shows those as "From /etc/systemd/timesyncd.conf on the host".
+page shows those as "From /etc/systemd/timesyncd.conf on the host". The page
+now says this too, in an info pill under the server list, so an engineer at the
+panel is told where the persistent list lives rather than having to find this
+file.
 
 ## Checking a station's clock from a workstation
 
