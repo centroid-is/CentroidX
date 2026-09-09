@@ -44,6 +44,11 @@ import websockets
 import ua_server as UA
 import mb_server as MB
 
+# Line-buffered progress even when stdout is a file: a three-minute run whose
+# log is empty until exit looks exactly like a hung run.
+import functools
+print = functools.partial(print, flush=True)  # noqa: A001
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 GEN = os.path.join(HERE, "generated")
 PY = sys.executable
