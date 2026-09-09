@@ -922,19 +922,19 @@ void main() {
       expect(await _rawUserCount(db), 0);
     });
 
-    test('an empty password is refused without quoting anything', () async {
-      try {
-        await repo.createUser(
-            username: 'ada', password: '', roleName: 'Engineering');
-        fail('expected an ArgumentError');
-      } on ArgumentError catch (e) {
-        expect(e.invalidValue, isNull,
-            reason: 'ArgumentError.value would put the credential in the '
-                'message, and from there into whatever logs it');
-        expect(e.toString(), isNot(contains('hunter2')));
-      }
+    test('an empty password creates an account that signs in on its username '
+        'alone, marked so nothing derives against it', () async {
+      await repo.createUser(
+          username: 'line', password: '', roleName: 'Engineering');
 
-      expect(await _rawUserCount(db), 0);
+      final row = (await repo.user('line'))!;
+      expect(row.passwordHash, kNoPasswordMarker);
+      expect(isPasswordless(row.passwordHash), isTrue);
+      expect(row.salt, isEmpty, reason: 'there is nothing to salt');
+      expect(decodeStoredHash(row.passwordHash, saltB64: row.salt), isNull,
+          reason: 'the marker is not an algorithm, so a caller that forgets to '
+              'ask isPasswordless first fails the login rather than letting '
+              'somebody in');
     });
 
     test('usernames are trimmed but not case-folded', () async {
@@ -1187,19 +1187,24 @@ void main() {
       );
     });
 
-    test('an empty password is refused without quoting anything', () async {
+    test('an empty password removes the password rather than being refused, '
+        'and a real one puts it back', () async {
       await repo.createFirstUser(username: 'jon', password: 'hunter2');
       final before = (await repo.user('jon'))!.passwordHash;
+      expect(isPasswordless(before), isFalse);
 
-      try {
-        await repo.setPassword('jon', '');
-        fail('expected an ArgumentError');
-      } on ArgumentError catch (e) {
-        expect(e.invalidValue, isNull);
-        expect(e.toString(), isNot(contains('hunter2')));
-      }
+      await repo.setPassword('jon', '');
+      final opened = (await repo.user('jon'))!;
+      expect(opened.passwordHash, kNoPasswordMarker);
+      expect(opened.salt, isEmpty);
 
-      expect((await repo.user('jon'))!.passwordHash, before);
+      await repo.setPassword('jon', 'hunter3');
+      final closed = (await repo.user('jon'))!;
+      expect(isPasswordless(closed.passwordHash), isFalse,
+          reason: 'it is a round trip, not a one-way door');
+      expect(closed.salt, isNotEmpty);
+      expect(closed.passwordHash, isNot(before),
+          reason: 'a new salt, so a new hash');
     });
 
     test('the hash is derived before the transaction opens', () async {

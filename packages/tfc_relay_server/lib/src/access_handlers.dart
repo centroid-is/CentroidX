@@ -171,7 +171,7 @@ final class AccessHandlers {
 
   Future<Object?> adminListUsers(rpc.Parameters _) async => [
         for (final user in await source.accessAdmin.listUsers())
-          authenticatedUserToJson(user),
+          userSummaryToJson(user),
       ];
 
   Future<Object?> adminCreateRole(rpc.Parameters params) async {

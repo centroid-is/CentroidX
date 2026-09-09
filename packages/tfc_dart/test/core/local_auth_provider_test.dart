@@ -204,13 +204,67 @@ void main() {
       expect(counting.userReads, 0);
     });
 
-    test('an empty password returns null without touching the database',
+    test('an empty password against an account that has one returns null',
         () async {
-      final counting = _CountingRepository(db);
-      final p = LocalAuthProvider(counting);
+      // It used to short-circuit before the database was touched. It cannot
+      // any more: a blank password is how a passwordless account signs in, so
+      // the row has to be read before the answer is known. What must not
+      // change is the answer for an account that *does* have a password.
+      expect(await provider.authenticate('jon', ''), isNull);
+    });
+  });
 
-      expect(await p.authenticate('jon', ''), isNull);
-      expect(counting.userReads, 0);
+  group('an account with no password', () {
+    setUp(() async {
+      await repo.upsertRole(const AccessRole(
+          name: 'Line', groups: {AccessGroup.operate}));
+      await repo.createUser(
+          username: 'line', password: '', roleName: 'Line');
+    });
+
+    test('signs in on its username alone', () async {
+      final user = await provider.authenticate('line', '');
+
+      expect(user, isNotNull,
+          reason: 'this is the whole feature: a blank password box and a name');
+      expect(user!.username, 'line');
+      expect(user.roleName, 'Line');
+    });
+
+    test('signs in whatever was typed in the password box', () async {
+      // Stated as a test rather than left to be discovered: there is no
+      // credential, so there is no wrong guess at one. Anybody at the panel
+      // holds this account's role, which is what the users screen marks and
+      // what the create dialog warns about.
+      expect(await provider.authenticate('line', 'anything at all'), isNotNull);
+    });
+
+    test('the sign-in is recorded like any other', () async {
+      await provider.authenticate('line', '');
+
+      expect((await repo.user('line'))!.lastLoginAt, isNotNull,
+          reason: 'an open account is the one you most want a last-login for');
+    });
+
+    test('nothing is derived for it, and nothing is rehashed', () async {
+      LocalAuthProvider.dummyDerivations = 0;
+      final before = (await repo.user('line'))!.passwordHash;
+
+      await provider.authenticate('line', '');
+
+      expect(LocalAuthProvider.dummyDerivations, 0,
+          reason: 'the account exists, so the absent-user dummy must not run');
+      expect((await repo.user('line'))!.passwordHash, before,
+          reason: 'there is no plaintext in hand and no hash to carry '
+              'forward, so the rehash path must not be reached');
+    });
+
+    test('giving it a password closes it again', () async {
+      await repo.setPassword('line', 'hunter2');
+
+      expect(await provider.authenticate('line', ''), isNull);
+      expect(await provider.authenticate('line', 'wrong'), isNull);
+      expect(await provider.authenticate('line', 'hunter2'), isNotNull);
     });
   });
 

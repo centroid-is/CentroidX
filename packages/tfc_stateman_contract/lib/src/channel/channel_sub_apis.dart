@@ -575,10 +575,10 @@ final class ChannelAccessAdminApi implements AccessAdminApi {
       ];
 
   @override
-  Future<List<AuthenticatedUser>> listUsers() async => [
+  Future<List<UserSummary>> listUsers() async => [
         for (final row in jsonArray(
             await _send(HarnessMethods.accessAdminListUsers, const {})))
-          authenticatedUserFromJson(jsonObject(row)),
+          userSummaryFromJson(jsonObject(row)),
       ];
 
   @override

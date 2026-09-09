@@ -136,11 +136,17 @@ abstract interface class AccessAdminApi {
 
   /// Every account, ordered by username.
   ///
-  /// [AuthenticatedUser] rather than the database's own row class, and the
-  /// choice is a safety property rather than a convenience: that class carries
-  /// **no password-specific fields at all**, so no password hash can reach this
-  /// wire by somebody forgetting to strip it. There is nowhere to put one.
-  Future<List<AuthenticatedUser>> listUsers();
+  /// [UserSummary] rather than the database's own row class, and the choice is
+  /// a safety property rather than a convenience: that class carries **no
+  /// password-specific fields at all**, so no password hash can reach this wire
+  /// by somebody forgetting to strip it. There is nowhere to put one.
+  ///
+  /// It was [AuthenticatedUser] until 17-08's F-1. That type is a *session
+  /// identity* — who the far end decided you are — and it has no room for the
+  /// two columns the users screen renders, so gateway mode drew `createdAt` as
+  /// epoch zero and `lastLoginAt` as "never" for every account. Reusing an
+  /// identity as a roster row was the mistake; [UserSummary] is the roster row.
+  Future<List<UserSummary>> listUsers();
 
   /// Creates the role [role].
   Future<void> createRole(AccessRole role, {String? reason});
@@ -566,7 +572,9 @@ AccessRole accessRoleFromJson(Map<String, Object?> json) => AccessRole.fromDb(
 /// [AuthenticatedUser] as a JSON map.
 ///
 /// Four fields, and there is no fifth: this type carries no hash, no salt and
-/// no token, which is why [AccessAdminApi.listUsers] answers with it.
+/// no token. It is the **session identity** — what `hello` answers — and not a
+/// roster row; [AccessAdminApi.listUsers] answers [UserSummary] instead, for
+/// the reasons that class records.
 Map<String, Object?> authenticatedUserToJson(AuthenticatedUser value) =>
     <String, Object?>{
       'username': value.username,
@@ -583,6 +591,123 @@ AuthenticatedUser authenticatedUserFromJson(Map<String, Object?> json) =>
       displayName: json['displayName'] as String?,
       stationAccount: (json['stationAccount'] as bool?) ?? false,
     );
+
+/// One row of the users roster, for [AccessAdminApi.listUsers].
+///
+/// **Not [AuthenticatedUser].** That type answers "who is this session?" — it
+/// is minted from a verified sign-in and it is what `hello` hands back. This
+/// one answers "what does the roster show?", which is a different question with
+/// two extra columns: when the account was made and when it was last used. They
+/// were conflated until 17-08's F-1, and the cost was a users screen that drew
+/// 1970-01-01 for every account on a gateway station, because the identity type
+/// had nowhere to carry a date and the panel filled the hole with epoch zero.
+///
+/// **There is still no credential field, and there must never be one.** That
+/// property is the reason `listUsers` does not simply answer `app_user`'s drift
+/// row: a hash cannot reach this wire by somebody forgetting to strip it,
+/// because there is nowhere to put one.
+///
+/// Both timestamps are nullable, and they mean different things:
+///
+///  * [lastLoginAt] null means **never signed in**, which is a fact about the
+///    account and is what the screen renders as "never".
+///  * [createdAt] null means **this server did not say** — an older backend
+///    that predates this DTO. Every `app_user` row has a `created_at`, so a
+///    null here is a statement about the wire, never about the account. The
+///    panel renders it as unknown rather than inventing a date.
+final class UserSummary {
+  const UserSummary({
+    required this.username,
+    required this.roleName,
+    this.displayName,
+    this.stationAccount = false,
+    this.hasPassword = true,
+    this.createdAt,
+    this.lastLoginAt,
+  });
+
+  /// The account name — `app_user.username`, the primary key.
+  final String username;
+
+  /// The single role the account holds.
+  final String roleName;
+
+  /// A friendlier name to show instead of [username], when there is one.
+  /// `app_user` has no such column today, so this is null from the database
+  /// path; it exists because the wire should not need a revision to carry one.
+  final String? displayName;
+
+  /// A station account's sessions never expire. See `AppUser.stationAccount`.
+  final bool stationAccount;
+
+  /// Whether the account has a password at all.
+  ///
+  /// False means it signs in on its username alone — anybody standing at the
+  /// panel can hold its role. One bit, and **not a credential**: it says that
+  /// there is nothing to steal, not what the thing to steal is. The roster is
+  /// gated on `users` either way.
+  ///
+  /// It is carried because the users screen has to mark these accounts. A
+  /// roster that draws an open account exactly like a protected one is the
+  /// failure mode the whole feature has to avoid.
+  ///
+  /// Defaults to true, which is what a backend older than this field means:
+  /// before passwordless accounts existed, every account had one. Assuming
+  /// "protected" for an unknown is the safe direction — it under-claims rather
+  /// than telling somebody an account is open when it is not.
+  final bool hasPassword;
+
+  /// When the account was created, or null when the server did not say.
+  final DateTime? createdAt;
+
+  /// When the account last signed in, or null when it never has.
+  final DateTime? lastLoginAt;
+
+  @override
+  String toString() => 'UserSummary($username, role: $roleName, '
+      'station: $stationAccount, password: $hasPassword, '
+      'created: $createdAt, lastLogin: $lastLoginAt)';
+}
+
+/// [UserSummary] as a JSON map.
+///
+/// Timestamps travel as epoch milliseconds UTC under `createdAtMs` /
+/// `lastLoginAtMs`, the spelling [auditRecordToJson] already uses for `atMs`:
+/// one integer, no timezone to disagree about, and no ISO-8601 string for two
+/// ends to parse differently. Both keys are omitted when null rather than sent
+/// as an explicit null — 17-06 recorded what a present-null field costs (every
+/// create/update/delete answering `-32602`), so absence is spelled by absence.
+Map<String, Object?> userSummaryToJson(UserSummary value) => <String, Object?>{
+      'username': value.username,
+      'roleName': value.roleName,
+      if (value.displayName != null) 'displayName': value.displayName,
+      'stationAccount': value.stationAccount,
+      'hasPassword': value.hasPassword,
+      if (value.createdAt != null)
+        'createdAtMs': value.createdAt!.toUtc().millisecondsSinceEpoch,
+      if (value.lastLoginAt != null)
+        'lastLoginAtMs': value.lastLoginAt!.toUtc().millisecondsSinceEpoch,
+    };
+
+/// The inverse of [userSummaryToJson].
+///
+/// A missing timestamp key decodes to null, which is what lets a panel on this
+/// build talk to a backend that predates the DTO without throwing: it renders
+/// the created column as unknown instead of failing the whole roster.
+UserSummary userSummaryFromJson(Map<String, Object?> json) => UserSummary(
+      username: json['username'] as String,
+      roleName: json['roleName'] as String,
+      displayName: json['displayName'] as String?,
+      stationAccount: (json['stationAccount'] as bool?) ?? false,
+      hasPassword: (json['hasPassword'] as bool?) ?? true,
+      createdAt: _utcFromMs(json['createdAtMs']),
+      lastLoginAt: _utcFromMs(json['lastLoginAtMs']),
+    );
+
+/// Epoch milliseconds to a UTC [DateTime], or null when the key was absent.
+DateTime? _utcFromMs(Object? ms) => ms == null
+    ? null
+    : DateTime.fromMillisecondsSinceEpoch((ms as num).toInt(), isUtc: true);
 
 /// [AuditRecord] as a JSON map — every column of `audit_entry`, and the
 /// instant as epoch milliseconds UTC.

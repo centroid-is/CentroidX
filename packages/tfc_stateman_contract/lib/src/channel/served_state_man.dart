@@ -568,7 +568,7 @@ final class ServedStateMan {
   Future<Object?> _admListUsers(rpc.Parameters _) =>
       _access(HarnessMethods.accessAdminListUsers, () async => [
             for (final u in await api.accessAdmin.listUsers())
-              authenticatedUserToJson(u),
+              userSummaryToJson(u),
           ]);
 
   Future<Object?> _admCreateRole(rpc.Parameters params) =>

@@ -142,7 +142,19 @@ class FakeAccessServices
   final _templates = <String, AccessTemplate>{};
   final _bindings = <String, String>{}; // key -> templateName
   final _roles = <String, AccessRole>{};
-  final _users = <String, AuthenticatedUser>{};
+  final _users = <String, UserSummary>{};
+
+  /// The instant [createUser] stamps onto the next account it makes.
+  ///
+  /// A fixed base plus a per-account step, never `DateTime.now()`: this fake
+  /// backs golden tests and contract runs that compare rendered output, and a
+  /// wall clock in here would make two runs of the same test disagree. The step
+  /// keeps successive accounts distinguishable, which is what a test asserting
+  /// an ordering or a rendered date needs.
+  static final DateTime _createdEpoch = DateTime.utc(2026, 1, 1, 9);
+  int _createdStep = 0;
+  DateTime _nextCreatedAt() =>
+      _createdEpoch.add(Duration(minutes: _createdStep++));
   final _passwords = <String, String>{}; // username -> password, never exposed
   final _audit = <AuditRecord>[];
   String _configJson;
@@ -266,7 +278,7 @@ class FakeAccessServices
   Future<List<AccessRole>> roles() async => _roles.values.toList();
 
   @override
-  Future<List<AuthenticatedUser>> listUsers() async =>
+  Future<List<UserSummary>> listUsers() async =>
       _users.values.toList()..sort((a, b) => a.username.compareTo(b.username));
 
   @override
@@ -312,8 +324,11 @@ class FakeAccessServices
   @override
   Future<void> createUser(NewUserParams params) async {
     requireGroup(AccessGroup.users, params.subject, 'admin.createUser');
-    _users[params.subject] = AuthenticatedUser(
-        username: params.subject, roleName: params.grantedRole);
+    _users[params.subject] = UserSummary(
+        username: params.subject,
+        roleName: params.grantedRole,
+        hasPassword: params.password.isNotEmpty,
+        createdAt: _nextCreatedAt());
     _passwords[params.subject] = params.password;
     _touch('admin.createUser:${params.subject}');
   }
@@ -332,11 +347,14 @@ class FakeAccessServices
     requireGroup(AccessGroup.users, subject, 'admin.setUserRole');
     final existing = _users[subject];
     if (existing != null) {
-      _users[subject] = AuthenticatedUser(
+      _users[subject] = UserSummary(
           username: subject,
           roleName: newRole,
           displayName: existing.displayName,
-          stationAccount: existing.stationAccount);
+          stationAccount: existing.stationAccount,
+          hasPassword: existing.hasPassword,
+          createdAt: existing.createdAt,
+          lastLoginAt: existing.lastLoginAt);
     }
     _touch('admin.setUserRole:$subject->$newRole');
   }
@@ -347,11 +365,14 @@ class FakeAccessServices
     requireGroup(AccessGroup.users, subject, 'admin.setUserStationAccount');
     final existing = _users[subject];
     if (existing != null) {
-      _users[subject] = AuthenticatedUser(
+      _users[subject] = UserSummary(
           username: subject,
           roleName: existing.roleName,
           displayName: existing.displayName,
-          stationAccount: value);
+          stationAccount: value,
+          hasPassword: existing.hasPassword,
+          createdAt: existing.createdAt,
+          lastLoginAt: existing.lastLoginAt);
     }
     _touch('admin.setUserStationAccount:$subject=$value');
   }
@@ -362,6 +383,19 @@ class FakeAccessServices
     // The password is stored and NEVER returned or echoed. There is no code path
     // here that puts it in a message, a result or a thrown error.
     _passwords[params.subject] = params.password;
+    // An empty password removes it, the same as the repository: the roster
+    // then reports the account as one that signs in on its username alone.
+    final existing = _users[params.subject];
+    if (existing != null) {
+      _users[params.subject] = UserSummary(
+          username: existing.username,
+          roleName: existing.roleName,
+          displayName: existing.displayName,
+          stationAccount: existing.stationAccount,
+          hasPassword: params.password.isNotEmpty,
+          createdAt: existing.createdAt,
+          lastLoginAt: existing.lastLoginAt);
+    }
     _touch('admin.setUserPassword:${params.subject}');
   }
 
