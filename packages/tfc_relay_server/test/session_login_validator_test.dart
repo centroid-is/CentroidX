@@ -281,6 +281,85 @@ void main() {
               'app_role, and the live session is retired on the next sweep');
     });
 
+    test('a signed-in person is judged live against the account source — '
+        'the same sweep, one more provenance', () async {
+      final source = _UserSource({
+        'jon': ResolvedUser(
+            user: _account('jon', 'Engineering', stationAccount: false),
+            groups: const {AccessGroup.operate, AccessGroup.configure}),
+      });
+      final validator = SessionLoginValidator(accounts: source.resolve);
+      final person = StationIdentity(
+        user: _account('jon', 'Engineering', stationAccount: false),
+        station: 'PACK-02',
+        session: AccessSession(
+            user: _account('jon', 'Engineering', stationAccount: false),
+            groups: const {AccessGroup.operate, AccessGroup.configure}),
+      );
+      expect(validator.stillValid(person, null), isTrue,
+          reason: 'an untouched account keeps its session — the sweep '
+              'closes nothing whose credential still means what it meant');
+
+      // The demotion: same account, same role name, a group unticked.
+      source.accounts['jon'] = ResolvedUser(
+          user: _account('jon', 'Engineering', stationAccount: false),
+          groups: const {AccessGroup.operate});
+      expect(validator.stillValid(person, null), isFalse,
+          reason: 'demote in app_role and the signed-in person\'s live '
+              'session is retired on the next sweep — the 4001 property, '
+              'now for people');
+
+      // The deletion: the operator\'s own revocation lever.
+      source.accounts.remove('jon');
+      expect(validator.stillValid(person, null), isFalse,
+          reason: 'an account deleted out from under a live login is a '
+              'revocation');
+    });
+
+    test('a signed-in person whose row was re-pointed is retired: the row '
+        'is compared whole', () async {
+      final source = _UserSource({
+        'jon': ResolvedUser(
+            user: _account('jon', 'Engineering', stationAccount: false),
+            groups: const {AccessGroup.operate}),
+      });
+      final validator = SessionLoginValidator(accounts: source.resolve);
+      final person = StationIdentity(
+        user: _account('jon', 'Engineering', stationAccount: false),
+        station: 'PACK-02',
+        session: AccessSession(
+            user: _account('jon', 'Engineering', stationAccount: false),
+            groups: const {AccessGroup.operate}),
+      );
+      expect(validator.stillValid(person, null), isTrue);
+      source.accounts['jon'] = ResolvedUser(
+          user: _account('jon', 'Viewer', stationAccount: false),
+          groups: const {AccessGroup.operate});
+      expect(validator.stillValid(person, null), isFalse,
+          reason: 'a re-roled account minted now would be a different '
+              'identity, so the one being carried is stale — '
+              'AuthenticatedUser\'s value equality is the comparison');
+    });
+
+    test('an unreachable account source answers "no evidence of a change", '
+        'never "revoked" — the poll asymmetry, for people too', () async {
+      final validator = SessionLoginValidator(
+          accounts: (_) =>
+              throw StateError('the account source is unreachable'));
+      final person = StationIdentity(
+        user: _account('jon', 'Engineering', stationAccount: false),
+        station: 'PACK-02',
+        session: AccessSession(
+            user: _account('jon', 'Engineering', stationAccount: false),
+            groups: const {AccessGroup.operate}),
+      );
+      expect(validator.stillValid(person, null), isTrue,
+          reason: 'this runs on a poll against every live session; '
+              'answering "revoked" when Postgres blinks would sign every '
+              'person in the plant out for the length of a network hiccup '
+              '— FileTokenValidator.stillValid\'s exact trade');
+    });
+
     test('an identity this validator cannot account for is not honoured',
         () async {
       final somebody = StationIdentity(
