@@ -422,8 +422,14 @@ void main() {
   group('enumeration is the backend, never a union', () {
     test('getAll answers the backend and does not resurrect a stale mirror row',
         () async {
-      await f.mirror.setString('alarm_man_config', 'STALE');
-      await f.mirror.setString('startup_url', '/mine');
+      // Seeded through the inner store, not just the mirror behind it: a
+      // gateway panel's `Preferences` loads its memory cache FROM the mirror
+      // at construction, so that cache is where a stale direct-mode row
+      // actually turns up — and `Preferences.getAll` answers the memory
+      // cache. Seeding only the mirror would leave `_inner.getAll()` empty
+      // and this arm would pass against a store that unioned the two.
+      await f.inner.setString('alarm_man_config', 'STALE');
+      await f.inner.setString('startup_url', '/mine');
       f.wire.store['alarm_man_config'] = 'FRESH';
       f.connect();
 
@@ -435,7 +441,7 @@ void main() {
     });
 
     test('getKeys is the backend key set', () async {
-      await f.mirror.setString('startup_url', '/mine');
+      await f.inner.setString('startup_url', '/mine');
       f.wire.store['a'] = 1;
       f.connect();
 
@@ -452,6 +458,23 @@ void main() {
       await f.prefs.clear(allowList: {'a'});
       expect(f.wire.calls, contains('clear(allowList: {a})'));
       expect(await f.mirror.getString('startup_url'), '/mine');
+    });
+
+    test('an unrestricted clear is the backend\'s to refuse, and this station '
+        "keeps its own settings while it is refused", () async {
+      // The dangerous shape, and the one an allow-listed arm cannot catch:
+      // a bare `clear()` on the local store wipes EVERY device-local key —
+      // this station's transport row included, which is how a panel loses the
+      // address of the backend it is talking to. The server refuses the
+      // unrestricted form outright; the local store must be untouched either
+      // way, and must be untouched even though the refusal comes second.
+      await f.inner.setString('startup_url', '/mine');
+      f.connect();
+      f.wire.failWith = StateError('an allowList is required');
+
+      await expectLater(f.prefs.clear(), throwsA(isA<StateError>()));
+      expect(await f.mirror.getString('startup_url'), '/mine');
+      expect(await f.inner.getString('startup_url'), '/mine');
     });
   });
 

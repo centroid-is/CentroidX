@@ -540,6 +540,69 @@ void main() {
     });
   });
 
+  group('the empty-config seed is a direct-mode thing only', () {
+    // The seed exists so that a never-configured station does not have
+    // `AlarmMan.create` write a `configure` key at boot with nobody signed
+    // in. On the relay the shared store is the BACKEND's, so the same line
+    // would be this panel writing an empty alarm config into the plant —
+    // racing every other panel that booted at the same time, and refused by
+    // the server's `configure` gate for a station that lacks the group, which
+    // would error this provider and take the alarm surface down at boot.
+
+    /// A store with no `alarm_man_config` at all, which is the only state in
+    /// which the seed fires. [_prefs] always pre-seeds it, which is why no
+    /// existing arm in this file reaches the branch.
+    Future<Preferences> unconfigured() async {
+      Preferences.clearSecretCache();
+      return Preferences(database: null, secureStorage: FakeSecureStorage());
+    }
+
+    test('a gateway panel with no alarm config writes none', () async {
+      final preferences = await unconfigured();
+      final container = _container(
+        gateway: true,
+        preferences: preferences,
+        transport: _RecordingTransport(),
+      );
+
+      await container.read(alarmManProvider.future);
+
+      expect(await preferences.getString('alarm_man_config'), isNull,
+          reason: 'the panel seeded the plant\'s alarm configuration. On this '
+              'transport that key is the backend\'s, and an empty config '
+              'written over it is every alarm rule in the factory gone');
+    });
+
+    test('and the source still comes up, reading the absence as no rules yet',
+        () async {
+      // Anti-vacuity for the arm above in the direction that matters: not
+      // writing must not mean not working. If the seed were load-bearing this
+      // would fail rather than pass silently.
+      final container = _container(
+        gateway: true,
+        preferences: await unconfigured(),
+        transport: _RecordingTransport(),
+      );
+
+      final man = await container.read(alarmManProvider.future);
+      expect(man.config.alarms, isEmpty);
+    });
+
+    test('and the store it was handed is genuinely writable — the arm above '
+        'is not passing against an inert double', () async {
+      final preferences = await unconfigured();
+      final container = _container(
+        gateway: true,
+        preferences: preferences,
+        transport: _RecordingTransport(),
+      );
+      await container.read(alarmManProvider.future);
+
+      await preferences.setString('alarm_man_config', 'x', saveToDb: false);
+      expect(await preferences.getString('alarm_man_config'), 'x');
+    });
+  });
+
   group('panel-side evaluation is structurally absent (D-10, pin 2 of 2)', () {
     // ------------------------------------------------------------------ 4
     test('the gateway branch names no AlarmMan.create and no Evaluator', () {

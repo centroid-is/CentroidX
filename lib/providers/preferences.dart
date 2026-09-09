@@ -106,16 +106,23 @@ Future<Preferences> preferences(Ref ref) async {
   // marked `origin: 'system'`, which is how the mcp.config migration is
   // recorded too.
   //
-  // **Direct mode only, and not merely to avoid a deadlock.** The migration
-  // exists because `syncToLocalCache` copies every shared row over the local
-  // store, so a stray shared `startup_url` permanently overwrites each
-  // station's own choice. `RelayedPreferences` performs no such sync — it
-  // routes `startup_url` to this station and never reads a backend row for it
-  // at all — so on that transport the hazard is structurally absent and there
-  // is nothing to migrate. (It would also deadlock: this read would park on a
-  // slot that `stateManProvider` fills, and `stateManProvider` is waiting on
-  // this provider to return.) Deleting a stray row from the shared database
-  // remains a direct-mode station's job, exactly as before.
+  // **Direct mode only.** The migration exists because `syncToLocalCache`
+  // copies every shared row over the local store, so a stray shared
+  // `startup_url` permanently overwrites each station's own choice.
+  // `RelayedPreferences` performs no such sync, and it routes `startup_url` to
+  // this station by name, so on that transport the hazard is structurally
+  // absent and there is nothing to migrate.
+  //
+  // Being precise about what this guard is worth, because it is easy to
+  // overstate: **removing it changes no observable behaviour today.** Both
+  // sides of the migration resolve to the same device-local store on this
+  // transport, so it would read a value, delete it and write it straight back
+  // — churn on every reconnect, and nothing else. What the guard buys is that
+  // if `startup_url` ever stopped being device-local, this would not quietly
+  // become a panel reaching across and deleting the backend's row.
+  //
+  // Deleting a stray row from the shared database remains a direct-mode
+  // station's job, exactly as before.
   if (!gateway.isGateway) {
     await migrateStartupUrlToDeviceLocal(
       shared: guarded.systemWrites,
