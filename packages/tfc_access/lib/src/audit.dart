@@ -118,6 +118,9 @@ class AuditRecord {
     required String actionId,
     DateTime? at,
     String? reason,
+    // 'relay' when the gateway verified the sign-in server-side
+    // (session.login); the default is every direct-mode caller unchanged.
+    String origin = 'operator',
   }) =>
       AuditRecord(
         at: at ?? clock.now(),
@@ -129,6 +132,7 @@ class AuditRecord {
         newValue: roleName,
         groupRequired: '',
         allowed: true,
+        origin: origin,
         actionId: actionId,
         reason: reason,
       );
@@ -149,6 +153,8 @@ class AuditRecord {
     required String actionId,
     DateTime? at,
     String? reason,
+    // As on [AuditRecord.login]: 'relay' for a gateway-verified attempt.
+    String origin = 'operator',
   }) =>
       AuditRecord(
         at: at ?? clock.now(),
@@ -161,6 +167,7 @@ class AuditRecord {
         itemKey: 'login.failed',
         groupRequired: '',
         allowed: false,
+        origin: origin,
         actionId: actionId,
         reason: reason,
       );
@@ -174,6 +181,8 @@ class AuditRecord {
     required String actionId,
     DateTime? at,
     String? reason,
+    // As on [AuditRecord.login]: 'relay' for a gateway-side sign-out.
+    String origin = 'operator',
   }) =>
       AuditRecord(
         at: at ?? clock.now(),
@@ -185,6 +194,7 @@ class AuditRecord {
         oldValue: roleName,
         groupRequired: '',
         allowed: true,
+        origin: origin,
         actionId: actionId,
         reason: reason,
       );

@@ -99,6 +99,15 @@ import 'support/ws_harness.dart';
 const Set<String> expectedHandlerTable = {
   'hello',
   'ping',
+  // Increment B of the 2026-09-08 no-station-file ruling: interactive
+  // sign-in over the socket, and its way back down. The forty-fifth and
+  // forty-sixth names, and — with hello and ping — two of the only four the
+  // awaiting-sign-in gate exempts (`awaiting_sign_in_test.dart` pins the
+  // exemption list as a partition, both directions). The password crosses
+  // inside these frames only; `session_login_ws_test.dart` sweeps every
+  // refusal path and every audit row for it.
+  'session.login',
+  'session.logout',
   'subscribe',
   'unsubscribe',
   'write',

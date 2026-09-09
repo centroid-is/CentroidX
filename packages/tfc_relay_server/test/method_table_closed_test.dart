@@ -92,10 +92,11 @@ RelaySession _session() {
 ///
 /// Selected by the dot, and the rule is worth stating because the whole
 /// equality below rests on it. Every data-service name is `family.methodName`
-/// (`methods.dart:73-76`) and **nothing else on this wire has a dot in it** —
-/// the nine names that predate Phase 10 are `hello`, `ping`, `subscribe`,
-/// `unsubscribe`, `write`, `writeStatus`, `read`, `readFresh`, `readMany`, and
-/// the one client notification is `h`.
+/// (`methods.dart:73-76`) and the only other dotted things on this wire are
+/// the two `session.*` auth names, which `declaredDottedNames` carries by
+/// constant — the ten undotted names are `hello`, `ping`, `subscribe`,
+/// `unsubscribe`, `write`, `writeStatus`, `ackAlarm`, `read`, `readFresh`,
+/// `readMany`, and the one client notification is `h`.
 ///
 /// Selecting by the dot rather than by intersecting with
 /// `DataServiceMethods.all` is the difference between a check and a tautology:
@@ -316,16 +317,22 @@ Iterable<String> _dartPaths(String argument) => RegExp(r'[\w./]+\.dart')
     .allMatches(argument)
     .map((match) => match.group(0)!);
 
-/// Every dotted name a client may call: the thirty-four data services plus —
-/// 17-09 — the twenty-eight access methods. Spelled from the two declared
-/// sets so a name can only exist in one place, exactly as each `all` is
-/// spelled from its family sets.
-Set<String> get declaredDottedNames =>
-    {...DataServiceMethods.all, ...AccessMethods.all};
+/// Every dotted name a client may call: the thirty-four data services, the
+/// twenty-eight access methods (17-09), and — increment B of the 2026-09-08
+/// no-station-file ruling — the two `session.*` auth names, which are core
+/// session vocabulary that happens to be dotted (spelled `family.method` so
+/// "login" bare would not read as a tenth session verb). Spelled from the
+/// declared sets and constants so a name can only exist in one place.
+Set<String> get declaredDottedNames => {
+      ...DataServiceMethods.all,
+      ...AccessMethods.all,
+      Methods.sessionLogin,
+      Methods.sessionLogout,
+    };
 
 void main() {
   group('the data-service ledger is closed in both directions', () {
-    test('the dotted half of the ledger is exactly the declared sixty-two',
+    test('the dotted half of the ledger is exactly the declared sixty-four',
         () {
       final registered = _session().registeredMethods;
 

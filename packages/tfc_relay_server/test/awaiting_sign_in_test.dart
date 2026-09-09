@@ -104,11 +104,12 @@ Map<String, Object?> _helloWithToken(String token) => HelloParams(
 
 /// Every name a client can *call* on this wire, from the declared sets plus
 /// the core table `relay_session.dart` registers by hand — the same union
-/// `method_table_closed_test.dart` closes over. `hello` and `ping` are the
-/// two the awaiting gate exempts; everything else must refuse.
+/// `method_table_closed_test.dart` closes over.
 Set<String> _callableMethods() => {
       Methods.hello,
       Methods.ping,
+      Methods.sessionLogin,
+      Methods.sessionLogout,
       Methods.subscribe,
       Methods.unsubscribe,
       Methods.write,
@@ -119,6 +120,26 @@ Set<String> _callableMethods() => {
       Methods.readMany,
       ...DataServiceMethods.all,
       ...AccessMethods.all,
+    };
+
+/// The methods the awaiting gate exempts, and there may never be a fifth.
+///
+/// **This literal is the security boundary of the credential-less
+/// admission**, written out by hand so widening it is an edit a reviewer
+/// reads: everything an unauthenticated socket can do, it can do through
+/// these four names. `hello` because the first one runs while the identity
+/// is still null; `ping` because a panel at the sign-in screen is waiting,
+/// not broken; the two session-auth names because they are what the
+/// awaiting state exists FOR — the login is how it ends, and the logout is
+/// idempotent on nobody. The partition arm below fails in BOTH directions:
+/// a fifth method silently joining the exemption (answered, or refused
+/// under any other marker, when it should carry `awaiting_sign_in`), and
+/// one of these four falling back under the gate.
+Set<String> _exemptFromAwaitingGate() => {
+      Methods.hello,
+      Methods.ping,
+      Methods.sessionLogin,
+      Methods.sessionLogout,
     };
 
 void main() {
@@ -135,14 +156,17 @@ void main() {
       expect(fixture.server.sessions.sessionCount, 1);
     });
 
-    test('is refused every callable method except hello and ping — swept '
-        'from the declared sets', () async {
+    test('is refused every callable method except EXACTLY the four exempt '
+        'names — the partition swept from the whole table', () async {
       final fixture = relayFixture(validator: SessionLoginValidator());
       await fixture.ready;
       await fixture.hello();
-      final methods = _callableMethods()
-        ..remove(Methods.hello)
-        ..remove(Methods.ping);
+      final exempt = _exemptFromAwaitingGate();
+      expect(exempt, hasLength(4),
+          reason: 'the exemption list is the security boundary of the '
+              'credential-less admission; a fifth name is a decision, '
+              'never a drift');
+      final methods = _callableMethods().difference(exempt);
       expect(methods.length, greaterThan(60),
           reason: 'the sweep must be the whole table; a shrunken union '
               'passes by visiting nothing');
@@ -158,6 +182,39 @@ void main() {
             reason: 'the marker is what tells a panel to show the sign-in '
                 'screen rather than an error toast');
       }
+    });
+
+    test('the four exempt names are genuinely reachable while awaiting — '
+        'the other half of the partition, so the exemption list cannot '
+        'rot in either direction', () async {
+      final fixture = relayFixture(validator: SessionLoginValidator());
+      await fixture.ready;
+      await fixture.hello();
+
+      // ping answers.
+      await fixture.request(Methods.ping,
+          what: 'a ping from a session awaiting sign-in');
+      // session.logout answers: idempotent on nobody.
+      await fixture.request(Methods.sessionLogout,
+          params: const <String, Object?>{},
+          what: 'a logout on a session that is already nobody');
+      // session.login REACHES ITS HANDLER: this fixture serves no verifier,
+      // so the refusal is sign_in_not_served — a deployment fact from
+      // inside the handler, and NOT the awaiting marker the gate would
+      // have thrown before it.
+      final login = await fixture.refusal(Methods.sessionLogin,
+          params: const {'username': 'jon', 'password': 'irrelevant'},
+          what: 'a login against a verifier-less gateway');
+      expect(login.message, contains('sign_in_not_served'));
+      expect(login.message, isNot(contains('awaiting_sign_in')),
+          reason: 'a login refused by the awaiting gate itself would be a '
+              'sign-in screen no one can ever get past');
+      // A second hello is the GATE's already_helloed refusal — reachable,
+      // just spent.
+      final second = await fixture.refusal(Methods.hello,
+          params: helloParams(),
+          what: 'a second hello from an awaiting session');
+      expect(second.message, isNot(contains('awaiting_sign_in')));
     });
 
     test('may still ping: the session is waiting, not broken', () async {
