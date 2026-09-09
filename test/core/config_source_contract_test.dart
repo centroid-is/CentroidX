@@ -165,16 +165,12 @@ class LocalHarness extends ConfigSourceHarness {
 
 /// A scripted far end: answers what it is told to, records every call, and
 /// counts `previous()` so the contract can prove nobody asked it.
-class _ScriptedBackendConfigApi implements BackendConfigApi {
-  _ScriptedBackendConfigApi({
-    required this.configJson,
-    this.readOnlySections = const ['relay'],
-    this.hasPrevious = false,
-  });
+class ScriptedBackendConfigApi implements BackendConfigApi {
+  ScriptedBackendConfigApi({required this.configJson});
 
   String configJson;
-  List<String> readOnlySections;
-  bool hasPrevious;
+  List<String> readOnlySections = const ['relay'];
+  bool hasPrevious = false;
   ConfigValidation validateAnswer = const ConfigValidation(ok: true);
   Object? writeError;
   Object? restoreError;
@@ -224,7 +220,7 @@ class _ScriptedBackendConfigApi implements BackendConfigApi {
 }
 
 class GatewayHarness extends ConfigSourceHarness {
-  _ScriptedBackendConfigApi? api;
+  ScriptedBackendConfigApi? api;
 
   @override
   String get name => 'GatewayConfigSource';
@@ -243,7 +239,7 @@ class GatewayHarness extends ConfigSourceHarness {
 
   @override
   Future<ConfigSource> build(String storedJson) async {
-    api = _ScriptedBackendConfigApi(configJson: storedJson);
+    api = ScriptedBackendConfigApi(configJson: storedJson);
     return GatewayConfigSource(api: api!);
   }
 
