@@ -188,6 +188,41 @@ abstract interface class AlarmAcknowledger {
   Future<void> acknowledge(String alarmUid, int ruleIndex);
 }
 
+/// The alarm definitions that were **actually in force**, for whoever has to
+/// resolve a stored row against them.
+///
+/// Separate from [AlarmAcknowledger] because the two capabilities genuinely
+/// come apart — `relay_server.dart:318` makes the same point about its own two
+/// alarm seams — and declared for [AlarmAcknowledger]'s reason: `AlarmEngine`
+/// is a `final class`, so a reader that named it could not be measured against
+/// anything else.
+///
+/// **The engine's copy, never a second read of `alarm_man_config`.** Re-reading
+/// the preference would be a second answer to "which alarms exist" that can
+/// disagree with the one the rules were evaluated under — including in the case
+/// that matters most, where the engine *refused* an unparseable configuration
+/// (`_refuseConfig`) and is running none. Null there says exactly that, and a
+/// reader that had gone to the preference row itself would resolve a row
+/// against definitions no alarm was ever judged by.
+abstract interface class AlarmDefinitions {
+  /// See [AlarmEngine.config] — null when the configuration could not be read.
+  AlarmManConfig? get config;
+}
+
+/// Everything the relay gateway needs from the alarm engine, as one argument.
+///
+/// **One parameter rather than two, and that is the whole reason this type
+/// exists.** `composeBackendRelay` wires an acknowledge sink and a history
+/// source from the same object; two optional parameters would let a composition
+/// pass one and forget the other, and a gateway that acknowledges but cannot
+/// remember would refuse `alarmHistory` **by name** — a refusal that reads as a
+/// deliberate deployment choice and is indistinguishable from one. That is not
+/// hypothetical: it is precisely the defect the SVN rig met, where the history
+/// seam shipped complete and unwired and every panel was told the gateway
+/// serves no history.
+abstract interface class GatewayAlarmEngine
+    implements AlarmAcknowledger, AlarmDefinitions {}
+
 /// One active alarm-rule instance, as the engine holds it.
 ///
 /// Mutable where the wire type is not: [pendingAck] flips in place when an
@@ -307,7 +342,7 @@ final class _RuleBinding {
 
 /// The plant's one alarm evaluator. See the library doc for why each property
 /// is here.
-final class AlarmEngine implements AlarmAcknowledger {
+final class AlarmEngine implements GatewayAlarmEngine {
   /// Builds the engine and seeds [relay.AlarmKeys.active] **before anything
   /// can subscribe**.
   ///
@@ -409,6 +444,12 @@ final class AlarmEngine implements AlarmAcknowledger {
 
   /// The alarm definitions in force, or null when the configuration could not
   /// be read. See [refusals].
+  ///
+  /// [AlarmDefinitions]' one member: the gateway's history reader resolves a
+  /// stored row's group and `acknowledgeRequired` against **this** copy, and
+  /// null is a load-bearing answer — a refused configuration resolves nothing
+  /// rather than resolving against definitions no alarm was ever judged by.
+  @override
   AlarmManConfig? get config => _config;
 
   /// The active set as it stands, without subscribing to anything.

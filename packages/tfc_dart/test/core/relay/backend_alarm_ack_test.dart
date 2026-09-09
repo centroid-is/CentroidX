@@ -344,7 +344,7 @@ void main() {
       });
       final prefs = await Preferences.create(db: database);
 
-      BackendRelayComposition compose({AlarmAcknowledger? alarms}) {
+      BackendRelayComposition compose({GatewayAlarmEngine? alarms}) {
         final composed = composeBackendRelay(
           config: RelayConfig.fromJson(_relaySection(), source: 'stateman.json')!,
           pipe: PipeMainEndpoint(),
@@ -491,18 +491,29 @@ final class _RecordingOutput extends LogOutput {
   void output(OutputEvent event) => lines.addAll(event.lines);
 }
 
-/// An [AlarmAcknowledger] that records, and optionally fails.
+/// A [GatewayAlarmEngine] that records acknowledges, and optionally fails.
 ///
 /// The reason [AlarmAcknowledger] exists at all: `AlarmEngine` is a `final
 /// class`, so nothing can stand in for it, and the two properties arms 7 and 8
 /// are about — the adapter passes through unchanged, and it does not swallow —
 /// are properties of the adapter that cannot be observed with the real engine
 /// on the other side of them.
-final class _RecordingAcknowledger implements AlarmAcknowledger {
+final class _RecordingAcknowledger implements GatewayAlarmEngine {
   _RecordingAcknowledger({this.throws});
 
   final Object? throws;
   final List<(String, int)> calls = <(String, int)>[];
+
+  /// No definitions, which is what a recorder honestly has.
+  ///
+  /// `composeBackendRelay` takes the acknowledge and the history definitions as
+  /// ONE argument, so that a composition cannot wire one and forget the other —
+  /// the shape of the defect the history seam shipped with. The cost lands
+  /// here: a fake for either capability answers for both, and this one answers
+  /// null, which the history reader treats as "nothing configured claims this
+  /// row" rather than as a failure.
+  @override
+  AlarmManConfig? get config => null;
 
   @override
   Future<void> acknowledge(String alarmUid, int ruleIndex) async {

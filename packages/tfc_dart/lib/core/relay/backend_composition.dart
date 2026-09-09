@@ -68,8 +68,9 @@ import '../preferences.dart';
 import '../state_man.dart' show KeyMappings;
 import 'backend_access.dart';
 import 'backend_alarm_ack.dart';
+import 'backend_alarm_history_source.dart';
 import 'backend_config_store.dart';
-import 'backend_alarms.dart' show AlarmAcknowledger;
+import 'backend_alarms.dart' show GatewayAlarmEngine;
 import 'backend_browse.dart';
 import 'backend_data_services.dart';
 import 'backend_freshness.dart';
@@ -285,12 +286,19 @@ final class _AccountCache {
 /// deadline — and a disagreement between the two is logged rather than
 /// silently resolved.
 ///
-/// [alarms] is the alarm engine an accepted `ackAlarm` is handed to. Optional,
-/// and null is a real deployment: a gateway composed without one refuses an
-/// acknowledge by name rather than accepting it into nothing (14-12). It is
+/// [alarms] is the alarm engine an accepted `ackAlarm` is handed to **and** the
+/// definitions a history row is resolved against. Optional, and null is a real
+/// deployment: a gateway composed without one refuses both an acknowledge and a
+/// history read by name rather than accepting them into nothing (14-12). It is
 /// **not** the same argument as [values]/[freshness] — those exist because the
 /// engine must run whether or not this function is called at all, whereas this
 /// one exists because the *gateway* needs a way back to it.
+///
+/// Typed [GatewayAlarmEngine] — both capabilities in one parameter — so that
+/// wiring one and forgetting the other is not a state a caller can reach. That
+/// is the shape of the defect this seam shipped with: the history half was
+/// built end to end and never passed, and every gateway panel was told the
+/// backend serves no alarm history.
 ///
 /// [validator] is required when — and refused unless — [config] says the
 /// composition root supplies the credential check. See the argument below.
@@ -309,7 +317,7 @@ BackendRelayComposition composeBackendRelay({
   TimeseriesLimits? limits,
   BackendLiveValues? values,
   BackendFreshnessSweep? freshness,
-  AlarmAcknowledger? alarms,
+  GatewayAlarmEngine? alarms,
   Duration staleAfter = kBackendStaleAfter,
   Set<String> methodKeys = const <String>{},
   String? statemanFilePath,
@@ -643,10 +651,29 @@ BackendRelayComposition composeBackendRelay({
   // alarm engine") instead of accepting one into nothing and answering an
   // operator that it worked.
   //
-  // Typed `AlarmAcknowledger` rather than `AlarmEngine` so this file names the
-  // capability and not the implementation — and so a composition arm can hand
-  // it a recorder and read the wiring off the server.
+  // Typed by capability rather than as `AlarmEngine` so this file names what it
+  // needs and not the implementation — and so a composition arm can hand it a
+  // recorder and read the wiring off the server.
   final alarmAcks = alarms == null ? null : BackendAlarmAckSink(alarms);
+
+  // ------------------------------------------------------------ the history
+  //
+  // Null on the same condition and for the same reason: a gateway with no
+  // engine refuses `alarmHistory` **by name** ("this gateway serves no alarm
+  // history") rather than answering `{entries: []}`, which on a panel is a
+  // factory that has never had an alarm.
+  //
+  // **This line is the whole defect.** The protocol type, the server handler,
+  // the relay client and the app side all shipped; nothing ever passed
+  // `alarmHistory:`, so the null branch was the only branch a plant reached and
+  // the rig met a refusal naming a composition problem — this composition. The
+  // reader is built over the SAME `Database` every other service on this graph
+  // is (one pool, opened in one place) and reads the definitions off the SAME
+  // engine `alarmAcks` acknowledges into, so the two can never be resolving a
+  // row against a configuration nothing was evaluated under.
+  final alarmHistory = alarms == null
+      ? null
+      : BackendAlarmHistorySource(database: database.db, definitions: alarms);
 
   final RelayServer server;
   if (validator == null) {
@@ -657,6 +684,7 @@ BackendRelayComposition composeBackendRelay({
       policy: chosenPolicy,
       resolver: resolver,
       alarmAcks: alarmAcks,
+      alarmHistory: alarmHistory,
       audit: auditSink,
       accounts: accounts,
       accessFor: scopeFactory,
@@ -671,6 +699,7 @@ BackendRelayComposition composeBackendRelay({
       resolver: resolver,
       validator: validator,
       alarmAcks: alarmAcks,
+      alarmHistory: alarmHistory,
       audit: auditSink,
       accounts: accounts,
       accessFor: scopeFactory,
