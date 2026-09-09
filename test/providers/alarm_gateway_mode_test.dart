@@ -960,7 +960,12 @@ void main() {
     });
   });
 
-  group('everything else a gateway-mode panel still does (D-11)', () {
+  // D-11 had two halves. The **history** half is superseded — a gateway panel
+  // has no database, so `getRecentAlarms` reads the backend now; see arm 12.
+  // The **configuration** half stands: the alarm editor still writes
+  // `alarm_man_config` through preferences, and a gateway station whose editor
+  // was silently read-only would be a worse bug than the one it fixes.
+  group('what a gateway-mode panel still does, and where it now asks', () {
     late AppDatabase appDb;
     late Database database;
 
