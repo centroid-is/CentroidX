@@ -60,6 +60,7 @@ import 'package:tfc_relay_client/src/readiness_barrier.dart';
 import 'package:tfc_relay_client/src/remote_state_man.dart';
 import 'package:tfc_relay_client/src/subscription_state.dart';
 import 'package:tfc_relay_client/src/ws_transport.dart';
+import 'package:tfc_relay_client/src/dial/pinned_dialer_io.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 import 'package:tfc_stateman_contract/faults.dart';
@@ -637,14 +638,18 @@ void main() {
       // default descriptor limit and then fails for a reason that has nothing
       // to do with the network. `HttpClient.connectionTimeout` is the second
       // bound underneath, and it *cancels*.
-      final code = File('lib/src/remote_state_man.dart').readAsStringSync();
+      final code =
+          File('lib/src/dial/pinned_dialer_io.dart').readAsStringSync();
       expect(code, contains('SecurityContext(withTrustedRoots: false)'),
           reason: 'anti-vacuity: this pin reads the same construction the '
               'case below reads, and both are wrong if that moved');
-      expect(code, contains('connectionTimeout = config.connectTimeout'),
+      expect(code, contains('..connectionTimeout = connectionTimeout'),
           reason: 'the pinned HttpClient was built with a context and nothing '
               'else — no connectionTimeout, no idleTimeout — so there was no '
-              'bound underneath the abandoned one at all');
+              'bound underneath the abandoned one at all. The value reaching '
+              'it is still the panel\'s `config.connectTimeout`; the client '
+              'is built in the dial seam now, so it arrives as an argument '
+              'rather than being read off the config in place');
     });
 
     test('the panel\'s context never consults the machine\'s own trust store',
@@ -659,7 +664,7 @@ void main() {
       // can be talked into signing, or that a rogue root installed on that
       // station signs outright (T-06-20) — a property whose only honest
       // offline observable is the declaration itself.
-      final source = File('lib/src/remote_state_man.dart');
+      final source = File('lib/src/dial/pinned_dialer_io.dart');
       expect(source.existsSync(), isTrue,
           reason: 'this case reads the implementation as text, so it must run '
               'with the package root as the working directory');
@@ -694,7 +699,7 @@ void main() {
               'with the package root as the working directory');
 
       final code = source.readAsStringSync();
-      final closesClient = code.indexOf('_pinned?.close(force: true);');
+      final closesClient = code.indexOf('_dialer.close();');
       final disposesSupervisor = code.indexOf('await _supervisor.dispose();');
 
       expect(closesClient, isNot(-1),

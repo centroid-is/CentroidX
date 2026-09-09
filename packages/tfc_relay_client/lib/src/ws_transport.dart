@@ -78,10 +78,8 @@
 library;
 
 import 'dart:async';
-import 'dart:io';
 
 import 'package:stream_channel/stream_channel.dart';
-import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// The outcome of exactly one dial. Sealed, so the supervisor's switch over it
@@ -124,7 +122,21 @@ final class ConnectFailed extends ConnectAttempt {
   ConnectFailed(this._ws, this.error, this.stackTrace,
       {this.certificateUntrusted = false});
 
-  final WebSocketChannel _ws;
+  /// A dial refused before a socket was opened, because the configuration
+  /// cannot be honoured on this platform.
+  ///
+  /// One outcome type and not two: to the supervisor this is an attempt that
+  /// failed, with a reason for the health line, and it backs off from it
+  /// exactly as it does from a gateway that did not answer. A separate type
+  /// would be a second thing every caller had to remember to handle, and the
+  /// one that got forgotten would be the one that reports nothing.
+  ConnectFailed.refused(Uri uri, String why)
+      : _ws = null,
+        error = StateError('cannot dial $uri: $why'),
+        stackTrace = StackTrace.current,
+        certificateUntrusted = false;
+
+  final WebSocketChannel? _ws;
 
   /// Whether the dial failed because this panel would not trust what the
   /// gateway presented.
@@ -154,73 +166,42 @@ final class ConnectFailed extends ConnectAttempt {
   final StackTrace stackTrace;
 
   @override
-  int? get closeCode => _ws.closeCode;
+  int? get closeCode => _ws?.closeCode;
 
   @override
-  String? get closeReason => _ws.closeReason;
+  String? get closeReason => _ws?.closeReason;
 }
 
-/// Dials [uri] once and reports what happened.
+/// Waits for [ws] to be usable and reports what happened.
+///
+/// The half of a dial that is the same everywhere. What differs by platform is
+/// *how the socket was opened* and *whether a refused certificate can be told
+/// apart from an absent gateway* — so the opening is the caller's and the
+/// telling-apart arrives as [certificateUntrusted], a predicate the platform
+/// arm supplies. See `dial/pinned_dialer.dart`.
 ///
 /// No retry and no backoff live here: one attempt, one value. The schedule is
 /// `backoff.dart`'s and the loop is the supervisor's, because a transport that
 /// retried on its own would be a second, invisible policy sitting under the
 /// one the operator can see.
-///
-/// [client] is the panel's pinned `HttpClient` — one per `RemoteStateMan`,
-/// built from a `SecurityContext(withTrustedRoots: false)` over the mounted
-/// root. Null is the plaintext dial every existing fixture makes, and it is
-/// also, deliberately, the *system trust store* posture: `WebSocket.connect`
-/// then builds a default client of its own. A `wss` dial with a null [client]
-/// is therefore refused before it gets here, by
-/// `ClientConfig.checkDialable`.
-///
-/// [connectTimeout] bounds the dial itself, which is the one thing the
-/// supervisor's schedule cannot bound: a connect to an address that answers
-/// nothing takes 75 s to fail on macOS (06-RESEARCH §C.4), so an attempt can
-/// otherwise outlive the whole backoff ceiling. Null means the operating
-/// system decides, which is what every caller before this had.
-Future<ConnectAttempt> connect(
-  Uri uri, {
-  Iterable<String>? protocols,
-  HttpClient? client,
-  Duration? connectTimeout,
+Future<ConnectAttempt> awaitReady(
+  WebSocketChannel ws, {
+  required bool Function(Object error) certificateUntrusted,
 }) async {
-  final ws = IOWebSocketChannel.connect(
-    uri,
-    protocols: protocols,
-    customClient: client,
-    connectTimeout: connectTimeout,
-  );
   try {
     await ws.ready;
   } catch (error, stack) {
-    // Finding 2: the same exception is queued on the stream as well. Nothing
-    // will ever read it, and an unread error on a socket stream is exactly the
-    // fault that reaches the ambient handler with no frame of this package in
-    // its trace. Swallow that copy; the caller gets the one above.
+    // The same exception is queued on the stream as well. Nothing will ever
+    // read it, and an unread error on a socket stream is exactly the fault
+    // that reaches the ambient handler with no frame of this package in its
+    // trace. Swallow that copy; the caller gets the one above.
     ws.stream.listen(null, onError: (Object _) {}, cancelOnError: true);
     unawaited(ws.sink.done.catchError((Object _) => null));
     return ConnectFailed(ws, error, stack,
-        certificateUntrusted: _certificateWasRefused(error));
+        certificateUntrusted: certificateUntrusted(error));
   }
   return ConnectSucceeded(ws, wsChannel(ws));
 }
-
-/// Whether [error] is this panel refusing the gateway's certificate.
-///
-/// One level of unwrapping, because that is where the exception is:
-/// `web_socket_channel` hands the failure over as a `WebSocketChannelException`
-/// with the real one in `.inner` (06-RESEARCH §A.3).
-///
-/// The type and nothing finer. *Which* certificate problem it was is
-/// deliberately not read here — see `ConnectionSupervisor._refusalReason`,
-/// which owns that argument: openssl volunteers a reason on Linux and Windows
-/// and says nothing on macOS, so a panel that named the fault would be silent
-/// on the desktops and confident on the eLinux screens for the same broken
-/// leaf.
-bool _certificateWasRefused(Object error) =>
-    error is WebSocketChannelException && error.inner is HandshakeException;
 
 /// Wraps [ws] as a channel of whole string messages.
 ///

@@ -66,6 +66,7 @@ import 'deadline.dart';
 import 'freshness_watchdog.dart';
 import 'heartbeat_pump.dart';
 import 'readiness_barrier.dart';
+import 'dial/pinned_dialer.dart';
 import 'resync_engine.dart';
 import 'subscription_state.dart';
 import 'ws_transport.dart';
@@ -140,7 +141,7 @@ final class ConnectionSupervisor {
         _onBye = onBye,
         _onPreferenceChanged = onPreferenceChanged,
         _now = now ?? _wallClock,
-        _dial = dial ?? connect {
+        _dial = dial ?? _defaultDial {
     // The watchdog is built by the client above and handed down, so what it
     // *does* about an expiry is wired here, where the peer and the schedule
     // are (04-REVIEW CR-06).
@@ -1526,3 +1527,17 @@ final class ConnectionSupervisor {
       ? {for (final entry in raw.entries) '${entry.key}': entry.value}
       : throw FormatException('expected a JSON object, got ${raw.runtimeType}');
 }
+
+
+/// The dial a supervisor built without one uses.
+///
+/// Unpinned — a plaintext bench dial on a panel, and `wss` with the browser's
+/// own trust store on web. Production never reaches it: `RemoteStateMan`
+/// always passes its own, built from the panel's `ClientTlsConfig`. It exists
+/// because the supervisor is constructed directly by a great many tests, and
+/// because it must not be the thing that ties this file to `dart:io` — the
+/// state machine here is the same on every platform and
+/// `no_dart_io_in_supervisor_test.dart` holds it to that.
+final _unpinnedDialer = PinnedDialer(null);
+
+Future<ConnectAttempt> _defaultDial(Uri uri) => _unpinnedDialer.dial(uri);

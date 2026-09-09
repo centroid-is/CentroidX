@@ -55,6 +55,7 @@ import 'package:test/test.dart';
 import 'package:tfc_relay_client/src/connection_supervisor.dart' show LinkState;
 import 'package:tfc_relay_client/src/remote_state_man.dart';
 import 'package:tfc_relay_client/src/ws_transport.dart';
+import 'package:tfc_relay_client/src/dial/pinned_dialer_io.dart';
 import 'package:tfc_relay_server/tfc_relay_server.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
