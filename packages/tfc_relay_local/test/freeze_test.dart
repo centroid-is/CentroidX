@@ -318,7 +318,15 @@ const int declaredRetainedTimers = 2;
 /// substitutes the element, and writes it back. That read-back is the tenth
 /// bounded await, added while reading this rule. It is a **read**; the
 /// write-side of the RMW is counted by freeze 4 below.
-const int declaredUpstreamAwaitSites = 10;
+///
+/// **Eleven since the undecodable-keys fix.** `OpcUaUpstreamLink._probeDecode`
+/// performs one bounded read per key per epoch (`.timeout(_probeDeadline)`),
+/// because the binding's monitor callback swallows decode failures into
+/// stderr and the read path is the only place the throw is catchable — the
+/// 200-server bench's Guid/ByteString/LocalizedText/Range keys sat at 258
+/// forever without it. It is a **read**, once per key per epoch, never
+/// retried on transient failure inside the probe itself.
+const int declaredUpstreamAwaitSites = 11;
 
 /// Lines under `lib/` that cross into the plant **without** the word `await`.
 ///

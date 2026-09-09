@@ -50,6 +50,8 @@ library;
 import 'dart:async';
 
 import 'package:open62541/open62541.dart' as ua;
+import 'package:tfc_dart/core/modbus_client_wrapper.dart'
+    show ModbusAddressRefusal;
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/umas_types.dart' show UmasException;
@@ -680,7 +682,48 @@ class ModbusUpstreamLink extends DeviceClientUpstreamLink {
     super.health,
     super.supportsWrites,
     super.staleAfter,
-  }) : super(supportsBrowse: false);
+    Stream<ModbusAddressRefusal>? refusals,
+  }) : super(supportsBrowse: false) {
+    // Taken out at construction rather than in `connect`: the stream is a
+    // broadcast seam and nothing flows on it before polling starts, so there
+    // is no ordering to get wrong — and a link that only listened after a
+    // successful connect would drop a refusal raced against a reconnect.
+    _refusalSub = refusals?.listen(_onRefusal);
+  }
+
+  StreamSubscription<ModbusAddressRefusal>? _refusalSub;
+
+  /// The device refused [ModbusAddressRefusal.key]'s address space by name.
+  ///
+  /// **[Quality.errorConfig], and here is the argument written down.** 770's
+  /// own doc reads "a configuration error, not a transient — waiting will not
+  /// fix it", minted today for a key retired upstream. A register the device
+  /// answers `IllegalDataAddress` for is the same statement arriving on a
+  /// different wire: the far end parsed the request and affirmatively said
+  /// the address does not exist as asked. It is deliberately NOT
+  /// `errorTypeMismatch` (the two ends agree the register cannot be read at
+  /// all — there is no type to disagree about), NOT `badCommFault` (the
+  /// socket answered; waiting is the one instruction that is wrong), and not
+  /// a new code (a band that already means "the upstream said no" is used
+  /// honestly rather than a fifth spelling invented).
+  ///
+  /// The wrapper deduplicates per transition, so this handler stays dumb —
+  /// and `publishDegraded`'s own equal-quality guard makes even a repeated
+  /// event free. Recovery needs no path here: the first successful poll after
+  /// the map is fixed delivers a good sample through [deliver], which
+  /// overwrites the cache and the feed the ordinary way.
+  void _onRefusal(ModbusAddressRefusal refusal) {
+    recordUpstreamError('device refused ${refusal.key}: ${refusal.code.name} '
+        '— the register map names an address this device does not serve');
+    publishDegraded(refusal.key, Quality.errorConfig);
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _refusalSub?.cancel();
+    _refusalSub = null;
+    await super.dispose();
+  }
 
   /// Wraps the real adapter, which is the production path.
   ///
@@ -703,6 +746,10 @@ class ModbusUpstreamLink extends DeviceClientUpstreamLink {
         health: _AdapterHealth(adapter),
         supportsWrites: supportsWrites,
         staleAfter: staleAfter,
+        // The third input the adapter supplies, and the reason the bench's
+        // Illegal register sat at 258: without this wire a refused address
+        // is a fact the wrapper names and nobody hears.
+        refusals: adapter.registerRefusals,
       );
 
   /// The configured poll group per claimed key, **passed through untouched**.
