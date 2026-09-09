@@ -69,6 +69,7 @@ SoakTimeline _handTimeline(
   required Duration duration,
   int seed = 11,
   List<String> panels = const <String>['panel-1', 'panel-2', 'panel-3', 'panel-4'],
+  List<StableWindow> stableWindows = const <StableWindow>[],
 }) =>
     SoakTimeline(
       seed: seed,
@@ -77,7 +78,7 @@ SoakTimeline _handTimeline(
       events: const <ScheduledSoakEvent>[],
       quietClears: const <ScheduledFault>[],
       merged: entries,
-      stableWindows: const <StableWindow>[],
+      stableWindows: stableWindows,
       panels: panels,
       aliases: soakAliases,
     );
@@ -727,6 +728,79 @@ void main() {
               'one event it models as a discontinuity, and it is what made the '
               '35-minute arm red on a pipe that was behaving:\n'
               '${lost.join('\n')}');
+    });
+  });
+
+  group('the write probe honours the quiet windows', () {
+    test('a probe due inside a stable window is withheld, and the probe '
+        'resumes after the window closes', () async {
+      // **The CI finding this pins (2026-09-09, seed 11, ubuntu runner):**
+      // `ST201.CN02.MOT01.setpoint in window 0 (unattributed)` on the
+      // never-faulted control panel. The probe wrote `900015` to a real plant
+      // key at +32 s — inside the [22.5..32.5) window — and the plant
+      // genuinely published that value to every panel until the next 250 ms
+      // sweep superseded it. `plantTruthFor` answers the sweep counter for a
+      // non-overridden key, so a panel honestly rendering the value the plant
+      // actually published was judged diverged; whether the window's LAST
+      // sample lands inside that ~250 ms overlay is timer-phase roulette,
+      // which is why the lane was green on a fast machine and red on a loaded
+      // runner (all five of the run's divergences healed exactly 1 ms after
+      // their window — a lost push cannot heal in 1 ms; a write overlay
+      // expiring at the next sweep always does).
+      //
+      // The rule already exists everywhere else: the timeline WITHHOLDS link
+      // entries inside quiet windows ("withholding is what makes the window
+      // quiet"), and the event schedule suppresses draws — `PanelWrite`
+      // included — that would reach into one. The probe is the one
+      // plant-moving actor outside the timeline, so it must carry the same
+      // discipline itself.
+      const duration = Duration(seconds: 16);
+      const window = StableWindow(Duration(seconds: 3), Duration(seconds: 11));
+      final driver = _driver(
+        duration: duration,
+        timeline: _handTimeline(const <SoakTimelineEntry>[],
+            duration: duration,
+            stableWindows: const <StableWindow>[window]),
+      );
+      // The whole declared duration, exactly as `soak_test.dart` runs it —
+      // `at` on a write record is the PLAY clock, which only advances inside
+      // play(), so a case that started the tickers without playing would be
+      // asserting about records pinned at +00:00.000.
+      await driver.run();
+
+      // Probes fall due at 2, 4, 6, 8, 10, 12, 14 s of a 16 s arm; the
+      // window covers [3..11). Assert direction, not exact counts — a loaded
+      // machine slips a timer, and the property is WHERE the probe fired,
+      // never how often.
+      bool resumed() => driver.writeRecords.any((record) =>
+          record.probe &&
+          record.stage == SoakWriteStage.issued &&
+          record.at >= window.end);
+
+      final issuedInside = driver.writeRecords
+          .where((record) =>
+              record.probe &&
+              record.stage == SoakWriteStage.issued &&
+              window.contains(record.at))
+          .toList();
+      expect(issuedInside, isEmpty,
+          reason: 'the probe fired into a stable window. An applied write '
+              'puts a real, plant-published value on a key for up to one '
+              'sweep period, and plant truth for a non-overridden key is the '
+              'sweep counter — so every honest panel reads as diverged for '
+              'the life of the overlay, and invariant 3\'s window-end '
+              'judgement turns into timer-phase roulette. The storm\'s own '
+              'levers and event draws are withheld inside windows for exactly '
+              'this reason:\n${issuedInside.join('\n')}');
+      expect(driver.probeWritesWithheld, greaterThanOrEqualTo(1),
+          reason: 'four probes fell due inside an eight-second window and '
+              'none was counted as withheld — the probe is not recording the '
+              'fire it held, so the verdict\'s writes line would claim a '
+              'cadence the run did not keep');
+      expect(resumed(), isTrue,
+          reason: 'no probe was issued after the window closed — withholding '
+              'must hold fire, not stop the probe: invariant 2\'s write '
+              'coverage outside the windows is the reason the probe exists');
     });
   });
 }
