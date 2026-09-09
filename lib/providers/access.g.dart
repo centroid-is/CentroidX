@@ -30,6 +30,53 @@ final accessRepositoryProvider = FutureProvider<AccessRepository?>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef AccessRepositoryRef = FutureProviderRef<AccessRepository?>;
+String _$accessAuthorityHash() => r'7c761301ae522850d493ad79a8e8a4f6dd925525';
+
+/// What verifies a credential on this station — the gate's first question.
+///
+/// [AccessGroup]-gated routes, the D-Bus controls and the menu lock all ask
+/// [resolveAccessGate], and what that function needs to know is not "is there
+/// a repository" but "can anybody be authenticated here, and by whom". On a
+/// gateway panel those two questions have different answers:
+/// `databaseProvider` returns null the moment the transport is gateway
+/// (`database.dart`), so [accessRepositoryProvider] is null by design, while
+/// sign-in works perfectly well over the socket ([relaySignInProvider]).
+/// Reading the null as "nobody can sign in" is what hid every `/advanced`
+/// entry from a signed-in engineer on the rig.
+///
+/// **`ref.read` on the config, `ref.watch` on the repository**, and the split
+/// is deliberate — it mirrors `database.dart` line for line and for the same
+/// two reasons. Transport is restart-to-apply (`gateway.dart`), and
+/// `server_config.dart` invalidates [gatewayConfigProvider] on every save; a
+/// watch here would flip a DIRECT station's authority to
+/// [AccessAuthority.relay] the instant somebody typed in the gateway URL
+/// field, i.e. before the restart that actually builds the relay client, and
+/// the gate would then be consulting a session nothing can mint. The
+/// repository, by contrast, must go on being watched: Postgres coming up or
+/// dropping mid-shift has to move the gate exactly as it does today.
+///
+/// A config that cannot be read leaves the station direct, the default in
+/// every direction (`readGatewayConfig`, `database.dart`).
+///
+/// A throwing repository surfaces here as an [AsyncError], which the gate maps
+/// to [AccessAuthority.none] — the same fact as a resolved null, gated
+/// identically, exactly as it was when the gate held the repository itself.
+///
+/// Copied from [accessAuthority].
+@ProviderFor(accessAuthority)
+final accessAuthorityProvider = FutureProvider<AccessAuthority>.internal(
+  accessAuthority,
+  name: r'accessAuthorityProvider',
+  debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
+      ? null
+      : _$accessAuthorityHash,
+  dependencies: null,
+  allTransitiveDependencies: null,
+);
+
+@Deprecated('Will be removed in 3.0. Use Ref instead')
+// ignore: unused_element
+typedef AccessAuthorityRef = FutureProviderRef<AccessAuthority>;
 String _$authProviderHash() => r'f344be07868fbf4975f0c3d9f260fa87191ea622';
 
 /// The authentication seam.
@@ -53,21 +100,34 @@ final authProviderProvider = FutureProvider<AuthProvider?>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef AuthProviderRef = FutureProviderRef<AuthProvider?>;
-String _$auditSinkHash() => r'8c60017008841289ac9c8809af9b989e2d0c58d1';
+String _$auditSinkHash() => r'8d71ca5cb4903d61bc1840f881d2d25293edb994';
 
-/// Where audit rows go.
+/// Where audit rows go. Three cases, and each gets a different sink:
 ///
-/// [NullAuditSink] when there is no database. That covers two real cases: the
-/// boot window before the connection is open, and a station commissioned with
-/// no Postgres at all. Losing the trail there is preferable to failing to
-/// boot — an HMI that will not start because it cannot write an audit row is a
-/// stopped line.
+///  1. **Gateway mode** → [ServerAuditedSink]. The trail lives at the far
+///     end: every relayed operation is audited server-side by the backend's
+///     policy decorator, attributed to the identity the server verified at
+///     `hello` and stamped `origin: 'relay'` (D-05/D-11) — and the wire
+///     deliberately has no method a client could write a row through, because
+///     a client-supplied row is a forgery surface. This case must **not**
+///     fall into [NullAuditSink]: a null sink on a gateway panel is a trail
+///     that looks like a trail and records nothing, which is worse than no
+///     trail at all (criterion 3). The named type is how a test tells the
+///     cases apart.
+///  2. **Direct mode, no database** → [NullAuditSink]. The two real cases
+///     this always covered: the boot window before the connection is open,
+///     and a station commissioned with no Postgres at all. Losing the trail
+///     there is preferable to failing to boot — an HMI that will not start
+///     because it cannot write an audit row is a stopped line. It **is** a
+///     gap, and [NullAuditSink] is silent by design: a direct station running
+///     without a database is *knowingly* running without a trail.
+///  3. **Direct mode, database present** → [DriftAuditSink], which names
+///     every row it loses.
 ///
-/// But it **is** a gap, and it is the kind of gap nobody notices, because a
-/// missing row looks exactly like an action that never happened. What makes it
-/// visible is the sink's own error logging: [DriftAuditSink] names every row it
-/// loses. [NullAuditSink] is silent by design, so a station running without a
-/// database is knowingly running without a trail.
+/// `ref.watch` on the transport, never `ref.read`: this provider is
+/// `keepAlive`, and `alarm.dart:45` records what a `ref.read` behind a
+/// `keepAlive` cost — a stale transport whose stream closed rather than
+/// errored, so nothing reported it.
 ///
 /// Copied from [auditSink].
 @ProviderFor(auditSink)
@@ -170,7 +230,7 @@ final firstUserWindowOpenProvider = FutureProvider<bool>.internal(
 // ignore: unused_element
 typedef FirstUserWindowOpenRef = FutureProviderRef<bool>;
 String _$accessSessionControllerHash() =>
-    r'0f098b0b48288af2118f071429fe5fc63085fc8f';
+    r'4e9f57c4071ecc2e3c1dd29b1e74731a45c11da3';
 
 /// Who is standing at this panel, and what they may do.
 ///

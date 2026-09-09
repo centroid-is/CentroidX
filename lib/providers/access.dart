@@ -34,6 +34,8 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
     show SessionAuthMarkers, SessionLoginResult;
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 
+import '../core/access_authority.dart';
+import '../core/gateway_config.dart';
 import '../core/gateway_state_man.dart';
 import '../core/relayed_access_stores.dart';
 import 'database.dart';
@@ -137,6 +139,48 @@ Future<AccessRepository?> accessRepository(Ref ref) async {
   final db = await ref.watch(databaseProvider.future);
   if (db == null) return null;
   return AccessRepository(db.db);
+}
+
+/// What verifies a credential on this station — the gate's first question.
+///
+/// [AccessGroup]-gated routes, the D-Bus controls and the menu lock all ask
+/// [resolveAccessGate], and what that function needs to know is not "is there
+/// a repository" but "can anybody be authenticated here, and by whom". On a
+/// gateway panel those two questions have different answers:
+/// `databaseProvider` returns null the moment the transport is gateway
+/// (`database.dart`), so [accessRepositoryProvider] is null by design, while
+/// sign-in works perfectly well over the socket ([relaySignInProvider]).
+/// Reading the null as "nobody can sign in" is what hid every `/advanced`
+/// entry from a signed-in engineer on the rig.
+///
+/// **`ref.read` on the config, `ref.watch` on the repository**, and the split
+/// is deliberate — it mirrors `database.dart` line for line and for the same
+/// two reasons. Transport is restart-to-apply (`gateway.dart`), and
+/// `server_config.dart` invalidates [gatewayConfigProvider] on every save; a
+/// watch here would flip a DIRECT station's authority to
+/// [AccessAuthority.relay] the instant somebody typed in the gateway URL
+/// field, i.e. before the restart that actually builds the relay client, and
+/// the gate would then be consulting a session nothing can mint. The
+/// repository, by contrast, must go on being watched: Postgres coming up or
+/// dropping mid-shift has to move the gate exactly as it does today.
+///
+/// A config that cannot be read leaves the station direct, the default in
+/// every direction (`readGatewayConfig`, `database.dart`).
+///
+/// A throwing repository surfaces here as an [AsyncError], which the gate maps
+/// to [AccessAuthority.none] — the same fact as a resolved null, gated
+/// identically, exactly as it was when the gate held the repository itself.
+@Riverpod(keepAlive: true)
+Future<AccessAuthority> accessAuthority(Ref ref) async {
+  GatewayConfig gateway;
+  try {
+    gateway = await ref.read(gatewayConfigProvider.future);
+  } catch (_) {
+    gateway = GatewayConfig.defaults;
+  }
+  if (gateway.isGateway) return AccessAuthority.relay;
+  final repo = await ref.watch(accessRepositoryProvider.future);
+  return repo == null ? AccessAuthority.none : AccessAuthority.local;
 }
 
 /// The authentication seam.

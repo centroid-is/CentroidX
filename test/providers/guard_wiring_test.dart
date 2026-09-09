@@ -411,6 +411,50 @@ void main() {
     });
   });
 
+  group('the gate asks the authority, never the repository', () {
+    String codeOf(String path) => File(path)
+        .readAsLinesSync()
+        .where((l) => !l.trimLeft().startsWith('///'))
+        .where((l) => !l.trimLeft().startsWith('//'))
+        .join('\n');
+
+    test('no deciding surface reads accessRepositoryProvider', () {
+      // The three surfaces that call `resolveAccessGate` — the route gate, the
+      // menu lock and the tap-time guard for the D-Bus controls — plus the
+      // locked page's own no-database line. A half-migrated call site is a
+      // station where the menu and the route disagree, and on a gateway panel
+      // it is the rig defect back again: no repository read as "nobody can
+      // sign in here".
+      for (final path in const [
+        'lib/widgets/access_gate.dart',
+        'lib/widgets/access_lock_badge.dart',
+        'lib/widgets/group_access_guard.dart',
+      ]) {
+        final code = codeOf(path);
+        expect(code, isNotEmpty);
+        expect(code.contains('accessRepositoryProvider'), isFalse,
+            reason: '$path must ask accessAuthorityProvider: whether a '
+                'repository exists is not the same question as whether '
+                'anybody can be authenticated');
+        expect(code.contains('accessAuthorityProvider'), isTrue,
+            reason: '$path decides on the authority');
+      }
+    });
+
+    test('the authority reads the transport and watches the repository', () {
+      // `ref.read` on the config for the reason `database.dart` gives: the
+      // transport is restart-to-apply, and Server Config invalidates that
+      // provider on every save, so a watch would flip a direct station's
+      // authority to `relay` before anything could mint a relay session.
+      // `ref.watch` on the repository because Postgres coming up or going away
+      // mid-shift must still move the gate.
+      final code = codeOf('lib/providers/access.dart');
+      expect(code, contains('Future<AccessAuthority> accessAuthority(Ref ref)'));
+      expect(code, contains('ref.read(gatewayConfigProvider.future)'));
+      expect(code, contains('ref.watch(accessRepositoryProvider.future)'));
+    });
+  });
+
   group('boot with nothing stored and nobody signed in', () {
     test('all four providers build, with no throw and zero denial events',
         () async {

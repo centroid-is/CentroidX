@@ -24,7 +24,7 @@ import 'access_gate.dart';
 /// is what an anonymous session already holds, so the answer is known from the
 /// path alone. That is what makes the badge free for the hundreds of ordinary
 /// page entries: they neither subscribe to the session nor cause
-/// `accessRepositoryProvider` to be built, and a station that raises no routes
+/// `accessAuthorityProvider` to be built, and a station that raises no routes
 /// renders its whole menu without ever reading the database or the station
 /// keychain. It is also why adding this widget to a menu row cannot change how
 /// that row lays out — with nothing to show it is a `SizedBox.shrink()`,
@@ -71,9 +71,9 @@ bool accessRouteLocked(WidgetRef ref, String? path, {bool watch = true}) {
   if (group == AccessGroup.operate) return false;
   final state = resolveAccessGate(
     group: group,
-    repository: watch
-        ? ref.watch(accessRepositoryProvider)
-        : ref.read(accessRepositoryProvider),
+    authority: watch
+        ? ref.watch(accessAuthorityProvider)
+        : ref.read(accessAuthorityProvider),
     session: watch
         ? ref.watch(accessSessionProvider)
         : ref.read(accessSessionProvider),
