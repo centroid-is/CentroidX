@@ -223,10 +223,19 @@ TypedWrite shapeOpcUaWrite(Object? value, {ua.NodeId? targetType}) {
       return _rangedInteger(asInt, id, _integerTypeId(id));
 
     default:
-      // A namespace-0 type this table does not shape — DateTime, Guid,
-      // ByteString, LocalizedText and the rest. The plant does not write them
-      // and inventing an encoding for one here would be a guess with no test
-      // behind it, so it takes the same road as an unknown type.
+      // Two kinds of type land here and both want the same answer.
+      //
+      // **The abstract ones** — `BaseDataType` (open62541's own default for a
+      // node whose DataType attribute was never set), `Number`, `Integer`,
+      // `UInteger`, `Enumeration` — are named entries in `Namespace0Id` but
+      // are not something a Variant can be. Encoding one means handing it to
+      // `nodeIdToPayloadType(...)!`, which throws a bare null-check from
+      // inside the FFI layer.
+      // **The concrete ones this binding cannot serialise** — Guid,
+      // ByteString, LocalizedText, NodeId and the rest: `create_type.dart`'s
+      // `_payloadTypes` has thirteen entries and every one of them is handled
+      // above. Inventing an encoding for a fourteenth would be a guess with
+      // no test behind it.
       return _shapeByRuntimeType(value, declared: targetType);
   }
 }
