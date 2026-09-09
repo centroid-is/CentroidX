@@ -1733,7 +1733,27 @@ final class RemoteStateMan implements StateManApi {
     // `heartbeat_pump.dart`'s doc calls a queue and this project forbids. Both
     // calls are idempotent, so a repeated transition costs nothing and cannot
     // leave a second timer behind.
-    if (isReady) {
+    // ...and while a session is admitted but awaiting a sign-in, which is a
+    // live socket with nobody on it yet.
+    //
+    // **Measured on the rig, 2026-09-09.** Beating only on `isReady` left an
+    // awaiting session silent, and the gateway closed it on its own deadline:
+    // `4003 — no heartbeat for 6098 ms; the deadline is 6000 ms`. The panel
+    // then reconnected, was admitted, sat silent, and was reaped again — a
+    // six-second cycle in which nobody can type a username and a password.
+    // The sign-in screen was reachable and unusable.
+    //
+    // Increment B judged this deliberately and got it wrong for a stated
+    // reason worth keeping: "a reaped awaiting session self-heals via the
+    // reconnect loop". It does — the *socket* heals. The person does not, and
+    // `awaitingSignIn`'s own doc calls this "a stable, live, sign-in-able
+    // condition", which it cannot be while the far end is timing it out.
+    //
+    // This does not widen what the pump may send. `heartbeat_pump.dart` may
+    // name `Methods.ping` and nothing else, and `ping` is one of the four
+    // methods the awaiting gate exempts — so this beats inside the partition
+    // `awaiting_sign_in_test.dart` pins, and adds no reachable surface.
+    if (isReady || _supervisor.awaitingSignIn) {
       _heartbeat.start();
     } else {
       _heartbeat.stop();
