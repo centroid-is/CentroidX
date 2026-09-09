@@ -97,6 +97,12 @@ const _connectBudget = Duration(seconds: 5);
 /// The byte that tells the upstream server to start firehosing.
 const _firehose = 0xf0;
 
+/// How often the modelled client writes while waiting for a dropout.
+///
+/// Frequent relative to the 16 s budget and far cheaper than the firehose it
+/// runs beside — the point is to touch the socket, not to move data.
+const _keepalive = Duration(milliseconds: 250);
+
 void main() {
   test('latency, throttle and flap all bite in the same run', () async {
     final rig = await _Rig.open();
@@ -130,7 +136,9 @@ void main() {
       budget: _up * 2,
       state: () => 'the rate window closed at ${measuredBy.inMilliseconds} ms '
           'of an ${_up.inMilliseconds} ms up-window; since then the proxy has '
-          'made ${rig.proxy.flapTransitions} flap transition(s) and holds '
+          'made ${rig.proxy.flapTransitions} flap transition(s), retired '
+          '${rig.proxy.pairsRetiredWithLiveClient} pair(s) without ending '
+          'their client, and holds '
           '${rig.proxy.livePairs} live pair(s)',
     );
     run.stop();
@@ -175,6 +183,19 @@ void main() {
           'All three have to be observable in one run; two out of three is '
           'the exact result a table of levers cannot distinguish from three',
     );
+    // The other half of the dropout claim, and the half a client cannot see.
+    //
+    // Everything above asks whether the client *learned* the link went away.
+    // This asks whether the proxy ever *told* it — a pair that leaves without
+    // its client socket being ended is a peer connected to nothing, with no
+    // reset coming, and the assertions above would blame the budget for it.
+    // Measured at 0 across 680 000 connections and 446 flap transitions in
+    // `storm_probe_test.dart`; if it is ever not 0, the fault is here and not
+    // in the runner.
+    expect(rig.proxy.pairsRetiredWithLiveClient, 0,
+        reason: 'the proxy retired a pair whose client socket it never ended. '
+            'The dropout this arm waits for was never sent, so no budget and '
+            'no client could have observed it');
   }, timeout: const Timeout(Duration(seconds: 60)));
 
   group('the rate window', () {
@@ -530,6 +551,41 @@ final class _Client {
     required Duration budget,
     required String Function() state,
   }) async {
+    // The keepalive is not decoration, and it is not a way of making this arm
+    // easier to pass.
+    //
+    // A Dart socket that is only *read* does not learn on macOS that its peer
+    // has reset it. `storm_probe_test.dart` measured this over 340 000
+    // connections: every miss had read exactly 5000 bytes — one whole throttle
+    // up-window — and sat silent for six seconds, and every single one
+    // delivered its end **the instant a byte was written to it**
+    // (`WRITE-THEN-END`, 12 of 12). The proxy had already reset the peer in
+    // every case; `FaultProxy.pairsRetiredWithLiveClient` was 0 throughout.
+    // So the reset was sent, the connection was dead, and only the
+    // notification was latent.
+    //
+    // A bare reader is therefore a client this project does not ship. The real
+    // one is `RemoteStateMan`, which wires a `HeartbeatPump` — a periodic
+    // `Methods.ping` — precisely because "a panel that sends nothing after its
+    // handshake" cannot notice a link that has gone. This models that pump, so
+    // the arm measures the dropout a real panel would see rather than one no
+    // client of ours would wait for.
+    //
+    // It does not weaken the assertion: if the proxy ever failed to reset the
+    // peer, these writes would keep succeeding, no end would arrive, and the
+    // arm would still fail — and the "never sent" half is pinned independently
+    // and permanently by the counter checked at the end of this test.
+    final keepalive = Timer.periodic(_keepalive, (_) async {
+      if (_dropped.isCompleted) return;
+      try {
+        _socket.add(const <int>[0]);
+        await _socket.flush();
+      } on Object {
+        // A write that fails IS the client learning the link is gone — the
+        // same way the heartbeat's send failing is how the supervisor learns.
+        _onEnd();
+      }
+    });
     try {
       return await _dropped.future.timeout(budget);
     } on TimeoutException {
@@ -539,6 +595,8 @@ final class _Client {
           'reach the peer; a count of zero means the flap was not running '
           'while the other two modes were set, which is the composition '
           'failure this arm exists for');
+    } finally {
+      keepalive.cancel();
     }
   }
 

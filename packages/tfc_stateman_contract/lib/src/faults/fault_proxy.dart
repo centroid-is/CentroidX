@@ -244,6 +244,26 @@ final class FaultProxy {
   /// before the fd count does.
   int get livePairs => _pairs.length;
 
+  /// Pairs retired while their client socket had never been destroyed.
+  ///
+  /// **Always zero, and the one number that says why when it is not.** Every
+  /// path to [_retire] is supposed to have destroyed the client first — by
+  /// reset (`killWithReset`, `forceReset` in the accept path) or by
+  /// [_ProxiedPair.close]. A pair that leaves `_pairs` without that having
+  /// happened is a client still sitting on a socket nobody will ever end,
+  /// while `livePairs` reports 0 — the exact triple the macOS fault lane
+  /// fails on: *flap fired, no pairs held, client still connected*.
+  ///
+  /// This exists because `livePairs` alone cannot answer the question. It is
+  /// read long after the event and cannot distinguish "the pair was dropped
+  /// and the reset was lost on the way" from "the pair left without a reset
+  /// being sent at all" — and those two have opposite fixes. This counter is
+  /// only the second one. It costs a bool test per retire and changes no
+  /// behaviour, so it can stand in the shipping proxy rather than in a
+  /// debugging fork that is not there on the run that matters.
+  int get pairsRetiredWithLiveClient => _pairsRetiredWithLiveClient;
+  int _pairsRetiredWithLiveClient = 0;
+
   /// The most any one direction of any one pair has ever held.
   ///
   /// The bounded-memory criterion restated at the proxy, where a test can
@@ -909,6 +929,11 @@ final class FaultProxy {
 
   /// Drops a closed pair, keeping the one number that outlives it.
   void _retire(_ProxiedPair pair) {
+    // Counted before anything else, for `_flapTransitions`' reason: a pair
+    // that leaves the set without its client having been ended is invisible
+    // afterwards — the set no longer holds it and the socket belongs to a
+    // client this side cannot see.
+    if (!pair.clientWasDestroyed) _pairsRetiredWithLiveClient++;
     final peak = pair.peakPendingBytes;
     if (peak > _retiredPeakPendingBytes) _retiredPeakPendingBytes = peak;
     final largest = pair.largestChunkBytes;
@@ -1108,6 +1133,11 @@ final class _ProxiedPair {
   /// through `forceReset`. Destroying twice is harmless; what is not harmless
   /// is the reverse, a reset socket being re-`close()`d, so the flag keeps the
   /// ownership statement in one place.
+  /// Whether this pair's client socket has been ended by any route.
+  ///
+  /// Read by `FaultProxy._retire` to count the pairs that left without one.
+  bool get clientWasDestroyed => _clientDestroyed;
+
   void _destroyClient() {
     if (_clientDestroyed) return;
     _clientDestroyed = true;
