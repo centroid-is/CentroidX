@@ -22,6 +22,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
 
 import '../core/config_source.dart';
 import '../core/gateway_config.dart';
+import '../core/gateway_link_status.dart' show GatewayLinkKind;
 import '../core/gateway_state_man.dart';
 import '../core/gateway_trust.dart';
 import '../core/server_config_db.dart';
@@ -536,7 +537,20 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
     final refusal = _edited.validationError;
     // Deliberately NOT `refusal`, and deliberately not folded into it. See the
     // comment on the save button below and `GatewayConfig.advisory`'s own doc.
-    final advisory = _edited.advisory;
+    //
+    // **Driven from the link state, not the typed URL alone** — the fix for
+    // the rig's photographed defect. `GatewayConfig.advisory` is a pure
+    // function of the URL and cannot know whether the certificate actually
+    // carries a SAN for the name; only the handshake knows that. A live
+    // session over `wss://name` is proof it does, so the proactive warning is
+    // false while connected — and a warning that fires while the very thing
+    // it warns will fail is succeeding teaches operators to ignore the row.
+    // Suppressed whenever the link is connected; the reactive half (the
+    // `sanHint` in `GatewayLinkStatusRow`) still fires at handshake-failure
+    // time, which is the only moment the warning can be known to be true.
+    final connected =
+        linkReport?.kind == GatewayLinkKind.connected;
+    final advisory = connected ? null : _edited.advisory;
 
     // The save button is this card's ONE indicator of unsaved state — the
     // trailing `Unsaved` pill it used to duplicate is gone by owner ruling
@@ -864,6 +878,33 @@ final backendConfigApiProvider = FutureProvider<BackendConfigApi>((ref) async {
   return remote.backendConfig;
 });
 
+/// The username the gateway verified this session as, for the attribution
+/// row — or null when the gateway named none (an awaiting-sign-in session,
+/// or a gateway too old to say).
+///
+/// **The fix for the rig's photographed attribution defect.** The row used
+/// to print `stationNameProvider` — this panel's own hostname — which on the
+/// rig rendered a bare container id (`00fb2feb2a16`), useless to an operator
+/// and to anyone reading the audit trail later. The account the *server*
+/// verified is the honest thing to name, and it is unknowable client-side
+/// except from the hello answer's `account` capability, which
+/// `RemoteStateMan.verifiedAccount` carries. Reached through the ONE relay
+/// client the panel already holds, the `backendConfigApiProvider` pattern.
+///
+/// A `FutureProvider` rather than a watch on a stream: the verified account
+/// is stable for the life of a station session, the page rebuilds on save
+/// and navigation, and a re-read costs one getter. Refuses in direct mode
+/// by answering null — the attribution row is a gateway-only surface.
+final gatewayVerifiedAccountProvider = FutureProvider<String?>((ref) async {
+  final gateway = await ref.watch(gatewayConfigProvider.future);
+  if (!gateway.isGateway) return null;
+  final stateMan = await ref.watch(stateManProvider.future);
+  final remote = stateMan is GuardedStateMan
+      ? stateMan.innerAs<GatewayStateMan>()?.remote
+      : null;
+  return remote?.verifiedAccount;
+});
+
 /// The card's title line — the section named beside the machine it edits.
 /// Keyed so the header golden can photograph exactly this line.
 const Key kBackendConfigHeaderKey = Key('backend_config_header');
@@ -951,7 +992,14 @@ class BackendConfigSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final stationName = ref.watch(stationNameProvider);
+    // The account the SERVER verified, not this panel's hostname. The
+    // hostname is a fact about the machine (a container id on the rig); the
+    // verified account is who the audit trail actually attributes the save
+    // to. Falls back to the station-account phrasing without a name while
+    // the account is still unknown (boot, or a gateway too old to say it) —
+    // never to the hostname, which is the defect this replaces.
+    final verifiedAccount =
+        ref.watch(gatewayVerifiedAccountProvider).valueOrNull;
     final apiAsync = ref.watch(backendConfigApiProvider);
 
     // The gateway dressing: which machine, and who a save is recorded
@@ -973,9 +1021,13 @@ class BackendConfigSection extends ConsumerWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Saves are recorded against this station\'s verified '
-                    'account ($stationName) — a station account, not a '
-                    'person.',
+                    verifiedAccount == null
+                        ? 'Saves are recorded against this station\'s '
+                            'verified account — a station account, not a '
+                            'person.'
+                        : 'Saves are recorded against this station\'s '
+                            'verified account ($verifiedAccount) — a station '
+                            'account, not a person.',
                     style: theme.textTheme.bodySmall,
                   ),
                 ),

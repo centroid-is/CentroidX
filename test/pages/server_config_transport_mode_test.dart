@@ -629,6 +629,84 @@ void main() {
           .first);
       expect(save.onPressed, isNotNull);
     });
+
+    // The photographed defect (rig, gateway mode): the advisory warned that
+    // a name would fail the handshake while a live session over that very
+    // name was up three lines below. An advisory that fires while the thing
+    // it warns will fail is succeeding teaches operators to ignore the
+    // warning row. Driven from the link state now, not the typed URL: a
+    // connection to `wss://name` is proof the certificate carries a SAN for
+    // that name, so the advisory is suppressed.
+    testWidgets('a live session over the named host suppresses the advisory',
+        (tester) async {
+      final local = await _gatewayStation(
+          url: 'wss://centroidx-backend:9443', caCertPath: null);
+      await writeGatewayConfig(
+        local,
+        const GatewayConfig(
+          mode: TransportMode.gateway,
+          url: 'wss://centroidx-backend:9443',
+          caPem: '-----BEGIN CERTIFICATE-----\nMIIB\n'
+              '-----END CERTIFICATE-----',
+        ),
+      );
+      await pumpAndLoad(
+        tester,
+        _serverConfigWith(
+          [
+            gatewayLinkProvider.overrideWith((ref) => Stream.value(_report(
+                  headline: 'Connected to wss://centroidx-backend:9443',
+                  detail: 'The panel is holding a live session.',
+                ))),
+          ],
+          localPreferences: local,
+        ),
+      );
+
+      expect(find.textContaining('subject-alternative name'), findsNothing,
+          reason: 'the leaf plainly carries a SAN for this name — the '
+              'handshake succeeded on it — so warning that it might not is '
+              'false, and a false warning row trains operators to ignore the '
+              'true ones');
+      // The live control: the connected row IS on screen, so the advisory's
+      // absence is a suppression, not an empty card.
+      expect(find.textContaining('holding a live session'), findsOneWidget);
+    });
+
+    testWidgets('an unreachable link over a named host still shows the '
+        'advisory — the honest case, and the live control for the arm above',
+        (tester) async {
+      final local = await _gatewayStation(
+          url: 'wss://centroidx-backend:9443', caCertPath: null);
+      await writeGatewayConfig(
+        local,
+        const GatewayConfig(
+          mode: TransportMode.gateway,
+          url: 'wss://centroidx-backend:9443',
+          caPem: '-----BEGIN CERTIFICATE-----\nMIIB\n'
+              '-----END CERTIFICATE-----',
+        ),
+      );
+      await pumpAndLoad(
+        tester,
+        _serverConfigWith(
+          [
+            gatewayLinkProvider.overrideWith((ref) => Stream.value(_report(
+                  kind: GatewayLinkKind.untrustedCertificate,
+                  headline: 'The certificate at wss://centroidx-backend:9443 '
+                      'was refused',
+                  detail: 'This panel would not trust the certificate.',
+                ))),
+          ],
+          localPreferences: local,
+        ),
+      );
+
+      expect(find.textContaining('subject-alternative name'), findsOneWidget,
+          reason: 'a certificate refusal on a name IS the case the advisory '
+              'is for — here it fires, which is what keeps the suppression '
+              'above a suppression and not a deletion');
+    });
   });
 
   // ---------------------------------------------------------------------
