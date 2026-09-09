@@ -120,7 +120,7 @@ Future<void> _waitFor(bool Function() test,
 
 void main() {
   late _FakeClientApi fake;
-  late StateMan stateMan;
+  late OpcUaStateMan stateMan;
 
   final tA = DateTime.utc(2026, 9, 6, 11, 0, 0);
   final tB = DateTime.utc(2026, 9, 6, 11, 0, 5);
@@ -128,7 +128,7 @@ void main() {
 
   setUp(() async {
     fake = _FakeClientApi();
-    stateMan = await StateMan.create(
+    stateMan = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []),
       keyMappings: _mappings(),
       deviceClients: const [],

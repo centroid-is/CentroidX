@@ -1329,7 +1329,7 @@ class _KeyMappingEntryDialogState extends ConsumerState<KeyMappingEntryDialog> {
   Future<void> _loadConfig() async {
     try {
       final prefs = await ref.read(preferencesProvider.future);
-      final config = await StateManConfig.fromPrefs(prefs);
+      final config = await StateManConfigStorage.fromPrefs(prefs);
       if (mounted) {
         setState(() {
           _config = config;

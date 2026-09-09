@@ -17,6 +17,7 @@ import 'package:tfc_dart/core/state_man.dart'
         ModbusConfig,
         ModbusNodeConfig,
         ModbusPollGroupConfig,
+        OpcUaStateMan,
         StateMan;
 import 'package:tfc_dart/core/umas_client.dart';
 import 'package:tfc_dart/core/umas_types.dart'
@@ -1377,7 +1378,7 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   static DynamicValue _toDynamicValue(Object? value, ModbusRegisterSpec spec) {
     final dv =
         DynamicValue(value: value, typeId: _typeIdFromDataType(spec.dataType));
-    return StateMan.applyBitMask(dv, spec.bitMask, spec.bitShift);
+    return OpcUaStateMan.applyBitMask(dv, spec.bitMask, spec.bitShift);
   }
 
   /// Maps [ModbusDataType] to the corresponding OPC UA [NodeId] type identifier.

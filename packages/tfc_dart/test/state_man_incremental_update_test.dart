@@ -86,9 +86,9 @@ KeyMappingEntry m2400Entry({int? statusFilter}) => KeyMappingEntry(
       ),
     );
 
-Future<StateMan> buildStateMan(Map<String, KeyMappingEntry> nodes,
+Future<OpcUaStateMan> buildStateMan(Map<String, KeyMappingEntry> nodes,
     {List<DeviceClient> deviceClients = const []}) {
-  return StateMan.create(
+  return OpcUaStateMan.create(
     config: StateManConfig(opcua: []),
     keyMappings: KeyMappings(nodes: nodes),
     deviceClients: deviceClients,
@@ -236,7 +236,7 @@ void main() {
 
   group('updateKeyMappings — live OPC UA streams', () {
     late RecordingClientApi fake;
-    late StateMan stateMan;
+    late OpcUaStateMan stateMan;
 
     setUp(() async {
       fake = RecordingClientApi();

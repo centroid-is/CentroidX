@@ -63,9 +63,9 @@ class DrivableClientApi implements ClientApi {
   dynamic noSuchMethod(Invocation invocation) => null;
 }
 
-Future<StateMan> makeStateMan(
+Future<OpcUaStateMan> makeStateMan(
     DrivableClientApi fake, Map<String, KeyMappingEntry> nodes) async {
-  final sm = await StateMan.create(
+  final sm = await OpcUaStateMan.create(
     config: StateManConfig(opcua: []),
     keyMappings: KeyMappings(nodes: nodes),
   );

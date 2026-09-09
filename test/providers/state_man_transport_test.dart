@@ -21,6 +21,7 @@
 library;
 
 import 'dart:io';
+import 'package:tfc/core/opcua_sessions.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -175,7 +176,7 @@ void main() {
     // The object it did build behaves as the adapter: it hands out no live
     // upstream client objects, and it refuses connection metadata rather than
     // answering emptily. A local StateMan does neither.
-    expect(stateMan.clients, isEmpty);
+    expect(opcUaSessionsOf(stateMan), isEmpty);
     expect(stateMan.deviceClients, isEmpty);
     expect(stateMan.connMetaAliases, isEmpty);
     expect(() => stateMan.subscribeConnMeta('plc1'),

@@ -262,7 +262,7 @@ void main() {
     // way the backend closed it before this phase. Nothing about the stall is
     // specific to running inside a worker; what is specific to the worker is
     // that we never call this.
-    final stateMan = await StateMan.create(
+    final stateMan = await OpcUaStateMan.create(
       config: StateManConfig(
           opcua: <OpcUAConfig>[_serverConfig(fixture.endpoint, alias)]),
       keyMappings: _mappingsFor(key, alias),

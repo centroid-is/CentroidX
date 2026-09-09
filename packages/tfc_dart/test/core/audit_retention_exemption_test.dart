@@ -131,7 +131,7 @@ void main() {
       values = StreamController<DynamicValue>();
       addTearDown(() => values.close());
 
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {}),
       );

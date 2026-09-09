@@ -1,6 +1,6 @@
 // GENERATED CODE - DO NOT MODIFY BY HAND
 
-part of 'collector.dart';
+part of 'collect_config.dart';
 
 // **************************************************************************
 // JsonSerializableGenerator

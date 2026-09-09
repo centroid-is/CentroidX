@@ -31,10 +31,11 @@ import 'package:tfc_dart/core/state_man.dart'
     show
         ConnectionStatus,
         EffectiveDeviceStatus,
-        KeyMappings,
         KeyMappingEntry,
+        KeyMappings,
         ModbusNodeConfig,
         ModbusRegisterType,
+        OpcUaStateMan,
         StateMan,
         StateManConfig,
         StateManException;
@@ -304,7 +305,7 @@ void main() {
         umasEnabled: false,
         serverAlias: 'plc1',
       );
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {
           'pump.speed': KeyMappingEntry(
@@ -1280,7 +1281,7 @@ void main() {
         umasEnabled: umasEnabled,
         serverAlias: 'plc1',
       );
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {
           'pump.speed': KeyMappingEntry(
@@ -1395,7 +1396,7 @@ void main() {
         umasEnabled: true,
         serverAlias: 'plc1',
       );
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {
           'bogus.key': KeyMappingEntry(

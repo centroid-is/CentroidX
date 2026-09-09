@@ -110,7 +110,7 @@ class ScriptedClientApi implements ClientApi {
 
 Future<StateMan> stateManWith(ScriptedClientApi fake,
     {Map<String, KeyMappingEntry>? nodes}) async {
-  final sm = await StateMan.create(
+  final sm = await OpcUaStateMan.create(
     config: StateManConfig(opcua: []),
     keyMappings: KeyMappings(
         nodes: nodes ??

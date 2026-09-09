@@ -1023,8 +1023,16 @@ List<String> _sourceLinesWithoutComments(String path) {
 }
 
 /// The body of `class [name]` in [lines], from the head to its closing brace.
+///
+/// Matches an `abstract interface class` head as well as a plain one, because
+/// [StateMan] is now the former: the contract this suite checks the guard
+/// against is declared in `state_man_types.dart` and implemented three times
+/// over (OPC UA, gateway, guard).
 List<String> _classBody(List<String> lines, String name) {
-  final start = lines.indexWhere((l) => l.trimRight() == 'class $name {');
+  final start = lines.indexWhere((l) {
+    final head = l.trimRight();
+    return head == 'class $name {' || head == 'abstract interface class $name {';
+  });
   expect(start, isNonNegative,
       reason: 'could not find the head of class $name; the derivation below '
           'would silently read nothing');
@@ -1045,7 +1053,7 @@ String? _declaredName(String line) {
 /// Every public instance member of `StateMan`, derived from its source.
 Set<String> stateManPublicMembers() {
   final body = _classBody(
-      _sourceLinesWithoutComments('lib/core/state_man.dart'), 'StateMan');
+      _sourceLinesWithoutComments('lib/core/state_man_types.dart'), 'StateMan');
   return {
     for (final line in body)
       if (_declaredName(line) case final name?)

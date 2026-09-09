@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../core/opcua_sessions.dart';
 
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_mcp_server/tfc_mcp_server.dart'
@@ -14,7 +15,7 @@ import '../widgets/opcua_browse.dart' show OpcUaBrowseDataSource;
 /// address space behind one `BrowseDataSource`
 /// abstraction. This adapts that to the MCP layer rather than growing a
 /// second browse implementation that would drift from the one operators see.
-/// Only `StateMan.clients` (OPC UA) are enumerated today. UMAS devices live
+/// Only `opcUaSessionsOf(StateMan)` (OPC UA) are enumerated today. UMAS devices live
 /// in `StateMan.deviceClients` and would need `UmasBrowseDataSource` wiring in
 /// here; the NodeBrowser interface is already protocol-agnostic so that can be
 /// added without touching the server package or the tools.
@@ -34,7 +35,7 @@ class StateManNodeBrowser implements NodeBrowser {
 
   @override
   List<BrowseSource> get sources => [
-        for (final w in _stateMan.clients)
+        for (final w in opcUaSessionsOf(_stateMan))
           if (w.config.serverAlias != null)
             BrowseSource(
               alias: w.config.serverAlias!,
@@ -46,7 +47,7 @@ class StateManNodeBrowser implements NodeBrowser {
   BrowseDataSource _sourceFor(String alias) {
     final cached = _sources[alias];
     if (cached != null) return cached;
-    for (final w in _stateMan.clients) {
+    for (final w in opcUaSessionsOf(_stateMan)) {
       if (w.config.serverAlias == alias) {
         final src = OpcUaBrowseDataSource(w.client);
         _sources[alias] = src;
