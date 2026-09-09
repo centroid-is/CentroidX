@@ -303,6 +303,20 @@ async def build_server(name: str, seed: int, fixed_port: int | None = None,
 
         nodes[N("Fast")] = await add(N("Fast"), V(0.0, T.Double))
 
+    # Write-arm targets: TWO writable nodes per server, outside the matrix
+    # (the matrix is read-side coverage; these are the write path's landing
+    # zones). Never ticked — only a client write moves them, so a readback
+    # after a write is proof of application, not a race with the generator.
+    # Two types on purpose: the gateway's OPC UA write adapter types an `int`
+    # as Int32 but leaves a `double` untyped, and the pinned binding THROWS on
+    # untyped doubles — Int32 measures the applied path, Double pins the hole.
+    for sink_name, variant in (("WriteSinkInt", V(0, T.Int32)),
+                               ("WriteSinkReal", V(0.0, T.Double)),
+                               ("WriteSinkBool", V(False, T.Boolean))):
+        sink = await obj.add_variable(nid(sink_name), f"{idx}:{sink_name}", variant)
+        await sink.set_writable()
+        nodes[sink_name] = sink
+
     return server, {
         "name": name, "seed": seed, "port": port, "idx": idx,
         "nodes": nodes, "BenchStruct": BenchStruct, "tick": 0, "fast_tick": 0,

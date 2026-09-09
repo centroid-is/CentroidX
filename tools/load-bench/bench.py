@@ -69,6 +69,22 @@ BAD_FLOOR = 512          # badStale 516, badCommFault 522, error* 770+ all >= th
 HIST_EDGES_MS = [5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
 
 
+ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def new_ulid(now_ms: int | None = None) -> str:
+    """A real Crockford-base32 ULID (48-bit ms + 80-bit random). The gateway's
+    outcome log DATES cmds by their ULID timestamp — `writeStatus` can only
+    answer `not_received` honestly for a cmd it can date, so the bench must
+    mint the format the plant mints, not an opaque string."""
+    import secrets
+    t = int(now_ms if now_ms is not None else time.time() * 1000)
+    chars = [ULID_ALPHABET[(t >> (5 * (9 - i))) & 31] for i in range(10)]
+    r = secrets.randbits(80)
+    chars += [ULID_ALPHABET[(r >> (5 * (15 - i))) & 31] for i in range(16)]
+    return "".join(chars)
+
+
 def hist_bucket(ms: float) -> int:
     """Bucket index for a latency: 0 = <=5 ms ... len(HIST_EDGES_MS) = >5 s."""
     return bisect.bisect_left(HIST_EDGES_MS, ms)
@@ -203,10 +219,16 @@ def spawn_fleet(args):
 # Config generation
 # --------------------------------------------------------------------------
 
-def make_key_mappings(ua_info, mb_info, replicate_ua=1, replicate_mb=1):
+def make_key_mappings(ua_info, mb_info, replicate_ua=1, replicate_mb=1,
+                      write_targets=False):
     nodes = {}
     ua_nodes = UA.replicated_nodes(replicate_ua)
     mb_keys = MB.replicated_keys(replicate_mb)
+    if write_targets:
+        ua_nodes = ua_nodes + ["WriteSinkInt", "WriteSinkReal", "WriteSinkBool"]
+        mb_keys = dict(mb_keys)
+        mb_keys["WriteReg"] = ("write-target", "holdingRegister", MB.WRITE_REG,
+                               "uint16", None, None, None)
     for name, info in ua_info.items():
         for node in ua_nodes:
             nodes[f"{name}.{node}"] = {
@@ -449,6 +471,14 @@ class Bench:
         self.measure_start = None
         self.evicted_at = None     # wall time the GATEWAY closed us (4004 etc.)
         self.evict_reason = None
+        # Write arm: (probe kind, outcome) -> count, RPC round trips, and a
+        # cmd sample for the writeStatus reconciliation at the end.
+        self.write_outcomes = {}
+        self.write_rpc_ms = array("d")
+        self.write_cmds = []       # (cmd, outcome) — capped sample
+        self.write_readback_bad = 0
+        self.write_readback_sample = None    # (key, wrote, readback) — first
+        self.write_reason_samples = {}   # message -> first probe that got it
         self.violations = []       # determinism/honesty violations, named
         self.hazard_seen = {"nonfinite_null": 0, "finite": 0, "raw_nonfinite": 0}
         self._id = 0
@@ -522,7 +552,8 @@ class Bench:
                 continue
             self.changes += 1
             if key[0] == "u" and now >= self.warmup_until \
-                    and not key.startswith(self.lat_exclude):
+                    and not key.startswith(self.lat_exclude) \
+                    and ".WriteSink" not in key:
                 self.changes_ua_clean += 1   # conflation-ratio numerator (UA, never-killed)
             v = wire.get("v")
             q = wire.get("q", Q_GOOD)
@@ -557,7 +588,8 @@ class Bench:
         # changes measure the pipe's latency.
         if not snapshot and t is not None and q < BAD_FLOOR \
                 and now >= self.warmup_until \
-                and not key.startswith(self.lat_exclude):
+                and not key.startswith(self.lat_exclude) \
+                and ".WriteSink" not in key:
             lat = now * 1000.0 - t
             if key.startswith("ua"):
                 self.latency_ua.append(lat)
@@ -831,7 +863,8 @@ async def amain(args):
         config_path = os.path.join(GEN, "gateway-config.json")
         page_path = os.path.join(GEN, "page_editor_data.json")
         mappings = make_key_mappings(ua_info, mb_info,
-                                     args.replicate_ua, args.replicate_mb)
+                                     args.replicate_ua, args.replicate_mb,
+                                     write_targets=args.write_rate > 0)
         with open(keymap_path, "w") as f:
             json.dump(mappings, f, indent=1)
         with open(config_path, "w") as f:
@@ -996,6 +1029,104 @@ async def amain(args):
         last_changes = 0
         next_report = 10.0
 
+        # ---- 5b. write arm ----
+        # Writes ride the SAME session the read load rides — the plant's own
+        # shape is a modest write rate against a large read load, and a write
+        # path measured in a quiet system would measure the wrong thing.
+        # Probe mix: mostly applied-path (WriteSink), every 10th a REJECTED
+        # probe (a read-only matrix node), every 3rd Modbus, and during the
+        # kill window writes aim at the DEAD servers — the honest way to
+        # manufacture genuine UNKNOWN outcomes.
+        # Targets are ONLY this bench's own spawned fleet (ua*/mb* keys);
+        # nothing door-shaped exists in this key space, asserted per write.
+        write_task = None
+        if args.write_rate > 0:
+            ua_live = sorted(n for n in ua_info
+                             if not any(n == kn for _, kn, _, _ in kill_targets))
+            mb_live = sorted(n for n in mb_info
+                             if not any(n == kn for _, kn, _, _ in kill_targets))
+            kill_ua_names = [n for _, n, _, _ in kill_targets if n.startswith("ua")]
+
+            async def write_arm():
+                i = 0
+                interval = 1.0 / args.write_rate
+                while True:
+                    await asyncio.sleep(interval)
+                    i += 1
+                    in_kill_window = killed and restarted_at is None
+                    if in_kill_window and kill_ua_names and i % 5 == 0:
+                        key = f"{kill_ua_names[i % len(kill_ua_names)]}.WriteSinkInt"
+                        val, kind = i, "dead-server"
+                    elif i % 10 == 0:
+                        # UInt16, an INT value: the int->Int32 typed path is
+                        # the only one that reaches the server today, so it is
+                        # the only probe that can show the REJECTED class
+                        # (Bad_UserAccessDenied on a read-only node). UInt16
+                        # has no monotonicity honesty check to trip on the
+                        # readback republication.
+                        key = f"{ua_live[i % len(ua_live)]}.UInt16"
+                        val, kind = 1, "readonly-node"
+                    elif i % 3 == 0:
+                        key = f"{mb_live[i % len(mb_live)]}.WriteReg"
+                        val, kind = i % 65536, "mb-register"
+                    elif i % 4 == 0:
+                        # The plant's most common write shape (start/stop/
+                        # reset BOOLs) — currently dies CLIENT-side: the write
+                        # adapter only types ints, and the binding's variant
+                        # encoder throws on any untyped scalar
+                        # (common.dart:122). Pinned so it is NOTICED the day
+                        # it moves.
+                        key = f"{ua_live[i % len(ua_live)]}.WriteSinkBool"
+                        val, kind = True, "ua-sink-bool"
+                    elif i % 2 == 0:
+                        # A real-typed setpoint (REAL/LREAL) — same hole,
+                        # double flavour.
+                        key = f"{ua_live[i % len(ua_live)]}.WriteSinkReal"
+                        val, kind = i + 0.5, "ua-sink-real"
+                    else:
+                        key = f"{ua_live[i % len(ua_live)]}.WriteSinkInt"
+                        val, kind = i, "ua-sink-int"
+                    assert key.startswith(("ua", "mb")) and "Door" not in key, \
+                        f"write arm aimed outside the bench fleet: {key}"
+                    cmd = new_ulid()
+                    t0 = time.time()
+                    try:
+                        res = await bench.rpc(ws, "write",
+                                              {"cmd": cmd, "key": key, "value": val})
+                        outcome = res.get("outcome", "?") if isinstance(res, dict) else "?"
+                        if outcome == "applied" and kind == "ua-sink-int" \
+                                and res.get("readback") != val:
+                            bench.write_readback_bad += 1
+                            if bench.write_readback_sample is None:
+                                bench.write_readback_sample = \
+                                    (key, val, res.get("readback"))
+                        if outcome in ("rejected", "unknown"):
+                            # The reason IS the finding — an unknown without
+                            # its kind is a number nobody can act on.
+                            r = res.get("reason") or {}
+                            outcome += f"({r.get('kind')}" + \
+                                (f":{r.get('status')})" if r.get("status") else ")")
+                            msg = r.get("message")
+                            if msg and len(bench.write_reason_samples) < 5 \
+                                    and msg not in bench.write_reason_samples:
+                                bench.write_reason_samples[msg] = f"{kind} {key}"
+                    except asyncio.CancelledError:
+                        return
+                    except Exception as e:
+                        if "ConnectionClosed" in type(e).__name__:
+                            return
+                        outcome = "rpc_error"
+                    bench.write_rpc_ms.append((time.time() - t0) * 1000)
+                    k = (kind, outcome)
+                    bench.write_outcomes[k] = bench.write_outcomes.get(k, 0) + 1
+                    bench.write_cmds.append((cmd, outcome))
+                    if len(bench.write_cmds) > 100:   # rolling: recent cmds
+                        bench.write_cmds.pop(0)       # stay inside outcome TTL
+
+            write_task = asyncio.create_task(write_arm())
+            print(f"WRITE ARM: {args.write_rate:.0f} writes/s against the "
+                  f"bench's OWN fleet only (applied/rejected/unknown mix)")
+
         def fleet_stats():
             # (total rss, summed cpu%, HOTTEST single process cpu%). The
             # hottest matters: asyncua is single-threaded per process, so one
@@ -1071,6 +1202,27 @@ async def amain(args):
                       f"gwRSS={gw_rss/1e6:6.0f}MB gwCPU={gw_cpu:5.0f}% "
                       f"fleetRSS={f_rss/1e9:5.2f}GB fleetCPU={f_cpu:5.0f}% "
                       f"clientCPU={cl_cpu:4.0f}%")
+
+        # ---- 5c. write-arm reconciliation (the reconnect path, exercised) ----
+        if write_task is not None:
+            write_task.cancel()
+            bench.write_status = None
+            if bench.write_cmds and bench.evicted_at is None:
+                pairs = bench.write_cmds[-50:]
+                try:
+                    res = await bench.rpc(ws, "writeStatus",
+                                          {"cmds": [c for c, _ in pairs]})
+                    results = res.get("results") or []
+                    agree = sum(1 for (c, o), r in zip(pairs, results)
+                                if isinstance(r, dict)
+                                and r.get("outcome") == o.split("(")[0])
+                    kinds = {}
+                    for r in results:
+                        k = r.get("outcome", "?") if isinstance(r, dict) else "?"
+                        kinds[k] = kinds.get(k, 0) + 1
+                    bench.write_status = (agree, len(results), kinds)
+                except Exception as e:
+                    print(f"writeStatus reconciliation failed: {e!r}")
 
         # ---- 6. verdict ----
         print("\n" + "=" * 78)
@@ -1286,6 +1438,39 @@ def report(bench, ua_info, mb_info, killed, restarted_at, rss_series, cpu_series
         summary["gw_rss_end_mb"] = rss_series[-1][1] / 1e6
         summary["gw_rss_slope_mb_h"] = (gw_last - gw_first) / 1e6 / max(span_h, 1e-9) * 0.75
         summary["fleet_rss_end_gb"] = rss_series[-1][2] / 1e9
+
+    # ---- write arm ----
+    if len(bench.write_rpc_ms):
+        wp = pcts_of(bench.write_rpc_ms)
+        total_w = sum(bench.write_outcomes.values())
+        print(f"\nwrite arm: {total_w} writes at ~{args.write_rate:.0f}/s "
+              f"alongside the read load; rpc round-trip p50={wp['p50']:.0f}ms "
+              f"p95={wp['p95']:.0f}ms p99={wp['p99']:.0f}ms max={wp['max']:.0f}ms")
+        print("  probe -> outcome (what the pipe SAID happened):")
+        for (kind, outcome), n in sorted(bench.write_outcomes.items()):
+            print(f"    {kind:<14} -> {outcome:<12} {n:6d}")
+        if bench.write_readback_bad:
+            print(f"  READBACK MISMATCHES: {bench.write_readback_bad} applied "
+                  f"writes whose readback was not the written value")
+            if bench.write_readback_sample:
+                k, wrote, got = bench.write_readback_sample
+                print(f"    e.g. {k}: wrote {wrote!r}, readback {str(got)[:120]!r}")
+        for msg, src in bench.write_reason_samples.items():
+            print(f"  reason sample [{src}]: {msg[:160]}")
+        ws_rec = getattr(bench, "write_status", None)
+        if ws_rec:
+            agree, n, kinds = ws_rec
+            print(f"  writeStatus reconciliation (last {n} cmds re-queried): "
+                  f"{agree}/{n} answered the outcome recorded at write time; "
+                  f"answers: {kinds}")
+        summary["writes"] = {
+            "total": total_w,
+            "rpc": wp,
+            "outcomes": {f"{k}->{o}": n
+                         for (k, o), n in sorted(bench.write_outcomes.items())},
+            "readback_bad": bench.write_readback_bad,
+            "status_agree": ws_rec[0] if ws_rec else None,
+        }
 
     if load_clients:
         rates = [lc.frames / args.duration for lc in load_clients]
@@ -1567,6 +1752,11 @@ def main():
                     help="approximate keys per server; realised as whole matrix "
                          "copies (see README). Default: one matrix copy "
                          f"({len(UA.NODE_MATRIX)} UA / {len(MB.MB_KEYS)} MB keys)")
+    ap.add_argument("--write-rate", type=float, default=0.0,
+                    help="writes/s driven alongside the read load, against the "
+                         "bench's OWN fleet only (0 = off). Mix: applied "
+                         "(WriteSink), rejected (read-only node), unknown "
+                         "(writes at killed servers during the kill window)")
     ap.add_argument("--clients", type=int, default=1,
                     help="total concurrent WebSocket clients (1 measuring + "
                          "N-1 subscribe-everything panels; encode-once fan-out "

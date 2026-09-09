@@ -50,6 +50,36 @@ subscribe-everything panels (ack honestly, count frames) — the encode-once
 fan-out probe: per-client encoding would show as roughly linear gateway CPU
 growth per added panel; encode-once predicts the 20th panel is nearly free.
 
+## The write arm (`--write-rate N`)
+
+`--write-rate 20` drives 20 writes/s **alongside** the read load (the plant's
+own shape: modest writes against heavy reads), against the bench's OWN fleet
+only — every target key is asserted `ua*/mb*`, nothing door-shaped exists in
+this key space. The probe mix exercises all three outcomes on purpose:
+
+- **applied**: `WriteSinkInt` (Int32, writable, never ticked — readback is
+  proof) and Modbus `WriteReg` (hr 30);
+- **rejected**: an INT write to a read-only matrix node — the int path is
+  the only one that reaches the server, so it is the only probe that can
+  show `Bad_UserAccessDenied`;
+- **unknown**: writes aimed at the KILLED servers during the kill window —
+  genuine unknowns (`plc_timeout`), not simulated ones;
+- **`WriteSinkReal` (Double) and `WriteSinkBool` (Boolean)**: pin a real
+  hole — the gateway's OPC UA write adapter types ONLY `int` as Int32
+  (`opcua_upstream_link.dart _toBindingValue`); every other scalar goes to
+  the binding untyped and the variant encoder throws (`common.dart:122`
+  "Unable to determine type"). So a REAL setpoint and a start/stop BOOL —
+  the plant's two commonest write shapes — both answer
+  `unknown(unparsed_upstream_error)` without ever reaching the server. The
+  bench will notice the day it moves.
+
+Each run reports outcome counts by probe, write RPC round-trip percentiles,
+readback checks, a `writeStatus` reconciliation of recent cmds (the reconnect
+path), and the same RSS-over-time series as always — compare a `--write-rate
+0` run against a write run at the same size to see whether the write path's
+maps (`_mintedCmds` / the outcome log, both capped at 4096 + TTL since
+WR-08) actually hold their bound in practice.
+
 ## The KPIs a run reports (and why these)
 
 - **Latency histogram** (log-ish buckets ≤5 … >5000 ms): latency under load

@@ -93,6 +93,11 @@ BLOCK_IR = 8
 BLOCK_BIT = 16
 MAX_REPLICATE = 60000 // BLOCK_HR    # 117: keeps every replica's Illegal illegal
 
+# Write-arm target: holding register 30 (replica 0 block, never ticked — the
+# datastore accepts FC6/16 writes by default, so a read-back after a write is
+# proof of application). Outside MB_KEYS: the matrix is read-side coverage.
+WRITE_REG = 30
+
 
 def replica_address(register_type: str, address: int, r: int) -> int:
     if address == 60000:                      # Illegal: distinct, all beyond store
