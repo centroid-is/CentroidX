@@ -11,9 +11,10 @@ import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'alarm_ack_sink.dart';
+import 'alarm_history_source.dart';
 import 'error_codes.dart';
 
-/// The bodies behind [Methods.ackAlarm].
+/// The bodies behind [Methods.ackAlarm] and [Methods.alarmHistory].
 ///
 /// Built per session, exactly as `ValueHandlers` is, and holding no state of
 /// its own: the engine it hands work to belongs to the gateway and outlives
@@ -22,6 +23,7 @@ final class AlarmHandlers {
   AlarmHandlers({
     required this.api,
     this.sink,
+    this.history,
     this.canWriteKey = _anyKeyWritable,
   });
 
@@ -48,6 +50,17 @@ final class AlarmHandlers {
   /// and the acknowledge is refused *by name* there rather than being absent
   /// from the wire — see the null branch in [acknowledge].
   final AlarmAckSink? sink;
+
+  /// Where this gateway reads `alarm_history`, or null on one that reads none.
+  ///
+  /// Null is a real deployment for [sink]'s reason and refused by name for
+  /// [sink]'s reason — see the null branch in [recent]. Separate from [sink]
+  /// rather than folded into it because they are separate capabilities: a
+  /// gateway can perfectly well have an alarm engine with no persistence
+  /// (`AlarmEngine.persists` is false when it was built without a history
+  /// writer), and one seam carrying both would make that deployment answer a
+  /// sentence about acknowledging when what it cannot do is remember.
+  final AlarmHistorySource? history;
 
   /// Whether the station this session speaks for may actuate a given key.
   ///
@@ -88,10 +101,11 @@ final class AlarmHandlers {
     } on FormatException catch (error) {
       // The exception's own sentence, because it is the one that says which
       // field was wrong and why a missing one is not a zero.
-      throw _refuse('${Methods.ackAlarm} params could not be read: '
-          '${error.message}');
+      throw _refuse(Methods.ackAlarm,
+          '${Methods.ackAlarm} params could not be read: ${error.message}');
     } on TypeError {
       throw _refuse(
+          Methods.ackAlarm,
           '${Methods.ackAlarm} needs an "alarmUid" string and a whole, '
           'non-negative "ruleIndex": together they are the open alarm row, '
           'and neither one names it alone');
@@ -105,7 +119,7 @@ final class AlarmHandlers {
           rpc_errors.INVALID_PARAMS,
           'this gateway does not serve "${AlarmKeys.active}", so it has no '
           'active alarm set to acknowledge anything in',
-          data: _substitute());
+          data: _substitute(Methods.ackAlarm));
     }
 
     // **The authorization gate.** `canWriteKey` alone, asked about
@@ -129,7 +143,7 @@ final class AlarmHandlers {
           'not retry — the session is fine and reading continues; what is '
           'missing is a permission, and permissions change in the gateway\'s '
           'token file rather than on the next attempt',
-          data: _substitute());
+          data: _substitute(Methods.ackAlarm));
     }
 
     final engine = sink;
@@ -159,7 +173,7 @@ final class AlarmHandlers {
           'session, so this is a composition problem rather than a version '
           'one: pass an AlarmAckSink to RelayServer(alarmAcks:) in whatever '
           'builds this gateway',
-          data: _substitute());
+          data: _substitute(Methods.ackAlarm));
     }
 
     // The engine's answer is the gateway's answer. A throw here reaches
@@ -176,6 +190,102 @@ final class AlarmHandlers {
     return null;
   }
 
+  /// The body behind [Methods.alarmHistory].
+  ///
+  /// **Three steps, and the missing fourth is the decision.**
+  ///
+  /// 1. **Shape.** A window that could only ever answer empty — no `limit`, a
+  ///    zero one, one over [AlarmHistoryParams.maxLimit], a `from` after its
+  ///    `to` — is refused before anything is read. Every one of those would
+  ///    otherwise come back as an empty list, which on screen is a factory that
+  ///    has never had an alarm.
+  /// 2. **Existence**, from `api.keys`, exactly as [acknowledge] does it and in
+  ///    the same place for the same reason: a station that may not *see*
+  ///    `AlarmKeys.active` has had it filtered out by the session's
+  ///    `PolicyStateMan`, so it is refused as a tag this source does not serve,
+  ///    byte-identically to a tag that never existed.
+  /// 3. **The source.** Absent → a named refusal. Present → its answer is the
+  ///    gateway's answer, **including its failure**.
+  ///
+  /// **There is no authorization step, and that is the decision.** [acknowledge]
+  /// has one because an acknowledge is an operator action: it clears something
+  /// off everybody's banner, so it is gated by the same `canWrite` answer a
+  /// write is. This is a *read*, and step 2 already **is** its authorization —
+  /// `PolicyStateMan.keys` is the hiding primitive every other read on this wire
+  /// is gated by (`policy_state_man.dart:30-35`), and it is the same answer that
+  /// decides whether the station is shown a banner at all. A station that may
+  /// watch alarms happen may read what happened.
+  ///
+  /// Adding a `canWriteKey` gate here would not be a safe default. It would
+  /// blank the history page on the canteen wall display and on every `view`
+  /// station in the plant — the same silent empty page this method exists to
+  /// remove, reached through a permission instead of through a missing
+  /// database.
+  ///
+  /// **A failure is never an empty list.** The source's throw reaches
+  /// `RelaySession._answer` and becomes `handlerFailed`, which is right:
+  /// answering `{entries: []}` because the database was unreachable would
+  /// report a fact about the gateway as a fact about the factory, and nothing
+  /// on the operator's screen would distinguish the two.
+  Future<Object?> recent(rpc.Parameters params) async {
+    // Sanitized first, `acknowledge`'s reason: `jsonDecode('1e999')` yields
+    // Infinity silently and `Infinity.toInt()` throws an `UnsupportedError`
+    // nothing at this boundary catches.
+    final decoded =
+        (sanitize(params.asMap).value as Map).cast<String, Object?>();
+
+    final AlarmHistoryParams request;
+    try {
+      request = AlarmHistoryParams.fromJson(decoded);
+    } on FormatException catch (error) {
+      // The exception's own sentence: it names which value was refused and why
+      // an empty answer would have been worse than this refusal.
+      throw _refuse(Methods.alarmHistory,
+          '${Methods.alarmHistory} params could not be read: ${error.message}');
+    } on TypeError {
+      throw _refuse(
+          Methods.alarmHistory,
+          '${Methods.alarmHistory} needs a whole "limit" of at least 1 and at '
+          'most ${AlarmHistoryParams.maxLimit}, and optional whole "fromMs" / '
+          '"toMs" epoch milliseconds');
+    }
+
+    if (!api.keys.contains(AlarmKeys.active)) {
+      throw rpc.RpcException(
+          rpc_errors.INVALID_PARAMS,
+          'this gateway does not serve "${AlarmKeys.active}", so it has no '
+          'alarm history to read',
+          data: _substitute(Methods.alarmHistory));
+    }
+
+    final source = history;
+    if (source == null) {
+      // Refused by name and not `-32601`, for `acknowledge`'s reason: the name
+      // is registered on every session whether or not a deployment supplied a
+      // reader, so a client can tell "serves no alarm history" from "too old to
+      // know the word" — a composition problem and a version problem, fixed in
+      // different places. Answering `{entries: []}` instead would be a panel
+      // drawing an empty history page and calling it the plant's.
+      throw rpc.RpcException(
+          ServerErrorCodes.handlerFailed,
+          'this gateway serves no alarm history, so there is nothing to read. '
+          '${Methods.alarmHistory} is registered on every session, so this is '
+          'a composition problem rather than a version one: pass an '
+          'AlarmHistorySource to RelayServer(alarmHistory:) in whatever builds '
+          'this gateway. Nothing was answered — this is NOT an empty history',
+          data: _substitute(Methods.alarmHistory));
+    }
+
+    // The source's answer is the gateway's answer, and so is its throw. See the
+    // doc above for why swallowing it would be the worst outcome available.
+    final rows = await source.recentAlarms(
+      limit: request.limit,
+      from: request.from,
+      to: request.to,
+    );
+    return AlarmHistoryEntry.encodeList(rows);
+  }
+
   /// A shape refusal with the armor already on it.
   ///
   /// `value_handlers.dart:_refuse`'s argument, verbatim: `data['request']` is
@@ -183,11 +293,16 @@ final class AlarmHandlers {
   /// request into `error.data` when it is not — and one request carrying
   /// `1e999` then makes the *error* unencodable, at which point the peer drops
   /// it and every caller without a deadline waits forever.
-  static rpc.RpcException _refuse(String why) =>
-      rpc.RpcException(rpc_errors.INVALID_PARAMS, why, data: _substitute());
+  ///
+  /// Takes the method name rather than assuming one: this class answers two
+  /// names now, and a refusal that named the wrong one would send an engineer
+  /// reading the wrong handler.
+  static rpc.RpcException _refuse(String method, String why) =>
+      rpc.RpcException(rpc_errors.INVALID_PARAMS, why,
+          data: _substitute(method));
 
-  static Map<String, Object?> _substitute() => {
-        'method': Methods.ackAlarm,
+  static Map<String, Object?> _substitute(String method) => {
+        'method': method,
         'request': 'omitted: echoing a request that may carry a non-finite '
             'number is what makes the error itself unencodable, and an '
             'unencodable error on a path with no deadline is a hang',

@@ -43,6 +43,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'alarm_ack_sink.dart';
+import 'alarm_history_source.dart';
 import 'auth/file_token_validator.dart';
 import 'auth/session_login_validator.dart';
 import 'error_reporter.dart';
@@ -152,6 +153,7 @@ final class RelayServer {
     TokenValidator validator = permissiveDefault,
     this.policy = const AccessPolicyKeyPolicy(),
     this.alarmAcks,
+    this.alarmHistory,
     this.audit = const NullAuditSink(),
     this.accounts,
     this.accessFor,
@@ -297,6 +299,21 @@ final class RelayServer {
   /// name, which is what keeps "this gateway serves no alarm engine"
   /// distinguishable from "this gateway is too old to know the word".
   final AlarmAckSink? alarmAcks;
+
+  /// Where a panel's alarm-history read is answered, or null on a gateway that
+  /// answers none.
+  ///
+  /// **Optional for [alarmAcks]' reason, and additive in the same way**: a name
+  /// on the wire, not a version. Every existing embedder keeps compiling with
+  /// no edit, and a gateway built without this argument still *registers*
+  /// `alarmHistory` and refuses it by name — which is what keeps "this gateway
+  /// serves no alarm history" distinguishable both from "too old to know the
+  /// word" and, far more importantly, from "this plant has never had an alarm".
+  /// That last confusion is the defect this argument exists to end: a
+  /// gateway-mode panel read its own database for history, and since
+  /// `preferencesProvider` stopped building one in gateway mode it had been
+  /// answering an empty list, silently, on every station.
+  final AlarmHistorySource? alarmHistory;
 
   /// Where every session's authorization verdicts become rows (D-05, 17-09).
   ///
@@ -912,6 +929,10 @@ final class RelayServer {
         // rather than an omission: the session registers `ackAlarm` either way
         // and refuses it by name when there is no engine behind it.
         alarmAcks: alarmAcks,
+        // Forwarded exactly as `alarmAcks` is. Separate from it because the two
+        // capabilities genuinely come apart: an engine built without a history
+        // writer can acknowledge and cannot remember.
+        alarmHistory: alarmHistory,
         // One sink for the gateway, threaded to every session's decorator —
         // a reconnecting panel's rows and its predecessor's land in one
         // trail (D-05). The seam 17-07 built; this line is what makes it

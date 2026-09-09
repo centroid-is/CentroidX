@@ -39,6 +39,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'access_handlers.dart';
 import 'alarm_ack_sink.dart';
+import 'alarm_history_source.dart';
 import 'alarm_handlers.dart';
 import 'auth/identity.dart';
 import 'auth/session_login_validator.dart';
@@ -156,6 +157,7 @@ final class RelaySession {
     this.validator,
     this.policy,
     this.alarmAcks,
+    this.alarmHistory,
     this.resolver,
     this._gate,
     this._lastSeen,
@@ -208,6 +210,7 @@ final class RelaySession {
     TokenValidator validator = const PermissiveTokenValidator(),
     KeyPolicy policy = const AccessPolicyKeyPolicy(),
     AlarmAckSink? alarmAcks,
+    AlarmHistorySource? alarmHistory,
     AuditSink audit = const NullAuditSink(),
     AccessScopeFactory? accessFor,
     required SeriesResolver resolver,
@@ -250,6 +253,7 @@ final class RelaySession {
       validator,
       policy,
       alarmAcks,
+      alarmHistory,
       resolver,
       HelloGate(serverSupported: serverSupported),
       lastSeen,
@@ -558,6 +562,20 @@ final class RelaySession {
   /// What consults it is the [AlarmHandlers] built in [_start]; nothing else in
   /// this class asks it anything.
   final AlarmAckSink? alarmAcks;
+
+  /// Where an alarm-history read goes, or null on a gateway that serves none.
+  ///
+  /// Held here for [alarmAcks]' reason and null for [alarmAcks]' reason:
+  /// `Methods.alarmHistory` is registered either way and the handler answers a
+  /// named refusal rather than an empty history, because an empty history is
+  /// what a plant that has never had an alarm looks like.
+  ///
+  /// A **separate** field from [alarmAcks] because they are separate
+  /// capabilities: `AlarmEngine.persists` is false on a gateway built without a
+  /// history writer, so "can acknowledge" and "can remember" genuinely come
+  /// apart, and one field carrying both would make that deployment answer a
+  /// sentence about the wrong one.
+  final AlarmHistorySource? alarmHistory;
 
   /// How a node id and a table name become a plant key.
   ///
@@ -1024,6 +1042,7 @@ final class RelaySession {
     final alarms = AlarmHandlers(
       api: api,
       sink: alarmAcks,
+      history: alarmHistory,
       canWriteKey: api.canWrite,
     );
     // Kept, unlike `handlers`, because this object owns state with a lifetime:
@@ -1042,6 +1061,12 @@ final class RelaySession {
     // this wire that is not a write** — which is exactly why it is gated by
     // the same `canWrite` answer a write is, one line above.
     _on(Methods.ackAlarm, alarms.acknowledge);
+    // Beside the acknowledge because it is the same surface, and gated
+    // differently on purpose: this is a **read**, so its authorization is the
+    // visibility answer `api.keys` already carries, not `api.canWrite`. See
+    // `AlarmHandlers.recent` — a write gate here would blank the history page
+    // on every `view` station in the plant.
+    _on(Methods.alarmHistory, alarms.recent);
     _on(Methods.read, values.read);
     _on(Methods.readFresh, values.readFresh);
     _on(Methods.readMany, values.readMany);

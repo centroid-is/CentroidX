@@ -111,6 +111,21 @@ const Set<String> expectedHandlerTable = {
   // refusal rather than `-32601`, which is what keeps "serves no engine"
   // distinguishable from "too old to know the word".
   'ackAlarm',
+  // Alarm history over the pipe. The second name on this wire that is not a
+  // write and not a value read, and it is gated **differently from the ack one
+  // line up**: an acknowledge takes `KeyPolicy.canWrite` because it clears
+  // something off everybody's banner, and this takes only the visibility answer
+  // `PolicyStateMan.keys` already carries, because it is a read. A `view`
+  // station that may watch alarms happen may read what happened — gating it any
+  // harder would blank the history page on the canteen wall display.
+  //
+  // Registered whether or not the deployment supplied a reader, for `ackAlarm`'s
+  // reason and one more: a gateway with no reader answers a *named* refusal, so
+  // "serves no alarm history" stays distinguishable from "too old to know the
+  // word" AND from "this plant has never had an alarm" — which is the silent
+  // answer a gateway-mode panel had been giving since `preferencesProvider`
+  // stopped building it a database.
+  'alarmHistory',
   'read',
   'readFresh',
   'readMany',

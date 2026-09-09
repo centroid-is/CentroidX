@@ -1240,6 +1240,73 @@ final class RemoteStateMan implements StateManApi {
     }
   }
 
+  // ------------------------------------------------------ the history read
+
+  /// The `alarm_history` rows overlapping a window, newest first.
+  ///
+  /// **Why this exists.** `RelayAlarmSource.getRecentAlarms` read the panel's
+  /// own database, under a ruling whose premise was that a gateway-mode panel
+  /// has one. `lib/providers/preferences.dart:60` now branches on the transport
+  /// before it reads the config row, so a gateway panel builds `Preferences`
+  /// with `db: null` and that method's `if (preferences.database == null)
+  /// return []` became the only branch that ever ran — an empty history page on
+  /// a plant that has had alarms all week, with nothing anywhere to say the
+  /// answer was not an answer. The backend is the process that has the table.
+  ///
+  /// **Not on `StateManApi`**, and it is [ackAlarm]'s ruling for [ackAlarm]'s
+  /// reason: the interface is the surface `api_surface_test.dart` calls "the
+  /// access-control policy", implemented by `LocalStateMan` and exercised by
+  /// one shared contract suite against both ends, and every member on it is
+  /// something every implementation owes an answer for. Alarm history has no
+  /// `LocalStateMan` meaning — on the backend the engine's history writer is
+  /// reached directly, not through a state-management call — so widening the
+  /// surface would oblige every implementation to answer for a capability only
+  /// one of them has.
+  ///
+  /// **An unreadable answer throws; it never becomes an empty list.**
+  /// `AlarmHistoryEntry.decodeList` refuses a shape it cannot read, and one
+  /// unreadable row refuses the whole answer rather than shortening it. That is
+  /// the opposite of `AlarmActiveEntry.decodeList`, which is tolerant on
+  /// purpose — there the previous active set stands and a banner must not go
+  /// blank, and here there is no previous set to stand on. A tolerant decode
+  /// would put an empty page on screen and present it as the plant's history,
+  /// which is precisely the defect this method replaces.
+  ///
+  /// **An impossible window is refused here**, before a frame leaves: a zero
+  /// [limit], one over [AlarmHistoryParams.maxLimit], or a [from] after its
+  /// [to] all throw [ArgumentError] out of the DTO's own constructor. Sending
+  /// them would cost a round trip to be told the same thing in a sentence that
+  /// no longer knows which argument the caller passed.
+  ///
+  /// **Only `-32601` is translated.** See [AlarmHistoryUnsupported]: the method
+  /// name is an additive protocol change, so `METHOD_NOT_FOUND` is the single
+  /// observable difference between a gateway that predates it and one that does
+  /// not. Everything else the gateway answers arrives exactly as it was sent,
+  /// because the gateway's own sentence says which of them it is.
+  Future<List<AlarmHistoryEntry>> recentAlarms({
+    int limit = 1000,
+    DateTime? from,
+    DateTime? to,
+  }) async {
+    const method = Methods.alarmHistory;
+    // Built before the disposed guard and before the barrier, so an impossible
+    // window is an `ArgumentError` at the call site rather than something that
+    // depends on whether the link happened to be up.
+    final params = AlarmHistoryParams(limit: limit, from: from, to: to);
+    try {
+      return AlarmHistoryEntry.decodeList(
+          // Through the shared DTO rather than a map literal, for 05-REVIEW
+          // IN-02's reason: the gateway decodes with
+          // `AlarmHistoryParams.fromJson`, and a hand-rolled literal at this
+          // end would leave the two halves of one wire shape kept in step by a
+          // test suite alone.
+          await _request(method, params.toJson()));
+    } on rpc.RpcException catch (error) {
+      if (error.code != AlarmAckUnsupported.methodNotFound) rethrow;
+      throw AlarmHistoryUnsupported(method, error.message, data: error.data);
+    }
+  }
+
   /// Re-asks the gateway what became of [cmds], in the order asked.
   ///
   /// The one place a `writeStatus` frame is built, for both callers: the

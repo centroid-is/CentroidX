@@ -169,6 +169,45 @@ final class AlarmAckUnsupported extends RpcException {
       'no permission is missing. The gateway said: $message';
 }
 
+/// The gateway does not know the word `alarmHistory` at all.
+///
+/// [AlarmAckUnsupported]'s sibling, for its reason and one that binds harder.
+/// The acknowledge's three answers ask an operator for three different actions;
+/// alarm history's ask for **four**, and the fourth is the one this type exists
+/// to keep out of the other three:
+///
+/// | Answer | What it means | Who fixes it |
+/// |---|---|---|
+/// | [AlarmHistoryUnsupported] | this gateway predates alarm history | whoever upgrades the gateway |
+/// | `-32011`, no source | this gateway was composed without an `AlarmHistorySource` | whoever wires `RelayServer(alarmHistory:)` |
+/// | `-32602`, not served | this station may not see `ALARM.active` | whoever holds the access policy |
+/// | an empty list | **this plant has had no alarms in that window** | nobody — it is a fact |
+///
+/// The last row is the whole point. A gateway-mode panel was answering it for
+/// all four cases, silently, because `getRecentAlarms` read a database that
+/// gateway mode no longer builds. Every other row on this table has to stay
+/// distinguishable from it and from each other, or the panel is back to
+/// reporting a fact about the wire as a fact about the factory.
+///
+/// **Extends [RpcException]**, carrying the gateway's own code and words
+/// through unaltered, for [AlarmAckUnsupported]'s reason: narrowing an answer
+/// must never cost a caller the answer it already handled.
+final class AlarmHistoryUnsupported extends RpcException {
+  AlarmHistoryUnsupported(this.method, String message, {Object? data})
+      : super(AlarmAckUnsupported.methodNotFound, message, data: data);
+
+  /// The method the gateway did not recognise. Carried because "unsupported"
+  /// without saying *what* has told nobody anything.
+  final String method;
+
+  @override
+  String toString() =>
+      'AlarmHistoryUnsupported: this gateway does not know "$method" — it '
+      'predates alarm history over the pipe and has to be upgraded. This is '
+      'NOT a plant with no alarm history, and nothing about the plant was '
+      'learned. The gateway said: $message';
+}
+
 /// Sorts a thrown [error] into the two verdicts.
 ///
 /// Rethrows anything that is a defect in this process rather than a condition
