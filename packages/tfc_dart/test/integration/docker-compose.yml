@@ -9,7 +9,7 @@
 #   ports: 5432:5432          A fixed host port cannot be published twice.
 #
 # The host port comes from the environment instead: the fixture reserves one
-# free port per run and passes it as TFC_TEST_DB_PORT (see docker_compose.dart),
+# free port per run and passes it as CENTROID_TEST_DB_PORT (see docker_compose.dart),
 # so it differs between concurrent runs but stays put for the whole of one run.
 # Letting Docker allocate an ephemeral port was tried first and is race-free,
 # but it moves every time the container is recreated, and the suites here
@@ -31,4 +31,4 @@ services:
       - POSTGRES_USER=testuser
       - POSTGRES_PASSWORD=testpass
     ports:
-      - "${TFC_TEST_DB_PORT:-5432}:5432"
+      - "${CENTROID_TEST_DB_PORT:-5432}:5432"

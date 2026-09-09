@@ -160,7 +160,7 @@ Future<void> startDockerCompose() async {
         'docker',
         [..._composeArgs, 'up', '-d'],
         workingDirectory: dockerComposePath,
-        environment: {'TFC_TEST_DB_PORT': '$port'},
+        environment: {'CENTROID_TEST_DB_PORT': '$port'},
       );
 
       if (result.exitCode == 0) {
