@@ -52,9 +52,17 @@ Future<PreferencesApi> _gatewayStation({
   return prefs;
 }
 
-/// Opens the transport card, which is collapsed on a direct-mode station.
-Future<void> _expandTransport(WidgetTester tester) async {
-  await tester.tap(find.text('Transport'));
+/// Was: opens the transport card, which used to be collapsed on a direct-mode
+/// station. The card no longer collapses — the owner moved the toggle to the
+/// top of the page in the open, because it is the ONE difference between the
+/// two faces of this page and a difference behind a disclosure triangle is one
+/// you have to already know about to find.
+///
+/// Kept as a named step rather than deleted from thirteen call sites: what
+/// each arm below is doing is still "reach the transport controls", and the
+/// step now costs no gesture. The claim that it costs none is its own arm
+/// ('the toggle is reachable with no gesture at all').
+Future<void> _openTransport(WidgetTester tester) async {
   await settle(tester);
 }
 
@@ -163,12 +171,15 @@ void main() {
       await pumpAndLoad(tester, buildTestableServerConfig());
 
       expect(find.text('Transport'), findsOneWidget);
-      // Collapsed, so the page below it is where it always was.
-      expect(find.byType(SegmentedButton<TransportMode>), findsNothing);
+      // Open, at the top, with no disclosure triangle in front of it.
+      expect(find.byType(SegmentedButton<TransportMode>), findsOneWidget,
+          reason: 'the toggle is reachable with no gesture at all — the whole '
+              'of what the owner asked for at the top of this page');
       expect(find.text('Direct to PLCs'), findsOneWidget,
-          reason: 'the collapsed subtitle names the mode without opening it');
+          reason: 'and the mode is named on the segment, not in a subtitle '
+              'that only appears while the card is shut');
 
-      await _expandTransport(tester);
+      await _openTransport(tester);
       expect(
         tester
             .widget<SegmentedButton<TransportMode>>(
@@ -179,18 +190,18 @@ void main() {
       _expectDirectSections(findsOneWidget);
       // No gateway fields until gateway is chosen — the card is a switch, not
       // a fifth section.
-      expect(find.text('Gateway address'), findsNothing);
+      expect(find.text('Gateway address and port'), findsNothing);
     });
 
     testWidgets('choosing the gateway reveals one field: the address',
         (tester) async {
       await pumpAndLoad(tester, buildTestableServerConfig());
-      await _expandTransport(tester);
+      await _openTransport(tester);
 
       await tester.tap(find.text('Relay gateway'));
       await settle(tester);
 
-      expect(find.text('Gateway address'), findsOneWidget);
+      expect(find.text('Gateway address and port'), findsOneWidget);
       // The two questions an operator cannot answer are gone. Trust is
       // fetched and approved at Save ("how do I obtain pem path" was the
       // owner's, verbatim), and the credential file is on its way out with
@@ -208,39 +219,45 @@ void main() {
     testWidgets('the four sections stay while the change is unsaved',
         (tester) async {
       await pumpAndLoad(tester, buildTestableServerConfig());
-      await _expandTransport(tester);
+      await _openTransport(tester);
       await tester.tap(find.text('Relay gateway'));
       await settle(tester);
 
       _expectDirectSections(findsOneWidget);
     });
 
-    testWidgets('a saved gateway station hides the four sections, without a '
-        'note narrating the toggle', (tester) async {
+    testWidgets(
+        'a saved gateway station renders the SAME page, with the backend as '
+        'its target and no note narrating the toggle', (tester) async {
       await pumpAndLoad(
         tester,
         buildTestableServerConfig(localPreferences: await _gatewayStation()),
       );
 
-      _expectDirectSections(findsNothing);
-      expect(find.text('Database Configuration'), findsNothing);
-      // Changed twice, deliberately, and each change is the owner's. 15-05
-      // re-pointed this line at the corrected Postgres copy after the rig
-      // measured the original claim false (13-RIG-E2E-EVIDENCE FIND-C). The
-      // note itself is now GONE — "it is implied by the toggle switch in
-      // Transport" — so the arm pins its absence: prose that narrates the
-      // state of a control beside it is noise, and on a panel it costs the
-      // vertical space the JSON editor needs. The honest Postgres sentence
-      // still lives in `server_config.dart`'s comments, where
-      // `test/core/gateway_copy_test.dart` keeps holding it present.
-      expect(
-        find.textContaining('no OPC UA session'),
-        findsNothing,
-      );
-      expect(
-        find.textContaining('takes its values from the relay'),
-        findsNothing,
-      );
+      // The owner's ruling: "the server config should look exactly the same
+      // with gateway and without — the only difference is a toggle at the top
+      // for gateway". So the page keeps its slots; what changes is what each
+      // slot is about. (The section headings themselves are the editor's, and
+      // this fixture stands up no backend for it to read — the parity arms in
+      // server_config_transport_parity_test.dart do that with one.)
+      expect(find.text('Database Configuration'), findsOneWidget,
+          reason: 'the database card stays in its slot and says, in gateway '
+              'mode, that the station opens no connection of its own — a '
+              'missing card cannot say anything');
+      expect(find.textContaining('Not used in gateway mode'), findsWidgets,
+          reason: 'and it is the gateway face of the card, not the editor');
+      expect(find.text('Import / Export'), findsOneWidget,
+          reason: 'so does import/export: same slot, and its own honest face');
+
+      // The narration stays deleted — the toggle above states the mode, and
+      // prose beside a control that already says it is noise. 15-05 re-pointed
+      // this at the corrected Postgres copy after the rig measured the
+      // original claim false (13-RIG-E2E-EVIDENCE FIND-C); the note itself is
+      // gone, and the honest Postgres sentence lives in `server_config.dart`'s
+      // comments where `test/core/gateway_copy_test.dart` holds it present.
+      expect(find.textContaining('no OPC UA session'), findsNothing);
+      expect(find.textContaining('takes its values from the relay'),
+          findsNothing);
     });
   });
 
@@ -255,7 +272,7 @@ void main() {
     testWidgets('a scheme that is not a WebSocket stays refused',
         (tester) async {
       await pumpAndLoad(tester, buildTestableServerConfig());
-      await _expandTransport(tester);
+      await _openTransport(tester);
       await tester.tap(find.text('Relay gateway'));
       await settle(tester);
 
@@ -278,7 +295,7 @@ void main() {
     testWidgets('a wss address with nothing pinned says so, and Save is the '
         'way forward', (tester) async {
       await pumpAndLoad(tester, buildTestableServerConfig());
-      await _expandTransport(tester);
+      await _openTransport(tester);
       await tester.tap(find.text('Relay gateway'));
       await settle(tester);
 
@@ -317,7 +334,7 @@ void main() {
           localPreferences: local,
         ),
       );
-      await _expandTransport(tester);
+      await _openTransport(tester);
       await tester.tap(find.text('Relay gateway'));
       await settle(tester);
       await tester.enterText(
@@ -351,6 +368,61 @@ void main() {
       expect(find.textContaining(_fingerprint), findsOneWidget);
     });
 
+    // The field asks for "address and port" and must mean it. These two arms
+    // are the operator's half of `normalizeGatewayAddress`: what is typed is
+    // what an integrator wrote down, and what is dialled, fetched and pinned
+    // is the secure URL — no scheme typed anywhere.
+    for (final (label, typed, dialled) in [
+      ('an IP address', '10.50.10.11:9443', 'wss://10.50.10.11:9443'),
+      (
+        'an FQDN',
+        'centroidx-backend:9443',
+        'wss://centroidx-backend:9443',
+      ),
+    ]) {
+      testWidgets('$label and a port, typed bare, is dialled over wss',
+          (tester) async {
+        final local = InMemoryPreferences();
+        Uri? fetchedFor;
+        await pumpAndLoad(
+          tester,
+          _serverConfigWith(
+            [
+              gatewayTrustFetcherProvider.overrideWithValue((uri) async {
+                fetchedFor = uri;
+                return FetchedGatewayTrust(
+                    caPem: _approvedPem, sha256Fingerprint: _fingerprint);
+              }),
+            ],
+            localPreferences: local,
+          ),
+        );
+        await _openTransport(tester);
+        await tester.tap(find.text('Relay gateway'));
+        await settle(tester);
+        await tester.enterText(find.byType(TextField).first, typed);
+        await settle(tester);
+
+        await tester.tap(find.text('Save Configuration'));
+        await settle(tester);
+        expect(fetchedFor, Uri.parse(dialled),
+            reason: 'the identity fetched must be the one for the URL this '
+                'panel will actually dial — an unnormalised "$typed" has no '
+                'host to fetch from at all');
+        await tester.tap(find.text('Approve'));
+        await settle(tester);
+
+        final saved = await readGatewayConfig(local);
+        expect(saved.url, dialled,
+            reason: 'the stored row is what the boot path reads; it must be '
+                'dialable without the page that wrote it being present to '
+                'reinterpret it');
+        expect(saved.undialable, isNull,
+            reason: 'and it must satisfy the boot guard, not merely the '
+                'edit-time one');
+      });
+    }
+
     testWidgets('Reject writes nothing at all', (tester) async {
       final local = InMemoryPreferences();
       await pumpAndLoad(
@@ -364,7 +436,7 @@ void main() {
           localPreferences: local,
         ),
       );
-      await _expandTransport(tester);
+      await _openTransport(tester);
       await tester.tap(find.text('Relay gateway'));
       await settle(tester);
       await tester.enterText(
@@ -401,7 +473,7 @@ void main() {
           localPreferences: local,
         ),
       );
-      await _expandTransport(tester);
+      await _openTransport(tester);
       await tester.tap(find.text('Relay gateway'));
       await settle(tester);
       await tester.enterText(
@@ -444,7 +516,7 @@ void main() {
       // whose row is already gateway other cards on the page render text
       // fields of their own, so `.first` is not this card's.
       await tester.enterText(
-          find.widgetWithText(TextField, 'Gateway address'),
+          find.widgetWithText(TextField, 'Gateway address and port'),
           'wss://10.50.10.11:9444');
       await settle(tester);
       await tester.ensureVisible(find.text('Save Configuration'));
@@ -550,7 +622,7 @@ void main() {
       final local = InMemoryPreferences();
       await pumpAndLoad(
           tester, buildTestableServerConfig(localPreferences: local));
-      await _expandTransport(tester);
+      await _openTransport(tester);
 
       await tester.tap(find.text('Relay gateway'));
       await settle(tester);
@@ -581,7 +653,7 @@ void main() {
         tester,
         buildTestableServerConfig(localPreferences: local),
       );
-      await _expandTransport(tester);
+      await _openTransport(tester);
 
       await tester.tap(find.text('Relay gateway'));
       await settle(tester);
@@ -614,7 +686,7 @@ void main() {
     /// rather than about there being nothing to save.
     Future<void> typeGateway(WidgetTester tester, String url) async {
       await pumpAndLoad(tester, buildTestableServerConfig());
-      await _expandTransport(tester);
+      await _openTransport(tester);
       await tester.tap(find.text('Relay gateway'));
       await settle(tester);
       await tester.enterText(find.byType(TextField).first, url);
@@ -839,7 +911,7 @@ void main() {
           gatewayLinkProvider.overrideWith((ref) => Stream.value(null)),
         ]),
       );
-      await _expandTransport(tester);
+      await _openTransport(tester);
 
       expect(find.byKey(kGatewayLinkStatusRowKey), findsNothing);
     });

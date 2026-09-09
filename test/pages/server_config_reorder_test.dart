@@ -351,7 +351,11 @@ void main() {
       await pumpAndLoad(tester,
           buildTestableServerConfig(stateManConfig: _threeOpcuaServers()));
 
-      // Remove the middle server.
+      // Remove the middle server. Scrolled to first: the transport card at
+      // the top of the page no longer collapses, so on the 800x600 default
+      // surface this button starts a few pixels below the fold.
+      await tester.ensureVisible(removeButtonFor('st201'));
+      await settle(tester);
       await tester.tap(removeButtonFor('st201'));
       await settle(tester);
       await tester.tap(find.text('Remove'));

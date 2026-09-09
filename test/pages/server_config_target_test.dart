@@ -47,6 +47,8 @@ const _banner = Key('config_target_banner');
 // `backend_config_editor` still exists — it now keys the typed
 // StateManConfigEditor rather than a textarea; the swap arm lives in
 // server_config_gateway_editor_test.dart.
+/// The deleted read-only relay field. Still spelled, because arm 4 now
+/// asserts its absence and an absence arm has to name what must be absent.
 const _relayField = Key('backend_config_relay_field');
 const _save = Key('backend_config_save');
 const _restore = Key('backend_config_restore');
@@ -405,28 +407,38 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
-  // Arm 4 — the relay section renders, is not editable, and says why.
-  // Present, disabled, explained: three properties, three assertions. Hiding
-  // it would pass the "not editable" half alone.
+  // Arm 4 — the relay section is NOT on the screen, and is still on the wire.
+  //
+  // This arm used to assert the opposite: present, disabled, explained. The
+  // owner removed the read-only JSON card by name ("remove the read only
+  // json"), so the claim inverts — but only half of it. The dangerous
+  // half-obedience is a build that stops showing the section AND stops
+  // carrying it, which looks identical on screen and drops the backend's
+  // relay configuration on the next save, so both halves are asserted here
+  // against one document.
   // -------------------------------------------------------------------------
-  testWidgets('arm 4: the relay section is present, disabled and explained',
+  testWidgets('arm 4: the relay section is not shown, and still crosses whole',
       (tester) async {
-    await _pumpGateway(tester);
+    final fixture = await _pumpGateway(tester);
 
-    final relayFinder = find.byKey(_relayField);
-    expect(relayFinder, findsOneWidget,
-        reason: 'present: an operator who cannot see the relay port will go '
-            'and look for it somewhere worse');
+    expect(find.byKey(_relayField), findsNothing,
+        reason: 'the disabled JSON field is gone: a textarea of JSON is not '
+            'something the operators on this plant read');
+    expect(find.textContaining('token_file'), findsNothing,
+        reason: 'and nothing else prints the section either — an absence '
+            'asserted only by key would pass on a card that moved');
+    expect(find.textContaining('cut this screen off'), findsNothing,
+        reason: 'the explanation went with the thing it explained');
 
-    final relay = tester.widget<TextField>(relayFinder);
-    expect(relay.enabled, isFalse,
-        reason: 'disabled: the section configures the socket this edit '
-            'arrives on (D-10)');
-    expect(relay.controller?.text, contains('token_file'),
-        reason: 'the section\'s actual content is shown, not a placeholder');
+    await _editAndSave(tester);
 
-    expect(find.textContaining('cut this screen off'), findsOneWidget,
-        reason: 'explained: the copy says why, in operator language');
+    final written =
+        jsonDecode(fixture.api.writes.single) as Map<String, Object?>;
+    expect((written['relay'] as Map<String, Object?>?)?['token_file'],
+        '/etc/centroid/relay-tokens.json',
+        reason: 'unshown is not unkept: the backend refuses a document whose '
+            'relay section differs from the live one (D-10), so a save that '
+            'dropped it would fail by the wrong name');
   });
 
   // -------------------------------------------------------------------------
@@ -606,40 +618,42 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
-  // Arm 12 — placement and height: the owner's complaint, encoded. The target
-  // is a card-header affordance, not a page banner. It used to sit above the
-  // Transport card — labelling the one card that is device-local in BOTH
-  // modes — and spent a full band of height on one sentence. These arms are
+  // Arm 12 — placement and height: the owner's complaint, encoded, twice
+  // over. The first complaint was the full-width page band above the Transport
+  // card — a card that is device-local in BOTH modes, so the band labelled the
+  // wrong thing and spent a band of height on one sentence. The second was
+  // that gateway mode looked like a different screen, so the target now sits
+  // in ONE slot, measured identically in both modes below. These arms are
   // geometric on purpose: a golden of the affordance being present cannot
-  // guard the rule that the old band is absent.
+  // guard the rule that the old band is absent, and it cannot guard sameness
+  // between two images either.
   // -------------------------------------------------------------------------
   testWidgets(
-      'arm 12: in gateway mode the target lives inside the Backend '
-      'Configuration card, below Transport, one line tall', (tester) async {
+      'arm 12: in gateway mode the target sits exactly where the direct-mode '
+      'caption sits — below Transport, above the first section, one line tall',
+      (tester) async {
     await _pumpGateway(tester);
 
-    expect(
-        find.descendant(
-            of: find.byType(BackendConfigSection),
-            matching: find.byKey(_banner)),
-        findsOneWidget,
-        reason: 'the target is a fact about the Backend Configuration card — '
-            'the card whose editor reads and writes that machine — so it '
-            'lives on that card\'s own header, not above the Transport card '
-            'it used to mislabel');
     expect(find.byKey(_banner), findsOneWidget,
-        reason: 'and there is exactly one: a second copy above the page '
-            'would be the old band back');
+        reason: 'exactly one: a second copy would be the old page band back');
 
-    final transportTop = tester.getRect(find.byType(TransportModeCard)).top;
-    final bannerTop = tester.getRect(find.byKey(_banner)).top;
-    expect(bannerTop, greaterThan(transportTop),
-        reason: 'nothing about the target sits above the Transport card');
+    // The same three measurements the direct arm below makes, on the same
+    // page furniture. That is the owner's ruling as geometry: "the server
+    // config should look exactly the same with gateway and without".
+    final transportBottom =
+        tester.getRect(find.byType(TransportModeCard)).bottom;
+    final banner = tester.getRect(find.byKey(_banner));
+    expect(banner.top, greaterThanOrEqualTo(transportBottom),
+        reason: 'nothing about the target sits above the Transport card, '
+            'which is device-local in both modes');
 
-    final height = tester.getSize(find.byKey(_banner)).height;
-    expect(height, lessThanOrEqualTo(32),
-        reason: 'one line, not a band: the JSON editor is what the operator '
-            'needs the vertical space for (measured ${height}px)');
+    final dbTop = tester.getRect(find.text('Database Configuration')).top;
+    expect(banner.bottom, lessThanOrEqualTo(dbTop),
+        reason: 'above the first section it describes — the same slot the '
+            'direct-mode caption occupies');
+
+    expect(banner.height, lessThanOrEqualTo(32),
+        reason: 'one line, not a band (measured ${banner.height}px)');
   });
 
   testWidgets(
@@ -712,12 +726,10 @@ void main() {
     expect(find.textContaining('the relay is not accepting this station'),
         findsOneWidget,
         reason: 'the far end\'s own words, not a paraphrase');
-    expect(
-        find.descendant(
-            of: find.byType(BackendConfigSection),
-            matching: find.byKey(_banner)),
-        findsOneWidget,
-        reason: 'the target chip must survive onto the error face');
+    expect(find.byKey(_banner), findsOneWidget,
+        reason: 'the target chip is page furniture now — above the editor in '
+            'both modes — so it survives onto the error face by construction '
+            'rather than by a second copy inside the card');
     expect(
         find.descendant(
             of: find.byKey(_banner),

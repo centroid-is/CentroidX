@@ -193,6 +193,26 @@ final class GatewayConfig {
     if (uri.scheme != 'wss' && uri.scheme != 'ws') {
       return 'Scheme must be wss (or ws for a bench gateway), not ${uri.scheme}';
     }
+    // The host has to look like a host. This arm arrived with
+    // [normalizeGatewayAddress]: once the field supplies the missing scheme,
+    // anything typed into it parses, and `wss://just some words` has the host
+    // `just some words` — a URL by syntax and nothing by intent. Before the
+    // normaliser that string was refused for having no scheme, and losing
+    // that refusal would trade a sentence the operator can act on for a trust
+    // fetch that fails later with a network error.
+    //
+    // Deliberately a shape test and not a resolution: the plant's own dial is
+    // a container hostname that resolves nowhere from a developer's machine,
+    // and a validator that refused it would be wrong about the one deployment
+    // that matters. Letters, digits, dots and dashes are hostnames; brackets
+    // and colons are IPv6 literals. `%` is excluded on purpose — `Uri`
+    // percent-escapes an illegal host rather than rejecting it, so a typed
+    // space arrives here as `just%20some%20words`, and admitting `%` for the
+    // sake of an IPv6 zone id nobody dials would admit every typo with it.
+    if (!RegExp(r'^[A-Za-z0-9._:\[\]-]+$').hasMatch(uri.host)) {
+      return 'Not an address: "$trimmed" is not a host name or an IP address '
+          'and a port. Type it like 10.50.10.11:9443';
+    }
     if (uri.scheme == 'ws' && hasPinnedTrust) {
       return 'A CA root on a ws:// dial is never consulted — the config would '
           'read as encrypted while the traffic is not';
@@ -357,6 +377,32 @@ final class GatewayConfig {
   String toString() => 'GatewayConfig(${mode.wireName}, $url, '
       'ca=${caPem != null ? '<pinned material, ${caPem!.length} chars>' : caCertPath}, '
       'token=$tokenPath)';
+}
+
+/// Turns what an operator types into the URL the rest of the app dials.
+///
+/// The field asks for an address and a port, because that is what an
+/// integrator has written down: `10.50.10.11:9443`, or `centroidx-backend:9443`
+/// — a container hostname, which is what this plant's panels actually dial.
+/// Neither is a URL, and neither can be repaired by `Uri.parse` after the
+/// fact: a bare IPv4 literal parses as a *path*, while a hostname with a port
+/// parses as the scheme `centroidx-backend` with the path `9443`, which a
+/// naive check reads as "has a scheme" and then nothing can dial. So the test
+/// here is textual and deliberately crude — no `://` means no scheme was
+/// typed, and the secure one is supplied.
+///
+/// **`wss` and never `ws`.** Defaulting to the cleartext scheme would be this
+/// function quietly choosing the plant's security for it. A bench gateway is
+/// still reachable: type the `ws://` and it is kept exactly as typed, and
+/// [GatewayConfig.validationError] still says what that costs.
+///
+/// Empty stays empty, so an operator halfway through clearing the field gets
+/// "Enter the gateway address" rather than a refusal about `wss://`.
+String normalizeGatewayAddress(String raw) {
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty) return '';
+  if (trimmed.contains('://')) return trimmed;
+  return 'wss://$trimmed';
 }
 
 /// Reads the station's transport choice, falling back to direct mode.

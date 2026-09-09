@@ -54,14 +54,16 @@ const kCertPlaceholder = "todo";
 /// mistaken for "not connected".
 const Key kConfigStatusAbsenceKey = Key('config_status_absence');
 
-/// The "Advanced — edit as JSON" expansion, collapsed by default.
-const Key kConfigAdvancedJsonTileKey = Key('config_advanced_json_tile');
-
-/// The raw JSON text field inside the Advanced expansion.
-const Key kConfigAdvancedJsonFieldKey = Key('config_advanced_json_field');
-
-/// The button that re-parses the Advanced text into the ONE document.
-const Key kConfigAdvancedJsonApplyKey = Key('config_advanced_json_apply');
+// The "Advanced — edit as JSON" expansion is gone, by the owner's ruling, and
+// so is the read-only card that printed a section's JSON into a disabled
+// field. Both were JSON on a screen for people who do not read JSON. Neither
+// removal loses a byte: `ConfigDocument` still carries every section and every
+// unknown key it did not model — including `relay` — verbatim through an edit
+// and back out of `encode()`, which is a property `config_document_test.dart`
+// holds with a seeded round-trip. What is lost is the ability to EDIT a
+// section this build has no form for; the recovery editor below still repairs
+// a document that will not decode, and anything else is a backend-side edit,
+// which is where `relay` always had to be changed anyway (D-10).
 
 /// The raw text field of the recovery face — the stored document, shown
 /// whole when it will not decode.
@@ -2120,7 +2122,6 @@ class StateManConfigEditor extends ConsumerStatefulWidget {
     this.refusalRowKey,
     this.restoreButtonKey,
     this.applyNoteKey,
-    this.readOnlySectionKey,
   });
 
   /// Where the document lives. The transport decides this and nothing else.
@@ -2139,10 +2140,6 @@ class StateManConfigEditor extends ConsumerStatefulWidget {
   final Key? refusalRowKey;
   final Key? restoreButtonKey;
   final Key? applyNoteKey;
-
-  /// The key for a read-only section's disabled field, by section name
-  /// (gateway maps `relay` to `kBackendConfigRelayFieldKey`).
-  final Key Function(String section)? readOnlySectionKey;
 
   @override
   ConsumerState<StateManConfigEditor> createState() =>
@@ -2179,20 +2176,11 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
   RawConfig? _rawRecovery;
   String? _recoveryError;
 
-  /// The Advanced — edit as JSON expansion's own state. The controller is
-  /// (re)seeded from `doc.encode()` every time the tile OPENS, so the raw
-  /// view always starts from the ONE document, unsaved form edits included.
-  final _advancedController = TextEditingController();
   final _recoveryController = TextEditingController();
-  String? _advancedError;
 
   final _opcuaKeys = _RowKeys();
   final _jbtmKeys = _RowKeys();
   final _modbusKeys = _RowKeys();
-
-  /// One controller per read-only section's disabled field, owned here so
-  /// they are disposed rather than re-minted every build.
-  final Map<String, TextEditingController> _readOnlyControllers = {};
 
   @override
   void initState() {
@@ -2202,11 +2190,7 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
 
   @override
   void dispose() {
-    _advancedController.dispose();
     _recoveryController.dispose();
-    for (final controller in _readOnlyControllers.values) {
-      controller.dispose();
-    }
     super.dispose();
   }
 
@@ -2216,25 +2200,20 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
       error is rpc.RpcException ? error.message : error.toString();
 
   /// Re-points [_doc] and everything derived from it. The single place a
-  /// new document enters this state, whether from load, the Advanced
-  /// expansion or the raw recovery editor.
+  /// new document enters this state, whether from load or the raw recovery
+  /// editor.
+  ///
+  /// `doc.readOnlySections` is deliberately not read here any more: the
+  /// sections it names are no longer rendered, and they need nothing done to
+  /// them to survive — [ConfigDocument] carries every unmodelled section
+  /// verbatim from `parse` to `encode`, which is what a gateway save relies
+  /// on to re-attach `relay` byte-for-byte.
   void _adoptDocument(ConfigDocument doc, {required String? savedEncoded}) {
     _doc = doc;
     _savedEncoded = savedEncoded;
     _opcuaKeys.reset(doc.opcua.length);
     _jbtmKeys.reset(doc.jbtm.length);
     _modbusKeys.reset(doc.modbus.length);
-    const encoder = JsonEncoder.withIndent('  ');
-    for (final name in doc.readOnlySections) {
-      final content = doc.rawSection(name);
-      _readOnlyControllers.putIfAbsent(name, TextEditingController.new).text =
-          content == null ? '' : encoder.convert(content);
-    }
-    _readOnlyControllers.removeWhere((name, controller) {
-      if (doc.readOnlySections.contains(name)) return false;
-      controller.dispose();
-      return true;
-    });
   }
 
   Future<void> _load() async {
@@ -2349,39 +2328,6 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
       // The far end's refusal, verbatim — restorePrevious may refuse by
       // name (17-10 deviation 4), and its sentence is the operator's.
       setState(() => _refusal = _describe(e));
-    }
-  }
-
-  /// Re-parses the Advanced expansion's text into the ONE document. Asks
-  /// first when the form holds unsaved edits — the paste replaces the whole
-  /// document, those edits included.
-  Future<void> _applyAdvancedJson() async {
-    final doc = _doc;
-    if (doc == null) return;
-    if (_hasUnsavedChanges) {
-      final confirmed = await showConfirmDialog(
-        context: context,
-        title: 'Replace the whole document?',
-        message: 'The form holds unsaved edits. Applying this JSON replaces '
-            'the whole document with what is written here — including those '
-            'edits, unless the text still carries them.',
-        confirmLabel: 'Replace',
-      );
-      if (!confirmed || !mounted) return;
-    }
-    try {
-      final parsed = ConfigDocument.parse(_advancedController.text,
-          readOnlySections: doc.readOnlySections);
-      setState(() {
-        _adoptDocument(parsed, savedEncoded: _savedEncoded);
-        _advancedError = null;
-      });
-    } on FormatException catch (e) {
-      // The parser's own words. The form document is untouched — a refused
-      // apply must not half-adopt anything.
-      setState(() => _advancedError = e.message);
-    } catch (e) {
-      setState(() => _advancedError = e.toString());
     }
   }
 
@@ -2634,105 +2580,6 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
     );
   }
 
-  /// The read-only sections, rendered from the document itself: present,
-  /// disabled and explained (D-10). The content is `rawSection`'s — exactly
-  /// what `encode()` will reproduce — so the screen cannot show one thing
-  /// while the wire carries another.
-  List<Widget> _readOnlySectionCards(ConfigDocument doc, ThemeData theme) => [
-        for (final name in doc.readOnlySections) ...[
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  TextField(
-                    key: widget.readOnlySectionKey?.call(name) ??
-                        Key('config_readonly_$name'),
-                    controller: _readOnlyControllers[name],
-                    enabled: false,
-                    maxLines: null,
-                    decoration: InputDecoration(
-                      labelText: '$name — read-only from here',
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Changing $name from here would cut this screen off '
-                    'mid-change — edit it on the backend\'s own machine.',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-        ],
-      ];
-
-  /// The escape hatch, demoted and not deleted: a build whose form cannot
-  /// model a top-level section is otherwise back to SSH. It edits the SAME
-  /// [ConfigDocument] the form edits — opening serialises the current
-  /// document, applying re-parses into it — so the two views cannot
-  /// silently diverge.
-  Widget _advancedJsonCard(ConfigDocument doc, ThemeData theme) => Card(
-        child: ExpansionTile(
-          key: kConfigAdvancedJsonTileKey,
-          leading: const FaIcon(FontAwesomeIcons.code, size: 16),
-          title: const Text('Advanced — edit as JSON'),
-          subtitle: Text(
-            'The same document the form edits, whole — for sections this '
-            'build has no form for, or for pasting a known-good document.',
-            style: theme.textTheme.bodySmall,
-          ),
-          onExpansionChanged: (open) {
-            if (open) _advancedController.text = doc.encode();
-            setState(() => _advancedError = null);
-          },
-          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-          children: [
-            TextField(
-              key: kConfigAdvancedJsonFieldKey,
-              controller: _advancedController,
-              maxLines: null,
-              style: theme.textTheme.bodySmall,
-              decoration: const InputDecoration(
-                labelText: 'Configuration document (JSON)',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            if (_advancedError != null) ...[
-              const SizedBox(height: 8),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.error_outline,
-                      size: 16, color: theme.colorScheme.error),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _advancedError!,
-                      style: TextStyle(color: theme.colorScheme.error),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton.icon(
-                key: kConfigAdvancedJsonApplyKey,
-                onPressed: _applyAdvancedJson,
-                icon: const Icon(Icons.check, size: 16),
-                label: const Text('Apply JSON'),
-              ),
-            ),
-          ],
-        ),
-      );
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -2904,12 +2751,6 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
           emptySubtitle: 'Add your first Modbus TCP server to get started',
           list: () => _modbusList(doc, stateManAsync),
         ),
-        const SizedBox(height: 16),
-        // The read-only sections (gateway's `relay`, D-10): present,
-        // disabled, explained — never silently absent.
-        ..._readOnlySectionCards(doc, theme),
-        // The demoted JSON escape hatch, collapsed by default, both modes.
-        _advancedJsonCard(doc, theme),
         const SizedBox(height: 16),
         if (_refusal != null) ...[
           Row(

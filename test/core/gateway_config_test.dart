@@ -207,6 +207,91 @@ void main() {
     });
   });
 
+  // The field on the Server Config page asks for "address and port", because
+  // that is what an integrator has written down. These arms are the contract
+  // between what is typed there and what the rest of the app dials.
+  group('normalizeGatewayAddress — an address and a port, not a URL', () {
+    /// The pairing that matters: normalise, then judge the result with the
+    /// same getter the Save button consults. An arm that only compared
+    /// strings would pass on a normaliser that produced a URL nothing dials.
+    String? refusalFor(String typed) => GatewayConfig(
+          mode: TransportMode.gateway,
+          url: normalizeGatewayAddress(typed),
+        ).validationError;
+
+    test('an IP literal and a port becomes a secure URL, and is accepted', () {
+      expect(normalizeGatewayAddress('10.50.10.11:9443'),
+          'wss://10.50.10.11:9443');
+      expect(refusalFor('10.50.10.11:9443'), isNull);
+    });
+
+    test('an FQDN and a port is accepted — the rig dials one', () {
+      // `wss://centroidx-backend:9443` is this plant's real dial: a container
+      // hostname, not an address. Typed bare, `Uri.parse` reads
+      // `centroidx-backend` as the SCHEME and `9443` as the path, which is
+      // why the normaliser tests for `://` textually rather than parsing.
+      expect(normalizeGatewayAddress('centroidx-backend:9443'),
+          'wss://centroidx-backend:9443');
+      expect(refusalFor('centroidx-backend:9443'), isNull,
+          reason: 'a hostname must not be refused: it is what the rig itself '
+              'dials, and the SAN advisory — not a refusal — is what warns '
+              'about the certificate');
+      expect(
+          GatewayConfig(
+                  mode: TransportMode.gateway,
+                  url: normalizeGatewayAddress('centroidx-backend:9443'))
+              .advisory,
+          contains('centroidx-backend'),
+          reason: 'accepted, and still warned about by name');
+    });
+
+    test('a dotted FQDN with a port is accepted', () {
+      expect(normalizeGatewayAddress('gw.svn.centroid.is:9443'),
+          'wss://gw.svn.centroid.is:9443');
+      expect(refusalFor('gw.svn.centroid.is:9443'), isNull);
+    });
+
+    test('an IPv6 literal keeps its brackets', () {
+      expect(normalizeGatewayAddress('[fd00::1]:9443'), 'wss://[fd00::1]:9443');
+      expect(refusalFor('[fd00::1]:9443'), isNull);
+    });
+
+    test('a scheme the operator typed is kept exactly, ws included', () {
+      expect(normalizeGatewayAddress('ws://bench:9443'), 'ws://bench:9443',
+          reason: 'a bench gateway stays reachable — and stays visibly '
+              'plaintext, which the refusals about credentials depend on');
+      expect(normalizeGatewayAddress('wss://10.50.10.11:9443'),
+          'wss://10.50.10.11:9443');
+    });
+
+    test('the default is the secure scheme, never the plaintext one', () {
+      expect(normalizeGatewayAddress('10.50.10.11:9443'), startsWith('wss://'),
+          reason: 'a default of ws:// would be this function choosing the '
+              'plant\'s security for it, silently');
+    });
+
+    test('surrounding whitespace is dropped', () {
+      expect(normalizeGatewayAddress('  10.50.10.11:9443\n'),
+          'wss://10.50.10.11:9443');
+    });
+
+    test('empty stays empty, so the field still asks for an address', () {
+      expect(normalizeGatewayAddress(''), '');
+      expect(normalizeGatewayAddress('   '), '');
+      expect(refusalFor(''), contains('Enter the gateway address'),
+          reason: 'an operator halfway through clearing the field must read '
+              '"enter the address", not a complaint about wss://');
+    });
+
+    test('nonsense is still refused rather than dressed up as a URL', () {
+      // `wss://just some words` has a host of `just` — a URL by syntax and
+      // nothing by intent. What must not happen is the refusal disappearing.
+      expect(refusalFor('just some words'), isNotNull,
+          reason: 'prepending a scheme must not turn a typo into something '
+              'the Save button accepts');
+    });
+  });
+
   group('the legacy path migrates on save, never on load', () {
     test('a readable legacy file becomes pinned material, path dropped',
         () async {

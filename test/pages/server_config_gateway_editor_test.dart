@@ -11,9 +11,11 @@
 ///  * fidelity over the wire from the FORM — a typed edit crosses with the
 ///    relay section byte-verbatim and every unknown key intact, and the
 ///    local store is not written;
-///  * the Advanced-JSON escape hatch shares ONE document with the form, in
-///    both directions, refuses bad JSON in the parser's own words, and asks
-///    before replacing a dirty form;
+///  * no JSON is printed on this page any more — neither the Advanced
+///    expansion nor the read-only card that showed `relay` in a disabled
+///    field (the owner removed both) — and the sections they used to show
+///    still cross the wire verbatim, which is the property that made
+///    removing the VIEW safe;
 ///  * honest absence — gateway mode has no live status, and the screen says
 ///    so instead of drawing a grey chip that reads as "not connected";
 ///  * apply semantics — the restart-to-apply copy is the transport's answer
@@ -51,10 +53,10 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
 import '../helpers/test_helpers.dart';
 
 // ---------------------------------------------------------------------------
-// Keys. The 17-13 kBackendConfig* spellings stay on the gateway dressing; the
-// editor-owned affordances (advanced JSON, status absence, raw recovery) get
-// editor-owned spellings, declared as literals here so this file fails by
-// "found nothing" until the GREEN task declares the constants.
+// Keys. The 17-13 kBackendConfig* spellings stay on the gateway affordances;
+// the editor-owned ones (status absence, raw recovery) get editor-owned
+// spellings, declared as literals here so this file fails by "found nothing"
+// rather than by a compile error somebody could silence.
 // ---------------------------------------------------------------------------
 
 const _editor = Key('backend_config_editor');
@@ -66,8 +68,9 @@ const _restartNote = Key('backend_config_restart_note');
 // server_config_target_test.dart — arm 4 holds unchanged across the swap.
 
 const _absence = Key('config_status_absence');
+/// The deleted Advanced-JSON field, still spelled here: an arm that asserts
+/// an absence has to name the thing that must be absent.
 const _advancedField = Key('config_advanced_json_field');
-const _advancedApply = Key('config_advanced_json_apply');
 const _recoveryField = Key('config_raw_recovery_field');
 const _recoveryApply = Key('config_raw_recovery_apply');
 
@@ -231,18 +234,6 @@ Future<void> _tapSave(WidgetTester tester) async {
   await settle(tester);
 }
 
-/// Opens the Advanced — edit as JSON expansion at the bottom of the editor.
-Future<void> _openAdvanced(WidgetTester tester) async {
-  await tester.scrollUntilVisible(
-    find.textContaining('Advanced'),
-    200,
-    scrollable: find.byType(Scrollable).first,
-  );
-  await settle(tester);
-  await tester.tap(find.textContaining('Advanced'));
-  await settle(tester);
-}
-
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
@@ -278,12 +269,6 @@ void main() {
     expect(editorWidget, isNot(isA<TextField>()),
         reason: 'the raw JSON textarea is no longer the primary editor');
 
-    // Demoted, not deleted: the escape hatch exists, collapsed by default.
-    expect(find.textContaining('Advanced'), findsOneWidget,
-        reason: 'the JSON escape hatch must survive — a build whose form '
-            'cannot model a section is otherwise back to SSH');
-    expect(find.byKey(_advancedField), findsNothing,
-        reason: 'collapsed by default: the form is the primary editor');
   });
 
   // ---------------------------------------------------------------------
@@ -326,123 +311,47 @@ void main() {
   });
 
   // ---------------------------------------------------------------------
-  // The Advanced-JSON escape hatch: one document, both directions.
+  // The JSON is gone from the SCREEN — and from the screen only.
+  //
+  // The owner removed both JSON surfaces by name: the "Advanced — edit as
+  // JSON" expansion and the read-only card that printed `relay` into a
+  // disabled field. The hazard in obeying that is obvious and is what this
+  // arm exists for: a removal that also stopped CARRYING what it stopped
+  // SHOWING would look identical on screen and would silently drop the
+  // backend's relay section on the next save. So absence and preservation are
+  // asserted in one arm, against one document.
   // ---------------------------------------------------------------------
   testWidgets(
-      'form → raw: opening Advanced serialises the current document, '
-      'unsaved form edits included', (tester) async {
-    await _pumpGateway(tester);
-
-    await _editEndpoint(tester, 'opc.tcp://10.104.20.10:4899');
-    await _openAdvanced(tester);
-
-    final field = tester.widget<TextField>(find.byKey(_advancedField));
-    final text = field.controller!.text;
-    expect(text, contains('opc.tcp://10.104.20.10:4899'),
-        reason: 'the raw view shows the SAME document the form holds — the '
-            'unsaved edit included, because there is only one document');
-    expect(text, contains('token_file'),
-        reason: 'the whole document, relay section included: the raw view '
-            'is where an unmodeled section can be seen and edited');
-    expect(text, contains('collector_hints'),
-        reason: 'unknown top-level sections are visible in the raw view');
-  });
-
-  testWidgets(
-      'raw → form: applying pasted JSON updates the typed form and the '
-      'save sends exactly that document', (tester) async {
+      'no JSON is printed on the page, and the sections it used to print '
+      'still cross the wire verbatim', (tester) async {
     final fixture = await _pumpGateway(tester);
 
-    await _openAdvanced(tester);
-    final pasted = <String, Object?>{
-      'opcua': [
-        <String, Object?>{
-          'endpoint': 'opc.tcp://10.104.20.77:4840',
-          'server_alias': 'ST101',
-          'publishing_interval_ms': 250,
-          'vendor_note': 'kept-verbatim',
-        },
-      ],
-      'collector_hints': <String, Object?>{'window': '5m'},
-      'relay': _liveConfig['relay'],
-    };
-    await tester.enterText(find.byKey(_advancedField), jsonEncode(pasted));
-    await settle(tester);
-    await tester.ensureVisible(find.byKey(_advancedApply));
-    await tester.tap(find.byKey(_advancedApply));
-    await settle(tester);
+    expect(find.textContaining('Advanced'), findsNothing,
+        reason: 'the JSON expansion is gone by the owner\'s ruling — a '
+            'textarea of JSON is not a form for people who do not read JSON');
+    expect(find.byKey(_advancedField), findsNothing);
+    expect(find.textContaining('read-only from here'), findsNothing,
+        reason: 'and so is the disabled card that printed a section\'s JSON');
+    expect(find.textContaining('token_file'), findsNothing,
+        reason: 'nothing on this page prints the relay section any more, in '
+            'either mode — the absence is the whole point of the ruling');
 
-    expect(find.text('opc.tcp://10.104.20.77:4840'), findsWidgets,
-        reason: 'the typed form re-renders from the applied document — the '
-            'form and the raw view cannot diverge because there is only '
-            'one document between them');
-
+    await _editEndpoint(tester, 'opc.tcp://10.104.20.10:4841');
     await _tapSave(tester);
-    expect(fixture.api.writes, hasLength(1));
+
     final written =
         jsonDecode(fixture.api.writes.single) as Map<String, dynamic>;
     expect(
-        ((written['opcua'] as List).first
-            as Map<String, dynamic>)['endpoint'],
-        'opc.tcp://10.104.20.77:4840');
-  });
-
-  testWidgets(
-      'bad JSON in the Advanced field is refused in the parser\'s own '
-      'words, and the form document is untouched', (tester) async {
-    final fixture = await _pumpGateway(tester);
-
-    await _openAdvanced(tester);
-    await tester.enterText(find.byKey(_advancedField), 'not json {');
-    await settle(tester);
-    await tester.ensureVisible(find.byKey(_advancedApply));
-    await tester.tap(find.byKey(_advancedApply));
-    await settle(tester);
-
-    expect(find.textContaining('Unexpected character'), findsOneWidget,
-        reason: 'the parser\'s own sentence, verbatim — not a paraphrase');
-    expect(find.text('ST101'), findsOneWidget,
-        reason: 'the form still holds the document as read');
-    expect(fixture.api.writes, isEmpty);
-    // The save face stays clean: a refused apply changed nothing. Scoped
-    // to the section — the Transport card's save button wears the same
-    // face.
-    expect(
-        find.descendant(
-            of: find.byType(BackendConfigSection),
-            matching: find.text('All Changes Saved')),
-        findsOneWidget);
-  });
-
-  testWidgets(
-      'applying raw JSON over a dirty form asks first, and cancel keeps '
-      'the form edit', (tester) async {
-    final fixture = await _pumpGateway(tester);
-
-    await _editEndpoint(tester, 'opc.tcp://10.104.20.10:5000');
-    await _openAdvanced(tester);
-    await tester.enterText(
-        find.byKey(_advancedField), jsonEncode(_liveConfig));
-    await settle(tester);
-    await tester.ensureVisible(find.byKey(_advancedApply));
-    await tester.tap(find.byKey(_advancedApply));
-    await settle(tester);
-
-    expect(find.textContaining('unsaved'), findsWidgets,
-        reason: 'the form holds unsaved edits; replacing the whole document '
-            'deserves an are-you-sure');
-    await tester.tap(find.text('Cancel'));
-    await settle(tester);
-
-    // The typed edit survived the cancelled apply.
-    await _tapSave(tester);
-    final written =
-        jsonDecode(fixture.api.writes.single) as Map<String, dynamic>;
-    expect(
-        ((written['opcua'] as List).first
-            as Map<String, dynamic>)['endpoint'],
-        'opc.tcp://10.104.20.10:5000',
-        reason: 'cancel means cancel: the form edit is still the document');
+        const DeepCollectionEquality()
+            .equals(written['relay'], _liveConfig['relay']),
+        isTrue,
+        reason: 'removing the VIEW must not remove the CONTENT: the backend '
+            'refuses a document whose relay section differs from the live '
+            'one, so a save that dropped it would fail by the wrong name — '
+            'and one that dropped it silently would be worse');
+    expect(written['collector_hints'], {'window': '5m'},
+        reason: 'the same for a top-level section this build has no form '
+            'for: unshown is not unkept');
   });
 
   // ---------------------------------------------------------------------

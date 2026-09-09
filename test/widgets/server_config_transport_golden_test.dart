@@ -1,14 +1,19 @@
 /// Golden images of the transport mode switch, for design review — under the
 /// **real station themes**, in both brightnesses.
 ///
-/// Five frames, because they are the five things an operator sees. Collapsed on
-/// a direct-mode station: the whole-plant default, where the card must read as a
-/// *switch* and not as a fifth section, with the page below it exactly where it
-/// was. Expanded on a direct station: the switch itself, above the four sections
-/// it governs. A station already pointed at a gateway: the card opens on its own
-/// settings, the live link is under the three fields, and the four sections are
-/// gone. The note that replaces them. And the hostname advisory, showing while
-/// Save is still enabled.
+/// The frames are the things an operator sees. A direct-mode station: the
+/// switch itself, at the top of the page, above the sections it governs. A
+/// station already pointed at a gateway: the address and port, the pinned CA
+/// and the live link, above the same sections read from the backend. And the
+/// hostname advisory, showing while Save is still enabled.
+///
+/// **The collapsed frame is gone with the collapsing.** The card used to be an
+/// `ExpansionTile`, shut by default on a direct station, and the first frame
+/// photographed that shut state as "the whole-plant default". The owner opened
+/// it permanently — the transport toggle is the ONE difference between this
+/// page's two faces, and a difference behind a disclosure triangle is one an
+/// operator has to already know about to find — so the frame had nothing left
+/// to show that the direct frame below does not.
 ///
 /// ## Why this file was re-shot rather than extended
 ///
@@ -224,27 +229,17 @@ void main() {
       final label = dark ? 'dark' : 'light';
       final suffix = dark ? '_dark' : '';
 
-      testWidgets('direct station, collapsed — the whole-plant default, $label',
+      testWidgets('direct station, the toggle in the open, $label',
           (tester) async {
         await pumpPage(tester, dark: dark);
-        expectNoSpinner('direct collapsed');
+        expectNoSpinner('direct');
 
-        // The point of the frame: the card is a switch, not a fifth section,
-        // and the four sections below it are where they were.
+        // The card is a switch and not a fifth section: it needs no opening,
+        // and the sections it governs are below it where they always were.
+        expect(find.byType(SegmentedButton<TransportMode>), findsOneWidget,
+            reason: 'no disclosure gesture stands between the operator and '
+                'the one control this page\'s two faces differ by');
         expect(find.text('OPC-UA Servers'), findsOneWidget);
-
-        await expectLater(
-          find.byType(MaterialApp),
-          matchesGoldenFile(
-              'goldens/server_config_transport_direct_collapsed$suffix.png'),
-        );
-      });
-
-      testWidgets('direct station, card opened, $label', (tester) async {
-        await pumpPage(tester, dark: dark);
-        await tester.tap(find.text('Transport'));
-        await settle(tester);
-        expectNoSpinner('direct expanded');
 
         await expectLater(
           find.byType(MaterialApp),
@@ -294,8 +289,6 @@ void main() {
         // genuinely true and the button's enabled state is about the advisory
         // rather than about there being nothing to save.
         await pumpPage(tester, dark: dark);
-        await tester.tap(find.text('Transport'));
-        await settle(tester);
         await tester.tap(find.text('Relay gateway'));
         await settle(tester);
         await tester.enterText(

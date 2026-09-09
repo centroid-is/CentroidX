@@ -217,31 +217,69 @@ class ServerConfigBody extends ConsumerWidget {
     // column carries.
     final stationName = ref.watch(stationNameProvider);
 
+    // **One page, one shape, both transports.** The owner's ruling, twice
+    // given: "backend configuration should be exactly the same ui page as
+    // server config in direct to plcs, it is the same data", and then "the
+    // server config should look exactly the same with gateway and without —
+    // the only difference is a toggle at the top for gateway". So the column
+    // below does not fork: every slot is filled in both modes, in the same
+    // order, and the transport decides only what each slot is *about*.
+    //
+    //  1. Transport — the toggle, and the gateway address when it is on.
+    //  2. The target, named — this station, or the backend being dialled.
+    //  3. Database — the station's own, or the honest statement that a
+    //     gateway station opens none (`DatabaseConfigWidget` branches).
+    //  4. The OPC UA / JBTM / Modbus editor — the SAME widget over the
+    //     transport's own [ConfigSource].
+    //  5. Import / Export — the station's own config envelope, or the honest
+    //     statement that it does not follow the transport.
     return SingleChildScrollView(
       child: Column(
         children: [
           // Which pipe this station runs on. Device-local in BOTH modes, so
           // it sits first and no target marker sits above it — the target is
-          // a fact about the content below, and it is said there (ACCESS-04,
-          // redesigned per owner: the old page band mislabelled this card
-          // and spent a band of height on one sentence).
+          // a fact about the content below, and it is said there (ACCESS-04).
           TransportModeCard(key: ValueKey('transport_$refreshKey')),
           const SizedBox(height: 16),
 
-          if (!gateway.isGateway) ...[
-            // The target, named, above the four station sections it
-            // describes: one quiet caption line, not a band.
-            ConfigTargetBanner.station(name: stationName),
-            const SizedBox(height: 8),
+          // The target, named, above the sections it describes — the same
+          // slot in both modes. The two faces differ because the fact does:
+          // editing your own station is the unremarkable case and reads as a
+          // caption; editing another machine is the failure mode the ROADMAP
+          // names first and wears the attention chip.
+          Align(
+            alignment: Alignment.centerLeft,
+            child: gateway.isGateway
+                ? ConfigTargetBanner.backend(name: gateway.url)
+                : ConfigTargetBanner.station(name: stationName),
+          ),
+          // Who a save here is recorded against. Gateway-only because the
+          // fact is: only a remote machine verifies this panel's session and
+          // can name the account (ACCESS-06). A direct station's saves are
+          // device-local and there is no second party to attribute them to.
+          if (gateway.isGateway) ...[
+            const SizedBox(height: 4),
+            const _GatewayAttributionLine(),
+          ],
+          const SizedBox(height: 8),
 
-            // Database Configuration Section
-            DatabaseConfigWidget(key: ValueKey('db_$refreshKey')),
-            const SizedBox(height: 16),
+          // Database Configuration Section. Gateway mode renders its own
+          // face — the station opens no direct database connection, and the
+          // card says exactly that instead of offering credentials nothing
+          // dials.
+          DatabaseConfigWidget(key: ValueKey('db_$refreshKey')),
+          const SizedBox(height: 16),
 
-            // The OPC UA / JBTM / Modbus sections, over ONE document with
-            // ONE save button (phase 2 of quick/20260908-unify-config-ui).
-            // Phase 3 hands this same editor to the gateway branch with a
-            // GatewayConfigSource — same form, same data, other machine.
+          // The OPC UA / JBTM / Modbus sections, over ONE document with ONE
+          // save button. The same widget in both modes — direct over this
+          // station's preferences, gateway over the backend's config file —
+          // which is the whole of the owner's ruling.
+          if (gateway.isGateway)
+            BackendConfigSection(
+              key: ValueKey('backend_config_$refreshKey'),
+              targetUrl: gateway.url,
+            )
+          else
             StateManConfigEditor(
               key: ValueKey('stateman_$refreshKey'),
               source: LocalPrefsConfigSource(
@@ -253,19 +291,8 @@ class ServerConfigBody extends ConsumerWidget {
                 await prefs.remove(StateManConfig.configKey, secret: true);
               },
             ),
-            const SizedBox(height: 16),
-            const ImportExportCard(),
-          ] else ...[
-            // The backend's own configuration — the page's second target
-            // (ACCESS-04). Its header names the machine it edits; the four
-            // direct-mode sections are simply absent, which the transport
-            // toggle above already explains (owner: a note narrating the
-            // toggle is noise).
-            BackendConfigSection(
-              key: ValueKey('backend_config_$refreshKey'),
-              targetUrl: gateway.url,
-            ),
-          ],
+          const SizedBox(height: 16),
+          const ImportExportCard(),
         ],
       ),
     );
@@ -578,24 +605,28 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
         attention.withAlpha(30),
         theme.cardTheme.color ?? theme.colorScheme.surfaceContainerLow);
 
-    // Collapsed by default in direct mode — the shape `McpServerSection`
-    // already uses for a device-local setting, and the reason is not only
-    // consistency: an expanded card here pushes the four sections down the
-    // page on every station in the plant, for a setting almost none of them
-    // will ever change.
+    // **Always open, at the top of the page.** It used to be an
+    // `ExpansionTile` collapsed in direct mode, on the argument that an
+    // expanded card pushes the sections below it down on every station in
+    // the plant. The owner overruled that: the transport toggle IS the one
+    // difference between the two faces of this page, and a difference folded
+    // behind a disclosure triangle is one an operator has to already know
+    // about to find. Everything below this card is now the same in both
+    // modes, so this is the whole of what the toggle costs in height.
     return Card(
-      child: ExpansionTile(
-        leading: const FaIcon(FontAwesomeIcons.networkWired, size: 20),
-        title: const Text('Transport'),
-        subtitle: Text(saved.isGateway
-            ? 'Relay gateway — ${saved.url}'
-            : 'Direct to PLCs'),
-        // A gateway station opens on its own settings; a direct one does not
-        // have any to show.
-        initiallyExpanded: saved.isGateway,
-        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        expandedCrossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+          Row(
+            children: [
+              const FaIcon(FontAwesomeIcons.networkWired, size: 20),
+              const SizedBox(width: 8),
+              Text('Transport', style: theme.textTheme.titleMedium),
+            ],
+          ),
+          const SizedBox(height: 12),
           Text(
             'This setting belongs to this station only. It is never '
             'exported, imported or synced from another machine.',
@@ -624,11 +655,22 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
             TextField(
               controller: _urlController,
               decoration: const InputDecoration(
-                labelText: 'Gateway address',
-                hintText: 'wss://10.50.10.11:9443',
+                labelText: 'Gateway address and port',
+                hintText: '10.50.10.11:9443  or  centroidx-backend:9443',
+                // Kept short deliberately: at 760px — the narrowest panel
+                // this page is shot at — a longer line ellipsises, and a
+                // helper the operator cannot finish reading is worse than a
+                // terse one.
+                helperText: 'IP address or host name, and the port. '
+                    'wss unless you type a scheme.',
                 border: OutlineInputBorder(),
               ),
-              onChanged: (value) => _edit(_edited.copyWith(url: value)),
+              // Normalised on the way in, not on the way out: everything that
+              // reads this row — the refusal below, the trust fetch, the boot
+              // path — sees the URL it will actually dial, so no second
+              // spelling of "what did the operator mean" can appear.
+              onChanged: (value) => _edit(
+                  _edited.copyWith(url: normalizeGatewayAddress(value))),
             ),
             const SizedBox(height: 12),
             // The trust line — what replaced the "PEM path" field ("how do I
@@ -825,7 +867,8 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
             'Changing the transport takes effect when the HMI restarts.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -905,15 +948,8 @@ final gatewayVerifiedAccountProvider = FutureProvider<String?>((ref) async {
   return remote?.verifiedAccount;
 });
 
-/// The card's title line — the section named beside the machine it edits.
-/// Keyed so the header golden can photograph exactly this line.
-const Key kBackendConfigHeaderKey = Key('backend_config_header');
-
 /// The editable half of the backend's configuration document.
 const Key kBackendConfigEditorKey = Key('backend_config_editor');
-
-/// The `relay` section, rendered and not editable (D-10).
-const Key kBackendConfigRelayFieldKey = Key('backend_config_relay_field');
 
 /// The section's own save button — its ONE unsaved-state indicator, the same
 /// ruling the Transport card's save button carries.
@@ -931,36 +967,79 @@ const Key kBackendConfigAttributionKey = Key('backend_config_attribution');
 /// Restart-to-apply, said where the save happens.
 const Key kBackendConfigRestartNoteKey = Key('backend_config_restart_note');
 
-/// The backend's `StateManConfig`, editable from a gateway-mode panel —
-/// except for the section that carries the edit (ACCESS-04, D-10).
+/// Who a save on this page is recorded against, on a gateway station.
 ///
-/// **Phase 3 of quick/20260908-unify-config-ui:** the body is the SAME
-/// [StateManConfigEditor] direct mode renders, over a [GatewayConfigSource]
-/// — the owner's ruling ("backend configuration should be exactly the same
-/// ui page as server config in direct to plcs, it is the same data"). The
-/// raw JSON textarea 17-13 shipped is demoted into the editor's
-/// "Advanced — edit as JSON" expansion, not deleted. This widget keeps only
-/// the gateway dressing AROUND the editor: the header chip naming the
-/// machine, the station-account attribution (ACCESS-06), and the error face
-/// for a relay client that cannot be built at all.
+/// **The fix for the rig's photographed attribution defect, kept.** The line
+/// used to print `stationNameProvider` — this panel's own hostname, which on
+/// the rig rendered a bare container id (`00fb2feb2a16`), useless to an
+/// operator and to anyone reading the audit trail later. The account the
+/// *server* verified is the honest thing to name.
+///
+/// It is the one caption on this page that renders in only one mode, and the
+/// reason is that the fact exists in only one mode: a direct station's saves
+/// are its own, with no second party that verified anything to name.
+class _GatewayAttributionLine extends ConsumerWidget {
+  const _GatewayAttributionLine();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final verifiedAccount =
+        ref.watch(gatewayVerifiedAccountProvider).valueOrNull;
+    return Row(
+      key: kBackendConfigAttributionKey,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(Icons.desktop_windows,
+            size: 14,
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.65)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            verifiedAccount == null
+                ? 'Saves are recorded against this station\'s verified '
+                    'account — a station account, not a person.'
+                : 'Saves are recorded against this station\'s verified '
+                    'account ($verifiedAccount) — a station account, not a '
+                    'person.',
+            style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.65)),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// The backend's `StateManConfig`, editable from a gateway-mode panel.
+///
+/// **This is the gateway slot of the ONE page**, and it holds the SAME
+/// [StateManConfigEditor] direct mode renders — over a [GatewayConfigSource]
+/// instead of a [LocalPrefsConfigSource]. That is the owner's ruling
+/// ("backend configuration should be exactly the same ui page as server
+/// config in direct to plcs, it is the same data"), and after the same
+/// owner's second pass there is nothing left around the editor except what
+/// the transport genuinely needs: the relay client has to be *built* before
+/// there is a document to edit, so this widget is the loading face and the
+/// cannot-build face for that one asynchronous step.
+///
+/// The header card this widget used to carry — a title row, the target chip
+/// and the attribution line — is gone. The target and the attribution moved
+/// up to the page, where the direct face has them too; a second title over an
+/// editor that already names its three sections was the last thing making
+/// this mode look like a different screen.
 ///
 /// Reads come from `backendConfig.read`, saves go to `backendConfig.write`;
 /// nothing here touches this station's own preferences. The check, the audit
-/// row and the validation live at the far end (17-09/17-10); this card is the
+/// row and the validation live at the far end (17-09/17-10); this is the
 /// screen for them and adds no second policy.
-///
-/// The card's own header names [targetUrl] — the machine whose document the
-/// editor below reads and writes. That used to be a page banner above the
-/// Transport card; the owner moved it here because it is a fact about THIS
-/// card, and squeezed it to a chip because it is one fact. The header renders
-/// on the error face too: "could not read the backend's configuration" is
-/// only actionable if the operator can see WHICH backend refused.
 class BackendConfigSection extends ConsumerWidget {
   const BackendConfigSection({super.key, required this.targetUrl});
 
   /// The endpoint this panel is dialling — the machine a save here changes.
-  /// A constructor argument rather than a provider watch so the widget tests
-  /// and goldens name the target as plainly as the page does.
+  /// Named on the page's own target chip, above this widget; kept as a
+  /// constructor argument because the refusal face below spells it too, and
+  /// "the backend refused" is only actionable when you can see WHICH backend.
   final String targetUrl;
 
   /// The operator-facing sentence for [error]. A protocol refusal carries the
@@ -968,77 +1047,12 @@ class BackendConfigSection extends ConsumerWidget {
   static String _describe(Object error) =>
       error is rpc.RpcException ? error.message : error.toString();
 
-  /// The card's title line: the section named, and beside it the machine it
-  /// edits. One line — the chip is the ACCESS-04 affordance, and this row is
-  /// its home on every face of the card, the error face included.
-  Widget _header(ThemeData theme) => Wrap(
-        key: kBackendConfigHeaderKey,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        spacing: 12,
-        runSpacing: 4,
-        children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const FaIcon(FontAwesomeIcons.server, size: 20),
-              const SizedBox(width: 8),
-              Text('Backend Configuration', style: theme.textTheme.titleMedium),
-            ],
-          ),
-          ConfigTargetBanner.backend(name: targetUrl),
-        ],
-      );
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    // The account the SERVER verified, not this panel's hostname. The
-    // hostname is a fact about the machine (a container id on the rig); the
-    // verified account is who the audit trail actually attributes the save
-    // to. Falls back to the station-account phrasing without a name while
-    // the account is still unknown (boot, or a gateway too old to say it) —
-    // never to the hostname, which is the defect this replaces.
-    final verifiedAccount =
-        ref.watch(gatewayVerifiedAccountProvider).valueOrNull;
     final apiAsync = ref.watch(backendConfigApiProvider);
 
-    // The gateway dressing: which machine, and who a save is recorded
-    // against. It stays up on every face — a refusal from an unnamed
-    // machine sends the operator to the wrong one (17-13 arm 14).
-    final headerCard = Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _header(theme),
-            const SizedBox(height: 12),
-            Row(
-              key: kBackendConfigAttributionKey,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.desktop_windows, size: 16),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    verifiedAccount == null
-                        ? 'Saves are recorded against this station\'s '
-                            'verified account — a station account, not a '
-                            'person.'
-                        : 'Saves are recorded against this station\'s '
-                            'verified account ($verifiedAccount) — a station '
-                            'account, not a person.',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-
-    final body = apiAsync.when(
+    return apiAsync.when(
       loading: () => const Card(
         child: Padding(
           padding: EdgeInsets.all(16),
@@ -1062,7 +1076,7 @@ class BackendConfigSection extends ConsumerWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Could not read the backend\'s configuration: '
+                      'Could not read the configuration of $targetUrl: '
                       '${_describe(error)}',
                       style: TextStyle(color: theme.colorScheme.error),
                     ),
@@ -1087,24 +1101,22 @@ class BackendConfigSection extends ConsumerWidget {
         refusalRowKey: kBackendConfigRefusalKey,
         restoreButtonKey: kBackendConfigRestoreKey,
         applyNoteKey: kBackendConfigRestartNoteKey,
-        readOnlySectionKey: (section) => section == 'relay'
-            ? kBackendConfigRelayFieldKey
-            : Key('backend_config_readonly_$section'),
       ),
-    );
-
-    return Column(
-      children: [
-        headerCard,
-        const SizedBox(height: 16),
-        body,
-      ],
     );
   }
 }
 
-/// Section header with icon, title, unsaved badge, and add button.
-
+/// Moving a STATION's configuration between machines: an encrypted envelope
+/// to a file, or to the shared database.
+///
+/// It occupies the same slot in both transports, because the page has one
+/// shape — but on a gateway station it renders a statement instead of four
+/// buttons, the shape `DatabaseConfigWidget` already uses. The reason is not
+/// cosmetic: every path in here reads and writes THIS station's own
+/// preferences and its own certificates, and on a gateway station those rows
+/// are not what the panel runs on. An "Import File" that reported success
+/// while changing nothing the backend reads is precisely the failure mode
+/// this page exists to prevent, one target further along.
 class ImportExportCard extends ConsumerStatefulWidget {
   const ImportExportCard({super.key});
 
@@ -1112,6 +1124,34 @@ class ImportExportCard extends ConsumerStatefulWidget {
 
   @override
   ConsumerState<ImportExportCard> createState() => _ImportExportCardState();
+}
+
+/// The import/export card on a gateway-mode station: a statement, not a set
+/// of buttons. Mirrors the database card's gateway face — same slot, same
+/// muted voice, same reason (the stored rows apply only in direct mode).
+class _GatewayImportExportCard extends StatelessWidget {
+  const _GatewayImportExportCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+    final muted = onSurface.withValues(alpha: 0.65);
+    return Card(
+      child: ListTile(
+        leading: Icon(Icons.sync_alt, size: 20, color: muted),
+        title: const Text('Import / Export'),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            'Not used in gateway mode. This moves a station\'s own '
+            'configuration and certificates between machines; the backend\'s '
+            'configuration is edited above and saved straight to the backend.',
+            style: TextStyle(color: muted),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _ImportExportCardState extends ConsumerState<ImportExportCard> {
@@ -1127,6 +1167,11 @@ class _ImportExportCardState extends ConsumerState<ImportExportCard> {
 
   @override
   Widget build(BuildContext context) {
+    // Absent or still loading reads as direct mode — the transport an
+    // unconfigured station runs, and the face this card has always had.
+    final gateway = ref.watch(gatewayConfigProvider).valueOrNull ??
+        GatewayConfig.defaults;
+    if (gateway.isGateway) return const _GatewayImportExportCard();
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16.0),

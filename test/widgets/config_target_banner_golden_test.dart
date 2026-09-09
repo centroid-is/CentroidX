@@ -12,9 +12,15 @@
 ///                                      yellow, antenna, the URL. Its home —
 ///                                      the card's own header line — is in
 ///                                      every frame from 3 on;
-///  3. `config_target_relay_disabled` — the whole card: header naming the
-///                                      target, relay section present,
-///                                      greyed and explained (D-10);
+///  3. *(deleted)* — it photographed the `relay` section, present in a
+///                   disabled field and explained. The owner removed the
+///                   read-only JSON card by name, so the frame has no
+///                   subject left. Its numbering is kept as a gap rather
+///                   than closed, so the frames below keep the names their
+///                   PNGs already carry. That the section is still *carried*
+///                   — unshown is not unkept — is a functional arm
+///                   (`server_config_target_test.dart` arm 4), because a
+///                   golden of an absence guards nothing;
 ///  4. `config_target_refused`        — a save the parser refused, in the
 ///                                      parser's own words;
 ///  5. `config_target_relay_refused`  — a relay-section edit refused, in
@@ -181,7 +187,19 @@ Future<void> _pumpSection(
         SingleChildScrollView(
           child: Padding(
             padding: const EdgeInsets.all(16),
-            child: BackendConfigSection(targetUrl: _gatewayUrl),
+            // The target chip above the card, which is where the PAGE puts
+            // it now — it is furniture the direct face has too, not a header
+            // this one card carries. Reproduced here because these frames
+            // exist to answer "is it obvious you are editing the backend?",
+            // and the chip is the whole of that answer.
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                ConfigTargetBanner.backend(name: _gatewayUrl),
+                SizedBox(height: 8),
+                BackendConfigSection(targetUrl: _gatewayUrl),
+              ],
+            ),
           ),
         ),
         dark: dark,
@@ -192,16 +210,16 @@ Future<void> _pumpSection(
   expect(find.byType(CircularProgressIndicator), findsNothing,
       reason: 'the scripted read has resolved; a spinner in a golden is a '
           'promise the frame cannot keep');
-  // Every card frame carries the ACCESS-04 affordance: the header chip
-  // naming the machine this card edits. Asserted in the pump that records,
-  // so a frame that lost its subject fails instead of re-baselining.
+  // Every card frame carries the ACCESS-04 affordance: the chip naming the
+  // machine being edited. Asserted in the pump that records, so a frame that
+  // lost its subject fails instead of re-baselining.
   expect(
       find.descendant(
-          of: find.byKey(const Key('backend_config_header')),
+          of: find.byKey(kConfigTargetBannerKey),
           matching: find.textContaining('10.50.10.11')),
       findsOneWidget,
-      reason: 'the card header must name the target, or the frame records a '
-          'card that could be editing anything');
+      reason: 'the frame must name the target, or it records a card that '
+          'could be editing anything');
 }
 
 /// Phase 3 retarget: the benign edit goes through the TYPED form — expand
@@ -257,19 +275,6 @@ void main() {
         expect(find.textContaining('10.50.10.11'), findsOneWidget,
             reason: 'the whole point: the machine about to be edited, named');
         await _shoot(tester, 'config_target_gateway$suffix');
-      });
-
-      testWidgets('frame 3: the relay section, present and greyed, $label',
-          (tester) async {
-        await _pumpSection(tester, _ScriptedBackend(), dark: dark);
-
-        final relay = tester.widget<TextField>(
-            find.byKey(const Key('backend_config_relay_field')));
-        expect(relay.enabled, isFalse,
-            reason: 'the frame is only D-10\'s frame if the section is in it '
-                'and dead');
-        expect(find.textContaining('cut this screen off'), findsOneWidget);
-        await _shoot(tester, 'config_target_relay_disabled$suffix');
       });
 
       testWidgets('frame 4: a refused save, in the parser\'s words, $label',
