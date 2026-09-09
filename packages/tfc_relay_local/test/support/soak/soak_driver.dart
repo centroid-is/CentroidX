@@ -850,6 +850,13 @@ final class SoakDriver
   int get probeWrites => _probeWrites;
   int _probeWrites = 0;
 
+  /// How many probes fell due inside a stable window and were held.
+  ///
+  /// Printed on the verdict's writes line, so a run's write count names the
+  /// cadence it actually kept rather than the one the timer promised.
+  int get probeWritesWithheld => _probeWritesWithheld;
+  int _probeWritesWithheld = 0;
+
   // ------------------------------------------- what invariant 4 is given
   //
   // One method rather than ten getters, because the readings in a checkpoint
