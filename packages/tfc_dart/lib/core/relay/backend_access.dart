@@ -238,6 +238,10 @@ final class BackendAccessAdmin implements relay.AccessAdminApi {
           username: row.username,
           roleName: row.roleName,
           stationAccount: row.stationAccount,
+          // One bit, not a credential: whether there is anything to verify.
+          // The users screen marks accounts that sign in on a username alone,
+          // and it cannot mark what it is not told.
+          hasPassword: !isPasswordless(row.passwordHash),
           createdAt: row.createdAt,
           lastLoginAt: row.lastLoginAt,
         ),

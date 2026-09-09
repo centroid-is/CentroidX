@@ -621,6 +621,7 @@ final class UserSummary {
     required this.roleName,
     this.displayName,
     this.stationAccount = false,
+    this.hasPassword = true,
     this.createdAt,
     this.lastLoginAt,
   });
@@ -639,6 +640,23 @@ final class UserSummary {
   /// A station account's sessions never expire. See `AppUser.stationAccount`.
   final bool stationAccount;
 
+  /// Whether the account has a password at all.
+  ///
+  /// False means it signs in on its username alone — anybody standing at the
+  /// panel can hold its role. One bit, and **not a credential**: it says that
+  /// there is nothing to steal, not what the thing to steal is. The roster is
+  /// gated on `users` either way.
+  ///
+  /// It is carried because the users screen has to mark these accounts. A
+  /// roster that draws an open account exactly like a protected one is the
+  /// failure mode the whole feature has to avoid.
+  ///
+  /// Defaults to true, which is what a backend older than this field means:
+  /// before passwordless accounts existed, every account had one. Assuming
+  /// "protected" for an unknown is the safe direction — it under-claims rather
+  /// than telling somebody an account is open when it is not.
+  final bool hasPassword;
+
   /// When the account was created, or null when the server did not say.
   final DateTime? createdAt;
 
@@ -647,8 +665,8 @@ final class UserSummary {
 
   @override
   String toString() => 'UserSummary($username, role: $roleName, '
-      'station: $stationAccount, created: $createdAt, '
-      'lastLogin: $lastLoginAt)';
+      'station: $stationAccount, password: $hasPassword, '
+      'created: $createdAt, lastLogin: $lastLoginAt)';
 }
 
 /// [UserSummary] as a JSON map.
@@ -664,6 +682,7 @@ Map<String, Object?> userSummaryToJson(UserSummary value) => <String, Object?>{
       'roleName': value.roleName,
       if (value.displayName != null) 'displayName': value.displayName,
       'stationAccount': value.stationAccount,
+      'hasPassword': value.hasPassword,
       if (value.createdAt != null)
         'createdAtMs': value.createdAt!.toUtc().millisecondsSinceEpoch,
       if (value.lastLoginAt != null)
@@ -680,6 +699,7 @@ UserSummary userSummaryFromJson(Map<String, Object?> json) => UserSummary(
       roleName: json['roleName'] as String,
       displayName: json['displayName'] as String?,
       stationAccount: (json['stationAccount'] as bool?) ?? false,
+      hasPassword: (json['hasPassword'] as bool?) ?? true,
       createdAt: _utcFromMs(json['createdAtMs']),
       lastLoginAt: _utcFromMs(json['lastLoginAtMs']),
     );

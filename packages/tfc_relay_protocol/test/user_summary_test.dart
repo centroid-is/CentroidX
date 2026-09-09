@@ -99,12 +99,41 @@ void main() {
             'username',
             'roleName',
             'stationAccount',
+            'hasPassword',
             'createdAtMs',
             'lastLoginAtMs',
           },
           reason: 'the reason listUsers does not answer app_user\'s drift row: '
               'a hash cannot reach this wire by somebody forgetting to strip '
               'it, because there is no key for one');
+    });
+
+    test('hasPassword crosses, and an older backend reads as protected', () {
+      final open = userSummaryToJson(const UserSummary(
+          username: 'line', roleName: 'Operator', hasPassword: false));
+      expect(open['hasPassword'], isFalse);
+      expect(userSummaryFromJson(open).hasPassword, isFalse,
+          reason: 'the users screen cannot mark an open account it is not '
+              'told about');
+
+      // What a backend that predates the field sends: no key at all.
+      final older = userSummaryFromJson(const <String, Object?>{
+        'username': 'line',
+        'roleName': 'Operator',
+      });
+      expect(older.hasPassword, isTrue,
+          reason: 'assume protected for an unknown — under-claiming is the '
+              'safe direction, telling somebody an account is open when it is '
+              'not is the unsafe one');
+    });
+
+    test('hasPassword says whether there is a credential, never what it is',
+        () {
+      final json = userSummaryToJson(const UserSummary(
+          username: 'jon', roleName: 'Engineering', hasPassword: true));
+      expect(json['hasPassword'], isTrue);
+      expect(json.values.whereType<String>(), everyElement(isNot(contains(r'$'))),
+          reason: 'nothing hash-shaped is on this wire');
     });
 
     test('toString names the account and its dates and nothing else', () {

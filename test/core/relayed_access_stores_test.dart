@@ -381,6 +381,29 @@ void main() {
       expect(row.salt, isEmpty);
     });
 
+    test('an account with no password arrives marked, and the marker is what '
+        'the screen reads', () async {
+      final api = _RecordingAdminApi()
+        ..users = const [
+          UserSummary(
+              username: 'line', roleName: 'Operator', hasPassword: false),
+          UserSummary(username: 'jon', roleName: 'Engineering'),
+        ];
+      final store = RelayedAccessAdminStore(api: api);
+
+      final rows = await store.listUsers();
+      final open = rows.firstWhere((r) => r.username == 'line');
+      final closed = rows.firstWhere((r) => r.username == 'jon');
+
+      expect(isPasswordless(open.passwordHash), isTrue,
+          reason: 'the users screen asks the column, so the column has to '
+              'carry the one bit the wire sent');
+      expect(isPasswordless(closed.passwordHash), isFalse);
+      expect(closed.passwordHash, isEmpty,
+          reason: 'an account that has a password keeps it on the backend — '
+              'an empty string is not a hash of anything');
+    });
+
     test(
         'a backend that sends no createdAt still renders as a visible absence, '
         'never as a plausible date', () async {

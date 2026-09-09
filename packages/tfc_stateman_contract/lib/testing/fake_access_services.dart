@@ -327,6 +327,7 @@ class FakeAccessServices
     _users[params.subject] = UserSummary(
         username: params.subject,
         roleName: params.grantedRole,
+        hasPassword: params.password.isNotEmpty,
         createdAt: _nextCreatedAt());
     _passwords[params.subject] = params.password;
     _touch('admin.createUser:${params.subject}');
@@ -351,6 +352,7 @@ class FakeAccessServices
           roleName: newRole,
           displayName: existing.displayName,
           stationAccount: existing.stationAccount,
+          hasPassword: existing.hasPassword,
           createdAt: existing.createdAt,
           lastLoginAt: existing.lastLoginAt);
     }
@@ -368,6 +370,7 @@ class FakeAccessServices
           roleName: existing.roleName,
           displayName: existing.displayName,
           stationAccount: value,
+          hasPassword: existing.hasPassword,
           createdAt: existing.createdAt,
           lastLoginAt: existing.lastLoginAt);
     }
@@ -380,6 +383,19 @@ class FakeAccessServices
     // The password is stored and NEVER returned or echoed. There is no code path
     // here that puts it in a message, a result or a thrown error.
     _passwords[params.subject] = params.password;
+    // An empty password removes it, the same as the repository: the roster
+    // then reports the account as one that signs in on its username alone.
+    final existing = _users[params.subject];
+    if (existing != null) {
+      _users[params.subject] = UserSummary(
+          username: existing.username,
+          roleName: existing.roleName,
+          displayName: existing.displayName,
+          stationAccount: existing.stationAccount,
+          hasPassword: params.password.isNotEmpty,
+          createdAt: existing.createdAt,
+          lastLoginAt: existing.lastLoginAt);
+    }
     _touch('admin.setUserPassword:${params.subject}');
   }
 

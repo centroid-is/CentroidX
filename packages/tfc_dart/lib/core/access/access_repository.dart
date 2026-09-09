@@ -629,6 +629,19 @@ class AccessRepository {
       throw ArgumentError.value(username, 'username', 'must not be blank');
     }
     if (password.isEmpty) {
+      // **Unlike [createUser], which allows it.** An empty password there is a
+      // choice an administrator makes about somebody else's account, from a
+      // screen gated on `users`, with an account that already exists to make
+      // it. Here there is no administrator — that is the definition of the
+      // first-user window — and the account being made is Engineering, which
+      // grants every group including `users`. A passwordless one would mean
+      // anyone standing at a freshly commissioned panel can create accounts,
+      // and nobody would have chosen that.
+      //
+      // It is not a one-way door: sign in and clear the password from the
+      // users screen ([setPassword] with an empty value) if that is really
+      // what the site wants.
+      //
       // Deliberately not `ArgumentError.value(password, ...)`: that puts the
       // credential into the message, and from there into whatever logs it.
       throw ArgumentError('password must not be empty');
@@ -704,13 +717,12 @@ class AccessRepository {
     if (name.isEmpty) {
       throw ArgumentError.value(username, 'username', 'must not be blank');
     }
-    if (password.isEmpty) {
-      // Deliberately not `ArgumentError.value(password, ...)`: that puts the
-      // credential into the message, and from there into whatever logs it.
-      throw ArgumentError('password must not be empty');
-    }
-
-    final hash = await PasswordHasher.hash(password);
+    // An empty password is a **choice**, not an omission: the account signs in
+    // on its username alone. See [kNoPasswordMarker] for what goes in the
+    // column and why it cannot be confused for a credential. It is offered
+    // here and refused in [createFirstUser]; that asymmetry is documented
+    // there.
+    final hash = password.isEmpty ? null : await PasswordHasher.hash(password);
 
     await db.transaction(() async {
       final clash = await (db.select(db.appUser)
@@ -727,8 +739,9 @@ class AccessRepository {
             AppUserCompanion.insert(
               username: name,
               roleName: roleName,
-              passwordHash: encodeStoredHash(hash),
-              salt: hash.saltB64,
+              passwordHash:
+                  hash == null ? kNoPasswordMarker : encodeStoredHash(hash),
+              salt: hash?.saltB64 ?? '',
               createdAt: DateTime.now().toUtc(),
             ),
           );
@@ -807,19 +820,25 @@ class AccessRepository {
   /// Writes `password_hash` and `salt` and nothing else: it does not touch
   /// `last_login_at` and it does not sign anybody out, because there is no
   /// session state in this layer to invalidate. It never logs, echoes or
-  /// returns the password or the hash, and the empty-password refusal carries
-  /// no value for the same reason.
+  /// returns the password or the hash.
+  ///
+  /// **An empty [password] removes the password**, leaving an account that
+  /// signs in on its username alone — the same state [createUser] produces
+  /// from an empty one, written the same way ([kNoPasswordMarker], empty
+  /// salt). It is how an account already in the table becomes a passwordless
+  /// panel account, and how one goes back: giving it a real password again
+  /// overwrites the marker with a hash.
   ///
   /// No lockout guard: a password is not a permission, so no password can
-  /// remove the last holder.
+  /// remove the last holder. That is still true when the password is removed
+  /// altogether — an open account holds exactly the role it held before.
+  ///
+  /// It **can** open the last `users`-holding account to anyone standing at
+  /// the panel, and that is not refused here. The refusal that matters lives
+  /// one layer up, where the operator can be told what they are about to do;
+  /// this layer states the consequence rather than guessing at policy.
   Future<void> setPassword(String username, String password) async {
-    if (password.isEmpty) {
-      // Deliberately not `ArgumentError.value(password, ...)`: that puts the
-      // credential into the message, and from there into whatever logs it.
-      throw ArgumentError('password must not be empty');
-    }
-
-    final hash = await PasswordHasher.hash(password);
+    final hash = password.isEmpty ? null : await PasswordHasher.hash(password);
 
     await db.transaction(() async {
       final existing = await (db.select(db.appUser)
@@ -829,8 +848,9 @@ class AccessRepository {
 
       await (db.update(db.appUser)..where((t) => t.username.equals(username)))
           .write(AppUserCompanion(
-        passwordHash: Value(encodeStoredHash(hash)),
-        salt: Value(hash.saltB64),
+        passwordHash:
+            Value(hash == null ? kNoPasswordMarker : encodeStoredHash(hash)),
+        salt: Value(hash?.saltB64 ?? ''),
       ));
     });
   }

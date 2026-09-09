@@ -288,8 +288,12 @@ final class RelayedAccessAdminStore implements AccessAdminStore {
             roleName: user.roleName,
             // No credential crosses this wire in either direction —
             // `UserSummary` has nowhere to put one — and an empty digest can
-            // never verify. Nothing renders these two columns.
-            passwordHash: '',
+            // never verify. Nothing renders these two columns *as values*;
+            // what the screen does read is whether the account is open, so
+            // the column carries the one bit the wire sent: the marker when
+            // there is no password, and an empty string, which is not a hash
+            // of anything, when there is one that stayed on the backend.
+            passwordHash: user.hasPassword ? '' : kNoPasswordMarker,
             salt: '',
             // Both real since 17-08's F-1. The fallback is for a backend older
             // than the DTO, which sends no timestamp at all; see
