@@ -457,7 +457,7 @@ void main() {
     expect(link.session.subscriptions.count, 0);
   });
 
-  test('the wire surface is exactly the seventy-three methods declared today, '
+  test('the wire surface is exactly the seventy-five methods declared today, '
       'plus the one name a client announces', () async {
     final link = _link();
     addTearDown(link.dispose);
@@ -465,6 +465,11 @@ void main() {
     expect(link.session.registeredMethods, {
       Methods.hello,
       Methods.ping,
+      // Increment B of the no-station-file ruling: sign-in over the socket
+      // and its way back down. Constants here, bare strings in
+      // `surface_test.dart` — the standing split.
+      Methods.sessionLogin,
+      Methods.sessionLogout,
       Methods.subscribe,
       Methods.unsubscribe,
       Methods.write,

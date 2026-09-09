@@ -111,6 +111,22 @@ abstract final class HelloCapabilities {
   /// to match a server config nobody diffs is a mismatch that surfaces a year
   /// later, and here it surfaces as every screen in the factory redialling.
   static const String heartbeatDeadlineMs = 'heartbeatDeadlineMs';
+
+  /// The username of the account the gateway verified this session as — the
+  /// token file's account on a station hello, absent entirely on a
+  /// credential-less (awaiting-sign-in) one and on a gateway too old to
+  /// send it.
+  ///
+  /// **Advisory display material, exactly as [HelloResult.publisherId] is:**
+  /// nothing routes on it, nothing is authorised by it, and the panel's only
+  /// legitimate use is prose — "saves are recorded against …" naming the
+  /// account instead of a machine id nobody can read. The server attributes
+  /// every relayed operation to the identity it verified whether or not the
+  /// panel ever reads this key. It exists because the verified username was
+  /// otherwise unknowable client-side, and the panel's own hostname — the
+  /// thing screens used to print in its place — is a fact about the machine,
+  /// not about the account (the rig rendered a bare container id).
+  static const String account = 'account';
 }
 
 final class HelloResult {

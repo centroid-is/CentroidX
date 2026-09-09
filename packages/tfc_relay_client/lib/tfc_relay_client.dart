@@ -52,6 +52,11 @@ library;
 
 export 'src/client_config.dart';
 export 'src/connection_supervisor.dart' show LinkState;
+// The "no link" answer every call resolves to when the barrier times out —
+// exported because a consumer that drives `sessionLogin` must be able to tell
+// a dead link from a credential verdict (the app's gateway sign-in maps it to
+// "unavailable", never "wrong password").
+export 'src/deadline.dart' show LinkDown;
 // One name off the taxonomy, and only because a consumer must be able to spell
 // it: `RelayAlarmSource` (14-09) catches this to tell "this gateway predates
 // alarm acknowledge" from "acknowledge was refused", and a type an embedder

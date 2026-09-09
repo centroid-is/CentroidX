@@ -618,20 +618,34 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
-  // Arm 10: login is still unavailable, and says so
+  // Arm 10: the local auth path is gone in gateway mode — sign-in is the
+  // relay's now
   // ---------------------------------------------------------------------------
+  //
+  // This arm used to pin "sign-in reads unavailable" as the correct end state,
+  // and that WAS the PRIMARY defect: 17-12 relayed the access stores and left
+  // authentication on a Postgres connection the gateway panel no longer has,
+  // so nobody could ever sign in. Increment B routes sign-in over the socket
+  // (`AccessSessionController._signInOverRelay`), verified server-side. What
+  // stays true here is the two facts this arm was really about: there is no
+  // LOCAL auth path on a gateway panel (authProvider null, no database), and
+  // an unelevated station sits at the seeded Operator floor. The sign-in
+  // path's own behaviour — ok / bad_credentials / unavailable, and no
+  // persisted session — is `gateway_signin_test.dart`, which drives the relay
+  // seam directly rather than standing up a scripted gateway per outcome.
 
-  group('login stays out of scope, and the screens can say so', () {
-    test('arm 10: gateway mode with no database — authProvider null, session '
-        'anonymous Operator, and sign-in reads "unavailable", never "wrong '
-        'password"', () async {
+  group('gateway mode has no LOCAL auth path — sign-in moved to the relay',
+      () {
+    test('arm 10: authProvider null and the station is the Operator floor '
+        'until a relay sign-in elevates it', () async {
       final gateway = await _gateway(_servedFamilies());
       final container =
           await _gatewayPanel(gateway, database: () async => null);
 
       expect(await container.read(authProviderProvider.future), isNull,
-          reason: 'this plan relays what an identity may do; it does not '
-              'relay becoming one — session login is next milestone');
+          reason: 'a gateway panel holds no database, so the LOCAL auth '
+              'provider is null — authentication is the gateway\'s job now, '
+              'reached through RemoteStateMan.sessionLogin');
 
       final session = await container.read(accessSessionProvider.future);
       expect(session.isElevated, isFalse);
@@ -639,17 +653,7 @@ void main() {
           session.groups,
           kSeedRoles.firstWhere((r) => r.name == kOperatorRoleName).groups,
           reason: 'an unelevated station is an Operator — the seeded floor, '
-              'not a guess (access.dart:399-423)');
-
-      final result = await container
-          .read(accessSessionProvider.notifier)
-          .signIn('jon', 'not-checked-anywhere');
-      expect(result, AccessSignInResult.unavailable,
-          reason: 'out of scope is not the same as broken: a screen must be '
-              'able to say "sign-in needs a database connection"');
-      expect(result, isNot(AccessSignInResult.badCredentials),
-          reason: 'a missing route is not somebody mistyping a password, '
-              'and the two must stay distinguishable all the way up');
+              'not a guess (access.dart)');
     });
   });
 }

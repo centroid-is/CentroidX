@@ -367,8 +367,8 @@ void main() {
             'a deadline and the pump would be pure cost');
   });
 
-  test('the handler table is exactly the seventy-three names a client may call, '
-      'plus the one it announces', () async {
+  test('the handler table is exactly the seventy-five names a client may '
+      'call, plus the one it announces', () async {
     final link = _link();
     addTearDown(link.dispose);
 
@@ -377,6 +377,11 @@ void main() {
         {
           Methods.hello,
           Methods.ping,
+          // Increment B of the no-station-file ruling: sign-in over the
+          // socket and its way back down. Constants here, bare strings in
+          // `surface_test.dart` — the standing split.
+          Methods.sessionLogin,
+          Methods.sessionLogout,
           Methods.subscribe,
           Methods.unsubscribe,
           Methods.write,

@@ -32,7 +32,8 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:stream_channel/stream_channel.dart';
 import 'package:test/test.dart';
-import 'package:tfc_access/tfc_access.dart' show AuditSink, NullAuditSink;
+import 'package:tfc_access/tfc_access.dart'
+    show AuditSink, AuthProvider, NullAuditSink;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_relay_server/src/auth/file_token_validator.dart'
     show UserResolver;
@@ -225,6 +226,8 @@ RelayFixture relayFixture({
   UserResolver? accounts,
   AuditSink? audit,
   AccessScopeFactory? accessFor,
+  // Increment B: the sign-in seam, null for every fixture that predates it.
+  AuthProvider? loginVerifier,
 }) {
   final served = FakeStateMan(
     staleAfter: staleAfter,
@@ -244,6 +247,7 @@ RelayFixture relayFixture({
     accounts: accounts,
     audit: audit ?? const NullAuditSink(),
     accessFor: accessFor,
+    loginVerifier: loginVerifier,
     // Defaults to a collector that discards rather than to `reportToStderr`:
     // several cases in this phase provoke errors on purpose, and a suite that
     // printed a stack trace per provoked error would train everyone to

@@ -38,7 +38,8 @@ import 'package:stream_channel/stream_channel.dart';
 // Narrowed to the sink names, `relay_session.dart`'s discipline: the server
 // wires the trail, the decorator writes it, and the master system's wider
 // vocabulary stays out of this file.
-import 'package:tfc_access/tfc_access.dart' show AuditSink, NullAuditSink;
+import 'package:tfc_access/tfc_access.dart'
+    show AuditSink, AuthProvider, NullAuditSink;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -157,6 +158,7 @@ final class RelayServer {
     this.audit = const NullAuditSink(),
     this.accounts,
     this.accessFor,
+    this.loginVerifier,
     required this.resolver,
     this.serverSupported = const [protocolVersion],
     this.onError = reportToStderr,
@@ -341,6 +343,16 @@ final class RelayServer {
   /// from `AccessRepository`, cached in memory on the same cadence the
   /// token reload uses.
   final UserResolver? accounts;
+
+  /// Where `session.login` verifies a password — `tfc_access`'s own
+  /// [AuthProvider] seam, which `composeBackendRelay` fills with
+  /// `LocalAuthProvider` over the backend's `AccessRepository`. Null on a
+  /// gateway that serves no interactive sign-in, and then the method
+  /// refuses by name and [start] wraps nothing: a credential-less hello
+  /// stays a refusal, exactly as before the ruling's increment B, because
+  /// admitting awaiting-sign-in sessions on a gateway where nobody could
+  /// ever sign in would be idle surface with no purpose.
+  final AuthProvider? loginVerifier;
 
   /// Builds each session's per-identity template/admin families at `hello`
   /// (D-11) — see [AccessScopeFactory]. Forwarded to every session exactly
@@ -529,8 +541,19 @@ final class RelayServer {
                 'healthy from every screen in the plant. Pass accounts:, the '
                 'way composeBackendRelay fills it from AccessRepository');
       }
-      _loaded =
+      final stations =
           await FileTokenValidator.load(auth.tokenFilePath, accounts: accounts);
+      // Increment D step 1 of the no-station-file ruling, gated on the
+      // verifier: with one wired, the file validator is wrapped so
+      // credential-less hellos are admitted fail-closed (the awaiting
+      // sentinel, held to nothing by the session gate) and a person can
+      // sign in over the socket — while every existing token keeps working
+      // verbatim, no flag day. Without a verifier the wrap buys nothing and
+      // widens nothing: the bare file validator stands, and a hello with no
+      // credential is refused exactly as it always was.
+      _loaded = loginVerifier == null
+          ? stations
+          : SessionLoginValidator(stations: stations, accounts: accounts);
     }
     // Before the bind, so it is the first thing in the log rather than a line
     // after the port is already open. `StackTrace.empty` is this package's
@@ -941,6 +964,13 @@ final class RelayServer {
         // The per-identity family factory, consulted by the session at
         // `hello` — see `AccessScopeFactory` (D-11).
         accessFor: accessFor,
+        // The sign-in seam and the account cache behind it, forwarded the
+        // way `validator` and `policy` are: one gateway, one verifier, one
+        // cache — the login handler resolving against a different source
+        // from the one the sweep judges by would mint sessions the next
+        // tick retires.
+        loginVerifier: loginVerifier,
+        loginAccounts: accounts,
         // Forwarded the same way, and required at both ends: a session built
         // without a mapping is a session whose browse filter has nothing to
         // ask, and 10-03's timeseries handlers would have no table to resolve.

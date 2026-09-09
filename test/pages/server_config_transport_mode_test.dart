@@ -515,6 +515,33 @@ void main() {
               'operator would have no way to clear it. The station-token '
               'work deletes the field and the value together');
     });
+
+    testWidgets('a saved gateway station with NO token file — the '
+        'signed-in-over-the-socket shape — does not show the field at all',
+        (tester) async {
+      // Defect 3, the other polarity: once sign-in over the socket works, a
+      // panel needs no credential file, and the legacy field must disappear
+      // for everyone not actively holding one. The rig still holds one (the
+      // arm above), so this is hide-when-unused, not delete-for-all.
+      final prefs = InMemoryPreferences();
+      await writeGatewayConfig(
+        prefs,
+        const GatewayConfig(
+          mode: TransportMode.gateway,
+          url: 'wss://centroidx-backend:9443',
+          caPem: _approvedPem,
+        ),
+      );
+      await pumpAndLoad(
+        tester,
+        buildTestableServerConfig(localPreferences: prefs),
+      );
+
+      expect(find.text('Station credential file (legacy)'), findsNothing,
+          reason: 'no token file in play, no field: an unanswerable, '
+              'on-its-way-out question must not sit on the card of a panel '
+              'that signs in over the socket');
+    });
   });
 
   group('saving', () {
@@ -628,6 +655,84 @@ void main() {
               matching: find.byType(ElevatedButton))
           .first);
       expect(save.onPressed, isNotNull);
+    });
+
+    // The photographed defect (rig, gateway mode): the advisory warned that
+    // a name would fail the handshake while a live session over that very
+    // name was up three lines below. An advisory that fires while the thing
+    // it warns will fail is succeeding teaches operators to ignore the
+    // warning row. Driven from the link state now, not the typed URL: a
+    // connection to `wss://name` is proof the certificate carries a SAN for
+    // that name, so the advisory is suppressed.
+    testWidgets('a live session over the named host suppresses the advisory',
+        (tester) async {
+      final local = await _gatewayStation(
+          url: 'wss://centroidx-backend:9443', caCertPath: null);
+      await writeGatewayConfig(
+        local,
+        const GatewayConfig(
+          mode: TransportMode.gateway,
+          url: 'wss://centroidx-backend:9443',
+          caPem: '-----BEGIN CERTIFICATE-----\nMIIB\n'
+              '-----END CERTIFICATE-----',
+        ),
+      );
+      await pumpAndLoad(
+        tester,
+        _serverConfigWith(
+          [
+            gatewayLinkProvider.overrideWith((ref) => Stream.value(_report(
+                  headline: 'Connected to wss://centroidx-backend:9443',
+                  detail: 'The panel is holding a live session.',
+                ))),
+          ],
+          localPreferences: local,
+        ),
+      );
+
+      expect(find.textContaining('subject-alternative name'), findsNothing,
+          reason: 'the leaf plainly carries a SAN for this name — the '
+              'handshake succeeded on it — so warning that it might not is '
+              'false, and a false warning row trains operators to ignore the '
+              'true ones');
+      // The live control: the connected row IS on screen, so the advisory's
+      // absence is a suppression, not an empty card.
+      expect(find.textContaining('holding a live session'), findsOneWidget);
+    });
+
+    testWidgets('an unreachable link over a named host still shows the '
+        'advisory — the honest case, and the live control for the arm above',
+        (tester) async {
+      final local = await _gatewayStation(
+          url: 'wss://centroidx-backend:9443', caCertPath: null);
+      await writeGatewayConfig(
+        local,
+        const GatewayConfig(
+          mode: TransportMode.gateway,
+          url: 'wss://centroidx-backend:9443',
+          caPem: '-----BEGIN CERTIFICATE-----\nMIIB\n'
+              '-----END CERTIFICATE-----',
+        ),
+      );
+      await pumpAndLoad(
+        tester,
+        _serverConfigWith(
+          [
+            gatewayLinkProvider.overrideWith((ref) => Stream.value(_report(
+                  kind: GatewayLinkKind.untrustedCertificate,
+                  headline: 'The certificate at wss://centroidx-backend:9443 '
+                      'was refused',
+                  detail: 'This panel would not trust the certificate.',
+                ))),
+          ],
+          localPreferences: local,
+        ),
+      );
+
+      expect(find.textContaining('subject-alternative name'), findsOneWidget,
+          reason: 'a certificate refusal on a name IS the case the advisory '
+              'is for — here it fires, which is what keeps the suppression '
+              'above a suppression and not a deletion');
     });
   });
 

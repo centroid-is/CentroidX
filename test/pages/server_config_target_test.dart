@@ -59,6 +59,12 @@ const _restartNote = Key('backend_config_restart_note');
 /// different string on every machine that runs this suite.
 const _station = 'SVN-ST101';
 
+/// A container-id-shaped hostname, the exact shape the rig photographed in
+/// the attribution row. Set as the station name in the attribution arm so the
+/// fix — show the verified account, never this — has something to be checked
+/// against.
+const _machineId = '00fb2feb2a16';
+
 /// The endpoint the gateway fixture dials — the machine the banner must name.
 const _gatewayUrl = 'wss://10.50.10.11:9443';
 
@@ -183,6 +189,14 @@ List<Override> _scriptedBackend(ScriptedBackendConfig api) => [
       backendConfigApiProvider.overrideWith((ref) async => api),
     ];
 
+/// The verified-account seam for the attribution arm. Null answers the
+/// "unknown yet" phrasing; a name answers the named phrasing. Overridden so
+/// the arm need not stand up a live relay to reach `RemoteStateMan
+/// .verifiedAccount`.
+List<Override> _verifiedAccount(String? account) => [
+      gatewayVerifiedAccountProvider.overrideWith((ref) async => account),
+    ];
+
 /// The page, in gateway mode, over a scripted backend.
 Future<
     ({
@@ -191,6 +205,10 @@ Future<
     })> _pumpGateway(
   WidgetTester tester, {
   ScriptedBackendConfig? api,
+  // Null leaves the account unknown (the boot / old-gateway phrasing); a
+  // value drives the named attribution AND sets the station hostname to the
+  // machine-id shape, so the arm can prove the id is not what shows.
+  String? verifiedAccount,
 }) async {
   // The typed editor (phase 3) is a page of section cards, not one
   // textarea; a taller surface keeps these arms about behaviour instead of
@@ -205,8 +223,10 @@ Future<
       localPreferences: await _gatewayStation(),
       overrides: [
         preferencesProvider.overrideWith((ref) async => shared),
-        stationNameProvider.overrideWithValue(_station),
+        stationNameProvider
+            .overrideWithValue(verifiedAccount == null ? _station : _machineId),
         ..._scriptedBackend(backend),
+        ..._verifiedAccount(verifiedAccount),
       ],
     ),
   );
@@ -511,17 +531,31 @@ void main() {
   // and marked as a station rather than a person.
   // -------------------------------------------------------------------------
   testWidgets(
-      'arm 9: the save is attributed to a station account, by name, marked '
-      'as a station and not a person', (tester) async {
-    await _pumpGateway(tester);
+      'arm 9: the save is attributed to the VERIFIED ACCOUNT by name — never '
+      'the machine id the panel used to print', (tester) async {
+    // The photographed defect: the row read "…verified account
+    // (00fb2feb2a16)…" — the container's hostname, useless to an operator
+    // and to the audit trail. The station's hostname is deliberately set to
+    // that machine-id shape here, and the account the gateway verified is a
+    // readable name; the row must show the name and never the id.
+    await _pumpGateway(tester, verifiedAccount: 'rig-panel-eng');
 
     final attribution = find.byKey(_attribution);
     expect(attribution, findsOneWidget);
     expect(
         find.descendant(
-            of: attribution, matching: find.textContaining(_station)),
+            of: attribution,
+            matching: find.textContaining('rig-panel-eng')),
         findsOneWidget,
-        reason: 'named: the account the gateway verified is this station\'s');
+        reason: 'named: the account the SERVER verified, from the hello '
+            'answer — not a value this client invented');
+    expect(
+        find.descendant(
+            of: attribution, matching: find.textContaining(_machineId)),
+        findsNothing,
+        reason: 'the machine id is a fact about the container, not about the '
+            'account a save is recorded against — the whole of the '
+            'photographed defect');
     expect(
         find.descendant(
             of: attribution,

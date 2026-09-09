@@ -75,12 +75,23 @@ final class SessionLoginValidator implements RevocableTokenValidator {
   /// delegation exists solely so no deployment needs a flag day, and this
   /// parameter is deleted with the file. A seam here would be a seam
   /// inviting a second credential mechanism to live forever.
-  SessionLoginValidator({this.stations});
+  ///
+  /// [accounts] is the same synchronous account source the file validator
+  /// reads (`UserResolver`, answered from the embedder-refreshed cache) —
+  /// here it is what the sweep judges a **signed-in person** against, the
+  /// third provenance [stillValid] accounts for. Null in a deployment that
+  /// serves no interactive sign-in, and then a login-minted identity is
+  /// never honoured — fail closed, since nothing could have minted one.
+  SessionLoginValidator({this.stations, this.accounts});
 
   /// The wrapped file validator, or null once the deployment has crossed
   /// over. Public because `RelayServer.reloadTokensIfChanged` needs the
   /// digest-guarded reload the interface deliberately does not carry.
   final FileTokenValidator? stations;
+
+  /// Where a signed-in person's username is re-resolved on every sweep
+  /// tick, or null when this gateway serves no sign-in. See the constructor.
+  final UserResolver? accounts;
 
   /// The station string of the sentinel. Self-naming: it reaches close
   /// reasons and logs, and must never read as a station somebody configured.
@@ -154,11 +165,44 @@ final class SessionLoginValidator implements RevocableTokenValidator {
       // before anyone could sign in.
       return true;
     }
+    if (credentialDigest == null) {
+      // The third provenance: a **signed-in person**, minted by the
+      // `session.login` handler after a server-side Argon2id verification.
+      // No credential is at rest anywhere — increment C's open decision —
+      // so there is no digest; what there is instead is the account row,
+      // and the row is re-resolved live and compared WHOLE, exactly the
+      // judgement `FileTokenValidator.stillValid` makes past its digest
+      // lookup: a deleted account is a revocation, a re-roled or re-marked
+      // one would mint a different identity now, and a group unticked on
+      // the role retires the session on the next tick (the 4001 property,
+      // for people).
+      final resolve = accounts;
+      if (resolve == null) {
+        // Fail closed: a gateway serving no sign-in cannot have minted a
+        // digest-less identity, and a sweep that answered "still fine"
+        // would keep alive a session whose provenance nothing can explain.
+        return false;
+      }
+      final ResolvedUser? resolved;
+      try {
+        resolved = resolve(identity.user.username);
+      } on Object {
+        // Unreachable is not revoked, and this runs on a poll against
+        // every live session — the file validator's exact asymmetry, for
+        // its exact reason: a blinking database must not sign the whole
+        // plant out.
+        return true;
+      }
+      if (resolved == null) return false;
+      if (resolved.user != identity.user) return false;
+      final held = identity.session.groups;
+      return resolved.groups.length == held.length &&
+          resolved.groups.containsAll(held);
+    }
     final delegate = stations;
     if (delegate == null) {
       // Fail closed: with no file there is no way this validator minted the
-      // identity being asked about, and a sweep that answered "still fine"
-      // would keep alive a session whose provenance nothing can explain.
+      // digest-carrying identity being asked about.
       return false;
     }
     return delegate.stillValid(identity, credentialDigest);

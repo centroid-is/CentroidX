@@ -712,6 +712,103 @@ final class RemoteStateMan implements StateManApi {
           String method, Map<String, Object?> params) =>
       _request(method, params);
 
+  // --------------------------------------------------- interactive sign-in
+  //
+  // Increment B of the 2026-09-08 no-station-file ruling. NOT on
+  // `StateManApi`, deliberately: signing in is session vocabulary like
+  // `hello` and `ping`, not a value operation, and a direct-mode StateMan
+  // has no session to sign in on — the app's controller branches on the
+  // transport and reaches these through the one RemoteStateMan it already
+  // holds (the `backendConfig` route's own pattern).
+
+  /// The username the gateway verified this session as at `hello`, or null.
+  ///
+  /// Advisory display material for attribution prose, never identity —
+  /// [ConnectionSupervisor.verifiedAccount] carries the whole argument.
+  String? get verifiedAccount => _supervisor.verifiedAccount;
+
+  /// Whether this session was admitted with no credential and is waiting for
+  /// a `session.login` — the client's view of the gateway's awaiting-sign-in
+  /// sentinel. True means the socket is up and the sign-in screen is the
+  /// thing to show; the value barrier is shut until a sign-in lands.
+  bool get awaitingSignIn => _supervisor.awaitingSignIn;
+
+  /// Completes when the hello is answered — whether or not the resync that
+  /// follows can. The signal `session.login` waits behind, and the one a
+  /// sign-in surface can await to know its socket is up. Distinct from
+  /// [isReady], which is the *value* barrier and stays shut on an awaiting
+  /// session.
+  Future<void> get sessionReady => _supervisor.sessionReady;
+
+  /// Signs a person in over the socket. The SERVER verifies (Argon2id
+  /// behind its `AuthProvider` seam) and answers with the resolved
+  /// user + role + groups; this client supplies a username, a password and
+  /// an optional station *label* for the audit trail, and decides nothing.
+  ///
+  /// The password crosses inside the request frame once and is held on no
+  /// field — [SessionLoginParams] withholds it from `toString`, and nothing
+  /// on this path logs params. No retained credential is minted or stored
+  /// anywhere: that is increment C's still-open owner decision, and a
+  /// reconnect therefore lands back at the sign-in screen.
+  ///
+  /// Refusals arrive as the gateway's own `RpcException` — the marker
+  /// vocabulary is [SessionAuthMarkers], and the caller maps it to a screen.
+  /// A dead link is [LinkDown], exactly as every other call answers it.
+  Future<SessionLoginResult> sessionLogin({
+    required String username,
+    required String password,
+    String? station,
+  }) async {
+    final raw = await _sessionRequest(
+        Methods.sessionLogin,
+        SessionLoginParams(
+                username: username, password: password, station: station)
+            .toJson());
+    final result = SessionLoginResult.fromJson(_asJson(raw));
+    // The gate lifted at the far end; drive the resync it deferred so this
+    // client's pages subscribe and it reaches `ready`. A no-op if the
+    // session was not actually awaiting (there is no such path today, but
+    // the supervisor guards it), and taken down like any other resync if the
+    // now-permitted subscribe still fails.
+    await _supervisor.resumeAfterSignIn();
+    return result;
+  }
+
+  /// Signs out: the far end returns this session to its awaiting-sign-in
+  /// sentinel and refuses everything but liveness and a fresh sign-in.
+  /// Idempotent on a session that is already nobody — a reconnect may have
+  /// reset the far end without this client knowing.
+  Future<void> sessionLogout() =>
+      _sessionRequest(Methods.sessionLogout, const <String, Object?>{});
+
+  /// A request that waits on the SESSION gate rather than the value barrier.
+  ///
+  /// `session.login` and `session.logout` are the two methods that must reach
+  /// the wire while the value barrier is shut — an awaiting session cannot
+  /// read or subscribe, so [_request]'s `barrier.ready` wait would time out
+  /// into [LinkDown] and a sign-in screen could never talk to the gateway.
+  /// The session gate opens the moment the hello is answered, which is
+  /// exactly when these two become answerable. Same peer-at-call-time
+  /// capture and same deadline as [_request]; the only difference is which
+  /// gate it waits behind.
+  Future<Object?> _sessionRequest(
+      String method, Map<String, Object?> params) async {
+    _refuseIfDisposed(method);
+    final budget = config.controlDeadline;
+    try {
+      await _supervisor.sessionReady.timeout(budget);
+    } on TimeoutException {
+      throw LinkDown(method);
+    }
+    _refuseIfDisposed(method);
+    return callWithDeadline(
+      () => _supervisor.peer,
+      method,
+      params: params,
+      deadline: budget,
+    );
+  }
+
   // ------------------------------------------------------------- the write
 
   /// Writes [value] to [key] and reports what became of it.

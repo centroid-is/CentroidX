@@ -31,16 +31,29 @@ import 'dart:typed_data';
 import 'package:json_rpc_2/error_code.dart' as rpc_errors;
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:stream_channel/stream_channel.dart';
-// Narrowed to the two sink names on purpose: the master system's vocabulary
-// (groups, sessions, records) must not become ambient in this file — the
-// session routes and registers, the policy decorator decides.
-import 'package:tfc_access/tfc_access.dart' show AuditSink, NullAuditSink;
+// Narrowed by `show` on purpose: the master system's vocabulary (groups,
+// sessions, records) must not become ambient in this file — the session
+// routes and registers, the policy decorator decides. The names past the two
+// sinks are the sign-in handler's: the seam it verifies through
+// (AuthProvider), the row and session types the verified identity is built
+// from, and the two audit factories a login and a logout write with. None of
+// them grades anything.
+import 'package:tfc_access/tfc_access.dart'
+    show
+        AccessSession,
+        AuditRecord,
+        AuditSink,
+        AuthProvider,
+        AuthenticatedUser,
+        NullAuditSink,
+        newActionId;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'access_handlers.dart';
 import 'alarm_ack_sink.dart';
 import 'alarm_history_source.dart';
 import 'alarm_handlers.dart';
+import 'auth/file_token_validator.dart' show ResolvedUser, UserResolver;
 import 'auth/identity.dart';
 import 'auth/session_login_validator.dart';
 import 'data_handlers.dart';
@@ -213,6 +226,8 @@ final class RelaySession {
     AlarmHistorySource? alarmHistory,
     AuditSink audit = const NullAuditSink(),
     AccessScopeFactory? accessFor,
+    AuthProvider? loginVerifier,
+    UserResolver? loginAccounts,
     required SeriesResolver resolver,
     List<String> serverSupported = const [protocolVersion],
     WriteOutcomeLog? writeOutcomes,
@@ -275,6 +290,8 @@ final class RelaySession {
       // by-hand session in this package's suite leaves them defaulted.
       .._audit = audit
       .._accessFor = accessFor
+      .._loginVerifier = loginVerifier
+      .._loginAccounts = loginAccounts
       .._start();
   }
 
@@ -295,6 +312,26 @@ final class RelaySession {
   /// the shared source's own families answer (refuse-by-name on the shipped
   /// backend).
   IdentityAccessFamilies? _scoped;
+
+  /// Where `session.login` verifies a password, or null on a gateway that
+  /// serves no interactive sign-in (every by-hand session in this package's
+  /// suite, and any deployment that has not wired one).
+  ///
+  /// The seam is `tfc_access`'s own [AuthProvider] — the interface
+  /// `LocalAuthProvider` already implements — so the wire adds no second
+  /// verification vocabulary. Its null-versus-throw contract is load-bearing
+  /// here exactly as it is on the panel: null is a credential verdict,
+  /// a throw is infrastructure, and [_sessionLogin] keeps them apart all
+  /// the way into two different refusal markers and an audit row for only
+  /// one of them.
+  AuthProvider? _loginVerifier;
+
+  /// Where a verified username becomes an account and its grants — the same
+  /// synchronous, embedder-refreshed [UserResolver] the file validator and
+  /// the sweep read, threaded per session so the login handler resolves
+  /// against the exact cache `stillValid` will judge the identity by. Two
+  /// sources here would mint sessions the next sweep tick retires.
+  UserResolver? _loginAccounts;
 
   /// This session's health overlay, or null on a session built by hand.
   ///
@@ -1052,6 +1089,14 @@ final class RelaySession {
     _values = values;
     _on(Methods.hello, _hello);
     _on(Methods.ping, _ping);
+    // The forty-fifth and forty-sixth names (increment B of the 2026-09-08
+    // no-station-file ruling): interactive sign-in and its way back down.
+    // Registered through `_on` like everything else — the handshake gate
+    // covers them by construction — and they are two of the three names the
+    // awaiting-sign-in stage exempts, because they exist precisely for a
+    // session that stage is holding.
+    _on(Methods.sessionLogin, _sessionLogin);
+    _on(Methods.sessionLogout, _sessionLogout);
     _on(Methods.subscribe, handlers.subscribe);
     _on(Methods.unsubscribe, handlers.unsubscribe);
     _on(Methods.write, values.write);
@@ -1402,12 +1447,21 @@ final class RelaySession {
   /// still null (and a second one is the gate's `already_helloed` refusal
   /// before this is ever consulted); `ping` is exempt because a panel
   /// sitting at the sign-in screen is waiting, not broken, and reaping it
-  /// for silence would darken every idle station.
+  /// for silence would darken every idle station. `session.login` and
+  /// `session.logout` are exempt because they are the two methods the
+  /// awaiting state exists FOR: the login is how it ends, and the logout is
+  /// idempotent on nobody so a panel that cannot know whether a reconnect
+  /// already reset the far end may always send it.
   ///
   /// The refusal is `unauthorized` with a stable `awaiting_sign_in` marker:
   /// what a panel does with it is show the sign-in screen, not an error.
   void _refuseWhileAwaitingSignIn(String method) {
-    if (method == Methods.hello || method == Methods.ping) return;
+    if (method == Methods.hello ||
+        method == Methods.ping ||
+        method == Methods.sessionLogin ||
+        method == Methods.sessionLogout) {
+      return;
+    }
     if (_identity != SessionLoginValidator.awaitingSignIn) return;
     throw rpc.RpcException(
         ServerErrorCodes.unauthorized,
@@ -1463,6 +1517,244 @@ final class RelaySession {
             'number is what makes the error itself unencodable, and an '
             'unencodable error on a path with no deadline is a hang',
       };
+
+  /// The station label an unlabelled login's audit rows carry. Self-naming,
+  /// [SessionLoginValidator.station]'s reason: it reaches the trail and must
+  /// read as "the panel did not say", never as a station somebody configured.
+  static const String unlabelledStation = 'unlabelled-panel';
+
+  /// The audit trail's `station` column for this login: the panel's own
+  /// claim about WHERE it stands, trimmed and capped — a location label,
+  /// exactly what a direct-mode panel writes from its own hostname. Never an
+  /// identity: who signed in is [_loginVerifier]'s answer alone, and no
+  /// length of string here can influence it.
+  static String _stationLabelOf(SessionLoginParams login) {
+    final label = login.station?.trim() ?? '';
+    if (label.isEmpty) return unlabelledStation;
+    // The close-reason clamp's neighbourhood: a station label rides in close
+    // reasons ("credential revoked for station …", capped at 123 bytes) and
+    // in every audit row, so a pasted megabyte must not become either.
+    return label.length > 63 ? label.substring(0, 63) : label;
+  }
+
+  /// One auth row, never a precondition: the trail is an account of
+  /// decisions, and a sink that throws must not turn a verified sign-in
+  /// into a refusal (the app's `_record` makes the same trade, same words).
+  Future<void> _recordAuth(AuditRecord entry) async {
+    try {
+      await _audit.record(entry);
+    } catch (error, stack) {
+      _onError?.call(error, stack, 'session auth audit row');
+    }
+  }
+
+  /// `session.login` — a person (or, at commissioning, the integrator
+  /// holding a station account's password) signing in over the socket.
+  ///
+  /// **The server verifies; the panel decides nothing.** The password is
+  /// checked through [_loginVerifier] (Argon2id behind the `AuthProvider`
+  /// seam), the account is resolved user → role → groups through
+  /// [_loginAccounts] — the same cache the revocation sweep judges by — and
+  /// the answer is what was RESOLVED, never what was claimed. The heavy
+  /// derivation runs here, post-hello, where `TokenValidator.validate`'s
+  /// no-event-loop-await constraint does not bind (the constraint exists for
+  /// the hello/reload interleaving; a login races nothing but itself, and
+  /// the once-only + re-check-after-the-await discipline below covers that).
+  ///
+  /// **One identity per session.** Allowed only while the identity is the
+  /// awaiting-sign-in sentinel. A station-credential session is refused by
+  /// name: signing a person in OVER a station's base identity is elevation
+  /// semantics — stacked identities with a revert — and the
+  /// remove-station-credential design defers that whole (§5) rather than
+  /// half-shipping it. A second login after a first is refused the way a
+  /// second hello is.
+  ///
+  /// **Never the password anywhere.** It is decoded, handed to the verifier,
+  /// and discarded; no refusal message, no audit row and no log line carries
+  /// it — `session_login_ws_test.dart` drives a distinctive secret through
+  /// every refusal path and sweeps.
+  Future<Object?> _sessionLogin(rpc.Parameters params) async {
+    if (_identity != SessionLoginValidator.awaitingSignIn) {
+      throw _notSignInable();
+    }
+    final verifier = _loginVerifier;
+    if (verifier == null) {
+      throw rpc.RpcException(
+          ServerErrorCodes.unauthorized,
+          'session.login refused: ${SessionAuthMarkers.signInNotServed} — '
+          'this gateway was composed without a sign-in verifier, so there '
+          'is nothing to check a password against. A deployment fact, not '
+          'a credential verdict',
+          data: _substitute(Methods.sessionLogin));
+    }
+    // Sanitized like every ingress decode; a wrong-typed field lands on
+    // `_answer`'s TypeError arm as a typed refusal.
+    final login = SessionLoginParams.fromJson(
+        (sanitize(params.asMap).value as Map).cast<String, Object?>());
+    final station = _stationLabelOf(login);
+
+    final AuthenticatedUser? verified;
+    try {
+      verified = await verifier.authenticate(login.username, login.password);
+    } catch (_) {
+      // Infrastructure, not a credential — and NO audit row, deliberately:
+      // a database blip is not somebody trying to get in, and a trail full
+      // of phantom failed attempts during an outage is a trail nobody
+      // reads. The thrown error is not interpolated: an upstream message
+      // can carry addresses and paths, and this one travels to a panel.
+      throw rpc.RpcException(
+          ServerErrorCodes.unauthorized,
+          'session.login refused: '
+          '${SessionAuthMarkers.userSourceUnavailable} — verification could '
+          'not be attempted. This is the gateway\'s user source, not the '
+          'credential that was typed',
+          data: _substitute(Methods.sessionLogin));
+    }
+
+    // Re-check after the await — `_hello`'s own discipline, for the same
+    // field: two logins racing through a slow verifier both pass the guard
+    // at the top in one turn, and the assignment happens in another. The
+    // loser costs itself a refusal, never the session.
+    if (_identity != SessionLoginValidator.awaitingSignIn) {
+      throw _notSignInable();
+    }
+
+    if (verified == null) {
+      await _recordAuth(AuditRecord.loginFailed(
+        who: login.username,
+        station: station,
+        actionId: newActionId(),
+        origin: 'relay',
+      ));
+      // One message for an unknown username and a wrong password: two would
+      // let anybody at the panel enumerate which usernames exist.
+      throw rpc.RpcException(
+          ServerErrorCodes.unauthorized,
+          'session.login refused: ${SessionAuthMarkers.badCredentials} — '
+          'the username or password was not recognised',
+          data: _substitute(Methods.sessionLogin));
+    }
+
+    // The verifier said who; the account cache says what that is right now.
+    // The CACHE's row is what the identity is minted from, because the
+    // cache is what the revocation sweep re-resolves against — minting from
+    // a fresher source would build sessions the next tick retires.
+    ResolvedUser? resolved;
+    final resolve = _loginAccounts;
+    if (resolve != null) {
+      try {
+        resolved = resolve(verified.username);
+      } catch (_) {
+        resolved = null;
+      }
+    }
+    if (resolved == null) {
+      // Verified but not resolvable: no seam wired, the cache has not
+      // caught up, or the source threw. Fail closed with the
+      // infrastructure marker — the password was RIGHT, and saying
+      // otherwise sends the person to reset it.
+      throw rpc.RpcException(
+          ServerErrorCodes.unauthorized,
+          'session.login refused: '
+          '${SessionAuthMarkers.userSourceUnavailable} — the account was '
+          'verified but could not be resolved to a role and its grants, '
+          'and a session elevated against an unresolved account would be '
+          'a grant nobody made',
+          data: _substitute(Methods.sessionLogin));
+    }
+
+    final identity = StationIdentity(
+      user: resolved.user,
+      station: station,
+      session: AccessSession(user: resolved.user, groups: resolved.groups),
+    );
+    // The two assignments and the family construction are `_hello`'s
+    // TokenAccepted arm, one provenance over: identity and digest written
+    // together (no digest — no credential is at rest anywhere, which is
+    // increment C's still-open decision, not an oversight), and the
+    // per-identity families built once, for the verified person (D-11).
+    _identity = identity;
+    _credentialDigest = null;
+    _scoped = _accessFor?.call(identity);
+
+    await _recordAuth(AuditRecord.login(
+      who: resolved.user.username,
+      station: station,
+      roleName: resolved.user.roleName,
+      actionId: newActionId(),
+      origin: 'relay',
+    ));
+
+    return SessionLoginResult(user: resolved.user, groups: resolved.groups)
+        .toJson();
+  }
+
+  /// The refusal for a login on a session that is not the sentinel: a
+  /// station-credential session by name, anything else as a second login.
+  rpc.RpcException _notSignInable() {
+    if (_credentialDigest != null) {
+      return rpc.RpcException(
+          ServerErrorCodes.unauthorized,
+          'session.login refused: '
+          '${SessionAuthMarkers.stationCredentialSession} — this session '
+          'authenticated with a station credential at hello, and signing a '
+          'person in over a station\'s base identity is deferred elevation '
+          'semantics. Clear the station credential file on this panel and '
+          'reconnect to sign in over the socket',
+          data: _substitute(Methods.sessionLogin));
+    }
+    return rpc.RpcException(
+        ServerErrorCodes.unauthorized,
+        'session.login refused: ${SessionAuthMarkers.alreadySignedIn} — '
+        'somebody is already signed in on this session. Sign out first',
+        data: _substitute(Methods.sessionLogin));
+  }
+
+  /// `session.logout` — back to nobody, never to a direct-mode-shaped
+  /// anonymous.
+  ///
+  /// Idempotent on a session that is already the sentinel: the panel that
+  /// calls this cannot know whether a reconnect already reset the far end,
+  /// and refusing would make every sign-out after a link flap an error
+  /// toast. A station-credential session is refused by name — its identity
+  /// came from `hello` and lives as long as the socket; "signing it out"
+  /// would strand a wall panel below its own mounted credential.
+  ///
+  /// What ends with the sign-out, in fail-safe order: the subscriptions are
+  /// cleared server-side (a session returned to nobody must stop being fed
+  /// the plant — the same disclosure rule the awaiting gate enforces on the
+  /// request path), and any engaged hold starves within its own deadman
+  /// window, because the awaiting condition in `_onNotification` drops the
+  /// ticks — the feed's whole safety property is that it STOPS.
+  Future<Object?> _sessionLogout(rpc.Parameters params) async {
+    final current = _identity;
+    if (current == null || current == SessionLoginValidator.awaitingSignIn) {
+      // Already nobody. No row: there is nobody to attribute one to.
+      return null;
+    }
+    if (_credentialDigest != null) {
+      throw rpc.RpcException(
+          ServerErrorCodes.unauthorized,
+          'session.logout refused: '
+          '${SessionAuthMarkers.stationCredentialSession} — this session '
+          'authenticated with a station credential at hello, and a station '
+          'has nothing to sign out: its identity lives as long as the '
+          'socket',
+          data: _substitute(Methods.sessionLogout));
+    }
+    await _recordAuth(AuditRecord.logout(
+      who: current.user.username,
+      station: current.station,
+      roleName: current.session.roleName,
+      actionId: newActionId(),
+      origin: 'relay',
+    ));
+    _identity = SessionLoginValidator.awaitingSignIn;
+    _credentialDigest = null;
+    _scoped = null;
+    subscriptions.clear();
+    return null;
+  }
 
   /// The handshake. Credential first, version second, identity third.
   ///
@@ -1621,6 +1913,16 @@ final class RelaySession {
             HelloCapabilities.tickMs: config.tick.inMilliseconds,
             HelloCapabilities.heartbeatDeadlineMs:
                 config.heartbeatDeadline.inMilliseconds,
+            // The verified account's username, so the panel's attribution
+            // prose can name the account instead of a machine id (the rig
+            // rendered a bare container id). Advisory display material —
+            // see `HelloCapabilities.account` — and OMITTED for the
+            // awaiting-sign-in sentinel: nobody is not an account, and
+            // printing the sentinel's self-naming string as one would be
+            // the lie its names exist to prevent. `_identity` is non-null
+            // here by the credential-first ordering above.
+            if (_identity != SessionLoginValidator.awaitingSignIn)
+              HelloCapabilities.account: _identity!.user.username,
           },
           sessionId: id,
           epoch: _epoch!,

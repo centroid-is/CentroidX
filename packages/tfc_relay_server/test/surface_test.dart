@@ -99,6 +99,15 @@ import 'support/ws_harness.dart';
 const Set<String> expectedHandlerTable = {
   'hello',
   'ping',
+  // Increment B of the 2026-09-08 no-station-file ruling: interactive
+  // sign-in over the socket, and its way back down. The forty-fifth and
+  // forty-sixth names, and — with hello and ping — two of the only four the
+  // awaiting-sign-in gate exempts (`awaiting_sign_in_test.dart` pins the
+  // exemption list as a partition, both directions). The password crosses
+  // inside these frames only; `session_login_ws_test.dart` sweeps every
+  // refusal path and every audit row for it.
+  'session.login',
+  'session.logout',
   'subscribe',
   'unsubscribe',
   'write',
@@ -326,9 +335,9 @@ void main() {
               'registration.');
     });
 
-    test('the table is exactly the seventy-three names a client may call today',
+    test('the table is exactly the seventy-five names a client may call today',
         () {
-      // The sentence is unchanged in shape and still true: seventy-three names
+      // The sentence is unchanged in shape and still true: seventy-five names
       // a client may *call* — forty-four through Phase 14, 17-09's
       // twenty-eight access methods, and `alarmHistory`. `h` is not one of them — it is
       // announced, never called — so it is taken out of the ledger by name
@@ -341,7 +350,7 @@ void main() {
               'failure prints the whole table rather than a difference');
     });
 
-    test('the registered table is the seventy-three callable names plus the '
+    test('the registered table is the seventy-five callable names plus the '
         'client notifications', () {
       expect(_session().registeredMethods, everyRegisterableName,
           reason: 'the ledger is the union, because json_rpc_2 dispatches a '
