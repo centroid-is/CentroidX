@@ -38,6 +38,7 @@ import '../core/gateway_state_man.dart';
 import '../core/relayed_access_stores.dart';
 import 'database.dart';
 import 'gateway.dart';
+import 'gateway_preferences_slot.dart';
 import 'preferences.dart';
 import 'state_man.dart';
 
@@ -691,6 +692,15 @@ class AccessSessionController extends _$AccessSessionController {
     state = AsyncData(session);
     // Deliberately no `_persist`: gateway sessions are per-run (see above).
     _attach(session);
+    // This panel booted on the copy of `key_mappings` in its own cache,
+    // because the backend refuses the shared store to a session nobody has
+    // signed in on — the deadlock `RelayedPreferences` documents. This is the
+    // first moment it is allowed to read that key, so ask for the copy to be
+    // caught up; a difference lands on the reload path `stateManProvider`
+    // already has. A hint, not a step of signing in: it is fire-and-forget,
+    // it changes nothing if the panel is already current, and nothing here
+    // waits on it.
+    ref.read(gatewayPreferencesSlotProvider).requestReconcile();
     return AccessSignInResult.ok;
   }
 

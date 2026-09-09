@@ -25,6 +25,7 @@ import 'package:tfc/core/gateway_config.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/gateway.dart';
+import 'package:tfc/providers/gateway_preferences_slot.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/preferences.dart';
@@ -113,6 +114,68 @@ void main() {
         reason: 'the session is built from the row the SERVER resolved, not '
             'from anything the panel decided');
     expect(after.groups, {AccessGroup.operate, AccessGroup.configure});
+  });
+
+  test(
+      'a verified sign-in asks for the bootstrap copy to be caught up — it is '
+      'the first moment the shared store is legible', () async {
+    // The panel booted on the copy of `key_mappings` in its own cache,
+    // because a session nobody has signed in on may read nothing
+    // (`relayed_preferences.dart`). Without this, that copy would go
+    // unrefreshed for the whole run: the reconcile fires on `fill`, and a fill
+    // happens before anyone signs in.
+    final container = await _panel(
+      signIn: ({required username, required password, station}) async =>
+          const SessionLoginResult(
+        user: _engineer,
+        groups: {AccessGroup.operate, AccessGroup.configure},
+      ),
+    );
+
+    // Built before the seam is watched: the notifier resolves the transport
+    // row while it builds, and a `signIn` issued before that resolves takes
+    // the direct path.
+    await container.read(accessSessionProvider.future);
+
+    var asked = 0;
+    final sub = container
+        .read(gatewayPreferencesSlotProvider)
+        .onReconcileNeeded
+        .listen((_) => asked++);
+    addTearDown(sub.cancel);
+
+    final result = await container
+        .read(accessSessionProvider.notifier)
+        .signIn('rig-panel-eng', 'correct-horse');
+    expect(result, AccessSignInResult.ok);
+    await pumpEventQueue();
+
+    expect(asked, 1,
+        reason: 'a signed-in session is what bounds the staleness of the '
+            'bootstrap copy the panel booted on');
+  });
+
+  test('a refused sign-in asks for nothing — there is still no session that '
+      'may read the shared store', () async {
+    final container =
+        await _panel(signIn: null, throwOnSignIn: _refusal('bad_credentials'));
+
+    await container.read(accessSessionProvider.future);
+
+    var asked = 0;
+    final sub = container
+        .read(gatewayPreferencesSlotProvider)
+        .onReconcileNeeded
+        .listen((_) => asked++);
+    addTearDown(sub.cancel);
+
+    final result = await container
+        .read(accessSessionProvider.notifier)
+        .signIn('rig-panel-eng', 'wrong');
+    expect(result, AccessSignInResult.badCredentials);
+    await pumpEventQueue();
+
+    expect(asked, 0);
   });
 
   test('a gateway session is NOT persisted — no retained credential, per '

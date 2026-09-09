@@ -21,7 +21,7 @@
 /// |---|---|---|
 /// | `secret: true` | the inner store's keychain | SEC-01: the wire interface has no `secret` parameter and never may. A credential must not be copied into a replicated table, and the keychain is per-machine by construction. |
 /// | a device-local key | the inner store | `device_local_preferences.dart` says which, and why, per key. |
-/// | `key_mappings` | see the carve-out below | it is read to *build* the client that would otherwise answer it. |
+/// | a boot key (`key_mappings`) | see the boot-key section below | it is read to *build* the client that would otherwise answer it, and read before anyone can sign in. |
 /// | everything else | the wire | this is the fix. |
 ///
 /// `implements Preferences` for the reason `GuardedPreferences` does: the
@@ -53,16 +53,67 @@
 /// `LinkDown`. There is no path on which a caller waits forever and none on
 /// which it is told something false.
 ///
-/// ## The one carve-out: `key_mappings`
+/// ## The boot keys, and the deadlock they close
 ///
-/// `key_mappings` is read while the client is being built, so it is the one
-/// key that must have an answer with the slot empty. With the slot empty it
-/// reads and writes the mirror; with the slot filled it reads and writes the
-/// backend **and writes the result through to the mirror**. The write-through
-/// is load-bearing rather than an optimisation: a `key_mappings` change
-/// triggers `invalidateSelf` on `stateManProvider`, and the rebuild reads this
-/// key again with the slot cleared — without the write-through it would read
-/// the stale mirror and rebuild its client on the old key set forever.
+/// `stateManProvider` reads exactly two preference keys **in order to build
+/// the client**: `state_man_config` and `key_mappings`. Anything that makes
+/// either of them depend on the client — or on a session the panel cannot
+/// present until it has booted — is a station that never comes up.
+///
+/// The rig measured that on 2026-09-09. A gateway panel with no station token
+/// gets a session (a credential-less hello is admitted), and on that session
+/// the backend refuses `preferences.getString`: *`awaiting_sign_in — nobody
+/// has signed in on this session, and a session nobody signed in on may do
+/// nothing but wait. Sign in first`*. That refusal is **correct** — an
+/// unauthenticated session must hold nothing, and the fix is emphatically not
+/// to let it read the plant's routing config. But it made boot need
+/// preferences, preferences need sign-in and sign-in need a booted panel: the
+/// panel tore down and retried forever, five sockets in TIME_WAIT and a screen
+/// that looked disconnected.
+///
+/// So a boot key is answered from **the copy already on this device**
+/// whenever the relay cannot answer it, and from the relay — written through
+/// to that copy — whenever it can. The device copy is a *bootstrap*, not a
+/// second home: the relay is preferred on every single read, and every
+/// successful one refreshes the copy, so its staleness is bounded by the last
+/// time this panel could read the shared store.
+///
+/// **The two keys reach that guarantee by different routes, and it matters
+/// that the next reader knows which.**
+///
+///  * `key_mappings` is shared configuration on the wire, so it needs the
+///    carve-out below: [kBootstrapPreferenceKeys] names it, and the routing
+///    members consult that set.
+///  * `state_man_config` needs nothing here. `StateManConfig.fromPrefs` reads
+///    and writes it with `secret: true`, and a secret is routed to this
+///    machine's keychain by [_isLocal] before any of this is reached — the
+///    wire interface has no `secret` parameter and never may (SEC-01). Adding
+///    it to [kBootstrapPreferenceKeys] would be worse than redundant: the
+///    mirror write below is a plain `setString`, so it would create a second,
+///    non-secret home for a key every real reader looks for in the keychain.
+///
+/// The property both of them are judged on is the same and is stated once, in
+/// `gateway_boot_bootstrap_test.dart`: **a gateway boot survives a relay that
+/// answers nothing.** Not "asks it for nothing" — the relay is preferred on
+/// every read, and asking is how the copy gets refreshed; what boot must never
+/// do is *depend* on the answer. The boundary in
+/// `device_local_preferences.dart` is untouched —
+/// neither key is device-local, and `device_local_preferences_test.dart` still
+/// pins both of them to the shared side.
+///
+/// With the slot empty a boot key reads and writes the mirror; with the slot
+/// filled it reads and writes the backend **and writes the result through to
+/// the mirror**. The write-through is load-bearing rather than an
+/// optimisation: a `key_mappings` change triggers `invalidateSelf` on
+/// `stateManProvider`, and the rebuild reads this key again with the slot
+/// cleared — without the write-through it would read the stale mirror and
+/// rebuild its client on the old key set forever.
+///
+/// A read the backend **refuses** falls back to the mirror, which is the
+/// deadlock fix itself. It is a fallback for reads only: a *write* the backend
+/// refused stays refused and propagates, because a write that lands quietly on
+/// the panel after the plant said no is the silent-loss class this whole
+/// milestone exists to remove.
 ///
 /// The empty-slot **write** exists for exactly one caller: `fetchKeyMappings`
 /// seeding a default on a panel whose store is empty. That default must land
@@ -73,19 +124,29 @@
 /// [reconcileOnFill] closes the remaining gap: `preferences.changed` fires
 /// only when the backend changes *after* this panel connects, so a panel whose
 /// mirror went stale while it was switched off would otherwise never learn.
-/// On the first fill this reads `key_mappings` once over the wire and, only if
-/// it differs, persists it and announces the key — which drives the reload
-/// path that already exists in `stateManProvider`.
+/// This reads `key_mappings` over the wire and, only if it differs, persists it
+/// and announces the key — which drives the reload path that already exists in
+/// `stateManProvider`.
 ///
-/// **The residual, stated rather than hidden.** A *fresh* panel with an empty
-/// mirror boots on the seeded default and is rescued by that reconcile, one
-/// reload after its first connection. A panel that boots with the gateway
-/// unreachable runs on its mirror's mapping until the link comes up. Both are
-/// the posture the panel already had; what is gone is the permanence.
+/// It runs on every [GatewayPreferencesSlot.requestReconcile], and the slot
+/// fires that on each `fill` **and** on each sign-in. The sign-in trigger is
+/// what makes "refreshed from the relay once a session can read them" literal
+/// rather than aspirational: between boot and sign-in the reconcile is refused
+/// exactly like every other read, so a one-shot attempt at fill would leave the
+/// panel on its bootstrap copy for the whole run.
+///
+/// **The residual, stated rather than hidden.** A panel that boots with the
+/// gateway unreachable runs on its mirror's mapping until the link comes up.
+/// And a *fresh* panel — one whose mirror has never held `key_mappings` — still
+/// cannot boot against a backend that refuses it, because the default seed is
+/// a *write*, and writes do not fall back. That is a new panel's first boot
+/// before anyone has signed in on it; it is not the deadlock this file closes,
+/// and pretending a seeded toy mapping had reached the plant would be worse.
 library;
 
 import 'dart:async';
 
+import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/database.dart' show Database;
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
@@ -93,12 +154,15 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as rp;
 
 import 'device_local_preferences.dart';
 
-/// The keys that must answer with no client, because they are read in order to
-/// build one. See the carve-out section of the library doc.
+/// The keys that must answer with no client **and with nobody signed in**,
+/// because they are read in order to build one. See the boot-key section of
+/// the library doc.
 ///
 /// A set of one, spelled as a set so the next such key has an obvious home and
 /// so the routing code reads as a rule rather than as a special case for a
-/// literal.
+/// literal. The other boot key, `state_man_config`, is deliberately **not**
+/// here — it is read with `secret: true` and so never reaches the wire at all;
+/// the library doc says why naming it here would be actively wrong.
 const Set<String> kBootstrapPreferenceKeys = {'key_mappings'};
 
 /// How the relay client reaches [RelayedPreferences] despite being built after
@@ -123,10 +187,31 @@ final class GatewayPreferencesSlot {
   final StreamController<String> _changes =
       StreamController<String>.broadcast();
 
+  final StreamController<void> _reconcile = StreamController<void>.broadcast();
+
   /// The live client, or null while there is none. A **peek** — it never
   /// parks, which is what the bootstrap carve-out needs in order to answer
   /// locally rather than wait for a client that is waiting for it.
   rp.PreferencesApi? get api => _api;
+
+  /// Fires when the bootstrap copy on this device is worth re-checking against
+  /// the backend: a client arrived, or somebody signed in.
+  ///
+  /// A stream on the slot rather than a method on [RelayedPreferences] because
+  /// the slot is the seam those two already share, and it is reachable from a
+  /// `ref` — `preferencesProvider` hands out a `GuardedPreferences` whose inner
+  /// object is private, so a caller holding it has no way to name the router.
+  Stream<void> get onReconcileNeeded => _reconcile.stream;
+
+  /// Asks whoever is listening to re-check the bootstrap copy.
+  ///
+  /// Called by [fill], and by the sign-in path — the first moment a panel that
+  /// booted on its own copy is allowed to read the shared store, and therefore
+  /// the first moment that copy can be refreshed. Fire-and-forget: this is a
+  /// hint, and everything it drives is idempotent.
+  void requestReconcile() {
+    if (!_reconcile.isClosed) _reconcile.add(null);
+  }
 
   /// The live client, parking until there is one or until the panel's boot
   /// fails.
@@ -160,6 +245,7 @@ final class GatewayPreferencesSlot {
     final waiting = _waiting;
     _waiting = null;
     if (waiting != null && !waiting.isCompleted) waiting.complete(api);
+    requestReconcile();
   }
 
   /// Reports that no client is coming — the gateway branch of
@@ -192,6 +278,7 @@ final class GatewayPreferencesSlot {
   Future<void> dispose() async {
     clear();
     await _changes.close();
+    await _reconcile.close();
   }
 }
 
@@ -208,10 +295,13 @@ final class RelayedPreferences implements Preferences {
     _sources.add(_inner.onPreferencesChanged.listen(_emit));
     _sources.add(_slot.onPreferencesChanged.listen(_emit));
     if (reconcileOnFill) {
-      // Fire and forget, with a handler attached: an unawaited future that can
-      // error is a crash nobody catches, and a gateway that never comes up is
-      // a normal thing for this future to end in.
-      unawaited(_reconcileBootstrapKeys().catchError((Object _) {}));
+      // Every fill and every sign-in, not just the first one. Between boot and
+      // sign-in the reconcile is refused exactly like every other read, so a
+      // one-shot attempt would leave the panel on its bootstrap copy for the
+      // whole run.
+      _sources.add(_slot.onReconcileNeeded.listen((_) => _armReconcile()));
+      // And once now, for a slot that was already filled when this was built.
+      _armReconcile();
     }
   }
 
@@ -219,7 +309,43 @@ final class RelayedPreferences implements Preferences {
   final GatewayPreferencesSlot _slot;
   final StreamController<String> _changes =
       StreamController<String>.broadcast();
-  final List<StreamSubscription<String>> _sources = [];
+  final List<StreamSubscription<void>> _sources = [];
+
+  /// Reconciles are serialized through this, so two triggers arriving together
+  /// — a fill and the sign-in that follows it — cannot interleave their reads
+  /// and land the older answer last.
+  Future<void> _pendingReconcile = Future<void>.value();
+
+  /// The bootstrap keys this panel has already reported it could not refresh,
+  /// so a refusal is said once per run rather than once per read.
+  final Set<String> _reportedUnrefreshed = {};
+
+  void _armReconcile() {
+    // Fire and forget, with a handler attached: an unawaited future that can
+    // error is a crash nobody catches, and a gateway that never comes up is a
+    // normal thing for this future to end in.
+    _pendingReconcile = _pendingReconcile
+        .then((_) => _reconcileBootstrapKeys())
+        .catchError((Object _) {});
+    unawaited(_pendingReconcile);
+  }
+
+  /// Says, once per key per run, that this panel is running on the copy in its
+  /// own cache because the backend would not answer.
+  ///
+  /// Out loud rather than swallowed: a bootstrap copy that silently passed as
+  /// the plant's current configuration is the failure mode this whole fallback
+  /// could otherwise introduce. Once per key because the alternative is a line
+  /// per read on a panel nobody has signed in on, which is every read it makes.
+  void _bootstrapUnrefreshed(String key, Object error) {
+    if (!_reportedUnrefreshed.add(key)) return;
+    // `Logger`, not `stderr`: this class is the gateway-mode half, and
+    // gateway mode is what a web build would run. `dart:io` here would be the
+    // one import that made this file uncompilable there.
+    Logger().w('$key: the gateway would not serve it, so this panel is '
+        'running on the copy in its own cache — it will be refreshed on the '
+        'next connection or sign-in that can read it ($error)');
+  }
 
   void _emit(String key) {
     if (!_changes.isClosed) _changes.add(key);
@@ -237,16 +363,35 @@ final class RelayedPreferences implements Preferences {
   Future<T> _wire<T>(Future<T> Function(rp.PreferencesApi api) send) async =>
       send(await _slot.ready);
 
-  /// A read of a bootstrap key: the mirror while there is no client, the
-  /// backend once there is — written through so the next boot starts from it.
+  /// A read of a bootstrap key: the mirror while the backend cannot answer,
+  /// the backend once it can — written through so the next boot starts from it.
+  ///
+  /// The backend "cannot answer" in two ways, and both must land on the mirror
+  /// or the panel does not boot. There is no client yet — the case the slot
+  /// was built for — **or** there is one and it refuses, which is what a
+  /// session nobody has signed in on gets, and what the rig measured.
+  ///
+  /// The refusal is caught rather than distinguished by its marker on purpose:
+  /// `awaiting_sign_in` is the one seen today, but a boot key that cannot be
+  /// read is a boot key that cannot be read, and a panel that came up on its
+  /// own copy is strictly better than one that did not come up. What must not
+  /// be swallowed is the *fact* of it, which [_bootstrapUnrefreshed] says.
   Future<T> _bootstrapRead<T>({
+    required String key,
     required Future<T> Function() local,
     required Future<T> Function(rp.PreferencesApi api) wire,
     required Future<void> Function(T value) mirror,
   }) async {
     final api = _slot.api;
     if (api == null) return local();
-    final value = await wire(api);
+    final T value;
+    try {
+      value = await wire(api);
+    } on Object catch (error) {
+      _bootstrapUnrefreshed(key, error);
+      return local();
+    }
+    _reportedUnrefreshed.remove(key);
     await mirror(value);
     return value;
   }
@@ -264,11 +409,26 @@ final class RelayedPreferences implements Preferences {
     await local();
   }
 
-  /// The one-shot catch-up described in the library doc.
+  /// The catch-up described in the library doc, re-run on every fill and every
+  /// sign-in.
   Future<void> _reconcileBootstrapKeys() async {
-    final api = await _slot.ready;
+    final api = _slot.api;
+    // A peek, not `ready`: this is armed by the slot's own trigger, so a null
+    // here means the client went away again between the trigger and this run.
+    // Parking for the next one would queue a second reconcile behind the fill
+    // that is about to fire its own.
+    if (api == null) return;
     for (final key in kBootstrapPreferenceKeys) {
-      final backend = await api.getString(key);
+      final String? backend;
+      try {
+        backend = await api.getString(key);
+      } on Object catch (error) {
+        // The refusal this whole fallback exists for. Not a fault and not a
+        // reason to stop: the next fill or sign-in tries again.
+        _bootstrapUnrefreshed(key, error);
+        continue;
+      }
+      _reportedUnrefreshed.remove(key);
       final mine = await _inner.getString(key);
       if (backend == mine) continue;
       if (backend == null) {
@@ -325,6 +485,7 @@ final class RelayedPreferences implements Preferences {
     if (_isLocal(key, secret)) return _inner.getBool(key, secret: secret);
     if (kBootstrapPreferenceKeys.contains(key)) {
       return _bootstrapRead(
+        key: key,
         local: () => _inner.getBool(key),
         wire: (api) => api.getBool(key),
         mirror: (value) =>
@@ -339,6 +500,7 @@ final class RelayedPreferences implements Preferences {
     if (_isLocal(key, secret)) return _inner.getInt(key, secret: secret);
     if (kBootstrapPreferenceKeys.contains(key)) {
       return _bootstrapRead(
+        key: key,
         local: () => _inner.getInt(key),
         wire: (api) => api.getInt(key),
         mirror: (value) =>
@@ -353,6 +515,7 @@ final class RelayedPreferences implements Preferences {
     if (_isLocal(key, secret)) return _inner.getDouble(key, secret: secret);
     if (kBootstrapPreferenceKeys.contains(key)) {
       return _bootstrapRead(
+        key: key,
         local: () => _inner.getDouble(key),
         wire: (api) => api.getDouble(key),
         mirror: (value) =>
@@ -367,6 +530,7 @@ final class RelayedPreferences implements Preferences {
     if (_isLocal(key, secret)) return _inner.getString(key, secret: secret);
     if (kBootstrapPreferenceKeys.contains(key)) {
       return _bootstrapRead(
+        key: key,
         local: () => _inner.getString(key),
         wire: (api) => api.getString(key),
         mirror: (value) =>
@@ -383,6 +547,7 @@ final class RelayedPreferences implements Preferences {
     }
     if (kBootstrapPreferenceKeys.contains(key)) {
       return _bootstrapRead(
+        key: key,
         local: () => _inner.getStringList(key),
         wire: (api) => api.getStringList(key),
         mirror: (value) => value == null
@@ -397,9 +562,17 @@ final class RelayedPreferences implements Preferences {
   Future<bool> containsKey(String key, {bool secret = false}) {
     if (_isLocal(key, secret)) return _inner.containsKey(key, secret: secret);
     if (kBootstrapPreferenceKeys.contains(key)) {
-      final api = _slot.api;
-      if (api == null) return _inner.containsKey(key);
-      return api.containsKey(key);
+      // Through the same path as every other bootstrap read, so a refusal
+      // falls back here too. `fetchKeyMappings` does not call this, but the
+      // preferences editor does, and a boot key that answered on `getString`
+      // and threw on `containsKey` would be a second rule to get wrong.
+      return _bootstrapRead(
+        key: key,
+        local: () => _inner.containsKey(key),
+        wire: (api) => api.containsKey(key),
+        // Nothing to write through: a presence answer is not a value.
+        mirror: (_) async {},
+      );
     }
     return _wire((api) => api.containsKey(key));
   }
