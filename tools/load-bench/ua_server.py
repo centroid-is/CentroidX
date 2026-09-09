@@ -164,7 +164,11 @@ async def build_server(name: str, seed: int, fixed_port: int | None = None):
         new_struct_field("Note", ua.VariantType.String),
     ])
     types = await server.load_data_type_definitions()
-    BenchStruct = types["BenchStruct"]
+    # asyncua generates struct classes into the process-wide `ua` module: the
+    # SECOND server in a host process gets an empty dict back because the
+    # class already exists. Same layout, and the deterministic per-aspace node
+    # ids give every server's BenchStruct the same TypeId, so reuse is sound.
+    BenchStruct = types.get("BenchStruct") or getattr(ua, "BenchStruct")
 
     # ---- WORKAROUND for a REAL native crash in the pinned open62541_dart ----
     # asyncua's standard address space gives every base DataType node (e.g.

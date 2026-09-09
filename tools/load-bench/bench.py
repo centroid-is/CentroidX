@@ -100,9 +100,16 @@ def spawn_fleet(args):
     each is a SINGLE-server process so a real SIGKILL means one real server."""
     procs = []
 
+    os.makedirs(GEN, exist_ok=True)
+    spawn_n = [0]
+
     def spawn(script, extra):
         cmd = [PY, os.path.join(HERE, script)] + extra
-        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        # stderr to a file, not DEVNULL: a fleet proc that dies before READY
+        # must leave its reason somewhere a human can read.
+        err = open(os.path.join(GEN, f"fleet-{spawn_n[0]:02d}-{script}.err"), "w")
+        spawn_n[0] += 1
+        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err,
                                 text=True, bufsize=1, cwd=HERE)
 
     kill_targets = []
