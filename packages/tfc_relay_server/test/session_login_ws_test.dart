@@ -617,6 +617,46 @@ void main() {
               'attribute one to');
     });
 
+    test('returns to the identity the session was ADMITTED as, not a freshly '
+        'minted one — a sign-out may not re-read the grants', () async {
+      // The only arm where the two are distinguishable, and it needs an
+      // anonymous set that is both non-empty and *changing*: with the empty
+      // default they are the same object's worth of nothing.
+      //
+      // What it pins: policy is static per session (`key_policy.dart` — only
+      // a close moves it), and a logout is not a close. An operator who edits
+      // the `Operator` row mid-shift changes what the NEXT anonymous hello
+      // holds. If a logout re-read the row instead, one session would silently
+      // pick up an edit every other live session had not, and it would do so
+      // in whichever direction the edit went — a widening included.
+      var anonymousGroups = const {AccessGroup.configure};
+      final source = _engineeringSource();
+      final fixture = relayFixture(
+        validator: SessionLoginValidator(
+            accounts: source.resolve, anonymous: () => anonymousGroups),
+        loginVerifier: _verifierFor(source),
+        accounts: source.resolve,
+      );
+      await fixture.ready;
+      await fixture.hello();
+
+      // Admitted holding `configure`, so the graded write lands.
+      await fixture.request(DataServiceMethods.prefSetString,
+          params: const {'key': 'key_mappings', 'value': '{"nodes":{}}'},
+          what: 'the anonymous control before any sign-in');
+
+      await fixture.request(Methods.sessionLogin,
+          params: _login('jon', _secret), what: 'the sign-in');
+      // The row is narrowed while somebody is signed in.
+      anonymousGroups = const {};
+      await fixture.request(Methods.sessionLogout,
+          params: const <String, Object?>{}, what: 'the sign-out');
+
+      await fixture.request(DataServiceMethods.prefSetString,
+          params: const {'key': 'key_mappings', 'value': '{"nodes":{}}'},
+          what: 'the same write after the sign-out');
+    });
+
     test('a station-credential session has nothing to sign out, and is told '
         'so by name', () async {
       final source = _UserSource({
