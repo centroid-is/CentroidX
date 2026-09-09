@@ -48,6 +48,7 @@ library;
 import 'dart:async';
 
 import 'package:test/test.dart';
+import 'package:tfc_access/tfc_access.dart' show AuthProvider;
 import 'package:tfc_relay_client/src/client_config.dart';
 import 'package:tfc_relay_client/src/remote_state_man.dart';
 import 'package:tfc_relay_client/src/ws_transport.dart';
@@ -402,6 +403,12 @@ RelayFixture relayFixture({
   ServerConfig? config,
   ClientConfig? clientConfig,
   bool withProxy = false,
+  // Increment B pass-throughs, defaulted to the server's own defaults so
+  // every existing fixture composition is byte-identical — `ws_harness.dart`
+  // (the server package's own) carries the same three for the same reason.
+  TokenValidator validator = const PermissiveTokenValidator(),
+  UserResolver? accounts,
+  AuthProvider? loginVerifier,
 }) {
   final served = FakeStateMan(
     staleAfter: staleAfter,
@@ -420,6 +427,9 @@ RelayFixture relayFixture({
     resolver: const PermissiveSeriesResolver(),
     api: _PlantAddressSpace(served, page.difference(unservedKeys)),
     config: config ?? ServerConfig(tick: ServerConfig.minTick),
+    validator: validator,
+    accounts: accounts,
+    loginVerifier: loginVerifier,
     // Discards rather than `reportToStderr`: several contract cases provoke
     // errors on purpose, and a suite that printed a stack per provoked error
     // would train everyone to scroll past them (`ws_harness.dart:231-235`).

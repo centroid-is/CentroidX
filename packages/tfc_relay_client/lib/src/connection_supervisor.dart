@@ -297,7 +297,45 @@ final class ConnectionSupervisor {
   bool _stopped = false;
   String? _stopReason;
   String? _lastDownReason;
+  String? _verifiedAccount;
   bool _disposed = false;
+
+  /// True while this session was admitted with no credential and has not yet
+  /// signed in — the gateway's awaiting-sign-in sentinel, seen from the
+  /// client. The socket is up and the hello is answered; the value barrier
+  /// stays shut (nothing may be read or subscribed until a sign-in lands),
+  /// but the session barrier is open so `session.login` can cross.
+  ///
+  /// **This is the client half of the PRIMARY defect's fix.** Before it, an
+  /// awaiting-sign-in refusal on the resync subscribe hit the `unauthorized`
+  /// arm and `_stop`ped the retry loop — a gateway panel that could never
+  /// subscribe read as "the gateway refused this panel's credential" and
+  /// showed an error, never a sign-in screen. Now it is a stable, live,
+  /// sign-in-able condition instead.
+  bool _awaitingSignIn = false;
+  bool get awaitingSignIn => _awaitingSignIn;
+
+  /// The epoch of the current hello, kept so a successful `session.login` can
+  /// drive the resync that the awaiting state deferred — see [resumeAfterSignIn].
+  String _lastEpoch = '';
+
+  /// Opens when the hello is answered — whether or not the resync that
+  /// follows it can complete. `session.login` and `session.logout` wait on
+  /// this rather than on [barrier], because they exist precisely for a
+  /// session that cannot yet reach `ready`: gating them on the value barrier
+  /// would be a sign-in screen no one could ever get past. Re-armed on
+  /// [_down] / [_stop] like the value barrier, by the same swap-a-completed-
+  /// completer rule [ReadinessBarrier] documents.
+  Completer<void> _sessionGate = Completer<void>();
+  Future<void> get sessionReady => _sessionGate.future;
+
+  void _openSession() {
+    if (!_sessionGate.isCompleted) _sessionGate.complete();
+  }
+
+  void _rearmSession() {
+    if (_sessionGate.isCompleted) _sessionGate = Completer<void>();
+  }
 
   /// Which connection the callbacks in flight belong to.
   ///
@@ -344,6 +382,21 @@ final class ConnectionSupervisor {
   /// integrator — `ws_transport.dart` makes the same argument about the value
   /// it hands back from a refused dial.
   String? get lastDownReason => _lastDownReason;
+
+  /// The username the gateway said it verified this session as, from the
+  /// hello answer's `account` capability — or null when the gateway sent
+  /// none: a credential-less (awaiting-sign-in) session, or a gateway too
+  /// old to say.
+  ///
+  /// **Advisory display material, never identity** — `HelloCapabilities.
+  /// account`'s own rule. The one legitimate consumer is attribution prose
+  /// ("saves are recorded against …"), which used to print the panel's own
+  /// hostname and on the rig rendered a bare container id. Re-learned on
+  /// every hello, so a re-provisioned station follows its token file rather
+  /// than a stale first answer; NOT cleared when the link drops, because it
+  /// describes the last verified session and the link row beside it already
+  /// says the link is down.
+  String? get verifiedAccount => _verifiedAccount;
 
   /// The reason of the last `gateway_stalled` resync this connection was told,
   /// or null. See [RemoteStateMan.stallReason].
@@ -424,6 +477,16 @@ final class ConnectionSupervisor {
     _retry = null;
     watchdog.dispose();
     barrier.dispose();
+    // Strand any sign-in waiting on the session gate, the way the value
+    // barrier's own dispose strands its waiters: a login parked here while
+    // the client shuts down must get an error it can show, not a spinner
+    // that never stops.
+    if (!_sessionGate.isCompleted) {
+      final stranded = _sessionGate;
+      stranded.completeError(StateError(
+          'the client was disposed while a sign-in was waiting for the link'));
+      unawaited(stranded.future.catchError((Object _) {}));
+    }
     final peer = _peer;
     _peer = null;
     if (peer != null) await peer.close().catchError((Object _) {});
@@ -624,6 +687,13 @@ final class ConnectionSupervisor {
 
       final hello =
           HelloResult.fromJson(_asJson(sanitize(raw).value));
+      // Who the gateway verified this session as, for attribution prose and
+      // nothing else — see [verifiedAccount]. Assigned unconditionally so an
+      // absent capability reads as "the gateway did not say" rather than as
+      // a stale answer from a previous gateway.
+      final account = hello.capabilities[HelloCapabilities.account];
+      _verifiedAccount =
+          account is String && account.isNotEmpty ? account : null;
       // The gateway's fan-out cadence, for the per-subscription staleness
       // limit and nothing else (04-REVIEW WR-06). The *link* deadline stays
       // configured and independent, as 04-CONTEXT rules.
@@ -646,11 +716,37 @@ final class ConnectionSupervisor {
         threshold: config.implausibleClockThreshold,
       );
 
+      // The hello is answered and the peer is usable: open the session gate
+      // NOW, before the resync that may not complete, so `session.login` can
+      // cross on an awaiting session. The value barrier stays shut until
+      // resync reaches `ready` below.
+      _lastEpoch = hello.epoch;
+      _awaitingSignIn = false;
+      _openSession();
+
       // Adopts the epoch and re-establishes every page. It returns only when
       // all of them are holding a snapshot, which is the definition of ready.
       await _resync.onHello(hello.epoch);
       if (_disposed || gen != _generation) return;
     } on rpc.RpcException catch (error) {
+      // The awaiting-sign-in refusal is neither a dead credential nor a dead
+      // link: it is the resync subscribe hitting the gateway's gate on a
+      // session nobody has signed in on. Recognised by the marker the gate
+      // puts in every such refusal, and handled BEFORE the `unauthorized`
+      // arm below — which would otherwise `_stop` the loop and turn a panel
+      // that should show a sign-in screen into one that shows "credential
+      // refused". The socket stays up (the session gate is already open, the
+      // heartbeat keeps it alive), and a successful `session.login` drives
+      // the deferred resync through [resumeAfterSignIn].
+      if (error.message.contains(SessionAuthMarkers.awaitingSignIn)) {
+        _awaitingSignIn = true;
+        _lastDownReason = null;
+        // Not `ready` and not `down`: the value barrier stays shut, nothing
+        // is retried, and the connection is held. The state stays
+        // `resyncing` — socket up, hello answered — which is the honest
+        // description of a panel waiting at its sign-in screen.
+        return;
+      }
       // The gateway answered and said no. A version refusal is the one answer
       // that will not change on the next attempt, and it is taken from the
       // answer rather than from the close that follows it — Finding 2's
@@ -685,6 +781,35 @@ final class ConnectionSupervisor {
       return;
     }
 
+    _enter(LinkState.ready);
+  }
+
+  /// Drives the resync an awaiting session deferred, after a `session.login`
+  /// the gateway accepted — the client half of "the gate lifted".
+  ///
+  /// Called by `RemoteStateMan.sessionLogin` on a successful answer, and only
+  /// then: the far end has replaced the sentinel identity with the verified
+  /// person, so the subscribe that was refused a moment ago is now allowed.
+  /// A no-op unless this session is actually awaiting — a login answered on
+  /// an already-ready session (there is none today, but the guard is cheap)
+  /// must not tear its snapshot down and rebuild it.
+  ///
+  /// On success it enters `ready`, which opens the value barrier and resets
+  /// the backoff exactly as a first snapshot does. A resync that fails is
+  /// taken down like any other, so a login accepted onto a gateway that then
+  /// refuses the subscribe for some *other* reason does not leave a session
+  /// wedged half-signed-in.
+  Future<void> resumeAfterSignIn() async {
+    if (_disposed || !_awaitingSignIn) return;
+    final gen = _generation;
+    _awaitingSignIn = false;
+    try {
+      await _resync.onHello(_lastEpoch);
+      if (_disposed || gen != _generation) return;
+    } catch (error) {
+      _down(gen, 'the link died before the snapshot landed: $error');
+      return;
+    }
     _enter(LinkState.ready);
   }
 
@@ -1279,8 +1404,14 @@ final class ConnectionSupervisor {
     _retirePeer();
     // Re-armed so the next caller waits for the new link rather than being
     // let through to a socket that is gone. Everyone already through stays
-    // through — a completed future cannot un-complete.
+    // through — a completed future cannot un-complete. The session gate is
+    // re-armed beside it and for the same reason: a sign-in queued against a
+    // socket that has gone must wait for the next hello, not be sent into a
+    // peer that is closing. `awaitingSignIn` is cleared — the next
+    // connection re-derives it from its own hello.
     barrier.rearm();
+    _rearmSession();
+    _awaitingSignIn = false;
     _lastDownReason = why;
     _enter(LinkState.down);
     if (_stopped) return;
@@ -1302,6 +1433,8 @@ final class ConnectionSupervisor {
     _retry = null;
     _retirePeer();
     barrier.rearm();
+    _rearmSession();
+    _awaitingSignIn = false;
     _enter(LinkState.down);
   }
 
