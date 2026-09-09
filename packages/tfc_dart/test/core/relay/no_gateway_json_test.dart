@@ -63,7 +63,14 @@ List<File> _scanned() {
           .listSync(recursive: true)
           .whereType<File>()
           .where((f) => f.path.endsWith('.dart')),
-  ]..removeWhere((f) => _exemptions.containsKey(f.path));
+    // `/`-normalised for the same reason the code map below is (see the
+    // comment at the `setUpAll`): `_exemptions`' keys are hand-written with
+    // forward slashes, `File.path` uses the platform separator, so on Windows
+    // this lookup misses and an exemption somebody deliberately granted is
+    // not honoured. Fail-closed — the excused file stays in the scan and
+    // reddens the arm — but red on Windows alone, about a file that was
+    // already excused. Cheapest to fix while the map is still empty.
+  ]..removeWhere((f) => _exemptions.containsKey(f.path.replaceAll(r'\', '/')));
   files.sort((a, b) => a.path.compareTo(b.path));
   return files;
 }
