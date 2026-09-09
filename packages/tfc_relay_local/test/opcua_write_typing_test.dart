@@ -153,6 +153,8 @@ Future<void> awaitConnected(OpcUaUpstreamLink link,
 }
 
 void main() {
+  arrayElementGroup();
+
   late OpcUaServerFixture fixture;
   late OpcUaUpstreamLink link;
 
@@ -326,5 +328,89 @@ void main() {
                 'downstream can tell the operator the number changed');
       });
     }
+  });
+}
+
+/// The read-modify-write path, which was never *untyped* and truncates anyway.
+///
+/// `DynamicValue.operator []=` inherits the existing element's typeId
+/// (`dynamic_value.dart:226`), so an element write always carried a type — the
+/// server's own. That is right, and it is not enough: an `Int32` element with a
+/// 5000000000 in front of it narrows to 705032704 and the server answers Good,
+/// which is the same silently-wrong applied write the scalar path had. Reachable
+/// only with `expect` supplied (`guardArrayElementWrite`), which is a smaller
+/// door rather than a closed one.
+void arrayElementGroup() {
+  group('an element write is typed and range-checked like a scalar one', () {
+    const arrayKey = 'plant.iData';
+    late OpcUaServerFixture fixture;
+    late OpcUaUpstreamLink link;
+
+    setUp(() async {
+      fixture = await OpcUaServerFixture.start(
+        valueKeys: <String>[arrayKey],
+        // Born an Int32 array: a scalar-seeded node coerces the write to a
+        // scalar (the fixture's seedValues doc), and the element type is the
+        // whole subject here.
+        seedValues: <String, Object?>{
+          arrayKey: ua.DynamicValue.fromList(<int>[1, 2, 3],
+              typeId: ua.NodeId.int32, name: arrayKey),
+        },
+      );
+      addTearDown(fixture.dispose);
+      link = OpcUaUpstreamLink(
+          alias: alias, endpoint: fixture.endpoint, useIsolate: false);
+      addTearDown(link.dispose);
+      await link.connect(deadline: generous);
+      await awaitConnected(link);
+    });
+
+    KeyMappingEntry elementMapping(int at) {
+      final node =
+          OpcUANodeConfig(namespace: fixtureNamespace, identifier: arrayKey)
+            ..serverAlias = alias
+            ..arrayIndex = at;
+      return KeyMappingEntry()..opcuaNode = node;
+    }
+
+    Future<WriteResult> writeElement(int at, Object v) => link.write(
+          link.resolve(arrayKey, elementMapping(at))!,
+          DynamicValue(
+              value: v,
+              quality: Quality.good,
+              sourceTime: DateTime.now().toUtc()),
+          cmd: cmd,
+          deadline: generous,
+          // The guard only steps aside with expect; without it there is no
+          // element write to judge.
+          hasExpect: true,
+        );
+
+    test('an in-range element write still lands, and spares its neighbours',
+        () async {
+      expect(await writeElement(1, 42), isA<WriteApplied>());
+      final whole = await link.read(
+          link.resolve(arrayKey, mappingFor(arrayKey))!,
+          deadline: generous);
+      expect(<Object?>[whole[0].value, whole[1].value, whole[2].value],
+          <Object?>[1, 42, 3],
+          reason: 'read-modify-write, unchanged: one element moves and two do '
+              'not');
+    });
+
+    test('a value the ELEMENT type cannot hold is rejected, not narrowed',
+        () async {
+      final result = await writeElement(1, 5000000000);
+      expect(result, isA<WriteRejected>(),
+          reason: 'an Int32 element with 5000000000 in front of it narrows to '
+              '705032704 and the server answers Good — the same silently '
+              'wrong applied write the scalar path had, one door along');
+      final whole = await link.read(
+          link.resolve(arrayKey, mappingFor(arrayKey))!,
+          deadline: generous);
+      expect(<Object?>[whole[0].value, whole[1].value, whole[2].value],
+          <Object?>[1, 2, 3],
+          reason: 'nothing was written, so the array still holds what it held');
+    });
   });
 }

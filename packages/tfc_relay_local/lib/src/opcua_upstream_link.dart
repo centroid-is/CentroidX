@@ -641,7 +641,29 @@ final class OpcUaUpstreamLink implements UpstreamLink {
         // one deadline.
         final whole =
             await client.read(_nodes[ref.key]!).timeout(deadline);
-        whole[index] = value.value;
+        // **The element gets the same shaping the scalar path gets**, and it
+        // needs it for the same reason. `DynamicValue.operator []=` inherits
+        // the existing element's typeId (`dynamic_value.dart:226`), so this
+        // branch was never *untyped* — but an inherited `Int32` with a
+        // 5000000000 in front of it truncates to 705032704 exactly as the
+        // scalar path did, and the server answers Good to the narrowed number.
+        // Reachable only with `expect` (the guard above), which is a smaller
+        // door, not a closed one.
+        final element = whole.isArray &&
+                index >= 0 &&
+                index < whole.asArray.length
+            ? whole[index]
+            : null;
+        switch (shapeOpcUaWrite(value.value,
+            targetType: element?.typeId ?? whole.typeId)) {
+          case TypedWriteReady(value: final typed):
+            whole[index] = typed;
+          case TypedWriteRefused(code: final code, message: final message):
+            // The read happened; the WRITE did not. A read is not a write, so
+            // "nothing was sent" is still true of the crossing that matters.
+            return WriteRejected(cmd, WriteReason(code, message: message),
+                at: DateTime.now().millisecondsSinceEpoch);
+        }
         await client.write(_nodes[ref.key]!, whole).timeout(deadline);
       } else {
         await client

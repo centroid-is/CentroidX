@@ -53,6 +53,11 @@ NodeId fixtureNodeId(String key) => NodeId.fromString(fixtureNamespace, key);
 /// passes `typeId: NodeId.int32` for the same reason; this is that, in one
 /// place, so no lever can forget it.
 DynamicValue fixtureValue(Object? value, {String? name}) {
+  // Already shaped, by a caller that needs a type this function cannot derive
+  // — an Int32 array, say, where `List<double>` below is the only list shape
+  // with a rule. Passed through untouched; wrapping it would make a node whose
+  // value is a DynamicValue holding a DynamicValue.
+  if (value is DynamicValue) return value;
   // An array node: the binding models arrays as List<DynamicValue>
   // (`dynamic_value.dart:117`), so a bare Dart list must go through
   // `fromList` with an element type — the F7 group's node is a list of
