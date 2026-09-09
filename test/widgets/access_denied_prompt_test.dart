@@ -1040,6 +1040,11 @@ const Set<String> _kStateManWriteReceivers = {
 /// receiver name from the source rather than trusting this comment.
 const Set<String> _kOtherWriteReceivers = {
   'b',
+  // quick/20260908-unify-config-ui: `GatewayConfigSource.write` forwarding
+  // onto `BackendConfigApi.write` — the backend's config document over the
+  // relay, the same non-plant write as `backendConfig` below. The
+  // `administer` check and the audit row live server-side (17-09/17-10).
+  '_api',
   // 17-13: `BackendConfigApi.write` on the Server Config page — the backend's
   // config document over the relay, not a plant tag. The `administer` check
   // and the audit row live server-side (17-09/17-10), and the page surfaces
@@ -1054,6 +1059,11 @@ const Set<String> _kOtherWriteReceivers = {
   'slot',
   '_storage',
   '_legacy',
+  // quick/20260908-unify-config-ui: `ConfigSource.write` in the unified
+  // editor — the ONE config document, written to this station's preferences
+  // (direct) or the backend's file over the relay (gateway). Not a plant
+  // tag; the editor surfaces the refusal in its own snackbar.
+  'widget.source',
 };
 
 /// The files whose `StateMan` `.write(` is **already** resolved and shown.
