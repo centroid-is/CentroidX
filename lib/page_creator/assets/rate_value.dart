@@ -12,10 +12,12 @@ import 'option_variable.dart';
 import 'helper/database_recovery.dart';
 import 'helper/timeseries_notify_mixin.dart';
 import '../../providers/current_page_assets.dart';
-import '../../providers/database.dart';
+import '../../providers/timeseries_source.dart';
 import '../../widgets/graph.dart';
 import 'package:tfc/converter/color_converter.dart';
-import 'package:tfc_dart/core/database.dart';
+import '../../core/timeseries_source.dart';
+// `TimeseriesData` — the sample type both transports answer in.
+import 'package:tfc_dart/core/database.dart' show TimeseriesData;
 
 part 'rate_value.g.dart';
 
@@ -470,7 +472,7 @@ class _RateValueChartViewState extends ConsumerState<_RateValueChartView> {
   Timer? _pollTimer;
   bool _realTimeActive = true;
   bool _fetchingOlder = false;
-  Database? _db;
+  TimeseriesSource? _source;
 
   /// Cached finalized (closed) buckets per interval: ms → sum of values.
   final Map<int, List<(int, double)>> _bucketCache = {};
@@ -486,11 +488,11 @@ class _RateValueChartViewState extends ConsumerState<_RateValueChartView> {
     _graph = _getOrCreateGraph(_selectedInterval.inMinutes);
     // This window is meant to be dragged off the readout and left running, so
     // it has to survive the database coming up after it did. See
-    // reinitOnDatabaseAvailable.
-    reinitOnDatabaseAvailable(
+    // reinitOnTimeseriesSourceAvailable.
+    reinitOnTimeseriesSourceAvailable(
       ref,
-      currentDatabase: () => _db,
-      onDatabaseAvailable: (_) {
+      currentSource: () => _source,
+      onSourceAvailable: (_) {
         if (!mounted) return;
         _pollTimer?.cancel();
         _init();
@@ -648,8 +650,8 @@ class _RateValueChartViewState extends ConsumerState<_RateValueChartView> {
   // ── Init / fetch ──────────────────────────────────────────────────────
 
   Future<void> _init() async {
-    _db = await ref.read(databaseProvider.future);
-    if (_db == null || !mounted) return;
+    _source = await ref.read(timeseriesSourceProvider.future);
+    if (_source == null || !mounted) return;
     await _fetchRawData(showSpinner: true);
     _schedulePoll();
   }
@@ -657,13 +659,13 @@ class _RateValueChartViewState extends ConsumerState<_RateValueChartView> {
   Future<void> _fetchRawData({bool showSpinner = false}) async {
     if (showSpinner) setState(() => _isLoading = true);
     try {
-      if (_db == null || !mounted) return;
+      if (_source == null || !mounted) return;
       final maxMinutes = widget.config.intervalPresets.reduce(math.max);
       final totalWindow = Duration(minutes: maxMinutes * widget.config.howMany);
       _dataStart = DateTime.now().subtract(totalWindow);
       _dataEnd = DateTime.now();
 
-      final rows = await _db!.queryTimeseriesData(widget.config.key, _dataStart,
+      final rows = await _source!.queryTimeseriesData(widget.config.key, _dataStart,
           orderBy: 'time ASC');
       if (!mounted) return;
 
@@ -711,9 +713,9 @@ class _RateValueChartViewState extends ConsumerState<_RateValueChartView> {
   }
 
   Future<void> _pollNewData() async {
-    if (!_realTimeActive || _db == null || !mounted) return;
+    if (!_realTimeActive || _source == null || !mounted) return;
     try {
-      final rows = await _db!.queryTimeseriesData(
+      final rows = await _source!.queryTimeseriesData(
         widget.config.key,
         _dataEnd,
         orderBy: 'time ASC',
@@ -744,12 +746,12 @@ class _RateValueChartViewState extends ConsumerState<_RateValueChartView> {
   void _onPanEnd(GraphPanEvent event) => _onPanUpdate(event);
 
   Future<void> _fetchOlderData(DateTime newStart) async {
-    if (_fetchingOlder || _db == null || !mounted) return;
+    if (_fetchingOlder || _source == null || !mounted) return;
     _fetchingOlder = true;
     try {
       final fetchStart =
           newStart.subtract(_selectedInterval * widget.config.howMany);
-      final rows = await _db!.queryTimeseriesData(
+      final rows = await _source!.queryTimeseriesData(
         widget.config.key,
         _dataStart,
         from: fetchStart,

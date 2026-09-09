@@ -22,11 +22,13 @@ import 'package:tfc/page_creator/assets/conveyor.dart';
 import 'package:tfc/page_creator/assets/number.dart';
 import 'package:tfc/page_creator/assets/ratio_number.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc_dart/core/database.dart' show Database, TimeseriesData;
 import 'package:tfc_dart/core/collector.dart' show Collector;
 import 'package:tfc/page_creator/assets/third_party.dart';
 import 'package:tfc/page_creator/assets/third_party_painter.dart';
 import 'package:tfc/theme.dart' show HmiColorRole;
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 
 const _key = Key('third_party_golden');
 
@@ -196,6 +198,7 @@ Widget buildRunningStation({double frequency = 50.0}) {
       // future that never completes parks the mixin at its first await —
       // the widget still builds and paints, which is all a golden needs.
       databaseProvider.overrideWith((ref) => Completer<Database?>().future),
+      localPreferencesProvider.overrideWithValue(InMemoryPreferences()),  // the transport row; empty == direct mode
     ],
     child: MaterialApp(
       home: Scaffold(
@@ -384,6 +387,7 @@ void main() {
           // and paint without a database, which is all a golden needs.
           databaseProvider
               .overrideWith((ref) => Completer<Database?>().future),
+          localPreferencesProvider.overrideWithValue(InMemoryPreferences()),
         ],
         child: RepaintBoundary(
           key: _key,

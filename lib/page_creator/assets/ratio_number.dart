@@ -10,7 +10,8 @@ import 'common.dart';
 import 'option_variable.dart';
 import 'helper/timeseries_notify_mixin.dart';
 import '../../providers/current_page_assets.dart';
-import '../../providers/database.dart';
+import '../../core/timeseries_source.dart';
+import '../../providers/timeseries_source.dart';
 import '../../widgets/graph.dart';
 import 'package:tfc/converter/color_converter.dart';
 import 'package:tfc_dart/converter/duration_converter.dart';
@@ -570,7 +571,7 @@ Future<void> showRatioAnalysisDialog(
     {Duration? interval}) async {
   final navigator = Navigator.of(context);
   final activeSinceMinutes = interval ?? config.sinceMinutes;
-  final db = await ref.read(databaseProvider.future);
+  final db = await ref.read(timeseriesSourceProvider.future);
   if (db == null || !navigator.context.mounted) return;
 
   Future<List<TimeseriesData<dynamic>>> getQueue(String key) async {
@@ -655,7 +656,7 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
   }
 
   Future<void> _prefetchAll() async {
-    final db = await ref.read(databaseProvider.future);
+    final db = await ref.read(timeseriesSourceProvider.future);
     if (db == null || !mounted) return;
     final presets =
         widget.config.intervalPresets.map((m) => Duration(minutes: m)).toList();
@@ -668,7 +669,7 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
   }
 
   Future<(List<TimeseriesData<dynamic>>, List<TimeseriesData<dynamic>>)>
-      _fetchForInterval(Database db, Duration interval) async {
+      _fetchForInterval(TimeseriesSource db, Duration interval) async {
     final endTime = widget.config.barsClockAligned
         ? _clockAlignedEnd(DateTime.now(), interval)
         : DateTime.now();
@@ -692,7 +693,7 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
   Future<void> _fetchData() async {
     setState(() => _isLoading = true);
     try {
-      final db = await ref.read(databaseProvider.future);
+      final db = await ref.read(timeseriesSourceProvider.future);
       if (db == null) return;
       // Fetch current view first
       final data = await _fetchForInterval(db, _selectedInterval);
