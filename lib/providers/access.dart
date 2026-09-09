@@ -26,12 +26,67 @@ import 'package:tfc_dart/core/access/drift_audit_sink.dart';
 import 'package:tfc_dart/core/access/local_auth_provider.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
+import 'package:tfc_dart/core/access/guarded_state_man.dart';
+import 'package:tfc_dart/core/state_man.dart' show StateMan;
+import 'package:tfc_relay_client/tfc_relay_client.dart'
+    show LinkDown, RemoteStateMan;
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
+    show SessionAuthMarkers, SessionLoginResult;
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
+
+import '../core/gateway_state_man.dart';
 import '../core/relayed_access_stores.dart';
 import 'database.dart';
 import 'gateway.dart';
 import 'preferences.dart';
+import 'state_man.dart';
 
 part 'access.g.dart';
+
+/// How a gateway panel signs a person in: verify over the socket, and answer
+/// with what the SERVER resolved. Null in direct mode, and null on a gateway
+/// whose relay client is not built yet.
+///
+/// **A seam, so a widget test can drive sign-in without a live gateway** —
+/// the `backendConfigApiProvider` pattern. Production reaches the ONE relay
+/// client the panel already holds (`GatewayStateMan.remote`) and calls
+/// `RemoteStateMan.sessionLogin`; the credential crosses the `wss://` frame
+/// once and is verified server-side (Argon2id behind the backend's
+/// `AuthProvider`). Nothing here decides whether the password was right — the
+/// gateway does, and answers with the resolved user, role and groups.
+typedef RelaySignIn = Future<SessionLoginResult> Function({
+  required String username,
+  required String password,
+  String? station,
+});
+
+/// The relay sign-in seam, or null when this station cannot sign in over a
+/// socket (direct mode, or a gateway whose client is not up).
+///
+/// A plain [FutureProvider] rather than a codegen one, matching
+/// `gatewayVerifiedAccountProvider` and `gatewayConfigProvider`: it reaches
+/// `stateManProvider` and needs no generated wiring, and a widget test
+/// overrides it with `overrideWith` to drive sign-in without a live gateway.
+final relaySignInProvider = FutureProvider<RelaySignIn?>((ref) async {
+  final gateway = await ref.watch(gatewayConfigProvider.future);
+  if (!gateway.isGateway) return null;
+  final StateMan stateMan;
+  try {
+    stateMan = await ref.watch(stateManProvider.future);
+  } on Object {
+    return null;
+  }
+  final RemoteStateMan? remote = stateMan is GuardedStateMan
+      ? stateMan.innerAs<GatewayStateMan>()?.remote
+      : null;
+  if (remote == null) return null;
+  return ({required username, required password, station}) =>
+      remote.sessionLogin(
+        username: username,
+        password: password,
+        station: station,
+      );
+});
 
 /// The device-local preference key holding the serialised session.
 ///
@@ -323,6 +378,20 @@ class AccessSessionController extends _$AccessSessionController {
   /// Where auth rows go. Resolved at build for the same reason as [_station].
   AuditSink _sink = const NullAuditSink();
 
+  /// Whether this station runs on the relay. Resolved at build.
+  ///
+  /// **Gateway sessions are per-run, and that is D-11, not a limitation.** A
+  /// gateway panel signs in over the socket; the server verifies and mints
+  /// the session, and a reconnect lands back at the awaiting-sign-in screen
+  /// because there is no retained credential (increment C is Jón's open
+  /// decision, deliberately unbuilt). So in gateway mode the session is
+  /// **never persisted and never restored**: persisting it would be the
+  /// panel asserting "I am jón" across a restart with no server session
+  /// behind the claim — exactly the client-supplied identity D-11 forbids
+  /// the server to believe. `_persist` and `_restoreOrAnonymous` both honour
+  /// this flag.
+  bool _isGateway = false;
+
   @override
   Future<AccessSession> build() async {
     // Registered synchronously, before the first await: Riverpod fires
@@ -339,6 +408,7 @@ class AccessSessionController extends _$AccessSessionController {
 
     _station = ref.watch(stationNameProvider);
     _local = ref.watch(localPreferencesProvider);
+    _isGateway = (await ref.watch(gatewayConfigProvider.future)).isGateway;
     _timeout = await ref.watch(inactivityTimeoutProvider.future);
     // Before `_restoreOrAnonymous`, which writes a row when the stored session
     // turns out to have expired while the app was not running.
@@ -377,6 +447,12 @@ class AccessSessionController extends _$AccessSessionController {
   /// group the role does not have.
   Future<AccessSession> _restoreOrAnonymous(AccessRepository? repo) async {
     final anonymous = AccessSession.anonymous(await _anonymousGroups(repo));
+
+    // A gateway panel never restores a session: its elevation is a server
+    // session that a reconnect does not carry, so a restored one would be an
+    // unbacked client claim (see [_isGateway]). Anonymous — the seeded
+    // Operator floor — is the honest boot state until somebody signs in.
+    if (_isGateway) return anonymous;
 
     final raw = await _readStoredSession();
     if (raw == null) return anonymous;
@@ -469,6 +545,13 @@ class AccessSessionController extends _$AccessSessionController {
   /// not collapsed.** `LocalAuthProvider` distinguishes them precisely so a
   /// database blip is not recorded as somebody trying to get in.
   Future<AccessSignInResult> signIn(String username, String password) async {
+    // A gateway panel verifies over the socket — the server checks the
+    // credential and answers with the resolved user, role and groups. This
+    // is the fix for the PRIMARY defect: 17-12 relayed the access stores and
+    // left authentication on a Postgres connection the panel no longer has,
+    // so sign-in read "unavailable" forever. It goes through the relay now.
+    if (_isGateway) return _signInOverRelay(username, password);
+
     final AuthProvider? auth;
     final AccessRepository? repo;
     try {
@@ -542,6 +625,75 @@ class AccessSessionController extends _$AccessSessionController {
     return AccessSignInResult.ok;
   }
 
+  /// Sign in on a gateway panel: verify over the socket, server-side.
+  ///
+  /// The panel decides nothing about whether the password was right — it
+  /// hands username and password to the relay, the gateway verifies (Argon2id
+  /// behind its `AuthProvider`) and answers with the resolved user, role and
+  /// groups, and this builds the session from that answer. No audit row is
+  /// written here: the trail lives at the far end, where the server already
+  /// recorded the login `origin: 'relay'` (D-05); `_sink` is
+  /// [ServerAuditedSink] and would no-op anyway.
+  ///
+  /// **No persistence.** The session is held for this run only — see
+  /// [_isGateway]. A reconnect returns to the awaiting-sign-in screen.
+  ///
+  /// The two refusal answers are kept apart exactly as the direct path keeps
+  /// them: the gateway's `bad_credentials` marker is [badCredentials], and
+  /// every other refusal — an unreachable user source, a dead link, a
+  /// station-credential session, a gateway serving no sign-in — is
+  /// [unavailable], because none of them is somebody mistyping a password and
+  /// telling them it was would send them to reset one that was never wrong.
+  Future<AccessSignInResult> _signInOverRelay(
+      String username, String password) async {
+    final RelaySignIn? signInFn;
+    try {
+      signInFn = await ref.read(relaySignInProvider.future);
+    } on Object {
+      return AccessSignInResult.unavailable;
+    }
+    if (signInFn == null) return AccessSignInResult.unavailable;
+
+    final SessionLoginResult result;
+    try {
+      result =
+          await signInFn(username: username, password: password, station: _station);
+    } on rpc.RpcException catch (e) {
+      // The gateway answered and said no. Only its `bad_credentials` marker
+      // is a wrong password; everything else is infrastructure or policy and
+      // must not read as "your password is wrong". The message is the
+      // gateway's own and is never spliced with the credential.
+      if (e.message.contains(SessionAuthMarkers.badCredentials)) {
+        return AccessSignInResult.badCredentials;
+      }
+      Logger().w('Relay sign-in was refused: ${e.message}');
+      return AccessSignInResult.unavailable;
+    } on LinkDown {
+      // No link to the gateway — the honest "cannot reach the user database"
+      // of gateway mode, and never a credential verdict.
+      return AccessSignInResult.unavailable;
+    } on Object catch (e) {
+      Logger().w('Relay sign-in could not be attempted: $e');
+      return AccessSignInResult.unavailable;
+    }
+
+    final session = AccessSession(
+      user: result.user,
+      groups: result.groups,
+      // Same expiry rule as the direct path: a station account and the
+      // station-wide disable never expire; a person's session takes the
+      // inactivity window. The server sweep is the authority on revocation;
+      // this is the local idle timeout on top.
+      expiresAt: (_timeout == null || result.user.stationAccount)
+          ? null
+          : clock.now().add(_timeout!),
+    );
+    state = AsyncData(session);
+    // Deliberately no `_persist`: gateway sessions are per-run (see above).
+    _attach(session);
+    return AccessSignInResult.ok;
+  }
+
   /// Sign out deliberately.
   ///
   /// Always available, per spec §5 — there is no state in which an operator
@@ -549,6 +701,28 @@ class AccessSessionController extends _$AccessSessionController {
   Future<void> signOut() async {
     final current = state.valueOrNull;
     _detach();
+
+    // A gateway panel signs out at the far end too, so the server returns the
+    // session to its awaiting-sign-in sentinel and the sweep stops carrying
+    // it. Best-effort: a dead link already means the session is unreachable,
+    // and the local drop to anonymous below is what the operator sees. No
+    // client audit row — the server writes the logout `origin: 'relay'`.
+    if (_isGateway && current != null && current.isElevated) {
+      try {
+        final signInFn = await ref.read(relaySignInProvider.future);
+        if (signInFn != null) {
+          final stateMan = await ref.read(stateManProvider.future);
+          final remote = stateMan is GuardedStateMan
+              ? stateMan.innerAs<GatewayStateMan>()?.remote
+              : null;
+          await remote?.sessionLogout();
+        }
+      } on Object catch (e) {
+        Logger().w('Relay sign-out could not be delivered: $e');
+      }
+      await _toAnonymous();
+      return;
+    }
 
     if (current != null && current.isElevated) {
       await _record(AuditRecord.logout(
@@ -917,6 +1091,11 @@ class AccessSessionController extends _$AccessSessionController {
   // (spec §10).
 
   Future<void> _persist(AccessSession session) async {
+    // Never on a gateway panel: the retained secret that would survive a
+    // restart is increment C's open decision (Jón's), and a persisted
+    // session with no credential behind it is an unbacked claim across a
+    // reconnect (see [_isGateway]). Sign in, hold the session for this run.
+    if (_isGateway) return;
     final local = _local;
     if (local == null || !session.isElevated) return;
     try {
