@@ -1070,7 +1070,8 @@ final class SoakDriver
         <InvariantChecker>[for (final one in checkers) one.checker]);
     if (shared != null) lines.add(shared);
     lines.add('  writes      : $_writesIssued issued ($_probeWrites by the '
-        'probe every ${writeProbeCadence.inSeconds}s, one in '
+        'probe every ${writeProbeCadence.inSeconds}s, '
+        '$_probeWritesWithheld withheld inside quiet windows, one in '
         '$writeProbeReadOnlyEvery to $soakReadOnlyKey), $appliedWrites');
     lines.add('  violations  : ${violationLog.total} recorded '
         '(${violationLog.entries.length} retained, ${violationLog.overflow} '
@@ -1476,6 +1477,37 @@ final class SoakDriver
   /// same order. Nothing here is drawn and nothing reads a clock.
   void _probeWrite() {
     if (_stopped || _disposed || _fixture == null) return;
+    // **The probe holds its fire inside a stable window, exactly as the storm
+    // does.** An applied write puts a real, plant-published value on a key
+    // until the next sweep supersedes it (~one sweep period), and
+    // [plantTruthFor] answers the sweep counter for a non-overridden key — so
+    // for the life of that overlay every panel honestly rendering what the
+    // plant published reads as diverged, and whether invariant 3's window-END
+    // sample lands inside the overlay is timer-phase roulette. That roulette
+    // is what failed the lane on a loaded runner (2026-09-09, seed 11:
+    // `ST201.CN02.MOT01.setpoint in window 0 (unattributed)` on the control
+    // panel, healed 1 ms after the window — a write overlay's signature, not
+    // a lost push's). The timeline already withholds link levers inside quiet
+    // windows ("withholding is what makes the window quiet") and the event
+    // schedule draws around them, `PanelWrite` included; the probe is the one
+    // plant-moving actor outside the timeline, so it carries the rule itself.
+    //
+    // Checked at ISSUE time and with no pre-window margin, deliberately: the
+    // disturbance a write causes dies at the next sweep, so an overlay from a
+    // write issued just before a window opens is gone ten seconds before the
+    // window's end — the only instant invariant 3 judges. `n` is not
+    // consumed, so the panel/key/read-only rotation resumes where it paused
+    // instead of skipping spokes. Invariant 2 keeps its floor: the 90 s arm
+    // withholds ~5 of 44 probes per window against a floor of 12, and the
+    // writes that carry its evidence are the ones issued under faults, which
+    // are outside quiet windows by construction.
+    final at = _playClock.elapsed;
+    for (final window in timeline.stableWindows) {
+      if (window.contains(at)) {
+        _probeWritesWithheld++;
+        return;
+      }
+    }
     final n = _probeWrites++;
     final readOnly = n % writeProbeReadOnlyEvery == 0;
     final keys = plantKeys;
