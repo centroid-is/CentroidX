@@ -119,6 +119,34 @@ NODE_MATRIX = {
 SYNC_NODES = [n for n, (_, g) in NODE_MATRIX.items() if g is not None]
 
 
+# --------------------------------------------------------------------------
+# Matrix replication: how the bench scales KEY COUNT without touching the
+# matrix. Replica 0 is the original names; replica r >= 1 suffixes _c{r} and
+# derives its own seed, so every copy stays deterministic AND distinct.
+# The matrix is replicated whole — never padded with identical doubles —
+# because the matrix is the reason the bench has value at every size.
+# --------------------------------------------------------------------------
+
+def replica_seed(seed: int, r: int) -> int:
+    return seed if r == 0 else seed + 7919 * r     # 7919: prime, keeps seeds apart
+
+
+def replica_node_name(base: str, r: int) -> str:
+    return base if r == 0 else f"{base}_c{r}"
+
+
+def parse_replica(node_name: str) -> tuple[str, int]:
+    """'Int16_c3' -> ('Int16', 3); 'Int16' -> ('Int16', 0)."""
+    base, sep, tail = node_name.rpartition("_c")
+    if sep and tail.isdigit():
+        return base, int(tail)
+    return node_name, 0
+
+
+def replicated_nodes(replicate: int) -> list[str]:
+    return [replica_node_name(b, r) for r in range(replicate) for b in NODE_MATRIX]
+
+
 def free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -127,7 +155,8 @@ def free_port() -> int:
     return port
 
 
-async def build_server(name: str, seed: int, fixed_port: int | None = None):
+async def build_server(name: str, seed: int, fixed_port: int | None = None,
+                       replicate: int = 1):
     """One asyncua server with the full matrix. Returns (server, ctx dict).
 
     [fixed_port] exists for ONE caller: the bench's restart arm, which brings a
@@ -205,76 +234,103 @@ async def build_server(name: str, seed: int, fixed_port: int | None = None):
         node = await obj.add_variable(nid(node_name), f"{idx}:{node_name}", variant, datatype=datatype)
         return node
 
-    s = seed
-    nodes = {}
-    nodes["Counter"]   = await add("Counter",   V(gen_counter(s, 0), T.UInt32))
-    nodes["Bool"]      = await add("Bool",      V(gen_bool(s, 0), T.Boolean))
-    nodes["Int16"]     = await add("Int16",     V(gen_int16(s, 0), T.Int16))
-    nodes["Int32"]     = await add("Int32",     V(gen_int32(s, 0), T.Int32))
-    nodes["Int64"]     = await add("Int64",     V(gen_int64(s, 0), T.Int64))
-    nodes["UInt16"]    = await add("UInt16",    V(gen_uint16(s, 0), T.UInt16))
-    nodes["UInt32"]    = await add("UInt32",    V(gen_uint32(s, 0), T.UInt32))
-    nodes["Float"]     = await add("Float",     V(gen_float(s, 0), T.Float))
-    nodes["Double"]    = await add("Double",    V(gen_double(s, 0), T.Double))
-    nodes["DoubleHazard"] = await add("DoubleHazard", V(gen_double_hazard(s, 4), T.Double))  # start finite
-    nodes["StringUtf8"]   = await add("StringUtf8",   V(gen_string_utf8(s, 0), T.String))
-    nodes["StringLatin1"] = await add("StringLatin1", V(gen_string_latin1(s, 0), T.String))
-    nodes["DateTimeNode"] = await add("DateTimeNode", V(gen_datetime(s, 0), T.DateTime))
-    nodes["GuidNode"]     = await add("GuidNode",     V(gen_guid(s, 0), T.Guid))
-    nodes["ByteStringNode"] = await add("ByteStringNode", V(gen_bytestring(s, 0), T.ByteString))
-    text, locale = gen_localized(s, 0)
-    nodes["LocalizedTextNode"] = await add("LocalizedTextNode", V(ua.LocalizedText(text, locale), T.LocalizedText))
-
-    # Enum: Int32 value, DataType = the registered BenchMode enum.
+    # Enum DataType node id, resolved once (shared by every replica).
     enum_dtype = None
     for child in await server.nodes.enum_data_type.get_children():
         bn = await child.read_browse_name()
         if bn.Name == "BenchMode" and bn.NamespaceIndex == idx:
             enum_dtype = child.nodeid
             break
-    nodes["EnumNode"] = await add("EnumNode", V(gen_enum(s, 0), T.Int32), datatype=enum_dtype)
 
-    # Abstract DataType: value is a concrete Double variant, but the node's
-    # declared DataType is the ABSTRACT ua Number (i=26). Past bug specimen:
-    # writes to such a node null-checked and answered "unknown" in-process.
-    nodes["AbstractNode"] = await add(
-        "AbstractNode", V(gen_abstract(s, 0), T.Double),
-        datatype=ua.NodeId(ua.ObjectIds.Number))
+    nodes = {}
+    for r in range(replicate):
+        s = replica_seed(seed, r)
 
-    nodes["ArrayDouble"] = await add("ArrayDouble", V(gen_array_double(s, 0), T.Double))
-    nodes["ArrayInt32"]  = await add("ArrayInt32",  V(gen_array_int32(s, 0), T.Int32))
-    nodes["ArrayString"] = await add("ArrayString", V(gen_array_string(s, 0), T.String))
-    nodes["ArrayBool"]   = await add("ArrayBool",   V(gen_array_bool(s, 0), T.Boolean))
-    nodes["ArrayEmpty"]  = await add("ArrayEmpty",  V([], T.Double))
+        def N(base, _r=r):
+            return replica_node_name(base, _r)
 
-    low, high = gen_range(s, 0)
-    nodes["StructRange"] = await add("StructRange", V(ua.Range(Low=low, High=high), T.ExtensionObject))
-    st = gen_struct(s, 0)
-    nodes["StructCustom"] = await add(
-        "StructCustom",
-        V(BenchStruct(Flag=st["Flag"], Count=st["Count"], Value=st["Value"], Note=st["Note"]),
-          T.ExtensionObject))
+        nodes[N("Counter")]   = await add(N("Counter"),   V(gen_counter(s, 0), T.UInt32))
+        nodes[N("Bool")]      = await add(N("Bool"),      V(gen_bool(s, 0), T.Boolean))
+        nodes[N("Int16")]     = await add(N("Int16"),     V(gen_int16(s, 0), T.Int16))
+        nodes[N("Int32")]     = await add(N("Int32"),     V(gen_int32(s, 0), T.Int32))
+        nodes[N("Int64")]     = await add(N("Int64"),     V(gen_int64(s, 0), T.Int64))
+        nodes[N("UInt16")]    = await add(N("UInt16"),    V(gen_uint16(s, 0), T.UInt16))
+        nodes[N("UInt32")]    = await add(N("UInt32"),    V(gen_uint32(s, 0), T.UInt32))
+        nodes[N("Float")]     = await add(N("Float"),     V(gen_float(s, 0), T.Float))
+        nodes[N("Double")]    = await add(N("Double"),    V(gen_double(s, 0), T.Double))
+        nodes[N("DoubleHazard")] = await add(N("DoubleHazard"), V(gen_double_hazard(s, 4), T.Double))  # start finite
+        nodes[N("StringUtf8")]   = await add(N("StringUtf8"),   V(gen_string_utf8(s, 0), T.String))
+        nodes[N("StringLatin1")] = await add(N("StringLatin1"), V(gen_string_latin1(s, 0), T.String))
+        nodes[N("DateTimeNode")] = await add(N("DateTimeNode"), V(gen_datetime(s, 0), T.DateTime))
+        nodes[N("GuidNode")]     = await add(N("GuidNode"),     V(gen_guid(s, 0), T.Guid))
+        nodes[N("ByteStringNode")] = await add(N("ByteStringNode"), V(gen_bytestring(s, 0), T.ByteString))
+        text, locale = gen_localized(s, 0)
+        nodes[N("LocalizedTextNode")] = await add(
+            N("LocalizedTextNode"), V(ua.LocalizedText(text, locale), T.LocalizedText))
 
-    # Dead at source: exists, has an address-space default, NEVER published.
-    # The rig specimen: its initial read answers 0.0 quality GOOD.
-    nodes["Dead"] = await add("Dead", V(0.0, T.Double))
+        # Enum: Int32 value, DataType = the registered BenchMode enum.
+        nodes[N("EnumNode")] = await add(N("EnumNode"), V(gen_enum(s, 0), T.Int32),
+                                         datatype=enum_dtype)
 
-    # Constant: healthy but never changes. Must not decay to badStale.
-    nodes["Constant"] = await add("Constant", V(gen_constant(s), T.Double))
+        # Abstract DataType: value is a concrete Double variant, but the node's
+        # declared DataType is the ABSTRACT ua Number (i=26). Past bug specimen:
+        # writes to such a node null-checked and answered "unknown" in-process.
+        nodes[N("AbstractNode")] = await add(
+            N("AbstractNode"), V(gen_abstract(s, 0), T.Double),
+            datatype=ua.NodeId(ua.ObjectIds.Number))
 
-    nodes["Fast"] = await add("Fast", V(0.0, T.Double))
+        nodes[N("ArrayDouble")] = await add(N("ArrayDouble"), V(gen_array_double(s, 0), T.Double))
+        nodes[N("ArrayInt32")]  = await add(N("ArrayInt32"),  V(gen_array_int32(s, 0), T.Int32))
+        nodes[N("ArrayString")] = await add(N("ArrayString"), V(gen_array_string(s, 0), T.String))
+        nodes[N("ArrayBool")]   = await add(N("ArrayBool"),   V(gen_array_bool(s, 0), T.Boolean))
+        nodes[N("ArrayEmpty")]  = await add(N("ArrayEmpty"),  V([], T.Double))
+
+        low, high = gen_range(s, 0)
+        nodes[N("StructRange")] = await add(
+            N("StructRange"), V(ua.Range(Low=low, High=high), T.ExtensionObject))
+        st = gen_struct(s, 0)
+        nodes[N("StructCustom")] = await add(
+            N("StructCustom"),
+            V(BenchStruct(Flag=st["Flag"], Count=st["Count"], Value=st["Value"], Note=st["Note"]),
+              T.ExtensionObject))
+
+        # Dead at source: exists, has an address-space default, NEVER published.
+        # The rig specimen: its initial read answers 0.0 quality GOOD.
+        nodes[N("Dead")] = await add(N("Dead"), V(0.0, T.Double))
+
+        # Constant: healthy but never changes. Must not decay to badStale.
+        nodes[N("Constant")] = await add(N("Constant"), V(gen_constant(s), T.Double))
+
+        nodes[N("Fast")] = await add(N("Fast"), V(0.0, T.Double))
+
+    # Write-arm targets: TWO writable nodes per server, outside the matrix
+    # (the matrix is read-side coverage; these are the write path's landing
+    # zones). Never ticked — only a client write moves them, so a readback
+    # after a write is proof of application, not a race with the generator.
+    # Two types on purpose: the gateway's OPC UA write adapter types an `int`
+    # as Int32 but leaves a `double` untyped, and the pinned binding THROWS on
+    # untyped doubles — Int32 measures the applied path, Double pins the hole.
+    for sink_name, variant in (("WriteSinkInt", V(0, T.Int32)),
+                               ("WriteSinkReal", V(0.0, T.Double)),
+                               ("WriteSinkBool", V(False, T.Boolean))):
+        sink = await obj.add_variable(nid(sink_name), f"{idx}:{sink_name}", variant)
+        await sink.set_writable()
+        nodes[sink_name] = sink
 
     return server, {
         "name": name, "seed": seed, "port": port, "idx": idx,
         "nodes": nodes, "BenchStruct": BenchStruct, "tick": 0, "fast_tick": 0,
+        "replicate": replicate,
     }
 
 
 def variant_for(ua, ctx, node_name, value):
-    """Wrap a generator value in the right ua.Variant."""
+    """Wrap a generator value in the right ua.Variant. [node_name] may carry a
+    replica suffix (Int16_c3) — the variant type depends only on the base."""
     T = ua.VariantType
     V = ua.Variant
-    match node_name:
+    base, _ = parse_replica(node_name)
+    match base:
         case "Counter": return V(value, T.UInt32)
         case "Bool": return V(value, T.Boolean)
         case "Int16": return V(value, T.Int16)
@@ -310,14 +366,16 @@ async def tick_sync(server, ctx):
     from asyncua import ua
     ctx["tick"] += 1
     t = ctx["tick"]
-    s = ctx["seed"]
     now = dt.datetime.now(dt.timezone.utc)
     writes = []
-    for node_name in SYNC_NODES:
-        gen = NODE_MATRIX[node_name][1]
-        variant = variant_for(ua, ctx, node_name, gen(s, t))
-        writes.append((ctx["nodes"][node_name].nodeid,
-                       ua.DataValue(variant, SourceTimestamp=now)))
+    for r in range(ctx.get("replicate", 1)):
+        s = replica_seed(ctx["seed"], r)
+        for base in SYNC_NODES:
+            node_name = replica_node_name(base, r)
+            gen = NODE_MATRIX[base][1]
+            variant = variant_for(ua, ctx, node_name, gen(s, t))
+            writes.append((ctx["nodes"][node_name].nodeid,
+                           ua.DataValue(variant, SourceTimestamp=now)))
     for nodeid, dv in writes:
         await server.write_attribute_value(nodeid, dv)
 
@@ -325,9 +383,14 @@ async def tick_sync(server, ctx):
 async def tick_fast(server, ctx):
     from asyncua import ua
     ctx["fast_tick"] += 1
-    dv = ua.DataValue(ua.Variant(gen_fast(ctx["seed"], ctx["fast_tick"]), ua.VariantType.Double),
-                      SourceTimestamp=dt.datetime.now(dt.timezone.utc))
-    await server.write_attribute_value(ctx["nodes"]["Fast"].nodeid, dv)
+    now = dt.datetime.now(dt.timezone.utc)
+    for r in range(ctx.get("replicate", 1)):
+        dv = ua.DataValue(
+            ua.Variant(gen_fast(replica_seed(ctx["seed"], r), ctx["fast_tick"]),
+                       ua.VariantType.Double),
+            SourceTimestamp=now)
+        await server.write_attribute_value(
+            ctx["nodes"][replica_node_name("Fast", r)].nodeid, dv)
 
 
 async def main() -> int:
@@ -340,15 +403,22 @@ async def main() -> int:
     ap.add_argument("--offset", type=int, default=0, help="first server index (names + seeds)")
     ap.add_argument("--port", type=int, default=None,
                     help="fixed port (restart arm only; requires --count 1)")
+    ap.add_argument("--replicate", type=int, default=1,
+                    help="matrix copies per server (replica r suffixes _c{r} "
+                         "and derives seed+7919*r; the matrix is never padded, "
+                         "always copied whole)")
     args = ap.parse_args()
     if args.port is not None and args.count != 1:
         ap.error("--port requires --count 1")
+    if args.replicate < 1:
+        ap.error("--replicate must be >= 1")
 
     servers = []
     for i in range(args.count):
         n = args.offset + i
         name = f"{args.prefix}{n:02d}"
-        server, ctx = await build_server(name, args.seed + n, fixed_port=args.port)
+        server, ctx = await build_server(name, args.seed + n, fixed_port=args.port,
+                                         replicate=args.replicate)
         servers.append((server, ctx))
         print(f"SERVER {name} opc.tcp://127.0.0.1:{ctx['port']} ns={ctx['idx']} seed={args.seed + n}",
               flush=True)
