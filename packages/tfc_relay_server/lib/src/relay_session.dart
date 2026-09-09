@@ -1280,8 +1280,11 @@ final class RelaySession {
   /// method, which is the largest privilege hole this wire could grow.
   ///
   /// The table reopened at forty-four names (14-12's `ackAlarm` was the
-  /// forty-fourth callable) and closes again at seventy-two: nine template,
-  /// eleven admin, three audit reads, five config. There is no
+  /// forty-fourth callable) and closed again at seventy-two: nine template,
+  /// eleven admin, three audit reads, five config. It has since reopened once
+  /// more, for `alarmHistory` — the seventy-third — because a gateway-mode
+  /// panel's history read had no wire to travel on and was answering an empty
+  /// list off a database gateway mode no longer builds. There is no
   /// `accessTemplates.template` — the audit cut it (no caller anywhere,
   /// its own store included) — and no `audit.record`: the relay writes its
   /// own rows server-side, and a wire method a client could write a row

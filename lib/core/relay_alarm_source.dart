@@ -32,23 +32,45 @@
 /// right alarm — a silent mis-actuation of the operator's intent, with no
 /// error anywhere.
 ///
-/// ## What still comes from this station
+/// ## Alarm history comes from the backend too — D-11 is superseded
 ///
-/// Alarm **history** and alarm **configuration** (D-11). The panel holds its
-/// own Postgres connection in gateway mode — `preferencesProvider` builds it
-/// unconditionally — so `getRecentAlarms` reads `alarm_history` exactly as
-/// direct mode does, and the alarm editor still writes `alarm_man_config`
-/// through preferences. A gateway station whose alarm editor was silently
-/// read-only would be a worse bug than the one this class fixes.
+/// **The old text of this section was false, and its falsehood is how the bug
+/// survived.** It read: *"Alarm history and alarm configuration (D-11). The
+/// panel holds its own Postgres connection in gateway mode —
+/// `preferencesProvider` builds it unconditionally — so `getRecentAlarms`
+/// reads `alarm_history` exactly as direct mode does."*
+///
+/// `preferencesProvider` stopped building it unconditionally.
+/// `lib/providers/preferences.dart:60` now branches on the transport *before*
+/// it reads the config row — deliberately, so a gateway station does not pull
+/// a Postgres pool up at boot with no screen asking — and builds
+/// `Preferences` with `db: null`. From that commit,
+/// `if (preferences.database == null) return []` was the only branch
+/// [getRecentAlarms] ever took on a gateway panel: an empty history page, on a
+/// plant that has had alarms all week, with no error, no badge and no line on
+/// stderr. An empty answer presented as a fact is worse than an error, and it
+/// is the failure class this whole milestone exists to remove.
+///
+/// So history is routed the way every other read is routed: the backend owns
+/// `alarm_history`, and [AlarmTransport.recentAlarms] asks it. A failure is
+/// **thrown**, never returned as an empty list — see [getRecentAlarms] and
+/// [historyError].
+///
+/// ## Alarm configuration still comes from this station
+///
+/// The other half of D-11 stands. The alarm editor writes `alarm_man_config`
+/// through preferences, which in gateway mode is the device-local mirror. A
+/// gateway station whose alarm editor was silently read-only would be a worse
+/// bug than the one this class fixes.
 ///
 /// ## Why the collaborator is a port and not `RemoteStateMan`
 ///
 /// `RemoteStateMan` is a `final class`: nothing outside its own library may
 /// implement it, so no test in this repository can hand this class a double of
-/// it. [AlarmTransport] is therefore the two things a gateway-mode alarm
-/// source actually needs — the active-set stream and the acknowledge — and
-/// [RemoteAlarmTransport] is the one-line production implementation over the
-/// live client.
+/// it. [AlarmTransport] is therefore the three things a gateway-mode alarm
+/// source actually needs — the active-set stream, the acknowledge and the
+/// history read — and [RemoteAlarmTransport] is the one-line production
+/// implementation over the live client.
 ///
 /// The stream is taken from the client **directly** rather than through
 /// `GatewayStateMan.subscribe`, which runs `toUaValue` and rebuilds the
@@ -63,7 +85,11 @@ import 'dart:convert';
 import 'dart:io' show stderr;
 
 import 'package:collection/collection.dart';
-import 'package:drift/drift.dart' show OrderingMode, OrderingTerm;
+// No `package:drift` import, and its absence is the point: since history moved
+// onto the transport there is no query in this file, and a station that has no
+// database cannot be asked one. The old import was `OrderingMode` and
+// `OrderingTerm` for a `select(db.alarmHistory)` whose only reachable branch
+// on a gateway panel was `return []`.
 import 'package:rxdart/rxdart.dart';
 import 'package:tfc_dart/core/alarm.dart';
 // A prefixed second import of the same library, for one reason: the
@@ -76,7 +102,7 @@ import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as rp;
 
-/// The two things a gateway-mode alarm source needs from the relay client.
+/// The three things a gateway-mode alarm source needs from the relay client.
 ///
 /// Narrow on purpose. Taking the whole client would make this class untestable
 /// (`RemoteStateMan` is `final`) and would also let a later edit reach for
@@ -88,6 +114,22 @@ abstract interface class AlarmTransport {
 
   /// Acknowledges one rule of one alarm, by the identity D-4 persists.
   Future<void> ackAlarm(String alarmUid, int ruleIndex);
+
+  /// The backend's `alarm_history` rows overlapping the window, newest first.
+  ///
+  /// **The third member, and it was added because the second-best answer here
+  /// is measurably harmful.** History used to be read from the panel's own
+  /// database; a gateway panel has no database, so that read answered an empty
+  /// list — every time, silently, on every station. See the library doc.
+  ///
+  /// An implementation **throws** when the backend could not answer. It must
+  /// never return an empty list for a failure: `[]` is what a plant with no
+  /// alarms looks like, and the two are indistinguishable on screen.
+  Future<List<rp.AlarmHistoryEntry>> recentAlarms({
+    required int limit,
+    DateTime? from,
+    DateTime? to,
+  });
 }
 
 /// [AlarmTransport] over the live relay client.
@@ -103,6 +145,14 @@ class RemoteAlarmTransport implements AlarmTransport {
   @override
   Future<void> ackAlarm(String alarmUid, int ruleIndex) =>
       _remote.ackAlarm(alarmUid, ruleIndex);
+
+  @override
+  Future<List<rp.AlarmHistoryEntry>> recentAlarms({
+    required int limit,
+    DateTime? from,
+    DateTime? to,
+  }) =>
+      _remote.recentAlarms(limit: limit, from: from, to: to);
 }
 
 /// The gateway-mode [AlarmSource].
@@ -252,12 +302,15 @@ class RelayAlarmSource implements AlarmSource {
       _activeAlarms.add({for (final e in decoded.entries) _activeOf(e)});
     }
     // CD-2: re-query history on every active-set change, rather than keeping a
-    // ring buffer that appends on an observed deactivation. The database is
-    // the same one direct mode reads, and one source of truth cannot diverge
-    // from itself.
-    unawaited(_reloadHistory().catchError((Object error) {
-      stderr.writeln('Error reloading alarm history: $error');
-    }));
+    // ring buffer that appends on an observed deactivation. The rows come from
+    // the backend's `alarm_history` — the one table the engine writes — so
+    // there is one source of truth and it cannot diverge from itself.
+    //
+    // No `.catchError` here: [_reloadHistory] absorbs its own failure into
+    // [historyError] and a line on stderr, because "the refresh failed" is a
+    // fact the object has to keep, not one that scrolls past. A handler here
+    // as well would be a second place the same failure is decided about.
+    unawaited(_reloadHistory());
   }
 
   /// One payload entry, as the object the widgets already know.
@@ -416,6 +469,20 @@ class RelayAlarmSource implements AlarmSource {
           List<AlarmActive> alarms, String searchQuery) =>
       shared.filterAlarms(alarms, searchQuery);
 
+  /// Why the last history refresh failed, or null when the last one worked.
+  ///
+  /// **Not a log line.** The banner's equivalent of this is
+  /// [activeStreamClosed], and it exists for the same measured reason: a fault
+  /// that only reaches `stderr` is a fault nobody on a plant floor ever sees.
+  /// A history page showing an empty list is indistinguishable from a factory
+  /// that has never had an alarm, so when the refresh behind it failed there
+  /// has to be something on the object saying so.
+  ///
+  /// Cleared by the next refresh that succeeds — a stale fault line is a fault
+  /// line nobody reads.
+  String? get historyError => _historyError;
+  String? _historyError;
+
   /// Re-reads the history rows and republishes them.
   ///
   /// A plain list rather than `AlarmMan`'s `RingBuffer.buffer`: that buffer
@@ -424,8 +491,30 @@ class RelayAlarmSource implements AlarmSource {
   /// the previous answer's rows behind it. This side re-reads the whole window
   /// each time, so the query result *is* the history. Consumers already handle
   /// nulls in this list, because `RingBuffer.buffer` is padded with them.
+  ///
+  /// **A failure leaves the previous list standing** and records
+  /// [historyError]. Publishing an empty list instead would blank the page and
+  /// present that as the plant's history, which is the same lie by a shorter
+  /// route; erroring the subject instead would put a permanent spinner on
+  /// `alarm.dart:855`'s `StreamBuilder`, which says even less.
+  ///
+  /// It does not rethrow, and that is why [create] can await it: a gateway
+  /// that cannot answer history is still a gateway with a working active set,
+  /// and refusing to build the whole alarm surface over it would take the
+  /// banner down as well as the page.
   Future<void> _reloadHistory() async {
-    final rows = await getRecentAlarms();
+    final List<AlarmActive> rows;
+    try {
+      rows = await getRecentAlarms();
+    } catch (error) {
+      _historyError = '$error';
+      stderr.writeln(
+          'Alarm history could not be read from the backend: $error. The list '
+          'on the history page is whatever it last showed and is NOT this '
+          'plant\'s history. Nothing here says the plant has had no alarms.');
+      return;
+    }
+    _historyError = null;
     if (!_historyController.isClosed) {
       _historyController.add(List<AlarmActive?>.of(rows));
     }
@@ -433,83 +522,87 @@ class RelayAlarmSource implements AlarmSource {
 
   /// Closed and open activations from `alarm_history`, newest first.
   ///
-  /// D-11: this is the panel's own database in both transports, so the shape
-  /// matches `AlarmMan.getRecentAlarms` deliberately — the same overlap
-  /// window, the same rule resolution off `rule_index`, the same refusal to
-  /// guess when the row states nothing. It is spelled again here rather than
-  /// shared because the only place to share it from is `AlarmMan`, and
-  /// constructing one of those in gateway mode is the thing this class exists
-  /// to make impossible.
+  /// **Read from the backend over [AlarmTransport.recentAlarms], not from this
+  /// panel's database.** See the library doc: the D-11 ruling that put this
+  /// read on a local database rested on a premise that stopped being true, and
+  /// from that moment this method's only reachable branch was `return []`.
+  ///
+  /// The three arguments are `AlarmMan.getRecentAlarms`' three arguments and
+  /// they mean what they mean there — [limit] a row ceiling, [from] and [to] a
+  /// window bounded by **overlap** rather than by start, ordering newest
+  /// first. A divergence between the transports here is the bug this class
+  /// exists to prevent, so the semantics are stated in one place
+  /// (`AlarmHistorySource.recentAlarms`) and both ends are held to it.
+  ///
+  /// **It does not catch.** A backend that could not answer is the caller's to
+  /// show; converting that into an empty list would report a fact about the
+  /// wire as a fact about the factory, which is precisely the defect this
+  /// method was rewritten to end. [_reloadHistory] is the one caller that
+  /// absorbs the throw, and it records [historyError] rather than swallowing
+  /// it.
   @override
   Future<List<AlarmActive>> getRecentAlarms({
     int limit = 1000,
     DateTime? from,
     DateTime? to,
   }) async {
-    if (preferences.database == null) return [];
+    final entries =
+        await _transport.recentAlarms(limit: limit, from: from, to: to);
+    return entries.map(_historyOf).toList();
+  }
 
-    final db = preferences.database!.db;
+  /// One history row, as the object the widgets already know.
+  ///
+  /// **Everything here comes from [entry]. Nothing is looked up in [config]**,
+  /// which is the same rule [_activeOf] follows and it binds harder here.
+  /// `AlarmMan.getRecentAlarms` resolves each row against the local
+  /// configuration and returns `null` — dropped by `whereType`, silently — for
+  /// a uid it cannot find. On a direct station the configuration and the rows
+  /// are one file on one machine. In gateway mode they are a backend that
+  /// evaluated the rules and a panel holding a device-local mirror of a
+  /// preference, so the moment they disagree that join makes an alarm renamed
+  /// last week erase its own history, with no error anywhere.
+  AlarmActive _historyOf(rp.AlarmHistoryEntry entry) {
+    final rule = AlarmRule(
+      level: _levelOf(entry.level),
+      expression:
+          ExpressionConfig(value: Expression(formula: entry.expression ?? '')),
+      // Resolved by the backend against the configuration its engine actually
+      // ran — including its refusal to guess: a row that names no rule, or one
+      // whose rule has since been deleted, arrives as false rather than as
+      // rule 0's answer.
+      acknowledgeRequired: entry.acknowledgeRequired,
+    );
 
-    final query = db.select(db.alarmHistory);
-    if (from != null || to != null) {
-      query.where((t) => alarmHistoryOverlaps(t, from: from, to: to));
-    }
-    final result = await (query
-          ..orderBy([
-            (t) =>
-                OrderingTerm(expression: t.createdAt, mode: OrderingMode.desc)
-          ])
-          ..limit(limit))
-        .get();
-
-    return result
-        .map((row) {
-          final alarmConfig = alarms.firstWhereOrNull(
-            (a) => a.config.uid == row.alarmUid,
-          );
-          if (alarmConfig == null) return null;
-
-          final ruleIndex = row.ruleIndex;
-          final configuredRule = ruleIndex != null &&
-                  ruleIndex >= 0 &&
-                  ruleIndex < alarmConfig.config.rules.length
-              ? alarmConfig.config.rules[ruleIndex]
-              : null;
-
-          final rule = AlarmRule(
-            level: AlarmLevel.values.firstWhere(
-              (l) => l.name == row.alarmLevel,
-              orElse: () => AlarmLevel.error,
-            ),
-            expression: ExpressionConfig(
-              value: Expression(formula: row.expression ?? ''),
-            ),
-            // A pre-v7 row states no rule index, and a row whose index no
-            // longer exists names a rule that has been deleted. Neither can be
-            // resolved, and matching such a row to rule 0 would be a guess
-            // dressed as a fact.
-            acknowledgeRequired: configuredRule?.acknowledgeRequired ?? false,
-          );
-
-          return AlarmActive(
-            alarm: alarmConfig,
-            notification: AlarmNotification(
-              uid: row.alarmUid,
-              active: row.active,
-              expression: row.expression,
-              rule: rule,
-              timestamp: row.createdAt,
-              ruleIndex: ruleIndex,
-              tsSource: row.tsSource == null
-                  ? null
-                  : _tsSourceOf(row.tsSource!),
-            ),
-            pendingAck: row.pendingAck,
-            deactivated: row.deactivatedAt,
-          );
-        })
-        .whereType<AlarmActive>()
-        .toList();
+    return AlarmActive(
+      alarm: Alarm(
+        config: AlarmConfig(
+          uid: entry.uid,
+          title: entry.title,
+          description: entry.description,
+          group: List<String>.of(entry.group),
+          rules: [rule],
+        ),
+      ),
+      notification: AlarmNotification(
+        uid: entry.uid,
+        active: entry.active,
+        expression: entry.expression,
+        rule: rule,
+        // The backend's instant, in UTC. Never reconstructed through this
+        // machine's time zone: that is the bug which makes two panels disagree
+        // about when the line stopped.
+        timestamp: entry.createdAt,
+        ruleIndex: entry.ruleIndex,
+        // Three states, and the null is load-bearing: a pre-v7 row recorded no
+        // provenance at all, which is a different fact from a row that
+        // positively records that the backend guessed.
+        tsSource:
+            entry.tsSource == null ? null : _tsSourceOf(entry.tsSource!),
+      ),
+      pendingAck: entry.pendingAck,
+      deactivated: entry.deactivatedAt,
+    );
   }
 
   /// Drops the subscription and the two observation surfaces.

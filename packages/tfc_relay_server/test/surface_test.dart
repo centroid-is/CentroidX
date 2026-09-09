@@ -326,11 +326,11 @@ void main() {
               'registration.');
     });
 
-    test('the table is exactly the seventy-two names a client may call today',
+    test('the table is exactly the seventy-three names a client may call today',
         () {
-      // The sentence is unchanged in shape and still true: seventy-two names
-      // a client may *call* — forty-four through Phase 14, plus 17-09's
-      // twenty-eight access methods. `h` is not one of them — it is
+      // The sentence is unchanged in shape and still true: seventy-three names
+      // a client may *call* — forty-four through Phase 14, 17-09's
+      // twenty-eight access methods, and `alarmHistory`. `h` is not one of them — it is
       // announced, never called — so it is taken out of the ledger by name
       // here rather than being added to the literal, which would say a
       // client may ask the gateway to tick.
@@ -341,7 +341,7 @@ void main() {
               'failure prints the whole table rather than a difference');
     });
 
-    test('the registered table is the seventy-two callable names plus the '
+    test('the registered table is the seventy-three callable names plus the '
         'client notifications', () {
       expect(_session().registeredMethods, everyRegisterableName,
           reason: 'the ledger is the union, because json_rpc_2 dispatches a '

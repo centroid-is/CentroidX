@@ -457,7 +457,7 @@ void main() {
     expect(link.session.subscriptions.count, 0);
   });
 
-  test('the wire surface is exactly the seventy-two methods declared today, '
+  test('the wire surface is exactly the seventy-three methods declared today, '
       'plus the one name a client announces', () async {
     final link = _link();
     addTearDown(link.dispose);
@@ -473,6 +473,11 @@ void main() {
       // constants here because this file pins the *ledger*, bare strings in
       // `surface_test.dart` because that one pins the wire spelling.
       Methods.ackAlarm,
+      // Alarm history over the pipe, beside the acknowledge because it is the
+      // same surface — and gated differently on purpose: this one is a read,
+      // so its authorization is the visibility answer `api.keys` already
+      // carries rather than `api.canWrite`.
+      Methods.alarmHistory,
       Methods.read,
       Methods.readFresh,
       Methods.readMany,

@@ -130,6 +130,45 @@ rp.AlarmActiveEntry entry({
       staleSinceMs: staleSinceMs,
     );
 
+/// One `alarm_history` row as the backend puts it on the wire.
+///
+/// Deliberately titled and levelled DIFFERENTLY from [knownAlarm], so a source
+/// that resolved the row against the panel's own configuration — the way
+/// `AlarmMan.getRecentAlarms` does on a direct station — produces observably
+/// different output rather than the same output by luck.
+rp.AlarmHistoryEntry historyRow({
+  String uid = 'CN04.MOT01',
+  int? ruleIndex = 1,
+  String level = 'error',
+  String title = 'Motor overload',
+  String description = 'the drive tripped',
+  List<String> group = const ['Line 3'],
+  String? expression = 'a{10.0} > 5',
+  bool acknowledgeRequired = false,
+  bool active = false,
+  bool pendingAck = false,
+  DateTime? createdAt,
+  DateTime? deactivatedAt,
+  String? tsSource = rp.AlarmActiveEntry.tsSourcePlant,
+}) =>
+    rp.AlarmHistoryEntry(
+      uid: uid,
+      ruleIndex: ruleIndex,
+      level: level,
+      title: title,
+      description: description,
+      group: group,
+      expression: expression,
+      acknowledgeRequired: acknowledgeRequired,
+      active: active,
+      pendingAck: pendingAck,
+      createdAt: createdAt ?? backendOnset,
+      deactivatedAt: active
+          ? null
+          : (deactivatedAt ?? backendOnset.add(const Duration(minutes: 4))),
+      tsSource: tsSource,
+    );
+
 // ------------------------------------------------------------------- fakes
 
 /// The gateway's own refusal, as this file needs to observe it.
@@ -163,7 +202,9 @@ class _LinkDown implements Exception {
 ///
 /// A double for `RemoteStateMan` itself is impossible — it is a `final class`,
 /// so nothing outside its own library may implement it. That is exactly why
-/// [AlarmTransport] exists as a two-member port.
+/// [AlarmTransport] exists as a three-member port: the active-set stream, the
+/// acknowledge, and — since history stopped being readable from a database a
+/// gateway panel no longer has — the history read.
 class _RecordingTransport implements AlarmTransport {
   final List<String> subscribed = <String>[];
   final List<({String uid, int ruleIndex})> acks =
@@ -199,6 +240,30 @@ class _RecordingTransport implements AlarmTransport {
     if (gate != null) await gate.future;
     final error = ackError;
     if (error != null) throw error;
+  }
+
+  /// Every history window this port was asked for, in order.
+  final List<({int limit, DateTime? from, DateTime? to})> historyQueries =
+      <({int limit, DateTime? from, DateTime? to})>[];
+
+  /// What the backend holds. Empty by default, which is a *fact* about the
+  /// plant here and never a stand-in for a failure — [historyError] is how an
+  /// arm models the gateway declining.
+  List<rp.AlarmHistoryEntry> historyRows = const [];
+
+  /// Set to make the next (and every subsequent) history read throw.
+  Object? historyError;
+
+  @override
+  Future<List<rp.AlarmHistoryEntry>> recentAlarms({
+    required int limit,
+    DateTime? from,
+    DateTime? to,
+  }) async {
+    historyQueries.add((limit: limit, from: from, to: to));
+    final error = historyError;
+    if (error != null) throw error;
+    return historyRows;
   }
 
   void push(
@@ -866,12 +931,28 @@ void main() {
     });
 
     // ---------------------------------------------------------------- 12
-    test('getRecentAlarms reads the panel\'s own database', () async {
+    //
+    // **D-11 is superseded, and this arm records why.** The ruling said
+    // history stays local because *"the panel holds its own Postgres
+    // connection in gateway mode — preferencesProvider builds it
+    // unconditionally"*. That premise is now false:
+    // `lib/providers/preferences.dart:60` branches on the transport before it
+    // reads the config row, so in gateway mode `Preferences` is built with
+    // `db: null` and `if (preferences.database == null) return []` was the
+    // ONLY branch `getRecentAlarms` ever took. No error, no log line — a
+    // history page that looks like a factory which has never had an alarm.
+    //
+    // The arm below is deliberately hostile: the panel is handed a database
+    // holding a row it *would* have returned under D-11, and the transport is
+    // handed a different one. A source that reads the database passes nothing
+    // here, and a source that reads neither is caught by the count.
+    test('getRecentAlarms reads the backend, not the panel\'s own database',
+        () async {
       await appDb.into(appDb.alarmHistory).insert(
             AlarmHistoryCompanion.insert(
               alarmUid: 'CN04.MOT01',
-              alarmTitle: 'Motor overload',
-              alarmDescription: 'the drive tripped',
+              alarmTitle: 'A local row nobody should ever see',
+              alarmDescription: 'written straight into the panel\'s database',
               alarmLevel: 'error',
               expression: const Value('a{10.0} > 5'),
               active: false,
@@ -883,7 +964,8 @@ void main() {
             ),
           );
 
-      final transport = _RecordingTransport();
+      final transport = _RecordingTransport()
+        ..historyRows = [historyRow(title: 'The backend\'s row')];
       addTearDown(transport.close);
       final container = _container(
         gateway: true,
@@ -895,14 +977,221 @@ void main() {
       final source = await container.read(alarmManProvider.future);
       final rows = await source.getRecentAlarms();
 
+      expect(rows, hasLength(1));
+      expect(rows.single.alarm.config.title, 'The backend\'s row',
+          reason: 'the backend is the process that has alarm_history; a '
+              'gateway panel has no database at all, so a read that went to '
+              'one could only ever answer empty');
+      expect(transport.historyQueries, hasLength(2),
+          reason: 'two reads, both over the wire: `create` primes the history '
+              'stream and this arm asked again. A source still reading the '
+              'database would show none at all');
+    });
+
+    // --------------------------------------------------------------- 12b
+    test('the window and the limit go to the backend unchanged', () async {
+      final transport = _RecordingTransport();
+      addTearDown(transport.close);
+      final container = _container(
+        gateway: true,
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source = await container.read(alarmManProvider.future);
+      transport.historyQueries.clear();
+
+      await source.getRecentAlarms(
+        limit: 2000,
+        from: DateTime.utc(2026, 9, 1, 6),
+        to: DateTime.utc(2026, 9, 1, 14),
+      );
+
+      // `AlarmMan.getRecentAlarms`'s three arguments, arriving intact. A
+      // transport that dropped the window would answer the newest N rows to a
+      // stop timeline asking about last Tuesday — confidently wrong rather
+      // than empty, which is worse.
+      expect(transport.historyQueries, [
+        (
+          limit: 2000,
+          from: DateTime.utc(2026, 9, 1, 6),
+          to: DateTime.utc(2026, 9, 1, 14)
+        )
+      ]);
+    });
+
+    // --------------------------------------------------------------- 12c
+    test('a history row is read off the payload, never joined against the '
+        'local config', () async {
+      // `AlarmMan.getRecentAlarms` resolves each row against the local
+      // configuration and returns null — dropped by `whereType`, silently —
+      // for a uid it cannot find. Across this wire the two copies are a
+      // backend that evaluated the rules and a panel holding a device-local
+      // mirror, so that join would make an alarm renamed last week erase its
+      // own history with no error anywhere.
+      final transport = _RecordingTransport()
+        ..historyRows = [
+          historyRow(
+            uid: 'CN99.NOBODY-HERE-KNOWS-THIS',
+            title: 'Renamed since this panel last synced',
+            level: 'warning',
+            acknowledgeRequired: true,
+          )
+        ];
+      addTearDown(transport.close);
+      final container = _container(
+        gateway: true,
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source = await container.read(alarmManProvider.future);
+      final rows = await source.getRecentAlarms();
+
       expect(rows, hasLength(1),
-          reason: 'the panel holds its own Postgres connection in gateway '
-              'mode too (preferences.dart:37-40), so history is not the '
-              'gateway\'s to serve');
-      expect(rows.single.notification.ruleIndex, 1);
+          reason: 'a row for an alarm this panel\'s config has never heard of '
+              'is still a thing that happened on the plant');
+      expect(rows.single.alarm.config.title,
+          'Renamed since this panel last synced');
+      expect(rows.single.notification.rule.level, AlarmLevel.warning);
       expect(rows.single.notification.rule.acknowledgeRequired, isTrue,
-          reason: 'the row names rule 1 of the LOCAL configuration, which is '
-              'where a historical row\'s rule has always come from');
+          reason: 'resolved by the backend against the configuration its '
+              'engine actually ran, and carried on the row — the panel does '
+              'not index into its own rule list to find it');
+    });
+
+    // --------------------------------------------------------------- 12d
+    test('a still-standing row keeps a null deactivation', () async {
+      // Null is what makes a row overlap every window it started before, which
+      // is what `alarmHistoryOverlaps` and `StopIntervalSource` are built on.
+      final transport = _RecordingTransport()
+        ..historyRows = [historyRow(active: true, deactivatedAt: null)];
+      addTearDown(transport.close);
+      final container = _container(
+        gateway: true,
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source = await container.read(alarmManProvider.future);
+      final rows = await source.getRecentAlarms();
+
+      expect(rows.single.deactivated, isNull);
+      expect(rows.single.notification.active, isTrue);
+      expect(rows.single.notification.timestamp, backendOnset,
+          reason: 'the backend\'s instant, in UTC, to the millisecond — never '
+              'reconstructed through this machine\'s time zone');
+      expect(rows.single.notification.timestamp.isUtc, isTrue);
+    });
+
+    // --------------------------------------------------------------- 12e
+    test('a pre-v7 row states no rule and the panel does not guess one',
+        () async {
+      final transport = _RecordingTransport()
+        ..historyRows = [historyRow(ruleIndex: null, tsSource: null)];
+      addTearDown(transport.close);
+      final container = _container(
+        gateway: true,
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source = await container.read(alarmManProvider.future);
+      final rows = await source.getRecentAlarms();
+
+      expect(rows.single.notification.ruleIndex, isNull,
+          reason: 'matching such a row to rule 0 is a guess dressed as a '
+              'fact, and rule 0 is the identity an acknowledge would be sent '
+              'under');
+      expect(rows.single.notification.tsSource, isNull,
+          reason: 'nobody recorded a provenance is not the same fact as the '
+              'backend positively recording that it guessed');
+    });
+
+    // --------------------------------------------------------------- 12f
+    test('a backend that cannot answer history is NOT an empty history',
+        () async {
+      // The failure class this whole change is about. `[]` is what a plant
+      // with no alarms looks like, so answering it for a gateway that
+      // declined would report a fact about the wire as a fact about the
+      // factory — which is exactly what the old database read was doing.
+      final transport = _RecordingTransport()
+        ..historyError = const _GatewayRefusal(
+            'this gateway serves no alarm history, so there is nothing to '
+            'read');
+      addTearDown(transport.close);
+      final container = _container(
+        gateway: true,
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source = await container.read(alarmManProvider.future);
+
+      await expectLater(source.getRecentAlarms(), throwsA(isA<Exception>()),
+          reason: 'the refusal is the caller\'s to show; swallowing it into an '
+              'empty list is the silent loss this milestone exists to remove');
+    });
+
+    // --------------------------------------------------------------- 12g
+    test('a failed refresh reports itself and leaves the last list standing',
+        () async {
+      final transport = _RecordingTransport()
+        ..historyRows = [historyRow(title: 'The row that was really there')];
+      addTearDown(transport.close);
+      final container = _container(
+        gateway: true,
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source = await container.read(alarmManProvider.future)
+          as RelayAlarmSource;
+      expect(source.historyError, isNull,
+          reason: 'the premise: the first read worked');
+      expect((await source.history().first).single?.alarm.config.title,
+          'The row that was really there');
+
+      transport.historyError = const _GatewayRefusal('the pool is gone');
+      transport.push([entry()]);
+      await _settle(source);
+
+      expect(source.historyError, isNotNull,
+          reason: 'a refresh that failed is a fact the panel holds, not a '
+              'line that scrolled past on stderr');
+      expect((await source.history().first).single?.alarm.config.title,
+          'The row that was really there',
+          reason: 'the last answer that WAS an answer stands. Clearing the '
+              'list on a failed refresh would blank the page and call it the '
+              'plant\'s history — the same lie by a shorter route');
+    });
+
+    // --------------------------------------------------------------- 12h
+    test('a recovered refresh clears the reported failure', () async {
+      final transport = _RecordingTransport()
+        ..historyError = const _GatewayRefusal('the pool is gone');
+      addTearDown(transport.close);
+      final container = _container(
+        gateway: true,
+        preferences: await _prefs(alarms: [knownAlarm()]),
+        transport: transport,
+      );
+
+      final source = await container.read(alarmManProvider.future)
+          as RelayAlarmSource;
+      expect(source.historyError, isNotNull,
+          reason: 'construction does not throw on a history failure — the '
+              'active set is fine and a banner is worth more than a refusal '
+              'of the whole alarm surface');
+
+      transport.historyError = null;
+      transport.historyRows = [historyRow()];
+      transport.push([entry()]);
+      await _settle(source);
+
+      expect(source.historyError, isNull,
+          reason: 'a stale fault line is a fault line nobody reads');
+      expect((await source.history().first), hasLength(1));
     });
 
     // ---------------------------------------------------------------- 13

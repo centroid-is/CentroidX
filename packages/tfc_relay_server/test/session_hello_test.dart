@@ -367,7 +367,7 @@ void main() {
             'a deadline and the pump would be pure cost');
   });
 
-  test('the handler table is exactly the seventy-two names a client may call, '
+  test('the handler table is exactly the seventy-three names a client may call, '
       'plus the one it announces', () async {
     final link = _link();
     addTearDown(link.dispose);
@@ -385,6 +385,11 @@ void main() {
           // `surface_test.dart` — that file pins the wire spelling, this one
           // pins the ledger.
           Methods.ackAlarm,
+          // Alarm history over the pipe, beside the acknowledge because it is
+          // the same surface — and gated differently on purpose: this one is a
+          // read, so its authorization is the visibility answer `api.keys`
+          // already carries rather than `api.canWrite`.
+          Methods.alarmHistory,
           Methods.read,
           Methods.readFresh,
           Methods.readMany,
