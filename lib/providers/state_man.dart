@@ -7,9 +7,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:rxdart/rxdart.dart';
 
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
-import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:open62541/open62541_types.dart' show DynamicValue;
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
+// The one remaining edge to the FFI half, and it is `StateManConfigStorage`
+// alone: reading this station's config needs the drift-backed `Preferences`,
+// because `secret:` and `saveToDb:` live on that class and not on
+// `PreferencesApi`. Everything else in this file now names the types file.
+// See `direct_transport.dart` for the transport half of the same split.
+import 'package:tfc_dart/core/state_man.dart' show StateManConfigStorage;
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart'
     show ClientConfig, RemoteStateMan;
@@ -17,11 +22,11 @@ import '../core/gateway_state_man.dart';
 import '../core/relay_alarm_source.dart';
 import '../core/value_freshness.dart';
 import 'access.dart';
+import 'direct_transport.dart';
 import 'gateway.dart';
 import 'gateway_preferences_slot.dart';
 import 'access_policy.dart';
 import 'preferences.dart';
-import 'collector.dart';
 import 'value_freshness.dart';
 
 part 'state_man.g.dart';
@@ -94,7 +99,7 @@ typedef StateManFactory = Future<StateMan> Function({
 /// unit test. Those two properties have no other way to be observed, and both
 /// of them failing looks like nothing at all until it is a plant.
 final stateManFactoryProvider =
-    Provider<StateManFactory>((ref) => OpcUaStateMan.create);
+    Provider<StateManFactory>((ref) => createOpcUaStateMan);
 
 /// How the gateway-mode [StateMan] is built.
 ///
@@ -246,17 +251,12 @@ Future<StateMan> stateMan(Ref ref) async {
       prefsSlot.fill(gatewayStateMan.remote.preferences);
       stateMan = gatewayStateMan;
     } else {
-      final m2400Clients = createM2400DeviceClients(config.jbtm);
-      final modbusClients =
-          buildModbusDeviceClients(config.modbus, keyMappings);
-      final deviceClients = [...m2400Clients, ...modbusClients];
-      stateMan = await ref.read(stateManFactoryProvider)(
-          config: config,
-          keyMappings: keyMappings,
-          deviceClients: deviceClients);
-
-      // Initialize collector
-      ref.read(collectorProvider.future);
+      // The panel's own sessions, and the collector that historises them.
+      // Behind `direct_transport.dart` because an OPC UA client is `dart:ffi`
+      // and a browser has no equivalent — the web arm refuses by name rather
+      // than building something that would never receive a value.
+      stateMan = await buildDirectStateMan(ref,
+          config: config, keyMappings: keyMappings);
     }
 
     // The **inner** instance, exactly once. Closing through the decorator
