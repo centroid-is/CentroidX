@@ -546,7 +546,12 @@ void main() {
       final source =
           _stripComments(File('lib/providers/alarm.dart').readAsStringSync());
 
-      final branch = _blockAfter(source, 'gateway.isGateway');
+      // Anchored on the branch's own opening, not on the bare identifier:
+      // `alarmManProvider` also tests the transport to skip the direct-mode
+      // `alarm_man_config` seed, and a bare-identifier anchor would find that
+      // guard's block instead and pass or fail on the wrong code. The arm
+      // below still fails closed if this anchor ever stops matching.
+      final branch = _blockAfter(source, 'if (gateway.isGateway) {');
       expect(branch, isNotEmpty,
           reason: 'the roster must fail CLOSED: an arm that cannot find the '
               'branch it is scanning proves nothing at all');

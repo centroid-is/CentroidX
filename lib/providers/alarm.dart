@@ -69,13 +69,23 @@ Future<AlarmSource> alarmMan(Ref ref) async {
   // stays on the guarded object, which is right, because it is reached only
   // from addAlarm/removeAlarm/updateAlarm behind the `configure`-gated alarm
   // editor and never from `ackAlarm`.
-  if (await prefs.getString('alarm_man_config') == null) {
+  final gateway = await ref.read(gatewayConfigProvider.future);
+
+  // Direct mode only. On the relay the shared store is the backend's, so this
+  // seed would be a panel writing an EMPTY alarm config into the plant's
+  // configuration because its own store looked empty — racing every other
+  // panel that booted at the same time, and refused outright by the server's
+  // `configure` gate for a station that lacks the group, which would error
+  // this provider and take the alarm surface down at boot. The backend seeds
+  // its own config; `RelayAlarmSource.create` already reads a null as "no
+  // rules yet" rather than failing.
+  if (!gateway.isGateway &&
+      await prefs.getString('alarm_man_config') == null) {
     final systemPrefs = await ref.read(systemPreferencesProvider.future);
     await systemPrefs.setString(
         'alarm_man_config', jsonEncode(AlarmManConfig(alarms: [])));
   }
 
-  final gateway = await ref.read(gatewayConfigProvider.future);
   if (gateway.isGateway) {
     // The client is built by `stateManProvider`, which was awaited above; it
     // publishes the port into the slot because `GuardedStateMan` cannot be

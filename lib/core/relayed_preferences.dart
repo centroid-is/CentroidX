@@ -5,7 +5,7 @@
 /// ## What was wrong
 ///
 /// A gateway panel used to build its shared store as `Preferences.create(db:
-/// null, localCache: <device-local store>)`, so every shared configuration
+/// null, localCache: theDeviceLocalStore)`, so every shared configuration
 /// read and write landed in a **panel-local mirror**. An operator editing an
 /// alarm rule got a successful-looking edit the backend never saw, and two
 /// panels held two different rule sets with nothing anywhere reporting it.
@@ -517,10 +517,13 @@ final class RelayedPreferences implements Preferences {
   // The rest of the Preferences surface
   // ---------------------------------------------------------------------------
 
-  /// Null, and it must be: a gateway panel opens no Postgres pool, so a caller
-  /// reaching through this getter for raw Drift — which
-  /// `GuardedPreferences` documents as a real hole — finds nothing to reach
-  /// through here.
+  /// Null, and it must be: this router holds no database handle of its own, so
+  /// a caller reaching through this getter for raw Drift — which
+  /// `GuardedPreferences` documents as a real hole in its own guard — finds
+  /// nothing here to reach through. It is deliberately not forwarded to the
+  /// inner store: a handle reached this way would write `flutter_preferences`
+  /// on whatever database this station can see, which on this transport is not
+  /// where the shared configuration lives.
   @override
   Database? get database => null;
 

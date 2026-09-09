@@ -1782,6 +1782,46 @@ void main() {
     }
 
     // -------------------------------------------------------------------
+    // `alarm_man_config`, named on its own.
+    //
+    // It is covered by the `configure` rule the table below exercises through
+    // `key_mappings`, so these two arms add no new *grading*. What they add is
+    // the thing a reader of this file cannot otherwise check: that the panel
+    // change which put the alarm editor's writes on this wire lands on a gate
+    // that is **here**, on the server, above the one store the backend holds
+    // — not on the panel deciding for itself whether to send the frame. An
+    // alarm rule is a plant-wide safety rule; "the client did not ask" is not
+    // an access control, and a panel is not entitled to be the thing that
+    // enforces one.
+    // -------------------------------------------------------------------
+    test('an operator station is refused alarm_man_config by the server, '
+        'pre-effect', () async {
+      final panel = seenBy(_panel); // holds `operate`, and not `configure`
+
+      final refusal = await _refused(
+          () => panel.served.preferences
+              .setString('alarm_man_config', '{"alarms":[]}'),
+          'an alarm-config write from a station holding only operate');
+
+      expect(refusal.code, ServerErrorCodes.forbidden);
+      expect(panel.store.writes, isEmpty,
+          reason: 'the alarm editor\'s write must be stopped before it '
+              'reaches the store. A rule that lands and is then reported as '
+              'refused is a rule the plant is already running');
+    });
+
+    test('a station holding configure writes alarm_man_config through',
+        () async {
+      // The anti-vacuity half: without it the arm above passes against a
+      // decorator that refuses this key for everybody, which would break the
+      // alarm editor rather than gate it.
+      final engineer = seenBy(_engineer);
+      await engineer.served.preferences
+          .setString('alarm_man_config', '{"alarms":[]}');
+      expect(engineer.store.writes, ['setString']);
+    });
+
+    // -------------------------------------------------------------------
     // Graded BY KEY: the table, thirty cells (D-03).
     //
     // Six sessions crossed with five keys, one per rule kind plus the

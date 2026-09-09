@@ -18,6 +18,7 @@ import '../core/relay_alarm_source.dart';
 import '../core/value_freshness.dart';
 import 'access.dart';
 import 'gateway.dart';
+import 'gateway_preferences_slot.dart';
 import 'access_policy.dart';
 import 'preferences.dart';
 import 'collector.dart';
@@ -149,6 +150,12 @@ Future<StateMan> stateMan(Ref ref) async {
   // disposed"), and a throw in there takes the `stateMan.close()` below it
   // with it — so a teardown bug would present as a leaked OPC UA session.
   final alarmSlot = ref.read(gatewayAlarmSlotProvider);
+  // Read for the same reason and at the same point as the alarm slot. Every
+  // exit from the gateway branch below has to reach this: a caller parked on
+  // it is waiting for a client that only this build can produce, so a throw
+  // that left the slot empty would park the panel's whole shared
+  // configuration surface forever.
+  final prefsSlot = ref.read(gatewayPreferencesSlotProvider);
 
   // Watch for changes in specific preferences.
   //
@@ -233,6 +240,10 @@ Future<StateMan> stateMan(Ref ref) async {
       // subscription and a second session for the gateway to police. See
       // [GatewayAlarmSlot] for why it cannot simply type-test this provider.
       alarmSlot.transport = RemoteAlarmTransport(gatewayStateMan.remote);
+      // The shared configuration store, through the SAME client and for the
+      // same reason. Everything that has been parked on `preferencesProvider`
+      // since this build started is released here.
+      prefsSlot.fill(gatewayStateMan.remote.preferences);
       stateMan = gatewayStateMan;
     } else {
       final m2400Clients = createM2400DeviceClients(config.jbtm);
@@ -256,6 +267,10 @@ Future<StateMan> stateMan(Ref ref) async {
       // Cleared before the close, so nothing can pick a disposed client out of
       // the slot while the socket is going down.
       alarmSlot.transport = null;
+      // `clear`, not `fail`: a rebuild is coming and will fill this again, so
+      // a caller arriving in the gap should park for the next client rather
+      // than be told the panel has no gateway.
+      prefsSlot.clear();
       await stateMan.close();
     });
 
@@ -276,8 +291,13 @@ Future<StateMan> stateMan(Ref ref) async {
       readBaseline: (key) => stateMan.read(key),
       onDenied: (denial) => reportAccessDenial(ref, denial),
     );
-  } catch (e) {
+  } catch (e, stack) {
     listener.cancel();
+    // No client is coming. Anything parked on the shared configuration store
+    // has to learn that from this error rather than wait for a build that has
+    // already failed — an undialable gateway would otherwise present as a
+    // panel whose config screens never finish loading, with nothing said.
+    if (gateway.isGateway) prefsSlot.fail(e, stack);
     stderr.writeln('Error parsing key mappings: $e');
     rethrow;
   }

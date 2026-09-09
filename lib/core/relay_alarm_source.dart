@@ -56,12 +56,31 @@
 /// **thrown**, never returned as an empty list — see [getRecentAlarms] and
 /// [historyError].
 ///
-/// ## Alarm configuration still comes from this station
+/// ## Alarm configuration comes from the backend too, now
 ///
-/// The other half of D-11 stands. The alarm editor writes `alarm_man_config`
-/// through preferences, which in gateway mode is the device-local mirror. A
-/// gateway station whose alarm editor was silently read-only would be a worse
-/// bug than the one this class fixes.
+/// This used to say the opposite, and it was describing a bug rather than a
+/// design. The alarm editor writes `alarm_man_config` through preferences,
+/// and in gateway mode that store *was* this panel's own device-local mirror
+/// — so an operator editing a rule here got a successful-looking edit the
+/// plant never saw, and two panels held two rule sets with nothing anywhere
+/// reporting it. A silently panel-local alarm rule is the same failure class
+/// as the silently empty history above, and worse in consequence.
+///
+/// `RelayedPreferences` (`lib/core/relayed_preferences.dart`) now routes the
+/// shared store over the same pipe, so [_saveConfig] reaches the backend's
+/// `alarm_man_config` and the write is graded there by the server's own
+/// `configure` gate rather than by this panel. What has **not** changed is
+/// that the editor is not read-only in gateway mode.
+///
+/// **The one thing still missing, named rather than implied:** these three
+/// mutators return `void` and [_saveConfig] is an un-awaited `async` body, so
+/// a write refused or dropped by a downed link cannot reach the editor. The
+/// divergence is no longer permanent — the next rebuild reads the backend and
+/// the panel converges — but the moment of the edit still looks like success.
+/// Making `addAlarm`/`removeAlarm`/`updateAlarm` return futures the editor
+/// awaits is the fix, and it touches `AlarmMan` and the editor as well as this
+/// class. (A *denial* is already visible: it goes through
+/// `GuardedPreferences`' `onDenied` and the shared prompt.)
 ///
 /// ## Why the collaborator is a port and not `RemoteStateMan`
 ///

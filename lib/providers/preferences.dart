@@ -6,11 +6,13 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../core/gateway_config.dart';
 import '../core/preferences.dart';
+import '../core/relayed_preferences.dart';
 import '../core/startup_url.dart';
 import 'access.dart';
 import 'access_policy.dart';
 import 'database.dart';
 import 'gateway.dart';
+import 'gateway_preferences_slot.dart';
 
 part 'preferences.g.dart';
 
@@ -60,7 +62,24 @@ Future<Preferences> preferences(Ref ref) async {
       gateway.isGateway ? null : await ref.watch(databaseProvider.future);
   final localCache = createDeviceLocalPreferences();
 
-  final inner = await Preferences.create(db: db, localCache: localCache);
+  final local = await Preferences.create(db: db, localCache: localCache);
+
+  // In gateway mode the shared store is the **backend's**, reached over the
+  // one pipe this panel holds. Before 18-xx it was this station's own mirror,
+  // so an alarm rule edited here never left the panel and two panels held two
+  // rule sets with nothing reporting it. [RelayedPreferences] documents which
+  // calls still go to `local` — secrets, this station's own settings, and the
+  // one bootstrap key — and why each of them must.
+  //
+  // The client does not exist yet: `stateManProvider` builds it and it awaits
+  // *this* provider to do so, so the route is a slot it fills afterwards
+  // rather than a watch, which would deadlock. See [GatewayPreferencesSlot].
+  final inner = gateway.isGateway
+      ? RelayedPreferences(
+          inner: local,
+          slot: ref.watch(gatewayPreferencesSlotProvider),
+        )
+      : local;
 
   final guarded = GuardedPreferences(
     inner: inner,
@@ -86,10 +105,23 @@ Future<Preferences> preferences(Ref ref) async {
   // working again — the exact bug #354 fixed. It still produces one audit row,
   // marked `origin: 'system'`, which is how the mcp.config migration is
   // recorded too.
-  await migrateStartupUrlToDeviceLocal(
-    shared: guarded.systemWrites,
-    local: localCache,
-  );
+  //
+  // **Direct mode only, and not merely to avoid a deadlock.** The migration
+  // exists because `syncToLocalCache` copies every shared row over the local
+  // store, so a stray shared `startup_url` permanently overwrites each
+  // station's own choice. `RelayedPreferences` performs no such sync — it
+  // routes `startup_url` to this station and never reads a backend row for it
+  // at all — so on that transport the hazard is structurally absent and there
+  // is nothing to migrate. (It would also deadlock: this read would park on a
+  // slot that `stateManProvider` fills, and `stateManProvider` is waiting on
+  // this provider to return.) Deleting a stray row from the shared database
+  // remains a direct-mode station's job, exactly as before.
+  if (!gateway.isGateway) {
+    await migrateStartupUrlToDeviceLocal(
+      shared: guarded.systemWrites,
+      local: localCache,
+    );
+  }
 
   return guarded;
 }
