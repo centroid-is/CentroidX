@@ -234,8 +234,9 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
     // which is exactly the loss the ordering below exists to prevent.
     final alarmMan = await container.read(alarmManProvider.future);
     for (final a in _proposedAlarms) {
-      // updateAlarm removes the uid then re-adds it, so routing a removal
-      // through it would write the alarm straight back and delete nothing.
+      // updateAlarm writes the uid back -- in place now, but still written --
+      // so routing a removal through it would leave the alarm standing and
+      // delete nothing.
       if (_proposedDeleteUids.contains(a.uid)) {
         alarmMan.removeAlarm(a);
       } else {
@@ -305,9 +306,9 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
   ///
   /// A removal goes through [AlarmMan.removeAlarm]; everything else through
   /// [AlarmMan.updateAlarm], which handles both create and update:
-  /// - For new alarms (no matching UID): removeWhere is a no-op, then adds.
-  /// - For updated alarms (matching UID): removes old, then adds updated.
-  /// This avoids duplicate alarms when accepting an update proposal.
+  /// - For new alarms (no matching UID): appended to the end of the list.
+  /// - For updated alarms (matching UID): replaced where it already sits, so
+  ///   accepting an edit neither duplicates the alarm nor moves it.
   Future<void> _acceptProposalWithConfig(AlarmConfig editedConfig) async {
     final removing = _proposedDeleteUids.contains(editedConfig.uid);
     // The form's own Accept starts with this page on screen, so `ref` would

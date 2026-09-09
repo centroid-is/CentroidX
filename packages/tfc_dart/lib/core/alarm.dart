@@ -406,12 +406,47 @@ class AlarmMan {
     alarms.removeWhere((e) => e.config.uid == alarm.uid);
   }
 
+  /// Replaces the alarm carrying [alarm]'s uid, leaving it where it was.
+  ///
+  /// In place, not remove-then-append. Nothing sorts the alarm editor's list:
+  /// it is `config.alarms` in stored order, and `alarms` -- a LinkedHashSet,
+  /// so insertion order -- behind it. Appending moved every alarm the
+  /// operator edited to the bottom of the list, and because [_saveConfig]
+  /// rewrites the whole `alarm_man_config` blob the move was persisted, so it
+  /// survived the reload the editor does right after saving.
+  ///
+  /// An alarm whose uid is not here yet is appended, which is how the
+  /// proposal flow creates one: the editor routes both create and update
+  /// through this method.
   void updateAlarm(AlarmConfig alarm) {
-    config.alarms.removeWhere((e) => e.uid == alarm.uid);
-    config.alarms.add(alarm);
+    final index = config.alarms.indexWhere((e) => e.uid == alarm.uid);
+    if (index == -1) {
+      config.alarms.add(alarm);
+    } else {
+      config.alarms[index] = alarm;
+    }
     _saveConfig();
-    alarms.removeWhere((e) => e.config.uid == alarm.uid);
-    alarms.add(Alarm(config: alarm));
+    _replaceLiveAlarm(alarm);
+  }
+
+  /// Swaps the live [Alarm] for one rebuilt from [alarm], at the position it
+  /// already held in [alarms].
+  ///
+  /// A Set has no index to assign through, so the order is restored by
+  /// rebuilding it. [Alarm] has no `==`, so identity applies and the
+  /// replacement never collides with the entry it replaces.
+  void _replaceLiveAlarm(AlarmConfig alarm) {
+    final replacement = Alarm(config: alarm);
+    if (!alarms.any((e) => e.config.uid == alarm.uid)) {
+      alarms.add(replacement);
+      return;
+    }
+    final rebuilt = alarms
+        .map((e) => e.config.uid == alarm.uid ? replacement : e)
+        .toList();
+    alarms
+      ..clear()
+      ..addAll(rebuilt);
   }
 
   List<AlarmActive> filterAlarms(List<AlarmActive> alarms, String searchQuery) {
