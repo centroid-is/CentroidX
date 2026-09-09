@@ -37,3 +37,26 @@ enum AccessAuthority {
   /// why [relay] may fall through to the session where [none] may not.
   relay,
 }
+
+/// The one place "no repository" is turned into an authority.
+///
+/// Two inputs, three answers, and no caller anywhere may re-derive it from
+/// `accessRepositoryProvider == null` on its own. That misreading has now cost
+/// three defects in one day — the navigation menu hid `/advanced` from a
+/// signed-in engineer, the Server Config route gate stayed open to anonymous
+/// on every gateway panel, and `refreshGroupsFromRoles` demoted a correctly
+/// signed-in operator to anonymous because "the database is unreachable" — and
+/// all three are the same sentence: a null repository is a *transport*, not an
+/// outage, until you know which transport this station is on.
+///
+/// `accessAuthorityProvider` is this function over the two providers.
+/// `AccessSessionController` calls it directly, because it already holds both
+/// inputs and reading a provider that recomputes them from the same two would
+/// be a second copy of the answer rather than one.
+AccessAuthority accessAuthorityFor({
+  required bool isGateway,
+  required bool hasRepository,
+}) {
+  if (isGateway) return AccessAuthority.relay;
+  return hasRepository ? AccessAuthority.local : AccessAuthority.none;
+}

@@ -36,10 +36,12 @@ import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 
 import '../core/access_authority.dart';
 import '../core/gateway_config.dart';
+import '../core/gateway_link_status.dart';
 import '../core/gateway_state_man.dart';
 import '../core/relayed_access_stores.dart';
 import 'database.dart';
 import 'gateway.dart';
+import 'gateway_link.dart';
 import 'gateway_preferences_slot.dart';
 import 'preferences.dart';
 import 'state_man.dart';
@@ -178,9 +180,11 @@ Future<AccessAuthority> accessAuthority(Ref ref) async {
   } catch (_) {
     gateway = GatewayConfig.defaults;
   }
-  if (gateway.isGateway) return AccessAuthority.relay;
+  if (gateway.isGateway) {
+    return accessAuthorityFor(isGateway: true, hasRepository: false);
+  }
   final repo = await ref.watch(accessRepositoryProvider.future);
-  return repo == null ? AccessAuthority.none : AccessAuthority.local;
+  return accessAuthorityFor(isGateway: false, hasRepository: repo != null);
 }
 
 /// The authentication seam.
@@ -451,6 +455,23 @@ class AccessSessionController extends _$AccessSessionController {
     ref.onRemoveListener(_onListenerRemoved);
     ref.onDispose(_disposeMonitor);
 
+    // The client's half of ACCESS-01 on a gateway panel, registered
+    // synchronously with the two above and for the same reason — a `listen`
+    // after an await is not a build-time dependency.
+    //
+    // **`listen`, never `watch`.** A watch would rebuild this controller on
+    // every link report, which is the session being torn down and restored
+    // each time the socket blinks.
+    //
+    // Cheap in direct mode: `gatewayLinkProvider` reads the device-local
+    // transport row, publishes exactly one `null` and never touches
+    // `stateManProvider` unless the station is in gateway mode — a property
+    // `test/providers/gateway_link_test.dart` pins with a throwing override.
+    ref.listen<AsyncValue<GatewayLinkReport?>>(
+      gatewayLinkProvider,
+      (previous, next) => _onGatewayLink(next.valueOrNull),
+    );
+
     _station = ref.watch(stationNameProvider);
     _local = ref.watch(localPreferencesProvider);
     _isGateway = (await ref.watch(gatewayConfigProvider.future)).isGateway;
@@ -476,6 +497,65 @@ class AccessSessionController extends _$AccessSessionController {
     // set until this future completes, so hand `_attach` the session directly.
     if (_listeners > 0 && session.isElevated) _attach(session);
     return session;
+  }
+
+  /// A gateway link report landed. Drop an elevated session the server is no
+  /// longer holding.
+  ///
+  /// **Why the link is the signal.** A gateway session lives on the server and
+  /// is per-run: `_signInOverRelay` deliberately does not persist it, and
+  /// `_restoreOrAnonymous` deliberately does not restore it, because a session
+  /// that outlived its socket would be the panel asserting "I am jón" with
+  /// nothing behind the claim. That rule was written down and then not
+  /// enforced — nothing in this file watched the link, so a relayed elevation
+  /// survived in memory after the socket it was minted on had gone. This is
+  /// the rule keeping its own promise.
+  ///
+  /// It is also how the demote-and-delete property arrives on a gateway panel.
+  /// The backend runs a credential + role revocation poll and closes a retired
+  /// account's session with **4001 on the next tick**
+  /// (`packages/tfc_relay_server/test/session_login_ws_test.dart` arm 5). The
+  /// client supervisor treats 4001 like any other close — the link went away,
+  /// redial — so the close reaches this file as a link report that is no
+  /// longer [GatewayLinkKind.connected], and the elevation goes with it. The
+  /// redial comes back on the *station* credential, and the person signs in
+  /// again; the server never restores their session, so neither may the panel.
+  ///
+  /// **A null report is direct mode** (or a gateway whose client is still
+  /// building) and means nothing here. That is what keeps every direct-mode
+  /// station untouched by this listener.
+  ///
+  /// **[GatewayLinkKind.connecting] drops too, and must.** It is the first
+  /// state a closed socket passes through on its way to redialling; excluding
+  /// it would mean a demotion is honoured only if the panel happens to still
+  /// be failing to reconnect when the next report lands. At boot the session
+  /// is anonymous, so the drop is a no-op there.
+  void _onGatewayLink(GatewayLinkReport? report) {
+    if (report == null || report.kind == GatewayLinkKind.connected) return;
+    // Fire-and-forget with a handler attached: an unhandled error out of a
+    // provider listener takes the zone down, and nothing here is awaited.
+    unawaited(_dropSessionForLostLink().catchError((Object e) {
+      Logger().w('Could not drop the session after the gateway link went '
+          'away: $e');
+    }));
+  }
+
+  Future<void> _dropSessionForLostLink() async {
+    if (_disposed) return;
+    final session = state.valueOrNull;
+    if (session == null || !session.isElevated) return;
+
+    Logger().w(
+      'Dropping the elevated session for "${session.user!.username}" to '
+      'anonymous: the gateway link went away, and a gateway session does not '
+      'survive it — sign in again once the panel is connected.',
+    );
+    _detach();
+    // No `_clearStoredSession()`: `_persist` returns early in gateway mode, so
+    // there has never been a payload to clear. Naming that here rather than
+    // calling it defensively keeps the "two permitted persistence writes" list
+    // in `refreshGroupsFromRoles` true.
+    await _toAnonymous();
   }
 
   // -----------------------------------------------------------------------
@@ -1092,15 +1172,53 @@ class AccessSessionController extends _$AccessSessionController {
       await _toAnonymous();
     }
 
-    if (repo == null) {
-      await drop('the database is unreachable, so the account behind the '
-          'session cannot be confirmed');
-      return;
+    // **Which authority is being asked to confirm this account?** Not "is
+    // there a repository" — that question read a gateway panel, which has no
+    // repository by design and permanently, as a database outage and demoted a
+    // correctly signed-in engineer to anonymous. The three answers are the
+    // enum's, derived once by [accessAuthorityFor] from the two facts this
+    // controller already holds.
+    switch (accessAuthorityFor(
+      isGateway: _isGateway,
+      hasRepository: repo != null,
+    )) {
+      case AccessAuthority.relay:
+        // The server is the authority, and it already enforces ACCESS-01: the
+        // backend's credential + role revocation poll retires a demoted or
+        // deleted account's session and closes the socket 4001 on the next
+        // tick (`session_login_ws_test.dart` arm 5, every 10 s on the rig).
+        // The panel holds no user table and could not confirm anything if it
+        // wanted to, so it must not manufacture a demotion out of an absence
+        // it was designed to have. Honouring the close is the client's half,
+        // and that is [_dropSessionForLostLink], not this method.
+        //
+        // The cost, stated rather than hidden: an admin demoting a role from
+        // *this* panel's access screen no longer sees their own session narrow
+        // in the same frame. It narrows when the server says so, within the
+        // poll interval. An immediate local answer would be the panel deciding
+        // its own privileges, which is the thing gateway mode exists not to do.
+        return;
+      case AccessAuthority.none:
+        // Kept deliberately. Direct mode with no reachable Postgres: nothing
+        // on this station can confirm the account, the session was minted
+        // against a database that is no longer answering, and an elevated
+        // session with nothing behind it is the privilege-retention hole this
+        // method exists to close. The operator loses elevation on a blip and
+        // signs in again, which is the fail-safe direction.
+        await drop('the database is unreachable, so the account behind the '
+            'session cannot be confirmed');
+        return;
+      case AccessAuthority.local:
+        break;
     }
+
+    // `local` is `hasRepository: true` by [accessAuthorityFor]'s definition,
+    // so this is the switch's own postcondition rather than an assumption.
+    final localRepo = repo!;
 
     final String roleNameNow;
     try {
-      final row = await repo.user(username);
+      final row = await localRepo.user(username);
       if (row == null) {
         await drop('the account no longer exists');
         return;
@@ -1111,7 +1229,7 @@ class AccessSessionController extends _$AccessSessionController {
       return;
     }
 
-    final role = await _roleOrNull(repo, roleNameNow);
+    final role = await _roleOrNull(localRepo, roleNameNow);
     if (role == null) {
       await drop('the role "$roleNameNow" the account now holds cannot be '
           'resolved — it was deleted or renamed');

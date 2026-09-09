@@ -15,6 +15,8 @@
 /// `session_login_client_test.dart`); this file is the controller mapping.
 library;
 
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
@@ -25,6 +27,8 @@ import 'package:tfc/core/gateway_config.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/gateway.dart';
+import 'package:tfc/core/gateway_link_status.dart';
+import 'package:tfc/providers/gateway_link.dart';
 import 'package:tfc/providers/gateway_preferences_slot.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc_access/tfc_access.dart';
@@ -47,6 +51,7 @@ const _engineer = AuthenticatedUser(
 Future<ProviderContainer> _panel({
   required RelaySignIn? signIn,
   Object? throwOnSignIn,
+  List<Override> extra = const <Override>[],
 }) async {
   final local = InMemoryPreferences();
   await writeGatewayConfig(
@@ -67,6 +72,7 @@ Future<ProviderContainer> _panel({
         }
         return signIn;
       }),
+      ...extra,
     ],
   );
   addTearDown(container.dispose);
@@ -281,4 +287,115 @@ void main() {
         .signIn('rig-panel-eng', 'correct-horse');
     expect(result, AccessSignInResult.unavailable);
   });
+
+  // -------------------------------------------------------------------------
+  // Revalidation and revocation on a gateway panel
+  // -------------------------------------------------------------------------
+  //
+  // Two halves of ACCESS-01, and they have to be read together. The panel must
+  // stop inventing a demotion out of the repository it was designed not to
+  // have, and it must start honouring the one the server actually announces.
+  // Fixing only the first would be trading a nuisance for a privilege that
+  // never expires.
+
+  group('the panel does not confirm accounts it cannot see', () {
+    /// Signs the engineer in over the fake relay seam.
+    Future<ProviderContainer> signedIn({
+      List<Override> extra = const <Override>[],
+    }) async {
+      final container = await _panel(
+        extra: extra,
+        signIn: ({required username, required password, station}) async =>
+            const SessionLoginResult(
+          user: _engineer,
+          groups: {AccessGroup.operate, AccessGroup.configure},
+        ),
+      );
+      await container.read(accessSessionProvider.future);
+      expect(
+        await container
+            .read(accessSessionProvider.notifier)
+            .signIn('rig-panel-eng', 'correct-horse'),
+        AccessSignInResult.ok,
+      );
+      return container;
+    }
+
+    test('refreshGroupsFromRoles leaves a relayed session alone', () async {
+      // The rig defect, in one line of log: "Dropping the elevated session for
+      // \"jon\" to anonymous: the database is unreachable". A gateway panel has
+      // no repository BY DESIGN, and reading that absence as an outage demoted
+      // a correctly signed-in engineer mid-shift.
+      final container = await signedIn();
+      expect(container.read(accessSessionProvider).valueOrNull!.isElevated,
+          isTrue);
+
+      await container
+          .read(accessSessionProvider.notifier)
+          .refreshGroupsFromRoles();
+
+      final after = container.read(accessSessionProvider).valueOrNull!;
+      expect(after.isElevated, isTrue,
+          reason: 'the server verified this session and is the only thing '
+              'that may retire it; the missing database is the transport, '
+              'not an outage');
+      expect(after.can(AccessGroup.configure), isTrue,
+          reason: 'and it keeps what the server granted');
+    });
+
+    test('a link that goes away retires the relayed session — the server\'s '
+        '4001 arriving as a link report', () async {
+      // The control. The backend's revocation poll closes a demoted or deleted
+      // account's session with 4001 on the next tick
+      // (`session_login_ws_test.dart` arm 5); the client supervisor treats that
+      // like any other close, so it reaches the app as a link that is no
+      // longer connected. A gateway session does not survive its socket.
+      final link = StreamController<GatewayLinkReport?>.broadcast();
+      addTearDown(link.close);
+
+      final container = await signedIn(extra: [
+        gatewayLinkProvider.overrideWith((ref) => link.stream),
+      ]);
+      expect(container.read(accessSessionProvider).valueOrNull!.isElevated,
+          isTrue);
+
+      link.add(_report(GatewayLinkKind.unreachable));
+      await _settle();
+
+      final after = container.read(accessSessionProvider).valueOrNull!;
+      expect(after.isElevated, isFalse,
+          reason: 'the session it was minted on is gone; keeping the '
+              'elevation would be the panel asserting an identity with '
+              'nothing behind it');
+      expect(after.can(AccessGroup.configure), isFalse);
+    });
+
+    test('a connected link leaves the session exactly where it is', () async {
+      // Not a blanket drop: the control must cost nothing on a healthy panel,
+      // or it becomes an operator signed out every time a report lands.
+      final link = StreamController<GatewayLinkReport?>.broadcast();
+      addTearDown(link.close);
+
+      final container = await signedIn(extra: [
+        gatewayLinkProvider.overrideWith((ref) => link.stream),
+      ]);
+
+      link.add(_report(GatewayLinkKind.connected));
+      await _settle();
+
+      expect(container.read(accessSessionProvider).valueOrNull!.isElevated,
+          isTrue);
+    });
+  });
 }
+
+/// A link report of [kind]; only the kind is read by the session controller.
+GatewayLinkReport _report(GatewayLinkKind kind) => GatewayLinkReport(
+      kind: kind,
+      headline: 'headline',
+      detail: 'detail',
+      url: Uri.parse('wss://centroidx-backend:9443'),
+    );
+
+/// Lets the listener's fire-and-forget drop run to completion.
+Future<void> _settle() => Future<void>.delayed(Duration.zero);

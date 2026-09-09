@@ -453,6 +453,56 @@ void main() {
       expect(code, contains('ref.read(gatewayConfigProvider.future)'));
       expect(code, contains('ref.watch(accessRepositoryProvider.future)'));
     });
+
+    test('nothing outside the access providers reads the repository at all',
+        () {
+      // **The containment rule, and why it is a test rather than a note.**
+      // Reading `accessRepositoryProvider` and finding null tells you nothing
+      // on its own: it is "no Postgres configured", "Postgres is down", and
+      // "this station is a gateway panel and was built without one" in the
+      // same value. Three defects in one day came from a caller resolving that
+      // null itself — the navigation menu hid `/advanced` from a signed-in
+      // engineer, the Server Config route gate stayed open to anonymous on
+      // every gateway panel, and `refreshGroupsFromRoles` demoted a signed-in
+      // operator because "the database is unreachable".
+      //
+      // `accessAuthorityFor` in `lib/core/access_authority.dart` is the one
+      // place the two facts become an answer. This keeps the list of files
+      // allowed to hold the raw provider short enough that a fourth site
+      // cannot appear quietly. Adding a row here is allowed — deciding what a
+      // null means without the transport is what is not.
+      const allowed = {
+        // Declares it, and derives the authority from it.
+        'lib/providers/access.dart',
+        // Reads rows through it; never asks it what the transport is.
+        'lib/providers/access_admin.dart',
+        // Renders the create-the-first-account screen, whose whole subject is
+        // a station that has a repository and no accounts in it.
+        'lib/pages/first_user.dart',
+      };
+
+      final offenders = <String>[];
+      for (final entity in Directory('lib').listSync(recursive: true)) {
+        if (entity is! File || !entity.path.endsWith('.dart')) continue;
+        if (entity.path.endsWith('.g.dart')) continue;
+        if (allowed.contains(entity.path)) continue;
+        final body = entity.readAsStringSync();
+        // Doc comments may name it; code may not.
+        final code = body
+            .split('\n')
+            .where((line) => !line.trimLeft().startsWith('///'))
+            .join('\n');
+        if (code.contains('accessRepositoryProvider')) {
+          offenders.add(entity.path);
+        }
+      }
+
+      expect(offenders, isEmpty,
+          reason: 'these files reach the raw repository provider. A null out '
+              'of it is a transport, not an outage — ask '
+              'accessAuthorityProvider, or accessAuthorityFor if you already '
+              'hold both facts');
+    });
   });
 
   group('boot with nothing stored and nobody signed in', () {
