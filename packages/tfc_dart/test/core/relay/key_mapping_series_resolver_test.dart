@@ -265,7 +265,7 @@ void main() {
 
     test('the collector derives its table name through collectTableName and '
         'nowhere else', () {
-      final source = File('lib/core/collector.dart')
+      String uncommented(String path) => File(path)
           .readAsStringSync()
           .split('\n')
           .map((line) {
@@ -274,19 +274,30 @@ void main() {
           })
           .join('\n');
 
-      expect('entry.name ?? entry.key'.allMatches(source), hasLength(1),
+      // `collectTableName` moved to `collect_config.dart` when the portable
+      // halves were carved out of the drift-backed runtime, so the derivation
+      // and its callers now live in two files. The property is unchanged and
+      // the arm got stronger for it: the body is written **once**, in the
+      // function, and `collector.dart` may only call it.
+      final config = uncommented('lib/core/collect_config.dart');
+      final collector = uncommented('lib/core/collector.dart');
+
+      expect('entry.name ?? entry.key'.allMatches(config), hasLength(1),
           reason: 'exactly one occurrence, and it is the body of '
-              'collectTableName itself. Every other place the collector used '
-              'to open-code the derivation is a place it can drift from the '
-              'resolver, which is the drift this arm exists for');
+              'collectTableName itself');
       expect(
-          source,
+          config,
           contains(
               'String collectTableName(CollectEntry entry) => entry.name ?? '
               'entry.key;'));
-      expect('collectTableName('.allMatches(source).length, greaterThan(3),
-          reason: 'the declaration plus the three call sites the collector '
-              'had');
+
+      expect('entry.name ?? entry.key'.allMatches(collector), isEmpty,
+          reason: 'every place the collector open-codes the derivation is a '
+              'place it can drift from the resolver, which is the drift this '
+              'arm exists for. It must call collectTableName instead.');
+      expect('collectTableName('.allMatches(collector).length, greaterThan(2),
+          reason: 'the call sites the collector had; the declaration itself '
+              'now lives in collect_config.dart');
     });
   });
 
