@@ -99,6 +99,31 @@ Future<void> pumpTimeline(
   await tester.pumpAndSettle();
 }
 
+const activationCallout = ValueKey('stop-timeline-activation-callout');
+const alarmCallout = ValueKey('stop-timeline-alarm-callout');
+
+/// Taps a lane's bars [dx] pixels right of the label column, on the row keyed
+/// [rowKey] — the way an operator picks an activation.
+Future<void> tapLane(WidgetTester tester, String rowKey, double dx) async {
+  final label =
+      tester.getRect(find.byKey(ValueKey('stop-timeline-row-$rowKey')));
+  await tester.tapAt(Offset(label.right + dx, label.center.dy));
+  await tester.pumpAndSettle();
+}
+
+/// Where the middle of an interval lands, in pixels right of the label
+/// column, in the window the view opens on: the last three hours, plus the
+/// live pad for the configured twelve-hour period (12h/20, clamped to ten
+/// minutes).
+double xOfInterval(WidgetTester tester, DateTime start, DateTime end) {
+  final laneWidth = tester.getRect(find.byType(StopTimelineView)).width - 210;
+  final windowStart = now.subtract(const Duration(hours: 3));
+  final windowEnd = now.add(const Duration(minutes: 10));
+  final span = windowEnd.difference(windowStart).inMicroseconds;
+  final mid = start.add(end.difference(start) ~/ 2);
+  return mid.difference(windowStart).inMicroseconds / span * laneWidth;
+}
+
 /// Opens the period menu in the header.
 Future<void> openPeriodMenu(WidgetTester tester) async {
   await tester.tap(find.byKey(const ValueKey('stop-timeline-period-menu')));
@@ -233,19 +258,20 @@ void main() {
       expect(find.text('Downtime'), findsNothing);
     });
 
-    testWidgets('at strip height the brush and detail row are dropped',
+    testWidgets('at strip height the overview brush is dropped',
         (tester) async {
       await pumpTimeline(tester, size: const Size(620, 150));
-      expect(find.text('Select an activation to inspect it.'), findsNothing);
+      // the brush is the only thing carrying the period's day label
+      expect(find.text('29/08'), findsNothing);
       // the lanes themselves survive
       expect(find.text('Line 3'), findsOneWidget);
     });
 
-    testWidgets('at full height the detail row invites a selection',
+    testWidgets('nothing is called out until something is tapped',
         (tester) async {
       await pumpTimeline(tester);
-      expect(
-          find.text('Select an activation to inspect it.'), findsOneWidget);
+      expect(find.byKey(activationCallout), findsNothing);
+      expect(find.byKey(alarmCallout), findsNothing);
     });
   });
 
@@ -261,8 +287,8 @@ void main() {
       await openTable(tester);
       expect(find.byKey(const ValueKey('stop-timeline-pareto')),
           findsOneWidget);
-      // the detail row belongs to the timeline, not the table
-      expect(find.text('Select an activation to inspect it.'), findsNothing);
+      // callouts belong to the lanes, not to the table
+      expect(find.byKey(activationCallout), findsNothing);
     });
 
     testWidgets('ranks the most expensive alarm first', (tester) async {
@@ -496,7 +522,7 @@ void main() {
       ],
     );
 
-    testWidgets('the detail row says which day it started', (tester) async {
+    testWidgets('the callout says which day it started', (tester) async {
       await pumpTimeline(tester, intervals: sinceYesterday);
 
       // The bar fills the whole visible window; tap it anywhere right of the
@@ -519,6 +545,266 @@ void main() {
       // Opening window is the last 3h (+pad): in-window standing time is 3h,
       // not the alarm\'s 26h lifetime.
       expect(find.textContaining('now · 3h 00m · 1×'), findsOneWidget);
+    });
+  });
+
+  group('the activation callout', () {
+    // 'film-reel-empty' stood 90..70 minutes ago; the opening window is the
+    // last three hours, so it lands well inside the lane.
+    Future<void> openMultivac(WidgetTester tester) async {
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+          find.byKey(const ValueKey('stop-timeline-row-g:Line 3/Multivac')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('tapping a bar names the alarm, where it is and when it ran',
+        (tester) async {
+      await pumpTimeline(tester);
+      await openMultivac(tester);
+      await tapLane(tester, 'a:film-reel-empty',
+          xOfInterval(tester, ago(90), ago(70)));
+
+      expect(find.byKey(activationCallout), findsOneWidget);
+      expect(find.text('Film reel empty'), findsNWidgets(2),
+          reason: 'the lane label and the callout both name it');
+      expect(find.text('Line 3 › Multivac'), findsOneWidget);
+      expect(find.textContaining('12:52:00 – 13:12:00'), findsOneWidget);
+      expect(find.textContaining('20m'), findsWidgets);
+    });
+
+    testWidgets('tapping the same bar again closes it', (tester) async {
+      await pumpTimeline(tester);
+      await openMultivac(tester);
+      final x = xOfInterval(tester, ago(90), ago(70));
+      await tapLane(tester, 'a:film-reel-empty', x);
+      expect(find.byKey(activationCallout), findsOneWidget);
+      await tapLane(tester, 'a:film-reel-empty', x);
+      expect(find.byKey(activationCallout), findsNothing);
+    });
+
+    testWidgets('tapping empty lane space closes it', (tester) async {
+      await pumpTimeline(tester);
+      await openMultivac(tester);
+      await tapLane(tester, 'a:film-reel-empty',
+          xOfInterval(tester, ago(90), ago(70)));
+      expect(find.byKey(activationCallout), findsOneWidget);
+      // 2 minutes ago on the same lane: nothing stood there.
+      await tapLane(
+          tester, 'a:film-reel-empty', xOfInterval(tester, ago(2), ago(2)));
+      expect(find.byKey(activationCallout), findsNothing);
+    });
+
+    testWidgets('a still-standing activation is called out as such',
+        (tester) async {
+      await pumpTimeline(tester);
+      await openMultivac(tester);
+      await tapLane(tester, 'a:seal-temperature-out-of-band',
+          xOfInterval(tester, ago(10), now));
+      expect(find.textContaining('still standing'), findsOneWidget);
+      expect(find.textContaining('Since 14:12:00'), findsOneWidget);
+    });
+
+    testWidgets('a collapsed group counts what it is standing for',
+        (tester) async {
+      await pumpTimeline(tester);
+      // Line 3 collapsed: its bar is the union of everything underneath.
+      await tapLane(
+          tester, 'g:Line 3', xOfInterval(tester, ago(90), ago(70)));
+      expect(find.byKey(activationCallout), findsOneWidget);
+      expect(find.text('1 stop inside this group'), findsOneWidget);
+    });
+
+    testWidgets('a refresh that still holds the interval keeps it open',
+        (tester) async {
+      await pumpTimeline(tester);
+      await openMultivac(tester);
+      await tapLane(tester, 'a:film-reel-empty',
+          xOfInterval(tester, ago(90), ago(70)));
+      expect(find.byKey(activationCallout), findsOneWidget);
+
+      // A fresh fetch: same activations, brand new objects. The selection is
+      // held as coordinates and re-resolved against the new series each
+      // build, which is the only reason this survives.
+      await pumpTimeline(tester, intervals: source());
+      expect(find.byKey(activationCallout), findsOneWidget);
+    });
+
+    testWidgets('panning far enough takes the callout off with its bar',
+        (tester) async {
+      await pumpTimeline(tester);
+      await openMultivac(tester);
+      final label = tester
+          .getRect(find.byKey(const ValueKey('stop-timeline-row-a:film-reel-empty')));
+      await tester.tapAt(Offset(
+          label.right + xOfInterval(tester, ago(90), ago(70)),
+          label.center.dy));
+      await tester.pumpAndSettle();
+      expect(find.byKey(activationCallout), findsOneWidget);
+
+      // Drag right — back in time — until the bar is off the right edge.
+      final onLane = Offset(label.right + 200, label.center.dy);
+      await tester.dragFrom(onLane, const Offset(900, 0));
+      await tester.pumpAndSettle();
+      expect(find.byKey(activationCallout), findsNothing);
+
+      // ...and comes back with it.
+      await tester.dragFrom(onLane, const Offset(-900, 0));
+      await tester.pumpAndSettle();
+      expect(find.byKey(activationCallout), findsOneWidget);
+    });
+
+  });
+
+  group('the alarm identity callout', () {
+    testWidgets('tapping a leaf shows the title the column had to cut short',
+        (tester) async {
+      await pumpTimeline(tester);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+          find.byKey(const ValueKey('stop-timeline-row-g:Line 3/Multivac')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(
+          const ValueKey('stop-timeline-row-a:seal-temperature-out-of-band')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(alarmCallout), findsOneWidget);
+      expect(find.text('Error · Line 3 › Multivac'), findsOneWidget);
+      expect(find.textContaining('In view:'), findsOneWidget);
+      expect(find.textContaining('Standing now'), findsOneWidget);
+    });
+
+    testWidgets('tapping it again closes it', (tester) async {
+      await pumpTimeline(tester);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-row-g:Infrastructure')));
+      await tester.pumpAndSettle();
+      final leaf = find.byKey(const ValueKey('stop-timeline-row-a:link-error'));
+      await tester.tap(leaf);
+      await tester.pumpAndSettle();
+      expect(find.byKey(alarmCallout), findsOneWidget);
+      await tester.tap(leaf);
+      await tester.pumpAndSettle();
+      expect(find.byKey(alarmCallout), findsNothing);
+    });
+
+    testWidgets('an expandable group still expands and calls out nothing',
+        (tester) async {
+      await pumpTimeline(tester);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.pumpAndSettle();
+      expect(find.text('Multivac'), findsOneWidget);
+      expect(find.byKey(alarmCallout), findsNothing);
+    });
+
+    testWidgets('a bound alarm says it stands for the whole group',
+        (tester) async {
+      await pumpTimeline(tester);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+          find.byKey(const ValueKey('stop-timeline-row-g:Line 3/Multivac')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(
+          const ValueKey('stop-timeline-row-a:multivac-stopped')));
+      await tester.pumpAndSettle();
+      expect(find.text('Covers the whole group.'), findsOneWidget);
+    });
+
+    testWidgets('opening one callout closes the other', (tester) async {
+      await pumpTimeline(tester);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+          find.byKey(const ValueKey('stop-timeline-row-g:Line 3/Multivac')));
+      await tester.pumpAndSettle();
+
+      await tapLane(tester, 'a:film-reel-empty',
+          xOfInterval(tester, ago(90), ago(70)));
+      expect(find.byKey(activationCallout), findsOneWidget);
+
+      await tester.tap(find.byKey(
+          const ValueKey('stop-timeline-row-a:seal-temperature-out-of-band')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(alarmCallout), findsOneWidget);
+      expect(find.byKey(activationCallout), findsNothing);
+    });
+  });
+
+  group('hiding a row', () {
+    testWidgets('unticking a leaf empties its lane and its group', (tester) async {
+      await pumpTimeline(tester);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+          find.byKey(const ValueKey('stop-timeline-row-g:Line 3/Multivac')));
+      await tester.pumpAndSettle();
+
+      // Multivac's statistic before: three activations under it.
+      expect(find.textContaining('3×'), findsWidgets);
+
+      await tester.tap(find.byKey(
+          const ValueKey('stop-timeline-show-a:film-reel-empty')));
+      await tester.pumpAndSettle();
+
+      // The row stays — it is the way back — but reports nothing.
+      expect(find.text('Film reel empty'), findsOneWidget);
+      expect(find.textContaining('3×'), findsNothing);
+    });
+
+    testWidgets('unticking a group takes its subtree with it', (tester) async {
+      await pumpTimeline(tester);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.pumpAndSettle();
+      expect(find.text('Multivac'), findsOneWidget);
+
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-show-g:Line 3')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Line 3'), findsOneWidget);
+      expect(find.text('Multivac'), findsNothing);
+    });
+
+    testWidgets('ticking it again brings everything back', (tester) async {
+      await pumpTimeline(tester);
+      final box = find.byKey(const ValueKey('stop-timeline-show-g:Line 3'));
+      await tester.tap(box);
+      await tester.pumpAndSettle();
+      await tester.tap(box);
+      await tester.pumpAndSettle();
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.pumpAndSettle();
+      expect(find.text('Multivac'), findsOneWidget);
+    });
+
+    testWidgets('the box does not expand the group it sits on', (tester) async {
+      await pumpTimeline(tester);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-show-g:Line 3')));
+      await tester.pumpAndSettle();
+      expect(find.text('Multivac'), findsNothing);
+    });
+
+    testWidgets('hiding a row closes a callout describing it', (tester) async {
+      await pumpTimeline(tester);
+      await tapLane(tester, 'g:Line 3', xOfInterval(tester, ago(90), ago(70)));
+      expect(find.byKey(activationCallout), findsOneWidget);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-show-g:Line 3')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(activationCallout), findsNothing);
     });
   });
 }
