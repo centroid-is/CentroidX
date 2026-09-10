@@ -624,6 +624,7 @@ class AccessSessionController extends _$AccessSessionController {
     // commitment that actually survives.
     _onPanelSession = true;
     await _clearStoredSession();
+    ref.invalidate(panelAccountProvider);
     return true;
   }
 
@@ -1210,8 +1211,8 @@ class AccessSessionController extends _$AccessSessionController {
     final local = _local;
     if (local == null) return null;
     try {
-      final value = await local.getString(kAccessPanelAccountPrefKey);
-      return (value == null || value.isEmpty) ? null : value;
+      return panelAccountOrNull(
+          await local.getString(kAccessPanelAccountPrefKey));
     } on Object catch (e) {
       Logger().w('Could not read this panel\'s committed account: $e');
       return null;
@@ -1227,6 +1228,10 @@ class AccessSessionController extends _$AccessSessionController {
     } on Object catch (e) {
       Logger().w('Could not un-commit this panel: $e');
     }
+    // The one funnel for every way a commitment ends — a sign-out and the
+    // three resume refusals all land here — so the read-out follows all of
+    // them from a single line.
+    ref.invalidate(panelAccountProvider);
   }
 }
 
@@ -1239,3 +1244,30 @@ class AccessSessionController extends _$AccessSessionController {
 /// watch `accessSessionProvider`, and `.notifier`, `.future` and
 /// `overrideWith` all work through it unchanged.
 final accessSessionProvider = accessSessionControllerProvider;
+
+/// A stored panel-account value as the rest of the code must read it.
+///
+/// An empty string is not an account named "" — it is no commitment at all.
+/// One function rather than the same two-line check in both readers: a
+/// half-written preference file that un-commits the panel for the resume but
+/// still names an account on the Session card would be worse than either
+/// answer on its own.
+String? panelAccountOrNull(String? stored) =>
+    (stored == null || stored.isEmpty) ? null : stored;
+
+/// Which account this panel is committed to, or null when it is committed to
+/// none.
+///
+/// Read from the device-local store rather than from the live session, because
+/// that is the question being asked: a commitment outlives whoever is standing
+/// at the panel, so a human signed in over a committed panel must still be
+/// able to see what it returns to when they leave.
+///
+/// Kept current by the two methods that write the key —
+/// [AccessSessionController.commitPanelAccount] and
+/// `_clearPanelAccount` — so a commit or the sign-out that ends one shows up
+/// without a reload.
+final panelAccountProvider = FutureProvider<String?>((ref) async =>
+    panelAccountOrNull(await ref
+        .watch(localPreferencesProvider)
+        .getString(kAccessPanelAccountPrefKey)));
