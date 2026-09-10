@@ -464,11 +464,23 @@ class AlarmMan implements AlarmSource {
                   e.notification.rule == alarmNotification.rule) {
                 e.pendingAck = true;
                 e.notification.active = false;
-                // The condition cleared *now*; the ack, whenever it comes, is
-                // paperwork. Recording the clear time here is what lets the
-                // downtime analysis end the stop when the machine restarted
-                // rather than when somebody got around to pressing OK.
-                e.deactivated = DateTime.now();
+                // The condition cleared when the PLANT says it cleared, and
+                // the ack — whenever it comes — is paperwork. Recording the
+                // clear time here is what lets the downtime analysis end the
+                // stop when the machine restarted rather than when somebody
+                // got around to pressing OK.
+                //
+                // `stamp.at`, never `DateTime.now()`. The stamp is resolved
+                // once above, from the reading's own `sourceTimestamp` where
+                // there is one, and it carries the provenance it was resolved
+                // under. Reading this machine's clock here would replace a
+                // fact about the plant with a fact about this station — and
+                // it would disagree with the two sibling edges a dozen lines
+                // up, which both hand the same `stamp` to
+                // [_removeActiveAlarm]. That is D-2, and it is the reason
+                // `alarm_structure_test.dart` arm 6 permits exactly one
+                // `DateTime.now` on this path, at the composition root.
+                e.deactivated = stamp.at;
                 break;
               }
             }
