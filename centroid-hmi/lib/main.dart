@@ -586,10 +586,7 @@ RoutesLocationBuilder createLocationBuilder(
           child: DbusGate(
             title: 'About Linux',
             shared: dbusCompleter,
-            builder: (context, client, switchConnection) => AboutLinuxPage(
-              dbusClient: client,
-              onSwitchConnection: switchConnection,
-            ),
+            builder: (context, client, _) => AboutLinuxPage(dbusClient: client),
           ),
         ),
     '/advanced/page-editor': (context, state, args) => BeamPage(

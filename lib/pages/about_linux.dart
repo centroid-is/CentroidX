@@ -43,17 +43,11 @@ class AboutLinuxPage extends ConsumerStatefulWidget {
   final TimeDateApi? timeDate;
   final TimeSyncApi? timeSync;
 
-  /// Returns to the connection chooser. Present because the page now
-  /// auto-connects to the local bus; without it a station that has no saved
-  /// credentials could never reach another machine's bus.
-  final VoidCallback? onSwitchConnection;
-
   const AboutLinuxPage({
     super.key,
     required this.dbusClient,
     this.timeDate,
     this.timeSync,
-    this.onSwitchConnection,
   });
 
   @override
@@ -371,21 +365,14 @@ class _AboutLinuxPageState extends ConsumerState<AboutLinuxPage> {
             padding: const EdgeInsets.all(16),
             child: ListView(
               children: [
-                // Which machine this page is showing: hostname, its addresses,
-                // and the way to point the page somewhere else. One band, so
-                // the answer to "where am I" costs one line rather than four.
-                AboutIdentityCard(
+                // Which machine this page is showing and what it is running,
+                // as one card: hostname and addresses in the header band, OS,
+                // kernel, build and support end as rows under it. They were
+                // two cards with a gap between them, which read as two
+                // unrelated answers to the same question.
+                AboutSystemCard(
                   hostname: info.hostname,
                   activeIPs: info.activeIPs,
-                  onSwitchConnection: widget.onSwitchConnection,
-                ),
-
-                const SizedBox(height: 12),
-
-                // Kernel, OS and support end as rows in one card. They were
-                // three stacked cards, which pushed the clock — the part an
-                // operator actually acts on — below the fold on a panel.
-                AboutSystemFactsCard(
                   osPretty: info.osPretty,
                   kernel: [
                     if (info.kernelName.isNotEmpty) info.kernelName,
@@ -472,95 +459,21 @@ class _AboutLinuxPageState extends ConsumerState<AboutLinuxPage> {
   }
 }
 
-/// Which machine this page is reading — hostname, addresses, and the way to
-/// point it at a different bus.
+/// What this station is and what it is running, in one card.
 ///
-/// The switch action lives here rather than at the foot of the page, where it
-/// sat directly under the Date & Time section and read as one of the clock's
-/// controls. It is neither: it re-opens [DbusGate]'s connection form so the
-/// page can be pointed at another station's system bus over SSH. Beside the
-/// hostname it is switching, that is legible without a caption.
+/// The hostname and its addresses sit in the tinted header band; OS, kernel,
+/// build and support end are label/value rows in the body directly under it.
+/// They used to be two separate cards with a gap between them, which read as
+/// two unrelated answers to one question — "which machine am I looking at,
+/// and what is on it" — and cost a card edge and 12px of panel to say so.
+///
+/// Every row is conditional, so on a minimal image that answers hostname1's
+/// GetAll with very little, the body collapses away and the band stands alone
+/// rather than leaving an empty box with padding.
 @visibleForTesting
-class AboutIdentityCard extends StatelessWidget {
+class AboutSystemCard extends StatelessWidget {
   final String hostname;
   final List<String> activeIPs;
-  final VoidCallback? onSwitchConnection;
-
-  const AboutIdentityCard({
-    super.key,
-    required this.hostname,
-    required this.activeIPs,
-    this.onSwitchConnection,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final onContainer = theme.colorScheme.onPrimaryContainer;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: theme.colorScheme.primaryContainer,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      padding: const EdgeInsets.only(left: 16, right: 8, top: 10, bottom: 10),
-      child: Row(
-        children: [
-          FaIcon(FontAwesomeIcons.linux, size: 22, color: onContainer),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  hostname.isEmpty ? '—' : hostname,
-                  style: theme.textTheme.titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w700, color: onContainer),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                if (activeIPs.isNotEmpty)
-                  // Addresses as one line of text rather than a Wrap of Chips:
-                  // the chips were a second row of 32px-tall widgets for two
-                  // short strings, and this is the same information.
-                  Row(
-                    children: [
-                      Icon(Icons.public, size: 14, color: onContainer),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          activeIPs.join('  ·  '),
-                          style: theme.textTheme.bodyMedium
-                              ?.copyWith(color: onContainer),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
-              ],
-            ),
-          ),
-          if (onSwitchConnection != null)
-            TextButton.icon(
-              onPressed: onSwitchConnection,
-              icon: const Icon(Icons.swap_horiz, size: 18),
-              label: const Text('Switch machine'),
-              style: TextButton.styleFrom(foregroundColor: onContainer),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Kernel, OS and support end in one card.
-///
-/// These were three stacked cards, each with its own icon, label line, value
-/// line and 12px of padding — about 220px of panel for three short strings
-/// nobody reads twice. As label/value rows they are a third of that, and the
-/// Date & Time section below them is on screen without scrolling.
-@visibleForTesting
-class AboutSystemFactsCard extends StatelessWidget {
   final String osPretty;
   final String kernel;
   final String kernelVersion;
@@ -568,8 +481,10 @@ class AboutSystemFactsCard extends StatelessWidget {
   /// Already formatted; empty when hostname1 reports no support end.
   final String supportEnd;
 
-  const AboutSystemFactsCard({
+  const AboutSystemCard({
     super.key,
+    required this.hostname,
+    required this.activeIPs,
     required this.osPretty,
     required this.kernel,
     required this.kernelVersion,
@@ -579,6 +494,8 @@ class AboutSystemFactsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final onContainer = theme.colorScheme.onPrimaryContainer;
+
     final rows = <(String, String)>[
       // "OS", not "Operating system", which wraps the 120px gutter onto two
       // lines and makes the first row taller than the three below it. The
@@ -591,38 +508,90 @@ class AboutSystemFactsCard extends StatelessWidget {
       if (kernelVersion.isNotEmpty) ('Build', kernelVersion),
       if (supportEnd.isNotEmpty) ('Support end', supportEnd),
     ];
-    if (rows.isEmpty) return const SizedBox.shrink();
 
-    return Container(
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          for (final row in rows)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 3),
-              child: Row(
+          Container(
+            color: theme.colorScheme.primaryContainer,
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Row(
+              children: [
+                FaIcon(FontAwesomeIcons.linux, size: 22, color: onContainer),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        hostname.isEmpty ? '—' : hostname,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700, color: onContainer),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if (activeIPs.isNotEmpty)
+                        // Addresses as one line of text rather than a Wrap of
+                        // Chips: the chips were a second row of 32px-tall
+                        // widgets for two short strings, and this is the same
+                        // information.
+                        Row(
+                          children: [
+                            Icon(Icons.public, size: 14, color: onContainer),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                activeIPs.join('  ·  '),
+                                style: theme.textTheme.bodyMedium
+                                    ?.copyWith(color: onContainer),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (rows.isNotEmpty)
+            Container(
+              color: theme.colorScheme.surfaceContainerHighest,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Same 120px label gutter as the Time sync rows below, so
-                  // the two blocks read as one table down the page.
-                  SizedBox(
-                    width: 120,
-                    child: Text(row.$1,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant)),
-                  ),
-                  Expanded(
-                    child: Text(
-                      row.$2,
-                      style: theme.textTheme.bodyMedium,
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 2,
+                  for (final row in rows)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 3),
+                      child: Row(
+                        children: [
+                          // Same 120px label gutter as the Time sync rows
+                          // below, so the two blocks read as one table down
+                          // the page.
+                          SizedBox(
+                            width: 120,
+                            child: Text(row.$1,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: theme.colorScheme.onSurfaceVariant)),
+                          ),
+                          Expanded(
+                            child: Text(
+                              row.$2,
+                              style: theme.textTheme.bodyMedium,
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 2,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
                 ],
               ),
             ),
