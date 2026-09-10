@@ -280,6 +280,21 @@ void main() {
       expect(inside.map((e) => e.alarmUid), isNot(contains('link')));
     });
 
+    test('equal-length activations come back in a fixed order', () {
+      // List.sort is not stable, so ties need a total order or a test that
+      // pins the list flakes.
+      final tied = StopIntervalSource.fromAlarms(
+        history: [
+          activation('zulu', from: 0, to: 10),
+          activation('alpha', from: 0, to: 10),
+        ],
+        active: const [],
+      );
+      final inside = tied.activationsIn(['zulu', 'alpha'],
+          from: at(0), to: at(10), now: at(50));
+      expect(inside.map((e) => e.alarmUid), ['alpha', 'zulu']);
+    });
+
     test('a stretch with nothing in it reports nothing', () {
       // film cleared at 40 and never came back; seal is excluded because it
       // is still standing and so reaches every later window.

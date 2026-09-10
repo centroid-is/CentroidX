@@ -72,6 +72,8 @@ StopIntervalSource source() => StopIntervalSource(
 final crowdedAlarms = [
   ...alarms,
   alarm('Vacuum low', group: ['Line 3', 'Multivac']),
+  alarm('Line stopped from panel', group: ['Line 3']),
+  alarm('Afak jam', group: ['Line 3', 'Afak SL-15-3']),
 ];
 
 StopIntervalSource get overlappingUnderMultivac => StopIntervalSource(
@@ -96,6 +98,26 @@ StopIntervalSource get overlappingUnderMultivac => StopIntervalSource(
           interval: AlarmInterval(
               start: ago(40), end: ago(35), level: AlarmLevel.error),
         ),
+      ],
+      open: const [],
+    );
+
+/// Six alarms in one stretch, so the bubble has to leave two of them out.
+StopIntervalSource get sixUnderMultivac => StopIntervalSource(
+      closed: [
+        for (final (uid, from, to) in [
+          ('seal-temperature-out-of-band', 50, 20),
+          ('film-reel-empty', 48, 25),
+          ('vacuum-low', 46, 32),
+          ('multivac-stopped', 44, 35),
+          ('line-stopped-from-panel', 42, 36),
+          ('afak-jam', 40, 22),
+        ])
+          StopActivation(
+            alarmUid: uid,
+            interval:
+                AlarmInterval(start: ago(from), end: ago(to), level: AlarmLevel.error),
+          ),
       ],
       open: const [],
     );
@@ -716,11 +738,11 @@ void main() {
       expect(find.textContaining('12:52:00 · 20m'), findsOneWidget);
     });
 
-    testWidgets('the named stops are the longest ones, worst first',
+    testWidgets('the named stops read in the order they fired',
         (tester) async {
       await pumpTimeline(tester,
           configs: crowdedAlarms, intervals: overlappingUnderMultivac);
-      // Multivac collapsed inside Line 3: one stretch, three alarms in it.
+      // Multivac collapsed inside Line 3: one stretch, four alarms in it.
       await tapLane(
           tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
       final lines = tester
@@ -730,10 +752,88 @@ void main() {
           .map((t) => t.data)
           .whereType<String>()
           .toList();
-      // Seal 30m, film 20m, multivac 5m — and only three of the four fit.
+      // Seal fired at -50, film at -45, vacuum at -42, multivac at -40. The
+      // first to fire is usually the cause of the ones after it, so the list
+      // is the story of the stop, not a ranking.
       expect(lines.indexOf('Seal temperature out of band'),
           lessThan(lines.indexOf('Film reel empty')));
-      expect(find.text('1 more'), findsOneWidget);
+      expect(lines.indexOf('Film reel empty'),
+          lessThan(lines.indexOf('Vacuum low')));
+      expect(lines.indexOf('Vacuum low'),
+          lessThan(lines.indexOf('Multivac stopped')));
+    });
+
+    testWidgets('more than fits collapses into a counted tail',
+        (tester) async {
+      await pumpTimeline(tester,
+          configs: crowdedAlarms, intervals: sixUnderMultivac);
+      await tapLane(
+          tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+      expect(
+          find.byKey(const ValueKey('stop-timeline-contributors-more')),
+          findsOneWidget);
+      expect(find.text('and 2 more'), findsOneWidget);
+    });
+
+    testWidgets('a severity switched off drops its alarms from the list',
+        (tester) async {
+      // The bubble must be filtered exactly the way the bar it points at is —
+      // one predicate, or it names alarms the bar excludes.
+      await pumpTimeline(tester,
+          configs: crowdedAlarms, intervals: overlappingUnderMultivac);
+      await tapLane(
+          tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+      expect(find.text('Vacuum low'), findsWidgets);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-level-error')));
+      await tester.pumpAndSettle();
+      // Every one of them was an error, so the bar and the bubble empty out
+      // together rather than disagreeing.
+      expect(find.byKey(activationCallout), findsNothing);
+    });
+
+    testWidgets('an alarm that is its own group jumps to the group row',
+        (tester) async {
+      // 'Strapper stopped' is bound to Afak SL-15-3 and has no siblings, so
+      // AlarmTree folds it into the group line and it has no leaf row of its
+      // own. Aiming at one would expand the tree, find nothing, and leave the
+      // operator with the bubble gone and no answer.
+      final bound = [
+        alarm('Line 3 halted', group: ['Line 3'], bindToGroup: true),
+        alarm('Strapper stopped',
+            group: ['Line 3', 'Afak SL-15-3'], bindToGroup: true),
+      ];
+      await pumpTimeline(
+        tester,
+        configs: bound,
+        intervals: StopIntervalSource(
+          closed: [
+            StopActivation(
+              alarmUid: 'strapper-stopped',
+              interval: AlarmInterval(
+                  start: ago(50), end: ago(20), level: AlarmLevel.error),
+            ),
+          ],
+          open: const [],
+        ),
+      );
+      await tapLane(
+          tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+      await tester.tap(find
+          .byKey(const ValueKey('stop-timeline-contributor-strapper-stopped')));
+      await tester.pumpAndSettle();
+      // It landed somewhere real: the callout is still open, on the row that
+      // actually carries the alarm.
+      expect(find.byKey(activationCallout), findsOneWidget);
+      expect(
+          find.byKey(
+              const ValueKey('stop-timeline-row-a:strapper-stopped')),
+          findsNothing,
+          reason: 'a bound alarm with no siblings has no leaf row');
+      expect(
+          find.byKey(
+              const ValueKey('stop-timeline-row-g:Line 3/Afak SL-15-3')),
+          findsOneWidget);
     });
 
     testWidgets('an alarm standing under two rules is named once',

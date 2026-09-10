@@ -613,13 +613,21 @@ class _StopTimelineViewState extends State<StopTimelineView> {
     });
   }
 
+  /// Whether an alarm counts right now — not switched off, and not filtered
+  /// out by severity.
+  ///
+  /// One predicate, deliberately: [_seriesFor] uses it to decide what a group
+  /// bar is drawn from and [_contributingAlarms] uses it to decide what the
+  /// bubble over that bar may name. Two copies of this rule drifting apart is
+  /// a bubble naming an alarm the bar excludes, which is worse than a bubble
+  /// naming none.
+  bool _alarmVisible(AlarmConfig alarm) =>
+      !_alarmHidden(alarm) && _levels.contains(_levelOf(alarm));
+
   AlarmIntervalSeries _seriesFor(AlarmTreeRow row) {
     if (!row.isGroup) {
       final alarm = row.alarm!;
-      if (_alarmHidden(alarm) ||
-          !_levels.contains(alarm.rules.isEmpty
-              ? AlarmLevel.info
-              : alarm.rules.first.level)) {
+      if (!_alarmVisible(alarm)) {
         return AlarmIntervalSeries(const [], now: _now);
       }
       return widget.source.seriesFor(alarm.uid, now: _now);
@@ -627,28 +635,20 @@ class _StopTimelineViewState extends State<StopTimelineView> {
     if (_groupHidden(row.group!.path)) {
       return AlarmIntervalSeries(const [], now: _now);
     }
-    final uids = row.group!.subtreeAlarms
-        .where((a) =>
-            !_alarmHidden(a) &&
-            _levels.contains(
-                a.rules.isEmpty ? AlarmLevel.info : a.rules.first.level))
-        .map((a) => a.uid);
+    final uids =
+        row.group!.subtreeAlarms.where(_alarmVisible).map((a) => a.uid);
     return AlarmIntervalSeries(widget.source.mergedFor(uids, now: _now),
         now: _now);
   }
 
-  /// Which alarms a group lane's series is actually built from — the same
-  /// filter [_seriesFor] applies, because a bubble naming an alarm the bar
-  /// does not include is worse than one naming none.
+  /// Which alarms a group lane's series is actually built from.
   Iterable<AlarmConfig> _contributingAlarms(AlarmTreeRow row) {
     if (!row.isGroup || _groupHidden(row.group!.path)) return const [];
-    return row.group!.subtreeAlarms.where((a) =>
-        !_alarmHidden(a) &&
-        _levels.contains(
-            a.rules.isEmpty ? AlarmLevel.info : a.rules.first.level));
+    return row.group!.subtreeAlarms.where(_alarmVisible);
   }
 
-  /// What stood inside one stretch of a collapsed group lane, longest first.
+  /// What stood inside one stretch of a collapsed group lane, in the order
+  /// it fired.
   List<_Contributor> _contributorsIn(AlarmTreeRow row, AlarmInterval stretch) {
     final alarms = {for (final a in _contributingAlarms(row)) a.uid: a};
     if (alarms.isEmpty) return const [];
@@ -693,9 +693,14 @@ class _StopTimelineViewState extends State<StopTimelineView> {
         count: intervals.length,
       ));
     });
+    // Chronological, not longest first: a merged stretch is one downtime
+    // event, and the alarm that fired first is usually the cause of the ones
+    // after it. The list reads as the story of the stop. Which alarm cost the
+    // most over a shift is the Pareto table's question, and it is already
+    // answered there.
     out.sort((a, b) {
-      final byTotal = b.total.compareTo(a.total);
-      return byTotal != 0 ? byTotal : a.start.compareTo(b.start);
+      final byStart = a.start.compareTo(b.start);
+      return byStart != 0 ? byStart : a.alarm.uid.compareTo(b.alarm.uid);
     });
     return out;
   }
@@ -713,29 +718,53 @@ class _StopTimelineViewState extends State<StopTimelineView> {
         _expanded.add('g:${alarm.group.sublist(0, i).join('/')}');
       }
       _clearCallout();
-      _selectedLaneKey = 'a:${alarm.uid}';
+      _selectedLaneKey = _laneKeyFor(alarm);
       _selectedStart = contributor.start;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
       final lanes = _visibleLanes();
-      final index = lanes.indexWhere((l) => _keyOf(l.row) == 'a:${alarm.uid}');
+      final key = _laneKeyFor(alarm);
+      final index = lanes.indexWhere((l) => _keyOf(l.row) == key);
       if (index < 0) return;
       var offset = 0.0;
       for (var i = 0; i < index; i++) {
         offset += lanes[i].isGroup ? _groupRowHeight : _alarmRowHeight;
       }
       final viewport = _scroll.position.viewportDimension;
-      final height = _alarmRowHeight;
+      final height = lanes[index].isGroup ? _groupRowHeight : _alarmRowHeight;
       // Only when it is not already on screen: scrolling a row the operator
       // can see moves the bubble they are reading for no reason.
       if (offset >= _scroll.offset &&
           offset + height <= _scroll.offset + viewport) {
         return;
       }
-      _scroll.jumpTo((offset - (viewport - height) / 2)
-          .clamp(0.0, _scroll.position.maxScrollExtent));
+      _scroll.animateTo(
+        (offset - (viewport - height) / 2)
+            .clamp(0.0, _scroll.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
     });
+  }
+
+  /// Which row an alarm is selectable on.
+  ///
+  /// Normally its own leaf. But an alarm that *is* its group and has no
+  /// siblings gets no leaf row at all — [AlarmTree] folds it into the group
+  /// line — so aiming at `a:<uid>` would expand the tree, find nothing, and
+  /// leave the operator with the bubble gone and no answer. The group row it
+  /// was folded into is the row that carries it, and that row's series is the
+  /// merge of just this alarm, so the same start still resolves.
+  String _laneKeyFor(AlarmConfig alarm) {
+    final leaf = 'a:${alarm.uid}';
+    for (final row in widget.tree.rows(groups: widget.config.groups)) {
+      if (!row.isGroup && row.alarm!.uid == alarm.uid) return leaf;
+    }
+    for (final row in widget.tree.rows(groups: widget.config.groups)) {
+      if (row.isGroup && row.group!.bound?.uid == alarm.uid) return _keyOf(row);
+    }
+    return leaf;
   }
 
   void _pan(double dx, double width) {
@@ -1109,8 +1138,7 @@ class _StopTimelineViewState extends State<StopTimelineView> {
     // whose only alarm is its own bound one has no leaf row, and walking rows
     // would silently leave it out of the ranking.
     for (final alarm in _scopedAlarms().values) {
-      final level =
-          alarm.rules.isEmpty ? AlarmLevel.info : alarm.rules.first.level;
+      final level = _levelOf(alarm);
       if (!_levels.contains(level)) continue;
       final stats = widget.source
           .seriesFor(alarm.uid, now: _now)
@@ -1690,9 +1718,7 @@ class _StopTimelineViewState extends State<StopTimelineView> {
 
   /// A filled square: an alarm, one diagnosis among several.
   Widget _levelMark(BuildContext context, AlarmTreeRow row) {
-    final level = row.alarm!.rules.isEmpty
-        ? AlarmLevel.info
-        : row.alarm!.rules.first.level;
+    final level = _levelOf(row.alarm!);
     if (row.isBound) return _boundMark(context, row.alarm!);
     return Container(
       width: 7,
@@ -1705,8 +1731,7 @@ class _StopTimelineViewState extends State<StopTimelineView> {
 
   /// A hollow ring: the alarm that *is* this group, not one inside it.
   Widget _boundMark(BuildContext context, AlarmConfig alarm) {
-    final level =
-        alarm.rules.isEmpty ? AlarmLevel.info : alarm.rules.first.level;
+    final level = _levelOf(alarm);
     return Container(
       width: 8,
       height: 8,
@@ -1812,12 +1837,25 @@ class _StopTimelineViewState extends State<StopTimelineView> {
           width: _labelWidth,
           child: Padding(
             padding: const EdgeInsets.only(left: 10),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(_periodDayLabel(),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelSmall?.copyWith(fontSize: 9)),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Under the table there is no axis and no lane beside this
+                // strip to give it away, so it reads as a chart that wandered
+                // in rather than as the control that picks what the table
+                // ranks. Under the lanes it needs no introduction.
+                if (_showTable)
+                  Text('RANKED WINDOW',
+                      key: const ValueKey('stop-timeline-brush-caption'),
+                      maxLines: 1,
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(fontSize: 8, letterSpacing: 1.1)),
+                Text(_periodDayLabel(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(fontSize: 9)),
+              ],
             ),
           ),
         ),
@@ -2073,6 +2111,11 @@ class _StopTimelineViewState extends State<StopTimelineView> {
 /// reads as ten minutes ago.
 String _stampAt(DateTime t, DateTime now) =>
     _sameDay(t, now) ? _hhmmss(t) : '${_dayLabel(t)} ${_hhmmss(t)}';
+
+/// The severity an alarm is drawn at: its first rule's, or info for an alarm
+/// with no rules at all.
+AlarmLevel _levelOf(AlarmConfig alarm) =>
+    alarm.rules.isEmpty ? AlarmLevel.info : alarm.rules.first.level;
 
 String _levelName(AlarmLevel level) => switch (level) {
       AlarmLevel.error => 'Error',
@@ -2367,7 +2410,7 @@ class _ActivationCallout extends StatelessWidget {
   /// How many lines of the list there is room for. A bubble is at most 320px
   /// wide and only as tall as the space above or below the bar it points at,
   /// and it clips rather than scrolls — so this is a budget, not a preference.
-  static const int _shown = 3;
+  static const int _shown = 4;
 
   @override
   Widget build(BuildContext context) {
@@ -2385,7 +2428,8 @@ class _ActivationCallout extends StatelessWidget {
     // else, so the list would only be clipped. The title carries the answer
     // instead: the worst-costing alarm by name, which beats repeating the
     // branch the label column is already showing.
-    final listed = compact ? const <_Contributor>[] : contributors.take(_shown).toList();
+    final listed =
+        compact ? const <_Contributor>[] : contributors.take(_shown).toList();
     final more = compact ? 0 : contributors.length - listed.length;
     final headline = alarm?.title ??
         (compact && contributors.isNotEmpty
@@ -2482,7 +2526,8 @@ class _ActivationCallout extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(top: 3),
               child: Text(
-                  more == 1 ? '1 more' : '$more more',
+                  key: const ValueKey('stop-timeline-contributors-more'),
+                  more == 1 ? 'and 1 more' : 'and $more more',
                   style: theme.textTheme.labelSmall?.copyWith(color: muted)),
             ),
         ],
@@ -2585,9 +2630,7 @@ class _AlarmIdentityCallout extends StatelessWidget {
     // so that is the alarm to name, with the group itself in the path below.
     final alarm = row.isGroup ? row.group!.bound : row.alarm;
     final bound = row.isGroup ? row.group!.bound != null : row.isBound;
-    final level = alarm == null || alarm.rules.isEmpty
-        ? AlarmLevel.info
-        : alarm.rules.first.level;
+    final level = alarm == null ? AlarmLevel.info : _levelOf(alarm);
     final path = alarm?.group ?? row.group?.path ?? const <String>[];
     final muted = theme.colorScheme.onSurface.withValues(alpha: 0.7);
     final figures = theme.textTheme.labelSmall

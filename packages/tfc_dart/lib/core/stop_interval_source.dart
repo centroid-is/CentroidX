@@ -180,9 +180,14 @@ class StopIntervalSource {
   /// touch, so a contributor can start exactly where the stretch does, and an
   /// exclusive test would drop it.
   ///
-  /// Ordered longest first, then by start — the stop that cost the most is
-  /// the one to read first, and a bubble with room for three lines has to
-  /// spend them on the three that matter.
+  /// Ordered longest first, then by start, then by uid. The uid is not
+  /// decoration: `List.sort` is not stable, so without a total order two
+  /// activations of equal length and start come back in whichever order the
+  /// sort happened to leave them, and a test that pins the list flakes.
+  ///
+  /// Callers are free to re-order — the group callout reads its own list
+  /// chronologically, because a merged stretch is one downtime event and the
+  /// first alarm to fire is usually the cause.
   List<StopActivation> activationsIn(
     Iterable<String> alarmUids, {
     required DateTime from,
@@ -201,7 +206,9 @@ class StopIntervalSource {
     hits.sort((a, b) {
       final byLength =
           b.interval.lengthAt(now).compareTo(a.interval.lengthAt(now));
-      return byLength != 0 ? byLength : a.start.compareTo(b.start);
+      if (byLength != 0) return byLength;
+      final byStart = a.start.compareTo(b.start);
+      return byStart != 0 ? byStart : a.alarmUid.compareTo(b.alarmUid);
     });
     return hits;
   }

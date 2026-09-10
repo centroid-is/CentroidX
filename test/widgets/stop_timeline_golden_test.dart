@@ -124,15 +124,18 @@ StopIntervalSource sampleSource() {
   return StopIntervalSource(closed: closedOnes, open: openOnes);
 }
 
-/// Four alarms under Multivac running into one another, so a collapsed group
+/// Six alarms across Line 3 running into one another, so a collapsed group
 /// draws them as one bar — the stretch whose old callout could only count.
+/// Six so the bubble has to leave two of them out, and say so.
 StopIntervalSource crowdedSource() => StopIntervalSource(
       closed: [
         for (final (uid, from, to, level) in [
           ('seal-temperature-out-of-band', 50, 20, AlarmLevel.error),
-          ('film-reel-empty', 45, 25, AlarmLevel.error),
-          ('film-tracking-error', 42, 32, AlarmLevel.warning),
-          ('multivac-stopped', 40, 35, AlarmLevel.error),
+          ('film-reel-empty', 48, 25, AlarmLevel.error),
+          ('film-tracking-error', 46, 32, AlarmLevel.warning),
+          ('multivac-stopped', 44, 35, AlarmLevel.error),
+          ('blank-magazine-empty', 42, 36, AlarmLevel.error),
+          ('glue-temperature-low', 40, 22, AlarmLevel.warning),
         ])
           StopActivation(
             alarmUid: uid,
@@ -404,14 +407,15 @@ void main() {
           matchesGoldenFile('goldens/stop_timeline_group_callout.png'));
     }, skip: !Platform.isMacOS);
 
-    // The case the count was hopeless for: one bar, four alarms in it, and
-    // the bubble has room to name three. Both schemes, because the list is
-    // the only place a severity mark sits on the bubble's own fill.
+    // The case the count was hopeless for: one bar, six alarms in it, named
+    // in the order they fired, with the two that do not fit counted. Both
+    // schemes, because the list is the only place a severity mark sits on
+    // the bubble's own fill.
     for (final (name, brightness) in const [
       ('light', Brightness.light),
       ('dark', Brightness.dark),
     ]) {
-      testWidgets('a crowded group stretch, three named and one not ($name)',
+      testWidgets('a crowded group stretch, four named and two counted ($name)',
           (tester) async {
         await pump(
             tester,
