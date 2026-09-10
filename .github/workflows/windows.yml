@@ -120,8 +120,9 @@ jobs:
         uses: ./.github/actions/setup-flutter
 
       - name: Get Flutter packages
-        working-directory: centroid-hmi
-        run: flutter pub get
+        uses: ./.github/actions/pub-get
+        with:
+          working-directory: centroid-hmi
 
       - name: Build Windows
         working-directory: centroid-hmi
