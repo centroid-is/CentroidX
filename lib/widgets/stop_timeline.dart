@@ -762,6 +762,7 @@ class _StopTimelineViewState extends State<StopTimelineView> {
               _header(context, compact: compact),
               if (_showTable && !compact) ...[
                 _tableBar(context),
+                _tableHeader(context),
                 Expanded(child: _table(context)),
               ] else ...[
                 _axis(context),
@@ -1032,6 +1033,22 @@ class _StopTimelineViewState extends State<StopTimelineView> {
             () => setState(() => _grouping = ParetoGrouping.severity),
             'stop-timeline-pareto-severity'),
         const Spacer(),
+        // The table ranks the *window*, not the whole period, and with no
+        // lanes and no axis on screen there is nothing else here to say so —
+        // which also leaves the strip along the bottom looking like a chart
+        // that wandered in. Named here, it reads as what it is: where that
+        // window is picked.
+        Flexible(
+          child: Text('ranked over ${_windowLabel(_window.value)}',
+              key: const ValueKey('stop-timeline-pareto-window'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.right,
+              style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                  fontFeatures: const [FontFeature.tabularFigures()])),
+        ),
+        const SizedBox(width: 12),
         Text('RANK BY',
             style: theme.textTheme.labelSmall
                 ?.copyWith(fontSize: 9, letterSpacing: 1.1)),
@@ -1083,6 +1100,61 @@ class _StopTimelineViewState extends State<StopTimelineView> {
       byKey[key] = byKey.containsKey(key) ? byKey[key]! + entry : entry;
     }
     return rankPareto(byKey.values, byCount: _rankByCount);
+  }
+
+  /// The table's column headers, on the same widths [_table] lays its rows
+  /// out with — including a legend for the two quantities drawn in the last
+  /// column, which are otherwise a coloured bar and an unexplained hairline.
+  Widget _tableHeader(BuildContext context) {
+    final theme = Theme.of(context);
+    final style = theme.textTheme.labelSmall
+        ?.copyWith(fontSize: 9, letterSpacing: 1.1);
+    Widget cell(String text, {TextAlign align = TextAlign.left}) =>
+        Text(text, textAlign: align, maxLines: 1, style: style);
+
+    return Container(
+      height: 20,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: theme.dividerColor)),
+      ),
+      child: Row(children: [
+        const SizedBox(width: 22 + 8 + 8),
+        Expanded(
+          flex: 4,
+          child: cell(switch (_grouping) {
+            ParetoGrouping.alarm => 'ALARM',
+            ParetoGrouping.group => 'GROUP',
+            ParetoGrouping.severity => 'SEVERITY',
+          }),
+        ),
+        if (_grouping == ParetoGrouping.alarm)
+          Expanded(flex: 3, child: cell('IN GROUP')),
+        SizedBox(width: 44, child: cell('STOPS', align: TextAlign.right)),
+        SizedBox(width: 62, child: cell('LOST', align: TextAlign.right)),
+        const SizedBox(width: 10),
+        Expanded(
+          flex: 4,
+          child: Row(children: [
+            Container(
+                width: 8,
+                height: 8,
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.35)),
+            const SizedBox(width: 4),
+            Flexible(child: cell('SHARE')),
+            const SizedBox(width: 8),
+            Container(
+                width: 1,
+                height: 9,
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.5)),
+            const SizedBox(width: 4),
+            Flexible(child: cell('RUNNING TOTAL')),
+          ]),
+        ),
+        const SizedBox(width: 8),
+        const SizedBox(width: 34),
+      ]),
+    );
   }
 
   Widget _table(BuildContext context) {

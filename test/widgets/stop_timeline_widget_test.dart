@@ -357,6 +357,46 @@ void main() {
           lessThan(labels.indexOf('Link error')));
     });
 
+    testWidgets('every column says what it is, the notch included',
+        (tester) async {
+      await pumpTimeline(tester);
+      await openTable(tester);
+      // The bar and the hairline beside it are two different quantities, and
+      // the % column is a third; unlabelled, the notch is unguessable.
+      expect(find.text('ALARM'), findsOneWidget);
+      expect(find.text('IN GROUP'), findsOneWidget);
+      expect(find.text('STOPS'), findsOneWidget);
+      expect(find.text('LOST'), findsOneWidget);
+      expect(find.text('SHARE'), findsOneWidget);
+      expect(find.text('RUNNING TOTAL'), findsOneWidget);
+    });
+
+    testWidgets('the heading follows what the rows are grouped by',
+        (tester) async {
+      await pumpTimeline(tester);
+      await openTable(tester);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-pareto-severity')));
+      await tester.pumpAndSettle();
+      expect(find.text('SEVERITY'), findsOneWidget);
+      // Severities have no group to sit in, so that column is gone with it.
+      expect(find.text('IN GROUP'), findsNothing);
+    });
+
+    testWidgets('the table names the window it is ranking', (tester) async {
+      await pumpTimeline(tester);
+      await openTable(tester);
+      // Without lanes or an axis, this is the only thing on screen that says
+      // the ranking is windowed — and so the only thing that explains the
+      // strip along the bottom.
+      final label = tester
+          .widget<Text>(
+              find.byKey(const ValueKey('stop-timeline-pareto-window')))
+          .data;
+      expect(label, startsWith('ranked over '));
+      expect(label, contains('–'));
+    });
+
     testWidgets('grouping by group collapses a machine into one line',
         (tester) async {
       await pumpTimeline(tester);
