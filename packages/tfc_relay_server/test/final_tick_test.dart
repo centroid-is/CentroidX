@@ -58,6 +58,17 @@ import 'support/permissive_resolver.dart';
 const _dialBudget = Duration(seconds: 10);
 const _speedKey = 'ST101.CN01.MOT01.speed';
 
+/// 2100-01-01, epoch ms: the wall clock the unplanned-close arm freezes its
+/// gateway at, and a stamp no tick the *engine* wrote can wear.
+///
+/// The engine anchors its wire clock once, at construction, off the real
+/// `DateTime.now()` (`TickEngine.wallAt`), and nothing in this file's
+/// injection reaches it — so every ordinary tick is stamped in this decade,
+/// while `RelaySession._writeFinalTick` reads the injected clock directly.
+/// Far enough ahead that the gap is a fact about the two clocks and not about
+/// how long a test took.
+const _drainStamp = 4102444800000;
+
 /// One dialled panel, and every frame the gateway wrote to it in order.
 final class _Panel {
   _Panel(this.peer, this.frames, this.closed, this._ws);
@@ -182,15 +193,47 @@ void main() {
     });
 
     test('an unplanned close emits no final tick', () async {
+      // Told apart by what the frame *says*, not by when it arrived.
+      //
+      // A close-produced tick is stamped from the session's wall clock —
+      // `_writeFinalTick` does `final at = _now()` and puts that in both
+      // `serverTime` and every `evaluatedAt`. An ordinary tick is stamped by
+      // the tick engine from an anchor it sampled once at construction from
+      // the *real* clock (`TickEngine.wallAt`: `_epochAnchor + nowMs`), and
+      // this injection does not reach it. So freezing the server's wall clock
+      // at a stamp no real anchor can reach makes the two sources tell
+      // themselves apart, and a tick wearing [_drainStamp] is a tick the close
+      // wrote.
+      //
+      // The arm this replaces compared indices — the last tick's index against
+      // the frame count snapshotted just before the close — and that cannot
+      // decide this question. The server ticks every `ServerConfig.minTick`,
+      // so an ordinary tick lands between the snapshot and the close about a
+      // third of the time locally and did so once on the macOS lane; it sits
+      // at exactly the index a synthesised one would. Nor can the arm wait for
+      // quiet first: the silence that would make an index honest is silence
+      // the gateway reaps idle sessions during, and the session has to still
+      // be here to be closed.
       final plant = FakeStateMan()..setValue(_speedKey, 1450);
-      final server = buildServer(plant: plant);
+      final server = buildServer(plant: plant, now: () => _drainStamp);
       await server.start();
-      final panel = await station(server);
+      final panel = await station(server, hello: false);
+
+      // The discriminator, proven live before it is trusted. `serverTime` in
+      // the handshake is read from the very `_now` that `_writeFinalTick`
+      // stamps with, so this failing says "this arm can no longer see a final
+      // tick", which is a different thing from "there was none" — and without
+      // it a `_writeFinalTick` that changed clocks would leave an arm that
+      // passes whatever the server does.
+      final hello = HelloResult.fromJson(await _hello(panel.peer));
+      expect(hello.serverTime, _drainStamp,
+          reason: 'the frozen clock has to reach the field the final tick is '
+              'stamped from, or the assertion below is vacuous');
+
       await panel.peer.sendRequest(Methods.subscribe,
           SubscribeParams(sub: 'page-1', keys: const [_speedKey]).toJson());
       await Future<void>.delayed(const Duration(milliseconds: 150));
 
-      final before = panel.frames.length;
       // A backpressure eviction: nothing about this close is planned, and the
       // gateway has no business claiming a sequence it did not verify anybody
       // received.
@@ -198,9 +241,13 @@ void main() {
           .close(CloseCodes.backpressureOverrun, 'pending messages exceeded');
       await panel.closed.timeout(_dialBudget);
 
-      expect(panel.indexOfLastTick(), lessThan(before),
+      expect(panel.ticks.where((t) => t.serverTime == _drainStamp), isEmpty,
           reason: 'a tick after an abrupt drop would be a claim about state '
               'nobody verified');
+      expect(panel.ticks, isNotEmpty,
+          reason: 'and the session really was ticking while this watched, so '
+              'the emptiness above is a statement about the close rather than '
+              'about a socket nothing was ever written to');
     });
 
     test('a drain with a long reason still closes', () async {
