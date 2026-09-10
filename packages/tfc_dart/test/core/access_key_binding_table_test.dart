@@ -85,7 +85,7 @@ String? _declaredName(String line) {
 /// annotation lines are kept: a JSON name is exactly the kind of binding
 /// smuggling this file exists to catch.
 List<String> _keyMappingEntryBody() => _classBody(
-    _sourceLinesWithoutComments('lib/core/state_man.dart'), 'KeyMappingEntry');
+    _sourceLinesWithoutComments('lib/core/state_man_types.dart'), 'KeyMappingEntry');
 
 /// Every member `KeyMappingEntry` declares, derived from its source.
 Set<String> _keyMappingEntryMembers() => {
@@ -266,12 +266,12 @@ void main() {
       expect(round.io, isTrue);
     });
 
-    test('state_man.g.dart contains no access_template', () {
+    test('state_man_types.g.dart contains no access_template', () {
       // The generated code is evidence too: a field added and regenerated
       // would show up here even if somebody edited the hand-written class
       // back out.
       final generated =
-          File('lib/core/state_man.g.dart').readAsStringSync().toLowerCase();
+          File('lib/core/state_man_types.g.dart').readAsStringSync().toLowerCase();
       expect(generated.contains('access_template'), isFalse,
           reason: theRuling);
       expect(generated.contains('accesstemplate'), isFalse, reason: theRuling);

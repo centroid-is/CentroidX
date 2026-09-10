@@ -121,15 +121,52 @@ void main() {
   });
 
   group('what this plan must not have touched', () {
-    test('every open62541 pin in this pubspec is still SHA 0251aa09', () {
-      // Five packages in this repo override open62541 and all five carry this
-      // SHA. Two packages in one process resolving two different native builds
-      // is not a state this repository should ever be in, so a plan that edits
-      // an unrelated dependency block gets caught here rather than at runtime.
-      expect(pubspec,
-          contains('0251aa099d1779c2ab0c4f408123d63c8b6c0e12'),
-          reason: 'the open62541 override pin is Phase 12 territory and must '
-              'survive every dependency edit made for Phase 13');
+    test('every open62541 override in the repo carries the SAME SHA', () {
+      // Two packages in one process resolving two different native builds is
+      // not a state this repository should ever be in. That is the property,
+      // and this asserts it directly.
+      //
+      // It used to assert a literal — `contains('0251aa09…')` — which tested
+      // something narrower and had a hole in exactly the direction that
+      // matters: bumping five of the six sites and leaving one behind is the
+      // inconsistency the comment warns about, and a literal check on THIS
+      // file would have passed straight through it. It also went red on every
+      // deliberate bump, which trains a reader to edit the constant rather
+      // than to check the six agree. Derived, it cannot do either.
+      // Relative to the PACKAGE root: `dart test` runs with the cwd of the
+      // package under test, which is why line 81 above reads its own pubspec
+      // as a bare `pubspec.yaml`.
+      const sites = <String>[
+        'pubspec.yaml', // packages/tfc_dart, this package
+        '../../pubspec.yaml', // repo root
+        '../../centroid-hmi/pubspec.yaml',
+        '../jbtm/pubspec.yaml',
+        '../tfc_relay_local/pubspec.yaml',
+        '../tfc_mcp_server/pubspec.yaml',
+      ];
+
+      final refs = <String, String>{};
+      for (final site in sites) {
+        final file = File(site);
+        if (!file.existsSync()) continue;
+        final text = file.readAsStringSync();
+        // The override block names the repo, then pins a ref beneath it.
+        final match = RegExp(r'open62541_dart\.git[\s\S]{0,400}?ref:\s*([0-9a-f]{7,40})')
+            .firstMatch(text);
+        if (match != null) refs[site] = match.group(1)!;
+      }
+
+      // Anti-vacuity: a regex that stops matching forbids nothing, and a
+      // census of one file agrees with itself for free.
+      expect(refs.length, greaterThanOrEqualTo(5),
+          reason: 'found open62541 pins in only ${refs.length} pubspecs '
+              '(${refs.keys.join(', ')}). The pattern has stopped matching, so '
+              'the agreement asserted below is between too few files to mean '
+              'anything.');
+
+      expect(refs.values.toSet(), hasLength(1),
+          reason: 'the open62541 overrides disagree, which puts two native '
+              'builds in one process: $refs');
     });
   });
 }
