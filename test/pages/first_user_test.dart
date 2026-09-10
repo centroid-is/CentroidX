@@ -304,17 +304,22 @@ void main() {
   });
 
   group('submission', () {
-    testWidgets('a successful creation re-renders closed without a restart',
-        (tester) async {
+    /// A repository whose `createFirstUser` closes the window the way the real
+    /// one does — by making the next window question answer false.
+    ({_FakeAccessRepository repo, Widget host}) successHost() {
       var open = true;
-      late final _FakeAccessRepository repo;
-      repo = _FakeAccessRepository(onCreate: (_, __) async {
+      final repo = _FakeAccessRepository(onCreate: (_, __) async {
         // The real repository closes the window by inserting the row; the
         // fake closes it by flipping what the provider answers next.
         open = false;
       });
+      return (repo: repo, host: _openWindow(repo, isOpen: () => open));
+    }
 
-      await pumpAndLoad(tester, _openWindow(repo, isOpen: () => open));
+    testWidgets('a successful creation confirms the account and closes the '
+        'form, without a restart', (tester) async {
+      final (:repo, :host) = successHost();
+      await pumpAndLoad(tester, host);
 
       await _fillForm(tester);
       await tester.tap(_createButton());
@@ -322,12 +327,45 @@ void main() {
 
       expect(repo.calls, hasLength(1));
       expect(repo.calls.single.username, 'commissioner');
-      expect(
-        _textContaining('An account already exists, so this window is closed.'),
-        findsOneWidget,
-      );
+      expect(_textContaining('Account created'), findsOneWidget);
+      expect(_textContaining('commissioner'), findsOneWidget);
       expect(_usernameField(), findsNothing);
     });
+
+    testWidgets('a successful creation never shows the already-exists message',
+        (tester) async {
+      // The regression this whole group exists for. The window IS shut once
+      // the row lands, so every closed branch in build() goes true at once —
+      // and telling the engineer who just claimed the station that somebody
+      // else claimed it reads as a failure of the thing that succeeded.
+      final (:repo, :host) = successHost();
+      await pumpAndLoad(tester, host);
+
+      await _fillForm(tester);
+      await tester.tap(_createButton());
+      await settle(tester);
+
+      expect(_textContaining('An account already exists'), findsNothing);
+      expect(_textContaining('Recovery is a deployment task'), findsNothing);
+    });
+
+    testWidgets('the success state offers sign-in as the next step',
+        (tester) async {
+      final (:repo, :host) = successHost();
+      await pumpAndLoad(tester, host);
+
+      await _fillForm(tester);
+      await tester.tap(_createButton());
+      await settle(tester);
+
+      expect(find.byKey(kFirstUserSignInKey), findsOneWidget);
+    });
+
+    // There is deliberately no test that the password controllers are cleared
+    // on success. The fields leave the tree either way, so every assertion
+    // available from out here passes with or without the `clear()` calls — a
+    // test that cannot fail is worse than the comment in `_submit` that says
+    // why they are there.
 
     testWidgets('a FirstUserWindowClosedError shows the closed message, not a '
         'crash', (tester) async {
@@ -348,6 +386,9 @@ void main() {
         _textContaining('An account already exists, so this window is closed.'),
         findsOneWidget,
       );
+      // The mirror of the success case: losing the race created nothing, so
+      // the confirmation must not appear either.
+      expect(_textContaining('Account created'), findsNothing);
       expect(_usernameField(), findsNothing);
     });
 
