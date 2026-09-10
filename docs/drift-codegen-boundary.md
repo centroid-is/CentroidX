@@ -191,3 +191,107 @@ reference or a block call is to a screen — which is a question about the
 knowledge subsystem. It is exempted by exact file-and-type pair so the boundary
 cannot get worse while that is pending, and a further arm fails if an exemption
 outlives its leak.
+
+---
+
+## The other half: what was in the file that did not belong to drift
+
+Recorded 2026-09-10, after the four commits above.
+
+Ten app-tree files imported `database_drift.dart` before option 4; five did
+after. Triaging the five separated two different problems that had been wearing
+the same shape.
+
+### The payload vocabulary was never drift's
+
+`kNotificationWatchdogInterval`, `enum NotificationAction` and
+`class NotificationData` closed `database_drift.dart`. They are hand-written,
+they need `dart:convert`, and they are the vocabulary for decoding a Postgres
+`NOTIFY` payload. Nothing about them is generated and nothing about them is
+drift.
+
+They now live in `packages/tfc_dart/lib/core/database_notification.dart`.
+`database_drift.dart` **imports** it — it does not re-export it — so that
+reaching the payload vocabulary through the database layer stops being
+possible rather than merely stops being necessary. `tfc_dart.dart` exports the
+new file alongside the old one, so the barrel's surface is unchanged.
+
+**Why this move works when the table split did not.** The verdict at the top of
+this document turns on where drift *emits* a class, and these three are not
+emitted anywhere: no annotation, no `part`, nothing generated. The constraint
+that pins twelve `Table` subclasses to the file holding `@DriftDatabase` has no
+purchase on a hand-written enum. Checked rather than reasoned: a full
+`dart run build_runner build --delete-conflicting-outputs` in `packages/tfc_dart`
+after the move wrote 554 outputs and left every `.g.dart` in the tree
+byte-identical — `git status --short '*.g.dart'` empty. The moved declarations
+are themselves byte-identical to their previous text; only the watchdog
+constant's doc comment changed, because `[AppDatabase._ensureNotificationWatchdog]`
+is no longer a resolvable link from there.
+
+What it bought: `lib/core/timeseries_source.dart` — the seam a *chart* reaches
+history through, and one whose gateway-mode half has no database and never will
+— was importing `dart:io`, `dart:isolate`, `drift/native.dart` and
+`drift_postgres` for two type names. It now imports a file whose only import is
+`dart:convert`, pinned by an arm of `database_notification_test.dart` that reads
+the import lines back out of the source. The seam's freedom from
+`database_drift` is pinned by a new arm of `no_drift_row_types_in_app_test.dart`,
+alongside the one for `relayed_access_stores.dart`.
+
+`NotificationData.fromJson` had no test before the move. It has five now, and
+they were written against the old text and passed unaltered against the new —
+which is what makes this a move rather than a rewrite.
+
+### The other three name `AppDatabase`, and that is a different question
+
+`AppDatabase` is hand-written; `_$AppDatabase` is the generated one, and the
+gate excludes it deliberately. So none of the three below is the leak the gate
+forbids. What they cost is the *import*, not the type: `dart:io` and
+`drift_postgres` in the app tree.
+
+- **`lib/core/relayed_history_views.dart` is not the `relayed_access_stores`
+  defect.** `RelayedHistoryViews` — the actual gateway adapter — holds one
+  field, a `HistoryViewApi`, and names no drift type at all. The
+  `drift.AppDatabase` at `:246`/`:253` belongs to `GuardedDatabaseHistoryViews`,
+  the **direct-mode** implementation that shares the file. `historyViewsProvider`
+  builds it only on the non-gateway branch, from a non-null `dbWrap`; the
+  gateway branch returns before reaching it and throws rather than falling back.
+  Nothing is fabricated to satisfy a type. The file's *name* is the whole of the
+  resemblance, and splitting the direct half out under its own name would end
+  the confusion and let the same one-line arm be written for it.
+
+  It does hold one thing the gate cannot see: `_db.selectHistoryViews()` answers
+  `List<HistoryViewData>` and `listHistoryViewPeriods` answers
+  `List<HistoryViewPeriodData>`, both consumed as `for (final row in ...)`.
+  Inferred, never named, so a textual gate reads the file as clean. Each row is
+  mapped to a `HistoryViewRecord` in the same expression and none escapes — but
+  **type inference is a hole in the gate**, and a future edit that let one out
+  would be just as invisible.
+
+- **`lib/core/guarded_history_views.dart` genuinely needs it.**
+  `HistoryViewStore` is the direct-mode write path: five members whose bodies
+  are calls to `AppDatabase`'s own five hand-written write members, wrapped in
+  the policy check and the audit row. There is no smaller type to depend on
+  today. A hand-written `HistoryViewWrites` interface in `tfc_dart`, implemented
+  by `AppDatabase`, would narrow it — but that is a change to `tfc_dart`'s
+  surface for a file that has no gateway-mode half, so it buys the boundary
+  nothing it does not already have.
+
+- **`lib/core/server_config_db.dart` is the sharpest of the three.**
+  `ServerConfigDb.fetch(AppDatabase db)` composes a drift query *in the app
+  tree* — `db.select(db.flutterPreferences)..where((t) => t.key.equals(...))` —
+  to read one preference row while deliberately bypassing `Preferences`' cache.
+  The requirement is sound (the config worth importing is the one *another*
+  client wrote, so the cache is exactly the wrong place to look) and the drift
+  expression is the wrong place to satisfy it: that select belongs behind a
+  named member on `AppDatabase`, next to the other reads, and then this file
+  names no drift type at all.
+
+  There is a second finding here that is not about drift. Both call sites in
+  `lib/pages/server_config.dart` (`:1690`, `:1749`) guard on
+  `databaseProvider == null` and tell the operator *"No database connection —
+  configure and save the database first."* On a gateway panel that provider is
+  null **by design**, so store-to-database and load-from-database both offer
+  advice that is wrong on that station — the same "two facts behind one null"
+  shape this milestone exists to remove, one surface further along.
+
+None of the three was changed.
