@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/widgets/stop_timeline.dart';
@@ -65,6 +66,40 @@ StopIntervalSource source() => StopIntervalSource(
       ],
     );
 
+/// Four alarms under Multivac whose activations run into one another, so a
+/// collapsed group draws them as a single stretch — the case an operator taps
+/// and gets no answer from.
+final crowdedAlarms = [
+  ...alarms,
+  alarm('Vacuum low', group: ['Line 3', 'Multivac']),
+];
+
+StopIntervalSource get overlappingUnderMultivac => StopIntervalSource(
+      closed: [
+        StopActivation(
+          alarmUid: 'seal-temperature-out-of-band',
+          interval: AlarmInterval(
+              start: ago(50), end: ago(20), level: AlarmLevel.error),
+        ),
+        StopActivation(
+          alarmUid: 'film-reel-empty',
+          interval: AlarmInterval(
+              start: ago(45), end: ago(25), level: AlarmLevel.error),
+        ),
+        StopActivation(
+          alarmUid: 'vacuum-low',
+          interval: AlarmInterval(
+              start: ago(42), end: ago(32), level: AlarmLevel.error),
+        ),
+        StopActivation(
+          alarmUid: 'multivac-stopped',
+          interval: AlarmInterval(
+              start: ago(40), end: ago(35), level: AlarmLevel.error),
+        ),
+      ],
+      open: const [],
+    );
+
 Future<void> pumpTimeline(
   WidgetTester tester, {
   StopTimelineSpec? config,
@@ -97,6 +132,22 @@ Future<void> pumpTimeline(
     ),
   ));
   await tester.pumpAndSettle();
+}
+
+/// The axis tick labels, which are the visible proof of where the window sits
+/// and how wide it is.
+List<String> axisTicks(WidgetTester tester) => tester
+    .widgetList<Text>(find.byType(Text))
+    .map((t) => t.data)
+    .whereType<String>()
+    .where((d) => RegExp(r'^\d\d:\d\d$').hasMatch(d))
+    .toList();
+
+/// A point on the empty ground below the last lane row, right of the label
+/// column — where an operator lands when they miss the rows.
+Offset belowTheRows(WidgetTester tester) {
+  final view = tester.getRect(find.byType(StopTimelineView));
+  return Offset(view.left + 500, view.bottom - 70);
 }
 
 const activationCallout = ValueKey('stop-timeline-activation-callout');
@@ -535,7 +586,9 @@ void main() {
       // Started 28/08 12:22 — "Since 12:22:10" alone would read as today.
       expect(find.textContaining('Since 28/08 12:22:00'), findsOneWidget);
       expect(find.textContaining('still standing'), findsOneWidget);
-      expect(find.textContaining('26h 00m'), findsOneWidget,
+      // Twice over now — once on the stretch, once on the alarm the group
+      // bubble names underneath it — so the assertion has to say which.
+      expect(find.textContaining('still standing · 26h 00m'), findsOneWidget,
           reason: 'hour precision holds until two days; beyond that '
               '_durShort switches to days');
     });
@@ -607,14 +660,81 @@ void main() {
       expect(find.textContaining('Since 14:12:00'), findsOneWidget);
     });
 
-    testWidgets('a collapsed group counts what it is standing for',
+    testWidgets('a collapsed group names what stood inside it',
         (tester) async {
       await pumpTimeline(tester);
       // Line 3 collapsed: its bar is the union of everything underneath.
       await tapLane(
           tester, 'g:Line 3', xOfInterval(tester, ago(90), ago(70)));
       expect(find.byKey(activationCallout), findsOneWidget);
-      expect(find.text('1 stop inside this group'), findsOneWidget);
+      // The count was never the answer to "what stopped?".
+      expect(find.textContaining('inside this group'), findsNothing);
+      expect(
+          find.byKey(const ValueKey('stop-timeline-contributor-film-reel-empty')),
+          findsOneWidget);
+      expect(find.text('Film reel empty'), findsWidgets);
+      expect(find.textContaining('12:52:00 · 20m'), findsOneWidget);
+    });
+
+    testWidgets('the named stops are the longest ones, worst first',
+        (tester) async {
+      await pumpTimeline(tester,
+          configs: crowdedAlarms, intervals: overlappingUnderMultivac);
+      // Multivac collapsed inside Line 3: one stretch, three alarms in it.
+      await tapLane(
+          tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+      final lines = tester
+          .widgetList<Text>(find.descendant(
+              of: find.byKey(activationCallout),
+              matching: find.byType(Text)))
+          .map((t) => t.data)
+          .whereType<String>()
+          .toList();
+      // Seal 30m, film 20m, multivac 5m — and only three of the four fit.
+      expect(lines.indexOf('Seal temperature out of band'),
+          lessThan(lines.indexOf('Film reel empty')));
+      expect(find.text('1 more'), findsOneWidget);
+    });
+
+    testWidgets('tapping a named stop jumps to its own lane', (tester) async {
+      await pumpTimeline(tester,
+          configs: crowdedAlarms, intervals: overlappingUnderMultivac);
+      await tapLane(
+          tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+      await tester.tap(find
+          .byKey(const ValueKey('stop-timeline-contributor-film-reel-empty')));
+      await tester.pumpAndSettle();
+      // The tree opened down to it, and its own bar is the one called out.
+      expect(find.byKey(const ValueKey('stop-timeline-row-a:film-reel-empty')),
+          findsOneWidget);
+      expect(find.byKey(activationCallout), findsOneWidget);
+      expect(find.textContaining('inside this group'), findsNothing);
+      // The leaf callout names the alarm itself, not the branch.
+      expect(find.text('Film reel empty'), findsWidgets);
+    });
+
+    testWidgets('a switched-off alarm is not named under its group',
+        (tester) async {
+      await pumpTimeline(tester,
+          configs: crowdedAlarms, intervals: overlappingUnderMultivac);
+      // Down to the leaf, then untick it.
+      await tester.tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+          find.byKey(const ValueKey('stop-timeline-row-g:Line 3/Multivac')));
+      await tester.pumpAndSettle();
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-show-a:film-reel-empty')));
+      await tester.pumpAndSettle();
+      await tapLane(
+          tester, 'g:Line 3/Multivac', xOfInterval(tester, ago(50), ago(20)));
+      expect(
+          find.byKey(const ValueKey('stop-timeline-contributor-film-reel-empty')),
+          findsNothing);
+      expect(
+          find.byKey(
+              const ValueKey('stop-timeline-contributor-seal-temperature-out-of-band')),
+          findsOneWidget);
     });
 
     testWidgets('a refresh that still holds the interval keeps it open',
@@ -807,4 +927,52 @@ void main() {
       expect(find.byKey(activationCallout), findsNothing);
     });
   });
+
+  group('the ground below the last row', () {
+    // The chart reads as one surface, so an operator who lands in the gap
+    // under the last alarm is still pointing at it.
+    testWidgets('drags the window like a lane does', (tester) async {
+      await pumpTimeline(tester);
+      final before = axisTicks(tester);
+      // Rightwards, into the past: the window opens docked to the live edge,
+      // so a leftward drag has nowhere to go.
+      await tester.dragFrom(belowTheRows(tester), const Offset(200, 0));
+      await tester.pumpAndSettle();
+      expect(axisTicks(tester), isNot(before));
+      expect(axisTicks(tester).first.compareTo(before.first), isNegative,
+          reason: 'the window moved backwards in time');
+    });
+
+    testWidgets('the wheel over it changes the span', (tester) async {
+      await pumpTimeline(tester);
+      final before = axisTicks(tester);
+      final mouse = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(mouse.hover(belowTheRows(tester)));
+      for (var i = 0; i < 5; i++) {
+        await tester.sendEventToBinding(mouse.scroll(const Offset(0, 120)));
+        await tester.pumpAndSettle();
+      }
+      // Zoomed out far enough that the ticks are hours, not half hours.
+      final widened = axisTicks(tester);
+      expect(widened, isNot(before));
+      expect(widened.every((t) => t.endsWith(':00')), isTrue);
+
+      for (var i = 0; i < 9; i++) {
+        await tester.sendEventToBinding(mouse.scroll(const Offset(0, -120)));
+        await tester.pumpAndSettle();
+      }
+      // And back in past where it started: quarter hours.
+      expect(axisTicks(tester).any((t) => t.endsWith(':15')), isTrue);
+    });
+
+    testWidgets('a tap on it puts an open callout down', (tester) async {
+      await pumpTimeline(tester);
+      await tapLane(tester, 'g:Line 3', xOfInterval(tester, ago(90), ago(70)));
+      expect(find.byKey(activationCallout), findsOneWidget);
+      await tester.tapAt(belowTheRows(tester));
+      await tester.pumpAndSettle();
+      expect(find.byKey(activationCallout), findsNothing);
+    });
+  });
+
 }

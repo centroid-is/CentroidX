@@ -167,4 +167,42 @@ class StopIntervalSource {
     }
     return mergeIntervals(gathered, now: now);
   }
+
+  /// The individual activations that make up one stretch of a merged lane.
+  ///
+  /// [mergedFor] unions everything under a group into anonymous bars, so a
+  /// bar an operator taps can only say how many stops it absorbed. This is
+  /// the way back to *which* ones, without expanding the tree and hunting
+  /// for them — the whole point of a downtime view is that the answer is one
+  /// gesture away.
+  ///
+  /// Bounds are inclusive: [mergeIntervals] unions intervals that merely
+  /// touch, so a contributor can start exactly where the stretch does, and an
+  /// exclusive test would drop it.
+  ///
+  /// Ordered longest first, then by start — the stop that cost the most is
+  /// the one to read first, and a bubble with room for three lines has to
+  /// spend them on the three that matter.
+  List<StopActivation> activationsIn(
+    Iterable<String> alarmUids, {
+    required DateTime from,
+    required DateTime to,
+    required DateTime now,
+  }) {
+    final wanted = alarmUids.toSet();
+    final hits = <StopActivation>[];
+    for (final activation in all) {
+      if (!wanted.contains(activation.alarmUid)) continue;
+      final interval = activation.interval;
+      if (interval.start.isAfter(to)) continue;
+      if (interval.endAt(now).isBefore(from)) continue;
+      hits.add(activation);
+    }
+    hits.sort((a, b) {
+      final byLength =
+          b.interval.lengthAt(now).compareTo(a.interval.lengthAt(now));
+      return byLength != 0 ? byLength : a.start.compareTo(b.start);
+    });
+    return hits;
+  }
 }
