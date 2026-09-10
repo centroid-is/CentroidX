@@ -316,9 +316,15 @@ void main() {
       );
 
       try {
-        // Give the microtask + readPlcStatus round-trip time to fire.
-        // The stub responds immediately so 250ms is more than enough.
-        await Future.delayed(const Duration(milliseconds: 250));
+        // Wait for the pairing rather than sleeping through it. The stub
+        // responds immediately, so on this machine 250 ms was indeed "more
+        // than enough" — and on the Windows CI agent it was not: the session
+        // reached `identified` and the assertion below read the chip before it
+        // reached `connected`. A fixed sleep states a fact about the machine
+        // that runs it; the property is that eager pairing happens at all,
+        // with no subscriber, and that is what polling asserts.
+        await _settleThenWaitFor(
+            () => adapter.effectiveStatus == EffectiveDeviceStatus.connected);
 
         // Effective status must transition from connecting → connected
         // (paired) without any subscriber having called subscribe()
@@ -363,8 +369,11 @@ void main() {
       );
 
       try {
-        // First pairing.
-        await Future.delayed(const Duration(milliseconds: 250));
+        // First pairing. Polled for the same reason as the case above — this
+        // one had not failed yet, which on a timing assumption means only that
+        // it had not been unlucky yet.
+        await _settleThenWaitFor(
+            () => adapter.effectiveStatus == EffectiveDeviceStatus.connected);
         expect(adapter.effectiveStatus, EffectiveDeviceStatus.connected);
 
         final logSizeAfterFirstPair = stubLog.length;
@@ -394,4 +403,42 @@ void main() {
       }
     });
   });
+}
+
+/// Waits out the connect transient, then polls [test] until it holds.
+///
+/// **The settle is not padding, and removing it breaks these cases.** A fresh
+/// adapter reports `connected` *before* it starts dialling, so a bare poll for
+/// `connected` is satisfied on its first evaluation, returns without ever
+/// awaiting, and asserts against the state the adapter is in on the way *into*
+/// the connect rather than out of it. Measured while trying exactly that:
+/// "done after 0 polls, satisfied=true", with the `expect` one microtask later
+/// reading `connecting`.
+///
+/// So the fixed delay these cases were written with was never a guess at how
+/// long pairing takes — it was skipping the transient, and it has to stay.
+/// The poll is added after it, which makes this strictly more permissive than
+/// the sleep alone: it cannot fail anywhere the sleep passed, and it no longer
+/// fails on an agent where 250 ms happened not to be enough.
+Future<void> _settleThenWaitFor(bool Function() test) async {
+  await Future<void>.delayed(const Duration(milliseconds: 250));
+  await _waitFor(test);
+}
+
+/// Polls [test] until it holds or [budget] runs out, then returns either way.
+///
+/// The caller still asserts, so a condition that never arrives fails on its own
+/// `expect` with its own message rather than on a timeout with none.
+///
+/// **Only for waits that are followed by an assertion about a state
+/// transition.** The other `Future.delayed` calls in this file are not this
+/// shape: they let a known number of poll cycles elapse and then count lines in
+/// `stubLog`, so the elapsed time is the measurement and polling a condition
+/// would silently change what they measure. Those were left alone deliberately.
+Future<void> _waitFor(bool Function() test,
+    {Duration budget = const Duration(seconds: 6)}) async {
+  final deadline = DateTime.now().add(budget);
+  while (!test() && DateTime.now().isBefore(deadline)) {
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+  }
 }
