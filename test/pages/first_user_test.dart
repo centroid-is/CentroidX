@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/pages/first_user.dart';
 import 'package:tfc/providers/access.dart';
+import 'package:tfc/widgets/access_sign_in_dialog.dart' show AccessSignInOpener;
 import 'package:tfc_dart/core/access/access_repository.dart';
 
 import '../helpers/test_helpers.dart';
@@ -52,23 +53,33 @@ class _FakeAccessRepository implements AccessRepository {
 Widget _buildBody({
   required Future<bool> Function() windowOpen,
   required Future<AccessRepository?> Function() repository,
+  AccessSignInOpener? openSignIn,
 }) {
   return ProviderScope(
     overrides: [
       accessRepositoryProvider.overrideWith((ref) => repository()),
       firstUserWindowOpenProvider.overrideWith((ref) => windowOpen()),
     ],
-    child: const MaterialApp(
-      home: Scaffold(body: FirstUserBody()),
+    child: MaterialApp(
+      home: Scaffold(
+        body: openSignIn == null
+            ? const FirstUserBody()
+            : FirstUserBody(openSignIn: openSignIn),
+      ),
     ),
   );
 }
 
 /// The open-window case with a working repository.
-Widget _openWindow(_FakeAccessRepository repo, {bool Function()? isOpen}) =>
+Widget _openWindow(
+  _FakeAccessRepository repo, {
+  bool Function()? isOpen,
+  AccessSignInOpener? openSignIn,
+}) =>
     _buildBody(
       windowOpen: () async => isOpen?.call() ?? true,
       repository: () async => repo,
+      openSignIn: openSignIn,
     );
 
 Finder _usernameField() => find.widgetWithText(TextField, 'Username');
@@ -306,14 +317,19 @@ void main() {
   group('submission', () {
     /// A repository whose `createFirstUser` closes the window the way the real
     /// one does — by making the next window question answer false.
-    ({_FakeAccessRepository repo, Widget host}) successHost() {
+    ({_FakeAccessRepository repo, Widget host}) successHost({
+      AccessSignInOpener? openSignIn,
+    }) {
       var open = true;
       final repo = _FakeAccessRepository(onCreate: (_, __) async {
         // The real repository closes the window by inserting the row; the
         // fake closes it by flipping what the provider answers next.
         open = false;
       });
-      return (repo: repo, host: _openWindow(repo, isOpen: () => open));
+      return (
+        repo: repo,
+        host: _openWindow(repo, isOpen: () => open, openSignIn: openSignIn),
+      );
     }
 
     testWidgets('a successful creation confirms the account and closes the '
@@ -349,9 +365,12 @@ void main() {
       expect(_textContaining('Recovery is a deployment task'), findsNothing);
     });
 
-    testWidgets('the success state offers sign-in as the next step',
+    testWidgets('the success state offers sign-in, and the action opens it',
         (tester) async {
-      final (:repo, :host) = successHost();
+      var opened = 0;
+      final (:repo, :host) = successHost(
+        openSignIn: (context, ref) async => opened++,
+      );
       await pumpAndLoad(tester, host);
 
       await _fillForm(tester);
@@ -359,6 +378,12 @@ void main() {
       await settle(tester);
 
       expect(find.byKey(kFirstUserSignInKey), findsOneWidget);
+
+      // Injected rather than real: `showAccessSignInDialog` beams on the value
+      // the dialog pops with, and this harness has no Beamer ancestor.
+      await tester.tap(find.byKey(kFirstUserSignInKey));
+      await settle(tester);
+      expect(opened, 1);
     });
 
     // There is deliberately no test that the password controllers are cleared

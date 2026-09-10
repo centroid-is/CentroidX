@@ -107,7 +107,17 @@ class FirstUserPage extends StatelessWidget {
 /// without a Beamer ancestor. `IpSettingsBody` and `ServerConfigBody` are the
 /// same split for the same reason.
 class FirstUserBody extends ConsumerStatefulWidget {
-  const FirstUserBody({super.key});
+  const FirstUserBody({
+    super.key,
+    this.openSignIn = showAccessSignInDialog,
+  });
+
+  /// How the confirmation's sign-in action opens the prompt. Injectable for
+  /// the same reason `AccessStatusAction`, `AccessGate` and
+  /// `AccessDeniedPrompt` take it: a widget test can then assert the button
+  /// opens sign-in without standing up a dialog route and a Beamer ancestor
+  /// (`showAccessSignInDialog` beams on the value the dialog pops with).
+  final AccessSignInOpener openSignIn;
 
   @override
   ConsumerState<FirstUserBody> createState() => _FirstUserBodyState();
@@ -289,7 +299,7 @@ class _FirstUserBodyState extends ConsumerState<FirstUserBody> {
         // The dialog, not a route: the sign-in surface this account is for is
         // modal everywhere else in the app, and its "Create the first account"
         // link is already gone now that the window answers closed.
-        onPressed: () => showAccessSignInDialog(context, ref),
+        onPressed: () => widget.openSignIn(context, ref),
         child: const Text('Sign in'),
       ),
     ]);
