@@ -984,6 +984,47 @@ void main() {
       );
     });
 
+    test('signing out of a freshly signed-in panel account un-commits it too',
+        () async {
+      final h = await committed();
+      // Reachable: the commit prompt is suppressed when the panel already
+      // holds this account, so this session is the panel's identity without
+      // ever having been resumed into.
+      await h.notifier.signIn('freezer', 'panel pw');
+
+      await h.notifier.signOut();
+
+      expect(await h.panelAccountPref(), isNull,
+          reason: 'one sign-out, as the dialog promised — not two');
+      expect(h.session!.isElevated, isFalse);
+    });
+
+    test('the panel comes back when the database does', () async {
+      final h = await committed();
+
+      // The boot-before-Postgres window: anonymous, still committed.
+      final blind = await _harness(
+        users: users,
+        stationAccounts: const {'freezer'},
+        withDatabase: false,
+        reuseDb: h.db,
+      );
+      expect((await blind.settle()).isElevated, isFalse);
+
+      // `build` watches `accessRepositoryProvider`, so the database arriving
+      // rebuilds the controller and re-runs the restore. This is what makes
+      // "refuse freely, clear never" a recovery rather than a wedge.
+      final recovered = await _harness(
+        users: users,
+        stationAccounts: const {'freezer'},
+        reuseDb: h.db,
+      );
+      final session = await recovered.settle();
+
+      expect(session.isElevated, isTrue);
+      expect(session.user!.username, 'freezer');
+    });
+
     test('an empty stored value is not an account named ""', () async {
       final h = await panel();
       await h.container

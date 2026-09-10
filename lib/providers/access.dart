@@ -662,9 +662,21 @@ class AccessSessionController extends _$AccessSessionController {
     }
 
     await _clearStoredSession();
-    // Before `_toFloor`, which would otherwise resume the account being
-    // signed out and turn an explicit sign-out into a no-op.
-    if (_onPanelSession) await _clearPanelAccount();
+    // Before `_toFloor`, which would otherwise resume the account being signed
+    // out and turn an explicit sign-out into a no-op.
+    //
+    // The username comparison is not redundant with [_onPanelSession]. That
+    // flag means "this session *is* the resumed panel", and it is false when
+    // somebody signs in fresh as the account the panel is already committed to
+    // — which is reachable, because the commit prompt is suppressed in exactly
+    // that case. Without the comparison their sign-out would resume the panel
+    // instead of ending it, and it would take two sign-outs to do what the
+    // dialog promised one would.
+    final signingOut = current?.user?.username;
+    if (_onPanelSession ||
+        (signingOut != null && signingOut == await _readPanelAccount())) {
+      await _clearPanelAccount();
+    }
     await _toFloor();
   }
 
