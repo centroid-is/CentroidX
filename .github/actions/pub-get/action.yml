@@ -36,6 +36,26 @@ runs:
     # constraint still fails on the first attempt, loudly and in one shot,
     # because retrying one of those four times would bury the real error and
     # teach the next reader that resolution failures are "just flaky".
+
+    # `flutter_tools depends on ...` is on the retry list for a related but
+    # distinct reason. The Flutter SDK does NOT ship flutter_tools pre-resolved
+    # — `packages/flutter_tools/pubspec.lock` and its
+    # `.dart_tool/package_config.json` are both untracked and generated on
+    # first use — so every fresh SDK install in CI resolves flutter_tools
+    # against pub.dev, including its exact `sync_http: 0.3.1` pin. A pub.dev
+    # hiccup during that bootstrap surfaces in *our* step as:
+    #
+    #   Because flutter_tools depends on sync_http 0.3.1 which doesn't match
+    #   any versions, version solving failed.
+    #
+    # which is the "real constraint failure" wording, not the 403 wording — so
+    # without this clause it would fail fast and look like our bug. It is not
+    # and cannot be: nothing in this repository depends on flutter_tools or
+    # sync_http, and we do not control flutter_tools' pubspec. Any resolution
+    # error rooted in flutter_tools is by construction environmental, which is
+    # exactly what makes it safe to retry without weakening the rule above.
+    # Observed intermittent on `centroidx-upgrader-test (macos-latest)`
+    # (2026-09-10, PR #478): 6 passes to 2 failures on the same commit range.
     - shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -59,7 +79,7 @@ runs:
             exit 0
           fi
 
-          if ! grep -qE "authorization failed|Insufficient permissions to the resource|Got a response with a 429|Connection closed|Got socket error" "$log"; then
+          if ! grep -qE "authorization failed|Insufficient permissions to the resource|Got a response with a 429|Connection closed|Got socket error|flutter_tools depends on" "$log"; then
             echo "::error::'$PUB_GET_COMMAND' failed for a reason that is not pub.dev flaking. Read the 'Because ...' lines above: this is a real resolution or network failure, and re-running will not fix it."
             exit "$status"
           fi
