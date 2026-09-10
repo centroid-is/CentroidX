@@ -295,3 +295,45 @@ forbids. What they cost is the *import*, not the type: `dart:io` and
   shape this milestone exists to remove, one surface further along.
 
 None of the three was changed.
+
+---
+
+## Correction, 2026-09-10 — the Windows SecureStorage "defect" does not exist
+
+Commit `c26075fa`'s message claims:
+
+> there is no `setInstance` call anywhere in `lib/` or the app entrypoint, so
+> the first `Preferences.create` needing a secret on a real Windows station
+> throws the same exception. Windows is a supported client platform. That is a
+> production defect.
+
+**That is wrong.** `centroid-hmi/lib/main.dart:249` registers an
+implementation at startup:
+
+```dart
+SecureStorage.setInstance(
+    Platform.isMacOS ? MacOsMigratingSecureStorage() : OtherSecureStorage());
+```
+
+`OtherSecureStorage` (`lib/core/secure_storage/other.dart`) wraps
+`flutter_secure_storage`, which on Windows is DPAPI-backed. Its own comment
+says so: *"Windows ignores mOptions entirely, so this is macOS-only in
+effect."*
+
+The search that produced the claim looked in `lib/` and `packages/*/lib`. The
+Flutter entrypoint is in neither — it is `centroid-hmi/lib/main.dart`, a
+separate tree — so the grep was clean while the call sat one directory over.
+
+**What is actually true**, and what `c26075fa` correctly fixes:
+`SecureStorage.getInstance()` throws only when *nothing* registered an
+instance, which is true of unit tests that never call `setInstance` and never
+of the shipped app. It is a test-harness gap. The fix stands; the reasoning
+attached to it did not.
+
+**The lesson, which is the reason this is written down rather than quietly
+dropped:** the alarming half of a report is the half most worth verifying, and
+it is the half that gets repeated fastest. This one was relayed to the owner
+twice and written into a commit message before anybody ran the grep that
+disproved it. A negative claim about a whole repository — "there is no call
+anywhere" — is only as good as the roots it searched, and those roots should
+be stated with the claim.
