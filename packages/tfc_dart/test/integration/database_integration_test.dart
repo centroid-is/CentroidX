@@ -7,6 +7,8 @@ import 'package:postgres/postgres.dart';
 import 'package:tfc_dart/core/alarm.dart' show alarmHistoryOverlaps;
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import 'package:tfc_dart/core/database_notification.dart'
+    show kNotificationWatchdogInterval;
 import 'docker_compose.dart';
 import 'eventually.dart';
 

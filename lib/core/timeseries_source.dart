@@ -52,7 +52,9 @@ library;
 import 'dart:async';
 
 import 'package:tfc_dart/core/database.dart' as db;
-import 'package:tfc_dart/core/database_drift.dart' as drift;
+// The payload vocabulary only — no drift, no `dart:io`. This file wants two
+// type names to decode a NOTIFY string with, which is all this import is.
+import 'package:tfc_dart/core/database_notification.dart' as notify;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as rp;
 
 /// One historised row a source observed being appended.
@@ -185,8 +187,8 @@ final class DatabaseTimeseriesSource implements TimeseriesSource {
     return database.db.listenToChannel(channel).transform(
         StreamTransformer<String, TimeseriesInsert>.fromHandlers(
             handleData: (payload, sink) {
-      final notification = drift.NotificationData.fromJson(payload);
-      if (notification.action != drift.NotificationAction.insert) return;
+      final notification = notify.NotificationData.fromJson(payload);
+      if (notification.action != notify.NotificationAction.insert) return;
       final raw = notification.data['time'];
       if (raw == null) return;
       sink.add((

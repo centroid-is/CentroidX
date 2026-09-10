@@ -260,5 +260,36 @@ void main() {
               'database row so that something downstream can read it back out '
               'again.');
     });
+
+    test('the timeseries seam holds no drift import at all', () {
+      // The same claim as the arm above, on the seam a *chart* reaches history
+      // through. Both of this file's implementations were behind one import of
+      // `database_drift.dart`, and what it was there for was two type names:
+      // `NotificationData` and `NotificationAction`, which decode a Postgres
+      // NOTIFY payload.
+      //
+      // Neither is drift's. They are hand-written, they need `dart:convert`
+      // and nothing else, and they now live in `database_notification.dart` —
+      // which is what makes this arm assertable at all. Reaching them through
+      // `database_drift.dart` meant the gateway half of this seam, which has
+      // no database and never will, was compiled against `dart:io`,
+      // `dart:isolate`, `drift/native.dart` and `drift_postgres`.
+      //
+      // Not merely a tidiness claim: `lib/core/database_notification.dart` is
+      // web-safe and `database_drift.dart` is not, so the import that used to
+      // be here is one of the things standing between this seam and a web
+      // build.
+      const path = 'lib/core/timeseries_source.dart';
+      expect(File(path).existsSync(), isTrue,
+          reason: 'this arm names $path directly; if it moved, point the arm '
+              'at its new home rather than deleting it.');
+
+      expect(_uncommented(path), isNot(contains('database_drift')),
+          reason: 'the payload vocabulary is in database_notification.dart. If '
+              'something here now genuinely wants the database layer, it wants '
+              'it on one transport only, and the seam exists precisely so that '
+              'the two transports are two implementations rather than one with '
+              'a null in it. See docs/drift-codegen-boundary.md.');
+    });
   });
 }

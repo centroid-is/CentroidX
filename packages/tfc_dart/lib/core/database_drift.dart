@@ -23,6 +23,10 @@ import 'alarm.dart';
 import 'database.dart';
 import 'database_batch_insert.dart';
 import 'database_connections.dart';
+// Imported, not re-exported: a consumer that wants the payload vocabulary
+// should not have to take this file's `dart:io` with it. See that file's
+// header.
+import 'database_notification.dart';
 import 'mcp_tables.dart';
 import 'mcp_database.dart';
 
@@ -2258,28 +2262,8 @@ _HealthMonitor _startPoolHealthMonitor(pg.Pool pool, SendPort port) {
   return _HealthMonitor(stop, done.future);
 }
 
-/// How often the LISTEN/NOTIFY connection is checked for having died, on
-/// behalf of the channel streams riding on it. See
-/// [AppDatabase._ensureNotificationWatchdog].
-const kNotificationWatchdogInterval = Duration(seconds: 5);
-
-enum NotificationAction {
-  insert,
-  update,
-  delete,
-}
-
-class NotificationData {
-  final NotificationAction action;
-  final Map<String, dynamic> data;
-
-  NotificationData({required this.action, required this.data});
-
-  factory NotificationData.fromJson(String json) {
-    final data = jsonDecode(json);
-    return NotificationData(
-        action: NotificationAction.values
-            .byName((data['action'] as String).toLowerCase()),
-        data: data['data'] as Map<String, dynamic>);
-  }
-}
+// `kNotificationWatchdogInterval`, `NotificationAction` and `NotificationData`
+// used to close this file. They are hand-written and need only `dart:convert`,
+// so they now live in `database_notification.dart` — imported above, and not
+// re-exported. Reaching them no longer costs a reader `dart:io`,
+// `dart:isolate` and `drift_postgres`.
