@@ -203,6 +203,22 @@ final class FreshnessWatchdog {
   /// count is the design, not an implementation detail.
   int get debugTimerCount => _deadline == null ? 0 : 1;
 
+  /// How many subscriptions this watchdog has an `evaluatedAt` for.
+  ///
+  /// Zero means [staleSubscriptionsNow] iterates an empty map and returns the
+  /// empty set **however long the link stays quiet** — correctly, because the
+  /// panel has not been told what to age. `evaluatedAt` arrives on `tick`
+  /// frames only, so a case that starves the link before the first tick can
+  /// never reach a stale verdict and will wait out any budget it is given.
+  ///
+  /// `debug` for the same reason [debugTimerCount] is: it is a precondition a
+  /// test establishes, never a thing a screen renders. It exists because
+  /// [serverNowMs] is not that precondition — the clock is anchored at `hello`
+  /// (`connection_supervisor.dart:712`, the only caller of
+  /// [anchorServerClock]), which is several frames earlier, so a case waiting
+  /// on the clock has established less than its name suggests.
+  int get debugEvaluatedSubCount => _evaluatedAt.length;
+
   /// Records an inbound frame of any [kind] and restarts the link deadline.
   ///
   /// Runs on every frame — twenty times a second on the measured cadence — so

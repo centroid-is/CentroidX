@@ -519,6 +519,16 @@ final class RemoteStateMan implements StateManApi {
   bool get debugHasServerClock =>
       _supervisor.watchdog.serverNowMs != null;
 
+  /// How many subscriptions the watchdog can age — see
+  /// `FreshnessWatchdog.debugEvaluatedSubCount`.
+  ///
+  /// The precondition a starvation case actually needs. [debugHasServerClock]
+  /// is true from `hello`; this is true only once a `tick` has said what the
+  /// plant last evaluated, and until then no amount of silence produces a
+  /// stale verdict.
+  int get debugEvaluatedSubCount =>
+      _supervisor.watchdog.debugEvaluatedSubCount;
+
   /// How far this panel's clock sits from the gateway's, captured at the last
   /// handshake.
   ///

@@ -703,8 +703,27 @@ void main() {
       // on windows-latest. Split out so the two failures read differently —
       // this one says the panel never got a clock, the one below says it got
       // one and did not use it.
-      await until('the panel to take a gateway-clock sample from a tick frame',
+      // **The clock is not the precondition, and the old wait said it was.**
+      // `debugHasServerClock` is true from `hello` — `anchorServerClock` has
+      // exactly one caller, `connection_supervisor.dart:712`, and it is the
+      // hello handler. So this wait returned several frames before the thing
+      // the case needs.
+      //
+      // What it needs is an `evaluatedAt` to age. Those ride `tick` frames, and
+      // `staleSubscriptionsNow` ages the map they fill; with the map empty it
+      // returns the empty set for as long as the link stays quiet, which is
+      // correct — the panel has not been told what to age — and indistinguish-
+      // able from a panel that judges everything fresh. That is what starved
+      // the case on windows-latest: it blackholed before the first tick and
+      // then waited out its budget, twenty seconds of it once the runner
+      // factor applied, for a verdict that could not arrive.
+      await until('the panel to take a gateway clock sample',
           () => fixture.client.debugHasServerClock,
+          budget: const Duration(seconds: 5));
+      await until(
+          'the panel to record an evaluatedAt from a tick frame, which is what '
+          'a stale verdict is computed against',
+          () => fixture.client.debugEvaluatedSubCount > 0,
           budget: const Duration(seconds: 5));
 
       // Nothing crosses the proxy in either direction from here. No close, no
