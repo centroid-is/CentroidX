@@ -2,11 +2,17 @@
 #define RUNNER_FLUTTER_WINDOW_H_
 
 #include <flutter/dart_project.h>
+#include <flutter/encodable_value.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter/method_call.h>
+#include <flutter/method_channel.h>
+#include <flutter/method_result.h>
 
 #include <atomic>
 #include <memory>
+#include <string>
 
+#include "dart_liveness.h"
 #include "gpu_device_probe.h"
 #include "stderr_interposer.h"
 #include "gpu_diagnosis.h"
@@ -36,11 +42,35 @@ class FlutterWindow : public Win32Window {
 
   // Builds a FlutterViewController and attaches its view as this window's
   // child content. Returns false if the engine failed to start.
-  bool CreateController();
+  //
+  // |reason| says why a new engine is being started. It is logged as an
+  // explicit epoch boundary AND handed to Dart as an entrypoint argument, so
+  // the app's own log says which generation wrote each line. Working out that
+  // the 2026-09-10 freeze contained THREE engine generations took hours of
+  // elapsed-time arithmetic across thousands of lines, because every restart
+  // was silent on both sides of the boundary.
+  bool CreateController(const char* reason);
 
   // Tears the FlutterViewController down. This runs egl::Manager's destructor
   // inside the engine, which calls eglTerminate() and releases the D3D device.
-  void DestroyController();
+  //
+  // |reason| is logged with how long the generation lived and how far Dart got
+  // in it -- the teardown that caused the freeze landed on an engine that was
+  // still starting up, and nothing said so.
+  void DestroyController(const char* reason);
+
+  // --- The runner channel: what Dart tells the runner -----------------------
+  //
+  // A method channel the UI isolate calls, whose messages land in
+  // hmi-runner.log. See dart_liveness.h for why a signal from inside the
+  // isolate is the only one that can see this class of freeze.
+  void OnRunnerChannelCall(
+      const flutter::MethodCall<flutter::EncodableValue>& call,
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+
+  // Asks DartLiveness whether the silence is worth a line, and writes it.
+  // Called from the watchdog tick, on the platform thread.
+  void EvaluateDartLiveness(unsigned long long now_ms);
 
   // --- GPU watchdog adapter -----------------------------------------------
   //
@@ -150,6 +180,30 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // --- Engine generations ---------------------------------------------------
+  //
+  // Every RDP session change destroys the controller and builds a new one,
+  // and destroying it shuts the Dart isolate down: a "rebuild" is a whole new
+  // main(), not a re-render. One frozen station held three generations' worth
+  // of log lines with nothing to separate them. Each generation now gets a
+  // number, both sides of the boundary log it, and Dart is told its own so
+  // every line it writes can be attributed.
+  long long engine_epoch_ = 0;
+  unsigned long long epoch_started_tick_ = 0;
+  // What Dart last said about its own startup, for the teardown line.
+  bool dart_startup_complete_ = false;
+  bool dart_main_seen_ = false;
+
+  // Watches for the UI isolate going quiet. Fed by the runner channel,
+  // consulted on every watchdog tick.
+  tfc::DartLiveness dart_liveness_;
+
+  // Owned by the controller's messenger, so it is torn down with it.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      runner_channel_;
+  // Liveness stamps arrive every few seconds and are only worth sampling.
+  tfc::LogThrottle liveness_log_;
 
   // Watchdog state. Touched only on the platform thread.
   tfc::GpuWatchdog watchdog_;
