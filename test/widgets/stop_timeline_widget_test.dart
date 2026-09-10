@@ -736,6 +736,36 @@ void main() {
       expect(find.text('1 more'), findsOneWidget);
     });
 
+    testWidgets('an alarm standing under two rules is named once',
+        (tester) async {
+      // AlarmMan keys its active set by (uid, rule), so one alarm can stand
+      // twice over. The bubble is about alarms, not about rows in a table.
+      await pumpTimeline(
+        tester,
+        intervals: StopIntervalSource(
+          closed: [
+            StopActivation(
+              alarmUid: 'film-reel-empty',
+              interval: AlarmInterval(
+                  start: ago(50), end: ago(30), level: AlarmLevel.warning),
+            ),
+            StopActivation(
+              alarmUid: 'film-reel-empty',
+              interval: AlarmInterval(
+                  start: ago(40), end: ago(20), level: AlarmLevel.error),
+            ),
+          ],
+          open: const [],
+        ),
+      );
+      await tapLane(tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+      expect(find.text('Film reel empty'), findsOneWidget);
+      // 50→20 merged, not 20m + 20m summed, and the worse rule is the one
+      // the mark reports.
+      expect(find.textContaining('· 30m'), findsWidgets);
+      expect(find.text('2×'), findsOneWidget);
+    });
+
     testWidgets('tapping a named stop jumps to its own lane', (tester) async {
       await pumpTimeline(tester,
           configs: crowdedAlarms, intervals: overlappingUnderMultivac);

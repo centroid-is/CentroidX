@@ -652,16 +652,52 @@ class _StopTimelineViewState extends State<StopTimelineView> {
   List<_Contributor> _contributorsIn(AlarmTreeRow row, AlarmInterval stretch) {
     final alarms = {for (final a in _contributingAlarms(row)) a.uid: a};
     if (alarms.isEmpty) return const [];
-    return [
-      for (final activation in widget.source.activationsIn(
-        alarms.keys,
-        from: stretch.start,
-        to: stretch.endAt(_now),
-        now: _now,
-      ))
-        if (alarms[activation.alarmUid] case final alarm?)
-          _Contributor(alarm: alarm, interval: activation.interval),
-    ];
+
+    final byUid = <String, List<AlarmInterval>>{};
+    for (final activation in widget.source.activationsIn(
+      alarms.keys,
+      from: stretch.start,
+      to: stretch.endAt(_now),
+      now: _now,
+    )) {
+      (byUid[activation.alarmUid] ??= []).add(activation.interval);
+    }
+
+    final out = <_Contributor>[];
+    byUid.forEach((uid, intervals) {
+      final alarm = alarms[uid];
+      if (alarm == null) return;
+      // Merged before summing: two rules of the same alarm standing together
+      // are one stretch of downtime, and adding them would bill it twice.
+      final merged = intervals.length > 1
+          ? mergeIntervals(intervals, now: _now)
+          : intervals;
+      var total = Duration.zero;
+      var level = merged.first.level;
+      var open = false;
+      var start = merged.first.start;
+      for (final iv in merged) {
+        total += iv.lengthAt(_now);
+        level = level.worst(iv.level);
+        open = open || iv.isOpen;
+        if (iv.start.isBefore(start)) start = iv.start;
+      }
+      out.add(_Contributor(
+        alarm: alarm,
+        start: start,
+        total: total,
+        level: level,
+        isOpen: open,
+        // The activation count, not the merged one: it is how many times the
+        // alarm fired, which is the figure the lane statistics also report.
+        count: intervals.length,
+      ));
+    });
+    out.sort((a, b) {
+      final byTotal = b.total.compareTo(a.total);
+      return byTotal != 0 ? byTotal : a.start.compareTo(b.start);
+    });
+    return out;
   }
 
   /// Jumps from a named stop in a group bubble to the alarm's own lane.
@@ -678,7 +714,7 @@ class _StopTimelineViewState extends State<StopTimelineView> {
       }
       _clearCallout();
       _selectedLaneKey = 'a:${alarm.uid}';
-      _selectedStart = contributor.interval.start;
+      _selectedStart = contributor.start;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
@@ -2270,11 +2306,37 @@ class _CalloutBubble extends StatelessWidget {
 }
 
 /// One alarm's share of a group stretch, as the callout lists it.
+///
+/// One line per *alarm*, not per activation: AlarmMan keys its active set by
+/// (uid, rule), so an alarm standing under two of its rules at once is two
+/// activations of the same thing — and the same title twice in a
+/// three-line bubble reads as a bug, not as a diagnosis. [seriesFor] merges
+/// for the same reason. [count] says when there was more than one.
 class _Contributor {
-  const _Contributor({required this.alarm, required this.interval});
+  const _Contributor({
+    required this.alarm,
+    required this.start,
+    required this.total,
+    required this.level,
+    required this.isOpen,
+    required this.count,
+  });
 
   final AlarmConfig alarm;
-  final AlarmInterval interval;
+
+  /// Its earliest start inside the stretch.
+  final DateTime start;
+
+  /// How long it stood inside the stretch, its own overlaps counted once.
+  final Duration total;
+
+  /// The worst severity it stood under.
+  final AlarmLevel level;
+
+  final bool isOpen;
+
+  /// How many separate activations of it the stretch absorbed.
+  final int count;
 }
 
 /// What one activation was: the bubble that opens on a tapped bar.
@@ -2448,8 +2510,6 @@ class _ContributorLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final interval = contributor.interval;
-    final open = interval.isOpen;
     final figures = theme.textTheme.labelSmall
         ?.copyWith(fontFeatures: const [FontFeature.tabularFigures()]);
     return InkWell(
@@ -2464,7 +2524,7 @@ class _ContributorLine extends StatelessWidget {
               width: 7,
               height: 7,
               decoration: BoxDecoration(
-                  color: colorForLevel(context, interval.level),
+                  color: colorForLevel(context, contributor.level),
                   borderRadius: BorderRadius.circular(1)),
             ),
           ),
@@ -2474,14 +2534,18 @@ class _ContributorLine extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.labelSmall),
           ),
+          if (contributor.count > 1) ...[
+            const SizedBox(width: 6),
+            Text('${contributor.count}×', style: figures),
+          ],
           const SizedBox(width: 6),
           Text(
             // Stamped, not a bare clock time: a stop that started yesterday
             // reading "12:22:00" is the same lie the stretch line above is
             // already careful not to tell.
-            '${_stampAt(interval.start, now)} · '
-            '${_durShort(interval.lengthAt(now))}',
-            style: open
+            '${_stampAt(contributor.start, now)} · '
+            '${_durShort(contributor.total)}',
+            style: contributor.isOpen
                 ? figures?.copyWith(color: AlarmColors.of(context).error)
                 : figures,
           ),
