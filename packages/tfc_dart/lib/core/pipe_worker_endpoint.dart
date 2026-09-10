@@ -45,7 +45,7 @@ import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:open62541/open62541.dart';
 import 'package:tfc_dart/core/opcua_value_translation.dart';
 import 'package:tfc_dart/core/pipe_send_buffer.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import 'package:tfc_dart/core/write_translation.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 

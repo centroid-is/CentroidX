@@ -8,7 +8,7 @@ import 'dart:isolate';
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
-import 'package:drift/native.dart';
+import 'sqlite_executor.dart';
 import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:drift/isolate.dart';
 import 'package:drift_postgres/drift_postgres.dart';
@@ -503,7 +503,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   @visibleForTesting
   factory AppDatabase.inMemoryForTest() => AppDatabase._(
         DatabaseConfig(),
-        NativeDatabase.memory(logStatements: false),
+        sqliteInMemory(logStatements: false),
       );
 
   /// A generative constructor so a test can *subclass* [AppDatabase] and
@@ -1121,7 +1121,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
         },
       );
 
-  bool get native => executor is NativeDatabase;
+  bool get native => isSqliteExecutor(executor);
   bool get postgres => executor is PgDatabase;
 
   /// Check if the database is reachable by running a real query.
@@ -1314,8 +1314,9 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     if (sqliteFolder != null) {
       final dbFolder = sqliteFolder;
       final file = File(p.join(dbFolder.path, 'db.sqlite'));
-      // Use a local NativeDatabase (or FlutterQueryExecutor).
-      final executor = NativeDatabase.createInBackground(
+      // A local SQLite file, opened through the seam in
+      // `sqlite_executor.dart` so this library does not import `dart:ffi`.
+      final executor = sqliteInBackground(
         file,
         logStatements: config.debug,
       );
@@ -1364,8 +1365,9 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     } else if (sqliteFolder != null) {
       final dbFolder = sqliteFolder;
       final file = File(p.join(dbFolder.path, 'db.sqlite'));
-      // Use a local NativeDatabase (or FlutterQueryExecutor).
-      final executor = NativeDatabase.createInBackground(
+      // A local SQLite file, opened through the seam in
+      // `sqlite_executor.dart` so this library does not import `dart:ffi`.
+      final executor = sqliteInBackground(
         file,
         logStatements: config.debug,
       );

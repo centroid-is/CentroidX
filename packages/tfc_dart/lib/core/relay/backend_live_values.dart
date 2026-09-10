@@ -61,7 +61,7 @@ import 'dart:async';
 import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/relay/backend_seams.dart';
-import 'package:tfc_dart/core/state_man.dart' show KeyMappings;
+import 'package:tfc_dart/core/state_man_types.dart' show KeyMappings;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
 /// How long a value may go unrefreshed before it stops being trustworthy.

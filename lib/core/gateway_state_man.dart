@@ -69,7 +69,7 @@ import 'dart:collection';
 
 import 'package:logger/logger.dart';
 import 'package:open62541/open62541_types.dart' as ua;
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as rp;
 
@@ -207,9 +207,12 @@ class GatewayStateMan implements StateMan {
   @override
   String alias;
 
-  /// Empty: this process holds no OPC UA session. See the library doc.
-  @override
-  List<ClientWrapper> get clients => const [];
+  // `clients` used to be overridden here, returning an empty list. It is gone:
+  // `StateMan` deliberately does not declare it (see `state_man_types.dart`),
+  // nothing reads it off this class — `opcUaSessionsOf` tests for
+  // `OpcUaStateMan` and `GuardedStateMan` only — and naming `ClientWrapper`
+  // linked an open62541 session, and so `dart:ffi`, into a class whose whole
+  // point is that this process holds no session.
 
   /// Empty: this process holds no Modbus or M2400 socket. See the library doc.
   @override

@@ -100,7 +100,7 @@ import 'package:meta/meta.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
 import 'package:tfc_dart/core/relay/backend_hold.dart';
 import 'package:tfc_dart/core/relay/backend_seams.dart';
-import 'package:tfc_dart/core/state_man.dart' show KeyMappings;
+import 'package:tfc_dart/core/state_man_types.dart' show KeyMappings;
 import 'package:tfc_dart/core/write_translation.dart'
     show guardArrayElementWrite;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;

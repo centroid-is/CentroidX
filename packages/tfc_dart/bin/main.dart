@@ -4,7 +4,8 @@ import 'dart:io';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/preferences_watch.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
+import 'package:tfc_dart/core/state_man_config_storage.dart';
 
 import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/log_config.dart';

@@ -37,8 +37,10 @@ import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc_access/tfc_access.dart';
 
-import '../state_man.dart';
 import 'dynamic_value_diff.dart';
+// The interface only: `state_man.dart` also holds `OpcUaStateMan`, and this
+// guard must stay compilable where there is no OPC UA client.
+import '../state_man_types.dart';
 
 /// A [StateMan] that records every write it lets through and refuses the ones
 /// the session in force may not make.
@@ -444,16 +446,12 @@ class GuardedStateMan implements StateMan {
   @override
   set keyMappings(KeyMappings value) => _inner.keyMappings = value;
 
-  /// Live OPC UA sessions, when this guard happens to wrap a real one.
-  ///
-  /// Not a [StateMan] member and deliberately not an override: a panel in
-  /// gateway mode holds no session and a browser cannot hold one at all. The
-  /// browse and diagnostic widgets that ask for this must already cope with an
-  /// empty list, because that is what gateway mode has always handed them.
-  List<ClientWrapper> get clients {
-    final inner = _inner;
-    return inner is OpcUaStateMan ? inner.clients : const [];
-  }
+  // `clients` used to live here as
+  // `inner is OpcUaStateMan ? inner.clients : const []`. Naming `OpcUaStateMan`
+  // linked open62541 — and so `dart:ffi` — into every library that guards a
+  // StateMan, which is all of them. The test moved to `opcua_sessions.dart`,
+  // which is native-only by construction and was the only caller; it asks
+  // through `innerAs`, which already exists for exactly this.
 
   @override
   List<DeviceClient> get deviceClients => _inner.deviceClients;
