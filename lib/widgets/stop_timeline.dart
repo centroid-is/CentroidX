@@ -1464,7 +1464,22 @@ class _StopTimelineViewState extends State<StopTimelineView> {
         right: 0,
         bottom: 0,
         top: 0,
-        child: LayoutBuilder(builder: (context, c) {
+        // Rebuilt on the scroll position, not only on the constraints. The
+        // height here is read off `_scroll.offset`, which this widget does
+        // not otherwise subscribe to: collapsing a group while scrolled down
+        // builds it with the offset the list is about to clamp away, and an
+        // instrumented run measured 40px of overhang over live rows — which,
+        // being opaque, would swallow their taps.
+        //
+        // In practice a second build lands inside the same frame and corrects
+        // it, so there is no test that can catch this and none is pretended;
+        // that correction depends on this strip laying out after the ListView
+        // in the Stack, which is not a contract anybody wrote down. Reading a
+        // position without listening to it is the actual defect, and this is
+        // what fixes it.
+        child: ListenableBuilder(
+            listenable: _scroll,
+            builder: (context, _) => LayoutBuilder(builder: (context, c) {
           final scrolled = _scroll.hasClients ? _scroll.offset : 0.0;
           final free = c.maxHeight - (contentHeight - scrolled);
           if (free <= 0) return const SizedBox.shrink();
@@ -1486,7 +1501,7 @@ class _StopTimelineViewState extends State<StopTimelineView> {
               ),
             ),
           );
-        }),
+        })),
       ),
       // One overlay for gridlines, the hatch and the future, rather than
       // eleven elements per row repainted on every pan frame.
