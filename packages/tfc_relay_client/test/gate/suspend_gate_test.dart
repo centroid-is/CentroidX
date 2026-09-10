@@ -134,17 +134,26 @@ const int _beforeSuspend = 1300;
 const int _duringSuspend = 2500;
 
 /// How many reports the panel may push after a resume before one of them says
-/// the view is stale.
+/// the view is stale — and, separately, how many may carry the pre-freeze value
+/// with `stale` unset.
 ///
 /// **Three, and the number is a measurement.** Observed on this machine: the
-/// **second** report after the resume carries `stale: true`, every run. The
-/// freshness deadline's timer came due twenty-seven seconds ago, so it is owed
-/// on the first turn of the loop — but so is the panel's own periodic tick, and
-/// the tick's due time is the earlier of the two, so exactly one report gets out
+/// **second** report after the resume carries `stale: true`. The freshness
+/// deadline's timer came due twenty-seven seconds ago, so it is owed on the
+/// first turn of the loop — but so is the panel's own periodic tick, and the
+/// tick's due time is the earlier of the two, so exactly one report gets out
 /// ahead of the verdict. Three reports is sixty milliseconds, a fiftieth of the
 /// freshness deadline: wide enough that the ordering of two overdue timers is
 /// not what reddens a row about staleness, and nowhere near wide enough to
 /// admit a panel that painted a thirty-second-old value as current.
+///
+/// **Not "every run" — that claim used to be here and the macOS runner
+/// disproved it.** A third thing is due at the same instant: the resync. When
+/// it lands first the panel goes straight from silent to correct, no report
+/// says stale because no report ever had a stale view to describe, and the
+/// number below bounds nothing on that run. That is why the row's assertions
+/// are written as a bound on unmarked pre-freeze reports rather than as a
+/// requirement that a stale one exist — see the resume block for the argument.
 const int _staleWithinReports = 3;
 
 /// Builds the plant and the gateway the panel dials, and registers both
