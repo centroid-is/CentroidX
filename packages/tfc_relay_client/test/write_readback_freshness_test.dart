@@ -52,6 +52,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'support/fault_fixture.dart';
 import 'support/gate_bands.dart';
 import 'support/write_answer_restamp.dart';
+import 'support/runner_budget.dart';
 
 /// The one tag both arms write to and watch. Same key, which is the file.
 const String _key = scenarioKey;
@@ -79,6 +80,8 @@ const int _movedDuringOutage = 8000;
 const int _epochish = 1000;
 
 void main() {
+  useRunnerBudgets();
+
   group('S3 — a readback may not put an older reading on the mimic', () {
     test(
         'a writeStatus answer about a lost write does not overwrite the value '
@@ -113,6 +116,30 @@ void main() {
                   'command, so there is nothing to measure the cut against '
                   'and the cut length would be a magic number'))
           .length;
+      // QUIESCE BEFORE ARMING. `cutMidFrame(n)` spends a byte budget on the
+      // next n bytes travelling server->client, whatever they belong to. The
+      // case needs those bytes to be the lost write's *answer*, but the
+      // gateway also sends subscription updates on its own schedule — and the
+      // seed above changed the value this case is subscribed to. A straggler
+      // wide enough to spend the budget cuts the link before the lost write is
+      // even sent, the plant records zero attempts for it, and the case fails
+      // on the arm that checks the fixture rather than on anything it is about.
+      //
+      // Load-dependent, so it was green on macOS and Linux and red on the
+      // Windows agent, where more frames fit in the same window. Waiting for
+      // the direction to go quiet makes the next frame the one that was
+      // intended. `gate/cut_mid_write_gate_test.dart` arms the same lever the
+      // same way and carries the same race.
+      var seen = -1;
+      await until(
+        'the inbound direction to go quiet before the cut is armed',
+        () {
+          final now = fixture.seam.inbound.length;
+          final settled = now == seen;
+          seen = now;
+          return settled;
+        },
+      );
       fixture.proxy.cutMidFrame(frameLength ~/ 2);
 
       // ---------------------------------------------------------------- t0:

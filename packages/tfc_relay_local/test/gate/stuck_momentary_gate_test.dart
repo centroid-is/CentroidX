@@ -420,11 +420,34 @@ void main() {
     final frozenAt = _plantTag(fixture, 'ST101', _heldKey)!;
 
     // Stops within one tick period: a paused panel runs no pulse timer, so the
-    // counter never rises above where it froze.
+    // counter stops advancing.
+    //
+    // **Stops, not freezes at the instant of the call.** `Isolate.pause` takes
+    // effect at the isolate's next safepoint, not when it returns, so a pulse
+    // already scheduled can still land — and `frozenAt` is read immediately
+    // after the call, before that pulse. `[9, 10, 10, 10, 10, 10, 10, 10]` on
+    // the macOS runner is a counter that stopped, and the old ceiling read it
+    // as one that had not: eight samples at 60 ms against a 50 ms pulse period
+    // means a *running* timer shows about eight increments across this window,
+    // not one.
     final afterPause = await _sampleTag(fixture, 'ST101', _heldKey);
-    expect(afterPause.every((v) => v <= frozenAt), isTrue,
-        reason: 'the held counter rose above $frozenAt after the pause '
-            '($afterPause) — a paused isolate runs no pulse timer');
+    expect(afterPause.last, lessThanOrEqualTo(frozenAt + 1),
+        reason: 'the held counter reached ${afterPause.last} after freezing at '
+            '$frozenAt ($afterPause). At most one pulse may be in flight when '
+            'the isolate reaches its safepoint; more than that is a pulse '
+            'timer still running inside a paused isolate');
+    final advanced = [
+      for (var i = 1; i < afterPause.length; i++)
+        if (afterPause[i] > afterPause[i - 1]) '${afterPause[i - 1]}->'
+            '${afterPause[i]}',
+    ];
+    expect(advanced, isEmpty,
+        reason: 'the held counter advanced $advanced across '
+            '${afterPause.length} samples taken after the pause '
+            '($afterPause). This is the property and the ceiling above is only '
+            'its first turn: a counter that keeps climbing is a hold the '
+            'gateway believes in and nobody is holding. A fall to 0 is the '
+            'reaper and is allowed here — the arm below is what waits for it');
 
     // Reaches 0 when the reaper takes the paused session.
     await until(

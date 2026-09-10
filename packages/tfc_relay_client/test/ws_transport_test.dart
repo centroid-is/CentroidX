@@ -59,6 +59,21 @@ final class _EchoServer {
 
   final HttpServer _server;
   final List<WebSocket> _accepted = <WebSocket>[];
+  final Completer<void> _firstAccept = Completer<void>();
+
+  /// Completes once this server has accepted at least one socket.
+  ///
+  /// The gap this closes: `connect()` resolves when the *client* has seen the
+  /// 101, and the server appends to [_accepted] in the continuation after
+  /// `WebSocketTransformer.upgrade` resolves — which is a separate turn. A case
+  /// that connects and immediately hangs up can therefore find [_accepted]
+  /// empty, close nothing, and then wait out its whole budget for a stream that
+  /// was never going to complete because nobody ever hung up.
+  ///
+  /// It reads as a timing failure and is not one: on the Windows agent it
+  /// waited the full scaled 20 s, which is what ruled the budget out and
+  /// pointed here.
+  Future<void> get accepted => _firstAccept.future;
 
   static Future<_EchoServer> start() async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -66,6 +81,7 @@ final class _EchoServer {
     server.listen((HttpRequest request) async {
       final socket = await WebSocketTransformer.upgrade(request);
       echo._accepted.add(socket);
+      if (!echo._firstAccept.isCompleted) echo._firstAccept.complete();
       socket.listen(
         (Object? message) {
           if (socket.closeCode == null) socket.add(message! as String);
@@ -194,6 +210,11 @@ void main() {
 
       final closed = Completer<void>();
       channel.stream.listen((_) {}, onDone: closed.complete);
+      // The server must have the socket before it can hang up on it; see
+      // `_EchoServer.accepted`. Without this the case closes nothing and then
+      // blames the wait.
+      await within(echo.accepted, 'the server registering the connection',
+          budget: _socketBudget);
       await echo.hangUp();
 
       await within(closed.future, 'the channel stream completing on hang-up',

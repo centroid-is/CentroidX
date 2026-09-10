@@ -73,6 +73,8 @@ import 'package:tfc_relay_server/tfc_relay_server.dart';
 import 'package:tfc_stateman_contract/channel_harness.dart';
 import 'package:tfc_stateman_contract/faults.dart';
 import 'package:tfc_stateman_contract/testing/fake_state_man.dart';
+import 'package:tfc_stateman_contract/tfc_stateman_contract.dart'
+    show budgetScale;
 
 import 'frame_seam.dart';
 import 'permissive_resolver.dart';
@@ -306,15 +308,24 @@ Future<FaultFixture> faultFixture({
 /// `remote_state_man_test.dart:135-144` with its reason, because a second
 /// almost-identical waiter is how two files start disagreeing about what
 /// "recovered" means.
+/// [budget] is multiplied by `budgetScale`, for the reason `check.dart` gives
+/// about `within`: this is a liveness bound and not a latency measurement, and
+/// five seconds against a three-second freshness deadline is only 1.7x of
+/// margin — enough on the machine it was written on, not enough on a loaded
+/// Windows agent, where it failed for the runner's load and reported it as the
+/// panel not noticing its own staleness.
 Future<void> until(
   String what,
   bool Function() done, {
   Duration budget = const Duration(seconds: 5),
 }) async {
-  final deadline = DateTime.now().add(budget);
+  final allowed = budget * budgetScale;
+  final deadline = DateTime.now().add(allowed);
   while (!done()) {
     if (DateTime.now().isAfter(deadline)) {
-      fail('timed out after ${budget.inMilliseconds} ms waiting for: $what');
+      fail('timed out after ${allowed.inMilliseconds} ms waiting for: $what'
+          '${budgetScale == 1 ? '' : ' (${budget.inMilliseconds} ms x '
+              '$budgetScale for this runner)'}');
     }
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }

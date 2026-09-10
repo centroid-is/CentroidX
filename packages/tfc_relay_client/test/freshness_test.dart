@@ -43,6 +43,7 @@ import 'package:test/test.dart';
 // arithmetic, and no amount of driving the watchdog directly can reach it.
 import 'support/client_harness.dart' show relayFixture;
 import 'support/fault_fixture.dart' show until;
+import 'support/runner_budget.dart';
 import 'support/gate_bands.dart' show scenarioKey;
 
 /// The injected heartbeat period the client is configured to expect.
@@ -121,6 +122,8 @@ final class TransitionLog {
 }
 
 void main() {
+  useRunnerBudgets();
+
   group('the link watchdog: one timer, reset by any inbound frame', () {
     test('frames every period keep the view fresh across ten periods', () async {
       final log = TransitionLog();
