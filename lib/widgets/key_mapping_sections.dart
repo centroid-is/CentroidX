@@ -112,6 +112,11 @@ class _OpcUaConfigSectionState extends ConsumerState<OpcUaConfigSection> {
       initialNodeId: initialNodeId,
     );
 
+    // Browse is a floating window now, so this await can also be resolved by
+    // navigation closing every floating dialog — which disposes this section
+    // in the same breath. Without the guard the setState below throws.
+    if (!mounted) return;
+
     if (result != null) {
       final nodeId = result.nodeId;
       setState(() {
@@ -593,6 +598,10 @@ class _ModbusConfigSectionState extends ConsumerState<ModbusConfigSection> {
       serverAlias: _selectedAlias,
       initialPath: widget.variableName,
     );
+
+    // See _openBrowseDialog: a floating Browse can be closed by navigation,
+    // which disposes this section before the await resumes.
+    if (!mounted) return;
 
     if (result != null) {
       final blockNo = int.tryParse(result.metadata['blockNo'] ?? '') ?? 0;

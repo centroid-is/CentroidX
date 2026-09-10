@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -30,6 +33,17 @@ class StandardDialog extends StatelessWidget {
   final IconData? icon;
   final PaneStatus? status;
   final List<PaneAction> actions;
+
+  /// Actions that change while the dialog is open — a `Select` that enables
+  /// once the operator picks something, say.
+  ///
+  /// When set it supersedes [actions], and ONLY the action bar rebuilds when
+  /// it fires. That matters in a floating dialog: the body is built once and
+  /// handed down as a captured child, so rebuilding the dialog to re-enable a
+  /// button would take the content's state with it — a browse tree would drop
+  /// its loaded nodes and re-issue its reads on every tap.
+  final ValueListenable<List<PaneAction>>? actionsListenable;
+
   final Widget child;
   final VoidCallback? onClose;
   final Widget? headerTrailing;
@@ -51,6 +65,7 @@ class StandardDialog extends StatelessWidget {
     this.icon,
     this.status,
     this.actions = const [],
+    this.actionsListenable,
     this.onClose,
     this.headerTrailing,
     this.headerWrap,
@@ -82,7 +97,17 @@ class StandardDialog extends StatelessWidget {
               ? SingleChildScrollView(primary: false, child: body)
               : body,
         ),
-        if (actions.isNotEmpty)
+        if (actionsListenable != null)
+          ValueListenableBuilder<List<PaneAction>>(
+            valueListenable: actionsListenable!,
+            builder: (context, actions, _) => actions.isEmpty
+                ? const SizedBox.shrink()
+                : PaneActionBar(
+                    actions: actions,
+                    endInset: actionBarEndInset,
+                  ),
+          )
+        else if (actions.isNotEmpty)
           PaneActionBar(
             actions: actions,
             endInset: actionBarEndInset,
@@ -283,8 +308,28 @@ Future<bool> showConfirmDialog({
 /// Nothing is dimmed and nothing is blocked — the plant view keeps running
 /// behind it and several floating dialogs can be open at once (a trend for
 /// each of two conveyors, say). [id] de-duplicates: opening an id that is
-/// already showing is a no-op rather than a second copy.
-void showFloatingDialog({
+/// already showing is a no-op rather than a second copy, and the returned
+/// future completes with null immediately — the window already on screen
+/// keeps answering to whoever opened it.
+///
+/// The future completes when the window closes: with the value handed to
+/// [closeFloatingDialog], or **null for every other way out** — the header's
+/// close button, Escape, [closeAllFloatingDialogs] on navigation, or the
+/// overlay being torn down underneath it. So a picker can be awaited like a
+/// modal:
+///
+/// ```dart
+/// final node = await showFloatingDialog<BrowseNode>(
+///   context: context, id: 'browse:$alias', title: 'Browse',
+///   builder: (_) => BrowseBody(onPick: (n) =>
+///       closeFloatingDialog('browse:$alias', result: n)),
+/// );
+/// if (!mounted) return;   // navigation may have closed it AND disposed you
+/// ```
+///
+/// Most callers — a trend, an expanded channel grid — want nothing back and
+/// simply ignore the future.
+Future<T?> showFloatingDialog<T>({
   required BuildContext context,
   required String id,
   required String title,
@@ -293,6 +338,10 @@ void showFloatingDialog({
   IconData? icon,
   PaneStatus? status,
   List<PaneAction> actions = const [],
+
+  /// For a dialog whose actions change while it is open — see
+  /// [StandardDialog.actionsListenable]. Dispose it from [onClosed].
+  ValueListenable<List<PaneAction>>? actionsListenable,
   Size size = const Size(640, 480),
   Offset? position,
   VoidCallback? onClosed,
@@ -302,7 +351,7 @@ void showFloatingDialog({
   /// height, and a chart wants the whole window anyway.
   bool scrollable = true,
 }) {
-  FloatingDialogs._show(
+  return FloatingDialogs._show(
     context: context,
     id: id,
     title: title,
@@ -310,16 +359,25 @@ void showFloatingDialog({
     icon: icon,
     status: status,
     actions: actions,
+    actionsListenable: actionsListenable,
     builder: builder,
     size: size,
     position: position,
     onClosed: onClosed,
     scrollable: scrollable,
-  );
+    // Untyped inside the registry — one map serves every dialog, whatever
+    // each one returns. A [result] of the wrong type surfaces as a failed
+    // cast at the awaiting site, not at the closing one.
+  ).then((value) => value as T?);
 }
 
 /// Closes the floating dialog with this [id], if it is open.
-void closeFloatingDialog(String id) => FloatingDialogs.close(id);
+///
+/// [result] is what the opener's `await` on [showFloatingDialog] returns; omit
+/// it and the caller sees null, which is what every other way out of the
+/// window already gives them.
+void closeFloatingDialog(String id, {Object? result}) =>
+    FloatingDialogs.close(id, result: result);
 
 /// Closes every floating dialog. See [FloatingDialogs.closeAll].
 int closeAllFloatingDialogs() => FloatingDialogs.closeAll();
@@ -340,7 +398,13 @@ abstract final class FloatingDialogs {
 
   static bool isOpen(String id) => _entries.containsKey(id);
 
-  static void _show({
+  /// One per open dialog, completed by [_complete] when the window goes.
+  ///
+  /// Untyped: the registry does not care what a given dialog returns, and
+  /// [showFloatingDialog] casts on the way out.
+  static final Map<String, Completer<Object?>> _completers = {};
+
+  static Future<Object?> _show({
     required BuildContext context,
     required String id,
     required String title,
@@ -349,12 +413,16 @@ abstract final class FloatingDialogs {
     IconData? icon,
     PaneStatus? status,
     List<PaneAction> actions = const [],
+    ValueListenable<List<PaneAction>>? actionsListenable,
     Size size = const Size(640, 480),
     Offset? position,
     VoidCallback? onClosed,
     bool scrollable = true,
   }) {
-    if (_entries.containsKey(id)) return;
+    // Already showing: the window on screen keeps its original requester, so
+    // this caller gets null rather than a future that would resolve with
+    // somebody else's answer.
+    if (_entries.containsKey(id)) return Future<Object?>.value();
 
     final overlay = Overlay.of(context, rootOverlay: true);
     // Cascade so a second dialog does not land exactly on the first.
@@ -367,6 +435,7 @@ abstract final class FloatingDialogs {
         icon: icon,
         status: status,
         actions: actions,
+        actionsListenable: actionsListenable,
         initialSize: size,
         initialPosition: position,
         cascade: cascade,
@@ -374,19 +443,37 @@ abstract final class FloatingDialogs {
         builder: builder,
       ),
     );
+    final completer = Completer<Object?>();
     _entries[id] = entry;
     _stack.add(id);
     _onClosed[id] = onClosed;
+    _completers[id] = completer;
     overlay.insert(entry);
+    return completer.future;
   }
 
   static final Map<String, VoidCallback?> _onClosed = {};
 
-  static void close(String id) {
+  /// Answers the opener's `await`, exactly once, however the window went.
+  ///
+  /// Both [close] and [_forget] route through here on purpose. [_forget]
+  /// reads like pure bookkeeping, but it is the path a dialog takes when the
+  /// overlay disappears underneath it — a route change, a hot restart, a
+  /// test's next `pumpWidget`. Skipping the completion there leaves an
+  /// awaiting caller hanging for the rest of the session.
+  static void _complete(String id, Object? result) {
+    final completer = _completers.remove(id);
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(result);
+    }
+  }
+
+  static void close(String id, {Object? result}) {
     final entry = _entries.remove(id);
     _stack.remove(id);
     entry?.remove();
     _onClosed.remove(id)?.call();
+    _complete(id, result);
   }
 
   /// Drops the bookkeeping for a dialog whose overlay went away on its own —
@@ -397,6 +484,7 @@ abstract final class FloatingDialogs {
     _entries.remove(id);
     _stack.remove(id);
     _onClosed.remove(id)?.call();
+    _complete(id, null);
   }
 
   /// Closes every open dialog. Returns how many were closed.
@@ -446,6 +534,7 @@ class _FloatingDialogShell extends StatefulWidget {
   final IconData? icon;
   final PaneStatus? status;
   final List<PaneAction> actions;
+  final ValueListenable<List<PaneAction>>? actionsListenable;
   final Size initialSize;
   final Offset? initialPosition;
   final double cascade;
@@ -464,6 +553,7 @@ class _FloatingDialogShell extends StatefulWidget {
     this.icon,
     this.status,
     this.initialPosition,
+    this.actionsListenable,
   });
 
   @override
@@ -630,7 +720,12 @@ class _FloatingDialogShellState extends State<_FloatingDialogShell> {
         icon: widget.icon,
         status: widget.status,
         actions: widget.actions,
+        actionsListenable: widget.actionsListenable,
         scrollable: widget.scrollable,
+        // Keep the trailing action clear of the corner grip, which is a
+        // Positioned sibling drawn OVER this surface and would otherwise
+        // swallow taps meant for the last button in the bar.
+        actionBarEndInset: _ResizeGrip._size,
         onClose: () => FloatingDialogs.close(widget.id),
         // The header doubles as the window's title bar.
         headerWrap: (context, header) => GestureDetector(
