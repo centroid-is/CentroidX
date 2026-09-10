@@ -99,6 +99,19 @@ class _Harness {
   Future<void> writeStoredPayload(String payload) => container
       .read(localPreferencesProvider)
       .setString(kAccessSessionPrefKey, payload);
+
+  /// The account this panel is committed to, straight from the store rather
+  /// than through the controller — so an assertion about the commitment cannot
+  /// be satisfied by the controller's in-memory idea of it.
+  Future<String?> panelAccountPref() => container
+      .read(localPreferencesProvider)
+      .getString(kAccessPanelAccountPrefKey);
+
+  /// The itemKeys of the auth rows written so far, in order.
+  List<String> get authItemKeys => sink.rows
+      .where((r) => r.surface == 'auth')
+      .map((r) => r.itemKey)
+      .toList();
 }
 
 const String _kStation = 'test-panel';
@@ -108,9 +121,14 @@ Future<_Harness> _harness({
   Map<String, ({String password, String roleName})>? users,
   Set<String> stationAccounts = const {},
   bool withDatabase = true,
+  AppDatabase? reuseDb,
 }) async {
-  final db = AppDatabase.inMemoryForTest();
-  addTearDown(() => db.close());
+  // `reuseDb` is what makes a restart testable: a second container over the
+  // *same* database and the same preference store is exactly what a relaunch
+  // is, and a fresh database would make every restore fail for the wrong
+  // reason.
+  final db = reuseDb ?? AppDatabase.inMemoryForTest();
+  if (reuseDb == null) addTearDown(() => db.close());
   // Force the migration to run, so the four seeded roles exist before the
   // session provider asks for them.
   await db.customSelect('SELECT 1').getSingle();
@@ -160,6 +178,10 @@ ProviderSubscription<AsyncValue<AccessSession>> _listen(_Harness h) {
 
 void main() {
   setUp(() {
+    // Real Argon2id/PBKDF2 cost makes `createUser` take seconds a piece, and
+    // the panel-account tests need real `app_user` rows.
+    Pbkdf2Kdf.iterationsForTest = 10;
+    addTearDown(() => Pbkdf2Kdf.iterationsForTest = null);
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
@@ -725,6 +747,248 @@ void main() {
       final h = await _harness();
       await h.writeStoredPayload(
           jsonEncode({'username': 'jon', 'roleName': 'Engineering'}));
+
+      final session = await h.settle();
+
+      expect(session.isElevated, isFalse);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The panel account
+  // -------------------------------------------------------------------------
+
+  /// A panel committed to a station account: it survives a human signing in
+  /// over it, their timeout, their sign-out and a restart, and it re-resolves
+  /// everything it needs from the database every time it comes back.
+  ///
+  /// The fake auth provider and the `app_user` table are seeded together on
+  /// purpose. In production `LocalAuthProvider` reads the same row the resume
+  /// path re-reads, so a test where the two disagree would be testing a state
+  /// the app cannot reach — except in the tests that make them disagree
+  /// deliberately, which is what the account-deleted and demoted cases are.
+  group('the panel account', () {
+    const users = {
+      'freezer': (password: 'panel pw', roleName: kOperatorRoleName),
+      'jon': (password: 'correct horse', roleName: 'Engineering'),
+    };
+
+    Future<_Harness> panel({
+      Duration? timeout = const Duration(minutes: 15),
+      AppDatabase? reuseDb,
+    }) async {
+      final h = await _harness(
+        users: users,
+        stationAccounts: const {'freezer'},
+        timeout: timeout,
+        reuseDb: reuseDb,
+      );
+      if (reuseDb == null) {
+        await h.repository.createUser(
+            username: 'freezer',
+            password: 'panel pw',
+            roleName: kOperatorRoleName);
+        await h.repository.setStationAccount('freezer', true);
+        await h.repository.createUser(
+            username: 'jon', password: 'correct horse', roleName: 'Engineering');
+      }
+      return h;
+    }
+
+    /// Sign the panel in as `freezer` and commit it. The commissioning act.
+    Future<_Harness> committed({Duration? timeout = const Duration(minutes: 15)}) async {
+      final h = await panel(timeout: timeout);
+      await h.settle();
+      await h.notifier.signIn('freezer', 'panel pw');
+      expect(await h.notifier.commitPanelAccount(), isTrue);
+      return h;
+    }
+
+    test('committing stores the username and nothing else', () async {
+      final h = await committed();
+
+      expect(await h.panelAccountPref(), 'freezer');
+      expect(
+        await h.storedPayload(),
+        isNull,
+        reason: 'the panel lives in its own key; a copy in the human session '
+            'slot would be a second, staler answer that a restart rejects for '
+            'having no expiry',
+      );
+    });
+
+    test('refuses to commit a session that is not a station account', () async {
+      final h = await panel();
+      await h.settle();
+      await h.notifier.signIn('jon', 'correct horse');
+
+      expect(await h.notifier.commitPanelAccount(), isFalse);
+      expect(await h.panelAccountPref(), isNull);
+    });
+
+    test('refuses to commit while anonymous', () async {
+      final h = await panel();
+      await h.settle();
+
+      expect(await h.notifier.commitPanelAccount(), isFalse);
+      expect(await h.panelAccountPref(), isNull);
+    });
+
+    test('a human signing in over the panel leaves the commitment alone',
+        () async {
+      final h = await committed();
+
+      await h.notifier.signIn('jon', 'correct horse');
+
+      expect(h.session!.user!.username, 'jon');
+      expect(await h.panelAccountPref(), 'freezer',
+          reason: 'signing in over a panel must not un-commission it');
+    });
+
+    test('a human signing out hands the panel back', () async {
+      final h = await committed();
+      await h.notifier.signIn('jon', 'correct horse');
+
+      await h.notifier.signOut();
+
+      expect(h.session!.isElevated, isTrue);
+      expect(h.session!.user!.username, 'freezer');
+      expect(h.session!.roleName, kOperatorRoleName);
+      expect(await h.panelAccountPref(), 'freezer');
+      expect(h.authItemKeys, containsAllInOrder(['logout', 'session.resume']));
+    });
+
+    test('a human timing out hands the panel back', () async {
+      final h = await committed(timeout: const Duration(milliseconds: 120));
+      _listen(h);
+      await h.notifier.signIn('jon', 'correct horse');
+      expect(h.session!.user!.username, 'jon');
+
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+
+      expect(h.session!.user!.username, 'freezer',
+          reason: 'the whole point: an operator does not have to sign the '
+              'panel back in after somebody borrowed it');
+      expect(h.authItemKeys,
+          containsAllInOrder(['session.timeout', 'session.resume']));
+    });
+
+    test('the resumed panel never expires and arms no countdown', () async {
+      final h = await committed(timeout: const Duration(milliseconds: 120));
+      _listen(h);
+      await h.notifier.signIn('jon', 'correct horse');
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+
+      expect(h.session!.user!.username, 'freezer');
+      expect(h.session!.expiresAt, isNull);
+      expect(h.notifier.timerIsRunning, isFalse,
+          reason: 'a panel does not time out, so nothing may be armed for it');
+    });
+
+    test('signing the panel account itself out un-commits and goes anonymous',
+        () async {
+      final h = await committed();
+
+      await h.notifier.signOut();
+
+      expect(h.session!.isElevated, isFalse);
+      expect(await h.panelAccountPref(), isNull,
+          reason: 'the documented way out, and the only one');
+    });
+
+    test('the commitment survives a restart', () async {
+      final h = await committed();
+      final restarted = await panel(reuseDb: h.db);
+
+      final session = await restarted.settle();
+
+      expect(session.isElevated, isTrue);
+      expect(session.user!.username, 'freezer');
+      expect(session.expiresAt, isNull);
+    });
+
+    test('a human session still live at restart wins over the panel', () async {
+      final h = await committed();
+      await h.notifier.signIn('jon', 'correct horse');
+
+      final restarted = await panel(reuseDb: h.db);
+      final session = await restarted.settle();
+
+      expect(session.user!.username, 'jon',
+          reason: 'the person signed in is who is standing there; the panel is '
+              'the floor they land on when that ends');
+    });
+
+    test('the role is re-resolved at resume, not read from the commitment',
+        () async {
+      final h = await committed();
+      await h.notifier.signIn('jon', 'correct horse');
+      // The account is moved to a wider role while a human holds the panel.
+      await h.repository.setRole('freezer', 'Shift Leader');
+
+      await h.notifier.signOut();
+
+      expect(h.session!.roleName, 'Shift Leader');
+      expect(
+        h.sink.rows.lastWhere((r) => r.itemKey == 'session.resume').roleName,
+        'Shift Leader',
+        reason: 'the row must say what the panel actually came back holding',
+      );
+    });
+
+    test('a deleted account un-commits the panel at the next resume', () async {
+      final h = await committed();
+      await h.notifier.signIn('jon', 'correct horse');
+      await h.repository.deleteUser('freezer');
+
+      await h.notifier.signOut();
+
+      expect(h.session!.isElevated, isFalse);
+      expect(await h.panelAccountPref(), isNull);
+    });
+
+    test('an account demoted from station account un-commits the panel',
+        () async {
+      final h = await committed();
+      await h.notifier.signIn('jon', 'correct horse');
+      // "This is a person now" — and a person's identity is not what a panel
+      // silently wears.
+      await h.repository.setStationAccount('freezer', false);
+
+      await h.notifier.signOut();
+
+      expect(h.session!.isElevated, isFalse);
+      expect(await h.panelAccountPref(), isNull);
+    });
+
+    test('a database outage does not un-commit the panel', () async {
+      final h = await committed();
+
+      // No repository: the same state a boot before Postgres opens is in.
+      final blind = await _harness(
+        users: users,
+        stationAccounts: const {'freezer'},
+        withDatabase: false,
+        reuseDb: h.db,
+      );
+      final session = await blind.settle();
+
+      expect(session.isElevated, isFalse,
+          reason: 'resuming against an unresolvable group set is worse than '
+              'anonymous');
+      expect(
+        await blind.panelAccountPref(),
+        'freezer',
+        reason: 'a panel that dropped because Postgres blinked must come back '
+            'when Postgres does, with nobody driving to the plant',
+      );
+    });
+
+    test('an empty stored value is not an account named ""', () async {
+      final h = await panel();
+      await h.container
+          .read(localPreferencesProvider)
+          .setString(kAccessPanelAccountPrefKey, '');
 
       final session = await h.settle();
 

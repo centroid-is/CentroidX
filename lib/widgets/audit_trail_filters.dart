@@ -165,8 +165,9 @@ String auditGroupChipLabel(AccessGroup group) {
 ///
 /// ## Why there are eight chips and not seven
 ///
-/// Auth rows — `login`, `login.failed`, `logout`, `session.timeout` — carry an
-/// **empty** `group_required`, because signing in is not gated on a group. A
+/// Auth rows — `login`, `login.failed`, `logout`, `session.timeout` and
+/// `session.resume` — carry an **empty** `group_required`, because signing in
+/// is not gated on a group. A
 /// bare `group_required IN (...)` would therefore drop every sign-in from the
 /// page. CONTEXT rejected putting auth rows on a separate tab precisely because
 /// interleaving is what preserves "who signed in right before this write", so
