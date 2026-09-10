@@ -52,6 +52,32 @@ const String kAccessSignInBadCredentialsMessage =
 const String kAccessSignInUnavailableMessage =
     'Cannot reach the user database — sign-in is unavailable right now.';
 
+/// The commit prompt, shown after a station account signs in.
+///
+/// **After**, not as a checkbox on the form: whether an account is a station
+/// account is a database fact, and nothing knows it until the credential has
+/// been accepted. A tick-box on the form would either appear for people it
+/// does nothing for, or promise something it cannot yet know it can deliver.
+///
+/// The wording carries **two** promises, because committing makes two changes
+/// and only the first is obvious. "Stays signed in across restarts" is what an
+/// administrator expects. That a human can sign in over the panel and hand it
+/// back on their way out is the surprising half, and leaving it out is how
+/// somebody discovers it by watching a panel they thought they had locked
+/// return to an account on its own.
+String kAccessSignInCommitTitle(String username) =>
+    'Keep this panel signed in as $username?';
+
+String kAccessSignInCommitMessage(String username) =>
+    'The panel stays signed in across restarts. People can sign in over it '
+    'for their own work; when their session ends or times out, the panel '
+    'returns to $username. Signing out of $username ends this.';
+
+/// The confirm labels, named so the tests tap the same words the operator
+/// reads — the convention `access_users_section.dart` set.
+const String kAccessSignInCommitConfirm = 'Keep signed in';
+const String kAccessSignInCommitCancel = 'Just this session';
+
 /// The honesty line, in the operator's own terms.
 ///
 /// Spec §8 requires the UI itself to say what signing in does and does not do.
@@ -124,6 +150,8 @@ class _AccessSignInDialogState extends ConsumerState<AccessSignInDialog> {
     if (!mounted) return;
     switch (result) {
       case AccessSignInResult.ok:
+        await _offerPanelCommit();
+        if (!mounted) return;
         Navigator.of(context).maybePop();
       case AccessSignInResult.badCredentials:
         setState(() {
@@ -136,6 +164,41 @@ class _AccessSignInDialogState extends ConsumerState<AccessSignInDialog> {
           _error = kAccessSignInUnavailableMessage;
         });
     }
+  }
+
+  /// Offer to commit this panel, when the account that just signed in is a
+  /// station account and the panel is not already committed to it.
+  ///
+  /// Silent in every other case, which is the common one. A person signing in
+  /// sees exactly the dialog they saw before this feature existed.
+  ///
+  /// Declining is a real answer, not a deferral: the session stands and behaves
+  /// like any other, and the panel is left uncommitted. That is what makes it
+  /// safe to sign in as `freezer` on a workstation to check something without
+  /// commissioning the workstation.
+  Future<void> _offerPanelCommit() async {
+    final notifier = ref.read(accessSessionProvider.notifier);
+    final user = ref.read(accessSessionProvider).valueOrNull?.user;
+    if (user == null || !user.stationAccount) return;
+
+    // Already committed to this account: there is nothing to ask. Asking again
+    // on every sign-in would train the operator to dismiss the prompt without
+    // reading it, which is how the second promise in the message stops being
+    // read at all.
+    if (await notifier.panelAccount() == user.username) return;
+    if (!mounted) return;
+
+    final confirmed = await showConfirmDialog(
+      context: context,
+      title: kAccessSignInCommitTitle(user.username),
+      message: kAccessSignInCommitMessage(user.username),
+      confirmLabel: kAccessSignInCommitConfirm,
+      cancelLabel: kAccessSignInCommitCancel,
+      icon: Icons.desktop_windows_outlined,
+    );
+    if (!confirmed) return;
+
+    await notifier.commitPanelAccount();
   }
 
   @override

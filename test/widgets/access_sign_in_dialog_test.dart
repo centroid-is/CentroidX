@@ -29,6 +29,18 @@ class _FakeSessionController extends AccessSessionController {
   /// When set, `signIn` waits on it before answering — a submission in flight.
   Completer<void>? gate;
 
+  /// Who a successful `signIn` publishes. Null leaves the session anonymous,
+  /// which is what the tests that predate the panel commitment want.
+  AuthenticatedUser? signsInAs;
+
+  /// What `panelAccount()` answers — the account this panel is already
+  /// committed to, if any.
+  String? committedTo;
+
+  /// Usernames passed to `commitPanelAccount`, so a test can assert the
+  /// commitment happened rather than inferring it.
+  final List<String> commits = <String>[];
+
   @override
   Future<AccessSession> build() async => AccessSession.anonymous(const {});
 
@@ -38,9 +50,27 @@ class _FakeSessionController extends AccessSessionController {
     final g = gate;
     if (g != null) await g.future;
     final index = attempts.length - 1;
-    return index < _results.length
+    final result = index < _results.length
         ? _results[index]
         : AccessSignInResult.badCredentials;
+
+    final user = signsInAs;
+    if (result == AccessSignInResult.ok && user != null) {
+      state = AsyncData(AccessSession(user: user, groups: const {}));
+    }
+    return result;
+  }
+
+  @override
+  Future<String?> panelAccount() async => committedTo;
+
+  @override
+  Future<bool> commitPanelAccount() async {
+    final user = state.valueOrNull?.user;
+    if (user == null || !user.stationAccount) return false;
+    commits.add(user.username);
+    committedTo = user.username;
+    return true;
   }
 }
 
@@ -57,14 +87,22 @@ Widget _host({
     ],
     child: MaterialApp(
       home: Consumer(
-        builder: (context, ref, _) => Scaffold(
-          body: Center(
-            child: ElevatedButton(
-              onPressed: () => showAccessSignInDialog(context, ref),
-              child: const Text('open'),
+        builder: (context, ref, _) {
+          // Listened from the first frame, as `BaseScaffold` does in the real
+          // app. Without it the notifier is not created until `_submit` reads
+          // it, and a `state` written by `signIn` is then clobbered by the
+          // still-pending `build()` completing behind it — which is a fact
+          // about the test host, not about the dialog.
+          ref.watch(accessSessionProvider);
+          return Scaffold(
+            body: Center(
+              child: ElevatedButton(
+                onPressed: () => showAccessSignInDialog(context, ref),
+                child: const Text('open'),
+              ),
             ),
-          ),
-        ),
+          );
+        },
       ),
     ),
   );
@@ -393,6 +431,121 @@ void main() {
 
       expect(find.textContaining('Login'), findsNothing);
       expect(find.textContaining('Log in'), findsNothing);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Committing the panel
+  // -------------------------------------------------------------------------
+
+  /// The prompt that turns a station-account sign-in into a commissioned panel.
+  ///
+  /// It is deliberately a *second* dialog rather than a checkbox on the form:
+  /// whether an account is a station account is a database fact, unknown until
+  /// the credential has been accepted.
+  group('the panel commitment prompt', () {
+    const freezer = AuthenticatedUser(
+      username: 'freezer',
+      roleName: kOperatorRoleName,
+      stationAccount: true,
+    );
+    const person = AuthenticatedUser(
+      username: 'jon',
+      roleName: 'Engineering',
+    );
+
+    Future<_FakeSessionController> signInAs(
+      WidgetTester tester,
+      AuthenticatedUser user, {
+      String? committedTo,
+    }) async {
+      final controller =
+          _FakeSessionController(results: const [AccessSignInResult.ok])
+            ..signsInAs = user
+            ..committedTo = committedTo;
+      await tester.pumpWidget(_host(controller: controller));
+      await _open(tester);
+      await tester.enterText(
+          find.byKey(kAccessSignInUsernameKey), user.username);
+      await tester.enterText(find.byKey(kAccessSignInPasswordKey), 'pw');
+      await tester.tap(find.byKey(kAccessSignInSubmitKey));
+      await tester.pumpAndSettle();
+      return controller;
+    }
+
+    testWidgets('is offered when a station account signs in', (tester) async {
+      await signInAs(tester, freezer);
+
+      expect(find.text(kAccessSignInCommitTitle('freezer')), findsOneWidget);
+      expect(find.text(kAccessSignInCommitConfirm), findsOneWidget);
+    });
+
+    testWidgets('names the account and states both promises', (tester) async {
+      await signInAs(tester, freezer);
+
+      final message = kAccessSignInCommitMessage('freezer');
+      expect(find.text(message), findsOneWidget);
+      // The obvious promise.
+      expect(message, contains('across restarts'));
+      // The surprising one, which is the whole reason the copy is long: an
+      // administrator who only reads the first half would discover on their
+      // own that a panel they thought they had locked comes back by itself.
+      expect(message, contains('sign in over it'));
+      expect(message, contains('returns to freezer'));
+      // And the way out, so the prompt is not a one-way door.
+      expect(message, contains('Signing out of freezer ends this'));
+    });
+
+    testWidgets('confirming commits the panel', (tester) async {
+      final controller = await signInAs(tester, freezer);
+
+      await tester.tap(find.text(kAccessSignInCommitConfirm));
+      await tester.pumpAndSettle();
+
+      expect(controller.commits, ['freezer']);
+      expect(find.byKey(kAccessSignInUsernameKey), findsNothing,
+          reason: 'the sign-in dialog closes once the question is answered');
+    });
+
+    testWidgets('declining leaves the panel uncommitted and the session up',
+        (tester) async {
+      final controller = await signInAs(tester, freezer);
+
+      await tester.tap(find.text(kAccessSignInCommitCancel));
+      await tester.pumpAndSettle();
+
+      expect(controller.commits, isEmpty);
+      expect(controller.committedTo, isNull);
+      expect(controller.state.valueOrNull?.isElevated, isTrue,
+          reason: 'declining is an answer about the panel, not about the '
+              'sign-in — which is what makes it safe to sign in as a station '
+              'account on a workstation to check something');
+      expect(find.byKey(kAccessSignInUsernameKey), findsNothing);
+    });
+
+    testWidgets('is not offered to a person', (tester) async {
+      await signInAs(tester, person);
+
+      expect(find.text(kAccessSignInCommitTitle('jon')), findsNothing);
+      expect(find.byKey(kAccessSignInUsernameKey), findsNothing,
+          reason: 'a person sees exactly the dialog they saw before this '
+              'feature existed');
+    });
+
+    testWidgets('is not offered when the panel already holds this account',
+        (tester) async {
+      final controller =
+          await signInAs(tester, freezer, committedTo: 'freezer');
+
+      expect(find.text(kAccessSignInCommitTitle('freezer')), findsNothing);
+      expect(controller.commits, isEmpty);
+    });
+
+    testWidgets('is offered when the panel holds a different account',
+        (tester) async {
+      await signInAs(tester, freezer, committedTo: 'chiller');
+
+      expect(find.text(kAccessSignInCommitTitle('freezer')), findsOneWidget);
     });
   });
 }

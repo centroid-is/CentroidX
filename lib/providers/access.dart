@@ -24,6 +24,7 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/access/drift_audit_sink.dart';
 import 'package:tfc_dart/core/access/local_auth_provider.dart';
+import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 import 'package:tfc_dart/core/preferences.dart';
 
 import 'database.dart';
@@ -36,6 +37,24 @@ part 'access.g.dart';
 /// A constant rather than a literal so the login surface (plan 01-08) and the
 /// first-user screen (plan 01-09) name the same key as the tests do.
 const String kAccessSessionPrefKey = 'access.session';
+
+/// The device-local preference key naming the account this panel is committed
+/// to, or absent when it is committed to none.
+///
+/// A **bare username**, not a serialised session. Everything else — the role,
+/// the groups, whether the account still exists, whether it is still a station
+/// account — is re-resolved from the database on every resume, so this file
+/// grants nothing on its own. The worst a hand-edited value can do is name a
+/// different account, and [AccessSessionController._resumePanelAccount]
+/// refuses any that is not still flagged `stationAccount`.
+///
+/// Separate from [kAccessSessionPrefKey] on purpose, and that separation *is*
+/// the feature: a human signing in writes the session key and never touches
+/// this one, so the panel's own identity survives their session, their
+/// sign-out, their timeout and a restart without any suspend/restore
+/// bookkeeping. Committing is a deliberate act at sign-in; un-committing is
+/// signing the panel's own account out.
+const String kAccessPanelAccountPrefKey = 'access.panel_account';
 
 /// The device-local preference key holding the inactivity timeout, in minutes.
 const String kAccessInactivityMinutesPrefKey =
@@ -301,6 +320,26 @@ class AccessSessionController extends _$AccessSessionController {
   /// Null since the disable flag: no expiry, no monitor, no countdown.
   Duration? _timeout = kDefaultInactivityTimeout;
 
+  /// True while the live session **is** this panel's committed account.
+  ///
+  /// Not derived from `user.stationAccount`: signing in as a station account
+  /// without committing the panel is an ordinary (if non-expiring) session,
+  /// and an engineer testing as `freezer` on their workstation must not thereby
+  /// commission it. Only [commitPanelAccount] and a resume set this.
+  ///
+  /// It decides two things, both of which would be wrong the other way:
+  ///
+  /// * [signOut] clears [kAccessPanelAccountPrefKey] only when it is true, so
+  ///   a human signing out hands the panel back rather than un-committing it.
+  /// * [_persist] declines to write the panel's session into
+  ///   [kAccessSessionPrefKey], which is the human slot. The panel lives in its
+  ///   own key and re-resolves from the database; a copy in the session slot
+  ///   would be a second, staler answer to the same question.
+  ///
+  /// Re-derived on every [build] rather than carried across one: a rebuild
+  /// re-runs the restore, and that is what sets it.
+  bool _onPanelSession = false;
+
   PreferencesApi? _local;
 
   /// Where auth rows go. Resolved at build for the same reason as [_station].
@@ -316,6 +355,8 @@ class AccessSessionController extends _$AccessSessionController {
     // state and must NOT be reset, because the listeners themselves survive a
     // rebuild.
     _disposed = false;
+    // Re-derived by the restore below, never carried across a rebuild.
+    _onPanelSession = false;
     ref.onAddListener(_onListenerAdded);
     ref.onRemoveListener(_onListenerRemoved);
     ref.onDispose(_disposeMonitor);
@@ -323,7 +364,7 @@ class AccessSessionController extends _$AccessSessionController {
     _station = ref.watch(stationNameProvider);
     _local = ref.watch(localPreferencesProvider);
     _timeout = await ref.watch(inactivityTimeoutProvider.future);
-    // Before `_restoreOrAnonymous`, which writes a row when the stored session
+    // Before `_restoreOrFloor`, which writes a row when the stored session
     // turns out to have expired while the app was not running.
     _sink = await ref.watch(auditSinkProvider.future);
     final repo = await ref.watch(accessRepositoryProvider.future);
@@ -337,7 +378,7 @@ class AccessSessionController extends _$AccessSessionController {
     // and nothing can fire.
     _monitor = timeout == null ? null : InactivityMonitor(timeout: timeout);
 
-    final session = await _restoreOrAnonymous(repo);
+    final session = await _restoreOrFloor(repo);
 
     // The boot case the listener count exists for: if something is already
     // listening and the restored session is elevated, arm now. `state` is not
@@ -350,19 +391,31 @@ class AccessSessionController extends _$AccessSessionController {
   // Restore
   // -----------------------------------------------------------------------
 
-  /// Read the device-local payload and turn it into a live session, or
-  /// anonymous.
+  /// Read the device-local payload and turn it into a live session, or fall to
+  /// this panel's floor.
+  ///
+  /// The floor is the panel's committed station account when there is one and
+  /// it still resolves, and anonymous otherwise — see [_resumePanelAccount].
+  /// **Every** exit here goes through it, including the three failure exits: a
+  /// corrupt, expired or unresolvable *human* payload says nothing about the
+  /// panel's own identity, and dropping to anonymous in those cases would make
+  /// a committed panel lose itself to a mangled session file it does not own.
   ///
   /// The stored payload is unvalidated data from a file on a station anybody
   /// can walk up to. It is checked for expiry and its **groups are re-resolved
   /// from the role**, never read from the payload — `AccessSession.toJson`
   /// deliberately does not serialise them, so a hand-edited file cannot grant a
   /// group the role does not have.
-  Future<AccessSession> _restoreOrAnonymous(AccessRepository? repo) async {
-    final anonymous = AccessSession.anonymous(await _anonymousGroups(repo));
+  Future<AccessSession> _restoreOrFloor(AccessRepository? repo) async {
+    /// The panel's committed account, or anonymous. Deferred rather than
+    /// computed up front: the common case restores a human session and never
+    /// needs it, and resuming writes an audit row.
+    Future<AccessSession> floor() async =>
+        await _resumePanelAccount(repo) ??
+        AccessSession.anonymous(await _anonymousGroups(repo));
 
     final raw = await _readStoredSession();
-    if (raw == null) return anonymous;
+    if (raw == null) return floor();
 
     final stored = AccessSession.parse(raw);
     if (stored == null) {
@@ -373,7 +426,7 @@ class AccessSessionController extends _$AccessSessionController {
         'clearing it and starting anonymous.',
       );
       await _clearStoredSession();
-      return anonymous;
+      return floor();
     }
 
     if (stored.isExpiredAt(clock.now())) {
@@ -391,7 +444,7 @@ class AccessSessionController extends _$AccessSessionController {
         reason: 'The session expired at ${stored.expiresAt.toIso8601String()} '
             'while the app was not running.',
       ));
-      return anonymous;
+      return floor();
     }
 
     final role = repo == null ? null : await _roleOrNull(repo, stored.roleName);
@@ -404,7 +457,7 @@ class AccessSessionController extends _$AccessSessionController {
         'be resolved — starting anonymous.',
       );
       await _clearStoredSession();
-      return anonymous;
+      return floor();
     }
 
     return AccessSession(
@@ -519,16 +572,81 @@ class AccessSessionController extends _$AccessSessionController {
       at: clock.now(),
     ));
 
+    // A fresh sign-in is somebody's session, not the panel's — even when the
+    // account is a station account. Committing the panel is a separate,
+    // deliberate step (see [commitPanelAccount]); until it is taken this
+    // behaves exactly like any other login.
+    _onPanelSession = false;
     state = AsyncData(session);
     await _persist(session);
     _attach(session);
     return AccessSignInResult.ok;
   }
 
+  /// Commit this panel to the account that is signed in right now.
+  ///
+  /// The panel keeps this identity across restarts, and hands it back whenever
+  /// a human's session over it ends — by sign-out, by inactivity, or by the
+  /// app restarting. Signing this account out is what ends the commitment.
+  ///
+  /// Refuses unless the live session belongs to a `stationAccount`. That flag
+  /// is an administrator saying "this identity is a panel, not a person", and
+  /// it is the only thing standing between this method and a panel wearing
+  /// somebody's personal login forever. The caller — the sign-in dialog — only
+  /// offers the choice when the flag is set, so a refusal here means a second
+  /// call site got it wrong.
+  ///
+  /// Returns true when the panel is committed.
+  Future<bool> commitPanelAccount() async {
+    final session = state.valueOrNull;
+    final user = session?.user;
+    if (user == null || !user.stationAccount) {
+      Logger().w(
+        'Refusing to commit this panel: the live session is '
+        '${user == null ? 'not signed in' : '"${user.username}", which is not '
+            'a station account'}.',
+      );
+      return false;
+    }
+
+    final local = _local;
+    if (local == null) return false;
+    try {
+      await local.setString(kAccessPanelAccountPrefKey, user.username);
+    } on Object catch (e) {
+      Logger().w('Could not commit this panel to "${user.username}": $e');
+      return false;
+    }
+
+    // The panel's identity lives in its own key from here on. Clearing the
+    // human slot is what stops the same login existing twice, once as a
+    // session that a restart would reject for having no expiry and once as the
+    // commitment that actually survives.
+    _onPanelSession = true;
+    await _clearStoredSession();
+    return true;
+  }
+
+  /// Whether this panel is committed, and to whom. Null when it is not.
+  ///
+  /// For the sign-in dialog, which offers to commit a panel that is not
+  /// already committed to the account signing in.
+  Future<String?> panelAccount() => _readPanelAccount();
+
   /// Sign out deliberately.
   ///
   /// Always available, per spec §5 — there is no state in which an operator
   /// cannot hand the panel back.
+  ///
+  /// Signing out means signing out of **your own** session, which on a
+  /// committed panel resolves into two different-looking outcomes from one
+  /// rule:
+  ///
+  /// * A human who signed in over the panel lands back on the panel's account.
+  ///   They did not commit it and do not un-commit it.
+  /// * Somebody signed in *as* the panel's account un-commits the panel and
+  ///   lands on anonymous. This is the documented way out, and the only one —
+  ///   which is why there is no separate de-commissioning control.
   Future<void> signOut() async {
     final current = state.valueOrNull;
     _detach();
@@ -544,7 +662,22 @@ class AccessSessionController extends _$AccessSessionController {
     }
 
     await _clearStoredSession();
-    await _toAnonymous();
+    // Before `_toFloor`, which would otherwise resume the account being signed
+    // out and turn an explicit sign-out into a no-op.
+    //
+    // The username comparison is not redundant with [_onPanelSession]. That
+    // flag means "this session *is* the resumed panel", and it is false when
+    // somebody signs in fresh as the account the panel is already committed to
+    // — which is reachable, because the commit prompt is suppressed in exactly
+    // that case. Without the comparison their sign-out would resume the panel
+    // instead of ending it, and it would take two sign-outs to do what the
+    // dialog promised one would.
+    final signingOut = current?.user?.username;
+    if (_onPanelSession ||
+        (signingOut != null && signingOut == await _readPanelAccount())) {
+      await _clearPanelAccount();
+    }
+    await _toFloor();
   }
 
   /// Records activity. Cheap and safe to call on every pointer-down.
@@ -700,7 +833,7 @@ class AccessSessionController extends _$AccessSessionController {
       reason: 'No activity for ${_timeout!.inMinutes} minute(s).',
     ));
     await _clearStoredSession();
-    await _toAnonymous();
+    await _toFloor();
   }
 
   void _disposeMonitor() {
@@ -711,11 +844,139 @@ class AccessSessionController extends _$AccessSessionController {
     if (monitor != null) unawaited(monitor.dispose());
   }
 
-  Future<void> _toAnonymous() async {
+  /// The one way down: this panel's committed account, or anonymous.
+  ///
+  /// Every route that used to reach anonymous now reaches here — [signOut],
+  /// [_expire] and the three drops in [refreshGroupsFromRoles] — so "a human's
+  /// session ending hands the panel back" is one method rather than three
+  /// call sites that each have to remember.
+  Future<void> _toFloor() async {
     if (_disposed) return;
     final repo = await ref.read(accessRepositoryProvider.future);
     if (_disposed) return;
+
+    final resumed = await _resumePanelAccount(repo);
+    if (_disposed) return;
+    if (resumed != null) {
+      _onPanelSession = true;
+      state = AsyncData(resumed);
+      return;
+    }
+
+    _onPanelSession = false;
     state = AsyncData(AccessSession.anonymous(await _anonymousGroups(repo)));
+  }
+
+  /// This panel's committed account as a live session, or null.
+  ///
+  /// Null covers "no panel is committed" and "the commitment cannot be honoured
+  /// right now", and the caller treats them the same: fall to anonymous.
+  ///
+  /// ## Nothing is trusted from the preference file
+  ///
+  /// The file supplies a username and nothing else. The role, the groups and
+  /// the account's continued right to be a panel identity are all read from the
+  /// database on **every** resume, so a resume cannot hand back permissions the
+  /// account no longer has — a role edited or the account demoted while a human
+  /// was signed in takes effect the moment the panel comes back.
+  ///
+  /// Three checks, each closing a hole a stored session would leave open:
+  ///
+  /// 1. **The row still exists.** Deleting the account un-commissions every
+  ///    panel committed to it, at their next resume. Without this, deleting
+  ///    `freezer` would leave its panels holding its groups indefinitely — and
+  ///    indefinitely is the operative word, because a panel session has no
+  ///    expiry to run out.
+  /// 2. **It is still `stationAccount`.** Turning that flag off is how an
+  ///    administrator says "this is a person now", and a person's identity must
+  ///    not be what a panel silently wears. It is also what stops a hand-edited
+  ///    preference file naming a *human* account: the file can name anybody,
+  ///    but only a flagged account resumes.
+  /// 3. **Its role resolves.** Same reasoning as the restore path — signing
+  ///    somebody in against an undefined group set is worse than anonymous.
+  ///
+  /// ## An outage must not un-commission the panel
+  ///
+  /// A null repository, an unreadable row or an unresolvable role returns null
+  /// **without clearing** [kAccessPanelAccountPrefKey]. The commitment is a
+  /// deliberate act and only a deliberate act undoes it; a panel that drops to
+  /// anonymous because Postgres blinked must come back to itself when Postgres
+  /// does, with nobody driving to the plant. That asymmetry — refuse freely,
+  /// clear never — is the whole reason this is separate from the three drop
+  /// routes in [refreshGroupsFromRoles], which *do* clear.
+  Future<AccessSession?> _resumePanelAccount(AccessRepository? repo) async {
+    final username = await _readPanelAccount();
+    if (username == null) return null;
+
+    if (repo == null) {
+      Logger().w(
+        'This panel is committed to "$username" but the database is not '
+        'reachable — staying anonymous without un-committing it.',
+      );
+      return null;
+    }
+
+    final AppUserData? row;
+    try {
+      row = await repo.user(username);
+    } on Object catch (e) {
+      Logger().w(
+        'Could not read the app_user row for this panel\'s account '
+        '"$username" — staying anonymous without un-committing it: $e',
+      );
+      return null;
+    }
+
+    if (row == null) {
+      Logger().w(
+        'This panel is committed to "$username", which no longer exists. '
+        'Un-committing the panel.',
+      );
+      await _clearPanelAccount();
+      return null;
+    }
+
+    if (!row.stationAccount) {
+      Logger().w(
+        'This panel is committed to "$username", which is no longer a station '
+        'account. Un-committing the panel.',
+      );
+      await _clearPanelAccount();
+      return null;
+    }
+
+    final role = await _roleOrNull(repo, row.roleName);
+    if (role == null) {
+      Logger().w(
+        'This panel\'s account "$username" holds the role "${row.roleName}", '
+        'which cannot be resolved — staying anonymous without un-committing '
+        'the panel.',
+      );
+      return null;
+    }
+
+    await _record(AuditRecord.sessionResume(
+      who: username,
+      station: _station,
+      // The role resolved now, not the one it held when the panel was
+      // committed.
+      roleName: role.name,
+      actionId: newActionId(),
+      at: clock.now(),
+    ));
+
+    return AccessSession(
+      user: AuthenticatedUser(
+        username: username,
+        roleName: role.name,
+        stationAccount: true,
+      ),
+      groups: role.groups,
+      // A panel does not time out. Nothing arms for a null `expiresAt` —
+      // `_attach` and `poke` both already decline — so this needs no new
+      // guard anywhere.
+      expiresAt: null,
+    );
   }
 
   /// Re-resolve the session in force against `app_role` and `app_user`, in
@@ -761,7 +1022,7 @@ class AccessSessionController extends _$AccessSessionController {
   /// close.
   ///
   /// Each of the three does what [signOut] and [_expire] already do on the way
-  /// down: `_detach()`, then `_clearStoredSession()`, then [_toAnonymous].
+  /// down: `_detach()`, then `_clearStoredSession()`, then [_toFloor].
   ///
   /// * The **detach** is not decoration. [_attach] early-returns at
   ///   `if (_expiry != null)`, so a live subscription left behind would make
@@ -771,7 +1032,7 @@ class AccessSessionController extends _$AccessSessionController {
   ///   early logout, not a retained privilege — which is why it is worth one
   ///   line and not worth a workaround.
   /// * The **clear** is the difference between closing the hole and closing it
-  ///   until the next restart. [_restoreOrAnonymous] resolves the *stored*
+  ///   until the next restart. [_restoreOrFloor] resolves the *stored*
   ///   payload's role name and never consults `app_user`, so a payload left
   ///   behind by a self-delete restores **elevated**, with the deleted
   ///   account's name and the old role's groups, on any start inside the
@@ -809,7 +1070,7 @@ class AccessSessionController extends _$AccessSessionController {
   ///    through unchanged is what keeps "never rewrite a stored `expiresAt`"
   ///    intact: this rewrites the role, not the clock.
   ///
-  /// A no-op after dispose, like [_toAnonymous].
+  /// A no-op after dispose, like [_toFloor].
   Future<void> refreshGroupsFromRoles() async {
     if (_disposed) return;
     final session = state.valueOrNull;
@@ -844,7 +1105,7 @@ class AccessSessionController extends _$AccessSessionController {
       );
       _detach();
       await _clearStoredSession();
-      await _toAnonymous();
+      await _toFloor();
     }
 
     if (repo == null) {
@@ -902,6 +1163,11 @@ class AccessSessionController extends _$AccessSessionController {
   Future<void> _persist(AccessSession session) async {
     final local = _local;
     if (local == null || !session.isElevated) return;
+    // The panel's own session lives in `kAccessPanelAccountPrefKey` and
+    // re-resolves from the database; a copy here would be a second, staler
+    // answer to the same question — and one a restart rejects, because a panel
+    // session has no `expiresAt`.
+    if (_onPanelSession) return;
     try {
       await local.setString(
         kAccessSessionPrefKey,
@@ -932,6 +1198,34 @@ class AccessSessionController extends _$AccessSessionController {
       await local.remove(kAccessSessionPrefKey);
     } on Object catch (e) {
       Logger().w('Could not clear the stored session: $e');
+    }
+  }
+
+  /// The username this panel is committed to, or null.
+  ///
+  /// An empty stored value reads as null rather than as an account named "",
+  /// so a half-written preference file un-commits the panel instead of
+  /// sending [_resumePanelAccount] to look up a row that cannot exist.
+  Future<String?> _readPanelAccount() async {
+    final local = _local;
+    if (local == null) return null;
+    try {
+      final value = await local.getString(kAccessPanelAccountPrefKey);
+      return (value == null || value.isEmpty) ? null : value;
+    } on Object catch (e) {
+      Logger().w('Could not read this panel\'s committed account: $e');
+      return null;
+    }
+  }
+
+  Future<void> _clearPanelAccount() async {
+    _onPanelSession = false;
+    final local = _local;
+    if (local == null) return;
+    try {
+      await local.remove(kAccessPanelAccountPrefKey);
+    } on Object catch (e) {
+      Logger().w('Could not un-commit this panel: $e');
     }
   }
 }
