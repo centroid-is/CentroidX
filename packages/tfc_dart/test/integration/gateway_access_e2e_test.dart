@@ -72,6 +72,7 @@ import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'docker_compose.dart';
+import '../support/memory_secrets.dart';
 
 /// `ServerErrorCodes.forbidden` (`tfc_relay_server/lib/src/error_codes.dart:88`)
 /// — the wire code a policy refusal carries. Spelled as the literal the client's
@@ -274,6 +275,8 @@ final String suffix =
     Random().nextInt(0xFFFFFF).toRadixString(16).padLeft(6, '0');
 
 void main() {
+  useMemorySecrets();
+
   late Database database;
   late Preferences prefs;
   late Directory tmp;

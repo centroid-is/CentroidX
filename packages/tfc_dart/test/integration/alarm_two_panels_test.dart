@@ -75,6 +75,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
 import '../support/backend_ws_harness.dart';
 import '../support/harnessed_backend_state_man.dart';
+import '../support/memory_secrets.dart';
 
 /// The instant the plant stamped the alarm's input with.
 ///
@@ -113,6 +114,8 @@ final DateTime kSecondPlantInstant =
 const String kSub = 'panel';
 
 void main() {
+  useMemorySecrets();
+
   // The real on-disk `Database` and `Preferences` `composeBackendRelay`
   // requires. Registered first so the ordering is visible rather than inferred.
   installBackendWsStore();

@@ -175,6 +175,7 @@ import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'harnessed_backend_state_man.dart';
+import 'memory_secrets.dart';
 
 /// How long the served end has to appear after the client's connect returns.
 ///
@@ -224,6 +225,10 @@ void installBackendWsStore() {
       sqliteFolder: dir,
     ));
     _database = database;
+    // `Preferences.create` reaches for SecureStorage, which has no default
+    // on Windows and reaches a real AWS client on macOS. See
+    // `memory_secrets.dart`.
+    useMemorySecrets();
     _prefs = await Preferences.create(db: database);
   });
 

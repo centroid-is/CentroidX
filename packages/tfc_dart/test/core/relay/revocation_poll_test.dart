@@ -56,6 +56,7 @@ import 'package:tfc_dart/core/state_man.dart'
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import '../../support/memory_secrets.dart';
 
 // --------------------------------------------------------------- the fixture
 
@@ -226,6 +227,8 @@ const _station = 'ST101';
 const _roleName = 'Revocation Test Role';
 
 void main() {
+  useMemorySecrets();
+
   late Directory tmp;
   late Database database;
   late Preferences prefs;

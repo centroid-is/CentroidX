@@ -59,6 +59,7 @@ import 'package:tfc_dart/core/state_man.dart'
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
 import 'fake_backend_value_source.dart';
+import '../../support/memory_secrets.dart';
 
 /// A second plant instant, so a re-activation can be told from the first one.
 final DateTime t1 = t0.add(const Duration(minutes: 5));
@@ -67,6 +68,8 @@ final DateTime t1 = t0.add(const Duration(minutes: 5));
 final DateTime t2 = t0.add(const Duration(minutes: 10));
 
 void main() {
+  useMemorySecrets();
+
   group('AlarmEngine.acknowledge', () {
     // --------------------------------------------------------------- arm 1
     test('arm 1 — acknowledging a standing alarm drops it from the PUBLISHED '
