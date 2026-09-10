@@ -34,12 +34,6 @@ library;
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'access_repository.dart';
-// `AppUserData` only — the generated row type the users section renders. It is
-// a plain value class; naming it here does not put a Drift query in this file,
-// and the property being protected is that this file issues none. There is no
-// Drift import above and a test asserts there never is, by grepping this file
-// for the package name — which is why this comment does not spell it.
-import '../database_drift.dart' show AppUserData;
 
 /// The `who` recorded when nobody is signed in.
 const String _anonymousWho = 'anonymous';
@@ -213,7 +207,11 @@ class AccessAdminStore {
   Future<List<AccessRole>> roles() => _repository.roles();
 
   /// Every account, ordered by username, for the users section.
-  Future<List<AppUserData>> listUsers() => _repository.listUsers();
+  ///
+  /// [UserSummary], the same type [roles] answers `AccessRole` in: this
+  /// file names no generated row type at all now, so the no-Drift-import
+  /// rule it is held to holds plainly rather than through a carve-out.
+  Future<List<UserSummary>> listUsers() => _repository.listUsers();
 
   // ---------------------------------------------------------------------------
   // Role writes

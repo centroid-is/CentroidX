@@ -6,7 +6,7 @@ part of 'access_admin.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$accessAdminStoreHash() => r'4ff52b68f97b454dfbec2754a4d3f17d89467fb2';
+String _$accessAdminStoreHash() => r'4821004d5d2610cefc3884cf2eff6be1a923b071';
 
 /// The `users`-gated CRUD over `app_role` and `app_user`, or null when this
 /// station has no database.
@@ -80,7 +80,7 @@ final accessAdminRolesProvider =
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef AccessAdminRolesRef = AutoDisposeFutureProviderRef<List<AccessRole>>;
-String _$accessAdminUsersHash() => r'8e5466578d2a5b426d40571ad49e4724555d0424';
+String _$accessAdminUsersHash() => r'e15bba3a82aaef7dc40d7b3f903d2c9ac60ce40c';
 
 /// Every account, ordered by username, for the users section.
 ///
@@ -91,7 +91,7 @@ String _$accessAdminUsersHash() => r'8e5466578d2a5b426d40571ad49e4724555d0424';
 /// Copied from [accessAdminUsers].
 @ProviderFor(accessAdminUsers)
 final accessAdminUsersProvider =
-    AutoDisposeFutureProvider<List<AppUserData>>.internal(
+    AutoDisposeFutureProvider<List<UserSummary>>.internal(
   accessAdminUsers,
   name: r'accessAdminUsersProvider',
   debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
@@ -103,6 +103,6 @@ final accessAdminUsersProvider =
 
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
-typedef AccessAdminUsersRef = AutoDisposeFutureProviderRef<List<AppUserData>>;
+typedef AccessAdminUsersRef = AutoDisposeFutureProviderRef<List<UserSummary>>;
 // ignore_for_file: type=lint
 // ignore_for_file: subtype_of_sealed_class, invalid_use_of_internal_member, invalid_use_of_visible_for_testing_member, deprecated_member_use_from_same_package

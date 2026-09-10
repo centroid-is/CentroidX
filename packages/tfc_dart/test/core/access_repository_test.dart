@@ -108,12 +108,15 @@ Future<void> _rawInsertUser(
   AppDatabase db, {
   required String username,
   required String roleName,
+  String passwordHash = 'hash',
+  String createdAt = '2026-08-28T00:00:00Z',
+  String? lastLoginAt,
 }) =>
     db.customStatement(
       'INSERT INTO app_user '
-      '(username, role_name, password_hash, salt, created_at) '
-      "VALUES ('$username', '$roleName', 'hash', 'salt', "
-      "'2026-08-28T00:00:00Z')",
+      '(username, role_name, password_hash, salt, created_at, last_login_at) '
+      "VALUES ('$username', '$roleName', '$passwordHash', 'salt', "
+      "'$createdAt', ${lastLoginAt == null ? 'NULL' : "'$lastLoginAt'"})",
     );
 
 /// Inserts an `audit_entry` row naming [who], with raw SQL.
@@ -833,6 +836,83 @@ void main() {
       expect(users.map((u) => u.username), ['ada', 'jon', 'zoe']);
       expect(users.map((u) => u.roleName),
           ['Maintenance', 'Engineering', 'Operator']);
+    });
+
+    // -----------------------------------------------------------------------
+    // The roster row, and the one bit that replaces a credential column
+    //
+    // `listUsers` answers `UserSummary`, not `app_user`'s drift row. The
+    // difference that matters is `hasPassword`: the column holds either a
+    // stored hash or `kNoPasswordMarker`, and deciding which is a storage
+    // question that gets answered here, once, rather than by every screen that
+    // renders a roster.
+    // -----------------------------------------------------------------------
+
+    test('an account with a password reports hasPassword true', () async {
+      await _rawInsertUser(db,
+          username: 'ada',
+          roleName: 'Maintenance',
+          passwordHash: 'argon2id\$v=19\$m=65536,t=3,p=4\$abc');
+
+      expect((await repo.listUsers()).single.hasPassword, isTrue);
+    });
+
+    test('an account holding the no-password marker reports hasPassword false',
+        () async {
+      await _rawInsertUser(db,
+          username: 'panel',
+          roleName: 'Operator',
+          passwordHash: kNoPasswordMarker);
+
+      expect((await repo.listUsers()).single.hasPassword, isFalse,
+          reason: 'this account signs in on its username alone, and the roster '
+              'has to mark it. Drawing an open account exactly like a '
+              'protected one is the failure mode the feature exists to avoid.');
+    });
+
+    test('the hash and the salt do not cross, because there is nowhere to put '
+        'them', () async {
+      await _rawInsertUser(db,
+          username: 'ada',
+          roleName: 'Maintenance',
+          passwordHash: 'argon2id\$v=19\$m=65536,t=3,p=4\$secret-material');
+
+      final user = (await repo.listUsers()).single;
+
+      // Structural, not stylistic. `UserSummary` declares no credential field,
+      // so a hash cannot reach a caller by somebody forgetting to strip it —
+      // which is exactly what returning the drift row left open.
+      expect(user.toString(), isNot(contains('secret-material')));
+      expect(user.toString(), isNot(contains('salt')));
+    });
+
+    test('both timestamps cross as they were stored', () async {
+      await _rawInsertUser(db,
+          username: 'ada',
+          roleName: 'Maintenance',
+          createdAt: '2026-03-04T05:06:07Z',
+          lastLoginAt: '2026-07-08T09:10:11Z');
+      await _rawInsertUser(db,
+          username: 'zoe', roleName: 'Operator', createdAt: '2026-01-02T03:04:05Z');
+
+      final users = await repo.listUsers();
+
+      expect(users[0].createdAt, DateTime.utc(2026, 3, 4, 5, 6, 7));
+      expect(users[0].lastLoginAt, DateTime.utc(2026, 7, 8, 9, 10, 11));
+      expect(users[1].createdAt, DateTime.utc(2026, 1, 2, 3, 4, 5));
+      expect(users[1].lastLoginAt, isNull,
+          reason: 'null lastLoginAt is a fact about the account — it has never '
+              'signed in — and the screen renders it as "never". The direct '
+              'path always knows createdAt, so a null there would be a bug '
+              'rather than an older server.');
+    });
+
+    test('stationAccount crosses', () async {
+      await _rawInsertUser(db, username: 'ada', roleName: 'Maintenance');
+      await db.customStatement(
+          "UPDATE app_user SET station_account = 1 WHERE username = 'ada'");
+
+      expect((await repo.listUsers()).single.stationAccount, isTrue);
     });
   });
 

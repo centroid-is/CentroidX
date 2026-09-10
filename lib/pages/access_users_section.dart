@@ -88,7 +88,6 @@ import 'package:intl/intl.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
-import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 
 import '../core/access_admin_store.dart';
 import '../providers/access.dart';
@@ -165,15 +164,35 @@ const String kAccessUsersColumnLastLogin = 'Last login';
 /// rendering bug.
 const String kAccessUserNever = 'never';
 
+/// What an absent `createdAt` renders as, and **not** [kAccessUserNever].
+///
+/// The two nulls look alike and are different facts. A null `lastLoginAt` is
+/// about the account: it has never been signed into, and "never" is exactly
+/// right. A null `createdAt` is about the answer: every `app_user` row has one,
+/// so a missing value means this roster came over the wire from a server that
+/// predates the field. Saying "never" there would state something false about
+/// the account, so the column says it does not know.
+///
+/// Before the roster spoke [UserSummary] this case could not be expressed —
+/// the row type's `createdAt` was non-nullable and a gateway panel filled the
+/// hole with epoch zero, which every account then rendered as 1970-01-01.
+const String kAccessUserUnknown = 'unknown';
+
 /// A timestamp as this repo already renders one.
 ///
 /// `yyyy-MM-dd HH:mm` through `intl`, the pattern `plc_detail_panel.dart` and
 /// `tech_doc_library_section.dart` already use; no new dependency and no fourth
 /// spelling of a date. Local time, because the person reading it is standing in
 /// front of the panel.
-String kAccessUserWhen(DateTime? at) => at == null
-    ? kAccessUserNever
-    : DateFormat('yyyy-MM-dd HH:mm').format(at.toLocal());
+///
+/// [ifNull] is what an absent instant reads as. It defaults to
+/// [kAccessUserNever] because most callers are rendering `lastLoginAt`; the
+/// created column passes [kAccessUserUnknown] instead, for the reason recorded
+/// there.
+String kAccessUserWhen(DateTime? at, {String ifNull = kAccessUserNever}) =>
+    at == null
+        ? ifNull
+        : DateFormat('yyyy-MM-dd HH:mm').format(at.toLocal());
 
 /// The change-role dialog's title.
 String kAccessUserRoleDialogTitle(String username) =>
@@ -658,7 +677,7 @@ class _UserTile extends ConsumerStatefulWidget {
     required this.store,
   });
 
-  final AppUserData user;
+  final UserSummary user;
 
   /// Every role the picker may offer, from `accessAdminRolesProvider`, so it
   /// cannot offer one that does not exist.
@@ -685,7 +704,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
   /// during the round trip is simply ignored.
   bool _busy = false;
 
-  AppUserData get user => widget.user;
+  UserSummary get user => widget.user;
 
   @override
   Widget build(BuildContext context) {
@@ -712,7 +731,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
                     // fact about *this account*, and a reader scanning the
                     // roster for open accounts should find it without
                     // crossing the row.
-                    if (isPasswordless(user.passwordHash)) ...[
+                    if (!user.hasPassword) ...[
                       const SizedBox(width: 8),
                       Tooltip(
                         message:
@@ -737,7 +756,12 @@ class _UserTileState extends ConsumerState<_UserTile> {
               ),
               Expanded(
                 flex: _kWhenFlex,
-                child: Text(kAccessUserWhen(user.createdAt),
+                // [kAccessUserUnknown], not "never": a missing created
+                // instant is a gap in the answer, not a fact about the
+                // account.
+                child: Text(
+                    kAccessUserWhen(user.createdAt,
+                        ifNull: kAccessUserUnknown),
                     key: kAccessUserCreatedKey(user.username)),
               ),
               Expanded(

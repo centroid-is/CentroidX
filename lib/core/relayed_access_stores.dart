@@ -55,32 +55,12 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_admin_store.dart';
 import 'package:tfc_dart/core/access/access_template_store.dart';
 import 'package:tfc_dart/core/access/audit_trail_store.dart';
-import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
     hide PreferencesApi;
 
 // -----------------------------------------------------------------------------
 // The protocol-error to domain-exception mapping
 // -----------------------------------------------------------------------------
-
-/// What the wire could not say, before 17-08's F-1 closed the gap.
-///
-/// `AccessAdminApi.listUsers` used to answer `AuthenticatedUser` — a *session
-/// identity*, four fields, no timestamps — so a gateway-mode `AppUserData` had
-/// nowhere honest to get `createdAt` from and every account on the users screen
-/// rendered as 1970-01-01. It now answers [UserSummary], which carries both
-/// timestamps, and the sentinel is no longer reached against a backend of this
-/// build.
-///
-/// It is kept, and still means "not a date any account was created at",
-/// because `AppUserData.createdAt` is non-nullable and [UserSummary.createdAt]
-/// is: a panel on this build talking to a backend that predates the DTO gets a
-/// null, and epoch zero is how that absence stays visible instead of being
-/// filled in with a plausible recent date. `lastLoginAt` needs no sentinel —
-/// it is nullable all the way down, and the screen already renders null as
-/// "never".
-final DateTime kUnknownOverTheWire =
-    DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
 
 /// A domain error whose code this build does not recognise.
 ///
@@ -252,11 +232,12 @@ final class RelayedAccessTemplateStore implements AccessTemplateStore {
 }
 
 /// [AccessAdminStore]'s surface over the pipe. See
-/// [RelayedAccessTemplateStore] for the shared reasoning; what differs here
-/// is [listUsers], which must answer the drift row class the users section
-/// renders from a wire type that carries four fields and no timestamps —
-/// see [kUnknownOverTheWire] for how the gap is surfaced rather than
-/// invented.
+/// [RelayedAccessTemplateStore] for the shared reasoning.
+///
+/// [listUsers] used to be the one member that differed, because the store it
+/// implements answered drift's `AppUserData` and the wire carries
+/// `UserSummary`. Both speak `UserSummary` now, so it is a pass-through like
+/// the rest, and what went with the conversion is described there.
 final class RelayedAccessAdminStore implements AccessAdminStore {
   RelayedAccessAdminStore({
     required AccessAdminApi api,
@@ -280,29 +261,27 @@ final class RelayedAccessAdminStore implements AccessAdminStore {
   Future<List<AccessRole>> roles() => _guarded(_api.roles);
 
   @override
-  Future<List<AppUserData>> listUsers() => _guarded(() async => [
-        for (final user in await _api.listUsers())
-          AppUserData(
-            username: user.username,
-            roleName: user.roleName,
-            // No credential crosses this wire in either direction —
-            // `UserSummary` has nowhere to put one — and an empty digest can
-            // never verify. Nothing renders these two columns *as values*;
-            // what the screen does read is whether the account is open, so
-            // the column carries the one bit the wire sent: the marker when
-            // there is no password, and an empty string, which is not a hash
-            // of anything, when there is one that stayed on the backend.
-            passwordHash: user.hasPassword ? '' : kNoPasswordMarker,
-            salt: '',
-            // Both real since 17-08's F-1. The fallback is for a backend older
-            // than the DTO, which sends no timestamp at all; see
-            // [kUnknownOverTheWire] for why that stays visible as 1970 rather
-            // than being filled in.
-            createdAt: user.createdAt ?? kUnknownOverTheWire,
-            lastLoginAt: user.lastLoginAt,
-            stationAccount: user.stationAccount,
-          ),
-      ]);
+  // A pass-through, and the conversion it replaces is worth recording.
+  //
+  // This member used to rebuild each wire `UserSummary` into a drift
+  // `AppUserData`, because that was the type the users section rendered. Two
+  // of the columns it had to fill do not exist on the wire and must never:
+  //
+  //   passwordHash: user.hasPassword ? '' : kNoPasswordMarker,
+  //   salt: '',
+  //
+  // A gateway panel was minting a credential column — the marker, or an empty
+  // string standing in for a hash that stayed on the backend — so that
+  // `access_users_section.dart` could ask `isPasswordless()` about it and
+  // recover the single bit the wire had already sent as `hasPassword`. The
+  // screen now reads that bit, and there is no synthetic credential anywhere.
+  //
+  // `createdAt` needed the same treatment in the other direction: null over
+  // the wire means "this server did not say", and `AppUserData.createdAt` is
+  // non-nullable, so the gap was filled with an epoch-zero sentinel that the
+  // roster drew as 1970. `UserSummary.createdAt` is nullable, so the absence
+  // survives as an absence and the screen renders it as unknown.
+  Future<List<UserSummary>> listUsers() => _guarded(_api.listUsers);
 
   @override
   Future<void> createRole(AccessRole role,

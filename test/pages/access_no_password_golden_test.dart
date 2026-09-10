@@ -51,7 +51,6 @@ import 'package:tfc/providers/access_admin.dart';
 import 'package:tfc/theme.dart' show muted;
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
-import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 
 import '../helpers/golden_tolerance.dart';
 
@@ -81,23 +80,24 @@ List<AccessRole> _roles() => const [
 
 /// An account row.
 ///
-/// [open] writes the real [kNoPasswordMarker] rather than some other string:
-/// the section asks `isPasswordless` about this exact column, so a fixture that
-/// invented its own spelling would draw a marker the shipping code never draws.
-/// The protected rows carry an inert placeholder — nothing renders a hash, and
-/// a real derivation would be a credential in a fixture for no gain.
-AppUserData _user(
+/// [open] sets `hasPassword: false`, and there is no credential anywhere in
+/// this fixture — not a marker, not a placeholder hash, not a salt.
+///
+/// It used to write the real `kNoPasswordMarker` into a `passwordHash` column,
+/// because the section decoded that column with `isPasswordless()`. The roster
+/// now carries the bit itself, so the fixture states the fact the image is
+/// about instead of encoding it and having the widget decode it back.
+UserSummary _user(
   String username,
   String roleName, {
   required DateTime createdAt,
   DateTime? lastLoginAt,
   bool open = false,
 }) =>
-    AppUserData(
+    UserSummary(
       username: username,
       roleName: roleName,
-      passwordHash: open ? kNoPasswordMarker : 'not-a-hash',
-      salt: open ? '' : 'not-a-salt',
+      hasPassword: !open,
       createdAt: createdAt,
       lastLoginAt: lastLoginAt,
       stationAccount: false,
@@ -108,7 +108,7 @@ AppUserData _user(
 /// One of three, not three of three: the image has to show the marker *against*
 /// rows without it, because "can I pick the open account out of a list" is the
 /// question it exists to answer.
-List<AppUserData> _users() => [
+List<UserSummary> _users() => [
       _user('admin', 'Engineering',
           createdAt: DateTime(2026, 6, 2, 8, 15),
           lastLoginAt: DateTime(2026, 8, 31, 7, 5)),
@@ -132,13 +132,13 @@ class _AnsweringStore extends Fake implements AccessAdminStore {
   _AnsweringStore({required this.roleRows, required this.userRows});
 
   final List<AccessRole> roleRows;
-  final List<AppUserData> userRows;
+  final List<UserSummary> userRows;
 
   @override
   Future<List<AccessRole>> roles() async => roleRows;
 
   @override
-  Future<List<AppUserData>> listUsers() async => userRows;
+  Future<List<UserSummary>> listUsers() async => userRows;
 }
 
 class _PresentRepository extends Fake implements AccessRepository {}

@@ -28,7 +28,6 @@ import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
-import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 
 import '../core/access_admin_store.dart';
 import '../core/gateway_state_man.dart';
@@ -132,7 +131,7 @@ Future<List<AccessRole>> accessAdminRoles(Ref ref) async {
 /// reasons as [accessAdminRoles]; the two are deliberately the same shape so a
 /// reader of either section is not learning two conventions.
 @riverpod
-Future<List<AppUserData>> accessAdminUsers(Ref ref) async {
+Future<List<UserSummary>> accessAdminUsers(Ref ref) async {
   final store = await ref.watch(accessAdminStoreProvider.future);
   if (store == null) return const [];
   return store.listUsers();

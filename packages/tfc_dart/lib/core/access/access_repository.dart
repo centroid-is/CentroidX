@@ -673,17 +673,36 @@ class AccessRepository {
         'first-user window is now closed.');
   }
 
-  /// Every row in `app_user`, ordered by username.
+  /// Every account in `app_user`, ordered by username, as [UserSummary].
   ///
-  /// Returns the raw drift row, as [user] already does. A domain type here
-  /// would be a fifth shape of the same four columns, and the users screen
-  /// renders exactly those columns — username, role, created, last login.
+  /// **Not the drift row, and unlike [user], which still answers one.** The
+  /// two reads want different things: [user] is the credential read — the
+  /// authentication provider needs `passwordHash` and `salt` to verify a
+  /// sign-in, and there the row *is* the stored credential. This one feeds a
+  /// roster, and a roster has no business holding either.
+  ///
+  /// That is the whole argument for the mapping. `UserSummary` declares no
+  /// credential field, so a hash cannot reach a screen — or the wire — because
+  /// somebody forgot to strip it. There is nowhere to put one.
+  ///
+  /// [UserSummary.hasPassword] is where the storage encoding stops. The column
+  /// holds a stored hash or [kNoPasswordMarker]; which one it is gets decided
+  /// here, once, rather than by every caller that renders a roster. The relay
+  /// backend was already doing exactly this on its own side of the wire.
+  ///
+  /// `displayName` is null: `app_user` has no such column. `createdAt` is
+  /// always non-null on this path — every row has one — so a null reaching a
+  /// screen means the answer came over a wire from a server that predates the
+  /// field, never from here.
   ///
   /// Unguarded and unaudited: it is a read, and the screen that calls it is
   /// gated on [AccessGroup.users] before it gets here.
-  Future<List<AppUserData>> listUsers() =>
-      (db.select(db.appUser)..orderBy([(t) => OrderingTerm(expression: t.username)]))
-          .get();
+  Future<List<UserSummary>> listUsers() async {
+    final rows = await (db.select(db.appUser)
+          ..orderBy([(t) => OrderingTerm(expression: t.username)]))
+        .get();
+    return rows.map(_toUserSummary).toList(growable: false);
+  }
 
   /// Create an account in [roleName].
   ///
@@ -895,5 +914,20 @@ class AccessRepository {
         name: row.name,
         groupsJson: row.groups,
         seeded: row.seeded,
+      );
+
+  /// `app_user`'s row onto the roster type. See [listUsers].
+  ///
+  /// `passwordHash` and `salt` are the two columns that deliberately do not
+  /// cross; [isPasswordless] reduces the first to the one bit a roster needs,
+  /// which says that there is nothing to steal and never what the thing to
+  /// steal is.
+  UserSummary _toUserSummary(AppUserData row) => UserSummary(
+        username: row.username,
+        roleName: row.roleName,
+        stationAccount: row.stationAccount,
+        hasPassword: !isPasswordless(row.passwordHash),
+        createdAt: row.createdAt,
+        lastLoginAt: row.lastLoginAt,
       );
 }

@@ -377,12 +377,14 @@ void main() {
           reason: 'the created column is the whole of 17-08 F-1: it read '
               '1970-01-01 on every gateway station before the wire carried it');
       expect(row.lastLoginAt, lastLogin);
-      expect(row.passwordHash, isEmpty);
-      expect(row.salt, isEmpty);
+      // There is no credential column left to assert about — `UserSummary`
+      // declares none, which is what stopped a gateway panel from having to
+      // mint one. The row is the wire's own object, untouched.
+      expect(row, same(api.users.single));
     });
 
-    test('an account with no password arrives marked, and the marker is what '
-        'the screen reads', () async {
+    test('an account with no password arrives marked, and the screen reads '
+        'the bit rather than decoding a column', () async {
       final api = _RecordingAdminApi()
         ..users = const [
           UserSummary(
@@ -395,13 +397,12 @@ void main() {
       final open = rows.firstWhere((r) => r.username == 'line');
       final closed = rows.firstWhere((r) => r.username == 'jon');
 
-      expect(isPasswordless(open.passwordHash), isTrue,
-          reason: 'the users screen asks the column, so the column has to '
-              'carry the one bit the wire sent');
-      expect(isPasswordless(closed.passwordHash), isFalse);
-      expect(closed.passwordHash, isEmpty,
-          reason: 'an account that has a password keeps it on the backend — '
-              'an empty string is not a hash of anything');
+      expect(open.hasPassword, isFalse,
+          reason: 'the users screen reads this bit directly now. It used to '
+              'ask isPasswordless() about a passwordHash the panel had just '
+              'fabricated from this same bit, which is a round trip through a '
+              'synthetic credential to recover what the wire already said.');
+      expect(closed.hasPassword, isTrue);
     });
 
     test(
@@ -419,9 +420,11 @@ void main() {
       final store = RelayedAccessAdminStore(api: api);
 
       final row = (await store.listUsers()).single;
-      expect(row.createdAt, kUnknownOverTheWire,
-          reason: 'epoch zero is a visible absence; a plausible recent date '
-              'would be a lie about an account nobody can date');
+      expect(row.createdAt, isNull,
+          reason: 'the absence survives as an absence. It used to become an '
+              'epoch-zero sentinel because the drift row could not hold a '
+              'null, and the roster drew 1970-01-01; the screen now renders '
+              'it as unknown, which is what it actually is.');
       expect(row.lastLoginAt, isNull,
           reason: 'null is the honest floor and the screen renders it as '
               '"never"');

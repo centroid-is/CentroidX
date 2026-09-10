@@ -177,7 +177,7 @@ class _RecordingStore extends AccessAdminStore {
   }
 
   @override
-  Future<List<AppUserData>> listUsers() {
+  Future<List<UserSummary>> listUsers() {
     calls.add('listUsers');
     return super.listUsers();
   }
@@ -603,6 +603,39 @@ void main() {
       expect(cell(tester, kAccessUserLastLoginKey('nyr')), kAccessUserNever);
       expect(cell(tester, kAccessUserLastLoginKey('nyr')), isNotEmpty);
       expect(find.text(kAccessUserNever), findsOneWidget);
+    });
+
+    testWidgets('a null createdAt renders as unknown, never as never and '
+        'never as 1970', (tester) async {
+      // Unreachable from the tables — every `app_user` row has a `created_at`,
+      // which is why this one overrides the roster provider instead of seeding
+      // a database. The case exists over the wire: a gateway panel talking to
+      // a backend older than the field gets a `UserSummary` with no createdAt,
+      // and before the roster carried a nullable one that hole was filled with
+      // epoch zero and drawn as 1970-01-01 on every account.
+      //
+      // The two nulls are different facts and must not render alike: a null
+      // lastLoginAt is about the account (never signed in), a null createdAt is
+      // about the answer (this server did not say).
+      await pumpSection(tester, [
+        ...overrides(),
+        accessAdminUsersProvider.overrideWith((ref) async => const [
+              UserSummary(
+                  username: 'over-the-wire', roleName: 'Panel Operator'),
+            ]),
+      ]);
+
+      final created = cell(tester, kAccessUserCreatedKey('over-the-wire'));
+      expect(created, kAccessUserUnknown);
+      expect(created, isNot(kAccessUserNever),
+          reason: '"never" would state something false about the account: it '
+              'was certainly created, this answer just did not say when.');
+      expect(created, isNot(contains('1970')));
+
+      // The sibling column still says "never", so the two are visibly
+      // different words on one row rather than one word doing both jobs.
+      expect(cell(tester, kAccessUserLastLoginKey('over-the-wire')),
+          kAccessUserNever);
     });
 
     testWidgets('every account gets a row, in the roster order', (tester) async {

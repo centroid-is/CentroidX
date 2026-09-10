@@ -229,24 +229,16 @@ final class BackendAccessAdmin implements relay.AccessAdminApi {
   /// `passwordHash` / `salt` still are not — there is nowhere to put them.
   ///
   /// `displayName` is null because `app_user` has no such column.
+  ///
+  /// A pass-through now: the store answers [UserSummary] on both transports,
+  /// so the row-to-summary mapping this method used to perform — including the
+  /// `isPasswordless` reduction — lives on `AccessRepository`, where the drift
+  /// row stops. `async` is load-bearing here for the same reason it is on
+  /// `BackendAudit.entries`: `_require` refuses by throwing, and that refusal
+  /// is owed as a rejected future.
   @override
-  Future<List<UserSummary>> listUsers() async {
-    final rows = await _require('listUsers').listUsers();
-    return [
-      for (final row in rows)
-        UserSummary(
-          username: row.username,
-          roleName: row.roleName,
-          stationAccount: row.stationAccount,
-          // One bit, not a credential: whether there is anything to verify.
-          // The users screen marks accounts that sign in on a username alone,
-          // and it cannot mark what it is not told.
-          hasPassword: !isPasswordless(row.passwordHash),
-          createdAt: row.createdAt,
-          lastLoginAt: row.lastLoginAt,
-        ),
-    ];
-  }
+  Future<List<UserSummary>> listUsers() async =>
+      _require('listUsers').listUsers();
 
   @override
   Future<void> createRole(AccessRole role, {String? reason}) async =>

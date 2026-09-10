@@ -803,11 +803,15 @@ void main() {
     test('setUserPassword', () async {
       await repository.createUser(
           username: 'bob', password: 'pw', roleName: 'Shift Leader');
-      final before = (await repository.listUsers()).single.passwordHash;
+      // Read through `user()`, not `listUsers()`. The roster answers
+      // `UserSummary`, which carries no credential at all — that is the point
+      // of it — so the stored hash is now only reachable through the
+      // credential read, which is the method that legitimately exposes one.
+      final before = (await repository.user('bob'))!.passwordHash;
       repository.calls.clear();
       await expectGated(
           'user.password', (s) => s.setUserPassword('bob', 'new-one'));
-      expect((await repository.listUsers()).single.passwordHash, before);
+      expect((await repository.user('bob'))!.passwordHash, before);
     });
   });
 
