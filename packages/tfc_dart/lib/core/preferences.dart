@@ -1,11 +1,16 @@
 import 'dart:async';
-import 'dart:io';
+
+import 'package:logger/logger.dart';
 
 import 'package:drift/drift.dart' show UpdateKind, Variable;
 import 'package:meta/meta.dart' show visibleForTesting;
 
 import 'database.dart';
 import 'secure_storage/secure_storage.dart';
+
+/// File-level logger. These diagnostics used to go to stderr, which in a
+/// windowed MSIX build with no console is discarded outright.
+final Logger _log = Logger();
 
 class PreferencesException implements Exception {
   final String message;
@@ -236,7 +241,11 @@ class Preferences implements PreferencesApi {
       }
       return prefs;
     } on PreferencesException catch (e) {
-      stderr.writeln(e.message);
+      // Loading the station's configuration failed and we are about to carry
+      // on with an empty one. On stderr that was invisible on every station;
+      // the symptom -- preferences that silently revert -- was not.
+      _log.e('Preferences could not be loaded from Postgres, '
+          'continuing with an unsynced set: ${e.message}');
       return Preferences(
           database: db, secureStorage: secureStorage, localCache: localCache);
     }

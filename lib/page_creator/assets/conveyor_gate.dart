@@ -1,6 +1,7 @@
 import 'dart:math';
 
-import 'dart:io' as io;
+
+import 'package:logger/logger.dart';
 
 import 'package:flutter/material.dart';
 import 'package:tfc/widgets/panes/color_picker_dialog.dart';
@@ -24,6 +25,10 @@ import '../../widgets/duration_field.dart';
 import '../../widgets/memo_stream_builder.dart';
 
 part 'conveyor_gate.g.dart';
+
+/// File-level logger. These diagnostics used to go to stderr, which in a
+/// windowed MSIX build with no console is discarded outright.
+final Logger _log = Logger();
 
 /// Color helpers for JSON serialization: legacy records hold a raw ARGB int
 /// (a literal), newer ones may hold `{"role": ...}` (follows the scheme).
@@ -346,9 +351,10 @@ class _ConveyorGateState extends ConsumerState<ConveyorGate>
         DynamicValue(value: value, typeId: NodeId.boolean),
       );
     } catch (e) {
-      // stderr, not debugPrint: a force write that silently fails looks
-      // identical to a stuck PLC bit from the operator's side.
-      io.stderr.writeln('ConveyorGate: failed to write force key "$key": $e');
+      // The logger, not stderr: a force write that silently fails looks
+      // identical to a stuck PLC bit from the operator's side, and stderr in
+      // a windowed MSIX build is exactly as silent as writing nothing.
+      _log.e('ConveyorGate: failed to write force key "$key": $e');
     }
   }
 

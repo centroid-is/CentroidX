@@ -4,6 +4,9 @@
 #include <ole2.h>
 #include <wtsapi32.h>
 
+#include <flutter/standard_method_codec.h>
+
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -11,6 +14,9 @@
 #include <sstream>
 #include <string>
 #include <typeinfo>
+#include <utility>
+#include <variant>
+#include <vector>
 
 #include "flutter/generated_plugin_registrant.h"
 #include "runner_log.h"
@@ -97,8 +103,93 @@ constexpr unsigned long long kSessionRebuildDebounceMs = 3000;
 
 constexpr const char* kTag = "[gpu-watchdog]";
 
+// Engine-generation boundaries and everything the UI isolate reports about
+// itself get their own tag, because they answer a different question from the
+// GPU watchdog's and are read at a different time. `findstr [engine]` on
+// hmi-runner.log now lists every restart of a run in order, with reasons.
+constexpr const char* kEngineTag = "[engine]";
+constexpr const char* kDartTag = "[dart]";
+
+// The method channel the UI isolate reports on. Its Dart half lives in
+// lib/core/runner_liveness.dart.
+constexpr const char* kRunnerChannel = "centroid/runner";
+
 void LogWatchdog(const std::string& message) {
   tfc::RunnerLogLine(kTag, message);
+}
+
+void LogEngine(const std::string& message) {
+  tfc::RunnerLogLine(kEngineTag, message);
+}
+
+void LogDart(const std::string& message) {
+  tfc::RunnerLogLine(kDartTag, message);
+}
+
+// --- Reading a method call's arguments without trusting them ----------------
+//
+// Everything below tolerates a missing or wrongly typed field rather than
+// throwing: this is diagnostics, and a diagnostic that can end the process it
+// is diagnosing is worse than none.
+
+const flutter::EncodableMap* ArgumentsOf(
+    const flutter::MethodCall<flutter::EncodableValue>& call) {
+  return std::get_if<flutter::EncodableMap>(call.arguments());
+}
+
+long long IntArg(const flutter::EncodableMap* args, const char* name,
+                 long long fallback) {
+  if (args == nullptr) {
+    return fallback;
+  }
+  const auto it = args->find(flutter::EncodableValue(name));
+  if (it == args->end()) {
+    return fallback;
+  }
+  if (const auto* wide = std::get_if<int64_t>(&it->second)) {
+    return static_cast<long long>(*wide);
+  }
+  if (const auto* narrow = std::get_if<int32_t>(&it->second)) {
+    return static_cast<long long>(*narrow);
+  }
+  return fallback;
+}
+
+unsigned long long UnsignedArg(const flutter::EncodableMap* args,
+                               const char* name) {
+  const long long value = IntArg(args, name, 0);
+  return value < 0 ? 0ull : static_cast<unsigned long long>(value);
+}
+
+bool BoolArg(const flutter::EncodableMap* args, const char* name) {
+  if (args == nullptr) {
+    return false;
+  }
+  const auto it = args->find(flutter::EncodableValue(name));
+  if (it == args->end()) {
+    return false;
+  }
+  const auto* value = std::get_if<bool>(&it->second);
+  return value != nullptr && *value;
+}
+
+std::string StringArg(const flutter::EncodableMap* args, const char* name) {
+  if (args == nullptr) {
+    return std::string();
+  }
+  const auto it = args->find(flutter::EncodableValue(name));
+  if (it == args->end()) {
+    return std::string();
+  }
+  const auto* value = std::get_if<std::string>(&it->second);
+  return value == nullptr ? std::string() : *value;
+}
+
+std::string SecondsSince(unsigned long long then, unsigned long long now) {
+  char buffer[32];
+  std::snprintf(buffer, sizeof(buffer), "%.1f",
+                (now > then ? now - then : 0) / 1000.0);
+  return buffer;
 }
 
 }  // namespace
@@ -115,6 +206,10 @@ FlutterWindow::FlutterWindow(const flutter::DartProject& project)
   hint_log_ = tfc::LogThrottle(tfc::LogThrottle::Config{10, 20, 30000});
   send_failure_log_ = tfc::LogThrottle(tfc::LogThrottle::Config{5, 10, 30000});
   timer_thread_log_ = tfc::LogThrottle(tfc::LogThrottle::Config{3, 60, 300000});
+  // Stamps arrive every 10 s. A handful in full at the start of an episode,
+  // then one in sixty (ten minutes) -- enough to prove the isolate is still
+  // there overnight without adding 8,640 lines a day to the file.
+  liveness_log_ = tfc::LogThrottle(tfc::LogThrottle::Config{3, 60, 600000});
 }
 
 FlutterWindow::~FlutterWindow() {
@@ -123,8 +218,31 @@ FlutterWindow::~FlutterWindow() {
   StopWatchdogTimer();
 }
 
-bool FlutterWindow::CreateController() {
+bool FlutterWindow::CreateController(const char* reason) {
   RECT frame = GetClientArea();
+
+  engine_epoch_++;
+  epoch_started_tick_ = ::GetTickCount64();
+  dart_startup_complete_ = false;
+  dart_main_seen_ = false;
+  dart_liveness_.EpochStarted(engine_epoch_, epoch_started_tick_);
+  liveness_log_.Reset();
+
+  // The boundary, on the native side of it. Its Dart counterpart is the
+  // "main() starting" line the app writes when it reads the arguments below.
+  LogEngine("epoch " + std::to_string(engine_epoch_) +
+            " STARTING, reason=" + (reason == nullptr ? "unspecified" : reason) +
+            ". A new engine is a new Dart isolate: everything the app was "
+            "doing is gone and main() runs again from the top.");
+
+  // Told to Dart rather than inferred by it. Flutter passes these straight to
+  // main(List<String> args), which is the earliest point the app can know
+  // which generation it is -- earlier than any channel could tell it, and the
+  // first log line it writes therefore already carries the epoch.
+  project_.set_dart_entrypoint_arguments(
+      {"--engine-epoch=" + std::to_string(engine_epoch_),
+       std::string("--engine-reason=") +
+           (reason == nullptr ? "unspecified" : reason)});
 
   // The size here must match the window dimensions to avoid unnecessary surface
   // creation / destruction in the startup path.
@@ -133,6 +251,9 @@ bool FlutterWindow::CreateController() {
   // Ensure that basic setup of the controller was successful.
   if (!flutter_controller_->engine() || !flutter_controller_->view()) {
     flutter_controller_ = nullptr;
+    LogEngine("epoch " + std::to_string(engine_epoch_) +
+              " did NOT start: FlutterViewController came back without an "
+              "engine or a view");
     LogWatchdog(
         "engine did NOT start: FlutterViewController came back without an "
         "engine or a view");
@@ -140,6 +261,17 @@ bool FlutterWindow::CreateController() {
   }
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+
+  // Opened before the first frame, because the messages worth having are the
+  // ones from a generation that never reaches one.
+  runner_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), kRunnerChannel,
+          &flutter::StandardMethodCodec::GetInstance());
+  runner_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) { this->OnRunnerChannelCall(call, std::move(result)); });
 
   // The engine posts this back to the platform thread, so it is safe to touch
   // watchdog state from it. It doubles as the stock runner template's "show the
@@ -178,7 +310,32 @@ bool FlutterWindow::CreateController() {
   return true;
 }
 
-void FlutterWindow::DestroyController() {
+void FlutterWindow::DestroyController(const char* reason) {
+  if (flutter_controller_ != nullptr) {
+    const unsigned long long now = ::GetTickCount64();
+    // The one line that was missing. On 2026-09-10 the second teardown landed
+    // 35 s into a startup that had not finished -- and the log had to be
+    // reconstructed from elapsed-since-logger-init arithmetic to see it at
+    // all. Now the teardown says how far Dart got before it was cut off.
+    LogEngine(
+        "epoch " + std::to_string(engine_epoch_) + " STOPPING after " +
+        SecondsSince(epoch_started_tick_, now) +
+        " s, reason=" + (reason == nullptr ? "unspecified" : reason) +
+        "; Dart main() " + (dart_main_seen_ ? "had started" : "was NEVER seen") +
+        ", app startup " +
+        (dart_startup_complete_
+             ? "had completed"
+             : "was STILL IN FLIGHT -- this teardown interrupts it") +
+        ". Everything this isolate opened, including its OPC UA clients, goes "
+        "with it; whatever it had not finished opening is orphaned.");
+  }
+
+  // The channel borrows the engine's messenger, so it is dropped first.
+  if (runner_channel_ != nullptr) {
+    runner_channel_->SetMethodCallHandler(nullptr);
+    runner_channel_ = nullptr;
+  }
+
   // Destroying the controller shuts the engine down, which takes egl::Manager
   // with it: eglTerminate() releases the lost D3D device so the next
   // eglInitialize() can create a healthy one.
@@ -231,7 +388,7 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
 
-  if (!CreateController()) {
+  if (!CreateController("initial start")) {
     return false;
   }
 
@@ -330,7 +487,7 @@ void FlutterWindow::OnDestroy() {
       session_notifications_registered_ = false;
     }
   }
-  DestroyController();
+  DestroyController("window destroyed");
 
   Win32Window::OnDestroy();
 }
@@ -619,13 +776,13 @@ void FlutterWindow::ApplyAction(const tfc::GpuWatchdog::Action& action) {
                 std::to_string(watchdog_.recovery_attempts()) +
                 " (loss episode " + std::to_string(watchdog_.losses_in_window()) +
                 " in the guard window).");
-    DestroyController();
+    DestroyController("gpu loss recovery");
     // Deliberately does not touch first_frame_shown_. If the window was already
     // shown it stays shown, and re-running Show() would undo an operator's
     // maximise. If the GPU was dead before the very first frame, the flag is
     // still false and the window has never appeared — then we do want the next
     // successful frame to show it.
-    if (!CreateController()) {
+    if (!CreateController("gpu loss recovery")) {
       LogWatchdog(
           "engine restart FAILED -- will retry on the next tick, and escalate "
           "to exit once the attempts are exhausted");
@@ -702,7 +859,7 @@ void FlutterWindow::ExitAfterDeviceLoss() {
   // Take the engine down first: that runs egl::Manager's destructor, which
   // releases the dead D3D device, and it stops the raster thread producing
   // more EGL errors after the report.
-  DestroyController();
+  DestroyController("exiting after gpu loss");
 
   std::cerr.flush();
   std::fflush(nullptr);
@@ -767,10 +924,12 @@ void FlutterWindow::RebuildForSessionChange(const char* why) {
               "cannot see this class of loss: the next-frame callback is "
               "answered whether or not rasterisation succeeded.");
 
-  DestroyController();
+  const std::string rebuild_reason =
+      std::string("session change: ") + (why == nullptr ? "unspecified" : why);
+  DestroyController(rebuild_reason.c_str());
   // As in the loss recovery: leave first_frame_shown_ alone so an already
   // visible window stays visible and an operator's maximise survives.
-  if (!CreateController()) {
+  if (!CreateController(rebuild_reason.c_str())) {
     LogWatchdog(
         "session-change rebuild FAILED -- the window has no renderer; the "
         "tick will keep trying and the loss path can still escalate");
@@ -779,6 +938,92 @@ void FlutterWindow::RebuildForSessionChange(const char* why) {
     // The old sentinel may belong to the session's departed adapter.
     device_probe_.Reset();
     device_probe_.Create();
+  }
+}
+
+void FlutterWindow::OnRunnerChannelCall(
+    const flutter::MethodCall<flutter::EncodableValue>& call,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  const flutter::EncodableMap* args = ArgumentsOf(call);
+  const unsigned long long now = ::GetTickCount64();
+  const std::string& method = call.method_name();
+
+  if (method == "mainStarting") {
+    dart_main_seen_ = true;
+    const long long epoch = IntArg(args, "epoch", -1);
+    const std::string reason = StringArg(args, "reason");
+    const std::string version = StringArg(args, "version");
+    // The line the 2026-09-10 investigation had to reconstruct by arithmetic.
+    LogDart("main() STARTING, epoch " + std::to_string(epoch) + ", reason=" +
+            (reason.empty() ? "unspecified" : reason) +
+            (version.empty() ? "" : ", build " + version) +
+            (epoch == engine_epoch_
+                 ? ""
+                 : " -- WARNING: the runner is on epoch " +
+                       std::to_string(engine_epoch_) +
+                       ", so this isolate belongs to an engine that is "
+                       "already gone"));
+    result->Success();
+    return;
+  }
+
+  if (method == "startupComplete") {
+    const long long epoch = IntArg(args, "epoch", -1);
+    if (epoch == engine_epoch_) {
+      dart_startup_complete_ = true;
+    }
+    LogDart("app startup COMPLETE for epoch " + std::to_string(epoch) +
+            " after " + SecondsSince(epoch_started_tick_, now) +
+            " s (runner clock). Until this line, a rebuild of this engine "
+            "interrupts an unfinished startup.");
+    result->Success();
+    return;
+  }
+
+  if (method == "liveness") {
+    tfc::DartLivenessStamp stamp;
+    stamp.epoch = IntArg(args, "epoch", -1);
+    stamp.uptime_ms = UnsignedArg(args, "uptimeMs");
+    stamp.ticks = UnsignedArg(args, "ticks");
+    stamp.frames = UnsignedArg(args, "frames");
+    stamp.lag_ms = UnsignedArg(args, "lagMs");
+    stamp.startup_complete = BoolArg(args, "startupComplete");
+
+    const tfc::DartLiveness::Decision decision =
+        dart_liveness_.OnStamp(stamp, now);
+    const std::string line = DescribeLiveness(decision, dart_liveness_.config());
+    if (!line.empty()) {
+      // First stamp and recovery are transitions: always worth a line.
+      LogDart(line);
+      liveness_log_.Reset();
+    } else if (decision.verdict ==
+               tfc::DartLiveness::Verdict::kNothingToSay) {
+      // The steady state. Sampled rather than printed in full, because the
+      // whole point of the previous incident's 9.7 MB log was that
+      // instrumentation must not become the fault it documents.
+      const tfc::LogThrottle::Decision throttle = liveness_log_.Record(now);
+      if (throttle.emit) {
+        LogDart("alive: epoch " + std::to_string(stamp.epoch) + ", tick " +
+                std::to_string(stamp.ticks) + ", uptime " +
+                SecondsSince(0, stamp.uptime_ms) + " s, " +
+                std::to_string(stamp.frames) +
+                " frame(s) since the last stamp, timer lag " +
+                std::to_string(stamp.lag_ms) + " ms" +
+                tfc::LogThrottle::DescribeSuppression(throttle));
+      }
+    }
+    result->Success();
+    return;
+  }
+
+  result->NotImplemented();
+}
+
+void FlutterWindow::EvaluateDartLiveness(unsigned long long now_ms) {
+  const tfc::DartLiveness::Decision decision = dart_liveness_.Evaluate(now_ms);
+  const std::string line = DescribeLiveness(decision, dart_liveness_.config());
+  if (!line.empty()) {
+    LogDart(line);
   }
 }
 
@@ -840,6 +1085,12 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
           (device_probe_.available() ? "watched" : "UNAVAILABLE") +
           tfc::LogThrottle::DescribeSuppression(decision));
     }
+
+    // The Dart side is asked separately, because it is the half that the
+    // device probe, the frame probe and the sentinel are all blind to. This
+    // runs on the platform thread, driven by the timer-queue thread, so it
+    // keeps working while the message queue is saturated.
+    EvaluateDartLiveness(now);
 
     // Ask the device before counting silence. A positive answer is better
     // evidence than any number of unanswered probes, and it arrives sooner.

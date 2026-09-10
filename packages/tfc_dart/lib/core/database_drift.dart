@@ -28,6 +28,10 @@ import 'mcp_database.dart';
 
 part 'database_drift.g.dart';
 
+/// File-level logger. These diagnostics used to go to stderr, which in a
+/// windowed MSIX build with no console is discarded outright.
+final Logger _log = Logger();
+
 @UseRowClass(AlarmConfig, constructor: 'fromDb')
 class Alarm extends Table {
   @override
@@ -1432,7 +1436,8 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
         ''');
       }
     } catch (e) {
-      stderr.writeln('Error updating retention policy for $tableName: $e');
+      // Retention silently not applied means the disk fills instead.
+      _log.e('Error updating retention policy for $tableName: $e');
     }
   }
 

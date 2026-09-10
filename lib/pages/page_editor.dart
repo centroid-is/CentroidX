@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
-import 'dart:io' show Platform, stderr;
+import 'dart:io' show Platform;
+
+import 'package:logger/logger.dart';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart'
@@ -47,6 +49,10 @@ import '../chat/palette_context_menu.dart';
 import '../widgets/proposal_visual.dart';
 import '../providers/proposal_state.dart';
 import 'package:flutter/services.dart';
+
+/// File-level logger. Diagnostics here must survive a windowed MSIX build
+/// with no console, which is the one thing stderr cannot do.
+final Logger _log = Logger();
 
 /// Hit-tests whether a pointer position falls inside an asset's rotated
 /// visual rect. The marquee gate uses this to decide between starting a
@@ -1691,7 +1697,12 @@ class _PageEditorState extends ConsumerState<PageEditor> {
             // substituting a default is how a proposed LED column arrived
             // with the preview's two LEDs instead of the three it carried,
             // with nothing logged and nothing shown to the operator.
-            stderr.writeln(
+            // The logger, not stderr: in a windowed MSIX build stderr has
+            // nowhere to go, so this warning -- the one that names the asset
+            // whose override was dropped -- was written and then discarded on
+            // every station. It cost three failed attempts to diagnose a
+            // wrong-looking proposal on 2026-09-10.
+            _log.w(
                 'PageEditor: config override for "$assetName" could not be '
                 'parsed, falling back to the default asset: $e');
           }

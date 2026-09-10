@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+
+import 'package:logger/logger.dart';
 
 import 'package:collection/collection.dart';
 import 'package:json_annotation/json_annotation.dart';
@@ -26,6 +27,10 @@ import 'boolean_expression.dart';
 import 'fuzzy_match.dart';
 
 part 'alarm.g.dart';
+
+/// File-level logger. These diagnostics used to go to stderr, which in a
+/// windowed MSIX build with no console is discarded outright.
+final Logger _log = Logger();
 
 @JsonEnum()
 enum AlarmLevel {
@@ -322,7 +327,7 @@ class AlarmMan {
             if (existing != null) {
               _removeActiveAlarm(existing);
             } else {
-              stderr.writeln(
+              _log.w(
                   'Did not find existing active alarm for alarmNotification: $alarmNotification');
             }
           } else {
@@ -342,7 +347,9 @@ class AlarmMan {
           }
           _activeAlarmsController.add(_activeAlarms);
         }, onError: (error, stack) {
-          stderr.writeln('Alarm stream error: $error');
+          // "Why did this alarm never fire" ends here. On stderr it ended
+          // nowhere.
+          _log.e('Alarm stream error: $error', error: error, stackTrace: stack);
         });
       }
     };
@@ -372,7 +379,7 @@ class AlarmMan {
       alarmMan._history.addAll(await alarmMan.getRecentAlarms());
       alarmMan._historyController.add(alarmMan._history.buffer);
     } catch (e) {
-      stderr.writeln('Error loading history: $e');
+      _log.e('Error loading alarm history: $e');
     }
     return alarmMan;
   }
