@@ -218,7 +218,7 @@ final class BackendAccessAdmin implements relay.AccessAdminApi {
   @override
   Future<List<AccessRole>> roles() async => _require('roles').roles();
 
-  /// Answered as [relay.UserSummary] — the type with **no password-specific
+  /// Answered as [UserSummary] — the type with **no password-specific
   /// fields at all**, so no hash can reach this wire by somebody forgetting to
   /// strip it.
   ///
@@ -230,11 +230,11 @@ final class BackendAccessAdmin implements relay.AccessAdminApi {
   ///
   /// `displayName` is null because `app_user` has no such column.
   @override
-  Future<List<relay.UserSummary>> listUsers() async {
+  Future<List<UserSummary>> listUsers() async {
     final rows = await _require('listUsers').listUsers();
     return [
       for (final row in rows)
-        relay.UserSummary(
+        UserSummary(
           username: row.username,
           roleName: row.roleName,
           stationAccount: row.stationAccount,

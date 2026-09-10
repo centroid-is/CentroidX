@@ -9,6 +9,7 @@
 // the safety property the type was given in the first place: there is nowhere
 // on it to put a credential.
 
+import 'package:tfc_access/tfc_access.dart';
 import 'package:test/test.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 

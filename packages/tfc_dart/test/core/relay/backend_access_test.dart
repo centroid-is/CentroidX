@@ -554,7 +554,7 @@ void main() {
       expect(await templates.keysBoundTo('T'), isA<List<String>>());
       expect(await admin.roles(), isNotEmpty,
           reason: 'the seeded roles are in a fresh schema');
-      expect(await admin.listUsers(), isA<List<relay.UserSummary>>());
+      expect(await admin.listUsers(), isA<List<UserSummary>>());
       expect(await audit.entries(const relay.AuditQueryParams()),
           isA<List<AuditRecord>>());
       expect(await audit.memberCountsByAction(const ['a']),
@@ -637,7 +637,7 @@ void main() {
     expect(await templates.bindings(), containsPair('k.read', 'Readable'));
     expect(await templates.keysBoundTo('Readable'), ['k.read']);
     expect((await admin.roles()).map((r) => r.name), contains('Operator'));
-    expect(await admin.listUsers(), isA<List<relay.UserSummary>>());
+    expect(await admin.listUsers(), isA<List<UserSummary>>());
     expect(await audit.entries(const relay.AuditQueryParams()), isNotEmpty,
         reason: 'the two writes above each left a row');
     expect(await audit.distinctWho(), contains('ST101-panel'));
