@@ -39,7 +39,6 @@ import 'package:tfc_dart/core/state_man.dart'
         KeyMappings,
         M2400DeviceClientAdapter,
         ModbusConfig,
-        OpcUaStateMan,
         StateManConfig;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_relay_server/tfc_relay_server.dart';
