@@ -126,3 +126,68 @@ one thing in that file stopping the web build. `umas_write_variable_test.dart`
 46/46, including the arm that encodes both extremes.
 
 `database_drift.dart` is unchanged.
+
+---
+
+## Resolution, 2026-09-10
+
+Option **4** was chosen and implemented across four commits on this branch.
+The record above stands as written; this section says what happened.
+
+| Stage | Commit | What moved |
+|---|---|---|
+| 1 | `26156f13` | `AuditTrailStore.entries` answers `tfc_access.AuditRecord`; both adapters become pass-throughs |
+| 2 | `2cd0aab9` | `UserSummary` moves from `tfc_relay_protocol` to `tfc_access`; codecs stay behind |
+| 3 | `c3a31d05` | `AccessAdminStore.listUsers` answers `UserSummary`; the synthetic credential column is deleted |
+| 4 | `1d0ae086` | The rule is pinned by a derived, ratcheted gate |
+
+### What the exercise was actually for
+
+Two fabrications, both on the gateway path, both existing only because a screen
+was typed on a database row:
+
+- `RelayedAuditTrailStore` rebuilt every wire record into an `AuditEntryData`
+  with `id: index` — a local ordinal invented to satisfy a class a panel with
+  no database has no rows for.
+- `RelayedAccessAdminStore` minted a credential column,
+  `passwordHash: user.hasPassword ? '' : kNoPasswordMarker`, so that
+  `access_users_section.dart` could call `isPasswordless()` on it and recover
+  the one bit the wire had already sent as `hasPassword`.
+
+Neither was a wrong line of code. Each was the locally reasonable way to
+satisfy a type that should never have reached that layer.
+
+A third was fixed on the way: `AppUserData.createdAt` is non-nullable, so a
+`UserSummary` from a backend older than the field had its absent `createdAt`
+filled with an epoch-zero sentinel, and the roster drew 1970-01-01.
+`UserSummary.createdAt` is nullable, so the absence survives and renders as
+`kAccessUserUnknown` — deliberately not `kAccessUserNever`, because a null
+`lastLoginAt` is a fact about the account and a null `createdAt` is a fact
+about the answer.
+
+### Where the line is
+
+A drift-generated type may be named only inside `packages/tfc_dart`, and there
+only by the persistence or wire-mapping layer. Anything a store exposes is
+hand-written. Applied:
+
+- `AccessRepository.listUsers` maps; **`AccessRepository.user` deliberately does
+  not** — it is the credential read, `LocalAuthProvider` needs `passwordHash`
+  and `salt` to verify a sign-in, and there the row *is* the stored credential.
+- Companions stay unmapped: they are the repository's write vocabulary and
+  already never escape it.
+- `kNoPasswordMarker` stays where it belongs — the column encoding, the two
+  repository writes, and the sign-in check. Only its two UI-side readers went.
+
+### What the gate found
+
+On its first run, a family nobody had inventoried:
+`lib/core/guarded_knowledge_stores.dart` leaks `PlcVarRefTableData`,
+`PlcFbInstanceTableData` and `PlcBlockCallTableData` through its interface into
+`lib/providers/plc.dart`. Same defect, different subsystem.
+
+**Not fixed.** It needs domain types for PLC cross-references — what a variable
+reference or a block call is to a screen — which is a question about the
+knowledge subsystem. It is exempted by exact file-and-type pair so the boundary
+cannot get worse while that is pending, and a further arm fails if an exemption
+outlives its leak.
