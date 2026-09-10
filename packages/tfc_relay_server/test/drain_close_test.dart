@@ -19,6 +19,25 @@
 /// cannot call `exit(0)`, so the race between "the close frame is queued" and
 /// "the process is gone" only exists in a real second process — which is
 /// exactly the race the rig lost.
+/// **Not run on Windows, and the reason is the mechanism, not flakiness.**
+///
+/// Every case here is driven by `child.kill(ProcessSignal.sigterm)` and a
+/// fixture that answers with `ProcessSignal.sigterm.watch()`. Windows has no
+/// SIGTERM: the watch throws `SignalException: Failed to listen for SIGTERM,
+/// errno = 50` before the fixture binds its port, so the seven drain cases
+/// fail with "the drain fixture never bound a port" — a symptom of the harness
+/// being impossible there, not of the close code being wrong.
+///
+/// This is an honest skip rather than a hidden hole because the behaviour under
+/// test **cannot occur** on Windows, not merely because it is inconvenient to
+/// reproduce. The thing being measured is what a panel sees when the gateway is
+/// stopped deliberately (4002) versus when the network breaks (1006), and a
+/// deliberate stop is a POSIX signal from Docker. The gateway ships in a Linux
+/// container; `relay_gateway.dart:297` already writes
+/// `Platform.isWindows ? null : ProcessSignal.sigterm.watch()` for the same
+/// reason. Ubuntu and macOS still run all of it, so no case loses coverage on a
+/// platform where it means anything.
+@TestOn('!windows')
 library;
 
 import 'dart:async';
