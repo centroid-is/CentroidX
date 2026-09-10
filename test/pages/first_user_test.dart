@@ -361,8 +361,85 @@ void main() {
       await tester.tap(_createButton());
       await settle(tester);
 
+      // Anchored on the call, not only on absent copy: every other assertion
+      // here is findsNothing, so a tap that missed the button would leave the
+      // form on screen and pass the lot.
+      expect(repo.calls, hasLength(1));
       expect(_textContaining('An account already exists'), findsNothing);
       expect(_textContaining('Recovery is a deployment task'), findsNothing);
+    });
+
+    testWidgets('the confirmation survives the window provider erroring after '
+        'the account is created', (tester) async {
+      // The window question failing is not evidence the account went away.
+      // build() answers a windowAsync error with _kClosed — correct while the
+      // form is up, and the wrong story once this screen has committed a row.
+      var thrower = false;
+      final repo = _FakeAccessRepository(onCreate: (_, __) async {
+        thrower = true;
+      });
+      await pumpAndLoad(
+        tester,
+        _buildBody(
+          windowOpen: () async {
+            if (thrower) throw StateError('cannot count app_user');
+            return true;
+          },
+          repository: () async => repo,
+        ),
+      );
+
+      await _fillForm(tester);
+      await tester.tap(_createButton());
+      await settle(tester);
+
+      expect(repo.calls, hasLength(1));
+      expect(_textContaining('Account created'), findsOneWidget);
+      expect(_textContaining('An account already exists'), findsNothing);
+    });
+
+    testWidgets('the confirmation survives the database going away after the '
+        'account is created', (tester) async {
+      // The finding from the review: accessRepositoryProvider follows
+      // databaseProvider, so a Server Config edit or a dropped connection
+      // re-emits null — and _kNoDatabase claims the first account "cannot be
+      // created yet", moments after it was.
+      final repo = _FakeAccessRepository();
+      var present = true;
+
+      // A container the test holds, rather than `_buildBody`'s scope: the page
+      // never invalidates `accessRepositoryProvider` itself, so re-emitting it
+      // is something only the owner of the container can do — and a rebuild
+      // that reads the same cached value would prove nothing.
+      final container = ProviderContainer(
+        overrides: [
+          accessRepositoryProvider
+              .overrideWith((ref) async => present ? repo : null),
+          firstUserWindowOpenProvider.overrideWith((ref) async => true),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await pumpAndLoad(
+        tester,
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: Scaffold(body: FirstUserBody())),
+        ),
+      );
+
+      await _fillForm(tester);
+      await tester.tap(_createButton());
+      await settle(tester);
+      expect(_textContaining('Account created'), findsOneWidget);
+
+      // The database drops out from under the confirmation.
+      present = false;
+      container.invalidate(accessRepositoryProvider);
+      await settle(tester);
+
+      expect(_textContaining('Account created'), findsOneWidget);
+      expect(_textContaining('no reachable database'), findsNothing);
     });
 
     testWidgets('the success state offers sign-in, and the action opens it',

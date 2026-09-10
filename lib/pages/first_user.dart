@@ -220,18 +220,28 @@ class _FirstUserBodyState extends ConsumerState<FirstUserBody> {
     final repoAsync = ref.watch(accessRepositoryProvider);
     final windowAsync = ref.watch(firstUserWindowOpenProvider);
 
+    // First, above every other branch. Once `createFirstUser` has returned,
+    // the account is committed and nothing either provider says afterwards can
+    // make that untrue:
+    //
+    //  * every closed branch below goes true — that is what creating the
+    //    account did — and each would report it as somebody else's;
+    //  * `accessRepositoryProvider` watches `databaseProvider`, so a Server
+    //    Config edit or a dropped connection re-emits null or an error, and
+    //    `_kNoDatabase` would then affirmatively claim "the first account
+    //    cannot be created yet" seconds after it was.
+    //
+    // The confirmation needs neither provider to render, so it does not wait
+    // on them.
+    final created = _createdUsername;
+    if (created != null) return _createdMessage(context, created);
+
     // A database that cannot even be constructed is a missing database, not a
     // claimed station.
     if (repoAsync.hasError) return _message(context, _kNoDatabase);
     if (!repoAsync.hasValue) return _loading();
     final repo = repoAsync.requireValue;
     if (repo == null) return _message(context, _kNoDatabase);
-
-    // Before every closed branch below. All three of them are true once this
-    // screen has created an account — that is the point of the window — and
-    // all three of them would be reporting somebody else's account.
-    final created = _createdUsername;
-    if (created != null) return _createdMessage(context, created);
 
     // The window closes on the repository's word before the provider's.
     if (_lostTheRace) return _message(context, _kClosed);
