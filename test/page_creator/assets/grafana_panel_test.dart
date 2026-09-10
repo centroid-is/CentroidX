@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/grafana_panel.dart';
 import 'package:tfc/page_creator/assets/registry.dart';
@@ -33,6 +36,18 @@ Widget _host(GrafanaPanelConfig config) => MaterialApp(
       ),
     );
 
+Widget _sized(GrafanaPanelConfig config, double w, double h) => MaterialApp(
+      home: Scaffold(
+        body: Center(
+          child: SizedBox(
+            width: w,
+            height: h,
+            child: GrafanaPanelView(config: config),
+          ),
+        ),
+      ),
+    );
+
 void main() {
   tearDown(() => GrafanaPanelView.debugFetcher = null);
 
@@ -48,6 +63,7 @@ void main() {
         to: 'now-1h',
         timezone: 'Atlantic/Reykjavik',
         variables: {'machine': 'BER01'},
+        extraParams: {'kiosk': ''},
         refreshSeconds: 300,
         theme: GrafanaPanelTheme.dark,
         apiToken: 'glsa_secret',
@@ -66,6 +82,7 @@ void main() {
       expect(restored.to, 'now-1h');
       expect(restored.timezone, 'Atlantic/Reykjavik');
       expect(restored.variables, {'machine': 'BER01'});
+      expect(restored.extraParams, {'kiosk': ''});
       expect(restored.refreshSeconds, 300);
       expect(restored.theme, GrafanaPanelTheme.dark);
       expect(restored.apiToken, 'glsa_secret');
@@ -523,4 +540,349 @@ void main() {
       expect(config.panelId, 4);
     });
   });
+
+  group('grafanaHttpFetch', () {
+    // The real network path. Every widget test above replaces the fetcher
+    // wholesale, so without these the status mapping, the PNG check and the
+    // timeout would only ever run in production.
+    Future<Object?> failureOf(MockClient client) async {
+      try {
+        await grafanaHttpFetch(
+            Uri.parse('http://g:3000/render/d-solo/u'), const {},
+            client: client);
+        return null;
+      } catch (e) {
+        return e;
+      }
+    }
+
+    test('returns the bytes on a 200 PNG', () async {
+      final client = MockClient((_) async => http.Response.bytes(_png, 200));
+      final bytes = await grafanaHttpFetch(
+          Uri.parse('http://g:3000/render/d-solo/u'), const {},
+          client: client);
+      expect(bytes, _png);
+    });
+
+    test('sends the headers it was given', () async {
+      Map<String, String>? seen;
+      final client = MockClient((request) async {
+        seen = request.headers;
+        return http.Response.bytes(_png, 200);
+      });
+      await grafanaHttpFetch(Uri.parse('http://g:3000/render/d-solo/u'),
+          const {'Authorization': 'Bearer tok'},
+          client: client);
+      expect(seen!['Authorization'], 'Bearer tok');
+    });
+
+    test('a missing renderer plugin becomes the install sentence', () async {
+      final client = MockClient((_) async =>
+          http.Response('{"message":"Rendering plugin not found"}', 500));
+      expect((await failureOf(client)).toString(),
+          contains('grafana-image-renderer'));
+    });
+
+    test('a 401 becomes the token sentence', () async {
+      final client = MockClient((_) async => http.Response('no', 401));
+      expect((await failureOf(client)).toString(), contains('token'));
+    });
+
+    test('a 200 that is a login page is rejected as one', () async {
+      // The confusing failure: it succeeds. Without the PNG sniff this would
+      // reach the operator as "could not decode image" about valid HTML.
+      final client = MockClient(
+          (_) async => http.Response('<!DOCTYPE html><html>login', 200));
+      expect((await failureOf(client)).toString(),
+          contains('page instead of an image'));
+    });
+
+    test('an unreachable host becomes a reachability sentence', () async {
+      final client = MockClient((_) async => throw const _SocketishException());
+      expect((await failureOf(client)).toString(),
+          contains('Cannot reach Grafana'));
+    });
+
+    test('every failure arrives as a GrafanaRenderException', () async {
+      // The widget only unwraps `.message` for this type; anything else
+      // would reach the operator as a raw toString.
+      for (final client in [
+        MockClient((_) async => http.Response('x', 500)),
+        MockClient((_) async => http.Response('<html>', 200)),
+        MockClient((_) async => throw const _SocketishException()),
+      ]) {
+        expect(await failureOf(client), isA<GrafanaRenderException>());
+      }
+    });
+  });
+
+  group('render parameters', () {
+    test('extra parameters reach the URL verbatim', () {
+      final uri = buildGrafanaRenderUri(
+        baseUrl: 'http://g:3000',
+        dashboardUid: 'u',
+        panelId: 1,
+        extraParams: const {'kiosk': '', 'timeout': '120'},
+        width: 800,
+        height: 400,
+        theme: 'light',
+      )!;
+      expect(uri.queryParameters['kiosk'], '');
+      expect(uri.queryParameters['timeout'], '120');
+    });
+
+    test('an extra parameter overrides one the asset computes', () {
+      final uri = buildGrafanaRenderUri(
+        baseUrl: 'http://g:3000',
+        dashboardUid: 'u',
+        panelId: 1,
+        extraParams: const {'theme': 'light', 'width': '1600'},
+        width: 800,
+        height: 400,
+        theme: 'dark',
+      )!;
+      expect(uri.queryParameters['theme'], 'light');
+      expect(uri.queryParameters['width'], '1600');
+    });
+
+    test('a blank parameter name is dropped rather than sent', () {
+      final uri = buildGrafanaRenderUri(
+        baseUrl: 'http://g:3000',
+        dashboardUid: 'u',
+        panelId: 1,
+        extraParams: const {'  ': 'x'},
+        width: 800,
+        height: 400,
+        theme: 'light',
+      )!;
+      expect(uri.queryParameters.containsKey(''), isFalse);
+      expect(uri.queryParameters.containsKey('  '), isFalse);
+    });
+
+    test('extra parameters survive a JSON round trip', () {
+      final config = _configured()..extraParams = {'kiosk': '', 'tz': 'UTC'};
+      final restored = GrafanaPanelConfig.fromJson(config.toJson());
+      expect(restored.extraParams, {'kiosk': '', 'tz': 'UTC'});
+    });
+
+    testWidgets('the widget sends both maps', (tester) async {
+      Uri? asked;
+      GrafanaPanelView.debugFetcher = (uri, headers) async {
+        asked = uri;
+        return _png;
+      };
+      await tester.pumpWidget(_host(_configured()
+        ..variables = {'machine': 'BER01'}
+        ..extraParams = {'kiosk': ''}));
+      await tester.pumpAndSettle();
+      expect(asked!.queryParameters['var-machine'], 'BER01');
+      expect(asked!.queryParameters.containsKey('kiosk'), isTrue);
+    });
+  });
+
+  group('the key/value editors', () {
+    // The config pane scrolls; the 800x600 test viewport does not reach the
+    // key/value sections, and tap() on an off-screen widget hits nothing.
+    Future<void> tapVisible(WidgetTester tester, Finder finder) async {
+      await tester.ensureVisible(finder);
+      await tester.pumpAndSettle();
+      await tester.tap(finder);
+      await tester.pumpAndSettle();
+    }
+    Future<void> openEditor(WidgetTester tester, GrafanaPanelConfig c) =>
+        tester.pumpWidget(MaterialApp(
+          home: Scaffold(
+            body: Builder(builder: (context) => c.configure(context)),
+          ),
+        ));
+
+    testWidgets('a variable can be added and typed in', (tester) async {
+      final config = _configured();
+      await openEditor(tester, config);
+
+      await tapVisible(tester, find.text('Add variable'));
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'name').last, 'machine');
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'value').last, 'BER01');
+      expect(config.variables, {'machine': 'BER01'});
+    });
+
+    testWidgets('a render parameter can be added and typed in',
+        (tester) async {
+      final config = _configured();
+      await openEditor(tester, config);
+
+      await tapVisible(tester, find.text('Add parameter'));
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'parameter').last, 'kiosk');
+      expect(config.extraParams, {'kiosk': ''});
+    });
+
+    testWidgets('the two editors do not write into each other',
+        (tester) async {
+      final config = _configured();
+      await openEditor(tester, config);
+
+      await tapVisible(tester, find.text('Add variable'));
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'name').last, 'machine');
+      await tapVisible(tester, find.text('Add parameter'));
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'parameter').last, 'kiosk');
+
+      expect(config.variables.keys, ['machine']);
+      expect(config.extraParams.keys, ['kiosk']);
+    });
+
+    testWidgets('removing the first of two rows removes the right one',
+        (tester) async {
+      // Rows keyed by position rather than identity meant the removed row's
+      // text stayed in the reused field: the map said one thing and the pane
+      // showed another.
+      final config = _configured()..variables = {'alpha': '1', 'beta': '2'};
+      await openEditor(tester, config);
+      expect(find.byTooltip('Remove variable'), findsNWidgets(2));
+
+      await tapVisible(tester, find.byTooltip('Remove variable').first);
+
+      expect(config.variables, {'beta': '2'});
+      expect(find.text('beta'), findsOneWidget);
+      expect(find.text('alpha'), findsNothing,
+          reason: 'the removed row must not linger in a reused field');
+    });
+
+    testWidgets('clearing a variable name drops it from the map',
+        (tester) async {
+      final config = _configured()..variables = {'machine': 'BER01'};
+      await openEditor(tester, config);
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'machine'), '');
+      expect(config.variables, isEmpty);
+    });
+
+    testWidgets('a pasted link repopulates the variable rows on screen',
+        (tester) async {
+      final config = GrafanaPanelConfig();
+      await openEditor(tester, config);
+
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Paste a Grafana panel URL'),
+        'http://g:3000/d/uid1/slug?viewPanel=3&var-machine=BER01',
+      );
+      await tester.tap(find.byTooltip('Fill the fields below from this URL'));
+      await tester.pumpAndSettle();
+
+      expect(config.variables, {'machine': 'BER01'});
+      expect(find.text('machine'), findsOneWidget,
+          reason: 'the rows must rebuild, not keep the pre-paste state');
+      expect(find.text('BER01'), findsOneWidget);
+    });
+  });
+
+  group('layout and lifecycle', () {
+    testWidgets('resizing the asset re-renders at the new size',
+        (tester) async {
+      final widths = <String?>[];
+      GrafanaPanelView.debugFetcher = (uri, headers) async {
+        widths.add(uri.queryParameters['width']);
+        return _png;
+      };
+      final config = _configured();
+      await tester.pumpWidget(_sized(config, 320, 240));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(_sized(config, 640, 480));
+      await tester.pumpAndSettle();
+      expect(widths, ['320', '640']);
+    });
+
+    testWidgets('a refresh tick during a fetch is dropped, not queued',
+        (tester) async {
+      var calls = 0;
+      final gates = <Completer<Uint8List>>[];
+      GrafanaPanelView.debugFetcher = (uri, headers) {
+        calls++;
+        final gate = Completer<Uint8List>();
+        gates.add(gate);
+        return gate.future;
+      };
+      await tester
+          .pumpWidget(_sized(_configured()..refreshSeconds = 10, 320, 240));
+      await tester.pump();
+      expect(calls, 1);
+
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pump(const Duration(seconds: 10));
+      expect(calls, 1,
+          reason: 'a render slower than the interval must not stack up');
+
+      for (final gate in gates) {
+        gate.complete(_png);
+      }
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('being disposed mid-fetch throws nothing', (tester) async {
+      final gates = <Completer<Uint8List>>[];
+      GrafanaPanelView.debugFetcher = (uri, headers) {
+        final gate = Completer<Uint8List>();
+        gates.add(gate);
+        return gate.future;
+      };
+      await tester.pumpWidget(_sized(_configured(), 320, 240));
+      await tester.pump();
+      expect(gates, hasLength(1));
+
+      await tester.pumpWidget(const SizedBox());
+      gates.single.complete(_png);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('an unbounded box lays out instead of throwing',
+        (tester) async {
+      // A Stack(fit: expand) under an infinite constraint throws during
+      // layout, and a layout exception on the canvas takes the page with it.
+      Uri? asked;
+      GrafanaPanelView.debugFetcher = (uri, headers) async {
+        asked = uri;
+        return _png;
+      };
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Row(children: [
+            SizedBox(
+                height: 240, child: GrafanaPanelView(config: _configured())),
+          ]),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(asked!.queryParameters['width'], '640',
+          reason: 'unbounded falls back to a readable size, not the floor');
+    });
+
+    test('applyLink keeps fields the pasted link did not carry', () {
+      final config =
+          GrafanaPanelConfig(from: 'now-24h', to: 'now-1h', orgId: 5);
+      config.applyLink(parseGrafanaPanelLink('http://g:3000/d/uid1/slug')!);
+      expect(config.from, 'now-24h');
+      expect(config.to, 'now-1h');
+      expect(config.orgId, 5);
+      expect(config.dashboardUid, 'uid1');
+    });
+
+    test('createDefaultAssetByName finds it — the MCP proposal path', () {
+      expect(AssetRegistry.createDefaultAssetByName('GrafanaPanelConfig'),
+          isA<GrafanaPanelConfig>());
+    });
+  });
+}
+
+/// Stands in for the dart:io SocketException the http client throws when the
+/// host is down, without dragging dart:io into this test.
+class _SocketishException implements Exception {
+  const _SocketishException();
+  @override
+  String toString() => 'SocketException: Connection refused';
 }

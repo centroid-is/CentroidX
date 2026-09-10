@@ -94,6 +94,19 @@ class GrafanaPanelConfig extends BaseAsset {
   /// (`{'machine': 'BER01'}` renders `&var-machine=BER01`).
   Map<String, String> variables;
 
+  /// Free-form query parameters appended to the render URL verbatim, for the
+  /// corners of Grafana this asset does not model: `kiosk`, `fullPageImage`,
+  /// a longer renderer `timeout`, a `refresh`, anything a future Grafana
+  /// adds.
+  ///
+  /// These are applied **last and win**, so a parameter the asset already
+  /// computes can be overridden by naming it here — including `width`,
+  /// `height`, `theme` and `panelId`. That is the point of the escape hatch,
+  /// and also the way to break it: an `extra_params` entry that shadows one
+  /// of those is on the person who typed it.
+  @JsonKey(name: 'extra_params')
+  Map<String, String> extraParams;
+
   /// Seconds between refreshes; 0 renders once and leaves it.
   @JsonKey(name: 'refresh_seconds')
   int refreshSeconds;
@@ -119,10 +132,12 @@ class GrafanaPanelConfig extends BaseAsset {
     this.to = 'now',
     this.timezone = '',
     Map<String, String>? variables,
+    Map<String, String>? extraParams,
     this.refreshSeconds = 60,
     this.theme = GrafanaPanelTheme.auto,
     this.apiToken = '',
-  }) : variables = variables ?? <String, String>{} {
+  })  : variables = variables ?? <String, String>{},
+        extraParams = extraParams ?? <String, String>{} {
     size = const RelativeSize(width: 0.3, height: 0.22);
   }
 
@@ -136,6 +151,7 @@ class GrafanaPanelConfig extends BaseAsset {
         to = 'now',
         timezone = '',
         variables = <String, String>{},
+        extraParams = <String, String>{},
         refreshSeconds = 60,
         theme = GrafanaPanelTheme.auto,
         apiToken = '' {
@@ -293,6 +309,7 @@ Uri? buildGrafanaRenderUri({
   String to = 'now',
   String timezone = '',
   Map<String, String> variables = const {},
+  Map<String, String> extraParams = const {},
   required int width,
   required int height,
   double scale = 1.0,
@@ -328,6 +345,10 @@ Uri? buildGrafanaRenderUri({
       if (scale > 1.0) 'scale': _trimScale(scale),
       for (final entry in variables.entries)
         if (entry.key.isNotEmpty) 'var-${entry.key}': entry.value,
+      // Last, so a named parameter overrides the computed one — see
+      // [GrafanaPanelConfig.extraParams].
+      for (final entry in extraParams.entries)
+        if (entry.key.trim().isNotEmpty) entry.key.trim(): entry.value,
     },
   );
 }
@@ -405,16 +426,34 @@ typedef GrafanaImageFetcher = Future<Uint8List> Function(
 /// every query in the panel before it screenshots anything.
 const Duration _renderTimeout = Duration(seconds: 30);
 
-Future<Uint8List> _httpFetch(Uri uri, Map<String, String> headers) async {
+/// The real fetch: everything between "ask Grafana" and "here are the
+/// bytes", including which failures become which sentence.
+///
+/// [client] exists so this is reachable from a test with a `MockClient`.
+/// Without it the whole network path — the status mapping, the timeout, the
+/// PNG check — would only ever run in production, since the widget tests all
+/// replace the fetcher wholesale.
+@visibleForTesting
+Future<Uint8List> grafanaHttpFetch(
+  Uri uri,
+  Map<String, String> headers, {
+  http.Client? client,
+}) async {
+  final owned = client == null;
+  final http.Client transport = client ?? http.Client();
   http.Response response;
   try {
-    response = await http.get(uri, headers: headers).timeout(_renderTimeout);
+    response =
+        await transport.get(uri, headers: headers).timeout(_renderTimeout);
   } on TimeoutException {
-    return Future<Uint8List>.error(GrafanaRenderException(
-        'Grafana did not answer within ${_renderTimeout.inSeconds} s.'));
+    throw GrafanaRenderException(
+        'Grafana did not answer within ${_renderTimeout.inSeconds} s.');
+  } on GrafanaRenderException {
+    rethrow;
   } catch (e) {
-    return Future<Uint8List>.error(
-        GrafanaRenderException('Cannot reach Grafana: $e'));
+    throw GrafanaRenderException('Cannot reach Grafana: $e');
+  } finally {
+    if (owned) transport.close();
   }
   if (response.statusCode != 200) {
     throw GrafanaRenderException(
@@ -433,8 +472,12 @@ Future<Uint8List> _httpFetch(Uri uri, Map<String, String> headers) async {
 /// asset a pixel wide in the editor does not fire a render per frame.
 const int _sizeQuantum = 32;
 
-int _quantise(double value, {required int min, required int max}) {
-  if (!value.isFinite || value <= 0) return min;
+/// Falls back to [fallback] for an unbounded or degenerate constraint —
+/// which is not the same as the clamp floor: a panel in an unbounded box
+/// should ask for a readable picture, not the smallest legal one.
+int _quantise(double value,
+    {required int min, required int max, required int fallback}) {
+  if (!value.isFinite || value <= 0) return fallback;
   final stepped = (value / _sizeQuantum).ceil() * _sizeQuantum;
   return stepped.clamp(min, max);
 }
@@ -517,7 +560,7 @@ class _GrafanaPanelViewState extends State<GrafanaPanelView> {
     if (_inFlight) return;
     _inFlight = true;
     if (mounted) setState(() => _loading = true);
-    final fetcher = GrafanaPanelView.debugFetcher ?? _httpFetch;
+    final fetcher = GrafanaPanelView.debugFetcher ?? grafanaHttpFetch;
     final headers = <String, String>{
       'Accept': 'image/png',
       if (widget.config.apiToken.trim().isNotEmpty)
@@ -572,6 +615,10 @@ class _GrafanaPanelViewState extends State<GrafanaPanelView> {
             )
           : LayoutBuilder(builder: (context, constraints) {
               final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0;
+              final width =
+                  _quantise(constraints.maxWidth, min: 128, max: 2000, fallback: 640);
+              final height =
+                  _quantise(constraints.maxHeight, min: 96, max: 2000, fallback: 400);
               final uri = buildGrafanaRenderUri(
                 baseUrl: config.baseUrl,
                 dashboardUid: config.dashboardUid,
@@ -582,8 +629,9 @@ class _GrafanaPanelViewState extends State<GrafanaPanelView> {
                 to: config.to,
                 timezone: config.timezone,
                 variables: config.variables,
-                width: _quantise(constraints.maxWidth, min: 128, max: 2000),
-                height: _quantise(constraints.maxHeight, min: 96, max: 2000),
+                extraParams: config.extraParams,
+                width: width,
+                height: height,
                 scale: dpr.clamp(1.0, 2.0),
                 theme: _resolveTheme(context),
               );
@@ -594,7 +642,18 @@ class _GrafanaPanelViewState extends State<GrafanaPanelView> {
                 );
               }
               _requestRender(uri);
-              return _content(context);
+              // `_content` expands to fill, which an unbounded constraint
+              // cannot satisfy — a `Stack(fit: expand)` under an infinite
+              // width throws during layout, and a layout exception on the
+              // canvas takes the whole page with it. Where the parent
+              // declines to bound us, stand on the size we just asked
+              // Grafana to render.
+              return SizedBox(
+                width: constraints.hasBoundedWidth ? null : width.toDouble(),
+                height:
+                    constraints.hasBoundedHeight ? null : height.toDouble(),
+                child: _content(context),
+              );
             }),
     );
   }
@@ -876,10 +935,29 @@ class _GrafanaPanelConfigEditorState extends State<_GrafanaPanelConfigEditor> {
                 .toList(),
           ),
           const SizedBox(height: 16),
-          _VariablesField(
+          _KeyValueRowsField(
             key: ValueKey('vars-$_revision'),
-            variables: config.variables,
+            title: 'Dashboard variables',
+            subtitle: 'Sent as var-<name>. These are the dashboard\'s own '
+                'template variables.',
+            nameLabel: 'name',
+            addLabel: 'Add variable',
+            removeTooltip: 'Remove variable',
+            entries: config.variables,
             onChanged: (next) => setState(() => config.variables = next),
+          ),
+          const SizedBox(height: 16),
+          _KeyValueRowsField(
+            key: ValueKey('params-$_revision'),
+            title: 'Render parameters',
+            subtitle: 'Appended to the render URL verbatim (kiosk, timeout, '
+                'refresh, …). Applied last, so naming one the asset already '
+                'sets overrides it.',
+            nameLabel: 'parameter',
+            addLabel: 'Add parameter',
+            removeTooltip: 'Remove parameter',
+            entries: config.extraParams,
+            onChanged: (next) => setState(() => config.extraParams = next),
           ),
           const SizedBox(height: 16),
           TextFormField(
@@ -937,30 +1015,60 @@ String _describeRefresh(int seconds) {
   return 'every $minutes min';
 }
 
-/// Editable `var-name = value` rows for the dashboard's template variables.
-class _VariablesField extends StatefulWidget {
-  final Map<String, String> variables;
-  final ValueChanged<Map<String, String>> onChanged;
+/// One editable row. Carries its own id so the `TextFormField`s can be keyed
+/// by identity rather than by position: without that, removing the first of
+/// two rows leaves the removed row's text sitting in the reused field, and
+/// the pane shows values that are no longer in the map.
+class _KeyValueRow {
+  _KeyValueRow(this.id, this.name, this.value);
+  final int id;
+  String name;
+  String value;
+}
 
-  const _VariablesField({
+/// Editable `name = value` rows over a `Map<String, String>`.
+///
+/// Used twice: once for the dashboard's template variables (which reach the
+/// URL with a `var-` prefix) and once for free-form render parameters (which
+/// reach it verbatim).
+class _KeyValueRowsField extends StatefulWidget {
+  final Map<String, String> entries;
+  final ValueChanged<Map<String, String>> onChanged;
+  final String title;
+  final String? subtitle;
+  final String nameLabel;
+  final String addLabel;
+  final String removeTooltip;
+
+  const _KeyValueRowsField({
     super.key,
-    required this.variables,
+    required this.entries,
     required this.onChanged,
+    required this.title,
+    required this.nameLabel,
+    required this.addLabel,
+    required this.removeTooltip,
+    this.subtitle,
   });
 
   @override
-  State<_VariablesField> createState() => _VariablesFieldState();
+  State<_KeyValueRowsField> createState() => _KeyValueRowsFieldState();
 }
 
-class _VariablesFieldState extends State<_VariablesField> {
-  late final List<MapEntry<String, String>> _rows =
-      widget.variables.entries.toList();
+class _KeyValueRowsFieldState extends State<_KeyValueRowsField> {
+  late final List<_KeyValueRow> _rows = [
+    for (final entry in widget.entries.entries)
+      _KeyValueRow(_nextId++, entry.key, entry.value),
+  ];
+
+  int _nextId = 0;
 
   void _publish() {
     final next = <String, String>{};
     for (final row in _rows) {
-      if (row.key.trim().isEmpty) continue;
-      next[row.key.trim()] = row.value;
+      final name = row.name.trim();
+      if (name.isEmpty) continue;
+      next[name] = row.value;
     }
     widget.onChanged(next);
   }
@@ -971,18 +1079,30 @@ class _VariablesFieldState extends State<_VariablesField> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Dashboard variables', style: theme.textTheme.titleMedium),
-        for (var i = 0; i < _rows.length; i++)
+        Text(widget.title, style: theme.textTheme.titleMedium),
+        if (widget.subtitle != null)
           Padding(
+            padding: const EdgeInsets.only(top: 2.0),
+            child: Text(
+              widget.subtitle!,
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.outline),
+            ),
+          ),
+        for (final row in _rows)
+          Padding(
+            key: ValueKey(row.id),
             padding: const EdgeInsets.only(top: 4.0),
             child: Row(
               children: [
                 Expanded(
                   child: TextFormField(
-                    initialValue: _rows[i].key,
-                    decoration: const InputDecoration(labelText: 'name'),
+                    key: ValueKey('name-${row.id}'),
+                    initialValue: row.name,
+                    decoration:
+                        InputDecoration(labelText: widget.nameLabel),
                     onChanged: (value) {
-                      _rows[i] = MapEntry(value, _rows[i].value);
+                      row.name = value;
                       _publish();
                     },
                   ),
@@ -990,19 +1110,20 @@ class _VariablesFieldState extends State<_VariablesField> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: TextFormField(
-                    initialValue: _rows[i].value,
+                    key: ValueKey('value-${row.id}'),
+                    initialValue: row.value,
                     decoration: const InputDecoration(labelText: 'value'),
                     onChanged: (value) {
-                      _rows[i] = MapEntry(_rows[i].key, value);
+                      row.value = value;
                       _publish();
                     },
                   ),
                 ),
                 IconButton(
                   icon: const Icon(Icons.remove_circle_outline),
-                  tooltip: 'Remove variable',
+                  tooltip: widget.removeTooltip,
                   onPressed: () {
-                    setState(() => _rows.removeAt(i));
+                    setState(() => _rows.remove(row));
                     _publish();
                   },
                 ),
@@ -1013,9 +1134,9 @@ class _VariablesFieldState extends State<_VariablesField> {
           alignment: Alignment.centerLeft,
           child: TextButton.icon(
             onPressed: () =>
-                setState(() => _rows.add(const MapEntry('', ''))),
+                setState(() => _rows.add(_KeyValueRow(_nextId++, '', ''))),
             icon: const Icon(Icons.add),
-            label: const Text('Add variable'),
+            label: Text(widget.addLabel),
           ),
         ),
       ],

@@ -19,6 +19,9 @@ GrafanaPanelConfig _$GrafanaPanelConfigFromJson(Map<String, dynamic> json) =>
       variables: (json['variables'] as Map<String, dynamic>?)?.map(
         (k, e) => MapEntry(k, e as String),
       ),
+      extraParams: (json['extra_params'] as Map<String, dynamic>?)?.map(
+        (k, e) => MapEntry(k, e as String),
+      ),
       refreshSeconds: (json['refresh_seconds'] as num?)?.toInt() ?? 60,
       theme: $enumDecodeNullable(_$GrafanaPanelThemeEnumMap, json['theme']) ??
           GrafanaPanelTheme.auto,
@@ -51,6 +54,7 @@ Map<String, dynamic> _$GrafanaPanelConfigToJson(GrafanaPanelConfig instance) =>
       'to': instance.to,
       'timezone': instance.timezone,
       'variables': instance.variables,
+      'extra_params': instance.extraParams,
       'refresh_seconds': instance.refreshSeconds,
       'theme': _$GrafanaPanelThemeEnumMap[instance.theme]!,
       'api_token': instance.apiToken,
