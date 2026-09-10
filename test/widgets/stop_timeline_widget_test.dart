@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/widgets/stop_timeline.dart';
@@ -65,6 +66,62 @@ StopIntervalSource source() => StopIntervalSource(
       ],
     );
 
+/// Four alarms under Multivac whose activations run into one another, so a
+/// collapsed group draws them as a single stretch — the case an operator taps
+/// and gets no answer from.
+final crowdedAlarms = [
+  ...alarms,
+  alarm('Vacuum low', group: ['Line 3', 'Multivac']),
+  alarm('Line stopped from panel', group: ['Line 3']),
+  alarm('Afak jam', group: ['Line 3', 'Afak SL-15-3']),
+];
+
+StopIntervalSource get overlappingUnderMultivac => StopIntervalSource(
+      closed: [
+        StopActivation(
+          alarmUid: 'seal-temperature-out-of-band',
+          interval: AlarmInterval(
+              start: ago(50), end: ago(20), level: AlarmLevel.error),
+        ),
+        StopActivation(
+          alarmUid: 'film-reel-empty',
+          interval: AlarmInterval(
+              start: ago(45), end: ago(25), level: AlarmLevel.error),
+        ),
+        StopActivation(
+          alarmUid: 'vacuum-low',
+          interval: AlarmInterval(
+              start: ago(42), end: ago(32), level: AlarmLevel.error),
+        ),
+        StopActivation(
+          alarmUid: 'multivac-stopped',
+          interval: AlarmInterval(
+              start: ago(40), end: ago(35), level: AlarmLevel.error),
+        ),
+      ],
+      open: const [],
+    );
+
+/// Six alarms in one stretch, so the bubble has to leave two of them out.
+StopIntervalSource get sixUnderMultivac => StopIntervalSource(
+      closed: [
+        for (final (uid, from, to) in [
+          ('seal-temperature-out-of-band', 50, 20),
+          ('film-reel-empty', 48, 25),
+          ('vacuum-low', 46, 32),
+          ('multivac-stopped', 44, 35),
+          ('line-stopped-from-panel', 42, 36),
+          ('afak-jam', 40, 22),
+        ])
+          StopActivation(
+            alarmUid: uid,
+            interval:
+                AlarmInterval(start: ago(from), end: ago(to), level: AlarmLevel.error),
+          ),
+      ],
+      open: const [],
+    );
+
 Future<void> pumpTimeline(
   WidgetTester tester, {
   StopTimelineSpec? config,
@@ -97,6 +154,22 @@ Future<void> pumpTimeline(
     ),
   ));
   await tester.pumpAndSettle();
+}
+
+/// The axis tick labels, which are the visible proof of where the window sits
+/// and how wide it is.
+List<String> axisTicks(WidgetTester tester) => tester
+    .widgetList<Text>(find.byType(Text))
+    .map((t) => t.data)
+    .whereType<String>()
+    .where((d) => RegExp(r'^\d\d:\d\d$').hasMatch(d))
+    .toList();
+
+/// A point on the empty ground below the last lane row, right of the label
+/// column — where an operator lands when they miss the rows.
+Offset belowTheRows(WidgetTester tester) {
+  final view = tester.getRect(find.byType(StopTimelineView));
+  return Offset(view.left + 500, view.bottom - 70);
 }
 
 const activationCallout = ValueKey('stop-timeline-activation-callout');
@@ -304,6 +377,46 @@ void main() {
       expect(labels, contains('Film reel empty'));
       expect(labels.indexOf('Film reel empty'),
           lessThan(labels.indexOf('Link error')));
+    });
+
+    testWidgets('every column says what it is, the notch included',
+        (tester) async {
+      await pumpTimeline(tester);
+      await openTable(tester);
+      // The bar and the hairline beside it are two different quantities, and
+      // the % column is a third; unlabelled, the notch is unguessable.
+      expect(find.text('ALARM'), findsOneWidget);
+      expect(find.text('IN GROUP'), findsOneWidget);
+      expect(find.text('STOPS'), findsOneWidget);
+      expect(find.text('LOST'), findsOneWidget);
+      expect(find.text('SHARE'), findsOneWidget);
+      expect(find.text('RUNNING TOTAL'), findsOneWidget);
+    });
+
+    testWidgets('the heading follows what the rows are grouped by',
+        (tester) async {
+      await pumpTimeline(tester);
+      await openTable(tester);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-pareto-severity')));
+      await tester.pumpAndSettle();
+      expect(find.text('SEVERITY'), findsOneWidget);
+      // Severities have no group to sit in, so that column is gone with it.
+      expect(find.text('IN GROUP'), findsNothing);
+    });
+
+    testWidgets('the table names the window it is ranking', (tester) async {
+      await pumpTimeline(tester);
+      await openTable(tester);
+      // Without lanes or an axis, this is the only thing on screen that says
+      // the ranking is windowed — and so the only thing that explains the
+      // strip along the bottom.
+      final label = tester
+          .widget<Text>(
+              find.byKey(const ValueKey('stop-timeline-pareto-window')))
+          .data;
+      expect(label, startsWith('ranked over '));
+      expect(label, contains('–'));
     });
 
     testWidgets('grouping by group collapses a machine into one line',
@@ -535,7 +648,9 @@ void main() {
       // Started 28/08 12:22 — "Since 12:22:10" alone would read as today.
       expect(find.textContaining('Since 28/08 12:22:00'), findsOneWidget);
       expect(find.textContaining('still standing'), findsOneWidget);
-      expect(find.textContaining('26h 00m'), findsOneWidget,
+      // Twice over now — once on the stretch, once on the alarm the group
+      // bubble names underneath it — so the assertion has to say which.
+      expect(find.textContaining('still standing · 26h 00m'), findsOneWidget,
           reason: 'hour precision holds until two days; beyond that '
               '_durShort switches to days');
     });
@@ -607,14 +722,189 @@ void main() {
       expect(find.textContaining('Since 14:12:00'), findsOneWidget);
     });
 
-    testWidgets('a collapsed group counts what it is standing for',
+    testWidgets('a collapsed group names what stood inside it',
         (tester) async {
       await pumpTimeline(tester);
       // Line 3 collapsed: its bar is the union of everything underneath.
       await tapLane(
           tester, 'g:Line 3', xOfInterval(tester, ago(90), ago(70)));
       expect(find.byKey(activationCallout), findsOneWidget);
-      expect(find.text('1 stop inside this group'), findsOneWidget);
+      // The count was never the answer to "what stopped?".
+      expect(find.textContaining('inside this group'), findsNothing);
+      expect(
+          find.byKey(const ValueKey('stop-timeline-contributor-film-reel-empty')),
+          findsOneWidget);
+      expect(find.text('Film reel empty'), findsWidgets);
+      expect(find.textContaining('12:52:00 · 20m'), findsOneWidget);
+    });
+
+    testWidgets('the named stops read in the order they fired',
+        (tester) async {
+      await pumpTimeline(tester,
+          configs: crowdedAlarms, intervals: overlappingUnderMultivac);
+      // Multivac collapsed inside Line 3: one stretch, four alarms in it.
+      await tapLane(
+          tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+      final lines = tester
+          .widgetList<Text>(find.descendant(
+              of: find.byKey(activationCallout),
+              matching: find.byType(Text)))
+          .map((t) => t.data)
+          .whereType<String>()
+          .toList();
+      // Seal fired at -50, film at -45, vacuum at -42, multivac at -40. The
+      // first to fire is usually the cause of the ones after it, so the list
+      // is the story of the stop, not a ranking.
+      expect(lines.indexOf('Seal temperature out of band'),
+          lessThan(lines.indexOf('Film reel empty')));
+      expect(lines.indexOf('Film reel empty'),
+          lessThan(lines.indexOf('Vacuum low')));
+      expect(lines.indexOf('Vacuum low'),
+          lessThan(lines.indexOf('Multivac stopped')));
+    });
+
+    testWidgets('more than fits collapses into a counted tail',
+        (tester) async {
+      await pumpTimeline(tester,
+          configs: crowdedAlarms, intervals: sixUnderMultivac);
+      await tapLane(
+          tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+      expect(
+          find.byKey(const ValueKey('stop-timeline-contributors-more')),
+          findsOneWidget);
+      expect(find.text('and 2 more'), findsOneWidget);
+    });
+
+    testWidgets('a severity switched off drops its alarms from the list',
+        (tester) async {
+      // The bubble must be filtered exactly the way the bar it points at is —
+      // one predicate, or it names alarms the bar excludes.
+      await pumpTimeline(tester,
+          configs: crowdedAlarms, intervals: overlappingUnderMultivac);
+      await tapLane(
+          tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+      expect(find.text('Vacuum low'), findsWidgets);
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-level-error')));
+      await tester.pumpAndSettle();
+      // Every one of them was an error, so the bar and the bubble empty out
+      // together rather than disagreeing.
+      expect(find.byKey(activationCallout), findsNothing);
+    });
+
+    testWidgets('an alarm that is its own group jumps to the group row',
+        (tester) async {
+      // 'Strapper stopped' is bound to Afak SL-15-3 and has no siblings, so
+      // AlarmTree folds it into the group line and it has no leaf row of its
+      // own. Aiming at one would expand the tree, find nothing, and leave the
+      // operator with the bubble gone and no answer.
+      final bound = [
+        alarm('Line 3 halted', group: ['Line 3'], bindToGroup: true),
+        alarm('Strapper stopped',
+            group: ['Line 3', 'Afak SL-15-3'], bindToGroup: true),
+      ];
+      await pumpTimeline(
+        tester,
+        configs: bound,
+        intervals: StopIntervalSource(
+          closed: [
+            StopActivation(
+              alarmUid: 'strapper-stopped',
+              interval: AlarmInterval(
+                  start: ago(50), end: ago(20), level: AlarmLevel.error),
+            ),
+          ],
+          open: const [],
+        ),
+      );
+      await tapLane(
+          tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+      await tester.tap(find
+          .byKey(const ValueKey('stop-timeline-contributor-strapper-stopped')));
+      await tester.pumpAndSettle();
+      // It landed somewhere real: the callout is still open, on the row that
+      // actually carries the alarm.
+      expect(find.byKey(activationCallout), findsOneWidget);
+      expect(
+          find.byKey(
+              const ValueKey('stop-timeline-row-a:strapper-stopped')),
+          findsNothing,
+          reason: 'a bound alarm with no siblings has no leaf row');
+      expect(
+          find.byKey(
+              const ValueKey('stop-timeline-row-g:Line 3/Afak SL-15-3')),
+          findsOneWidget);
+    });
+
+    testWidgets('an alarm standing under two rules is named once',
+        (tester) async {
+      // AlarmMan keys its active set by (uid, rule), so one alarm can stand
+      // twice over. The bubble is about alarms, not about rows in a table.
+      await pumpTimeline(
+        tester,
+        intervals: StopIntervalSource(
+          closed: [
+            StopActivation(
+              alarmUid: 'film-reel-empty',
+              interval: AlarmInterval(
+                  start: ago(50), end: ago(30), level: AlarmLevel.warning),
+            ),
+            StopActivation(
+              alarmUid: 'film-reel-empty',
+              interval: AlarmInterval(
+                  start: ago(40), end: ago(20), level: AlarmLevel.error),
+            ),
+          ],
+          open: const [],
+        ),
+      );
+      await tapLane(tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+      expect(find.text('Film reel empty'), findsOneWidget);
+      // 50→20 merged, not 20m + 20m summed, and the worse rule is the one
+      // the mark reports.
+      expect(find.textContaining('· 30m'), findsWidgets);
+      expect(find.text('2×'), findsOneWidget);
+    });
+
+    testWidgets('tapping a named stop jumps to its own lane', (tester) async {
+      await pumpTimeline(tester,
+          configs: crowdedAlarms, intervals: overlappingUnderMultivac);
+      await tapLane(
+          tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+      await tester.tap(find
+          .byKey(const ValueKey('stop-timeline-contributor-film-reel-empty')));
+      await tester.pumpAndSettle();
+      // The tree opened down to it, and its own bar is the one called out.
+      expect(find.byKey(const ValueKey('stop-timeline-row-a:film-reel-empty')),
+          findsOneWidget);
+      expect(find.byKey(activationCallout), findsOneWidget);
+      expect(find.textContaining('inside this group'), findsNothing);
+      // The leaf callout names the alarm itself, not the branch.
+      expect(find.text('Film reel empty'), findsWidgets);
+    });
+
+    testWidgets('a switched-off alarm is not named under its group',
+        (tester) async {
+      await pumpTimeline(tester,
+          configs: crowdedAlarms, intervals: overlappingUnderMultivac);
+      // Down to the leaf, then untick it.
+      await tester.tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+          find.byKey(const ValueKey('stop-timeline-row-g:Line 3/Multivac')));
+      await tester.pumpAndSettle();
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-show-a:film-reel-empty')));
+      await tester.pumpAndSettle();
+      await tapLane(
+          tester, 'g:Line 3/Multivac', xOfInterval(tester, ago(50), ago(20)));
+      expect(
+          find.byKey(const ValueKey('stop-timeline-contributor-film-reel-empty')),
+          findsNothing);
+      expect(
+          find.byKey(
+              const ValueKey('stop-timeline-contributor-seal-temperature-out-of-band')),
+          findsOneWidget);
     });
 
     testWidgets('a refresh that still holds the interval keeps it open',
@@ -807,4 +1097,52 @@ void main() {
       expect(find.byKey(activationCallout), findsNothing);
     });
   });
+
+  group('the ground below the last row', () {
+    // The chart reads as one surface, so an operator who lands in the gap
+    // under the last alarm is still pointing at it.
+    testWidgets('drags the window like a lane does', (tester) async {
+      await pumpTimeline(tester);
+      final before = axisTicks(tester);
+      // Rightwards, into the past: the window opens docked to the live edge,
+      // so a leftward drag has nowhere to go.
+      await tester.dragFrom(belowTheRows(tester), const Offset(200, 0));
+      await tester.pumpAndSettle();
+      expect(axisTicks(tester), isNot(before));
+      expect(axisTicks(tester).first.compareTo(before.first), isNegative,
+          reason: 'the window moved backwards in time');
+    });
+
+    testWidgets('the wheel over it changes the span', (tester) async {
+      await pumpTimeline(tester);
+      final before = axisTicks(tester);
+      final mouse = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(mouse.hover(belowTheRows(tester)));
+      for (var i = 0; i < 5; i++) {
+        await tester.sendEventToBinding(mouse.scroll(const Offset(0, 120)));
+        await tester.pumpAndSettle();
+      }
+      // Zoomed out far enough that the ticks are hours, not half hours.
+      final widened = axisTicks(tester);
+      expect(widened, isNot(before));
+      expect(widened.every((t) => t.endsWith(':00')), isTrue);
+
+      for (var i = 0; i < 9; i++) {
+        await tester.sendEventToBinding(mouse.scroll(const Offset(0, -120)));
+        await tester.pumpAndSettle();
+      }
+      // And back in past where it started: quarter hours.
+      expect(axisTicks(tester).any((t) => t.endsWith(':15')), isTrue);
+    });
+
+    testWidgets('a tap on it puts an open callout down', (tester) async {
+      await pumpTimeline(tester);
+      await tapLane(tester, 'g:Line 3', xOfInterval(tester, ago(90), ago(70)));
+      expect(find.byKey(activationCallout), findsOneWidget);
+      await tester.tapAt(belowTheRows(tester));
+      await tester.pumpAndSettle();
+      expect(find.byKey(activationCallout), findsNothing);
+    });
+  });
+
 }

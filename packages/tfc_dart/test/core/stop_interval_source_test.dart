@@ -225,4 +225,82 @@ void main() {
       expect(series.statsIn(at(0), at(100)).isOpen, isTrue);
     });
   });
+
+  group('what a merged stretch was made of', () {
+    final source = StopIntervalSource.fromAlarms(
+      history: [
+        activation('film', from: 0, to: 10),
+        activation('film', from: 30, to: 40),
+        activation('seal', from: 20, to: 50, level: AlarmLevel.warning),
+        activation('link', from: 200, to: 210),
+      ],
+      active: [activation('seal', from: 60)],
+    );
+    // The stretch a collapsed group draws for 20-50: seal 20-50 with film
+    // 30-40 inside it.
+    final stretch = source.mergedFor(['film', 'seal'], now: at(80))[1];
+
+    test('names every activation the stretch absorbed', () {
+      final inside = source.activationsIn(['film', 'seal'],
+          from: stretch.start, to: stretch.end!, now: at(80));
+      expect(inside.map((e) => e.alarmUid), ['seal', 'film']);
+      expect(inside.length, stretch.count);
+    });
+
+    test('the longest comes first, whatever order it started in', () {
+      final inside = source.activationsIn(['film', 'seal'],
+          from: stretch.start, to: stretch.end!, now: at(80));
+      // seal stood 30 minutes, film 10 — film started later but is second on
+      // length, not on start.
+      expect(inside.first.interval.lengthAt(at(80)),
+          const Duration(minutes: 30));
+    });
+
+    test('a contributor touching the edge is inside, not dropped', () {
+      // film 0-10 starts exactly where its own stretch does.
+      final first = source.mergedFor(['film', 'seal'], now: at(80)).first;
+      final inside = source.activationsIn(['film', 'seal'],
+          from: first.start, to: first.end!, now: at(80));
+      expect(inside.map((e) => e.alarmUid), ['film']);
+    });
+
+    test('an open contributor is measured against the clock', () {
+      final open = source.mergedFor(['film', 'seal'], now: at(80)).last;
+      final inside = source.activationsIn(['film', 'seal'],
+          from: open.start, to: at(80), now: at(80));
+      expect(inside.single.alarmUid, 'seal');
+      expect(inside.single.isOpen, isTrue);
+      expect(
+          inside.single.interval.lengthAt(at(80)), const Duration(minutes: 20));
+    });
+
+    test('alarms outside the asked-for set never appear', () {
+      final inside = source.activationsIn(['film', 'seal'],
+          from: at(0), to: at(300), now: at(300));
+      expect(inside.map((e) => e.alarmUid), isNot(contains('link')));
+    });
+
+    test('equal-length activations come back in a fixed order', () {
+      // List.sort is not stable, so ties need a total order or a test that
+      // pins the list flakes.
+      final tied = StopIntervalSource.fromAlarms(
+        history: [
+          activation('zulu', from: 0, to: 10),
+          activation('alpha', from: 0, to: 10),
+        ],
+        active: const [],
+      );
+      final inside = tied.activationsIn(['zulu', 'alpha'],
+          from: at(0), to: at(10), now: at(50));
+      expect(inside.map((e) => e.alarmUid), ['alpha', 'zulu']);
+    });
+
+    test('a stretch with nothing in it reports nothing', () {
+      // film cleared at 40 and never came back; seal is excluded because it
+      // is still standing and so reaches every later window.
+      final inside =
+          source.activationsIn(['film'], from: at(100), to: at(150), now: at(300));
+      expect(inside, isEmpty);
+    });
+  });
 }
