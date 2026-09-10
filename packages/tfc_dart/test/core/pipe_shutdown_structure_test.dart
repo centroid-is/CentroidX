@@ -324,8 +324,7 @@ void main() {
         reason: 'and nothing in the pump may await a peer');
   });
 
-  test('the shutdown path reaches Isolate.kill(priority: Isolate.immediate)',
-      () {
+  test('the shutdown path reaches Isolate.kill, politely then rudely', () {
     // The chain, not a grep: main's shutdown calls the endpoint's, the
     // endpoint's calls every link's kill(), and the production link delegates
     // to the worker handle — which sets its no-respawn guard and then kills
@@ -345,7 +344,34 @@ void main() {
 
     final handle = _stripComments(
         File('lib/core/data_acquisition_isolate.dart').readAsStringSync());
-    expect(_bodyOf(handle, 'void kill()'),
-        contains('kill(priority: Isolate.immediate)'));
+    final killBody = _bodyOf(handle, 'void kill()');
+
+    // BOTH priorities, and this pin is why.
+    //
+    // `Isolate.immediate` alone was the shipping shape until a macOS CI run
+    // aborted the whole process inside `UA_Client_run_iterate`:
+    //
+    //     runtime_entry.cc: error: Cannot invoke native callback while unwind
+    //     error propagates.
+    //
+    // The unwind `immediate` injects cannot cross open62541's
+    // `NativeCallable.isolateLocal` callbacks, so the polite priority has to
+    // go first. It also has to be BACKED — `beforeNextEvent` never lands on a
+    // worker that stops yielding, and "the backend did not stop" is a worse
+    // outcome than a rare abort. Dropping either half is a regression, and
+    // this test is written to bite for either.
+    expect(killBody, contains('kill(priority: Isolate.beforeNextEvent)'),
+        reason: 'the FIRST kill must be the one that injects no unwind error, '
+            'or every shutdown with a subscribed OPC UA server attached is a '
+            'coin flip on SIGABRT');
+    expect(killBody, contains('kill(priority: Isolate.immediate)'),
+        reason: 'the polite kill must stay backed: beforeNextEvent cannot '
+            'stop an isolate wedged in a blocking native call, and a backend '
+            'that does not stop when told is what this phase exists to '
+            'prevent');
+    // The escalation is a timer, not a wait. `await` here would be the
+    // unbounded shutdown by another name.
+    expect(killBody, isNot(matches(RegExp(r'\bawait\b'))),
+        reason: 'nothing on the kill path may await');
   });
 }

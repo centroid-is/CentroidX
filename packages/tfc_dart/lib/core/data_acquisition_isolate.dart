@@ -75,6 +75,16 @@ class DataAcquisitionIsolateConfig {
 /// wedge and turned into a kill/respawn loop.
 const kWorkerHandshakeDeadline = Duration(seconds: 30);
 
+/// How long [DataAcquisitionWorker.kill]'s polite kill gets before the rude
+/// one settles it. See that method for why there are two.
+///
+/// Sized against the two clocks it sits between: the acquisition pump yields
+/// to the event loop every ~10 ms (`state_man.dart:590`), so a worker that is
+/// merely busy is gone inside a tenth of this; and `pipe_shutdown_test.dart`
+/// bounds the whole shutdown at 1000 ms, so even a wedged worker's escalation
+/// leaves three quarters of that budget unspent.
+const kWorkerKillGrace = Duration(milliseconds: 250);
+
 /// A supervised acquisition worker, from main's side of the port.
 ///
 /// The handle outlives every respawn; the [Isolate] inside it is replaced.
@@ -160,14 +170,61 @@ class DataAcquisitionWorker {
 
   /// Shut this worker down for good.
   ///
-  /// `Isolate.immediate` runs no `finally` and flushes nothing: no shutdown
-  /// path may await `disconnect()`/`delete()`/`StateMan.close()`, because
-  /// those are what make an OPC UA teardown take seconds. Setting
-  /// [_shuttingDown] first is what keeps the exit listener from reading this
-  /// kill as a crash and respawning the worker we just stopped.
+  /// Neither priority runs a `finally` or flushes anything: no shutdown path
+  /// may await `disconnect()`/`delete()`/`StateMan.close()`, because those are
+  /// what make an OPC UA teardown take seconds. Setting [_shuttingDown] first
+  /// is what keeps the exit listener from reading this kill as a crash and
+  /// respawning the worker we just stopped.
+  ///
+  /// ## Why the first kill is `beforeNextEvent` and not `immediate`
+  ///
+  /// `Isolate.immediate` interrupts the isolate wherever it is, by injecting
+  /// an unwind error. A worker is inside `UA_Client_run_iterate` roughly half
+  /// its wall time (`state_man.dart:590` — a 10 ms iterate, a 10 ms delay),
+  /// and open62541 calls back into Dart from in there. The binding's
+  /// callbacks are `NativeCallable.isolateLocal`, which the VM refuses to
+  /// enter while an unwind is propagating — it does not throw, it aborts the
+  /// **process**:
+  ///
+  ///     runtime_entry.cc: error: Cannot invoke native callback while unwind
+  ///     error propagates.  isolate=<worker entry point>
+  ///     … UA_Client_run_iterate → processServiceResponse
+  ///       → backgroundPublish → processPublishResponse → [Dart] → FATAL
+  ///
+  /// That is a SIGABRT of the whole backend, taking the main isolate with it,
+  /// and it is a coin flip on every shutdown with a subscribed server
+  /// attached. macOS CI hit it first; nothing about it is macOS-specific.
+  ///
+  /// `beforeNextEvent` injects nothing. The in-flight `run_iterate` and its
+  /// callbacks finish normally and the isolate dies at the next event-loop
+  /// boundary — which the pump reaches every ~10 ms at its `await`, so this
+  /// costs milliseconds, not the seconds a graceful `close()` costs.
+  ///
+  /// ## Why `immediate` is still here, on a timer
+  ///
+  /// `beforeNextEvent` cannot stop an isolate that never yields — a worker
+  /// wedged in a blocking native call would simply not die, and a backend
+  /// that does not stop when told is the failure this whole phase exists to
+  /// prevent. So the polite kill gets [kWorkerKillGrace] and the rude one settles
+  /// it. The escalation is a `Timer`, never an `await`: [kill] returns to its
+  /// caller in the same turn it was called in, exactly as before.
   void kill() {
     _shuttingDown = true;
-    _isolate?.kill(priority: Isolate.immediate);
+    final isolate = _isolate;
+    if (isolate == null) return;
+    isolate.kill(priority: Isolate.beforeNextEvent);
+    Timer(kWorkerKillGrace, () {
+      // Identity, not null-ness. `_onExit` clears `_isolate` when the polite
+      // kill lands, so a worker that took it gets no second kill — but if a
+      // respawn that was already in flight when [kill] was called got there
+      // first, `_isolate` is a DIFFERENT isolate, and shooting it with
+      // `immediate` would be the abort this method exists to avoid, aimed at
+      // the wrong target. The hammer only ever hits the isolate it was raised
+      // against.
+      if (identical(_isolate, isolate)) {
+        isolate.kill(priority: Isolate.immediate);
+      }
+    });
   }
 
   void _onSpawned(Isolate isolate) {

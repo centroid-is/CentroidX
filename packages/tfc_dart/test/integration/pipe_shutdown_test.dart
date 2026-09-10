@@ -9,7 +9,9 @@
 /// is killed in the middle of is a write.
 ///
 /// [PipeMainEndpoint.shutdown] refuses to await any of it: it is
-/// `Isolate.kill(priority: immediate)` per worker and nothing else. 12-06 pinned
+/// `Isolate.kill` per worker and nothing else — `beforeNextEvent` first, so the
+/// unwind cannot abort the VM inside an open62541 callback, with `immediate` on
+/// a 250 ms timer behind it. Neither waits for a peer. 12-06 pinned
 /// that **structurally** — `test/core/pipe_shutdown_structure_test.dart` scans
 /// `bin/` and `lib/core/pipe*.dart` for a graceful teardown on a shutdown path
 /// and fails if one appears. A source scan cannot say how long the thing takes,

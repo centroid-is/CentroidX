@@ -785,11 +785,17 @@ class PipeMainEndpoint {
 
   /// Kills every worker. The whole of PIPE-13 on this side.
   ///
-  /// `Isolate.immediate` runs no `finally` and flushes nothing, and that is the
+  /// `Isolate.kill` runs no `finally` and flushes nothing, and that is the
   /// point: an OPC UA teardown that is awaited takes seconds, and a backend
   /// that takes seconds to stop is a backend Docker kills mid-write. Nothing
   /// here awaits anything — there is no future to return, deliberately, so no
   /// caller can be tempted to wait on one.
+  ///
+  /// [DataAcquisitionWorker.kill] owns which PRIORITY, and it is two of them:
+  /// a polite `beforeNextEvent` that cannot abort the VM inside an open62541
+  /// callback, backed on a timer by the `immediate` that guarantees the
+  /// worker dies. Neither of them waits for a peer, which is the only
+  /// property this method cares about.
   void shutdown() {
     for (final worker in _workers) {
       worker.kill();
