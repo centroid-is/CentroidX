@@ -419,34 +419,85 @@ void main() {
               'for some other reason then "the reaper releases a dead session" '
               'is not what this row measured');
 
-      // DETECTS STALENESS IMMEDIATELY — and, the harder half, detects it
-      // **before** it shows anything new. A panel that resynced first and
-      // greyed out afterwards would satisfy a "went stale at some point"
-      // assertion while having painted a thirty-second-old value as current in
-      // between, which is T-07-29 exactly.
-      expect(firstStale, isNotNull,
-          reason: 'the panel never reported a stale view at any point after '
-              'coming back from ${_suspend.inSeconds} seconds of being frozen. '
-              'Its last frame is half a minute old and its socket has been '
-              'reaped; a panel that reports that view as fresh is showing an '
-              'operator a number from before the freeze with nothing marking '
-              'its age');
-      expect(firstStale! - resumedAt, lessThan(_staleWithinReports),
-          reason: 'the panel took ${firstStale - resumedAt + 1} reports — '
-              '${(firstStale - resumedAt + 1) * defaultPanelTick.inMilliseconds} '
-              'ms — to report its view stale after the resume. "Detects '
-              'staleness immediately" is the row\'s own word: the freshness '
-              'deadline came due twenty-seven seconds ago, so the verdict is '
-              'owed on the first turn of the event loop and not after a round '
-              'trip');
-      expect(firstStale, lessThan(firstRecovered!),
-          reason: 'the panel reported the plant\'s new value at report '
-              '${firstRecovered - resumedAt + 1} and did not say its view was '
-              'stale until report ${firstStale - resumedAt + 1}. Recovering '
-              'before admitting staleness is the silent-permanent-staleness '
-              'case with a happy ending: for those reports the screen showed a '
-              'value from before the freeze, unmarked, and an operator had no '
-              'way to know');
+      // NEVER PAINTS THE OLD VALUE AS CURRENT — T-07-29 exactly, and the
+      // claim this row exists for. A panel that resynced first and greyed out
+      // afterwards would satisfy a "went stale at some point" assertion while
+      // having shown a thirty-second-old number, unmarked, in between.
+      //
+      // Stated as a property of every report rather than as the existence of a
+      // stale one, because whether a stale report exists at all is not up to
+      // the client. Three things come due the instant the isolate resumes: the
+      // panel's own 20 ms tick, the freshness deadline (overdue by
+      // twenty-seven seconds), and the resync. The row used to assume the tick
+      // wins, and on the macOS runner the resync did — it finished inside
+      // 38 ms, so the first report after the resume already held the plant's
+      // new value and the panel never had a stale moment to report. Nothing
+      // was wrong: the operator was shown nothing during the freeze and a
+      // correct number after it. The old arm read that as the failure it was
+      // built to catch.
+      //
+      // What follows cannot be satisfied by a fast resync, and still reddens
+      // for the behaviour the row names.
+      final paintedOldAsFresh = [
+        for (var i = resumedAt; i < panel.reports.length; i++)
+          if (panel.reports[i].value == _beforeSuspend &&
+              !panel.reports[i].stale)
+            i - resumedAt + 1,
+      ];
+      //
+      // Bounded rather than forbidden, and the bound is [_staleWithinReports]
+      // — the same three reports that budget already argued for, for the same
+      // reason. Two timers come due on the resume and the tick is the earlier
+      // of the two, so exactly one report gets out ahead of the verdict; that
+      // one is a fiftieth of the freshness deadline of unmarked screen and it
+      // is the runtime's ordering, not a decision this client makes. Zero is
+      // the wrong number here: it fails the row for the behaviour its own
+      // budget was written to permit.
+      expect(paintedOldAsFresh.length, lessThan(_staleWithinReports),
+          reason: 'after ${_suspend.inSeconds} seconds frozen, reports '
+              '$paintedOldAsFresh carried the pre-freeze value '
+              '($_beforeSuspend) with stale unset — '
+              '${paintedOldAsFresh.length * defaultPanelTick.inMilliseconds} '
+              'ms of it. Its last frame is half a minute old and its socket '
+              'has been reaped; every one of those reports put a number from '
+              'before the freeze on an operator\'s screen with nothing marking '
+              'its age, and past the first that is no longer two overdue '
+              'timers racing');
+
+      // ANTI-VACUITY. The sweep above is over reports that arrived; zero
+      // reports would pass it while measuring nothing.
+      expect(afterResume, greaterThan(0),
+          reason: 'no report arrived after the resume, so the sweep above ran '
+              'over an empty list and this row asserts nothing about what the '
+              'panel showed');
+
+      // AND WHERE IT IS OBSERVABLE, THE ORIGINAL TEETH. If any report got out
+      // ahead of the resync, then the panel had a view to describe before it
+      // had a new value to show, and that view was owed a stale verdict on the
+      // first turn of the loop.
+      if (firstRecovered != null && firstRecovered > resumedAt) {
+        expect(firstStale, isNotNull,
+            reason: 'the panel pushed ${firstRecovered - resumedAt} report(s) '
+                'before it held the plant\'s new value, and not one of them '
+                'said its view was stale. The freshness deadline came due '
+                'twenty-seven seconds ago, so the verdict was owed on the '
+                'first of them');
+        expect(firstStale! - resumedAt, lessThan(_staleWithinReports),
+            reason: 'the panel took ${firstStale - resumedAt + 1} reports — '
+                '${(firstStale - resumedAt + 1) * defaultPanelTick.inMilliseconds} '
+                'ms — to report its view stale after the resume. "Detects '
+                'staleness immediately" is the row\'s own word: the verdict is '
+                'owed on the first turn of the event loop and not after a '
+                'round trip');
+        expect(firstStale, lessThan(firstRecovered),
+            reason: 'the panel reported the plant\'s new value at report '
+                '${firstRecovered - resumedAt + 1} and did not say its view '
+                'was stale until report ${firstStale - resumedAt + 1}. '
+                'Recovering before admitting staleness is the '
+                'silent-permanent-staleness case with a happy ending: for '
+                'those reports the screen showed a value from before the '
+                'freeze, unmarked, and an operator had no way to know');
+      }
 
       // NO BURST OF QUEUED STALE TIMERS. The panel owes
       // ${_suspend / tick} periods; the VM coalesces them, so what comes back
