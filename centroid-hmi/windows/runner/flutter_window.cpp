@@ -43,6 +43,12 @@ constexpr UINT kWatchdogTickMessage = WM_APP + 0x47;
 // crosses the context-lost storm threshold. wparam carries the match count.
 constexpr UINT kEglStormMessage = WM_APP + 0x48;
 
+// Posted to ourselves when a session-change rebuild that was queued behind an
+// unfinished startup becomes due. Posted, never done inline, because the point
+// at which it becomes due is inside a method call from the very engine the
+// rebuild destroys.
+constexpr UINT kSessionRebuildDueMessage = WM_APP + 0x49;
+
 // The stale WM_TIMER id. Nothing arms it any more -- see the note on the tick
 // in flutter_window.h -- but a build that rolls back and forward could leave
 // one running, so teardown still kills it.
@@ -96,10 +102,6 @@ bool WatchdogEnabledFromEnvironment() {
 // Distinct enough to be recognisable in a service manager's log next to a
 // normal shutdown (0) and a crash-handler exit.
 constexpr int kGpuLossExitCode = 109;
-
-// One disconnect or reconnect emits several WM_WTSSESSION_CHANGE messages
-// within a second or so. One rebuild answers all of them.
-constexpr unsigned long long kSessionRebuildDebounceMs = 3000;
 
 constexpr const char* kTag = "[gpu-watchdog]";
 
@@ -223,6 +225,10 @@ bool FlutterWindow::CreateController(const char* reason) {
 
   engine_epoch_++;
   epoch_started_tick_ = ::GetTickCount64();
+  // Startup is in flight from here until Dart says otherwise. A session
+  // change arriving in that window is queued rather than acted on -- see
+  // session_rebuild_gate.h.
+  session_gate_.EngineCreated(epoch_started_tick_);
   dart_startup_complete_ = false;
   dart_main_seen_ = false;
   dart_liveness_.EpochStarted(engine_epoch_, epoch_started_tick_);
@@ -913,19 +919,23 @@ void FlutterWindow::RebuildForSessionChange(const char* why) {
   }
 
   const unsigned long long now = ::GetTickCount64();
-  if (last_session_rebuild_ms_ != 0 &&
-      now - last_session_rebuild_ms_ < kSessionRebuildDebounceMs) {
+  const tfc::SessionRebuildGate::Decision decision =
+      session_gate_.Request(why == nullptr ? "unspecified" : why, now);
+  const std::string line = DescribeSessionRebuild(decision);
+  if (!line.empty()) {
+    LogWatchdog(line);
+  }
+  if (decision.verdict != tfc::SessionRebuildGate::Verdict::kRebuildNow) {
     return;
   }
-  last_session_rebuild_ms_ = now;
+  PerformSessionRebuild(decision.reason);
+}
 
-  LogWatchdog(std::string("session change (") + why +
-              ") -- REBUILDING the renderer rather than probing it. The probe "
-              "cannot see this class of loss: the next-frame callback is "
-              "answered whether or not rasterisation succeeded.");
-
-  const std::string rebuild_reason =
-      std::string("session change: ") + (why == nullptr ? "unspecified" : why);
+void FlutterWindow::PerformSessionRebuild(const std::string& reason) {
+  if (flutter_controller_ == nullptr) {
+    return;
+  }
+  const std::string rebuild_reason = "session change: " + reason;
   DestroyController(rebuild_reason.c_str());
   // As in the loss recovery: leave first_frame_shown_ alone so an already
   // visible window stays visible and an operator's maximise survives.
@@ -971,6 +981,16 @@ void FlutterWindow::OnRunnerChannelCall(
     const long long epoch = IntArg(args, "epoch", -1);
     if (epoch == engine_epoch_) {
       dart_startup_complete_ = true;
+      session_gate_.StartupComplete(now);
+      // A rebuild held back waiting for exactly this is now due. It is POSTED
+      // rather than done here: this handler is running inside a call from the
+      // engine, on the messenger owned by the controller a rebuild destroys.
+      // Tearing that down under its own call frame is how the last three
+      // engine-lifecycle bugs in this file were written. The posted message is
+      // handled once the engine's frame has unwound.
+      if (session_gate_.has_queued_request()) {
+        ::PostMessage(GetHandle(), kSessionRebuildDueMessage, 0, 0);
+      }
     }
     LogDart("app startup COMPLETE for epoch " + std::to_string(epoch) +
             " after " + SecondsSince(epoch_started_tick_, now) +
@@ -1086,6 +1106,17 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
           tfc::LogThrottle::DescribeSuppression(decision));
     }
 
+    // A rebuild held back while an engine was starting is released here when
+    // that startup finishes without ever saying so -- the backstop for an app
+    // whose Dart side never reports completion. The channel's own
+    // startupComplete handler is the fast path.
+    const tfc::SessionRebuildGate::Decision released = session_gate_.Poll(now);
+    if (released.verdict == tfc::SessionRebuildGate::Verdict::kRebuildNow) {
+      LogWatchdog(DescribeSessionRebuild(released));
+      PerformSessionRebuild(released.reason);
+      return 0;
+    }
+
     // The Dart side is asked separately, because it is the half that the
     // device probe, the frame probe and the sentinel are all blind to. This
     // runs on the platform thread, driven by the timer-queue thread, so it
@@ -1098,6 +1129,16 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       Dispatch(WatchdogEvent::kRendererLost, tfc::LossCause::kContextLost);
     } else {
       Dispatch(WatchdogEvent::kTick);
+    }
+    return 0;
+  }
+
+  if (message == kSessionRebuildDueMessage) {
+    const tfc::SessionRebuildGate::Decision released =
+        session_gate_.Poll(::GetTickCount64());
+    if (released.verdict == tfc::SessionRebuildGate::Verdict::kRebuildNow) {
+      LogWatchdog(DescribeSessionRebuild(released));
+      PerformSessionRebuild(released.reason);
     }
     return 0;
   }

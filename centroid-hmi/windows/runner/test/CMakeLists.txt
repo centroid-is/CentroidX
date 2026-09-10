@@ -78,6 +78,15 @@ add_executable(dart_liveness_test
 )
 target_include_directories(dart_liveness_test PRIVATE "..")
 
+# When an RDP session change may rebuild the engine. The 3 s debounce it
+# replaces could not collapse a disconnect/reconnect pair 35 s apart, and the
+# teardown that resulted landed on an unfinished startup -- see the header.
+add_executable(session_rebuild_gate_test
+  "session_rebuild_gate_test.cpp"
+  "../session_rebuild_gate.cpp"
+)
+target_include_directories(session_rebuild_gate_test PRIVATE "..")
+
 # The drop-target reference-count model behind the 2026-09-02 crash. Pure
 # logic, no Windows headers -- the one real RevokeDragDrop the fix needs lives
 # in flutter_window.cpp, the reasoning it depends on is tested here.
@@ -106,7 +115,7 @@ endif()
 set(RUNNER_TEST_TARGETS gpu_watchdog_test gpu_diagnosis_test log_rotation_test
     log_throttle_test output_target_test crash_record_test
     path_utils_test egl_storm_detector_test drag_drop_lifetime_test
-    dart_liveness_test)
+    dart_liveness_test session_rebuild_gate_test)
 if(WIN32)
   list(APPEND RUNNER_TEST_TARGETS stderr_interposer_test)
 endif()
@@ -128,6 +137,7 @@ add_test(NAME gpu_diagnosis COMMAND gpu_diagnosis_test)
 add_test(NAME egl_storm_detector COMMAND egl_storm_detector_test)
 add_test(NAME drag_drop_lifetime COMMAND drag_drop_lifetime_test)
 add_test(NAME dart_liveness COMMAND dart_liveness_test)
+add_test(NAME session_rebuild_gate COMMAND session_rebuild_gate_test)
 if(WIN32)
   add_test(NAME stderr_interposer COMMAND stderr_interposer_test)
 endif()

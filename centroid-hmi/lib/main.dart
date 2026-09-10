@@ -59,6 +59,7 @@ import 'package:tfc/mcp/app_capture.dart';
 import 'package:tfc/providers/mcp_bridge.dart';
 import 'package:tfc/providers/navigator_key.dart';
 import 'package:tfc/providers/page_manager.dart';
+import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/providers/scaffold_messenger_key.dart';
 
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
@@ -460,14 +461,38 @@ Future<void> _startApp([bool debugMode = false]) async {
     ),
   ));
 
-  // Startup is not "runApp returned" -- runApp returns before anything has
-  // been laid out. The first frame is the earliest moment at which this
-  // generation has actually produced something, so that is the boundary
-  // recorded. Until this line appears in hmi-runner.log, an engine rebuild is
-  // interrupting a startup that had not finished.
+  // Startup is not "runApp returned", and it is not the first frame either.
+  // The work an engine rebuild must not interrupt is the OPC UA bring-up:
+  // the 2026-09-10 teardown landed 35 s in, while this generation was still
+  // on "ST101.PSU attempt 2", and abandoned the half-open clients. So the
+  // boundary reported to the runner is "every client has a clock watching it
+  // or has said why it cannot" -- see StateMan.connectionsSettled.
   SchedulerBinding.instance.addPostFrameCallback((_) {
-    _liveness?.reportStartupComplete();
+    unawaited(_reportStartupComplete());
   });
+}
+
+/// Waits for this generation's connections to settle, then tells the runner.
+///
+/// Best effort by construction: every failure path still reports, because a
+/// runner that never hears "startup complete" holds a queued session-change
+/// rebuild until its own backstop timeout, and an operator who has just
+/// reconnected would be looking at a stale renderer in the meantime.
+Future<void> _reportStartupComplete() async {
+  final liveness = _liveness;
+  if (liveness == null) return;
+  try {
+    final context = globalScaffoldMessengerKey.currentContext;
+    if (context != null) {
+      final container = ProviderScope.containerOf(context, listen: false);
+      final stateMan = await container.read(stateManProvider.future);
+      await stateMan.connectionsSettled();
+    }
+  } catch (error) {
+    logger.w('Could not wait for connections to settle before reporting '
+        'startup complete: $error');
+  }
+  liveness.reportStartupComplete();
 }
 
 Completer<DBusClient> dbusCompleter = Completer();
