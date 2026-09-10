@@ -27,6 +27,7 @@ import 'package:tfc/providers/gateway_preferences_slot.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc_dart/core/database.dart';
+import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as rp;
 
@@ -89,6 +90,13 @@ void main() {
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
     DatabaseConfig.clearPrefsCache();
+    // The real backend is the OS keychain, and on Windows there is no
+    // implementation at all — `SecureStorage.getInstance` throws "instance not
+    // set for this platform", which is what failed all five of these on the
+    // windows lane before any assertion ran. An explicit fake is right on
+    // every platform for the reason `guard_wiring_test.dart:47-51` gives: the
+    // keychain outlives the process and is shared by the whole run.
+    SecureStorage.setInstance(_MemorySecrets());
   });
 
   test('it builds in gateway mode with no relay client, and does not touch '
@@ -194,4 +202,19 @@ void main() {
     expect(container.read(gatewayPreferencesSlotProvider).api, isNull,
         reason: 'nothing in direct mode may fill the relay slot');
   });
+}
+
+/// An in-memory stand-in for the OS keychain, as `guard_wiring_test.dart` uses.
+class _MemorySecrets implements MySecureStorage {
+  final Map<String, String> _values = {};
+
+  @override
+  Future<String?> read({required String key}) async => _values[key];
+
+  @override
+  Future<void> write({required String key, required String value}) async =>
+      _values[key] = value;
+
+  @override
+  Future<void> delete({required String key}) async => _values.remove(key);
 }

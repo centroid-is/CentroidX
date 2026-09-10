@@ -39,6 +39,7 @@ import 'package:test/test.dart';
 import 'package:tfc_access/tfc_access.dart'
     show AccessGroup, AccessPolicy, AccessSession, AuthenticatedUser;
 import 'package:tfc_dart/core/access/access_repository.dart';
+import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/access/drift_audit_sink.dart';
 import 'package:tfc_dart/core/access/local_auth_provider.dart';
 import 'package:tfc_dart/core/database.dart';
@@ -107,6 +108,14 @@ void main() {
   late Preferences prefs;
 
   setUp(() async {
+    // `Preferences.create` below reaches `SecureStorage.getInstance`, which on
+    // Windows has no implementation at all and throws "instance not set for
+    // this platform" — that is what failed every case in this file on the
+    // windows lane, before a single assertion ran. An explicit fake is also
+    // the right default on macOS and Linux, where the fallback is the real
+    // keychain: it outlives the process, is shared by the whole run, and on
+    // macOS re-asks for the password each time.
+    SecureStorage.setInstance(_MemorySecrets());
     tmp = Directory.systemTemp.createTempSync('backend-composition');
     // The real production class over a real on-disk database. See the library
     // doc for why SQLite and not a container.
@@ -1151,4 +1160,19 @@ String _statementAt(String source, String anchor) {
   if (start < 0) return '';
   final end = source.indexOf(';', start);
   return end < 0 ? source.substring(start) : source.substring(start, end + 1);
+}
+
+/// An in-memory stand-in for the OS keychain, as `guard_wiring_test.dart` uses.
+class _MemorySecrets implements MySecureStorage {
+  final Map<String, String> _values = {};
+
+  @override
+  Future<String?> read({required String key}) async => _values[key];
+
+  @override
+  Future<void> write({required String key, required String value}) async =>
+      _values[key] = value;
+
+  @override
+  Future<void> delete({required String key}) async => _values.remove(key);
 }

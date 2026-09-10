@@ -483,9 +483,17 @@ void main() {
 
       final offenders = <String>[];
       for (final entity in Directory('lib').listSync(recursive: true)) {
-        if (entity is! File || !entity.path.endsWith('.dart')) continue;
-        if (entity.path.endsWith('.g.dart')) continue;
-        if (allowed.contains(entity.path)) continue;
+        if (entity is! File) continue;
+        // Normalised at the mint point, for the reason
+        // `_filesUsingTheSystemWritePath` states 220 lines below and this walk
+        // missed: `allowed` spells its paths with forward slashes and
+        // `listSync` hands back backslashes on Windows. Unnormalised, the
+        // three allowed files failed their own allow-list and reported
+        // themselves as the offenders — the census accusing exactly the rows
+        // it exists to permit.
+        final path = withForwardSlashes(entity.path);
+        if (!path.endsWith('.dart') || path.endsWith('.g.dart')) continue;
+        if (allowed.contains(path)) continue;
         final body = entity.readAsStringSync();
         // Doc comments may name it; code may not.
         final code = body
@@ -493,7 +501,7 @@ void main() {
             .where((line) => !line.trimLeft().startsWith('///'))
             .join('\n');
         if (code.contains('accessRepositoryProvider')) {
-          offenders.add(entity.path);
+          offenders.add(path);
         }
       }
 
