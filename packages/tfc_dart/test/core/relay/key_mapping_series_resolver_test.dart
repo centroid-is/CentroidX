@@ -265,7 +265,7 @@ void main() {
 
     test('the collector derives its table name through collectTableName and '
         'nowhere else', () {
-      final source = File('lib/core/collector.dart')
+      String strippedSource(String path) => File(path)
           .readAsStringSync()
           .split('\n')
           .map((line) {
@@ -274,19 +274,32 @@ void main() {
           })
           .join('\n');
 
-      expect('entry.name ?? entry.key'.allMatches(source), hasLength(1),
+      // `collectTableName` used to live in `collector.dart` and this arm read
+      // that one file. The portable-types split moved it to
+      // `collect_config.dart`, which is where a pure config helper belongs and
+      // is why an HMI asset can name `CollectEntry` without linking an OPC UA
+      // client. The rule did not change, so the arm follows it rather than
+      // being deleted — and it is now stated as two halves, which is strictly
+      // stronger than the single count it replaced: the derivation exists in
+      // exactly one place, and the collector is not that place.
+      final config = strippedSource('lib/core/collect_config.dart');
+      final collector = strippedSource('lib/core/collector.dart');
+
+      expect('entry.name ?? entry.key'.allMatches(config), hasLength(1),
           reason: 'exactly one occurrence, and it is the body of '
-              'collectTableName itself. Every other place the collector used '
-              'to open-code the derivation is a place it can drift from the '
-              'resolver, which is the drift this arm exists for');
+              'collectTableName itself');
+      expect('entry.name ?? entry.key'.allMatches(collector), isEmpty,
+          reason: 'every place the collector open-codes the derivation is a '
+              'place it can drift from the resolver, which is the drift this '
+              'arm exists for');
       expect(
-          source,
+          config,
           contains(
               'String collectTableName(CollectEntry entry) => entry.name ?? '
               'entry.key;'));
-      expect('collectTableName('.allMatches(source).length, greaterThan(3),
-          reason: 'the declaration plus the three call sites the collector '
-              'had');
+      expect('collectTableName('.allMatches(collector).length, greaterThan(2),
+          reason: 'the three call sites the collector had; the declaration '
+              'itself now lives in collect_config.dart');
     });
   });
 
