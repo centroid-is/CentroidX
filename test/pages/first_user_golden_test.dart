@@ -52,10 +52,34 @@ class _PresentRepository implements AccessRepository {
       );
 }
 
-Widget _host({required ThemeData theme, required bool windowOpen}) {
+/// A repository that accepts the one call the created-state image needs.
+///
+/// The success state cannot be posed by overriding a provider — it is local to
+/// the widget and only a real submit reaches it — so this image types the form
+/// and taps the button, and this repository is what the tap lands on.
+class _CreatingRepository implements AccessRepository {
+  @override
+  Future<void> createFirstUser({
+    required String username,
+    required String password,
+  }) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError(
+        'A golden called AccessRepository.${invocation.memberName}; the '
+        'created-state image should touch only createFirstUser.',
+      );
+}
+
+Widget _host({
+  required ThemeData theme,
+  required bool windowOpen,
+  AccessRepository? repository,
+}) {
   return ProviderScope(
     overrides: [
-      accessRepositoryProvider.overrideWith((ref) async => _PresentRepository()),
+      accessRepositoryProvider
+          .overrideWith((ref) async => repository ?? _PresentRepository()),
       firstUserWindowOpenProvider.overrideWith((ref) async => windowOpen),
     ],
     child: MaterialApp(
@@ -156,6 +180,44 @@ void main() {
       await expectLater(
         find.byKey(_boundary),
         matchesGoldenFile('goldens/access_first_user_closed.png'),
+      );
+    });
+
+    testWidgets('the commissioning window, created', (tester) async {
+      // Posed at the open form's height, not the capture height. This state is
+      // local to the widget — no provider override reaches it — so the image
+      // has to be produced by a real submit, and at 360px the 'Create account'
+      // button sits below the fold where `tap` lands on nothing at all and
+      // says so by leaving the form on screen.
+      _sizeView(tester, const Size(640, 800));
+      await tester.pumpWidget(
+        _host(theme: light, windowOpen: true, repository: _CreatingRepository()),
+      );
+      await _settle(tester);
+
+      await tester.enterText(
+          find.widgetWithText(TextField, 'Username'), 'commissioner');
+      await tester.enterText(
+          find.widgetWithText(TextField, 'Password'), 'correct horse');
+      await tester.enterText(
+          find.widgetWithText(TextField, 'Confirm password'), 'correct horse');
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Create account'));
+      await _settle(tester);
+
+      // Cropped to the confirmation's own height once the form is gone, so
+      // the image is framed like the closed one rather than floating in
+      // 800px of surface.
+      _sizeView(tester, const Size(640, 360));
+      await _settle(tester);
+
+      // The tick and the sign-in action, not a padlock and the recovery
+      // sentence — this image is the one that would have caught the bug.
+      expect(find.byType(TextField), findsNothing);
+      expect(find.text('Sign in'), findsOneWidget);
+
+      await expectLater(
+        find.byKey(_boundary),
+        matchesGoldenFile('goldens/access_first_user_created.png'),
       );
     });
   });

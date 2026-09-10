@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/pages/first_user.dart';
 import 'package:tfc/providers/access.dart';
+import 'package:tfc/widgets/access_sign_in_dialog.dart' show AccessSignInOpener;
 import 'package:tfc_dart/core/access/access_repository.dart';
 
 import '../helpers/test_helpers.dart';
@@ -52,23 +53,33 @@ class _FakeAccessRepository implements AccessRepository {
 Widget _buildBody({
   required Future<bool> Function() windowOpen,
   required Future<AccessRepository?> Function() repository,
+  AccessSignInOpener? openSignIn,
 }) {
   return ProviderScope(
     overrides: [
       accessRepositoryProvider.overrideWith((ref) => repository()),
       firstUserWindowOpenProvider.overrideWith((ref) => windowOpen()),
     ],
-    child: const MaterialApp(
-      home: Scaffold(body: FirstUserBody()),
+    child: MaterialApp(
+      home: Scaffold(
+        body: openSignIn == null
+            ? const FirstUserBody()
+            : FirstUserBody(openSignIn: openSignIn),
+      ),
     ),
   );
 }
 
 /// The open-window case with a working repository.
-Widget _openWindow(_FakeAccessRepository repo, {bool Function()? isOpen}) =>
+Widget _openWindow(
+  _FakeAccessRepository repo, {
+  bool Function()? isOpen,
+  AccessSignInOpener? openSignIn,
+}) =>
     _buildBody(
       windowOpen: () async => isOpen?.call() ?? true,
       repository: () async => repo,
+      openSignIn: openSignIn,
     );
 
 Finder _usernameField() => find.widgetWithText(TextField, 'Username');
@@ -304,17 +315,27 @@ void main() {
   });
 
   group('submission', () {
-    testWidgets('a successful creation re-renders closed without a restart',
-        (tester) async {
+    /// A repository whose `createFirstUser` closes the window the way the real
+    /// one does — by making the next window question answer false.
+    ({_FakeAccessRepository repo, Widget host}) successHost({
+      AccessSignInOpener? openSignIn,
+    }) {
       var open = true;
-      late final _FakeAccessRepository repo;
-      repo = _FakeAccessRepository(onCreate: (_, __) async {
+      final repo = _FakeAccessRepository(onCreate: (_, __) async {
         // The real repository closes the window by inserting the row; the
         // fake closes it by flipping what the provider answers next.
         open = false;
       });
+      return (
+        repo: repo,
+        host: _openWindow(repo, isOpen: () => open, openSignIn: openSignIn),
+      );
+    }
 
-      await pumpAndLoad(tester, _openWindow(repo, isOpen: () => open));
+    testWidgets('a successful creation confirms the account and closes the '
+        'form, without a restart', (tester) async {
+      final (:repo, :host) = successHost();
+      await pumpAndLoad(tester, host);
 
       await _fillForm(tester);
       await tester.tap(_createButton());
@@ -322,12 +343,131 @@ void main() {
 
       expect(repo.calls, hasLength(1));
       expect(repo.calls.single.username, 'commissioner');
-      expect(
-        _textContaining('An account already exists, so this window is closed.'),
-        findsOneWidget,
-      );
+      expect(_textContaining('Account created'), findsOneWidget);
+      expect(_textContaining('commissioner'), findsOneWidget);
       expect(_usernameField(), findsNothing);
     });
+
+    testWidgets('a successful creation never shows the already-exists message',
+        (tester) async {
+      // The regression this whole group exists for. The window IS shut once
+      // the row lands, so every closed branch in build() goes true at once —
+      // and telling the engineer who just claimed the station that somebody
+      // else claimed it reads as a failure of the thing that succeeded.
+      final (:repo, :host) = successHost();
+      await pumpAndLoad(tester, host);
+
+      await _fillForm(tester);
+      await tester.tap(_createButton());
+      await settle(tester);
+
+      // Anchored on the call, not only on absent copy: every other assertion
+      // here is findsNothing, so a tap that missed the button would leave the
+      // form on screen and pass the lot.
+      expect(repo.calls, hasLength(1));
+      expect(_textContaining('An account already exists'), findsNothing);
+      expect(_textContaining('Recovery is a deployment task'), findsNothing);
+    });
+
+    testWidgets('the confirmation survives the window provider erroring after '
+        'the account is created', (tester) async {
+      // The window question failing is not evidence the account went away.
+      // build() answers a windowAsync error with _kClosed — correct while the
+      // form is up, and the wrong story once this screen has committed a row.
+      var thrower = false;
+      final repo = _FakeAccessRepository(onCreate: (_, __) async {
+        thrower = true;
+      });
+      await pumpAndLoad(
+        tester,
+        _buildBody(
+          windowOpen: () async {
+            if (thrower) throw StateError('cannot count app_user');
+            return true;
+          },
+          repository: () async => repo,
+        ),
+      );
+
+      await _fillForm(tester);
+      await tester.tap(_createButton());
+      await settle(tester);
+
+      expect(repo.calls, hasLength(1));
+      expect(_textContaining('Account created'), findsOneWidget);
+      expect(_textContaining('An account already exists'), findsNothing);
+    });
+
+    testWidgets('the confirmation survives the database going away after the '
+        'account is created', (tester) async {
+      // The finding from the review: accessRepositoryProvider follows
+      // databaseProvider, so a Server Config edit or a dropped connection
+      // re-emits null — and _kNoDatabase claims the first account "cannot be
+      // created yet", moments after it was.
+      final repo = _FakeAccessRepository();
+      var present = true;
+
+      // A container the test holds, rather than `_buildBody`'s scope: the page
+      // never invalidates `accessRepositoryProvider` itself, so re-emitting it
+      // is something only the owner of the container can do — and a rebuild
+      // that reads the same cached value would prove nothing.
+      final container = ProviderContainer(
+        overrides: [
+          accessRepositoryProvider
+              .overrideWith((ref) async => present ? repo : null),
+          firstUserWindowOpenProvider.overrideWith((ref) async => true),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await pumpAndLoad(
+        tester,
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: Scaffold(body: FirstUserBody())),
+        ),
+      );
+
+      await _fillForm(tester);
+      await tester.tap(_createButton());
+      await settle(tester);
+      expect(_textContaining('Account created'), findsOneWidget);
+
+      // The database drops out from under the confirmation.
+      present = false;
+      container.invalidate(accessRepositoryProvider);
+      await settle(tester);
+
+      expect(_textContaining('Account created'), findsOneWidget);
+      expect(_textContaining('no reachable database'), findsNothing);
+    });
+
+    testWidgets('the success state offers sign-in, and the action opens it',
+        (tester) async {
+      var opened = 0;
+      final (:repo, :host) = successHost(
+        openSignIn: (context, ref) async => opened++,
+      );
+      await pumpAndLoad(tester, host);
+
+      await _fillForm(tester);
+      await tester.tap(_createButton());
+      await settle(tester);
+
+      expect(find.byKey(kFirstUserSignInKey), findsOneWidget);
+
+      // Injected rather than real: `showAccessSignInDialog` beams on the value
+      // the dialog pops with, and this harness has no Beamer ancestor.
+      await tester.tap(find.byKey(kFirstUserSignInKey));
+      await settle(tester);
+      expect(opened, 1);
+    });
+
+    // There is deliberately no test that the password controllers are cleared
+    // on success. The fields leave the tree either way, so every assertion
+    // available from out here passes with or without the `clear()` calls — a
+    // test that cannot fail is worse than the comment in `_submit` that says
+    // why they are there.
 
     testWidgets('a FirstUserWindowClosedError shows the closed message, not a '
         'crash', (tester) async {
@@ -348,6 +488,9 @@ void main() {
         _textContaining('An account already exists, so this window is closed.'),
         findsOneWidget,
       );
+      // The mirror of the success case: losing the race created nothing, so
+      // the confirmation must not appear either.
+      expect(_textContaining('Account created'), findsNothing);
       expect(_usernameField(), findsNothing);
     });
 
