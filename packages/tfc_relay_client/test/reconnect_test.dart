@@ -425,13 +425,12 @@ void main() {
               'automatic recovery never runs');
     });
 
-    test('a killed link reports 1002, which is not a code any policy may read',
-        () async {
+    test('a killed link reports a code no policy may read', () async {
       final gateway = await _gateway(withProxy: true);
       // Observed on a raw socket rather than through the supervisor, because
       // the supervisor deliberately has no way to report one: Finding 2's
-      // caveat is that 1002 here is a yanked cable, and 1002 is also what a
-      // protocol error looks like.
+      // caveat is that the code here is a yanked cable, and the same code is
+      // also what a protocol error looks like.
       final raw = IOWebSocketChannel.connect(gateway.uri);
       addTearDown(() => raw.sink.close().catchError((Object _) => null));
       await within(raw.ready, 'the observation socket connected',
@@ -442,11 +441,31 @@ void main() {
       await within(done, 'the observation socket saw its link yanked',
           budget: _recovery);
 
-      expect(raw.closeCode, 1002,
-          reason: 'Finding 2 measured this: a yanked cable is '
-              'indistinguishable-by-code from a protocol error, so an '
-              'implementation that retried on 1002 and gave up on 4005 by '
-              'number alone would strand a panel on a cut cable');
+      // Finding 2 measured 1002 here on POSIX; the Windows stack reports 1006
+      // for the same yanked cable, which is if anything the more accurate of
+      // the two. Pinning either number tests the platform rather than the
+      // property, and the property is the one that constrains the supervisor:
+      // whatever a cut cable reports, it lands in the range the protocol
+      // reserves for itself, so it is indistinguishable by number from a
+      // protocol fault and no policy may branch on it.
+      final code = raw.closeCode;
+      expect(code, isNotNull,
+          reason: 'the yanked link produced no close code at all, so the '
+              'claim below is about nothing — and Finding 2\'s caveat, that '
+              'the supervisor cannot tell these apart, would be resting on an '
+              'observation this test never made');
+      // 4000 is the floor of the range this protocol mints in — every member
+      // of CloseCodes is 4001 or above, and dart-lang/http#1690 is why nothing
+      // below it may be minted by us.
+      expect(code, lessThan(4000),
+          reason: 'a yanked cable came back as $code, inside the application '
+              'range this protocol mints its own codes in. If a cut cable can '
+              'produce an application code then the numbers are no longer '
+              'disjoint and something upstream is inventing one');
+      expect(code, isNot(CloseCodes.serverDraining),
+          reason: 'a cut cable is reporting the gateway\'s own draining code, '
+              'which is the exact confusion an implementation that retried by '
+              'number would act on');
     }, tags: 'faults');
 
     test('an eviction the client never inspects is retried like any other drop',

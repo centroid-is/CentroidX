@@ -353,6 +353,39 @@ void main() {
               'wrong file');
     });
 
+    test('a CRLF file is read as though it had been checked out with LF',
+        () async {
+      // The sweeps below split on `'\n'` and index into the string they split.
+      // On a CRLF checkout every one of those lines keeps a trailing `\r`,
+      // which is invisible in a diff and fatal to a regex anchored at `$` —
+      // this cost four false indictments on the Windows leg while macOS and
+      // Linux read the same directory correctly.
+      //
+      // `_exemptionOn` right-trims and so survives on its own, which is
+      // exactly why this arm exists: with that trim in place nothing else here
+      // can fail when `_readNormalised` stops normalising, and the marker
+      // sweep would be the only thing left to notice — on one platform, in CI.
+      final dir = await Directory.systemTemp.createTemp('gate-manifest-crlf-');
+      addTearDown(() => dir.delete(recursive: true));
+      final file = File('${dir.path}/crlf_test.dart')
+        ..writeAsStringSync("void main() {\r\n  // a comment\r\n}\r\n");
+
+      final read = _readNormalised(file);
+      expect(read, isNot(contains('\r')),
+          reason: 'a CRLF file came back with carriage returns still in it, so '
+              'every line the sweeps below split off this source ends in one '
+              'and every end-anchored match against those lines fails');
+      expect(read.split('\n').first, 'void main() {',
+          reason: 'the first line reads as ${read.split('\n').first} rather '
+              'than the code on it. Line splitting is the input to the '
+              'statement assembly, the line numbers and the marker sweep '
+              'alike');
+      expect(_stripCommentLines(read).split('\n')[1], '',
+          reason: 'a whole-line comment on a CRLF line was not blanked, so '
+              'commented-out code still counts as code in every sweep that '
+              'reads `code` rather than `source`');
+    });
+
     test('every plan id in the outstanding list is well-formed', () {
       final malformed = [
         for (final entry in gateOutstanding.entries)
@@ -981,6 +1014,22 @@ void main() {
       expect(_exemptionOn(short)!.length, lessThan(_exemptionReasonFloor),
           reason: 'the reason floor is not biting: "fine" is being measured as '
               'a justification, and the sweep arm above would let it through');
+
+      // A CRLF checkout. This is not a hypothetical: it reported all four of
+      // the directory's argued exemptions as unmarked instant reads on the
+      // Windows leg while passing on macOS and Linux, because `(\S.*)$` cannot
+      // reach past a trailing `\r` — `.` does not match it and a non-multiLine
+      // `$` will not match before it. _readNormalised is the fix; this arm is
+      // what makes the fix hold, because every other case here is authored
+      // with LF and none of them can see the difference.
+      expect(_exemptionOn('$justified\r'), isNotNull,
+          reason: 'a marker on a CRLF line is invisible, so on a Windows '
+              'checkout every exemption in the directory silently stops '
+              'counting and the sweep indicts the lines it was argued for');
+      expect(_exemptionOn('$justified\r'), _exemptionOn(justified),
+          reason: 'the same marker reads differently depending on the line '
+              'ending, so the reason floor is being measured against a string '
+              'with a carriage return on the end of it');
     });
 
     test('an unconditional skip is recognised and a probed one is not', () {
@@ -1455,8 +1504,16 @@ int _statementEnd(String code, int from) {
 /// Returns the reason rather than a bool so the caller can judge it: a marker
 /// and a justified marker are different things, and only the second one is
 /// allowed to suppress an arm.
+///
+/// [line] is right-trimmed before matching. The regex ends `(\S.*)$`, and Dart's
+/// regex is ECMAScript: `.` does not match `\r` and a non-`multiLine` `$` only
+/// matches the true end of the input, so a marker on a CRLF line matches
+/// nothing at all. Callers reading through [_readNormalised] never hand this a
+/// `\r`; trimming here means the helper is also correct on its own, which is
+/// what the arm in 'an exemption is read only when it carries a real reason'
+/// holds it to.
 String? _exemptionOn(String line) =>
-    _windowExemption.firstMatch(line)?.group(1)?.trim();
+    _windowExemption.firstMatch(line.trimRight())?.group(1)?.trim();
 
 /// The `(row, arm)` pairs at the front of [name].
 List<({String row, String? arm})> _tokensIn(String name) {
@@ -1510,11 +1567,29 @@ List<_Source> _allGateSources(Directory directory) {
         if (!_notAGateCase.containsKey(entity.uri.pathSegments.last))
           (
             name: entity.uri.pathSegments.last,
-            source: entity.readAsStringSync(),
-            code: _stripCommentLines(entity.readAsStringSync()),
+            source: _readNormalised(entity),
+            code: _stripCommentLines(_readNormalised(entity)),
           ),
   ];
 }
+
+/// [file]'s text with CRLF line endings normalised to LF.
+///
+/// Every sweep below splits on `'\n'` and matches with regexes anchored at
+/// `$`, and both of those quietly mean something else when a checkout carries
+/// CRLF. Dart's regex is ECMAScript: `.` does not match `\r`, and a `$` without
+/// `multiLine` matches only the true end of the input. So `_windowExemption`'s
+/// `(\S.*)$` cannot match a marker on a line that ends `...reason\r` — the
+/// `.*` stops before the `\r` and the `$` then has a character left to go.
+///
+/// The failure that costs is not a crash. Every `// window-exempt:` marker in
+/// the directory becomes invisible, the sweep reports four argued exemptions as
+/// unmarked instant reads, and the rule looks broken on one platform while
+/// reading correctly on the other two. Normalising here fixes it once for the
+/// line splits, the offsets and the markers together, rather than at each of
+/// the four places that would otherwise each need to remember.
+String _readNormalised(File file) =>
+    file.readAsStringSync().replaceAll('\r\n', '\n');
 
 /// [source] with whole-line `//` and `///` comments blanked out.
 ///

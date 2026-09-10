@@ -259,16 +259,34 @@ void main() {
       final attempt = await within(connect(uri), 'the refused connect settling',
           budget: _socketBudget);
 
-      expect(
-        switch (attempt) {
-          ConnectFailed(:final Object error) => '$error',
-          ConnectSucceeded() => fail('the closed port accepted a connection'),
-        },
-        contains('Connection refused'),
-        reason: 'the operator-facing health line says why the panel is not '
-            'connected; "attempt failed" with no cause is a call to the '
-            'integrator',
-      );
+      final message = switch (attempt) {
+        ConnectFailed(:final Object error) => '$error',
+        ConnectSucceeded() => fail('the closed port accepted a connection'),
+      };
+
+      // The property is that the cause survives the wrapping, not that it
+      // survives in any one platform's words. A refused dial reads
+      // "Connection refused (OS Error: Connection refused, errno = 61)" on
+      // POSIX and "The remote computer refused the network connection (OS
+      // Error: ..., errno = 1225)" on Windows — same fault, same thing to tell
+      // the integrator, two sentences. Pinning the POSIX phrasing failed the
+      // Windows leg for saying it in English rather than for saying nothing.
+      expect(message, matches(RegExp('refused', caseSensitive: false)),
+          reason: 'the operator-facing health line says why the panel is not '
+              'connected; "attempt failed" with no cause is a call to the '
+              'integrator. What arrived: $message');
+
+      // Anti-vacuity in the direction that matters: "refused" alone would also
+      // be satisfied by a hand-written sentence with the real exception thrown
+      // away. These two are what an integrator actually needs off the line —
+      // the class of fault and the number to look up.
+      expect(message, contains('SocketException'),
+          reason: 'the underlying exception was replaced by prose somewhere in '
+              'the transport, so the caller logs a summary and not a fault: '
+              '$message');
+      expect(message, contains('errno'),
+          reason: 'the OS error number did not survive, and it is the half of '
+              'this line that is the same in every language: $message');
     });
   });
 
