@@ -13,6 +13,7 @@
 #include <string>
 
 #include "dart_liveness.h"
+#include "session_rebuild_gate.h"
 #include "gpu_device_probe.h"
 #include "stderr_interposer.h"
 #include "gpu_diagnosis.h"
@@ -175,6 +176,10 @@ class FlutterWindow : public Win32Window {
   // maintenance, not a fault.
   void RebuildForSessionChange(const char* why);
 
+  // Carries out a rebuild the gate has released, either immediately or from
+  // the queue. |reason| is the gate's, already coalesced.
+  void PerformSessionRebuild(const std::string& reason);
+
   // The project to run.
   flutter::DartProject project_;
 
@@ -198,6 +203,12 @@ class FlutterWindow : public Win32Window {
   // Watches for the UI isolate going quiet. Fed by the runner channel,
   // consulted on every watchdog tick.
   tfc::DartLiveness dart_liveness_;
+
+  // Decides when a session change may rebuild the engine. Replaces the bare
+  // time-based debounce, which could not collapse a disconnect/reconnect pair
+  // 35 s apart and so let a teardown land on an unfinished startup. See
+  // session_rebuild_gate.h.
+  tfc::SessionRebuildGate session_gate_;
 
   // Owned by the controller's messenger, so it is torn down with it.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
@@ -241,10 +252,6 @@ class FlutterWindow : public Win32Window {
   // posted message; the platform thread declares the loss.
   tfc::StderrInterposer stderr_interposer_;
 
-  // When the renderer was last rebuilt for a session change, so that the
-  // several messages one disconnect/reconnect emits cost one rebuild, not
-  // several. 0 means never.
-  unsigned long long last_session_rebuild_ms_ = 0;
 
   // --- Instrumentation ------------------------------------------------------
   //
