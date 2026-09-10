@@ -245,13 +245,10 @@ void main() {
       addTearDown(server.close);
       await server.start();
 
-      await expectLater(
-        _get(Uri.parse('http://127.0.0.1:${server.port + 1}/relay-trust')),
-        throwsA(isA<SocketException>()),
-        reason: 'every existing deployment and fixture constructs without '
-            'trust:, and none of them may grow a listener they did not ask '
-            'for — port + 1 belongs to whoever bound it first',
-      );
+      // Every existing deployment and fixture constructs without `trust:`, and
+      // none of them may grow a listener they did not ask for.
+      await expectNoTrustDocument(
+          Uri.parse('http://127.0.0.1:${server.port + 1}/relay-trust'));
     });
 
     test('close() takes the trust listener down with the gateway', () async {
@@ -259,13 +256,45 @@ void main() {
       final port = gateway.server.port;
       await gateway.server.close();
 
-      await expectLater(
-        _get(Uri.parse('http://127.0.0.1:${port + 1}/relay-trust')),
-        throwsA(isA<SocketException>()),
-        reason: 'a listener that outlives close() holds the port against '
-            'the restarted gateway and serves a document whose gateway is '
-            'gone',
-      );
+      // A listener that outlives close() would hold the port against the
+      // restarted gateway and serve a document whose gateway is gone.
+      await expectNoTrustDocument(
+          Uri.parse('http://127.0.0.1:${port + 1}/relay-trust'));
     });
   });
+}
+
+/// Passes when **no trust document is served** at [uri].
+///
+/// Deliberately not `throwsA(isA<SocketException>())`, which was the earlier
+/// spelling. That asserts the port is *unbound* — a stronger claim than ours
+/// to make, and one this file's own comment already disowns: "port + 1 belongs
+/// to whoever bound it first". The gateway binds an ephemeral port and the
+/// trust listener takes the neighbour; nothing reserves that neighbour when
+/// there is no trust listener, so any other process may hold it.
+///
+/// Windows made that concrete. Its ephemeral range is handed out close to
+/// sequentially, so the neighbour is frequently another listener from the same
+/// test run: the GET connected and came back
+/// `HttpException: Invalid response line` instead of being refused, and the
+/// arm failed while the property it guards was intact.
+///
+/// The property is that this gateway serves no CA material on that port.
+/// Refused, unreachable, or answered by something that is not a trust
+/// document all satisfy it; a 200 carrying certificate material does not.
+Future<void> expectNoTrustDocument(Uri uri) async {
+  final ({String body, int status}) answer;
+  try {
+    answer = await _get(uri);
+  } on Object {
+    // Nothing answered, or what answered did not speak HTTP. Either way no
+    // trust endpoint is there, which is the whole of the claim.
+    return;
+  }
+  expect(answer.status, isNot(200),
+      reason: 'something served a 200 on the trust port: $uri');
+  expect(answer.body, isNot(contains('BEGIN CERTIFICATE')),
+      reason: 'CA material on a port this gateway never asked to bind');
+  expect(answer.body, isNot(contains('ca_pem')),
+      reason: 'a trust document on a port this gateway never asked to bind');
 }
