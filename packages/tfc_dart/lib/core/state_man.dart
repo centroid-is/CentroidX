@@ -1202,9 +1202,14 @@ class ClientWrapper {
     // callbacks can fire after stopHeartbeat(). Each callback checks
     // its captured generation against the current one.
     final gen = ++_heartbeatGeneration;
+    // Clearing this changes the derived status, so push it rather than
+    // leaving a client that has just been given a clock reading unhealthy
+    // until the next 2 s health tick.
+    final wasUnavailable = heartbeatUnavailable != null;
     heartbeatUnavailable = null;
     _heartbeatRetryTimer?.cancel();
     _heartbeatRetryTimer = null;
+    if (wasUnavailable) _recomputeEffectiveStatus();
     _logger.i('[${config.endpoint}] Starting heartbeat on sub=$subId');
     _heartbeatSub = client.monitoredItems(
       {
