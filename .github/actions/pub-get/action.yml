@@ -1,0 +1,75 @@
+name: 'pub get'
+description: >
+  Resolve dependencies, retrying only the failures that pub.dev hands back when
+  it is having a bad minute — never a real constraint failure.
+
+inputs:
+  command:
+    description: 'The resolve command to run (e.g. "flutter pub get", "dart pub get").'
+    required: false
+    default: 'flutter pub get'
+  working-directory:
+    description: 'Package directory to resolve in.'
+    required: false
+    default: '.'
+  attempts:
+    description: 'How many times to try before giving up.'
+    required: false
+    default: '4'
+
+runs:
+  using: composite
+  steps:
+    # Why this is not a plain `run: flutter pub get`:
+    #
+    # pub reports *any* non-200 from the pub.dev package-listing endpoint as
+    # `<name> ... which doesn't exist (authorization failed)`, plus the trailer
+    # "Insufficient permissions to the resource at the https://pub.dev package
+    # repository." Both read like the package was pulled or our credentials are
+    # wrong. Neither is what they mean. On 2026-09-10 pub.dev served those 403s
+    # intermittently for minutes at a time and CI lanes across every open PR
+    # died at resolution — one run naming `flutter_secure_storage_macos`,
+    # another naming `meta`, a Dart-team package that has never gone anywhere.
+    # The same packages resolved fine in the run either side of it.
+    #
+    # So: retry, but only on that signature. A genuinely unsatisfiable
+    # constraint still fails on the first attempt, loudly and in one shot,
+    # because retrying one of those four times would bury the real error and
+    # teach the next reader that resolution failures are "just flaky".
+    - shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PUB_GET_COMMAND: ${{ inputs.command }}
+        PUB_GET_ATTEMPTS: ${{ inputs.attempts }}
+      run: |
+        set -uo pipefail
+
+        log="$(mktemp)"
+        delay=15
+
+        attempt=0
+        while [ "$attempt" -lt "$PUB_GET_ATTEMPTS" ]; do
+          attempt=$((attempt + 1))
+          echo "::group::$PUB_GET_COMMAND (attempt $attempt/$PUB_GET_ATTEMPTS)"
+          eval "$PUB_GET_COMMAND" 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          echo "::endgroup::"
+
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+
+          if ! grep -qE "authorization failed|Insufficient permissions to the resource|Got a response with a 429|Connection closed|Got socket error" "$log"; then
+            echo "::error::'$PUB_GET_COMMAND' failed for a reason that is not pub.dev flaking. Read the 'Because ...' lines above: this is a real resolution or network failure, and re-running will not fix it."
+            exit "$status"
+          fi
+
+          if [ "$attempt" -lt "$PUB_GET_ATTEMPTS" ]; then
+            echo "::warning::pub.dev returned a transient not-accessible/rate-limit error. This is the pub.dev side, not a removed package and not our credentials — retrying in ${delay}s."
+            sleep "$delay"
+            delay=$((delay * 2))
+          fi
+        done
+
+        echo "::error::'$PUB_GET_COMMAND' still failing after $PUB_GET_ATTEMPTS attempts against a flaking pub.dev. Check https://status.pub.dev before treating this as our bug."
+        exit 1

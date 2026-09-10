@@ -74,8 +74,10 @@ jobs:
         run: flutter-elinux create --platforms=elinux .
 
       - name: Get Flutter Packages
-        working-directory: centroid-hmi
-        run: flutter-elinux pub get
+        uses: ./.github/actions/pub-get
+        with:
+          command: flutter-elinux pub get
+          working-directory: centroid-hmi
 
       - name: Build for eLinux
         working-directory: centroid-hmi
@@ -206,8 +208,10 @@ jobs:
         run: flutter-elinux create --platforms=elinux .
 
       - name: Get Flutter Packages
-        working-directory: centroid-hmi
-        run: flutter-elinux pub get
+        uses: ./.github/actions/pub-get
+        with:
+          command: flutter-elinux pub get
+          working-directory: centroid-hmi
 
       - name: Build for eLinux
         working-directory: centroid-hmi
@@ -313,8 +317,10 @@ jobs:
         run: flutter-elinux create --platforms=elinux .
 
       - name: Get Flutter Packages
-        working-directory: centroid-hmi
-        run: flutter-elinux pub get
+        uses: ./.github/actions/pub-get
+        with:
+          command: flutter-elinux pub get
+          working-directory: centroid-hmi
 
       - name: Build for eLinux
         working-directory: centroid-hmi
