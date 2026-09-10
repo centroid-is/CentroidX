@@ -868,6 +868,36 @@ class _GrafanaPanelConfigEditorState extends State<_GrafanaPanelConfigEditor> {
               ),
             ],
           ),
+          const SizedBox(height: 16),
+          Text('Time range', style: theme.textTheme.titleMedium),
+          DropdownButton<GrafanaQuickRange?>(
+            value: matchGrafanaQuickRange(config.from, config.to),
+            isExpanded: true,
+            onChanged: (range) {
+              if (range == null) return; // "Custom" is a label, not a choice
+              setState(() {
+                config.from = range.from;
+                config.to = range.to;
+                // The From/To fields below seed from `initialValue`, so they
+                // need a new key to show what was just picked.
+                _revision++;
+              });
+            },
+            items: [
+              // Only offered when it is what we have: picking "Custom" from
+              // a list cannot mean anything until the fields say what it is.
+              if (matchGrafanaQuickRange(config.from, config.to) == null)
+                const DropdownMenuItem<GrafanaQuickRange?>(
+                  value: null,
+                  child: Text('Custom'),
+                ),
+              for (final range in grafanaQuickRanges)
+                DropdownMenuItem<GrafanaQuickRange?>(
+                  value: range,
+                  child: Text(range.label),
+                ),
+            ],
+          ),
           const SizedBox(height: 8),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1004,6 +1034,50 @@ class _GrafanaPanelConfigEditorState extends State<_GrafanaPanelConfigEditor> {
       ),
     );
   }
+}
+
+/// A named `from`/`to` pair, in Grafana's own relative vocabulary.
+///
+/// Relative and not absolute on purpose: a panel on a wall wants a window
+/// that rolls forward with the shift, not a range frozen at the moment
+/// somebody configured the page. `now-6h` re-evaluates on every render;
+/// a pair of timestamps would age.
+class GrafanaQuickRange {
+  final String label;
+  final String from;
+  final String to;
+  const GrafanaQuickRange(this.label, this.from, this.to);
+}
+
+/// The ranges the picker offers, in Grafana's order and wording so the two
+/// screens agree. `/d` is Grafana's round-to-start-of-day, which is what
+/// makes "Today" mean the day rather than the last 24 hours.
+const List<GrafanaQuickRange> grafanaQuickRanges = [
+  GrafanaQuickRange('Last 5 minutes', 'now-5m', 'now'),
+  GrafanaQuickRange('Last 15 minutes', 'now-15m', 'now'),
+  GrafanaQuickRange('Last 30 minutes', 'now-30m', 'now'),
+  GrafanaQuickRange('Last 1 hour', 'now-1h', 'now'),
+  GrafanaQuickRange('Last 3 hours', 'now-3h', 'now'),
+  GrafanaQuickRange('Last 6 hours', 'now-6h', 'now'),
+  GrafanaQuickRange('Last 12 hours', 'now-12h', 'now'),
+  GrafanaQuickRange('Last 24 hours', 'now-24h', 'now'),
+  GrafanaQuickRange('Last 2 days', 'now-2d', 'now'),
+  GrafanaQuickRange('Last 7 days', 'now-7d', 'now'),
+  GrafanaQuickRange('Last 30 days', 'now-30d', 'now'),
+  GrafanaQuickRange('Today', 'now/d', 'now/d'),
+  GrafanaQuickRange('Yesterday', 'now-1d/d', 'now-1d/d'),
+  GrafanaQuickRange('This week', 'now/w', 'now/w'),
+];
+
+/// The quick range [from]/[to] name, or null when the pair is hand-written
+/// — in which case the picker shows "Custom" and the raw fields carry it.
+GrafanaQuickRange? matchGrafanaQuickRange(String from, String to) {
+  final f = from.trim();
+  final t = to.trim();
+  for (final range in grafanaQuickRanges) {
+    if (range.from == f && range.to == t) return range;
+  }
+  return null;
 }
 
 const List<int> _refreshChoices = [0, 10, 30, 60, 300, 900];

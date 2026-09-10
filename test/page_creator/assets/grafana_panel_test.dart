@@ -877,6 +877,95 @@ void main() {
           isA<GrafanaPanelConfig>());
     });
   });
+
+  group('the time-range picker', () {
+    Future<void> openEditor(WidgetTester tester, GrafanaPanelConfig c) =>
+        tester.pumpWidget(MaterialApp(
+          home: Scaffold(
+            body: Builder(builder: (context) => c.configure(context)),
+          ),
+        ));
+
+    test('a known pair resolves to its Grafana name', () {
+      expect(matchGrafanaQuickRange('now-6h', 'now')!.label, 'Last 6 hours');
+      expect(matchGrafanaQuickRange('now-24h', 'now')!.label, 'Last 24 hours');
+      expect(matchGrafanaQuickRange('now/d', 'now/d')!.label, 'Today');
+      expect(matchGrafanaQuickRange(' now-6h ', ' now ')!.label,
+          'Last 6 hours',
+          reason: 'whitespace from a hand-edit must not defeat the match');
+    });
+
+    test('a hand-written pair is Custom, not a wrong label', () {
+      expect(matchGrafanaQuickRange('now-90m', 'now'), isNull);
+      expect(matchGrafanaQuickRange('now-6h', 'now-1h'), isNull);
+      expect(matchGrafanaQuickRange('', ''), isNull);
+    });
+
+    test('every offered range is relative, so the window rolls', () {
+      // An absolute range would age: the panel would still be showing the
+      // shift somebody configured the page during, months later.
+      for (final range in grafanaQuickRanges) {
+        expect(range.from, startsWith('now'), reason: range.label);
+        expect(range.to, startsWith('now'), reason: range.label);
+      }
+    });
+
+    testWidgets('the default range shows its name, not Custom',
+        (tester) async {
+      await openEditor(tester, _configured());
+      expect(find.text('Last 6 hours'), findsOneWidget);
+      expect(find.text('Custom'), findsNothing);
+    });
+
+    testWidgets('picking a range rewrites From/To and the fields follow',
+        (tester) async {
+      final config = _configured();
+      await openEditor(tester, config);
+
+      await tester.ensureVisible(find.text('Last 6 hours'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Last 6 hours'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Last 24 hours').last);
+      await tester.pumpAndSettle();
+
+      expect(config.from, 'now-24h');
+      expect(config.to, 'now');
+      // The raw fields are the ones that actually get sent, so they have to
+      // show what was picked rather than the value they seeded with.
+      expect(find.text('now-24h'), findsOneWidget);
+    });
+
+    testWidgets('hand-editing From falls back to Custom', (tester) async {
+      final config = _configured();
+      await openEditor(tester, config);
+      expect(find.text('Last 6 hours'), findsOneWidget);
+
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'now-6h'), 'now-90m');
+      await tester.pumpAndSettle();
+
+      expect(config.from, 'now-90m');
+      expect(find.text('Custom'), findsOneWidget);
+      expect(find.text('Last 6 hours'), findsNothing);
+    });
+
+    testWidgets('a picked range reaches the render URL', (tester) async {
+      Uri? asked;
+      GrafanaPanelView.debugFetcher = (uri, headers) async {
+        asked = uri;
+        return _png;
+      };
+      final range = grafanaQuickRanges
+          .firstWhere((r) => r.label == 'Last 7 days');
+      await tester.pumpWidget(_host(_configured()
+        ..from = range.from
+        ..to = range.to));
+      await tester.pumpAndSettle();
+      expect(asked!.queryParameters['from'], 'now-7d');
+      expect(asked!.queryParameters['to'], 'now');
+    });
+  });
 }
 
 /// Stands in for the dart:io SocketException the http client throws when the
