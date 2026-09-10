@@ -28,6 +28,7 @@ dependencies:
   flutter_colorpicker: ^1.1.0
   open62541: ^1.5.7+3
   postgres: ^3.4.5
+  http: ^1.6.0
   intl: ^0.20.2
   collection: ^1.18.0
   community_charts_flutter: ^1.0.4
