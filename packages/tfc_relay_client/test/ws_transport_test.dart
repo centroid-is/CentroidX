@@ -41,6 +41,8 @@ import 'package:tfc_relay_client/src/ws_transport.dart';
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart' show within;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'support/runner_budget.dart';
+
 /// A loopback handshake plus one echoed frame, generously: this transport's
 /// measured round trip is 50 ms (04-RESEARCH Finding 8) and a loaded CI box is
 /// not this machine. The budget exists to turn a hang into a named failure, not
@@ -109,6 +111,8 @@ StreamChannel<String> _channelOf(ConnectAttempt attempt) => switch (attempt) {
     };
 
 void main() {
+  useRunnerBudgets();
+
   group('a live gateway', () {
     late _EchoServer echo;
 

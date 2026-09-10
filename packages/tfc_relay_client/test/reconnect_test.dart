@@ -47,6 +47,7 @@ import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
 import 'package:web_socket_channel/io.dart';
 
 import 'support/permissive_resolver.dart';
+import 'support/runner_budget.dart';
 
 /// A health key `FakeStateMan` seeds at construction, so a subscribe against a
 /// real gateway answers with a real snapshot and no plant has to be simulated.
@@ -303,6 +304,8 @@ final class _FakeLink {
 }
 
 void main() {
+  useRunnerBudgets();
+
   group('the four states and the peer that belongs to each', () {
     test('a live gateway is reached through connecting and resyncing, in order',
         () async {

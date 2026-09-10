@@ -79,6 +79,7 @@ import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
 
 import '../support/client_harness.dart';
 import 'ws_contract_test.dart' show unreachableChecks;
+import '../support/runner_budget.dart';
 
 /// The designated read-only key, character-identical to the one
 /// `ws_contract_test.dart:47` declares and to the server package's.
@@ -162,6 +163,8 @@ final _sweptRoster = allContractChecks.keys
     .toList();
 
 void main() {
+  useRunnerBudgets();
+
   final wall = Stopwatch()..start();
 
   group('the same registry, run through both legs', () {

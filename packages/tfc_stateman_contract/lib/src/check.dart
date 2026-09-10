@@ -26,6 +26,33 @@ import 'package:test/test.dart';
 /// that prove those checks bite.
 typedef Check<A> = Future<void> Function(A api);
 
+/// Multiplies every [within] budget, for runners where the wall clock is not
+/// the one these numbers were measured on.
+///
+/// Every budget in this suite is a **liveness** bound: it exists to turn a hang
+/// into a named failure, not to measure latency. `within`'s own doc says so, so
+/// stretching it on a slow box costs the suite nothing it claims to provide —
+/// what it buys is that a genuinely hung await still fails by name instead of
+/// running out the runner's own timeout with no sentence attached.
+///
+/// It is needed because the Windows CI runner is not this machine. The 200 ms
+/// default is generous against a 50 ms measured round trip on a developer's
+/// laptop and marginal against a real socket on a loaded Windows agent, where
+/// it failed the ws leg of the parity sweep for a first value while the
+/// in-memory leg passed — reported as a contract divergence between the two
+/// legs, which is the one thing that sweep exists to detect and the one thing
+/// that was not happening.
+///
+/// **A seam rather than a `Platform.isWindows` read here.** `check.dart` is
+/// kept free of `dart:io` on purpose — `channel_harness.dart:16` states the
+/// constraint and greps for it — so the platform question is answered by the
+/// caller, which is already VM-only, and this file stays portable.
+///
+/// Scaling, not replacing: a call site that passed an explicit budget still has
+/// its own number, multiplied by the same factor as everything else, so the
+/// relative sizes the suite was written with survive.
+double budgetScale = 1;
+
 /// Awaits [f], but fails the test if it has not settled within [budget].
 ///
 /// [what] names the property being waited for, in operator terms — "the first
@@ -35,15 +62,20 @@ typedef Check<A> = Future<void> Function(A api);
 /// Silence becomes a [TestFailure]. A genuine error is passed through
 /// unchanged: this helper converts *nothing happening* into a named failure,
 /// and leaves everything else alone.
+///
+/// [budget] is multiplied by [budgetScale] before it is applied.
 Future<T> within<T>(
   Future<T> f,
   String what, {
   Duration budget = const Duration(milliseconds: 200),
 }) async {
+  final allowed = budget * budgetScale;
   try {
-    return await f.timeout(budget);
+    return await f.timeout(allowed);
   } on TimeoutException {
-    fail('$what did not happen within ${budget.inMilliseconds} ms');
+    fail('$what did not happen within ${allowed.inMilliseconds} ms'
+        '${budgetScale == 1 ? '' : ' (${budget.inMilliseconds} ms x '
+            '$budgetScale for this runner)'}');
   }
 }
 
