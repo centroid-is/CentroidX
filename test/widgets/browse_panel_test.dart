@@ -6,6 +6,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import 'package:tfc/widgets/browse_panel.dart';
+import 'package:tfc/widgets/panes/standard_dialog.dart';
+import 'package:tfc/widgets/resizable_overlay_frame.dart';
 
 // ---------------------------------------------------------------------------
 // Fake BrowseDataSource
@@ -614,6 +616,184 @@ void main() {
       );
       expect(method.isExpandable, false);
       expect(method.isVariable, false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Floating window
+  // -------------------------------------------------------------------------
+
+  group('showBrowseDialog as a floating window', () {
+    tearDown(closeAllFloatingDialogs);
+
+    /// The future the caller of [showBrowseDialog] would be awaiting, set by
+    /// [open].
+    ///
+    /// Handed over in a variable rather than returned, because an `async`
+    /// helper that returned it would await it on the way out — and it does
+    /// not complete until the window closes, so every test would deadlock on
+    /// its own setup.
+    late Future<BrowseNode?> pending;
+
+    /// Pumps a bare host page and opens Browse over it.
+    Future<void> open(
+      WidgetTester tester,
+      BrowseDataSource dataSource, {
+      String alias = 'TestServer',
+    }) async {
+      late BuildContext ctx;
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(builder: (c) {
+            ctx = c;
+            return const SizedBox.expand();
+          }),
+        ),
+      ));
+      pending = showBrowseDialog(
+        context: ctx,
+        dataSource: dataSource,
+        serverAlias: alias,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('opens in the draggable, resizable chrome, not a modal',
+        (tester) async {
+      await open(tester, FakeBrowseDataSource(roots: [_tempVar]));
+
+      expect(find.byType(ResizableOverlayFrame), findsOneWidget,
+          reason: 'this is what makes the window resizable "and all"');
+      expect(find.byType(Dialog), findsNothing,
+          reason: 'a modal Dialog would put a barrier over the page the '
+              'operator wants to keep reading while they browse');
+      expect(FloatingDialogs.openIds, ['browse:TestServer']);
+
+      closeAllFloatingDialogs();
+      await tester.pumpAndSettle();
+      await pending;
+    });
+
+    testWidgets('resolves with the picked node', (tester) async {
+      await open(
+        tester,
+        FakeBrowseDataSource(
+          roots: [_tempVar],
+          details: {'plc.temp': const BrowseNodeDetail(value: '23.5')},
+        ),
+      );
+
+      await tester.tap(find.text('Temperature'));
+      await tester.pump(kDoubleTapTimeout);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Select'));
+      await tester.pumpAndSettle();
+
+      expect((await pending)?.id, 'plc.temp');
+      expect(FloatingDialogs.isEmpty, isTrue);
+    });
+
+    testWidgets('resolves null when the operator closes it', (tester) async {
+      await open(tester, FakeBrowseDataSource(roots: [_tempVar]));
+
+      await tester.tap(find.byIcon(Icons.close));
+      await tester.pumpAndSettle();
+
+      expect(await pending, isNull);
+    });
+
+    testWidgets('selecting does not re-fetch the tree', (tester) async {
+      // The Select action travels on a notifier precisely so picking a node
+      // cannot rebuild BrowsePanel. On UMAS a rebuild costs a symbol-cache
+      // re-walk per tap; see the umas-fb-freeze-loop note.
+      final ds = FakeBrowseDataSource(
+        roots: [_tempVar],
+        details: {'plc.temp': const BrowseNodeDetail(value: '23.5')},
+      );
+      await open(tester, ds);
+      expect(ds.fetchRootsCallCount, 1);
+
+      await tester.tap(find.text('Temperature'));
+      await tester.pump(kDoubleTapTimeout);
+      await tester.pumpAndSettle();
+
+      expect(ds.fetchRootsCallCount, 1,
+          reason: 'the tree must survive the Select button enabling');
+
+      closeAllFloatingDialogs();
+      await tester.pumpAndSettle();
+      await pending;
+    });
+
+    testWidgets('re-opening the same server replaces the window', (tester) async {
+      late BuildContext ctx;
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(builder: (c) {
+            ctx = c;
+            return const SizedBox.expand();
+          }),
+        ),
+      ));
+
+      final first = showBrowseDialog(
+        context: ctx,
+        dataSource: FakeBrowseDataSource(roots: [_tempVar]),
+        serverAlias: 'TestServer',
+      );
+      await tester.pumpAndSettle();
+
+      final second = showBrowseDialog(
+        context: ctx,
+        dataSource: FakeBrowseDataSource(roots: [_pressVar]),
+        serverAlias: 'TestServer',
+      );
+      await tester.pumpAndSettle();
+
+      expect(await first, isNull,
+          reason: 'the superseded requester is told nothing was picked, so '
+              'its field is left alone');
+      expect(find.byType(BrowsePanel), findsOneWidget,
+          reason: 'replaced, not stacked');
+      expect(find.text('Pressure'), findsOneWidget,
+          reason: 'the window on screen is the NEW one');
+
+      closeAllFloatingDialogs();
+      await tester.pumpAndSettle();
+      await second;
+    });
+
+    testWidgets('two different servers can be browsed side by side',
+        (tester) async {
+      late BuildContext ctx;
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(builder: (c) {
+            ctx = c;
+            return const SizedBox.expand();
+          }),
+        ),
+      ));
+
+      final a = showBrowseDialog(
+        context: ctx,
+        dataSource: FakeBrowseDataSource(roots: [_tempVar]),
+        serverAlias: 'ServerA',
+      );
+      final b = showBrowseDialog(
+        context: ctx,
+        dataSource: FakeBrowseDataSource(roots: [_pressVar]),
+        serverAlias: 'ServerB',
+      );
+      await tester.pumpAndSettle();
+
+      expect(FloatingDialogs.openIds, ['browse:ServerA', 'browse:ServerB']);
+      expect(find.byType(BrowsePanel), findsNWidgets(2));
+
+      closeAllFloatingDialogs();
+      await tester.pumpAndSettle();
+      expect(await a, isNull);
+      expect(await b, isNull);
     });
   });
 }

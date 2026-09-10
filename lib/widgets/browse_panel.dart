@@ -118,13 +118,30 @@ typedef BrowseErrorInfo = ({String summary, String detail});
 /// Return null to fall back to the default `e.toString()` display.
 typedef BrowseErrorMapper = BrowseErrorInfo? Function(Object error);
 
-/// Shows an address-space browser in a standard modal dialog sized at 80% of
-/// the screen. Returns the selected [BrowseNode] or null if cancelled.
+/// Shows an address-space browser in a free-floating [StandardDialog] and
+/// returns the selected [BrowseNode], or null if the operator closed it
+/// without picking.
+///
+/// Floating rather than modal because browsing a PLC's address space is not a
+/// question to be answered before anything else may happen: the operator
+/// reads a live value off the tree, drags the window aside to check the form
+/// behind it, and comes back. Nothing is dimmed and the page underneath stays
+/// live — including, when Browse was opened from the key-mapping dialog, that
+/// dialog itself.
+///
+/// One window per server. Opening Browse for an alias that already has one
+/// replaces it rather than stacking a second copy: a browse window answers
+/// exactly one requester, and the superseded one resolves null. Two different
+/// servers can be browsed side by side.
 ///
 /// When [initialPath] is non-null, the panel opens with that path
 /// pre-selected, the tree expanded down to it, and the detail strip
 /// populated. Stale bindings (target no longer resolves) fall back to the
 /// default empty-selection state without crashing.
+///
+/// Callers must re-check `mounted` after the await — navigating away closes
+/// every floating dialog, which resolves this future with null while the
+/// awaiting widget is being disposed in the same breath.
 Future<BrowseNode?> showBrowseDialog({
   required BuildContext context,
   required BrowseDataSource dataSource,
@@ -132,67 +149,45 @@ Future<BrowseNode?> showBrowseDialog({
   BrowseErrorMapper? errorMapper,
   String? initialPath,
 }) {
-  return showDialog<BrowseNode>(
+  final id = 'browse:$serverAlias';
+  if (FloatingDialogs.isOpen(id)) closeFloatingDialog(id);
+
+  // The `Select` action is the only thing about this window that changes
+  // while it is open, so it travels on its own notifier rather than through a
+  // rebuild of the dialog. Rebuilding would rebuild [BrowsePanel] with it and
+  // cost the loaded tree — on UMAS that means re-walking the symbol cache on
+  // every tap. See the umas-fb-freeze-loop note in umas_browse.dart.
+  final actions = ValueNotifier<List<PaneAction>>(
+    const [PaneAction.primary(label: 'Select')],
+  );
+
+  return showFloatingDialog<BrowseNode>(
     context: context,
-    builder: (context) => _BrowseDialog(
+    id: id,
+    title: 'Browse',
+    subtitle: serverAlias,
+    icon: Icons.account_tree_outlined,
+    size: const Size(920, 600),
+    // The panel sizes its own tree with an Expanded; a scroll view's
+    // unbounded height would break it, and it wants the whole window anyway.
+    scrollable: false,
+    actionsListenable: actions,
+    onClosed: actions.dispose,
+    builder: (_) => BrowsePanel(
       dataSource: dataSource,
-      serverAlias: serverAlias,
       errorMapper: errorMapper,
       initialPath: initialPath,
-    ),
-  );
-}
-
-/// The standard-chrome frame around [BrowsePanel]: header with the server
-/// identity and close button, pinned action bar with `Select`. Holds the
-/// current selection so the action enables the moment a variable is picked.
-class _BrowseDialog extends StatefulWidget {
-  final BrowseDataSource dataSource;
-  final String serverAlias;
-  final BrowseErrorMapper? errorMapper;
-  final String? initialPath;
-
-  const _BrowseDialog({
-    required this.dataSource,
-    required this.serverAlias,
-    this.errorMapper,
-    this.initialPath,
-  });
-
-  @override
-  State<_BrowseDialog> createState() => _BrowseDialogState();
-}
-
-class _BrowseDialogState extends State<_BrowseDialog> {
-  BrowseNode? _selected;
-
-  @override
-  Widget build(BuildContext context) {
-    final screenSize = MediaQuery.sizeOf(context);
-    return StandardDialogFrame(
-      title: 'Browse',
-      subtitle: widget.serverAlias,
-      icon: Icons.account_tree_outlined,
-      width: screenSize.width * 0.8,
-      height: screenSize.height * 0.8,
-      scrollable: false,
-      actions: [
+      onSelected: (node) => closeFloatingDialog(id, result: node),
+      onSelectionChanged: (node) => actions.value = [
         PaneAction.primary(
           label: 'Select',
-          onPressed: _selected != null && _selected!.isVariable
-              ? () => Navigator.of(context).pop(_selected)
+          onPressed: node != null && node.isVariable
+              ? () => closeFloatingDialog(id, result: node)
               : null,
         ),
       ],
-      child: BrowsePanel(
-        dataSource: widget.dataSource,
-        errorMapper: widget.errorMapper,
-        initialPath: widget.initialPath,
-        onSelected: (node) => Navigator.of(context).pop(node),
-        onSelectionChanged: (node) => setState(() => _selected = node),
-      ),
-    );
-  }
+    ),
+  );
 }
 
 /// Protocol-agnostic browse panel that displays a tree of nodes from a
