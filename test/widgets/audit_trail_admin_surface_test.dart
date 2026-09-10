@@ -13,7 +13,7 @@
 /// selected by Phase 5, with nobody's test double in between.** Every test here
 /// drives a real `AccessAdminStore` over a real in-memory database through the
 /// real `DriftAuditSink`, and reads the row back through the real
-/// [AuditTrailStore]. A hand-built `AuditEntryData` would prove that a
+/// [AuditTrailStore]. A hand-built `AuditRecord` would prove that a
 /// hand-written row renders, which is a different and much weaker claim than
 /// the one 06-01 made.
 ///
@@ -178,11 +178,11 @@ void main() {
   }
 
   /// What Phase 5's store returns for [filters], right now.
-  Future<List<AuditEntryData>> read(AuditTrailFilters filters) =>
+  Future<List<AuditRecord>> read(AuditTrailFilters filters) =>
       trail.entries(filters.toQuery(now: DateTime.now()));
 
   /// The one `role.update` row, as the trail returned it.
-  AuditEntryData roleUpdate(List<AuditEntryData> rows) =>
+  AuditRecord roleUpdate(List<AuditRecord> rows) =>
       rows.singleWhere((row) => row.itemKey == 'role.update');
 
   // -------------------------------------------------------------------------

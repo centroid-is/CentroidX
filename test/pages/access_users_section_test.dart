@@ -495,6 +495,9 @@ void main() {
             newValue: const Value('12.5'),
           ));
 
+  // Drift rows on purpose, and not the store's `AuditRecord`: this reads the
+  // table directly to assert what was *written*, so the generated row type is
+  // the honest one here. The store's read path is what speaks `AuditRecord`.
   Future<List<AuditEntryData>> auditRowsFor(String who) =>
       (db.select(db.auditEntry)..where((t) => t.who.equals(who))).get();
 

@@ -66,7 +66,7 @@ class AuditAction {
 
   /// The rows of this action that survived the filters, in the order the store
   /// returned them — newest-first, and never re-sorted here.
-  final List<AuditEntryData> rows;
+  final List<AuditRecord> rows;
 
   /// How many rows this action has in the table, filters aside.
   ///
@@ -83,7 +83,7 @@ class AuditAction {
   final int totalRowCount;
 
   /// The row the collapsed line is drawn from.
-  AuditEntryData get lead => rows.first;
+  AuditRecord get lead => rows.first;
 
   /// How many of this action's rows the filters excluded.
   ///
@@ -146,12 +146,12 @@ class AuditAction {
 /// the reason [totalsByActionId] is passed in at all is that the excluded rows
 /// are not available to be re-included.
 List<AuditAction> groupAuditRows(
-  List<AuditEntryData> rows, {
+  List<AuditRecord> rows, {
   Map<String, int> totalsByActionId = const {},
 }) {
-  final byAction = <String, List<AuditEntryData>>{};
+  final byAction = <String, List<AuditRecord>>{};
   for (final row in rows) {
-    byAction.putIfAbsent(row.actionId, () => <AuditEntryData>[]).add(row);
+    byAction.putIfAbsent(row.actionId, () => <AuditRecord>[]).add(row);
   }
 
   return [
@@ -227,7 +227,12 @@ String strictestGroupName(Iterable<String> names) {
 /// `old → new` instead of failing loudly.
 ///
 /// `AuditRecord.isAuthEvent` (`packages/tfc_access/lib/src/audit.dart`) is the
-/// same predicate on the writer's type. The two must stay in step.
+/// same predicate on the writer's type, and this function now **delegates to
+/// it** rather than restating it. Before the store answered in `AuditRecord`
+/// there were two literals to keep in step and a comment here asking a reader
+/// to do it by hand; there is one now, and it lives with the type. The name
+/// stays because three widgets and the source-grep test below read better for
+/// it — what went away is the second definition, not the second spelling.
 ///
 /// ## Why it keys on `surface` and not on an empty `group_required`
 ///
@@ -239,4 +244,4 @@ String strictestGroupName(Iterable<String> names) {
 /// diverging: the row that breaks it is an unbound tag write, which carries an
 /// empty `group_required` too (`guarded_state_man.dart` writes
 /// `strictestRequired?.name ?? ''`).
-bool isAuthEntry(AuditEntryData row) => row.surface == 'auth';
+bool isAuthEntry(AuditRecord row) => row.isAuthEvent;

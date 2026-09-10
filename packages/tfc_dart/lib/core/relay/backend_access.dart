@@ -336,10 +336,19 @@ final class BackendAudit implements relay.AuditApi {
               'answer a read-only family can give.');
 
   @override
-  Future<List<AuditRecord>> entries(relay.AuditQueryParams query) async {
-    final rows = await _require('entries').entries(_toQuery(query));
-    return [for (final row in rows) _toRecord(row)];
-  }
+  // A pass-through: the store already answers in `AuditRecord`. The
+  // row-to-record mapping this method used to perform now lives on the store,
+  // which is the only place that ever holds a drift row.
+  //
+  // `async` is load-bearing and not decoration. `_require` throws when no
+  // database is wired, and every member of this family owes that refusal as a
+  // **rejected future** rather than a synchronous throw — the arms in
+  // `backend_access_test.dart` call each member inside `expectLater`, where a
+  // synchronous throw escapes the matcher entirely. Dropping it here to make
+  // the body an expression turned the refusal into a different kind of failure
+  // and reddened arm 6.
+  Future<List<AuditRecord>> entries(relay.AuditQueryParams query) async =>
+      _require('entries').entries(_toQuery(query));
 
   @override
   Future<Map<String, int>> memberCountsByAction(List<String> actionIds) async =>
@@ -380,24 +389,4 @@ final class BackendAudit implements relay.AuditApi {
     );
   }
 
-  /// Drift's generated row onto `tfc_access`'s own record — the mapping this
-  /// seam exists for, exactly as `backend_data_services.dart` maps
-  /// `HistoryViewData` onto the protocol's records. Every column crosses;
-  /// nothing is invented.
-  static AuditRecord _toRecord(AuditEntryData row) => AuditRecord(
-        at: row.at,
-        who: row.who,
-        station: row.station,
-        roleName: row.roleName,
-        surface: row.surface,
-        itemKey: row.itemKey,
-        member: row.member,
-        oldValue: row.oldValue,
-        newValue: row.newValue,
-        groupRequired: row.groupRequired,
-        allowed: row.allowed,
-        origin: row.origin,
-        actionId: row.actionId,
-        reason: row.reason,
-      );
 }

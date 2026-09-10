@@ -55,8 +55,7 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_admin_store.dart';
 import 'package:tfc_dart/core/access/access_template_store.dart';
 import 'package:tfc_dart/core/access/audit_trail_store.dart';
-import 'package:tfc_dart/core/database_drift.dart'
-    show AppUserData, AuditEntryData;
+import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
     hide PreferencesApi;
 
@@ -403,33 +402,17 @@ final class RelayedAuditTrailStore implements AuditTrailStore {
   final AuditApi _api;
 
   @override
-  Future<List<AuditEntryData>> entries(AuditQuery query) =>
-      relayedAccessErrors(() async {
-        final rows = await _api.entries(auditQueryParamsFor(query));
-        return [
-          for (final (index, row) in rows.indexed)
-            AuditEntryData(
-              // The wire carries no row id and nothing reads one — the
-              // grouping keys on actionId. A local ordinal keeps the drift
-              // class satisfied without claiming a database identity.
-              id: index,
-              at: row.at,
-              who: row.who,
-              station: row.station,
-              roleName: row.roleName,
-              surface: row.surface,
-              itemKey: row.itemKey,
-              member: row.member,
-              oldValue: row.oldValue,
-              newValue: row.newValue,
-              groupRequired: row.groupRequired,
-              allowed: row.allowed,
-              origin: row.origin,
-              actionId: row.actionId,
-              reason: row.reason,
-            ),
-        ];
-      });
+  Future<List<AuditRecord>> entries(AuditQuery query) =>
+      // A pass-through. The wire already carries `AuditRecord` — `tfc_access`'s
+      // own declaration — and so does the store this implements, so there is
+      // nothing left to convert.
+      //
+      // What used to be here was a reconstruction into drift's `AuditEntryData`
+      // with `id: index`: a local ordinal invented to satisfy a class this
+      // panel has no database for. Deleting it is the point of the change, not
+      // a side effect of it — a gateway station now hands the page the same
+      // objects the backend read out of the table.
+      relayedAccessErrors(() => _api.entries(auditQueryParamsFor(query)));
 
   @override
   Future<Map<String, int>> memberCountsByAction(Iterable<String> actionIds) =>

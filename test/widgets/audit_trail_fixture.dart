@@ -43,6 +43,7 @@
 library;
 
 import 'package:tfc_dart/core/database_drift.dart';
+import 'package:tfc_access/tfc_access.dart';
 
 /// The instant the newest row in every fixture happened.
 ///
@@ -79,7 +80,7 @@ const int kAuditGoldenGroupTotal = 9;
 ///
 /// The same shape `audit_trail_row_test.dart` and `test/pages/audit_trail_test.
 /// dart` use, so a row read in one file reads the same way in the others.
-AuditEntryData auditGoldenRow({
+AuditRecord auditGoldenRow({
   required int id,
   Duration? ago,
   String who = 'jon',
@@ -96,8 +97,7 @@ AuditEntryData auditGoldenRow({
   String? actionId,
   String? reason,
 }) =>
-    AuditEntryData(
-      id: id,
+    AuditRecord(
       at: kAuditGoldenBase.subtract(ago ?? Duration(minutes: id - 1)),
       who: who,
       station: station,
@@ -124,7 +124,7 @@ AuditEntryData auditGoldenRow({
 /// Written as *what the `WHERE` clause returned*, not as a table to be filtered:
 /// every filter this page has is pushed into SQL, and the golden's store answers
 /// this list verbatim.
-List<AuditEntryData> auditGoldenPopulatedRows() => <AuditEntryData>[
+List<AuditRecord> auditGoldenPopulatedRows() => <AuditRecord>[
       // A sign-in. Orange mark, no `old → new` at all — the writer withholds
       // both columns on an auth row and the widget renders no slot for them.
       auditGoldenRow(
@@ -217,7 +217,7 @@ const Duration kAuditGoldenGroupAgo = Duration(minutes: 10);
 /// All three share [kAuditGoldenGroupActionId], so `groupAuditRows` folds them
 /// into one [AuditAction]; the store's companion count says nine, so the action
 /// is partial, arrives expanded, and carries the hidden-members line.
-List<AuditEntryData> auditGoldenPartialGroupRows() => <AuditEntryData>[
+List<AuditRecord> auditGoldenPartialGroupRows() => <AuditRecord>[
       auditGoldenRow(
         id: 11,
         ago: kAuditGoldenGroupAgo,

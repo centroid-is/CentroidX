@@ -394,6 +394,7 @@ void main() {
       String surface = 'tag',
       String origin = 'operator',
       String actionId = 'action-a',
+      String? reason,
     }) =>
         DriftAuditSink(db).record(AuditRecord(
           at: at,
@@ -409,9 +410,10 @@ void main() {
           allowed: allowed,
           origin: origin,
           actionId: actionId,
+          reason: reason,
         ));
 
-    Future<List<AuditEntryData>> run(AuditTrailFilters filters) =>
+    Future<List<AuditRecord>> run(AuditTrailFilters filters) =>
         store().entries(filters.toQuery(now: _now));
 
     setUp(() async {
@@ -422,6 +424,76 @@ void main() {
     });
 
     tearDown(() => db.close());
+
+    // -----------------------------------------------------------------------
+    // What comes back out
+    //
+    // The store answers in `tfc_access`'s own `AuditRecord`, not in drift's
+    // generated `AuditRecord`. That is the point of these two tests: they
+    // are written against the fourteen columns one at a time, so a mapper that
+    // drops a field, or transposes two of the same type, reddens here rather
+    // than reaching a page and being read as the truth about who did what.
+    // -----------------------------------------------------------------------
+
+    test('carries every column of a maximal row across the seam', () async {
+      final at = _now.subtract(const Duration(hours: 1));
+      await DriftAuditSink(db).record(AuditRecord(
+        at: at,
+        who: 'engineer',
+        station: 'SVN-NES-OT-CL02',
+        roleName: 'Engineering',
+        surface: 'tag',
+        itemKey: 'CN04.MOT01.p_cmd_Run',
+        member: 'p_cfg.Freq',
+        // Deliberately distinguishable from each other: two same-typed
+        // nullable neighbours are exactly what a mapper transposes silently.
+        oldValue: 'old-0',
+        newValue: 'new-1',
+        groupRequired: 'configure',
+        // Not the default. A denial is the more interesting audit line, and a
+        // mapper that hardcoded `true` would otherwise pass this.
+        allowed: false,
+        origin: 'machine',
+        actionId: 'action-max',
+        reason: 'the line was jammed',
+      ));
+
+      final rows = await run(const AuditTrailFilters(who: 'engineer'));
+
+      expect(rows, hasLength(1));
+      final row = rows.single;
+      expect(row.at, at);
+      expect(row.who, 'engineer');
+      expect(row.station, 'SVN-NES-OT-CL02');
+      expect(row.roleName, 'Engineering');
+      expect(row.surface, 'tag');
+      expect(row.itemKey, 'CN04.MOT01.p_cmd_Run');
+      expect(row.member, 'p_cfg.Freq');
+      expect(row.oldValue, 'old-0');
+      expect(row.newValue, 'new-1');
+      expect(row.groupRequired, 'configure');
+      expect(row.allowed, isFalse);
+      expect(row.origin, 'machine');
+      expect(row.actionId, 'action-max');
+      expect(row.reason, 'the line was jammed');
+    });
+
+    test('passes through a surface this build has never heard of', () async {
+      // `AuditRecord`'s named factories mint the surfaces this build knows.
+      // The read path must use the raw constructor instead, because a newer
+      // station writing a surface added after this build shipped still has to
+      // come back intact — `groupAuditRows` and `kKnownAuditSurfaces` both
+      // depend on unknown surfaces surviving the trip rather than being
+      // normalised into something legible.
+      await seed(
+        at: _now.subtract(const Duration(hours: 2)),
+        surface: 'quarantine',
+      );
+
+      final rows = await run(const AuditTrailFilters(who: 'engineer'));
+
+      expect(rows.single.surface, 'quarantine');
+    });
 
     // -----------------------------------------------------------------------
     // Ordering
@@ -436,7 +508,12 @@ void main() {
       expect(rows.map((r) => r.itemKey), ['new', 'old']);
     });
 
-    test('ties on at resolve by id descending', () async {
+    // The tiebreak is still `id DESC` in the statement — a row id is a database
+    // identity and stays one. These two observe it through `member` instead,
+    // because the store no longer answers in a type that carries an id, and
+    // each fixture row below is seeded with a distinct member, so member and id
+    // agree one-for-one and the guarantee pinned is the same one.
+    test('ties on at resolve by insertion order, newest first', () async {
       final at = _now.subtract(const Duration(hours: 1));
       await seed(at: at, member: 'p_cfg.Freq');
       await seed(at: at, member: 'p_cfg.Ramp');
@@ -444,12 +521,13 @@ void main() {
 
       final rows = await run(const AuditTrailFilters());
 
-      expect(rows.map((r) => r.id), [3, 2, 1],
+      expect(rows.map((r) => r.member),
+          ['p_cfg.Accel', 'p_cfg.Ramp', 'p_cfg.Freq'],
           reason: "a struct write's member rows all share an at, so without a "
               'tiebreak the order is whatever the engine felt like.');
     });
 
-    test('the same query run twice returns identical id sequences', () async {
+    test('the same query run twice returns the same sequence', () async {
       final at = _now.subtract(const Duration(hours: 1));
       for (var i = 0; i < 5; i++) {
         await seed(at: at, member: 'p_cfg.M$i');
@@ -459,8 +537,8 @@ void main() {
       final first = await run(const AuditTrailFilters());
       final second = await run(const AuditTrailFilters());
 
-      expect(first.map((r) => r.id).toList(),
-          second.map((r) => r.id).toList());
+      expect(first.map((r) => r.member).toList(),
+          second.map((r) => r.member).toList());
     });
 
     // -----------------------------------------------------------------------

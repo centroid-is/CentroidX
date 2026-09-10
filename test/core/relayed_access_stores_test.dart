@@ -479,8 +479,8 @@ void main() {
       expect(wireAllowedFor(AuditOutcomeFilter.deniedOnly), isFalse);
     });
 
-    test('wire rows become drift rows with every column intact and inert '
-        'local ids', () async {
+    test('the wire rows reach the caller untouched, as the same objects',
+        () async {
       final api = _RecordingAuditApi()
         ..rows = [
           AuditRecord(
@@ -523,9 +523,14 @@ void main() {
       expect(rows.first.origin, 'relay');
       expect(rows.first.actionId, 'A-1');
       expect(rows.first.reason, 'test');
-      expect(rows.map((r) => r.id).toSet(), hasLength(2),
-          reason: 'ordinals, distinct — nothing reads them, the grouping '
-              'keys on actionId');
+      // The store is a pass-through, and this is what pins it there: the very
+      // objects the wire produced reach the caller. It used to rebuild each row
+      // as a drift `AuditEntryData` with an invented ordinal id, and the
+      // assertion here was that those ordinals were distinct — a fact about a
+      // fabrication. Reintroducing any reconstruction, however faithful,
+      // reddens this, because a copy is not the same instance.
+      expect(rows[0], same(api.rows[0]));
+      expect(rows[1], same(api.rows[1]));
     });
 
     test('memberCountsByAction accepts any iterable, sends a list', () async {

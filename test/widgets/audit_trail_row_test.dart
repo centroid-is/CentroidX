@@ -21,6 +21,7 @@ import 'package:tfc/core/audit_trail_grouping.dart';
 import 'package:tfc/theme.dart' show HmiStateColors, muted;
 import 'package:tfc/widgets/audit_trail_row.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import 'package:tfc_access/tfc_access.dart';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -35,7 +36,7 @@ const String _actionId = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
 
 /// One audit row, with every column defaulted to the ordinary case so a test
 /// names only the column it is about.
-AuditEntryData _row({
+AuditRecord _row({
   int id = 1,
   DateTime? at,
   String who = 'jon',
@@ -52,8 +53,7 @@ AuditEntryData _row({
   String actionId = _actionId,
   String? reason,
 }) =>
-    AuditEntryData(
-      id: id,
+    AuditRecord(
       at: at ?? _at,
       who: who,
       station: station,
@@ -77,7 +77,7 @@ AuditEntryData _row({
 /// `groupAuditRows` documents. A test that is about a partly filtered action
 /// names a bigger number.
 AuditAction _action({
-  required List<AuditEntryData> rows,
+  required List<AuditRecord> rows,
   int? totalRowCount,
 }) =>
     AuditAction(
@@ -361,7 +361,7 @@ void main() {
   group('AuditEntryLine, auth rows', () {
     /// An auth row as `audit.dart`'s named constructors write one: the event in
     /// `itemKey`, an empty `groupRequired`, and no values.
-    AuditEntryData authRow({
+    AuditRecord authRow({
       String itemKey = 'login',
       bool allowed = true,
     }) =>

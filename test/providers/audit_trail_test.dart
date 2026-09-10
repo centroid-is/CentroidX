@@ -55,7 +55,7 @@ class _CountingStore extends Fake implements AuditTrailStore {
   bool throwing = false;
 
   @override
-  Future<List<AuditEntryData>> entries(AuditQuery query) {
+  Future<List<AuditRecord>> entries(AuditQuery query) {
     entriesCalls++;
     if (throwing) throw StateError('the audit database blinked');
     return inner.entries(query);

@@ -474,7 +474,19 @@ class AuditTrailStore {
   /// nothing in this file interpolates a value into SQL, so a prefix of
   /// `x' OR 1=1 --` returns rows or no rows and never changes the shape of the
   /// statement.
-  Future<List<AuditEntryData>> entries(AuditQuery query) {
+  /// ## What comes back
+  ///
+  /// `AuditRecord` — `tfc_access`'s own declaration, the same type
+  /// [DriftAuditSink] takes on the write side and the same type the relay
+  /// carries — never drift's generated `AuditEntryData`. The store is where the
+  /// row stops being a row.
+  ///
+  /// The generated class carries an `id` and this type does not. That is the
+  /// one column deliberately dropped: a row id is a database identity, nothing
+  /// above this layer reads one, and the relayed store previously had to invent
+  /// an ordinal to fabricate a value for it. The id still does its work inside
+  /// the statement below, as the tiebreak in the `ORDER BY`.
+  Future<List<AuditRecord>> entries(AuditQuery query) async {
     final statement = _db.select(_db.auditEntry)
       ..where((t) {
         Expression<bool>? predicate;
@@ -578,8 +590,35 @@ class AuditTrailStore {
       ])
       ..limit(query.limit);
 
-    return statement.get();
+    return (await statement.get()).map(_toRecord).toList();
   }
+
+  /// Drift's generated row onto `tfc_access`'s own record. Every column that
+  /// exists on both crosses; nothing is invented and nothing is normalised.
+  ///
+  /// **The raw constructor, never the named factories.** `AuditRecord.login`
+  /// and its siblings mint the surfaces *this* build knows about. A station
+  /// running a newer build may have written a surface this one has never heard
+  /// of, and it has to come back as it was stored: `groupAuditRows` and
+  /// `kKnownAuditSurfaces` both depend on an unfamiliar surface arriving
+  /// intact, so that it can be shown as itself rather than quietly folded into
+  /// a category that happens to be legible here.
+  static AuditRecord _toRecord(AuditEntryData row) => AuditRecord(
+        at: row.at,
+        who: row.who,
+        station: row.station,
+        roleName: row.roleName,
+        surface: row.surface,
+        itemKey: row.itemKey,
+        member: row.member,
+        oldValue: row.oldValue,
+        newValue: row.newValue,
+        groupRequired: row.groupRequired,
+        allowed: row.allowed,
+        origin: row.origin,
+        actionId: row.actionId,
+        reason: row.reason,
+      );
 
   /// The true number of rows each of [actionIds] produced, counted over the
   /// **whole** table with no filter and no time bound.
