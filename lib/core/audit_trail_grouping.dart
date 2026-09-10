@@ -15,7 +15,6 @@
 library;
 
 import 'package:tfc_access/tfc_access.dart';
-import 'package:tfc_dart/core/database_drift.dart';
 
 /// The audit surfaces this build knows how to talk about.
 ///
