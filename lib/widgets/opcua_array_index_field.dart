@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import '../core/opcua_sessions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:open62541/open62541_types.dart' show NodeId, DynamicValue;
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
+// The probe reads a live node, so it lives behind the same seam as the browse
+// dialog. See `opcua_browse_entry.dart`.
+import 'live_browse.dart';
 import '../providers/state_man.dart';
 
 /// A field that lets the user select an index within an OPC UA array node.
@@ -87,41 +88,22 @@ class OpcUaArrayIndexFieldState extends ConsumerState<OpcUaArrayIndexField> {
       final stateMan = ref.read(stateManProvider).valueOrNull;
       if (stateMan == null) throw Exception('Server connections not ready');
 
-      ClientWrapper? wrapper;
-      for (final w in opcUaSessionsOf(stateMan)) {
-        if (w.config.serverAlias == widget.serverAlias) {
-          wrapper = w;
-          break;
-        }
-      }
-      wrapper ??= opcUaSessionsOf(stateMan).isEmpty ? null : opcUaSessionsOf(stateMan).first;
-      if (wrapper == null) throw Exception('No OPC UA client available');
-
-      final nodeId = int.tryParse(id) != null
-          ? NodeId.fromNumeric(ns, int.parse(id))
-          : NodeId.fromString(ns, id);
-
-      final DynamicValue value =
-          await wrapper.client.read(nodeId).timeout(const Duration(seconds: 5));
+      final size = await probeOpcUaArrayLength(
+        stateMan,
+        serverAlias: widget.serverAlias,
+        namespace: ns,
+        identifier: id,
+      );
 
       if (!mounted) return;
-      if (value.isArray) {
-        final size = value.asArray.length;
-        setState(() {
-          _isProbing = false;
-          _arraySize = size;
-        });
-        // Invalidate selection if it is out-of-range for the new size.
-        final current = widget.value;
-        if (current != null && (current < 0 || current >= size)) {
-          widget.onChanged(null);
-        }
-      } else {
-        setState(() {
-          _isProbing = false;
-          _arraySize = null;
-          _probeError = 'Node is not an array';
-        });
+      setState(() {
+        _isProbing = false;
+        _arraySize = size;
+      });
+      // Invalidate selection if it is out-of-range for the new size.
+      final current = widget.value;
+      if (current != null && (current < 0 || current >= size)) {
+        widget.onChanged(null);
       }
     } catch (e) {
       if (!mounted) return;

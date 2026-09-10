@@ -19,7 +19,7 @@ library;
 import 'dart:convert' show utf8;
 
 import 'package:tfc_dart/core/boolean_expression.dart' show ExpressionConfig;
-import 'package:tfc_dart/core/state_man.dart' show KeyMappings;
+import 'package:tfc_dart/core/state_man_types.dart' show KeyMappings;
 import 'package:tfc_dart/tfc_dart.dart' show RetentionPolicy;
 
 import 'collection_config.dart';

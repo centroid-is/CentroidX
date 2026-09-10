@@ -107,7 +107,7 @@ dependency_overrides:
   open62541:
     git:
       url: https://github.com/centroid-is/open62541_dart.git
-      ref: 2ff18e4ee0af759cba4258a02648889bbbd526ae
+      ref: 91a497a2f1b2e5c7232c9e229de9a9d67c353edb
   # Copied verbatim from packages/tfc_dart/pubspec.yaml, comment included: a
   # dependency_overrides block only applies from the ROOT of a solve, so
   # tfc_dart's own overrides do nothing when tfc_dart is a path dependency here.

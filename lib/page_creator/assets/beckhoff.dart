@@ -15,7 +15,7 @@ import '../../painter/beckhoff/ek1110.dart';
 import '../../painter/beckhoff/ep_box.dart';
 import '../../painter/beckhoff/io8.dart';
 import '../../painter/beckhoff/ps2001.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import '../../providers/state_man.dart';
 import '../../widgets/panes/pane_chrome.dart';
 import '../../widgets/panes/side_pane.dart';

@@ -12,9 +12,11 @@ import 'package:path/path.dart' as path;
 import '../widgets/base_scaffold.dart';
 import '../widgets/proposal_visual.dart';
 import '../providers/proposal_state.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
+import 'package:tfc_dart/core/state_man_config_storage.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
-import 'package:tfc_dart/core/collector.dart';
+// `CollectEntry`/`CollectConfig` only — see the note in `assets/common.dart`.
+import 'package:tfc_dart/core/collect_config.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
 import '../widgets/fuzzy_search_bar.dart';

@@ -21,7 +21,7 @@ import 'dart:io';
 import 'package:args/args.dart';
 import 'package:open62541/open62541.dart';
 import 'package:tfc_dart/core/log_config.dart' show opcuaLogLevelFromEnv;
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 
 /// Default location of the HMI preferences file per platform.
 String? _defaultPrefsPath() {

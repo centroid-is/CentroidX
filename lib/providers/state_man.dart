@@ -9,12 +9,12 @@ import 'package:rxdart/rxdart.dart';
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
 import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc_dart/core/state_man_types.dart';
-// The one remaining edge to the FFI half, and it is `StateManConfigStorage`
-// alone: reading this station's config needs the drift-backed `Preferences`,
-// because `secret:` and `saveToDb:` live on that class and not on
-// `PreferencesApi`. Everything else in this file now names the types file.
-// See `direct_transport.dart` for the transport half of the same split.
-import 'package:tfc_dart/core/state_man.dart' show StateManConfigStorage;
+// Reading this station's config needs the drift-backed `Preferences`, because
+// `secret:` and `saveToDb:` live on that class and not on `PreferencesApi`.
+// That is fine for a browser; what was not fine is that the extension lived
+// beside `OpcUaStateMan`, so naming it linked `dart:ffi`. It has its own file
+// now. See `direct_transport.dart` for the transport half of the same split.
+import 'package:tfc_dart/core/state_man_config_storage.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart'
     show ClientConfig, RemoteStateMan;

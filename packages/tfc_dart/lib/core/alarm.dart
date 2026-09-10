@@ -21,7 +21,10 @@ import 'package:drift/drift.dart' as drift show Constant, Expression;
 import 'alarm_stamp.dart';
 import 'database_drift.dart' show $AlarmHistoryTable;
 import 'preferences.dart';
-import 'state_man.dart';
+// The interface only. `state_man.dart` also holds the OPC UA client, which is
+// `dart:ffi`, and the alarm editor is a web route — the rule model has no
+// business linking a protocol stack to name the thing it reads values from.
+import 'state_man_types.dart' show StateMan;
 import 'ring_buffer.dart';
 import 'boolean_expression.dart';
 import 'fuzzy_match.dart';

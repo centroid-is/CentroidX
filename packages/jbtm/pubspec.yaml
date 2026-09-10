@@ -19,7 +19,7 @@ dependency_overrides:
       # .statusCode / .sourceTimestamp and opt-in `deliverBadStatus`. Keep in
       # step with the root pubspec.yaml; every open62541 override in this
       # repo carries this same SHA.
-      ref: 2ff18e4ee0af759cba4258a02648889bbbd526ae
+      ref: 91a497a2f1b2e5c7232c9e229de9a9d67c353edb
 
 dev_dependencies:
   test: ^1.25.0

@@ -26,6 +26,8 @@ import 'package:tfc_dart/core/state_man.dart';
 /// is the normal case on a station in gateway mode, not an error.
 List<ClientWrapper> opcUaSessionsOf(StateMan stateMan) {
   if (stateMan is OpcUaStateMan) return stateMan.clients;
-  if (stateMan is GuardedStateMan) return stateMan.clients;
+  if (stateMan is GuardedStateMan) {
+    return stateMan.innerAs<OpcUaStateMan>()?.clients ?? const [];
+  }
   return const [];
 }

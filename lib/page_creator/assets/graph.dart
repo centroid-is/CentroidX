@@ -11,7 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc/converter/color_converter.dart';
 import 'package:tfc_dart/converter/duration_converter.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 
 import '../../widgets/duration_field.dart';
 import 'common.dart';

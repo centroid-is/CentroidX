@@ -54,7 +54,7 @@ dependency_overrides:
   open62541:
     git:
       url: https://github.com/centroid-is/open62541_dart.git
-      ref: 2ff18e4ee0af759cba4258a02648889bbbd526ae
+      ref: 91a497a2f1b2e5c7232c9e229de9a9d67c353edb
   postgres:
     git:
       url: https://github.com/centroid-is/postgresql-dart.git

@@ -37,6 +37,10 @@ import 'modbus_client_wrapper.dart' show ModbusDataType;
 import 'collect_config.dart';
 import 'preferences_api.dart';
 
+/// Pure plumbing that used to live in `state_man.dart`; re-exported so callers
+/// that reached it through this file are unaffected.
+export 'auto_disposing_stream.dart';
+
 part 'state_man_types.g.dart';
 
 /// Statistics tracker for runIterate timing

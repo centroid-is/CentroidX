@@ -60,7 +60,7 @@ import 'dart:convert';
 import 'package:collection/collection.dart';
 
 import 'relay/backend_config_store.dart' show kSecretPreservedSentinel;
-import 'state_man.dart';
+import 'state_man_types.dart';
 
 const _eq = DeepCollectionEquality();
 

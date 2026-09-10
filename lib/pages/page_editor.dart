@@ -37,10 +37,11 @@ import '../providers/current_page_assets.dart';
 import '../tech_docs/tech_doc_picker.dart';
 
 import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
-import '../chat/ai_context_action.dart';
-import '../chat/asset_context_menu.dart' show buildEditorAssetMenuItems;
+// Chat is not compiled for the browser; the web arm of this seam makes the
+// AI menu entries empty and the wrapper a pass-through. See `chat/editor_ai.dart`.
+import '../chat/editor_ai.dart';
 import '../core/feature_flags.dart';
-import '../chat/chat_overlay.dart' show ChatContext;
+import '../chat/chat_context_types.dart' show ChatContext, ChatContextType;
 import '../chat/hamburger_context_menu.dart';
 import '../chat/page_context_menu.dart';
 import '../chat/palette_context_menu.dart';

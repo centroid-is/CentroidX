@@ -9,7 +9,7 @@ import '../converter/dynamic_value_converter.dart';
 import '../converter/duration_converter.dart';
 import '../core/boolean_expression.dart';
 import 'collect_config.dart';
-import 'state_man.dart';
+import 'state_man_types.dart';
 import 'database.dart';
 
 // CollectEntry / CollectorConfig live in a file with no database behind it,

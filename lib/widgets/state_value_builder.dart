@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:rxdart/rxdart.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 
 import '../providers/state_man.dart';
 

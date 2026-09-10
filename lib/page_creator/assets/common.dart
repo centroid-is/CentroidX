@@ -13,9 +13,18 @@ import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:tfc_dart/core/fuzzy_match.dart';
-import 'package:tfc_dart/core/state_man.dart';
+// The config types and where they are stored. Not `state_man.dart`: its other
+// occupant is the OPC UA client, which is `dart:ffi`, and every HMI asset
+// imports this file — so that one import decided whether the page editor
+// could be built for the browser at all.
+import 'package:tfc_dart/core/state_man_types.dart';
+import 'package:tfc_dart/core/state_man_config_storage.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
-import 'package:tfc_dart/core/collector.dart';
+// `CollectEntry` only, from its own pure file. `collector.dart` names
+// `AutoDisposingStream`, which lives beside the OPC UA client in
+// `state_man.dart` and is welded to it by private state — so importing the
+// collector for one config type put `dart:ffi` in every asset's closure.
+import 'package:tfc_dart/core/collect_config.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
 // RetentionPolicy only, from its own pure file. `core/database.dart` re-exports
 // it but also carries the drift-backed runtime, and every HMI asset imports

@@ -1,7 +1,7 @@
 import 'dart:async';
 import '../core/opcua_sessions.dart';
 
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import 'package:tfc_mcp_server/tfc_mcp_server.dart'
     show BrowseSource, BrowsedNode, BrowsedNodeType, NodeBrowser;
 

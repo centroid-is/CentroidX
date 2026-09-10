@@ -12,7 +12,7 @@ import 'package:tfc/converter/color_converter.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
 import '../../widgets/boolean_expression.dart';
 import '../../providers/state_man.dart';
-import 'package:tfc_dart/core/state_man.dart' show StateMan;
+import 'package:tfc_dart/core/state_man_types.dart' show StateMan;
 
 part 'icon.g.dart';
 

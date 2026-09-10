@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:tfc_dart/core/state_man.dart'
+import 'package:tfc_dart/core/state_man_types.dart'
     show ConnectionStatus, EffectiveDeviceStatus;
 
 /// A pill-shaped chip that displays connection status with color coding.

@@ -30,7 +30,7 @@
 library;
 
 import 'package:jbtm/jbtm.dart' show M2400RecordType;
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'modbus_upstream_link.dart';

@@ -27,6 +27,7 @@ import 'modbus_device_client.dart'
         buildUmasPollGroupsFromKeyMappings,
         buildVariableNamesFromKeyMappings;
 import 'preferences.dart';
+import 'auto_disposing_stream.dart';
 import 'state_man_types.dart';
 
 // The configuration types, the key mappings and the StateMan interface moved to
@@ -34,44 +35,11 @@ import 'state_man_types.dart';
 // Re-exported so every existing `import 'state_man.dart'` is unaffected.
 export 'state_man_types.dart';
 
-/// Reading and writing a [StateManConfig] through a local store.
-///
-/// These three are not on [StateManConfig] itself because they are the only
-/// part of it that needs a filesystem or a database — `secret:` and
-/// `saveToDb:` exist on the drift-backed `Preferences` and on nothing else. A
-/// client whose preferences arrive over the relay has no use for any of them.
-extension StateManConfigStorage on StateManConfig {
-  static Future<StateManConfig> fromFile(String path) async {
-    final file = File(path);
-    if (!await file.exists()) {
-      throw Exception('Config file not found: $path');
-    }
-    final contents = await file.readAsString();
-    final Map<String, dynamic> json;
-    try {
-      json = jsonDecode(contents) as Map<String, dynamic>;
-    } on FormatException catch (e) {
-      throw Exception('Invalid JSON in config file: $path - ${e.message}');
-    }
-    return StateManConfig.fromJson(json);
-  }
+import 'state_man_config_storage.dart';
+/// Kept re-exported: `fromPrefs` is called from several places that also
+/// build a client, and they should not need two imports.
+export 'state_man_config_storage.dart';
 
-  static Future<StateManConfig> fromPrefs(Preferences prefs) async {
-    var configJson = await prefs.getString(StateManConfig.configKey, secret: true);
-    if (configJson == null) {
-      configJson = jsonEncode(StateManConfig(opcua: [OpcUAConfig()]).toJson());
-      await prefs.setString(StateManConfig.configKey, configJson,
-          secret: true, saveToDb: false);
-    }
-    return StateManConfig.fromJson(jsonDecode(configJson));
-  }
-
-  Future<void> toPrefs(Preferences prefs) async {
-    final configJson = jsonEncode(toJson());
-    await prefs.setString(StateManConfig.configKey, configJson,
-        secret: true, saveToDb: false);
-  }
-}
 
 class ClientWrapper {
   final ClientApi client;
@@ -702,10 +670,10 @@ class OpcUaStateMan implements StateMan {
             for (final key in keysToResub) {
               final ads = _subscriptions[key];
               logger.d('[$alias] resub $key: exists=${ads != null}, '
-                  'hasRawSub=${ads?._rawSub != null}');
-              if (ads != null && ads._rawSub != null) {
-                final oldSub = ads._rawSub;
-                ads._rawSub = null;
+                  'hasRawSub=${ads?.rawSub != null}');
+              if (ads != null && ads.rawSub != null) {
+                final oldSub = ads.rawSub;
+                ads.rawSub = null;
                 oldSub!.cancel(); // fire-and-forget; queues delete via FFI
               }
             }
@@ -1350,10 +1318,10 @@ class OpcUaStateMan implements StateMan {
       final ads = _subscriptions.remove(key);
       if (ads == null) continue;
       logger.i('[$alias] key mapping removed, closing live stream: $key');
-      ads._idleTimer?.cancel();
-      ads._rawSub?.cancel();
-      ads._rawSub = null;
-      if (!ads._subject.isClosed) ads._subject.close();
+      ads.idleTimer?.cancel();
+      ads.rawSub?.cancel();
+      ads.rawSub = null;
+      if (!ads.subject.isClosed) ads.subject.close();
       _unregisterStream(ads);
     }
 
@@ -1364,15 +1332,15 @@ class OpcUaStateMan implements StateMan {
     for (final key in changed) {
       final ads = _subscriptions[key];
       if (ads == null) continue;
-      ads._rawSub?.cancel();
-      ads._rawSub = null;
+      ads.rawSub?.cancel();
+      ads.rawSub = null;
       if (newKeyMappings.nodes[key]?.opcuaNode == null) {
         // The key switched protocols; the old OPC UA stream cannot carry
         // the new routing, so complete it like a removal. Fresh subscribes
         // route through the new protocol.
         _subscriptions.remove(key);
-        ads._idleTimer?.cancel();
-        if (!ads._subject.isClosed) ads._subject.close();
+        ads.idleTimer?.cancel();
+        if (!ads.subject.isClosed) ads.subject.close();
         _unregisterStream(ads);
         continue;
       }
@@ -1473,8 +1441,8 @@ class OpcUaStateMan implements StateMan {
     }
     // Clean up subscriptions
     for (final entry in _subscriptions.values) {
-      entry._rawSub?.cancel();
-      entry._subject.close();
+      entry.rawSub?.cancel();
+      entry.subject.close();
     }
     _subscriptions.clear();
 
@@ -1663,8 +1631,8 @@ class OpcUaStateMan implements StateMan {
         // server ever acknowledges the delete before we create its
         // replacement. If deleteAcked stops tracking deleteRequested, the
         // items are accumulating on the PLC.
-        _subscriptions[key]?._rawSub?.cancel();
-        _subscriptions[key]?._rawSub = null;
+        _subscriptions[key]?.rawSub?.cancel();
+        _subscriptions[key]?.rawSub = null;
 
         await client.awaitConnect();
 
@@ -1732,7 +1700,7 @@ class OpcUaStateMan implements StateMan {
         // deletes live monitored items on the PLC.
         if (_monitorLoopGeneration[key] != gen) return handOver();
         final ads = _subscriptions[key]!;
-        final hadPrevious = ads._rawSub != null;
+        final hadPrevious = ads.rawSub != null;
 
         // Trace, not debug: this fired 13,013 times in one run. The default
         // level used to be trace when CENTROID_LOG_LEVEL was unset, so this
@@ -1778,7 +1746,7 @@ class OpcUaStateMan implements StateMan {
         // properly to delete monitored items on retry.
         // Cleared per attempt: otherwise a timeout reports the previous
         // attempt's error as the reason this one failed.
-        _subscriptions[key]?._lastRawError = null;
+        _subscriptions[key]?.lastRawError = null;
         final firstEmission = Completer<void>();
         final wrappedStream = stream.map((value) {
           if (!firstEmission.isCompleted) firstEmission.complete();
@@ -1795,7 +1763,7 @@ class OpcUaStateMan implements StateMan {
             // Two very different things end up here, because `firstEmission`
             // only completes on a *value*: a server that stayed silent, and
             // one that answered with an error. They need opposite responses.
-            final last = _subscriptions[key]?._lastRawError;
+            final last = _subscriptions[key]?.lastRawError;
             if (last != null) {
               // The server gave a hard answer (BadNodeIdUnknown,
               // BadDeviceFailure, ...). That is a subscription which will not
@@ -1887,144 +1855,3 @@ String unresolvedKeyMessage(String key) {
       'the variable has loaded.';
 }
 
-class AutoDisposingStream<T> {
-  final String key;
-  final ReplaySubject<T> _subject;
-  final Logger _logger = Logger();
-  int _listenerCount = 0;
-  Timer? _idleTimer;
-  StreamSubscription<T>? _rawSub;
-  final Function(String key) _onDispose;
-  T? _lastValue;
-
-  /// Set once a permanent (BadNodeIdUnknown) error has been reported for this
-  /// key, so the same dead mapping is not reprinted on every retry.
-  bool _loggedPermanentError = false;
-
-  /// Last error the raw stream reported, so a first-value timeout can name
-  /// the server's actual complaint instead of just saying it timed out.
-  String? _lastRawError;
-
-  final Duration idleTimeout;
-  AutoDisposingStream(this.key, this._onDispose,
-      {this.idleTimeout = const Duration(minutes: 10)})
-      : _subject = ReplaySubject<T>(maxSize: 1) {
-    // Count UI listeners for idle shutdown:
-    _subject
-      ..onListen = _handleListen
-      ..onCancel = _handleCancel;
-  }
-
-  Stream<T> get stream => _subject.stream;
-
-  /// True once the subject is closed and this entry can never deliver again.
-  ///
-  /// A closed subject hands a new listener the replay buffer and then `done`,
-  /// which looks to a widget exactly like a key that has stopped updating.
-  /// [StateMan._monitor] checks this before reusing a cached entry.
-  bool get isSpent => _subject.isClosed;
-
-  void subscribe(Stream<T> raw, T? firstValue) {
-    _logger.d('[$key] subscribe() called: '
-        'subjectClosed=${_subject.isClosed}, '
-        'listeners=$_listenerCount, '
-        'hadRawSub=${_rawSub != null}, '
-        'hasFirstValue=${firstValue != null}');
-    _rawSub?.cancel();
-    // wire raw → subject
-    _rawSub = raw.listen(
-      (value) {
-        if (_subject.isClosed) {
-          _logger.e(
-              '[$key] RAW STREAM emitted value but subject is CLOSED — data lost!');
-          return;
-        }
-        _lastValue = value;
-        _subject.add(value);
-      },
-      onError: (error, stackTrace) {
-        // BadNodeIdUnknown is the server's final answer: that node does not
-        // exist in its address space, so every retry will get the same reply.
-        // Log it once at error level and then stay quiet, rather than
-        // reprinting the same dead mapping on every reconnect and burying the
-        // faults that are actually actionable.
-        _lastRawError = '$error';
-        final permanent = '$error'.contains('BadNodeIdUnknown');
-        if (permanent && _loggedPermanentError) {
-          // already reported; swallow the repeat
-        } else {
-          _logger.e('[$key] raw stream error: $error'
-              '${permanent ? " (node does not exist -- fix or remove this key "
-                  "mapping; further repeats suppressed)" : ""}');
-          if (permanent) _loggedPermanentError = true;
-        }
-        if (!_subject.isClosed) {
-          _subject.addError(error, stackTrace);
-        }
-      },
-      onDone: () {
-        _logger.w('[$key] raw stream DONE — '
-            'subject will close! listeners=$_listenerCount, '
-            'subjectClosed=${_subject.isClosed}');
-        // A spent entry must not leave an idle timer armed. _onDispose
-        // removes BY KEY, so a timer surviving into the next subscription for
-        // this key would evict the live entry that replaced this one, and the
-        // subscriber after that would ask the PLC for four more monitored
-        // items while the displaced entry kept streaming.
-        _idleTimer?.cancel();
-        _idleTimer = null;
-        _subject.close();
-        // Retire the entry as well. The idle path already does both -- it
-        // calls _onDispose before closing -- but this one used to close and
-        // leave the entry in StateMan._subscriptions, so the next subscriber
-        // for this key was handed a closed subject and saw nothing. That is
-        // what made a readout stay blank on returning to a page while
-        // selecting a different key worked: the different key had no cached
-        // entry to inherit.
-        _onDispose(key);
-      },
-    );
-    _lastValue = firstValue;
-    if (firstValue != null) {
-      if (_subject.isClosed) {
-        _logger.e('[$key] subject is CLOSED, cannot add firstValue!');
-      } else {
-        _subject.add(firstValue);
-        _logger.d('[$key] firstValue pushed to subject');
-      }
-    }
-  }
-
-  void _handleListen() {
-    _listenerCount++;
-    _idleTimer?.cancel();
-    _logger.d('[$key] listener added (count=$_listenerCount)');
-  }
-
-  void _handleCancel() {
-    _listenerCount--;
-    _logger.d('[$key] listener removed (count=$_listenerCount)');
-    // Nothing left to retire, and nothing that may outlive this entry.
-    if (_subject.isClosed) return;
-    if (_listenerCount == 0) {
-      _logger.w(
-          '[$key] no listeners left, starting ${idleTimeout.inSeconds}s idle timer');
-      _idleTimer = Timer(idleTimeout, () {
-        _logger.w('[$key] idle timer fired — disposing');
-        _rawSub?.cancel(); // tear down the OPC-UA monitoredItem
-        _onDispose(key); // remove from StateMan._subscriptions
-        _subject.close(); // close the replay buffer
-      });
-    }
-  }
-
-  void resendLastValue() {
-    // A spent entry can still be reachable from ClientWrapper.streams; adding
-    // to its closed subject throws StateError, which would abort the recovery
-    // loop and leave every later key on that server unrefreshed.
-    if (_subject.isClosed) return;
-    if (_lastValue != null) {
-      _subject.add(_lastValue!);
-    }
-  }
-}

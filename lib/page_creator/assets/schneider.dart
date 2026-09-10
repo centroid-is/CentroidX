@@ -4,8 +4,9 @@ import 'package:json_annotation/json_annotation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:rxdart/rxdart.dart';
-import 'package:open62541/open62541.dart'
-    show AttributeId, DynamicValue, LocalizedText, NodeId;
+// The FFI-free barrel. `AttributeId` was in this list and never used.
+import 'package:open62541/open62541_types.dart'
+    show DynamicValue, LocalizedText, NodeId;
 
 import '../../core/browse/field_descriptions.dart';
 import '../../core/browse/field_descriptions_types.dart';
@@ -13,7 +14,7 @@ import 'common.dart';
 import '../../widgets/panes/pane_chrome.dart';
 import '../../widgets/panes/side_pane.dart';
 import '../../painter/schneider/atv320.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import '../../providers/state_man.dart';
 import '../../widgets/dynamic_value.dart';
 import '../../widgets/memo_stream_builder.dart';

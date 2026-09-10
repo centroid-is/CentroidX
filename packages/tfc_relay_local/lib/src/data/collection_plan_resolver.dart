@@ -60,7 +60,7 @@
 /// is a named follow-up rather than something this file can fix alone.
 library;
 
-import 'package:tfc_dart/core/state_man.dart' show KeyMappings;
+import 'package:tfc_dart/core/state_man_types.dart' show KeyMappings;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
     show ResolvedSeries, SeriesAddress, SeriesResolver;
 

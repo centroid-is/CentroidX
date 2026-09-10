@@ -27,7 +27,7 @@ import 'package:tfc_dart/core/access/local_auth_provider.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
-import 'package:tfc_dart/core/state_man.dart' show StateMan;
+import 'package:tfc_dart/core/state_man_types.dart' show StateMan;
 import 'package:tfc_relay_client/tfc_relay_client.dart'
     show LinkDown, RemoteStateMan;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'

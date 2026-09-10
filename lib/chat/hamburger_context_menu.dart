@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../page_creator/assets/common.dart';
 import '../page_creator/assets/registry.dart';
-import 'ai_context_action.dart';
-import 'asset_context_menu.dart' show extractAssetIdentifier;
-import 'chat_overlay.dart' show ChatContextType;
+// Chat is not compiled for the browser; see `editor_ai.dart`.
+import 'editor_ai.dart';
+import 'chat_context_types.dart' show ChatContextType;
 
 /// Builds a structured context block describing the current page state.
 ///

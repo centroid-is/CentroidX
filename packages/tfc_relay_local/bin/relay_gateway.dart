@@ -16,7 +16,7 @@ import 'dart:io';
 import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart'
     show SecureStorage;
-import 'package:tfc_dart/core/state_man.dart' show KeyMappings;
+import 'package:tfc_dart/core/state_man_types.dart' show KeyMappings;
 // The adapter is deliberately not on the package barrel (the seam type
 // `TimeseriesSink` is the public surface); the composition root reaches it by
 // its src path, exactly as 8b-02 recorded.

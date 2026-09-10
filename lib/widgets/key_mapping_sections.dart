@@ -2,10 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FilteringTextInputFormatter;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 import 'package:tfc_dart/core/umas_types.dart' show mapUmasDataTypeToModbus;
-import 'package:tfc_dart/core/collector.dart';
+// `CollectEntry` only — see the note in `page_creator/assets/common.dart`.
+import 'package:tfc_dart/core/collect_config.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
 import 'package:jbtm/src/m2400_fields.dart'
@@ -16,8 +17,8 @@ import '../providers/access_templates.dart';
 import '../providers/state_man.dart';
 import '../pages/key_repository.dart' show ModbusConfigListExt;
 import 'opcua_array_index_field.dart';
-import 'opcua_browse.dart';
-import 'umas_browse.dart';
+// Narrow seam: the dialog is FFI, the NodeId it yields is not.
+import 'live_browse.dart';
 import 'duration_field.dart';
 
 // ===================== OPC UA Config Section =====================
@@ -113,7 +114,7 @@ class _OpcUaConfigSectionState extends ConsumerState<OpcUaConfigSection> {
     );
 
     if (result != null) {
-      final nodeId = result.nodeId;
+      final nodeId = result;
       setState(() {
         _namespaceController.text = nodeId.namespace.toString();
         _identifierController.text =
