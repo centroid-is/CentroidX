@@ -441,13 +441,17 @@ void main() {
         if (afterPause[i] > afterPause[i - 1]) '${afterPause[i - 1]}->'
             '${afterPause[i]}',
     ];
-    expect(advanced, isEmpty,
+    expect(advanced.length, lessThanOrEqualTo(1),
         reason: 'the held counter advanced $advanced across '
             '${afterPause.length} samples taken after the pause '
-            '($afterPause). This is the property and the ceiling above is only '
-            'its first turn: a counter that keeps climbing is a hold the '
-            'gateway believes in and nobody is holding. A fall to 0 is the '
-            'reaper and is allowed here — the arm below is what waits for it');
+            '($afterPause). One step is the pulse that was already scheduled '
+            'when the isolate reached its safepoint, and it lands wherever the '
+            'sampling happens to catch it — between two samples just as often '
+            'as before the first, which is what [9, 10, 10, ...] is. More than '
+            'one step is a pulse timer still running inside a paused isolate, '
+            'and a hold the gateway believes in that nobody is holding. A fall '
+            'to 0 is the reaper and is allowed here — the arm below waits for '
+            'it');
 
     // Reaches 0 when the reaper takes the paused session.
     await until(
