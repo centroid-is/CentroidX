@@ -23,6 +23,41 @@ class _FakeSurface implements WebViewSurface {
   Future<void> dispose() async => disposed = true;
 }
 
+/// A surface whose engine can be missing, i.e. the WebView2 shape.
+///
+/// Separate from [_FakeSurface] on purpose: the plain fake must keep *not*
+/// implementing [WebViewSurfaceAvailability], so the tests can prove the view
+/// asks only the surfaces that opt in.
+class _FakeAbsentableSurface
+    implements WebViewSurface, WebViewSurfaceAvailability {
+  _FakeAbsentableSurface({this.available = true});
+
+  final bool available;
+  final navigations = <Uri>[];
+  bool disposed = false;
+  int availabilityAsks = 0;
+
+  /// Held open so a test can answer the probe at a moment of its choosing.
+  final gate = Completer<bool>();
+  bool useGate = false;
+
+  @override
+  Widget build(BuildContext context) =>
+      const SizedBox.expand(key: ValueKey('fake-web'));
+
+  @override
+  Future<void> navigate(Uri uri) async => navigations.add(uri);
+
+  @override
+  Future<void> dispose() async => disposed = true;
+
+  @override
+  Future<bool> get isAvailable {
+    availabilityAsks++;
+    return useGate ? gate.future : Future<bool>.value(available);
+  }
+}
+
 WebViewAssetConfig _configured({
   String url = 'https://grafana.plant/d/abc/line-1',
   int reloadSeconds = 0,
@@ -127,28 +162,55 @@ void main() {
   });
 
   group('WebViewAvailability', () {
-    test('the three platforms webview_flutter implements', () {
+    test('the platforms with an OS-provided browser', () {
       for (final platform in [
         TargetPlatform.macOS,
         TargetPlatform.android,
         TargetPlatform.iOS,
+        TargetPlatform.windows,
       ]) {
         expect(WebViewAvailability.check(isWeb: false, platform: platform),
             isTrue,
-            reason: '$platform has a webview_flutter implementation');
+            reason: '$platform has a webview implementation');
       }
     });
 
-    test('the platforms we actually run on the plant floor do not', () {
+    test('the platforms that would need a browser we ship do not', () {
       for (final platform in [
         TargetPlatform.linux,
-        TargetPlatform.windows,
         TargetPlatform.fuchsia,
       ]) {
         expect(WebViewAvailability.check(isWeb: false, platform: platform),
             isFalse,
             reason: '$platform would need a bundled browser engine');
       }
+    });
+
+    test('windows is the WebView2 platform, and nothing else is', () {
+      // Two different questions: `check` asks whether a webview exists at
+      // all, `usesWebView2` picks the engine and, with it, whether the engine
+      // can be missing from the machine.
+      expect(
+          WebViewAvailability.usesWebView2(
+              isWeb: false, platform: TargetPlatform.windows),
+          isTrue);
+      for (final platform in [
+        TargetPlatform.macOS,
+        TargetPlatform.iOS,
+        TargetPlatform.android,
+        TargetPlatform.linux,
+        TargetPlatform.fuchsia,
+      ]) {
+        expect(
+            WebViewAvailability.usesWebView2(isWeb: false, platform: platform),
+            isFalse,
+            reason: '$platform is not served by WebView2');
+      }
+      expect(
+          WebViewAvailability.usesWebView2(
+              isWeb: true, platform: TargetPlatform.windows),
+          isFalse,
+          reason: 'a browser tab is not WebView2');
     });
 
     test('web is excluded even though an iframe would be trivial', () {
@@ -404,6 +466,101 @@ void main() {
       expect(find.text('Web view is not available on this platform'),
           findsNothing);
       expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('WebView2 availability (Windows)', () {
+    // WKWebView is part of macOS and cannot be missing. WebView2 is a separate
+    // runtime, so a Windows tile has one state a macOS tile does not: the
+    // engine reporting that it is not installed, after the tile has started.
+
+    testWidgets('an engine that reports itself missing flips to the placeholder',
+        (tester) async {
+      final surface = _FakeAbsentableSurface(available: false);
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget,
+          reason: 'the browser is on screen until the probe answers');
+
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('fake-web')), findsNothing);
+      expect(find.text('Web view is not available on this platform'),
+          findsOneWidget);
+      expect(surface.disposed, isTrue,
+          reason: 'a browser that cannot render should not be left running');
+    });
+
+    testWidgets('an engine that is present is left alone', (tester) async {
+      final surface = _FakeAbsentableSurface(available: true);
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pumpAndSettle();
+
+      expect(surface.availabilityAsks, 1);
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
+      expect(find.text('Web view is not available on this platform'),
+          findsNothing);
+      expect(surface.disposed, isFalse);
+    });
+
+    testWidgets('a surface that cannot be absent is never asked',
+        (tester) async {
+      // _FakeSurface does not implement WebViewSurfaceAvailability. If the
+      // view asked every surface the separate interface would be pointless,
+      // and macOS would be paying for a Windows problem.
+      final surface = _FakeSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
+      expect(surface.navigations, hasLength(1));
+    });
+
+    testWidgets('a probe answering after dispose does not throw',
+        (tester) async {
+      final surface = _FakeAbsentableSurface()..useGate = true;
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+
+      surface.gate.complete(false);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a probe for a superseded surface does not blank the new one',
+        (tester) async {
+      // A URL edit restarts the browser. The old surface's probe can land
+      // afterwards, and must not report on a tile that has moved on.
+      final first = _FakeAbsentableSurface()..useGate = true;
+      final second = _FakeAbsentableSurface(available: true);
+      var built = 0;
+      WebViewAssetView.debugSurfaceFactory =
+          (_) => (built++ == 0) ? first : second;
+
+      final config = _configured();
+      await tester.pumpWidget(_host(config));
+      await tester.pump();
+
+      config.url = 'https://grafana.plant/d/abc/line-2';
+      await tester.pumpWidget(_host(config));
+      await tester.pumpAndSettle();
+      expect(built, 2);
+
+      first.gate.complete(false);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget,
+          reason: "the live surface must survive the dead one's answer");
+      expect(find.text('Web view is not available on this platform'),
+          findsNothing);
     });
   });
 }
