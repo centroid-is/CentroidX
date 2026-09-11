@@ -50,6 +50,10 @@ library;
 
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:tfc_access/tfc_access.dart' show AccessSession;
+import 'package:tfc_dart/core/access/access_repository.dart'
+    show AccessRepository;
+
 import '../access_routes.dart';
 import '../models/menu_item.dart';
 import '../page_creator/page.dart';
@@ -89,6 +93,30 @@ typedef MenuComposer = List<MenuItem> Function(PageManager);
 /// `main()` overrides this with the shell's real composition, and *that* is
 /// what makes the provider the owner of the menu in the app.
 final menuComposerProvider = Provider<MenuComposer?>((ref) => null);
+
+/// The paths the router can actually serve, or null for "do not filter".
+///
+/// **Why the live menu needs this.** The route table is built once, before
+/// `runApp`, from the pages this station had cached locally at that moment.
+/// The menu is no longer built once — it recomposes when `pageManagerProvider`
+/// answers with the database's copy — so the two can now disagree in a way
+/// they could not before: a page created on *another* station reaches this
+/// one's database, and would appear in the menu with no route behind it. The
+/// operator would tap it and get "not found", which is a worse failure than
+/// not seeing it at all.
+///
+/// So the menu is intersected with what the router holds. The honest
+/// consequence, unchanged from before this work and stated rather than
+/// quietly kept: **a page added on another station still needs a restart of
+/// this one to appear.** Making the route table itself live is a larger
+/// change — Beamer's `RoutesLocationBuilder` stacks a page for every matching
+/// route, so a `'*'` fallback would add one on top of every route in the app,
+/// and rebuilding the delegate resets navigation state.
+///
+/// Null — the default, and what every test and harness gets — means no
+/// filtering, so a menu assembled by hand is shown as assembled. `main()`
+/// overrides it with the route table's own key set.
+final routablePathsProvider = Provider<Set<String>?>((ref) => null);
 
 /// The full menu tree: every published page and every built-in entry, composed
 /// live and session-blind.
@@ -248,15 +276,15 @@ VisibleMenu visibleMenu(Ref ref) {
   final tree = ref.watch(menuTreeProvider);
   final repository = ref.watch(accessRepositoryProvider);
   final session = ref.watch(accessSessionProvider);
+  final routable = ref.watch(routablePathsProvider);
 
-  bool visible(String path) =>
-      resolvePageAccess(
-        group: accessGroupForRoute(path),
-        path: path,
-        repository: repository,
-        session: session,
-      ) !=
-      AccessGateState.denied;
+  bool visible(String path) {
+    // Routability first, and it is not an access question: an entry the router
+    // cannot serve must not be offered, whoever is standing at the panel. See
+    // [routablePathsProvider].
+    if (routable != null && !routable.contains(path)) return false;
+    return _mayOpen(path, repository, session);
+  }
 
   MenuItem? filter(MenuItem item) {
     if (item.isNavigationSection) {
@@ -287,6 +315,21 @@ VisibleMenu visibleMenu(Ref ref) {
   }
   return VisibleMenu(List.unmodifiable(kept));
 }
+
+/// Whether this session may open [path] — the same question the route gate
+/// and the lock badge ask, asked through the same function.
+bool _mayOpen(
+  String path,
+  AsyncValue<AccessRepository?> repository,
+  AsyncValue<AccessSession> session,
+) =>
+    resolvePageAccess(
+      group: accessGroupForRoute(path),
+      path: path,
+      repository: repository,
+      session: session,
+    ) !=
+    AccessGateState.denied;
 
 /// Convenience for the two synchronous readers that still need the whole tree
 /// without a container — see the library doc's note on the page editor.

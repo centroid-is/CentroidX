@@ -427,6 +427,16 @@ Future<void> _startApp([bool debugMode = false]) async {
       // first menu with the same function, so what the provider produces on
       // its first build is what the app already had.
       menuComposerProvider.overrideWithValue(_composeTopLevelMenu),
+      // What the router can serve. The menu recomposes when the database's
+      // copy of the pages arrives; the route table does not, because it is
+      // built once above. Intersecting the two is what stops a page created
+      // on another station appearing in the menu here with nothing behind it
+      // — the operator would tap it and get "not found". It still takes a
+      // restart for such a page to become reachable, which is the same as
+      // before this work and is stated on `routablePathsProvider`.
+      routablePathsProvider.overrideWithValue(
+        locationBuilder.routes.keys.whereType<String>().toSet(),
+      ),
     ],
     child: UpgradeAlert(
       upgrader: upgrader,

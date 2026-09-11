@@ -335,6 +335,43 @@ void main() {
     });
   });
 
+  group('the menu never outruns the route table', () {
+    test('a page the router cannot serve is not offered', () async {
+      // The mismatch the live menu makes possible: the route table is built
+      // once at boot from the pages cached locally, and the menu recomposes
+      // when the database's copy arrives. A page created on another station
+      // would otherwise appear here with nothing behind it.
+      RouteRegistry().menuItems
+        ..clear()
+        ..addAll([home, fillet, packing]);
+      RouteRegistry().clearRouteGroups();
+      installRaisedRoutes();
+
+      final container = ProviderContainer(overrides: [
+        accessSessionProvider.overrideWith(
+            () => _FixedSession(AsyncValue.data(_sessionWith()))),
+        accessRepositoryProvider
+            .overrideWith((ref) async => _StubRepository()),
+        bootstrapPageManagerProvider.overrideWithValue(null),
+        routablePathsProvider.overrideWithValue(const {'/', '/fillet'}),
+      ]);
+      addTearDown(container.dispose);
+      await container.read(accessSessionProvider.future);
+
+      expect(container.read(visibleMenuProvider).topLevel.map((i) => i.path),
+          ['/', '/fillet'],
+          reason: '/packing has no route, so offering it would be a tap that '
+              'lands on "not found"');
+    });
+
+    test('null means do not filter, which is what every harness gets',
+        () async {
+      final container = _container(registry: [home, fillet, packing]);
+      await _settle(container);
+      expect(container.read(visibleMenuProvider).topLevel, hasLength(3));
+    });
+  });
+
   group('the menu changes between logins — the whole point', () {
     test('signing in adds the destinations that identity has', () async {
       // The behaviour the old pipeline could not have: the menu was composed
