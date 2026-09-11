@@ -80,6 +80,17 @@ ReportManConfig _reports() => ReportManConfig(reports: [
         id: 'packing-shift',
         name: 'Packing hall shift report',
         description: 'Per-shift production, drives, alarms and downtime',
+        // The window the report_view goldens render the *output* of: one
+        // activity signal, so every scoped section below carries a scope
+        // choice in its header.
+        window: ProductionWindowConfig(signals: [
+          ActivitySignalConfig(
+            label: 'Packing line 3',
+            running: ActivityRule(
+                key: 'SPB01.BoxCounter', member: 'rate', above: 0.5),
+            maxGapMinutes: 5,
+          ),
+        ]),
         sections: [
           KpiSectionConfig(metrics: [
             // The multi-key fold: three SpeedBatchers summed into one figure.
@@ -171,10 +182,6 @@ class _FixedSession extends AccessSessionController {
   Future<AccessSession> build() async => _session;
 }
 
-AccessSession _anonymous() => AccessSession.anonymous(
-      {...kSeedRoles.firstWhere((r) => r.name == kOperatorRoleName).groups},
-    );
-
 AccessSession _withConfigure() => AccessSession(
       user: const AuthenticatedUser(username: 'jon', roleName: 'Engineer'),
       groups: const {AccessGroup.operate, AccessGroup.configure},
@@ -213,7 +220,7 @@ void main() {
 
   Future<void> pump(WidgetTester tester, {required bool dark}) async {
     await _loadFonts();
-    tester.view.physicalSize = const Size(1400, 2400);
+    tester.view.physicalSize = const Size(1400, 2760);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
@@ -247,6 +254,18 @@ void main() {
 
     // Expand the report so the section editors are in the picture.
     await tester.tap(find.text('Packing hall shift report'));
+    await tester.pumpAndSettle();
+
+    // And the production window, so the signal editor — the new UI here — is
+    // covered rather than sitting collapsed behind one line of summary.
+    //
+    // Scoped to the tile's own key rather than found by text: "Production
+    // window" is also the selected value of every scoped section's scope
+    // dropdown, so a bare text finder matches half the page.
+    await tester.tap(find.descendant(
+      of: find.byKey(const ValueKey('window-tile-packing-shift')),
+      matching: find.text('Production window'),
+    ));
     await tester.pumpAndSettle();
   }
 

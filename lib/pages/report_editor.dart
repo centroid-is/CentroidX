@@ -167,6 +167,12 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
     // Watched, not read: a proposal can land while the operator is standing
     // on this page, and the point of the banner is that they see it arrive.
     ref.watch(proposalStateProvider);
+    // Watched here so the collected keys exist before a callback needs them.
+    // _collectedKeys reads this provider's value, and a provider nothing has
+    // watched during a build has no value yet — which seeded the standard
+    // shift report with no activity signal at all, silently, whenever the
+    // operator added one before opening a key field.
+    ref.watch(stateManProvider);
     // Idempotent — staged ids are remembered, so this only folds in what is
     // new.
     if (_shifts != null) {
@@ -388,6 +394,7 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
                       'shift' => ReportConfig(
                           id: id,
                           name: 'Shift report',
+                          window: _seedWindow(),
                           sections: [
                             KpiSectionConfig(title: 'Key figures'),
                             DowntimeSectionConfig(title: 'Downtime'),
@@ -498,6 +505,8 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
           ],
         ),
         const SizedBox(height: 8),
+        _windowTile(context, report),
+        const SizedBox(height: 8),
         for (var s = 0; s < report.sections.length; s++)
           _sectionCard(context, report, s),
         Align(
@@ -551,6 +560,191 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
     );
   }
 
+  /// How this report works out when production actually ran.
+  ///
+  /// Off by default, and off for every definition saved before it existed: a
+  /// report with no signals is a plain range report, every section covers the
+  /// whole range, and nothing below this tile changes meaning. Turning it on
+  /// is what makes "981 boxes/h" mean over the hours the line ran rather than
+  /// over the hours the clock did.
+  Widget _windowTile(BuildContext context, ReportConfig report) {
+    final theme = Theme.of(context);
+    final window = report.window;
+    return Card(
+      key: ValueKey('window-${report.id}'),
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      child: ExpansionTile(
+        key: ValueKey('window-tile-${report.id}'),
+        title: Text('Production window', style: theme.textTheme.labelLarge),
+        subtitle: Text(
+          window == null
+              ? 'Off — every section covers the whole range'
+              : '${window.signals.length} signal'
+                  '${window.signals.length == 1 ? '' : 's'} · '
+                  'idle ${window.idleMinutes}m · '
+                  'washing ${window.cleaningMinutes}m',
+          style: theme.textTheme.bodySmall
+              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        ),
+        trailing: Switch(
+          key: ValueKey('window-switch-${report.id}'),
+          value: window != null,
+          onChanged: (on) => setState(() {
+            report.window = on ? _seedWindow() ?? ProductionWindowConfig() : null;
+          }),
+        ),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        children: window == null
+            ? const []
+            : [
+                // Clear of the tile header: these fields carry floating
+                // labels above their boxes, which the header clips without it.
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    _smallField('window-${report.id}-idle', 'Idle minutes',
+                        '${window.idleMinutes}', 140, (v) {
+                      final n = int.tryParse(v);
+                      if (n != null && n > 0 && n <= 1440) {
+                        window.idleMinutes = n;
+                      }
+                    }),
+                    _smallField('window-${report.id}-clean',
+                        'Washing minutes', '${window.cleaningMinutes}', 150,
+                        (v) {
+                      final n = int.tryParse(v);
+                      if (n != null && n > 0 && n <= 1440) {
+                        window.cleaningMinutes = n;
+                      }
+                    }),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                for (var i = 0; i < window.signals.length; i++)
+                  _signalRow(context, report, window.signals, i),
+                TextButton.icon(
+                  onPressed: () => setState(() => window.signals.add(
+                      ActivitySignalConfig(
+                          running: ActivityRule(
+                              key: _collectedKeys.firstOrNull ?? '',
+                              above: 0.5)))),
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('Add signal'),
+                ),
+              ],
+      ),
+    );
+  }
+
+  /// One thing whose activity says the plant is producing.
+  ///
+  /// The cleaning rule is created by typing a key into its field and removed
+  /// by clearing it — most lines have nothing that reports "washing", and an
+  /// empty rule that always fails would be a worse default than no rule.
+  Widget _signalRow(BuildContext context, ReportConfig report,
+      List<ActivitySignalConfig> signals, int i) {
+    final signal = signals[i];
+    final id = '${report.id}-signal-$i';
+
+    String number(double? v) => v == null ? '' : '$v';
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          _smallField('$id-label', 'Label', signal.label ?? '', 130,
+              (v) => signal.label = v.isEmpty ? null : v),
+          _keyField('$id-key', signal.running.key,
+              (v) => signal.running.key = v,
+              label: 'Running key'),
+          _memberField('$id-member', signal.running.key,
+              signal.running.member ?? '',
+              (v) => signal.running.member = v.isEmpty ? null : v),
+          _smallField('$id-above', 'Above', number(signal.running.above), 90,
+              (v) => signal.running.above = double.tryParse(v)),
+          // Wide enough for the word: at 90 the floating label rendered as
+          // "Equa…", which reads as a broken field rather than a narrow one.
+          _smallField('$id-eq', 'Equals', number(signal.running.equalsValue),
+              112, (v) => signal.running.equalsValue = double.tryParse(v)),
+          _keyField('$id-clean-key', signal.cleaning?.key ?? '', (v) {
+            if (v.isEmpty) {
+              signal.cleaning = null;
+            } else {
+              signal.cleaning = (signal.cleaning ?? ActivityRule(key: v))
+                ..key = v;
+            }
+          }, label: 'Washing key'),
+          _memberField('$id-clean-member', signal.cleaning?.key ?? '',
+              signal.cleaning?.member ?? '', (v) {
+            signal.cleaning?.member = v.isEmpty ? null : v;
+          }),
+          _smallField('$id-clean-eq', 'Equals',
+              number(signal.cleaning?.equalsValue), 112, (v) {
+            signal.cleaning?.equalsValue = double.tryParse(v);
+          }),
+          _smallField('$id-gap', 'Max gap min',
+              signal.maxGapMinutes?.toString() ?? '', 120,
+              (v) => signal.maxGapMinutes = int.tryParse(v)),
+          IconButton(
+            tooltip: 'Remove signal',
+            icon: const Icon(Icons.close, size: 18),
+            onPressed: () => setState(() => signals.removeAt(i)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The window a standard shift report starts with.
+  ///
+  /// A guess, and deliberately one the operator can see and correct: the key
+  /// is right there in the editor. The alternative — shipping the template
+  /// with no window — leaves every new shift report averaging its rates over
+  /// hours the line was not running, which is the thing the window exists to
+  /// stop.
+  ProductionWindowConfig? _seedWindow() {
+    final keys = _collectedKeys;
+    if (keys.isEmpty) return null;
+    final key = keys.firstWhere(
+      (k) => k.toLowerCase().contains('avgbpm'),
+      orElse: () => keys.first,
+    );
+    return ProductionWindowConfig(signals: [
+      ActivitySignalConfig(
+        label: key,
+        running: ActivityRule(key: key, above: 0.5),
+        maxGapMinutes: 5,
+      ),
+    ]);
+  }
+
+  /// Which span a section's figures cover.
+  ///
+  /// Only offered when the report resolves a production window: without one
+  /// there is a single span, and three names for it would be three ways of
+  /// choosing nothing.
+  Widget _scopeDropdown(
+      ReportConfig report, ScopedSectionConfig section, int index) {
+    return DropdownButton<ReportScope>(
+      key: ValueKey('scope-${report.id}-$index'),
+      value: section.scope,
+      isDense: true,
+      style: Theme.of(context).textTheme.bodySmall,
+      items: [
+        for (final scope in ReportScope.values)
+          DropdownMenuItem(value: scope, child: Text(scope.label)),
+      ],
+      onChanged: (scope) =>
+          setState(() => section.scope = scope ?? section.scope),
+    );
+  }
+
   static String _sectionLabel(ReportSectionConfig s) => switch (s) {
         KpiSectionConfig() => 'KPI row',
         TableSectionConfig() => 'Table',
@@ -564,6 +758,7 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
   Widget _sectionCard(BuildContext context, ReportConfig report, int index) {
     final theme = Theme.of(context);
     final section = report.sections[index];
+    final scoped = section is ScopedSectionConfig ? section : null;
     return Card(
       key: ValueKey('section-${report.id}-$index'),
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -587,6 +782,10 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
                         setState(() => section.title = v.isEmpty ? null : v),
                   ),
                 ),
+                if (scoped != null && report.window != null) ...[
+                  const SizedBox(width: 12),
+                  _scopeDropdown(report, scoped, index),
+                ],
                 IconButton(
                   tooltip: 'Move up',
                   icon: const Icon(Icons.arrow_upward, size: 18),
@@ -721,8 +920,9 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
                 helperText:
                     ':from and :to are bound to the range as ISO-8601 UTC '
                     'text — against timestamptz write :from::timestamptz. '
+                    ':nominal_from/:nominal_to are the planned shift. '
                     'Read-only: one SELECT statement.',
-                helperMaxLines: 3,
+                helperMaxLines: 4,
                 isDense: true,
               ),
               style: const TextStyle(fontFamily: 'roboto-mono'),
@@ -785,7 +985,8 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
 
   /// A key field with fuzzy suggestions over the collected keys. Free text is
   /// allowed — a key can be configured before its collection is.
-  Widget _keyField(String id, String value, void Function(String) onChanged) {
+  Widget _keyField(String id, String value, void Function(String) onChanged,
+      {String label = 'Key'}) {
     return SizedBox(
       width: 280,
       child: RawAutocomplete<String>(
@@ -803,8 +1004,7 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
             TextFormField(
           controller: controller,
           focusNode: focusNode,
-          decoration:
-              const InputDecoration(labelText: 'Key', isDense: true),
+          decoration: InputDecoration(labelText: label, isDense: true),
           onChanged: (v) => setState(() => onChanged(v)),
         ),
         optionsViewBuilder: (context, onSelected, options) => Align(
@@ -844,8 +1044,9 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
 
   /// A member field that suggests the key's sampled members. Free text stays
   /// allowed — scalar keys have no members and need none.
-  Widget _memberField(
-      String id, String key, String value, void Function(String) onChanged) {
+  Widget _memberField(String id, String key, String value,
+      void Function(String) onChanged,
+      {String label = 'Member'}) {
     final members = _membersFor(key);
     return SizedBox(
       width: 170,
@@ -863,8 +1064,7 @@ class _ReportEditorPageState extends ConsumerState<ReportEditorPage> {
             TextFormField(
           controller: controller,
           focusNode: focusNode,
-          decoration:
-              const InputDecoration(labelText: 'Member', isDense: true),
+          decoration: InputDecoration(labelText: label, isDense: true),
           onChanged: (v) => setState(() => onChanged(v)),
         ),
         optionsViewBuilder: (context, onSelected, options) => Align(

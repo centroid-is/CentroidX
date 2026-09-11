@@ -60,8 +60,16 @@ negative = backwards in time). Shifts come from a configurable shift
 calendar. A KPI metric can fold several keys into one figure via
 `additional_keys` + `combine` (sum/mean/min/max, default sum) — "plant
 throughput = the three SpeedBatchers summed" is one metric, with rollover-
-safe counter deltas kept intact. An `sql` section takes one SELECT (or
-WITH … SELECT); the tokens `:from`/`:to` are bound to the range as ISO-8601
+safe counter deltas kept intact. A definition may also carry a `window`: one
+or more activity signals (a `running` rule, optionally a `cleaning` one) from
+which the engine resolves when production actually started and concluded, so a
+shift that finished at 13:42 and washed until 15:00 is not reported as two
+hours of zeros. Every section then carries a `scope` — `effective` (that
+production window, the default), `nominal` (the whole planned range, the
+default for alarm summaries) or `running` (only the stretches the line was
+moving). An `sql` section takes one SELECT (or
+WITH … SELECT); the tokens `:from`/`:to` are bound to the section's scope and
+`:nominal_from`/`:nominal_to` to the whole range, as ISO-8601
 UTC text (write `:from::timestamptz` against timestamptz columns), rows are
 capped by `max_rows`. The AI can READ (list_reports,
 get_report_definition, generate_report, resolve_shift, get_shift_calendar).

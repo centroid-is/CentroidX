@@ -338,6 +338,20 @@ String _describeShift(Map<String, dynamic> shift) {
   return 'starts ${hhmm(start)}, runs ${duration ~/ 60}h$days';
 }
 
+/// One line describing the production window, for a proposal's diff table.
+///
+/// Whether a report resolves a window at all changes what every figure in it
+/// means, so the operator deciding on the proposal is told before they accept
+/// rather than after they read a number.
+String _describeWindow(dynamic window) {
+  if (window is! Map) return 'none';
+  final signals = (window['signals'] as List?) ?? const [];
+  final idle = window['idle_minutes'] ?? 30;
+  final cleaning = window['cleaning_minutes'] ?? 10;
+  return '${signals.length} signal${signals.length == 1 ? '' : 's'}, '
+      'idle $idle min, washing $cleaning min';
+}
+
 /// Wraps one report definition as a proposal, after the risk gate.
 ///
 /// The definition travels whole rather than as a diff of its sections: the
@@ -359,6 +373,7 @@ Future<CallToolResult> _reportProposal({
         : sections
             .map((s) => (s as Map)['type'])
             .join(', '),
+    'window': _describeWindow(report['window']),
     'applied by': 'a person holding "configure", in the report editor',
   });
   await riskGate.requestConfirmation(

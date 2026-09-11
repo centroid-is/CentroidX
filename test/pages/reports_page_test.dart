@@ -125,7 +125,10 @@ void main() {
 
     // Current shift: Wednesday's Day shift, still running at the clock.
     expect(find.textContaining('Day 2026-09-02'), findsOneWidget);
-    expect(find.text('Rate'), findsOneWidget);
+    // The aggregate qualifier now rides the label: "last" names a different
+    // quantity from an average, so it earns a word. The engine-jargon
+    // subtitle under every tile ("Last", "Avg (time-weighted)") is gone.
+    expect(find.text('Rate · end'), findsOneWidget);
     expect(find.text('950.0'), findsOneWidget);
     expect(find.text('hello'), findsOneWidget);
     expect(find.text('So far'), findsOneWidget);

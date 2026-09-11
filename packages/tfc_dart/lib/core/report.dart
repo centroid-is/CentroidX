@@ -55,6 +55,21 @@ extension ReportAggregateLabel on ReportAggregate {
         ReportAggregate.durationFalse => 'Time off',
       };
 
+  /// Column-header form: the same aggregate in as few characters as a table
+  /// column can spare. [label] stays the long form the editor's chips use.
+  String get shortLabel => switch (this) {
+        ReportAggregate.first => 'FIRST',
+        ReportAggregate.last => 'LAST',
+        ReportAggregate.min => 'MIN',
+        ReportAggregate.max => 'MAX',
+        ReportAggregate.mean => 'MEAN',
+        ReportAggregate.timeWeightedMean => 'AVG',
+        ReportAggregate.delta => 'TOTAL',
+        ReportAggregate.count => 'SAMPLES',
+        ReportAggregate.durationTrue => 'TIME ON',
+        ReportAggregate.durationFalse => 'TIME OFF',
+      };
+
   /// Whether the result is a number of seconds and should render as h:mm:ss.
   bool get isDuration =>
       this == ReportAggregate.durationTrue ||
@@ -144,15 +159,178 @@ sealed class ReportSectionConfig {
   }
 }
 
+/// Which span of the report's range a section aggregates over.
+///
+/// A fish plant runs while there is fish, not while the clock says shift: a
+/// shift routinely starts late, ends early, and finishes in a wash. Averaging
+/// a rate over the planned eight hours when the line ran for six states
+/// something that did not happen, so [effective] — the production window — is
+/// the default and the other two are the deliberate exceptions.
+enum ReportScope {
+  /// The production window: first production to conclusion. The default.
+  effective,
+
+  /// The whole planned range, conclusion ignored.
+  nominal,
+
+  /// Only the segments the line was actually running — pauses excluded.
+  running,
+}
+
+extension ReportScopeLabel on ReportScope {
+  /// Caption a section carries so the reader knows what the figures cover.
+  String get caption => switch (this) {
+        ReportScope.effective => 'over the production window',
+        ReportScope.nominal => 'whole shift',
+        ReportScope.running => 'while running',
+      };
+
+  String get label => switch (this) {
+        ReportScope.effective => 'Production window',
+        ReportScope.nominal => 'Whole shift',
+        ReportScope.running => 'While running',
+      };
+}
+
+/// A section whose figures cover a span of time, and so can be scoped to the
+/// production window. Text is the one section that cannot.
+sealed class ScopedSectionConfig extends ReportSectionConfig {
+  /// Which span this section aggregates over. Ignored when the report has no
+  /// [ProductionWindowConfig] — there is then only one span.
+  ReportScope scope;
+
+  ScopedSectionConfig({super.title, ReportScope? scope})
+      : scope = scope ?? ReportScope.effective;
+}
+
+/// One predicate over a collected key: truthy (neither bound set), above a
+/// threshold, or equal to a value.
+///
+/// Equality is what reads an enum column — a drive's `p_stat_RunMode` is
+/// collected as an integer, so `member: p_stat_RunMode, equals: 4` is "this
+/// motor is in cleaning mode".
+@JsonSerializable(explicitToJson: true)
+class ActivityRule {
+  /// The collected key, as the timeseries table is named.
+  String key;
+
+  /// Struct member column, or null for the scalar `value` column.
+  String? member;
+
+  /// Matches when the value is strictly greater than this.
+  double? above;
+
+  /// Matches when the value equals this. Takes precedence over [above].
+  @JsonKey(name: 'equals')
+  double? equalsValue;
+
+  ActivityRule({
+    required this.key,
+    this.member,
+    this.above,
+    this.equalsValue,
+  });
+
+  /// Whether [v] satisfies this rule. With neither bound set, any non-zero
+  /// value matches — which is what a collected boolean means.
+  bool test(double v) {
+    final eq = equalsValue;
+    if (eq != null) return v == eq;
+    final gt = above;
+    if (gt != null) return v > gt;
+    return v != 0;
+  }
+
+  factory ActivityRule.fromJson(Map<String, dynamic> json) =>
+      _$ActivityRuleFromJson(json);
+  Map<String, dynamic> toJson() => _$ActivityRuleToJson(this);
+}
+
+/// One thing whose activity says whether the plant is producing — a line, a
+/// machine. A report may watch several; the plant is producing while any of
+/// them is.
+@JsonSerializable(explicitToJson: true)
+class ActivitySignalConfig {
+  /// Display name for this signal's lane in the state band.
+  String? label;
+
+  /// When this matches, the signal is producing.
+  ActivityRule running;
+
+  /// When this matches (and [running] does not), the signal is washing.
+  /// Null when nothing recorded says "washing" for this signal.
+  ActivityRule? cleaning;
+
+  /// How long a silence in an interval-sampled key means "the collector was
+  /// down", rather than "the value simply did not change".
+  ///
+  /// Null — the default — is the honest setting for a change-based key, where
+  /// hours between samples are normal and the last value genuinely still
+  /// stands. Set it only for a key sampled on an interval; the conclusion
+  /// algorithm then reports no-data rather than inventing idle time.
+  @JsonKey(name: 'max_gap_minutes')
+  int? maxGapMinutes;
+
+  ActivitySignalConfig({
+    this.label,
+    required this.running,
+    this.cleaning,
+    this.maxGapMinutes,
+  });
+
+  Duration? get maxGap =>
+      maxGapMinutes == null ? null : Duration(minutes: maxGapMinutes!);
+
+  factory ActivitySignalConfig.fromJson(Map<String, dynamic> json) =>
+      _$ActivitySignalConfigFromJson(json);
+  Map<String, dynamic> toJson() => _$ActivitySignalConfigToJson(this);
+}
+
+/// How a report decides when production actually started and concluded.
+///
+/// Deterministic on purpose: the same range over the same recorded history
+/// always yields the same window, so two people reading the same shift report
+/// read the same shift.
+@JsonSerializable(explicitToJson: true)
+class ProductionWindowConfig {
+  List<ActivitySignalConfig> signals;
+
+  /// A non-running tail at least this long, reaching the end of the range,
+  /// concludes the shift.
+  @JsonKey(name: 'idle_minutes')
+  int idleMinutes;
+
+  /// Washing in that tail this long concludes the shift even when the tail is
+  /// shorter than [idleMinutes] — a wash is an ending, not a pause.
+  @JsonKey(name: 'cleaning_minutes')
+  int cleaningMinutes;
+
+  ProductionWindowConfig({
+    List<ActivitySignalConfig>? signals,
+    this.idleMinutes = 30,
+    this.cleaningMinutes = 10,
+  }) : signals = signals ?? [];
+
+  Duration get idleThreshold => Duration(minutes: idleMinutes);
+  Duration get cleaningThreshold => Duration(minutes: cleaningMinutes);
+
+  factory ProductionWindowConfig.fromJson(Map<String, dynamic> json) =>
+      _$ProductionWindowConfigFromJson(json);
+  Map<String, dynamic> toJson() => _$ProductionWindowConfigToJson(this);
+}
+
 /// A row of headline figures.
 @JsonSerializable(explicitToJson: true)
-class KpiSectionConfig extends ReportSectionConfig {
+class KpiSectionConfig extends ScopedSectionConfig {
   static const kType = 'kpi';
 
   List<ReportMetricConfig> metrics;
 
-  KpiSectionConfig({super.title, List<ReportMetricConfig>? metrics})
-      : metrics = metrics ?? [];
+  KpiSectionConfig({
+    super.title,
+    super.scope,
+    List<ReportMetricConfig>? metrics,
+  }) : metrics = metrics ?? [];
 
   @override
   String get type => kType;
@@ -193,7 +371,7 @@ class TableRowConfig {
 /// A metrics-by-aggregates table: one row per key, one column per aggregate —
 /// the Ignition tag-calculation shape.
 @JsonSerializable(explicitToJson: true)
-class TableSectionConfig extends ReportSectionConfig {
+class TableSectionConfig extends ScopedSectionConfig {
   static const kType = 'table';
 
   List<TableRowConfig> rows;
@@ -201,6 +379,7 @@ class TableSectionConfig extends ReportSectionConfig {
 
   TableSectionConfig({
     super.title,
+    super.scope,
     List<TableRowConfig>? rows,
     List<ReportAggregate>? aggregates,
   })  : rows = rows ?? [],
@@ -236,7 +415,7 @@ class ReportChartSeriesConfig {
 
 /// A time-bucketed min/avg/max chart over the range.
 @JsonSerializable(explicitToJson: true)
-class ChartSectionConfig extends ReportSectionConfig {
+class ChartSectionConfig extends ScopedSectionConfig {
   static const kType = 'chart';
 
   List<ReportChartSeriesConfig> series;
@@ -248,6 +427,7 @@ class ChartSectionConfig extends ReportSectionConfig {
 
   ChartSectionConfig({
     super.title,
+    super.scope,
     List<ReportChartSeriesConfig>? series,
     this.maxPoints = 120,
   }) : series = series ?? [];
@@ -265,13 +445,20 @@ class ChartSectionConfig extends ReportSectionConfig {
 /// ISA-18.2-style alarm load summary: totals, rate, and the top offenders by
 /// count and by standing time.
 @JsonSerializable(explicitToJson: true)
-class AlarmSummarySectionConfig extends ReportSectionConfig {
+class AlarmSummarySectionConfig extends ScopedSectionConfig {
   static const kType = 'alarm_summary';
 
   @JsonKey(name: 'top_n')
   int topN;
 
-  AlarmSummarySectionConfig({super.title, this.topN = 10});
+  /// Alarms default to the whole shift: a stop after the line finished is not
+  /// downtime, but an alarm after it finished is still an alarm somebody has
+  /// to know about.
+  AlarmSummarySectionConfig({
+    super.title,
+    ReportScope? scope,
+    this.topN = 10,
+  }) : super(scope: scope ?? ReportScope.nominal);
 
   @override
   String get type => kType;
@@ -285,13 +472,13 @@ class AlarmSummarySectionConfig extends ReportSectionConfig {
 
 /// Downtime pareto over the alarms whose definitions count as stops.
 @JsonSerializable(explicitToJson: true)
-class DowntimeSectionConfig extends ReportSectionConfig {
+class DowntimeSectionConfig extends ScopedSectionConfig {
   static const kType = 'downtime';
 
   @JsonKey(name: 'top_n')
   int topN;
 
-  DowntimeSectionConfig({super.title, this.topN = 10});
+  DowntimeSectionConfig({super.title, super.scope, this.topN = 10});
 
   @override
   String get type => kType;
@@ -313,7 +500,7 @@ class DowntimeSectionConfig extends ReportSectionConfig {
 /// single SELECT/WITH statement is accepted — the engine rejects anything
 /// else before it reaches the database.
 @JsonSerializable(explicitToJson: true)
-class SqlSectionConfig extends ReportSectionConfig {
+class SqlSectionConfig extends ScopedSectionConfig {
   static const kType = 'sql';
 
   String query;
@@ -322,7 +509,12 @@ class SqlSectionConfig extends ReportSectionConfig {
   @JsonKey(name: 'max_rows')
   int maxRows;
 
-  SqlSectionConfig({super.title, this.query = '', this.maxRows = 200});
+  SqlSectionConfig({
+    super.title,
+    super.scope,
+    this.query = '',
+    this.maxRows = 200,
+  });
 
   @override
   String get type => kType;
@@ -382,12 +574,19 @@ class ReportConfig {
   @JsonKey(fromJson: _sectionsFromJson, toJson: _sectionsToJson)
   List<ReportSectionConfig> sections;
 
+  /// How this report works out when production actually ran. Null leaves the
+  /// report as a plain range report: every section covers the whole range and
+  /// no window is resolved — which is what every definition saved before this
+  /// existed deserialises to.
+  ProductionWindowConfig? window;
+
   ReportConfig({
     required this.id,
     required this.name,
     this.description,
     this.range = ReportRangeKind.shift,
     List<ReportSectionConfig>? sections,
+    this.window,
   }) : sections = sections ?? [];
 
   static List<ReportSectionConfig> _sectionsFromJson(List<dynamic> json) =>

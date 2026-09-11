@@ -44,6 +44,92 @@ class ReportService {
     TextSectionConfig.kType,
   ];
 
+  static const validScopes = ['effective', 'nominal', 'running'];
+
+  /// Checks the parts of a definition a generating model gets wrong most
+  /// often, against the raw JSON rather than the parsed object.
+  ///
+  /// Both reasons are about the error message. An unknown `scope` would
+  /// otherwise surface from the enum decoder as a generic parse failure that
+  /// names section types instead of scopes; and a threshold of zero parses
+  /// perfectly well, then quietly produces a window that concludes the shift
+  /// the instant the line pauses. Each message names the field and what would
+  /// be valid, so the caller can correct itself without guessing.
+  static String? _validateExtras(Map<String, dynamic> json) {
+    final sections = json['sections'];
+    if (sections is List) {
+      for (var i = 0; i < sections.length; i++) {
+        final section = sections[i];
+        if (section is! Map) continue;
+        final scope = section['scope'];
+        if (scope != null && !validScopes.contains(scope)) {
+          return 'Section $i has scope "$scope". '
+              'Valid scopes: ${validScopes.join(', ')}.';
+        }
+      }
+    }
+
+    final window = json['window'];
+    if (window == null) return null;
+    if (window is! Map) {
+      return 'The "window" must be an object with a "signals" list.';
+    }
+
+    final idle = window['idle_minutes'];
+    if (idle != null && (idle is! num || idle <= 0)) {
+      return 'window.idle_minutes must be a number greater than 0 — the '
+          'minutes of quiet that end a shift; got "$idle".';
+    }
+    final cleaning = window['cleaning_minutes'];
+    if (cleaning != null && (cleaning is! num || cleaning <= 0)) {
+      return 'window.cleaning_minutes must be a number greater than 0 — the '
+          'minutes of washing that end a shift; got "$cleaning".';
+    }
+
+    final signals = window['signals'];
+    if (signals != null && signals is! List) {
+      return 'window.signals must be a list of activity signals, each with a '
+          '"running" rule.';
+    }
+    final list = (signals as List?) ?? const [];
+    for (var i = 0; i < list.length; i++) {
+      final signal = list[i];
+      if (signal is! Map) return 'window.signals[$i] is not an object.';
+
+      final running = signal['running'];
+      final key = running is Map ? running['key'] : null;
+      if (key is! String || key.isEmpty) {
+        return 'window.signals[$i].running needs a non-empty "key" — the '
+            'collected key that says this machine is producing.';
+      }
+
+      final gap = signal['max_gap_minutes'];
+      if (gap != null && (gap is! num || gap <= 0)) {
+        return 'window.signals[$i].max_gap_minutes must be null for a '
+            'change-based key, or a number greater than 0 for one sampled on '
+            'an interval; got "$gap".';
+      }
+
+      for (final named in [
+        ('running', running),
+        ('cleaning', signal['cleaning']),
+      ]) {
+        final rule = named.$2;
+        if (rule == null) continue;
+        if (rule is! Map) {
+          return 'window.signals[$i].${named.$1} must be an object with a '
+              '"key", and optionally "above" or "equals".';
+        }
+        if (rule['above'] != null && rule['equals'] != null) {
+          return 'window.signals[$i].${named.$1} sets both "above" and '
+              '"equals". Use one: "above" for a threshold, "equals" for an '
+              'enum value, neither for a collected boolean.';
+        }
+      }
+    }
+    return null;
+  }
+
   Future<List<Map<String, dynamic>>> listReports() async {
     final config = await _store.loadReports();
     return [
@@ -195,6 +281,11 @@ class ReportService {
   /// Parses [json] as a report definition, or returns an error string that
   /// tells the caller what was wrong and what would be valid.
   ReportConfig? _parseReport(Map<String, dynamic> json, List<String> errors) {
+    final extras = _validateExtras(json);
+    if (extras != null) {
+      errors.add(extras);
+      return null;
+    }
     try {
       final report = ReportConfig.fromJson(json);
       if (report.id.isEmpty) errors.add('Report id must not be empty.');

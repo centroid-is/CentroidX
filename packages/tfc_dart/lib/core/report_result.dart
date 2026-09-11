@@ -12,6 +12,268 @@ String formatSeconds(double seconds) {
   return d > 0 ? '${d}d $hms' : hms;
 }
 
+/// Formats a duration the way a shift is talked about: `6h 10m`, `0h 18m`,
+/// `3d 2h`. Seconds are noise at this scale.
+String formatDurationCompact(Duration d) {
+  final total = d.inSeconds.abs();
+  final days = total ~/ 86400;
+  final hours = (total % 86400) ~/ 3600;
+  final minutes = (total % 3600) ~/ 60;
+  if (days > 0) return '${days}d ${hours}h';
+  return '${hours}h ${minutes}m';
+}
+
+/// What the plant was doing over one stretch of a report's range.
+enum ProductionState {
+  /// An activity signal says the line is producing.
+  running,
+
+  /// Nothing is producing, and nothing says why.
+  idle,
+
+  /// Washing — the daily ending, and the thing that is not downtime.
+  cleaning,
+
+  /// Not producing, with a stop alarm standing over it. The cause is named.
+  fault,
+
+  /// No history here at all: the collector was down. Not the same as idle,
+  /// and never counted as if it were.
+  noData,
+}
+
+extension ProductionStateLabel on ProductionState {
+  String get label => switch (this) {
+        ProductionState.running => 'Running',
+        ProductionState.idle => 'Idle',
+        ProductionState.cleaning => 'Washing',
+        ProductionState.fault => 'Stops',
+        ProductionState.noData => 'No data',
+      };
+}
+
+/// Why the production window ended where it did.
+enum ConclusionReason {
+  /// It ran to the end of the planned range.
+  shiftEnd,
+
+  /// It stopped and stayed stopped.
+  idle,
+
+  /// It stopped and the wash followed.
+  cleaning,
+
+  /// The recording stopped; what happened after is unknown.
+  noData,
+
+  /// Nothing was produced in this range at all.
+  noProduction,
+
+  /// The range is still open and production is not over.
+  ongoing,
+}
+
+/// One stretch of one state.
+class StateSegment {
+  final DateTime from;
+  final DateTime to;
+  final ProductionState state;
+
+  const StateSegment({
+    required this.from,
+    required this.to,
+    required this.state,
+  });
+
+  Duration get length => to.difference(from);
+
+  Map<String, dynamic> toJson() => {
+        'from': from.toIso8601String(),
+        'to': to.toIso8601String(),
+        'state': state.name,
+      };
+}
+
+/// One activity signal's own view of the range — a lane in the state band
+/// when a report watches more than one line.
+class SignalLane {
+  final String label;
+  final List<StateSegment> segments;
+
+  const SignalLane({required this.label, required this.segments});
+
+  Map<String, dynamic> toJson() => {
+        'label': label,
+        'segments': segments.map((s) => s.toJson()).toList(),
+      };
+}
+
+/// When production actually ran inside a report's planned range.
+///
+/// A fish plant runs while there is fish. The planned shift is an intention;
+/// this is what happened — when the line first produced, when it finished,
+/// and what the rest of the range was. Every section scoped to
+/// [ReportScope.effective] is computed over `[effectiveStart, effectiveEnd)`,
+/// so a shift that ended at 13:42 and washed until 15:00 does not report two
+/// hours of zeros as production.
+class ProductionWindow {
+  /// The planned range, as the calendar gave it.
+  final DateTime nominalStart;
+  final DateTime nominalEnd;
+
+  /// The last instant there can be data for: the range end, or now for a
+  /// range still open.
+  final DateTime cap;
+
+  /// First production seen. Null when there was none.
+  final DateTime? actualStart;
+
+  /// When production finished for good. Null while it has not.
+  final DateTime? concludedAt;
+
+  final ConclusionReason reason;
+
+  /// True when the conclusion is inferred on a range that is still open — the
+  /// line has been quiet long enough to call it, but starting again would
+  /// undo that, and regenerating then does.
+  final bool tentative;
+
+  /// The merged state of the plant over `[nominalStart, cap)`.
+  final List<StateSegment> segments;
+
+  /// Per-signal segments, when the report watches more than one.
+  final List<SignalLane> lanes;
+
+  final Duration running;
+  final Duration idle;
+  final Duration cleaning;
+  final Duration fault;
+  final Duration noData;
+
+  /// Running time over the production window excluding washing — the OEE
+  /// availability convention, where a wash is planned downtime. Null when
+  /// there is no window to divide by.
+  final double? availability;
+
+  /// What the resolution could not do: a signal whose key has no collected
+  /// data, say.
+  ///
+  /// A missing signal makes a busy shift look like an empty one, and the
+  /// difference between "the line did not run" and "nobody recorded whether
+  /// it ran" is the whole point of separating no-data from idle. So it is
+  /// said out loud rather than swallowed.
+  final List<String> notes;
+
+  const ProductionWindow({
+    required this.nominalStart,
+    required this.nominalEnd,
+    required this.cap,
+    required this.actualStart,
+    required this.concludedAt,
+    required this.reason,
+    required this.tentative,
+    required this.segments,
+    this.lanes = const [],
+    required this.running,
+    required this.idle,
+    required this.cleaning,
+    required this.fault,
+    required this.noData,
+    required this.availability,
+    this.notes = const [],
+  });
+
+  DateTime get effectiveStart => actualStart ?? nominalStart;
+  DateTime get effectiveEnd => concludedAt ?? cap;
+  Duration get effectiveDuration =>
+      effectiveEnd.isAfter(effectiveStart)
+          ? effectiveEnd.difference(effectiveStart)
+          : Duration.zero;
+  Duration get nominalDuration => nominalEnd.difference(nominalStart);
+
+  /// Nothing was produced in this range.
+  bool get isEmpty => reason == ConclusionReason.noProduction;
+
+  /// Whether production finished before the planned end.
+  bool get endedEarly =>
+      concludedAt != null && concludedAt!.isBefore(nominalEnd);
+
+  /// The production window as a range, for scoping a section.
+  TimeRange get effectiveRange => TimeRange(effectiveStart, effectiveEnd);
+
+  /// The stretches the line was actually running.
+  List<TimeRange> get runningRanges => [
+        for (final s in segments)
+          if (s.state == ProductionState.running) TimeRange(s.from, s.to),
+      ];
+
+  Map<String, dynamic> toJson() => {
+        'nominal_start': nominalStart.toIso8601String(),
+        'nominal_end': nominalEnd.toIso8601String(),
+        'cap': cap.toIso8601String(),
+        if (actualStart != null) 'actual_start': actualStart!.toIso8601String(),
+        if (concludedAt != null) 'concluded_at': concludedAt!.toIso8601String(),
+        'reason': reason.name,
+        'tentative': tentative,
+        'running_seconds': running.inMilliseconds / 1000,
+        'idle_seconds': idle.inMilliseconds / 1000,
+        'cleaning_seconds': cleaning.inMilliseconds / 1000,
+        'fault_seconds': fault.inMilliseconds / 1000,
+        'no_data_seconds': noData.inMilliseconds / 1000,
+        if (availability != null) 'availability': availability,
+        if (notes.isNotEmpty) 'notes': notes,
+        'segments': segments.map((s) => s.toJson()).toList(),
+        if (lanes.isNotEmpty)
+          'lanes': lanes.map((l) => l.toJson()).toList(),
+      };
+
+  /// The sentence a person would say about the shift.
+  String toText() {
+    String hm(DateTime t) =>
+        '${t.hour.toString().padLeft(2, '0')}:'
+        '${t.minute.toString().padLeft(2, '0')}';
+    final b = StringBuffer();
+    if (isEmpty) {
+      b.write('No production in this range');
+      if (tentative) b.write(' yet');
+      b.write('.');
+      for (final n in notes) {
+        b.write(' $n');
+      }
+      return b.toString();
+    }
+    b.write('Production ${hm(effectiveStart)}–');
+    b.write(concludedAt == null ? 'now' : hm(effectiveEnd));
+    b.write(' (${formatDurationCompact(effectiveDuration)} of '
+        '${formatDurationCompact(nominalDuration)} planned)');
+    b.write(switch (reason) {
+      ConclusionReason.shiftEnd => ', ran to the end of the range',
+      ConclusionReason.idle => tentative
+          ? ', possibly finished — idle since ${hm(concludedAt!)}'
+          : ', finished early and stayed stopped',
+      ConclusionReason.cleaning => ', finished early and washed',
+      ConclusionReason.noData => ', no data recorded after ${hm(cap)}',
+      ConclusionReason.ongoing => ', still running',
+      ConclusionReason.noProduction => '',
+    });
+    b.write('. Running ${formatDurationCompact(running)}, '
+        'stops ${formatDurationCompact(fault)}, '
+        'idle ${formatDurationCompact(idle)}, '
+        'washing ${formatDurationCompact(cleaning)}');
+    if (noData > Duration.zero) {
+      b.write(', no data ${formatDurationCompact(noData)}');
+    }
+    b.write('.');
+    if (availability != null) {
+      b.write(' Availability ${(availability! * 100).toStringAsFixed(1)}%.');
+    }
+    for (final n in notes) {
+      b.write(' $n');
+    }
+    return b.toString();
+  }
+}
+
 /// One computed metric value. [value] is null when the key had no data in the
 /// range or the query failed — [error] says which.
 class MetricResult {
@@ -64,10 +326,22 @@ sealed class ReportSectionResult {
   String toText();
 }
 
-class KpiSectionResult extends ReportSectionResult {
+/// A section whose figures cover a span of time, and so carry the scope they
+/// were computed over — what the reader needs to know before trusting a
+/// number that says "981 boxes/h".
+sealed class ScopedSectionResult extends ReportSectionResult {
+  final ReportScope scope;
+
+  const ScopedSectionResult({
+    super.title,
+    this.scope = ReportScope.effective,
+  });
+}
+
+class KpiSectionResult extends ScopedSectionResult {
   final List<MetricResult> metrics;
 
-  const KpiSectionResult({super.title, required this.metrics});
+  const KpiSectionResult({super.title, super.scope, required this.metrics});
 
   @override
   String get type => KpiSectionConfig.kType;
@@ -76,6 +350,7 @@ class KpiSectionResult extends ReportSectionResult {
   Map<String, dynamic> toJson() => {
         'type': type,
         if (title != null) 'title': title,
+        'scope': scope.name,
         'metrics': metrics.map((m) => m.toJson()).toList(),
       };
 
@@ -103,12 +378,13 @@ class TableRowResult {
       };
 }
 
-class TableSectionResult extends ReportSectionResult {
+class TableSectionResult extends ScopedSectionResult {
   final List<ReportAggregate> aggregates;
   final List<TableRowResult> rows;
 
   const TableSectionResult({
     super.title,
+    super.scope,
     required this.aggregates,
     required this.rows,
   });
@@ -120,6 +396,7 @@ class TableSectionResult extends ReportSectionResult {
   Map<String, dynamic> toJson() => {
         'type': type,
         if (title != null) 'title': title,
+        'scope': scope.name,
         'columns': aggregates.map((a) => a.label).toList(),
         'rows': rows.map((r) => r.toJson()).toList(),
       };
@@ -155,10 +432,10 @@ class ChartSeriesResult {
       };
 }
 
-class ChartSectionResult extends ReportSectionResult {
+class ChartSectionResult extends ScopedSectionResult {
   final List<ChartSeriesResult> series;
 
-  const ChartSectionResult({super.title, required this.series});
+  const ChartSectionResult({super.title, super.scope, required this.series});
 
   @override
   String get type => ChartSectionConfig.kType;
@@ -167,6 +444,7 @@ class ChartSectionResult extends ReportSectionResult {
   Map<String, dynamic> toJson() => {
         'type': type,
         if (title != null) 'title': title,
+        'scope': scope.name,
         'series': series.map((s) => s.toJson()).toList(),
       };
 
@@ -222,7 +500,7 @@ class AlarmStat {
       };
 }
 
-class AlarmSummarySectionResult extends ReportSectionResult {
+class AlarmSummarySectionResult extends ScopedSectionResult {
   final int totalActivations;
   final int distinctAlarms;
   final int openNow;
@@ -230,14 +508,20 @@ class AlarmSummarySectionResult extends ReportSectionResult {
   final List<AlarmStat> topByCount;
   final List<AlarmStat> topByDuration;
 
+  /// Activations that started after production concluded. Zero when the shift
+  /// ran to its end, or when no window was resolved.
+  final int afterConclusion;
+
   const AlarmSummarySectionResult({
     super.title,
+    super.scope,
     required this.totalActivations,
     required this.distinctAlarms,
     required this.openNow,
     required this.perHour,
     required this.topByCount,
     required this.topByDuration,
+    this.afterConclusion = 0,
   });
 
   @override
@@ -247,6 +531,8 @@ class AlarmSummarySectionResult extends ReportSectionResult {
   Map<String, dynamic> toJson() => {
         'type': type,
         if (title != null) 'title': title,
+        'scope': scope.name,
+        if (afterConclusion > 0) 'after_conclusion': afterConclusion,
         'total_activations': totalActivations,
         'distinct_alarms': distinctAlarms,
         'open_now': openNow,
@@ -281,7 +567,7 @@ class AlarmSummarySectionResult extends ReportSectionResult {
   }
 }
 
-class DowntimeSectionResult extends ReportSectionResult {
+class DowntimeSectionResult extends ScopedSectionResult {
   /// Union of all stop intervals clipped to the range — concurrent stops do
   /// not double-count.
   final Duration totalDown;
@@ -295,6 +581,7 @@ class DowntimeSectionResult extends ReportSectionResult {
 
   const DowntimeSectionResult({
     super.title,
+    super.scope,
     required this.totalDown,
     required this.fraction,
     required this.stops,
@@ -309,6 +596,7 @@ class DowntimeSectionResult extends ReportSectionResult {
   Map<String, dynamic> toJson() => {
         'type': type,
         if (title != null) 'title': title,
+        'scope': scope.name,
         'total_down_seconds': totalDown.inMilliseconds / 1000,
         'fraction': fraction,
         'stops': stops,
@@ -333,7 +621,7 @@ class DowntimeSectionResult extends ReportSectionResult {
 }
 
 /// A custom query's result: stringified cells, already capped.
-class SqlSectionResult extends ReportSectionResult {
+class SqlSectionResult extends ScopedSectionResult {
   final List<String> columns;
   final List<List<String>> rows;
 
@@ -344,6 +632,7 @@ class SqlSectionResult extends ReportSectionResult {
 
   const SqlSectionResult({
     super.title,
+    super.scope,
     required this.columns,
     required this.rows,
     this.truncated = false,
@@ -422,6 +711,10 @@ class ReportResult {
 
   final List<ReportSectionResult> sections;
 
+  /// When production actually ran. Null when the definition declares no
+  /// activity signals — the report is then a plain range report.
+  final ProductionWindow? window;
+
   const ReportResult({
     required this.reportId,
     required this.reportName,
@@ -431,6 +724,7 @@ class ReportResult {
     required this.generatedAt,
     required this.partial,
     required this.sections,
+    this.window,
   });
 
   Map<String, dynamic> toJson() => {
@@ -441,6 +735,7 @@ class ReportResult {
         'range_label': rangeLabel,
         'generated_at': generatedAt.toIso8601String(),
         'partial': partial,
+        if (window != null) 'window': window!.toJson(),
         'sections': sections.map((s) => s.toJson()).toList(),
       };
 
@@ -450,6 +745,9 @@ class ReportResult {
     b.writeln('Range: ${rangeStart.toIso8601String()} '
         '.. ${rangeEnd.toIso8601String()}, '
         'generated ${generatedAt.toIso8601String()}');
+    // The window goes first: what the numbers below cover is the first thing
+    // a reader — person or model — has to know.
+    if (window != null) b.writeln(window!.toText());
     for (final s in sections) {
       b.writeln();
       b.writeln(s.toText());

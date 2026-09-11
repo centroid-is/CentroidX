@@ -86,6 +86,9 @@ void main() {
     late MockMcpClient client;
     late List<Map<String, dynamic>> proposals;
 
+    /// The confirmation the operator would read before accepting.
+    Map<String, dynamic>? capturedDetails;
+
     // Fixed mid-shift clock: Tuesday 2026-09-01 10:00.
     final now = DateTime(2026, 9, 1, 10);
 
@@ -93,6 +96,7 @@ void main() {
       db = createTestDatabase();
       await db.customStatement('SELECT 1');
       proposals = [];
+      capturedDetails = null;
 
       final mcpServer = McpServer(
         const Implementation(name: 'test-server', version: '0.1.0'),
@@ -109,7 +113,7 @@ void main() {
       registerReportWriteTools(
         registry: registry,
         service: service,
-        riskGate: NoOpRiskGate(),
+        riskGate: _CapturingRiskGate((details) => capturedDetails = details),
         proposalService: ProposalService(onProposal: proposals.add),
       );
       client = await MockMcpClient.connect(mcpServer);
@@ -242,5 +246,84 @@ void main() {
       expect(result.isError, isTrue);
       expect(textOf(result), contains('list_reports'));
     });
+
+    test('the proposal diff names the production window', () async {
+      final create = await client.callTool('create_report', {
+        'config': {
+          'id': 'windowed',
+          'name': 'Windowed',
+          'range': 'shift',
+          'sections': [
+            {'type': 'kpi', 'scope': 'effective', 'metrics': <dynamic>[]}
+          ],
+          'window': {
+            'signals': [
+              {
+                'running': {'key': 'line.running'}
+              }
+            ],
+            'idle_minutes': 30,
+            'cleaning_minutes': 10,
+          },
+        },
+      });
+
+      expect(create.isError, isNot(isTrue), reason: textOf(create));
+      // Whether a report resolves a window changes what every figure in it
+      // means, so the operator is told before they accept, not after.
+      expect(capturedDetails?['diff'],
+          contains('1 signal, idle 30 min, washing 10 min'));
+    });
+
+    test('a report without a window says so in the diff', () async {
+      final create = await client.callTool('create_report', {
+        'config': {
+          'id': 'plain',
+          'name': 'Plain',
+          'range': 'shift',
+          'sections': [
+            {'type': 'text', 'text': 'hi'}
+          ],
+        },
+      });
+
+      expect(create.isError, isNot(isTrue), reason: textOf(create));
+      expect(capturedDetails?['diff'], contains('| window | none |'));
+    });
+
+    test('an unknown scope comes back as a helpful isError', () async {
+      final create = await client.callTool('create_report', {
+        'config': {
+          'id': 'bad-scope',
+          'name': 'Bad scope',
+          'sections': [
+            {'type': 'kpi', 'scope': 'whenever', 'metrics': <dynamic>[]}
+          ],
+        },
+      });
+
+      expect(create.isError, isTrue);
+      expect(textOf(create), contains('whenever'));
+      expect(textOf(create), contains('effective'));
+    });
   });
+}
+
+/// A RiskGate that records the confirmation it was asked for, then agrees —
+/// [NoOpRiskGate] with a memory. The diff is the only thing the operator reads
+/// before accepting a report definition, so what it says is worth asserting.
+class _CapturingRiskGate implements RiskGate {
+  _CapturingRiskGate(this.onConfirm);
+
+  final void Function(Map<String, dynamic>? details) onConfirm;
+
+  @override
+  Future<RiskConfirmation> requestConfirmation({
+    required String description,
+    required RiskLevel level,
+    Map<String, dynamic>? details,
+  }) async {
+    onConfirm(details);
+    return RiskConfirmation(confirmed: true);
+  }
 }

@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart';
 
 import 'mcp_database.dart';
+import 'production_window.dart';
 import 'report.dart';
 import 'report_math.dart';
 import 'report_result.dart';
@@ -149,15 +150,24 @@ class ReportEngine {
     final startIso = start.toUtc().toIso8601String();
     final endIso = end.toUtc().toIso8601String();
 
+    // The boundary row's *time* comes back with its value: an interval-sampled
+    // key whose collector died before the range began looks exactly like a
+    // change-based key that simply has not changed, until you know how old the
+    // standing sample is.
     final boundaryRows = await _db.customSelect(
-      _sql('SELECT $qCol AS v FROM $qTable '
+      _sql('SELECT time, $qCol AS v FROM $qTable '
           'WHERE time <= ?$_tsCast AND $qCol IS NOT NULL '
           'ORDER BY time DESC LIMIT 1'),
       variables: [Variable.withString(startIso)],
     ).get();
-    final boundaryValue = boundaryRows.isEmpty
-        ? null
-        : _rowValue(boundaryRows.first.data['v']);
+    double? boundaryValue;
+    DateTime? boundaryTime;
+    if (boundaryRows.isNotEmpty) {
+      boundaryValue = _rowValue(boundaryRows.first.data['v']);
+      if (boundaryValue != null) {
+        boundaryTime = _rowTime(boundaryRows.first.data['time']);
+      }
+    }
 
     final rows = await _db.customSelect(
       _sql('SELECT time, $qCol AS v FROM $qTable '
@@ -183,6 +193,7 @@ class ReportEngine {
       start: start,
       end: end,
       boundaryValue: boundaryValue,
+      boundaryTime: boundaryTime,
       samples: samples,
     );
   }
@@ -229,12 +240,14 @@ class ReportEngine {
       required ReportAggregate aggregate_,
       String? unit,
       int decimals = 1,
+      required List<TimeRange> ranges,
     }) async {
       final values = <double>[];
       final problems = <String>[];
       for (final k in [key, ...additionalKeys]) {
         try {
-          final v = aggregate(aggregate_, await windowFor(k, member));
+          final v =
+              aggregateOver(aggregate_, await windowFor(k, member), ranges);
           if (v != null) values.add(v);
         } on Exception catch (e) {
           problems.add('$k: $e');
@@ -275,12 +288,108 @@ class ReportEngine {
           await _fetchActivations(rangeStart, effectiveEnd, activeAlarms);
     }
 
+    // What the numbers below actually cover. A fish plant runs while there is
+    // fish: the planned range is an intention, and this is what happened.
+    ProductionWindow? window;
+    final windowConfig = config.window;
+    if (windowConfig != null && windowConfig.signals.isNotEmpty) {
+      final perSignal = <List<StateSegment>>[];
+      final lanes = <SignalLane>[];
+      final notes = <String>[];
+      for (final signal in windowConfig.signals) {
+        try {
+          final running =
+              await windowFor(signal.running.key, signal.running.member);
+          final cleaningRule = signal.cleaning;
+          final cleaning = cleaningRule == null
+              ? null
+              : await windowFor(cleaningRule.key, cleaningRule.member);
+          final segments = signalSegments(
+            running: running,
+            cleaning: cleaning,
+            runningRule: signal.running,
+            cleaningRule: cleaningRule,
+            maxGap: signal.maxGap,
+            start: rangeStart,
+            cap: effectiveEnd,
+          );
+          perSignal.add(segments);
+          lanes.add(SignalLane(
+            label: signal.label ?? signal.running.key,
+            segments: segments,
+          ));
+        } catch (e) {
+          // A signal whose table is missing contributes no lane rather than
+          // failing the report: a definition that outlived one of its machines
+          // still has to render, and the signals that remain still witness the
+          // shift. With every signal gone the window stays null and each
+          // section falls back to the plain range.
+          //
+          // It is said out loud, though. A silently dropped signal makes a
+          // busy shift read as an empty one, and "the line did not run" and
+          // "nobody recorded whether it ran" must never look the same.
+          notes.add('Signal "${signal.label ?? signal.running.key}" could not '
+              'be read: $e');
+        }
+      }
+      if (perSignal.isNotEmpty) {
+        // Only alarms their definition calls a stop name lost time; the
+        // activity signal is the better witness of everything else.
+        final stops = <TimeRange>[];
+        for (final a in await alarmActivations()) {
+          if (!(alarmMeta[a.uid]?.countsAsStop ?? true)) continue;
+          final lo = a.start.isAfter(rangeStart) ? a.start : rangeStart;
+          final hiRaw = a.end ?? effectiveEnd;
+          final hi = hiRaw.isBefore(effectiveEnd) ? hiRaw : effectiveEnd;
+          if (hi.isAfter(lo)) stops.add(TimeRange(lo, hi));
+        }
+        window = resolveProductionWindow(
+          nominalStart: rangeStart,
+          nominalEnd: rangeEnd,
+          now: clock,
+          segments: overlayStops(
+            mergeSignals(perSignal, start: rangeStart, cap: effectiveEnd),
+            stops,
+          ),
+          // With one signal the lane would repeat the merged band exactly,
+          // which teaches the reader nothing.
+          lanes: windowConfig.signals.length > 1 ? lanes : const [],
+          notes: notes,
+          idleThreshold: windowConfig.idleThreshold,
+          cleaningThreshold: windowConfig.cleaningThreshold,
+        );
+      }
+    }
+
+    // The spans a scoped section aggregates over. Without a window there is
+    // only one span to be had, so every scope collapses to the plain range.
+    List<TimeRange> rangesFor(ScopedSectionConfig s) {
+      final w = window;
+      if (w == null) return [TimeRange(rangeStart, effectiveEnd)];
+      return switch (s.scope) {
+        ReportScope.nominal => [TimeRange(rangeStart, effectiveEnd)],
+        ReportScope.effective => [w.effectiveRange],
+        ReportScope.running => w.runningRanges,
+      };
+    }
+
+    // Alarm, downtime and SQL sections reason about intervals rather than
+    // samples, so they take a single span: a `running` scope collapses to the
+    // stretch enclosing its pauses instead of being evaluated piecewise.
+    TimeRange spanFor(ScopedSectionConfig s) {
+      final ranges = rangesFor(s);
+      if (ranges.isEmpty) return TimeRange(rangeStart, rangeStart);
+      return TimeRange(ranges.first.from, ranges.last.to);
+    }
+
     final sections = <ReportSectionResult>[];
     for (final section in config.sections) {
       switch (section) {
         case KpiSectionConfig s:
+          final kpiRanges = rangesFor(s);
           sections.add(KpiSectionResult(
             title: s.title,
+            scope: s.scope,
             metrics: [
               for (final m in s.metrics)
                 await metric(
@@ -292,12 +401,15 @@ class ReportEngine {
                   aggregate_: m.aggregate,
                   unit: m.unit,
                   decimals: m.decimals,
+                  ranges: kpiRanges,
                 ),
             ],
           ));
         case TableSectionConfig s:
+          final tableRanges = rangesFor(s);
           sections.add(TableSectionResult(
             title: s.title,
+            scope: s.scope,
             aggregates: s.aggregates,
             rows: [
               for (final row in s.rows)
@@ -312,6 +424,7 @@ class ReportEngine {
                         aggregate_: agg,
                         unit: row.unit,
                         decimals: row.decimals,
+                        ranges: tableRanges,
                       ),
                   ],
                 ),
@@ -331,15 +444,37 @@ class ReportEngine {
                   ChartSeriesResult(label: cs.displayLabel, points: const []));
             }
           }
-          sections.add(ChartSectionResult(title: s.title, series: series));
+          // Charts stay bucketised over the whole nominal range whatever the
+          // scope says: the shape of the shift is the context a reader needs,
+          // and the view greys what falls outside the window rather than
+          // cropping it away.
+          sections.add(ChartSectionResult(
+              title: s.title, scope: s.scope, series: series));
         case AlarmSummarySectionConfig s:
+          final alarmSpan = spanFor(s);
+          final alarms = await alarmActivations();
+          final concluded = window?.concludedAt;
           sections.add(_alarmSummary(
-              s, await alarmActivations(), rangeStart, effectiveEnd));
+            s,
+            alarms,
+            alarmSpan.from,
+            alarmSpan.to,
+            // An alarm raised after the line finished is still an alarm
+            // somebody has to know about, but counting it as shift load would
+            // misread a quiet evening as a bad shift. The summary reports it
+            // separately rather than silently either way.
+            afterConclusion: concluded == null
+                ? 0
+                : alarms.where((a) => !a.start.isBefore(concluded)).length,
+          ));
         case DowntimeSectionConfig s:
+          final downtimeSpan = spanFor(s);
           sections.add(_downtime(s, await alarmActivations(), alarmMeta,
-              rangeStart, effectiveEnd));
+              downtimeSpan.from, downtimeSpan.to));
         case SqlSectionConfig s:
-          sections.add(await _sqlSection(s, rangeStart, effectiveEnd));
+          final sqlSpan = spanFor(s);
+          sections.add(await _sqlSection(
+              s, sqlSpan.from, sqlSpan.to, rangeStart, effectiveEnd));
         case TextSectionConfig s:
           sections.add(TextSectionResult(title: s.title, text: s.text));
       }
@@ -354,6 +489,7 @@ class ReportEngine {
       generatedAt: clock,
       partial: partial,
       sections: sections,
+      window: window,
     );
   }
 
@@ -383,25 +519,41 @@ class ReportEngine {
     return null;
   }
 
-  /// Runs a custom query section. `:from`/`:to` tokens become bound
-  /// parameters carrying the range as ISO-8601 UTC text.
+  /// Runs a custom query section. `:from`/`:to` carry the section's own scope
+  /// as ISO-8601 UTC text, `:nominal_from`/`:nominal_to` the whole planned
+  /// range — so one query can put the production window's figures beside the
+  /// shift they were planned for.
+  ///
+  /// A `running` scope covers several stretches; a query gets the span that
+  /// encloses them, since a bound parameter cannot carry a list of holes.
   Future<SqlSectionResult> _sqlSection(
-      SqlSectionConfig config, DateTime start, DateTime end) async {
+    SqlSectionConfig config,
+    DateTime start,
+    DateTime end,
+    DateTime nominalStart,
+    DateTime nominalEnd,
+  ) async {
     final invalid = validateSqlQuery(config.query);
     if (invalid != null) {
       return SqlSectionResult(
-          title: config.title, columns: const [], rows: const [],
+          title: config.title, scope: config.scope,
+          columns: const [], rows: const [],
           error: invalid);
     }
 
-    // Each :from/:to occurrence becomes its own placeholder, in order.
+    // Each token occurrence becomes its own placeholder, in order. The longer
+    // names are matched first: `:(from|to)` would otherwise eat the tail of
+    // `:nominal_from` and leave `:nominal_` in the SQL.
     final variables = <Variable>[];
     final substituted = config.query.trim().replaceAllMapped(
-      RegExp(r':(from|to)\b'),
+      RegExp(r':(nominal_from|nominal_to|from|to)\b'),
       (m) {
-        variables.add(Variable.withString(m[1] == 'from'
-            ? start.toUtc().toIso8601String()
-            : end.toUtc().toIso8601String()));
+        variables.add(Variable.withString(switch (m[1]) {
+          'from' => start.toUtc().toIso8601String(),
+          'to' => end.toUtc().toIso8601String(),
+          'nominal_from' => nominalStart.toUtc().toIso8601String(),
+          _ => nominalEnd.toUtc().toIso8601String(),
+        }));
         return '?';
       },
     );
@@ -412,7 +564,8 @@ class ReportEngine {
           .get();
       if (rows.isEmpty) {
         return SqlSectionResult(
-            title: config.title, columns: const [], rows: const []);
+            title: config.title, scope: config.scope,
+            columns: const [], rows: const []);
       }
       final columns = rows.first.data.keys.toList();
       final capped = rows.take(config.maxRows).toList();
@@ -423,6 +576,7 @@ class ReportEngine {
           };
       return SqlSectionResult(
         title: config.title,
+        scope: config.scope,
         columns: columns,
         rows: [
           for (final row in capped)
@@ -432,7 +586,8 @@ class ReportEngine {
       );
     } on Exception catch (e) {
       return SqlSectionResult(
-          title: config.title, columns: const [], rows: const [],
+          title: config.title, scope: config.scope,
+          columns: const [], rows: const [],
           error: '$e');
     }
   }
@@ -530,8 +685,9 @@ class ReportEngine {
     AlarmSummarySectionConfig config,
     List<_Activation> activations,
     DateTime start,
-    DateTime end,
-  ) {
+    DateTime end, {
+    int afterConclusion = 0,
+  }) {
     final stats = _stats(activations, start, end);
     final totalActivations =
         stats.fold<int>(0, (sum, s) => sum + s.count);
@@ -541,6 +697,8 @@ class ReportEngine {
     final byDuration = [...stats]..sort((a, b) => b.total.compareTo(a.total));
     return AlarmSummarySectionResult(
       title: config.title,
+      scope: config.scope,
+      afterConclusion: afterConclusion,
       totalActivations: totalActivations,
       distinctAlarms: stats.length,
       openNow: openNow,
@@ -599,6 +757,7 @@ class ReportEngine {
     final rangeUs = end.difference(start).inMicroseconds;
     return DowntimeSectionResult(
       title: config.title,
+      scope: config.scope,
       totalDown: Duration(microseconds: totalUs),
       fraction: rangeUs > 0 ? totalUs / rangeUs : 0,
       stops: mergedCount,

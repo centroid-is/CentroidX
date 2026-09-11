@@ -24,6 +24,13 @@ class SampleWindow {
   /// no history before the window.
   final double? boundaryValue;
 
+  /// When that boundary sample was taken. Null when there is none.
+  ///
+  /// The value alone is enough to step-hold; the *time* is what tells a
+  /// one-second-sampled key whose collector died an hour before the shift
+  /// apart from a change-based key that simply has not changed.
+  final DateTime? boundaryTime;
+
   /// Samples strictly after [start] and at or before [end], sorted by time.
   final List<Sample> samples;
 
@@ -31,10 +38,126 @@ class SampleWindow {
     required this.start,
     required this.end,
     required this.boundaryValue,
+    this.boundaryTime,
     required this.samples,
   });
 
   bool get isEmpty => samples.isEmpty && boundaryValue == null;
+
+  /// The same history seen through a shorter window `[from, to)`.
+  ///
+  /// The boundary is recomputed rather than carried over: the value standing
+  /// when a sub-range began is usually a sample *inside* the original window,
+  /// and using the original boundary would hold a value the data already
+  /// replaced.
+  SampleWindow clip(DateTime from, DateTime to) {
+    var bv = boundaryValue;
+    var bt = boundaryTime;
+    final kept = <Sample>[];
+    for (final s in samples) {
+      if (!s.time.isAfter(from)) {
+        bv = s.value;
+        bt = s.time;
+      } else if (!s.time.isAfter(to)) {
+        kept.add(s);
+      }
+    }
+    return SampleWindow(
+      start: from,
+      end: to,
+      boundaryValue: bv,
+      boundaryTime: bt,
+      samples: kept,
+    );
+  }
+}
+
+/// A half-open span of time. Several of them are how a section says "only
+/// while the line was running".
+class TimeRange {
+  final DateTime from;
+  final DateTime to;
+
+  const TimeRange(this.from, this.to);
+
+  Duration get length => to.difference(from);
+  bool get isEmpty => !to.isAfter(from);
+
+  @override
+  String toString() => '${from.toIso8601String()}..${to.toIso8601String()}';
+}
+
+/// Computes [agg] over the parts of [w] that fall inside [ranges], folding the
+/// per-range results the way that aggregate means.
+///
+/// One range is the ordinary case — a section scoped to the production window
+/// — and goes straight through [aggregate]. Several ranges is the "while
+/// running" scope, where the point of the fold is that the pauses between the
+/// ranges contribute nothing: a counter that was reset while the line stood
+/// still does not invent production, and an average is not dragged down by
+/// hours of zeros.
+double? aggregateOver(
+    ReportAggregate agg, SampleWindow w, List<TimeRange> ranges) {
+  final live = ranges.where((r) => !r.isEmpty).toList();
+  if (live.isEmpty) {
+    // A range of no length still answers with whatever stood there, which is
+    // what aggregating over it directly would say. Only the absence of any
+    // range at all means "nothing to compute".
+    return ranges.isEmpty
+        ? null
+        : aggregate(agg, w.clip(ranges.first.from, ranges.first.to));
+  }
+  if (live.length == 1) {
+    return aggregate(agg, w.clip(live.first.from, live.first.to));
+  }
+
+  final parts = [for (final r in live) w.clip(r.from, r.to)];
+  final values = [for (final p in parts) aggregate(agg, p)];
+  final known = <int>[
+    for (var i = 0; i < values.length; i++)
+      if (values[i] != null) i,
+  ];
+  if (known.isEmpty) return null;
+
+  double sum(Iterable<double> xs) => xs.fold(0.0, (a, b) => a + b);
+  final present = [for (final i in known) values[i]!];
+
+  return switch (agg) {
+    ReportAggregate.first => values[known.first],
+    ReportAggregate.last => values[known.last],
+    ReportAggregate.min => present.reduce((a, b) => a < b ? a : b),
+    ReportAggregate.max => present.reduce((a, b) => a > b ? a : b),
+    // Sample-weighted, so the fold equals the mean of all the samples in the
+    // ranges — not the mean of the per-range means.
+    ReportAggregate.mean => () {
+        var total = 0.0;
+        var n = 0;
+        for (final i in known) {
+          final c = parts[i].samples.length;
+          if (c == 0) continue;
+          total += values[i]! * c;
+          n += c;
+        }
+        return n == 0 ? null : total / n;
+      }(),
+    // Duration-weighted, for the same reason.
+    ReportAggregate.timeWeightedMean => () {
+        var total = 0.0;
+        var us = 0;
+        for (final i in known) {
+          final d = live[i].length.inMicroseconds;
+          if (d <= 0) continue;
+          total += values[i]! * d;
+          us += d;
+        }
+        return us == 0 ? null : total / us;
+      }(),
+    ReportAggregate.delta ||
+    ReportAggregate.count ||
+    ReportAggregate.durationTrue ||
+    ReportAggregate.durationFalse =>
+      sum(present),
+  };
 }
 
 /// Computes [agg] over [w]. Returns null when the window holds no data at

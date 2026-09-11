@@ -112,6 +112,106 @@ void main() {
     });
   });
 
+  group('production window validation', () {
+    Map<String, dynamic> validWindow() => {
+          'signals': [
+            {
+              'label': 'Line 3',
+              'running': {'key': 'line.running'},
+              'cleaning': {
+                'key': 'line.mode',
+                'member': 'stat.runMode',
+                'equals': 4,
+              },
+            },
+          ],
+          'idle_minutes': 30,
+          'cleaning_minutes': 10,
+        };
+
+    Map<String, dynamic> withWindow(Map<String, dynamic> window) => {
+          ...reportJson('r1'),
+          'window': window,
+        };
+
+    test('a window and scoped sections survive validation', () async {
+      final checked = await service.validateNewReport({
+        ...withWindow(validWindow()),
+        'sections': [
+          {'type': 'kpi', 'scope': 'running', 'metrics': <dynamic>[]},
+          {'type': 'alarm_summary', 'scope': 'nominal'},
+        ],
+      });
+      expect(checked['error'], isNull);
+      final report = checked['report'] as Map<String, dynamic>;
+      expect((report['window'] as Map)['idle_minutes'], 30);
+      expect((report['window'] as Map)['signals'], hasLength(1));
+      expect((report['sections'] as List).first['scope'], 'running');
+    });
+
+    test('idle and cleaning thresholds must be positive', () async {
+      // Zero parses perfectly well and then concludes the shift the instant
+      // the line pauses, so the check is here rather than in the model.
+      final idle = await service
+          .validateNewReport(withWindow({...validWindow(), 'idle_minutes': 0}));
+      expect(idle['error'], contains('idle_minutes'));
+      expect(idle['error'], contains('greater than 0'));
+
+      final cleaning = await service.validateNewReport(
+          withWindow({...validWindow(), 'cleaning_minutes': -5}));
+      expect(cleaning['error'], contains('cleaning_minutes'));
+    });
+
+    test('a signal needs the key that says it is producing', () async {
+      final result = await service.validateNewReport(withWindow({
+        'signals': [
+          {
+            'running': {'key': ''}
+          }
+        ],
+      }));
+      expect(result['error'], contains('running'));
+      expect(result['error'], contains('key'));
+    });
+
+    test('a rule may not set both above and equals', () async {
+      final result = await service.validateNewReport(withWindow({
+        'signals': [
+          {
+            'running': {'key': 'line.running', 'above': 0, 'equals': 4}
+          }
+        ],
+      }));
+      expect(result['error'], contains('above'));
+      expect(result['error'], contains('equals'));
+    });
+
+    test('max_gap_minutes is null or a positive number', () async {
+      final result = await service.validateNewReport(withWindow({
+        'signals': [
+          {
+            'running': {'key': 'line.running'},
+            'max_gap_minutes': 0,
+          }
+        ],
+      }));
+      expect(result['error'], contains('max_gap_minutes'));
+    });
+
+    test('an unknown scope names the valid ones', () async {
+      final result = await service.validateNewReport({
+        ...reportJson('r1'),
+        'sections': [
+          {'type': 'kpi', 'scope': 'whenever', 'metrics': <dynamic>[]}
+        ],
+      });
+      expect(result['error'], contains('whenever'));
+      for (final scope in ReportService.validScopes) {
+        expect(result['error'], contains(scope));
+      }
+    });
+  });
+
   group('shift calendar', () {
     test('set and get round-trip', () async {
       await seedShifts();
@@ -231,6 +331,34 @@ void main() {
       final lonely =
           await service.generateReport(reportId: 'r1', from: at(0));
       expect(lonely['error'], contains('both'));
+    });
+
+    test('a windowed report resolves when production actually ran', () async {
+      await db.customStatement(
+          'CREATE TABLE "line.running" ("value" REAL, "time" TEXT)');
+      await db.customStatement(
+          'INSERT INTO "line.running" ("time", "value") VALUES (?, ?)',
+          [at(-30).toUtc().toIso8601String(), 1]);
+      await seedReport({
+        ...reportJson('windowed'),
+        'window': {
+          'signals': [
+            {
+              'running': {'key': 'line.running'}
+            }
+          ],
+        },
+      });
+
+      final result = await service.generateReport(
+          reportId: 'windowed', from: at(0), to: at(120));
+      expect(result['error'], isNull);
+      final window = (result['json'] as Map)['window'] as Map<String, dynamic>;
+      expect(window['reason'], 'shiftEnd');
+      expect(DateTime.parse(window['actual_start'] as String), at(0));
+      // The window leads the rendered report: what the figures cover is the
+      // first thing a reader has to know.
+      expect(result['text'], contains('Production'));
     });
 
     test('day-range reports use calendar days', () async {

@@ -218,6 +218,52 @@ void main() {
     expect(find.byKey(const ValueKey('shift-0')), findsOneWidget);
   });
 
+  testWidgets('the production window is off until it is switched on',
+      (tester) async {
+    await store.saveReports(ReportManConfig(reports: [
+      ReportConfig(id: 'r1', name: 'R', sections: [KpiSectionConfig()]),
+    ]));
+    await pump(tester);
+
+    await tester.tap(find.text('R'));
+    await tester.pumpAndSettle();
+
+    // Off by design. A definition saved before production windows existed
+    // must keep meaning what it meant: every section over the whole range.
+    expect(find.text('Off — every section covers the whole range'),
+        findsOneWidget);
+    // And with no window there is one span, so no scope to choose.
+    expect(find.byKey(const ValueKey('scope-r1-0')), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('window-switch-r1')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('scope-r1-0')), findsOneWidget);
+
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final window = (await store.loadReports()).reports.single.window;
+    expect(window, isNotNull);
+    // Seeded on the one collected key the fake StateMan offers.
+    expect(window!.signals.single.running.key, 'line.throughput');
+    expect(window.signals.single.running.above, 0.5);
+    expect(window.signals.single.maxGapMinutes, 5);
+  });
+
+  testWidgets('the shift template arrives with a production window',
+      (tester) async {
+    await pump(tester);
+    await tester.tap(find.text('Add report'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Standard shift report'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final report = (await store.loadReports()).reports.single;
+    expect(report.window?.signals.single.running.key, 'line.throughput');
+  });
+
   testWidgets(
       'an agent proposal is staged, not applied, until a person saves it',
       (tester) async {

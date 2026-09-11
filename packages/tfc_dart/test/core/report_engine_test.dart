@@ -430,6 +430,228 @@ void main() {
     expect(result.toJson()['sections'], hasLength(1));
   });
 
+  group('production window', () {
+    /// Creates a collected table and fills it. An activity signal is an
+    /// ordinary collected key — the window is inferred from what the plant
+    /// already records, not from anything a machine publishes specially.
+    Future<void> signalTable(
+        String table, String column, List<(DateTime, num)> samples) async {
+      await db.customStatement(
+          'CREATE TABLE "$table" ("time" TEXT, "$column" REAL)');
+      for (final (t, v) in samples) {
+        await db.customStatement(
+            'INSERT INTO "$table" ("time", "$column") VALUES (?, ?)',
+            [iso(t), v]);
+      }
+    }
+
+    final washRule = ActivityRule(
+        key: 'Line3.CN04.mode', member: 'stat.runMode', equalsValue: 4);
+
+    ReportConfig withWindow(
+      List<ReportSectionConfig> sections, {
+      ActivityRule? cleaning,
+      int? maxGapMinutes,
+    }) =>
+        ReportConfig(
+          id: 'r1',
+          name: 'Shift report',
+          sections: sections,
+          window: ProductionWindowConfig(signals: [
+            ActivitySignalConfig(
+              label: 'Line 3',
+              running: ActivityRule(key: 'Line3.running'),
+              cleaning: cleaning,
+              maxGapMinutes: maxGapMinutes,
+            ),
+          ]),
+        );
+
+    // A shift that started on time, paused for an hour, produced its last box
+    // at 12:00 and washed for twenty minutes — the ordinary shape of a day.
+    Future<void> seedInterruptedShift() async {
+      await signalTable('Line3.running', 'value', [
+        (at(-30), 1),
+        (at(120), 0),
+        (at(180), 1),
+        (at(300), 0),
+      ]);
+      await signalTable('Line3.CN04.mode', 'stat.runMode', [
+        (at(300), 4),
+        (at(320), 0),
+      ]);
+      await signalTable('Line3.rate', 'value', [
+        (at(-30), 100),
+        (at(120), 0),
+        (at(180), 100),
+        (at(300), 0),
+      ]);
+    }
+
+    test('a shift that ran to the end concludes at the range end', () async {
+      await signalTable('Line3.running', 'value', [(at(-30), 1)]);
+      final result = await engine.generate(withWindow([]),
+          rangeStart: shiftStart, rangeEnd: shiftEnd, now: at(600));
+
+      final window = result.window!;
+      expect(window.actualStart, shiftStart);
+      expect(window.concludedAt, shiftEnd);
+      expect(window.reason, ConclusionReason.shiftEnd);
+      expect(window.endedEarly, isFalse);
+      // One signal: a lane would only repeat the merged band.
+      expect(window.lanes, isEmpty);
+    });
+
+    test('a wash after the last production concludes the shift', () async {
+      await seedInterruptedShift();
+      final result = await engine.generate(
+          withWindow([], cleaning: washRule),
+          rangeStart: shiftStart, rangeEnd: shiftEnd, now: at(600));
+
+      final window = result.window!;
+      expect(window.actualStart, shiftStart);
+      expect(window.concludedAt, at(300));
+      expect(window.reason, ConclusionReason.cleaning);
+      expect(window.endedEarly, isTrue);
+      // The hour-long pause is not an ending — production came back from it.
+      expect(window.running, const Duration(minutes: 240));
+      expect(window.cleaning, const Duration(minutes: 20));
+    });
+
+    test('a collector gap past max_gap_minutes concludes as no data',
+        () async {
+      // Sampled every five minutes, then the collector stops at +200.
+      await signalTable('Line3.running', 'value', [
+        for (var m = 0; m <= 200; m += 5) (at(m), 1),
+      ]);
+      final result = await engine.generate(
+          withWindow([], maxGapMinutes: 10),
+          rangeStart: shiftStart, rangeEnd: shiftEnd, now: at(600));
+
+      final window = result.window!;
+      // The last sample stands for max_gap_minutes; after that the record is
+      // silent, which is not the same as the line being idle.
+      expect(window.concludedAt, at(210));
+      expect(window.reason, ConclusionReason.noData);
+      expect(window.noData, const Duration(minutes: 270));
+    });
+
+    test('an effective-scoped average is not diluted by the idle tail',
+        () async {
+      await seedInterruptedShift();
+
+      Future<double?> rateOver(ReportScope scope) async {
+        final result = await engine.generate(
+          withWindow([
+            KpiSectionConfig(scope: scope, metrics: [
+              ReportMetricConfig(
+                  key: 'Line3.rate',
+                  label: 'Rate',
+                  aggregate: ReportAggregate.timeWeightedMean),
+            ]),
+          ], cleaning: washRule),
+          rangeStart: shiftStart,
+          rangeEnd: shiftEnd,
+          now: at(600),
+        );
+        final kpi = result.sections.single as KpiSectionResult;
+        expect(kpi.scope, scope);
+        return kpi.metrics.single.value;
+      }
+
+      // Four of the five hours produced at 100; the pause is inside.
+      expect(await rateOver(ReportScope.effective), closeTo(80, 1e-6));
+      // The planned shift, three hours of post-wash zeros included. This is
+      // the figure the window exists to stop anyone quoting.
+      expect(await rateOver(ReportScope.nominal), closeTo(50, 1e-6));
+      // Only while the line moved: the pause contributes nothing at all.
+      expect(await rateOver(ReportScope.running), closeTo(100, 1e-6));
+    });
+
+    test('a stop after the conclusion is not downtime in effective scope',
+        () async {
+      await seedInterruptedShift();
+      await alarmRow('late', at(360), at(400));
+
+      Future<DowntimeSectionResult> downtimeOver(ReportScope scope) async {
+        final result = await engine.generate(
+            withWindow([DowntimeSectionConfig(scope: scope)],
+                cleaning: washRule),
+            rangeStart: shiftStart, rangeEnd: shiftEnd, now: at(600));
+        return result.sections.single as DowntimeSectionResult;
+      }
+
+      final effective = await downtimeOver(ReportScope.effective);
+      expect(effective.totalDown, Duration.zero);
+      expect(effective.stops, 0);
+      // The same alarm over the planned shift is still forty minutes of it.
+      final nominal = await downtimeOver(ReportScope.nominal);
+      expect(nominal.totalDown, const Duration(minutes: 40));
+    });
+
+    test('alarms default to the whole shift and count what came after',
+        () async {
+      await seedInterruptedShift();
+      await alarmRow('late', at(360), at(400));
+      final result = await engine.generate(
+          withWindow([AlarmSummarySectionConfig()], cleaning: washRule),
+          rangeStart: shiftStart, rangeEnd: shiftEnd, now: at(600));
+
+      final summary = result.sections.single as AlarmSummarySectionResult;
+      expect(summary.scope, ReportScope.nominal);
+      expect(summary.totalActivations, 1);
+      // Still an alarm somebody has to know about, but not shift load.
+      expect(summary.afterConclusion, 1);
+    });
+
+    test(':from/:to are the production window, :nominal_* the whole range',
+        () async {
+      await seedInterruptedShift();
+      final result = await engine.generate(
+        withWindow([
+          SqlSectionConfig(
+            query: 'SELECT :from AS f, :to AS t, '
+                ':nominal_from AS nf, :nominal_to AS nt',
+          ),
+        ], cleaning: washRule),
+        rangeStart: shiftStart,
+        rangeEnd: shiftEnd,
+        now: at(600),
+      );
+
+      final sql = result.sections.single as SqlSectionResult;
+      expect(sql.error, isNull);
+      // The longer tokens must not be mangled into ":nominal_" by the
+      // shorter ones sharing their tail.
+      expect(sql.rows.single,
+          [iso(shiftStart), iso(at(300)), iso(shiftStart), iso(shiftEnd)]);
+    });
+
+    test('a definition without a window is the plain range report it was',
+        () async {
+      await seedInterruptedShift();
+      final result = await engine.generate(
+        ReportConfig(id: 'r1', name: 'R', sections: [
+          KpiSectionConfig(scope: ReportScope.running, metrics: [
+            ReportMetricConfig(
+                key: 'Line3.rate',
+                aggregate: ReportAggregate.timeWeightedMean),
+          ]),
+        ]),
+        rangeStart: shiftStart,
+        rangeEnd: shiftEnd,
+        now: at(600),
+      );
+
+      expect(result.window, isNull);
+      // With no window there is only one span to have, so a scope cannot
+      // narrow it — every definition saved before windows existed still reads
+      // exactly as it did.
+      final kpi = result.sections.single as KpiSectionResult;
+      expect(kpi.metrics.single.value, closeTo(50, 1e-6));
+    });
+  });
+
   group('ReportStore', () {
     test('report and shift configs round-trip through flutter_preferences',
         () async {

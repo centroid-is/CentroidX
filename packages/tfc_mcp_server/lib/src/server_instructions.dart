@@ -110,7 +110,17 @@ applies them in the report editor, and that save is checked against their
 session for `configure` and recorded. Say so when you propose one: the
 operator has to approve it.
 
-A report's `sql` section runs one read-only SELECT. It may not name the
+A report may declare a `window` of activity signals — a `running` rule per
+machine, optionally a `cleaning` one — and the engine then resolves when
+production actually started and concluded, because a fish plant runs while
+there is fish rather than while the clock says shift. Every section carries a
+`scope` saying what its figures cover: `effective` (that production window,
+the default), `nominal` (the whole planned range, the default for alarm
+summaries) or `running` (only the stretches the line was moving).
+
+A report's `sql` section runs one read-only SELECT, with `:from`/`:to` bound
+to the section's own scope and `:nominal_from`/`:nominal_to` to the whole
+range. It may not name the
 access tables (app_user, app_role, audit_entry, access_template,
 access_key_binding) — a report is rendered on a page any operator can open,
 so publishing credentials or the audit record through one is refused.

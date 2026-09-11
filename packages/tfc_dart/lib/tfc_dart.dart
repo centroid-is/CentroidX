@@ -13,6 +13,7 @@ export 'core/shift.dart';
 export 'core/report.dart';
 export 'core/report_math.dart';
 export 'core/report_result.dart';
+export 'core/production_window.dart';
 export 'core/report_store.dart';
 export 'core/report_engine.dart';
 export 'core/sql_dialect.dart';

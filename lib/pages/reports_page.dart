@@ -9,7 +9,6 @@ import '../providers/alarm.dart';
 import '../providers/report.dart';
 import '../routes.dart';
 import '../widgets/base_scaffold.dart';
-import '../widgets/graph.dart';
 import '../widgets/report_view.dart';
 
 /// The report viewer: pick a report, walk shifts (or days/weeks) backwards
@@ -272,11 +271,7 @@ class _ReportsPageState extends ConsumerState<ReportsPage> {
                           ? const SizedBox.shrink()
                           : Stack(
                               children: [
-                                ReportView(
-                                  result: _result!,
-                                  chartTheme: ref
-                                      .watch(chartThemeNotifierProvider),
-                                ),
+                                ReportView(result: _result!),
                                 if (_generating)
                                   const Positioned(
                                     top: 8,
