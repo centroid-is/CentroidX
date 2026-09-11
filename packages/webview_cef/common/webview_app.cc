@@ -4,6 +4,7 @@
 
 #include "webview_app.h"
 
+#include <cstdlib>
 #include <string>
 
 #include "include/cef_browser.h"
@@ -118,6 +119,36 @@ void WebviewApp::OnBeforeCommandLineProcessing(const CefString &process_type, Ce
 		// Don't create a "GPUCache" directory when cache-path is unspecified.
 		command_line->AppendSwitch("disable-gpu-shader-disk-cache");                            //disable gpu shader disk cache
         command_line->AppendSwitch("no-sandbox");
+
+#if defined(__linux__)
+		// Chromium's display backend ("ozone"). On Linux it defaults to X11, and
+		// an eLinux station has no X server: weston is Wayland-only and the
+		// Flutter embedder is its only client. There CEF failed at startup with
+		// "Missing X server or $DISPLAY" / "The platform failed to initialize",
+		// its UI thread exited, and every Web page tile stayed blank
+		// (2026-09-11).
+		//
+		// This browser is windowless: it paints into a CPU buffer that the
+		// plugin copies into a Flutter texture, and never opens a window of its
+		// own. So it needs no display connection at all, and the headless
+		// backend provides exactly that. "wayland" would open a second,
+		// never-shown client on weston and fail whenever that socket does.
+		//
+		// Only when there is no X display, so the Linux desktop build keeps the
+		// default it has always had. CENTROIDX_CEF_OZONE_PLATFORM overrides the
+		// choice from a station's compose file: the flutter-elinux runner rejects
+		// unknown command-line flags, so an environment variable is the only way
+		// to pass one without a rebuild.
+		if (!command_line->HasSwitch("ozone-platform"))
+		{
+			const char* forced = std::getenv("CENTROIDX_CEF_OZONE_PLATFORM");
+			const char* display = std::getenv("DISPLAY");
+			if (forced != nullptr && forced[0] != '\0')
+				command_line->AppendSwitchWithValue("ozone-platform", forced);
+			else if (display == nullptr || display[0] == '\0')
+				command_line->AppendSwitchWithValue("ozone-platform", "headless");
+		}
+#endif
 
 		//http://www.chromium.org/developers/design-documents/process-models
 		if (m_uMode == 1)

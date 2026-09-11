@@ -30,6 +30,15 @@ except for the one fix below.
 
 ## What was changed
 
+**`common/webview_app.cc` — the display backend.** Chromium's Linux display
+backend ("ozone") defaults to X11. An eLinux station is Wayland-only, so CEF
+logged "Missing X server or $DISPLAY" and its UI thread exited, and every Web
+page tile stayed blank. The browser is windowless (it paints into a CPU buffer
+that becomes a Flutter texture), so it needs no display at all. Where no
+`DISPLAY` is set, the browser process now gets `--ozone-platform=headless`.
+`CENTROIDX_CEF_OZONE_PLATFORM` overrides that from a station's environment,
+because the flutter-elinux runner rejects unknown command-line flags.
+
 **`elinux/CMakeLists.txt` — the C++ client wrapper.** Upstream hardcoded
 
     ../example/elinux/flutter/ephemeral/cpp_client_wrapper
