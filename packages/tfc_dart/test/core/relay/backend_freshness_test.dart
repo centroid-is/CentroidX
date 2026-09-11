@@ -32,6 +32,9 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart'
     show runFreshnessContract;
 
+import 'package:tfc_stateman_contract/testing/runner_budget.dart'
+    show budgetScale, useRunnerBudgets;
+
 import '../../support/harnessed_backend_state_man.dart';
 
 // ---------------------------------------------------------------- the fixture
@@ -161,7 +164,22 @@ class _FakePlantLink implements PipeWorkerLink {
 /// Short so the file stays quick, and real: these arms run the shipping
 /// watchdog on the wall clock, and the only thing 200 ms changes is how long
 /// the arm waits. The contract leg below runs at the production ten seconds.
-const _unitStaleAfter = Duration(milliseconds: 200);
+/// The unit fixture's freshness deadline.
+///
+/// **Scaled on a hosted runner, and every derived duration with it.** The
+/// sweep interval is a quarter of this and `insideDeadline` waits two
+/// intervals, so at 200 ms the case waits 100 ms and needs the value to still
+/// be fresh at 200 ms — a 2x margin against a `Future.delayed` that a loaded
+/// agent can overshoot by more than that. `tfc-dart-test (macos-latest)` did
+/// exactly that and reported it as "the arrival did not reset the ageing
+/// anchor", which is a claim about the code and was not true of it.
+///
+/// Scaling the deadline scales the interval and both waits together, so every
+/// ratio this file asserts is unchanged; only the absolute room for timer
+/// jitter grows. That is the difference between this and widening a tolerance:
+/// nothing here is permitted that was not permitted before.
+final Duration _unitStaleAfter =
+    const Duration(milliseconds: 200) * budgetScale;
 
 /// One assembled subject: one or two workers, one pipe, one adapter, one sweep.
 class _Fixture {
@@ -240,6 +258,8 @@ void _record(relay.ValueListenable<relay.DynamicValue> node,
 }
 
 void main() {
+  useRunnerBudgets();
+
   // ------------------------------------------------------ the monotonic sweep
 
   group('the monotonic sweep', () {
