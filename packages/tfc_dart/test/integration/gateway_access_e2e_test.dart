@@ -73,6 +73,8 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'docker_compose.dart';
 import '../support/memory_secrets.dart';
+import 'package:tfc_stateman_contract/testing/runner_budget.dart'
+    show budgetScale, useRunnerBudgets;
 
 /// `ServerErrorCodes.forbidden` (`tfc_relay_server/lib/src/error_codes.dart:88`)
 /// — the wire code a policy refusal carries. Spelled as the literal the client's
@@ -191,7 +193,11 @@ final class _Panel {
       'method': method,
       if (params != null) 'params': params,
     }));
-    return completer.future.timeout(budget, onTimeout: () {
+    // Scaled for a hosted runner. `createUser` hashes with Argon2id, which
+    // is CPU-hard on purpose, so 8 s here is a bet about the agent's cores;
+    // `tfc-dart-test (ubuntu-latest)` lost it on createUser.
+    final allowed = budget * budgetScale;
+    return completer.future.timeout(allowed, onTimeout: () {
       _pending.remove(id);
       throw TimeoutException('$method did not answer within $budget', budget);
     });
@@ -275,6 +281,8 @@ final String suffix =
     Random().nextInt(0xFFFFFF).toRadixString(16).padLeft(6, '0');
 
 void main() {
+  useRunnerBudgets();
+
   useMemorySecrets();
 
   late Database database;

@@ -33,6 +33,8 @@ import 'package:tfc_relay_local/tfc_relay_local.dart'
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart' show within;
 
 import '../support/timescale_fixture.dart';
+import 'package:tfc_stateman_contract/testing/runner_budget.dart'
+    show budgetScale, useRunnerBudgets;
 
 late TimescaleFixture fx;
 late pg.Connection admin;
@@ -122,7 +124,10 @@ Future<int> countOrZero(String table) async {
 /// an overshoot immediately, because an overshoot IS the doubling defect.
 Future<void> pumpUntilCount(TimescaleSink sink, String table, int expected,
     {Duration budget = const Duration(seconds: 30)}) async {
-  final deadline = DateTime.now().add(budget);
+  // Scaled for a hosted runner — `check.dart`'s `budgetScale`. These are
+  // liveness bounds against a real Postgres, and 30 s written here was a
+  // bet about the macOS agent that this file lost.
+  final deadline = DateTime.now().add(budget * budgetScale);
   while (true) {
     await sink.flush();
     final n = await countOrZero(table);
@@ -143,7 +148,10 @@ Future<void> pumpUntilCount(TimescaleSink sink, String table, int expected,
 Future<void> eventuallyAsync(
     Future<bool> Function() condition, String what,
     {Duration budget = const Duration(seconds: 30)}) async {
-  final deadline = DateTime.now().add(budget);
+  // Scaled for a hosted runner — `check.dart`'s `budgetScale`. These are
+  // liveness bounds against a real Postgres, and 30 s written here was a
+  // bet about the macOS agent that this file lost.
+  final deadline = DateTime.now().add(budget * budgetScale);
   while (!await condition()) {
     if (DateTime.now().isAfter(deadline)) {
       fail('$what did not become true within ${budget.inSeconds}s');
@@ -161,6 +169,8 @@ Future<bool> lockSessionExists(String applicationName) async {
 }
 
 void main() {
+  useRunnerBudgets();
+
   final realLevel = Logger.level;
 
   setUpAll(() async {

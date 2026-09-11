@@ -25,6 +25,12 @@ import 'dart:io';
 
 import '../src/check.dart' show budgetScale;
 
+/// Re-exported so a caller that both flips the switch and multiplies a budget
+/// of its own needs one import, not two. Several liveness helpers live outside
+/// `within` — `eventually`, `eventuallyAsync`, per-file request timeouts — and
+/// each has to reach the same number.
+export '../src/check.dart' show budgetScale;
+
 /// How much longer than the measured machine a hosted runner is allowed to
 /// take.
 ///

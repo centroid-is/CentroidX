@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:test/test.dart';
+import 'package:tfc_stateman_contract/testing/runner_budget.dart'
+    show budgetScale;
 
 /// Polls [probe] until its result satisfies [matcher], and returns that result.
 ///
@@ -27,7 +29,11 @@ Future<T> eventually<T>(
   String? reason,
 }) async {
   final wrapped = wrapMatcher(matcher);
-  final deadline = DateTime.now().add(timeout);
+  // Scaled for a hosted runner, for the reason `check.dart`'s `budgetScale`
+  // gives: this is a liveness bound, not a latency measurement, and a
+  // 15 s default written on a developer's machine is a bet about someone
+  // else's. `side_by_side_test` lost that bet on the macOS agent.
+  final deadline = DateTime.now().add(timeout * budgetScale);
 
   Object? last;
   var everProbed = false;
