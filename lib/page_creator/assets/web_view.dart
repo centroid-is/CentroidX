@@ -92,7 +92,12 @@ library;
 import 'dart:async';
 
 import 'package:flutter/foundation.dart'
-    show defaultTargetPlatform, kIsWeb, TargetPlatform, visibleForTesting;
+    show
+        defaultTargetPlatform,
+        kIsWeb,
+        TargetPlatform,
+        ValueListenable,
+        visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:json_annotation/json_annotation.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
@@ -421,6 +426,70 @@ class WebViewUnavailable implements Exception {
   String toString() => 'WebViewUnavailable: $reason';
 }
 
+/// How far a surface has got with the page it was last asked for.
+enum WebViewLoadPhase {
+  /// Navigating, with nothing worth showing painted yet.
+  loading,
+
+  /// Something truthful is painted: the page, or the engine's own error page.
+  shown,
+
+  /// The navigation failed and the engine painted nothing in its place.
+  failed,
+}
+
+/// One reading of a surface's progress, for [WebViewSurfaceLoading.load].
+@immutable
+class WebViewLoad {
+  const WebViewLoad.loading([this.progress]) : phase = WebViewLoadPhase.loading;
+  const WebViewLoad.shown()
+      : phase = WebViewLoadPhase.shown,
+        progress = null;
+  const WebViewLoad.failed()
+      : phase = WebViewLoadPhase.failed,
+        progress = null;
+
+  final WebViewLoadPhase phase;
+
+  /// 0..1 while loading, where the engine reports it. Null draws the bar
+  /// indeterminate.
+  final double? progress;
+
+  @override
+  bool operator ==(Object other) =>
+      other is WebViewLoad && other.phase == phase && other.progress == progress;
+
+  @override
+  int get hashCode => Object.hash(phase, progress);
+}
+
+/// Implemented *in addition to* [WebViewSurface] by a surface that can say
+/// when its page has painted. The same opt-in shape as
+/// [WebViewSurfaceAvailability], for the same reason.
+///
+/// Without it the tile goes straight from nothing to the raw browser, and
+/// every engine paints blank white until the page commits: a white box
+/// popping onto a dark HMI with nothing on it to say it is working. With it,
+/// [WebViewAssetView] holds a themed cover naming the site over the browser —
+/// which is laid out underneath and loading all the while — until [load]
+/// says [WebViewLoadPhase.shown], then fades it off.
+///
+/// The contract: [load] starts at `loading`; any navigation may report
+/// `loading` again; `shown` means the engine has something truthful on
+/// screen, its own error page included; `failed` only when it painted nothing
+/// at all.
+abstract class WebViewSurfaceLoading {
+  ValueListenable<WebViewLoad> get load;
+}
+
+/// How long a page may stay covered while it is still loading.
+///
+/// Heavy dashboards — Grafana is the one on the plant — paint long before the
+/// engine calls the load finished, and covering them until then would hide a
+/// page that is already readable. After this the cover lifts on its own; a
+/// failure with nothing ever shown puts it back.
+const Duration kWebViewRevealTimeout = Duration(seconds: 8);
+
 /// Builds the browser for [config], or null where this platform has none.
 typedef WebViewSurfaceFactory = WebViewSurface? Function(
     WebViewAssetConfig config);
@@ -477,7 +546,33 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
   /// [didUpdateWidget] and the reload timer all need it.
   Brightness _brightness = Brightness.light;
 
+  /// The latest reading from a [WebViewSurfaceLoading] surface. Null for a
+  /// surface that reports none, which is shown straight away as it always was.
+  WebViewLoad? _load;
+
+  /// Whether this start's page has been shown. Never unset by a reload tick
+  /// or a theme flip: those navigate in place, and the old page stays painted
+  /// until the new one commits, so covering it again would only hide
+  /// something readable. A restart — a new address — clears it.
+  bool _shown = false;
+
+  /// [kWebViewRevealTimeout] has run out since the start.
+  bool _capElapsed = false;
+  Timer? _capTimer;
+
+  /// Whether the cover is in the tree, fading or not. Dropped once it has
+  /// faded out, so an interactive tile's taps meet the page and nothing else.
+  bool _veilMounted = false;
+
+  VoidCallback? _stopWatchingLoad;
+
   WebViewAssetConfig get config => widget.config;
+
+  bool get _covered {
+    final load = _load;
+    if (load == null || _shown) return false;
+    return load.phase == WebViewLoadPhase.failed || !_capElapsed;
+  }
 
   /// What the browser should be showing right now.
   Uri? get _effectiveUrl => config.effectiveUrl(_brightness);
@@ -559,6 +654,7 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
     }
     _surface = surface;
     _probeAvailability(surface);
+    _watchLoad(surface);
     unawaited(surface.navigate(uri).catchError((Object _) {
       // A failed navigation leaves whatever the browser is showing, and
       // re-navigating on the next reload tick is the recovery.
@@ -579,8 +675,45 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
       // without us doing anything. Worth knowing before someone "fixes" this
       // for both platforms and regresses Windows into a custom placeholder
       // that says less than Edge's page does.
+      //
+      // The loading cover (see [WebViewSurfaceLoading]) keeps to the same
+      // split. WebView2 and CEF lift it onto their own error pages; only
+      // WKWebView reports `failed`, which is what finally puts "Can't reach"
+      // on that blank tile.
     }));
     _armTimer();
+  }
+
+  /// Follows a surface that reports its loading, to cover the tile until its
+  /// first page is up. See [WebViewSurfaceLoading].
+  ///
+  /// Fields are set directly, without setState, for the same reason as the
+  /// rest of [_start]; the listener and the cap timer run later, from the
+  /// engine and the clock, and do call it.
+  void _watchLoad(WebViewSurface surface) {
+    if (surface is! WebViewSurfaceLoading) return;
+    final load = (surface as WebViewSurfaceLoading).load;
+    _load = load.value;
+    _shown = load.value.phase == WebViewLoadPhase.shown;
+    _veilMounted = _covered;
+
+    void onLoad() {
+      // `_surface != surface`: a restart overtook this browser; its news is
+      // about a page nobody is looking at any more.
+      if (!mounted || _surface != surface) return;
+      setState(() {
+        _load = load.value;
+        if (load.value.phase == WebViewLoadPhase.shown) _shown = true;
+        if (_covered) _veilMounted = true;
+      });
+    }
+
+    load.addListener(onLoad);
+    _stopWatchingLoad = () => load.removeListener(onLoad);
+    _capTimer = Timer(kWebViewRevealTimeout, () {
+      if (!mounted || _surface != surface) return;
+      setState(() => _capElapsed = true);
+    });
   }
 
   /// Asks an absent-able engine whether it is really there, and flips the
@@ -638,6 +771,14 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
   void _teardown() {
     _reloadTimer?.cancel();
     _reloadTimer = null;
+    _capTimer?.cancel();
+    _capTimer = null;
+    _stopWatchingLoad?.call();
+    _stopWatchingLoad = null;
+    _load = null;
+    _shown = false;
+    _capElapsed = false;
+    _veilMounted = false;
     final surface = _surface;
     _surface = null;
     // No .timeout() here: this runs from dispose, where a pending timeout
@@ -702,6 +843,37 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
         ),
       );
     }
+    final covered = _covered;
+    // Always a Stack, cover or not: the browser keeps the same place in the
+    // tree when the cover comes and goes, so its platform view is never torn
+    // down and rebuilt under it. `passthrough` hands the browser exactly the
+    // constraints it had before there was a Stack here.
+    return Stack(fit: StackFit.passthrough, children: [
+      _browser(surface),
+      if (_veilMounted)
+        Positioned.fill(
+          child: IgnorePointer(
+            ignoring: !covered,
+            child: AnimatedOpacity(
+              opacity: covered ? 1 : 0,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+              onEnd: () {
+                if (mounted && !_covered) {
+                  setState(() => _veilMounted = false);
+                }
+              },
+              child: _LoadingVeil(
+                host: parseWebViewUrl(config.url)?.host,
+                load: _load ?? const WebViewLoad.loading(),
+              ),
+            ),
+          ),
+        ),
+    ]);
+  }
+
+  Widget _browser(WebViewSurface surface) {
     return LayoutBuilder(builder: (context, constraints) {
       final page = surface.build(context);
       // A browser expands to fill, which an unbounded constraint cannot
@@ -747,13 +919,40 @@ WebViewSurface? _defaultFactory(WebViewAssetConfig config) {
   }
 }
 
-class _PlatformWebViewSurface implements WebViewSurface {
+class _PlatformWebViewSurface
+    implements WebViewSurface, WebViewSurfaceLoading {
   final WebViewController _controller;
+  final ValueNotifier<WebViewLoad> _load =
+      ValueNotifier(const WebViewLoad.loading());
+  bool _disposed = false;
 
   _PlatformWebViewSurface(WebViewAssetConfig config)
       : _controller = WebViewController() {
     _controller.setJavaScriptMode(JavaScriptMode.unrestricted);
+    // WKWebView says nothing between "started" and "finished" — progress is
+    // KVO on its estimatedProgress — and a failed provisional navigation
+    // paints nothing at all: the blank white tile the note in `_start`
+    // describes. So this is the one engine that reports `failed`.
+    unawaited(_controller.setNavigationDelegate(NavigationDelegate(
+      onProgress: (percent) => _set(WebViewLoad.loading(percent / 100)),
+      onPageFinished: (_) => _set(const WebViewLoad.shown()),
+      onWebResourceError: (error) {
+        // -999 is NSURLErrorCancelled: this navigation was overtaken by the
+        // next one — a theme flip mid-load — which is not a failure.
+        if (error.errorCode == -999 || error.isForMainFrame == false) return;
+        _set(const WebViewLoad.failed());
+      },
+    )));
   }
+
+  // Parking the page on about:blank in [dispose] fires one last
+  // onPageFinished; nobody is listening by then, and nothing may be told.
+  void _set(WebViewLoad value) {
+    if (!_disposed) _load.value = value;
+  }
+
+  @override
+  ValueListenable<WebViewLoad> get load => _load;
 
   @override
   Widget build(BuildContext context) =>
@@ -764,6 +963,7 @@ class _PlatformWebViewSurface implements WebViewSurface {
 
   @override
   Future<void> dispose() async {
+    _disposed = true;
     // WebViewController has no dispose(); the platform view is torn down with
     // the widget. Pointing it at a blank page first stops a video or a
     // polling dashboard from carrying on in a detached web process.
@@ -779,8 +979,32 @@ class _PlatformWebViewSurface implements WebViewSurface {
 /// `onWebViewCreated`. [navigate] therefore has to work in three situations —
 /// before the widget is built, after it is built but before the controller
 /// exists, and normally — which is what [_wanted] and [_initialUrl] are for.
-class _WebView2Surface implements WebViewSurface, WebViewSurfaceAvailability {
+class _WebView2Surface
+    implements WebViewSurface, WebViewSurfaceAvailability, WebViewSurfaceLoading {
   _WebView2Surface(WebViewAssetConfig config);
+
+  final ValueNotifier<WebViewLoad> _load =
+      ValueNotifier(const WebViewLoad.loading());
+
+  @override
+  ValueListenable<WebViewLoad> get load => _load;
+
+  void _set(WebViewLoad value) {
+    if (!_disposed) _load.value = value;
+  }
+
+  /// What the Windows plugin reports, read off its native side
+  /// (`in_app_webview.cpp`, flutter_inappwebview_windows 0.6.0): progress 0
+  /// when navigation starts, 33 when content starts loading — the commit,
+  /// the old page gone — 66 at DOMContentLoaded, and 100 on completion,
+  /// followed by onLoadStop, or onReceivedError, or for a TLS failure
+  /// nothing at all. Nothing marks "first paint", so 66 is the reveal: the
+  /// document is there and paints straight after. Never `failed`: Edge
+  /// paints its own error page, and the note in `_start` says why that is
+  /// the thing to show.
+  void _onProgress(int progress) => _set(progress >= 66
+      ? const WebViewLoad.shown()
+      : WebViewLoad.loading(progress / 100));
 
   PlatformInAppWebViewWidget? _widget;
   PlatformInAppWebViewController? _controller;
@@ -832,6 +1056,10 @@ class _WebView2Surface implements WebViewSurface, WebViewSurfaceAvailability {
             ? null
             : URLRequest(url: WebUri((_initialUrl = _wanted.toString()))),
         onWebViewCreated: _onCreated,
+        onProgressChanged: (_, progress) => _onProgress(progress),
+        // Belt and braces for the progress reveal above.
+        onLoadStop: (_, __) => _set(const WebViewLoad.shown()),
+        onReceivedError: (_, __, ___) => _set(const WebViewLoad.shown()),
       ),
     );
     return widget.build(context);
@@ -888,13 +1116,32 @@ class _WebView2Surface implements WebViewSurface, WebViewSurfaceAvailability {
 ///
 /// And a third, which looks nothing like the other two: CEF present and
 /// initialised, but its browser never coming up. See [startTimeout].
-class _CefSurface implements WebViewSurface, WebViewSurfaceAvailability {
+class _CefSurface
+    implements WebViewSurface, WebViewSurfaceAvailability, WebViewSurfaceLoading {
   _CefSurface(WebViewAssetConfig config) {
     // Nobody may be listening when a failed `create` lands (a tile that
     // already gave up via [_browserFailed]); that must not surface as an
     // unhandled error. Other listeners still receive it.
     _created.future.ignore();
+    // CEF reports no progress, so the bar runs indeterminate. It does report
+    // the end of every load — per frame, the main one included — and a load
+    // that errors ends on CEF's own error page, so an end is always
+    // something truthful on screen and never a `failed`. Should the event be
+    // lost (it can land before the browser's id is registered), the reveal
+    // timeout lifts the cover anyway.
+    _controller.setWebviewListener(cef.WebviewEventsListener(
+      onLoadEnd: (_, __) {
+        if (!_disposed) _load.value = const WebViewLoad.shown();
+      },
+    ));
   }
+
+  final ValueNotifier<WebViewLoad> _load =
+      ValueNotifier(const WebViewLoad.loading());
+  bool _disposed = false;
+
+  @override
+  ValueListenable<WebViewLoad> get load => _load;
 
   /// How long a browser gets to come up before the tile gives up and says so.
   ///
@@ -978,14 +1225,15 @@ class _CefSurface implements WebViewSurface, WebViewSurfaceAvailability {
   Widget build(BuildContext context) => ValueListenableBuilder<bool>(
         valueListenable: _controller,
         // False until the browser has a texture to paint. The empty box is
-        // deliberate rather than a spinner: WebViewAssetView already shows one
-        // while no surface has produced anything.
+        // deliberate rather than a spinner: WebViewAssetView keeps its
+        // loading cover over the tile until [load] says the page is up.
         builder: (context, ready, _) =>
             ready ? _controller.webviewWidget : const SizedBox.expand(),
       );
 
   @override
   Future<void> dispose() async {
+    _disposed = true;
     if (!_started) return;
     await _controller.dispose();
   }
@@ -1028,6 +1276,42 @@ class _Glyph extends StatelessWidget {
         ),
       );
     });
+  }
+}
+
+/// What covers a page that is still coming: the tile's own surface, the site
+/// being fetched, and a hairline of progress along the top — the same hairline
+/// the chart windows fill in with. A failure swaps the site for "Can't
+/// reach", and drops the bar: nothing is coming.
+class _LoadingVeil extends StatelessWidget {
+  const _LoadingVeil({required this.host, required this.load});
+
+  final String? host;
+  final WebViewLoad load;
+
+  @override
+  Widget build(BuildContext context) {
+    final failed = load.phase == WebViewLoadPhase.failed;
+    return ColoredBox(
+      color: Theme.of(context).colorScheme.surface,
+      child: Stack(children: [
+        Positioned.fill(
+          child: failed
+              ? _Glyph(
+                  icon: Icons.public_off,
+                  caption: host == null ? "Can't reach the page" : "Can't reach $host",
+                )
+              : _Glyph(icon: Icons.public, caption: host),
+        ),
+        if (!failed)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: LinearProgressIndicator(minHeight: 2, value: load.progress),
+          ),
+      ]),
+    );
   }
 }
 

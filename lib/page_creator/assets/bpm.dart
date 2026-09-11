@@ -13,6 +13,7 @@ import 'helper/database_recovery.dart';
 import 'helper/timeseries_notify_mixin.dart';
 import '../../providers/current_page_assets.dart';
 import '../../providers/database.dart';
+import '../../providers/timeseries.dart';
 import '../../widgets/graph.dart';
 import 'package:tfc/converter/color_converter.dart';
 import 'package:tfc_dart/core/database.dart';
@@ -429,7 +430,18 @@ class _BpmChartView extends ConsumerStatefulWidget {
 class _BpmChartViewState extends ConsumerState<_BpmChartView> {
   late Duration _selectedInterval;
   List<DateTime> _rawTimestamps = [];
-  bool _isLoading = true;
+
+  /// Whether [_rawTimestamps] holds anything worth drawing yet: the readout's
+  /// seed, or the window's own fetch.
+  bool _hasData = false;
+
+  /// A history fetch is in flight -- the opening one, or the refresh button.
+  bool _fetching = false;
+
+  /// Epoch ms before which [_rawTimestamps] knows nothing, while it holds
+  /// only the readout's seed. Null once the window's own fetch has landed.
+  int? _coverageStartMs;
+
   late Graph _graph;
   final Map<int, Graph> _graphs = {};
   DateTime _dataStart = DateTime.now();
@@ -450,6 +462,7 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
     super.initState();
     _selectedInterval = Duration(minutes: widget.initialInterval);
     _graph = _getOrCreateGraph(_selectedInterval.inMinutes);
+    _seedFromReadout();
     // This window is meant to be dragged off the readout and left running, so
     // it has to survive the database coming up after it did. See
     // reinitOnDatabaseAvailable.
@@ -472,6 +485,36 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
     for (final graph in _graphs.values) {
       graph.theme(theme);
     }
+  }
+
+  /// Starts the chart from what the readout on the mimic already holds.
+  ///
+  /// The window used to open on a spinner and stay on it until one query
+  /// reaching back `howMany` x the largest preset (20 h at the default
+  /// presets) came back -- while the readout the operator had just tapped was
+  /// holding the last hour of the very same rows in the shared tracker. That
+  /// hour is every summary card and the whole 1-minute chart, so the window
+  /// now opens on them and the fetch fills in the rest.
+  ///
+  /// The tracker is only read, never created: `ref.exists` first, because
+  /// reading an absent one would start a tracker, and with it a history query
+  /// of its own.
+  void _seedFromReadout() {
+    final key = widget.config.key;
+    final provider = timeseriesTrackerProvider(key);
+    if (!ref.exists(provider)) return;
+    final tracker = ref.read(provider);
+    // An empty cache cannot tell "no batches this hour" from "not fetched
+    // yet", and a row of zeros on a running line is worse than a dash.
+    final seed = tracker.cache.timestamps(key).toList()..sort();
+    if (seed.isEmpty) return;
+    _rawTimestamps = seed;
+    _coverageStartMs = DateTime.now()
+        .subtract(Duration(minutes: tracker.windowMinutes))
+        .millisecondsSinceEpoch;
+    _hasData = true;
+    _buildCache(_selectedInterval.inMinutes);
+    _pushToGraph(_graph, _selectedInterval.inMinutes);
   }
 
   Graph _getOrCreateGraph(int intervalMinutes) {
@@ -527,6 +570,15 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
       final dataMs =
           _bucketStart(_rawTimestamps.first.millisecondsSinceEpoch, intervalMs);
       if (dataMs < startMs) startMs = dataMs;
+    }
+
+    // Seeded from the readout: nothing is known before its window, and the
+    // bucket straddling that edge would be drawn short. Start at the first
+    // bucket the seed covers completely; the fetch lifts this.
+    final coverage = _coverageStartMs;
+    if (coverage != null) {
+      final firstFull = _bucketStart(coverage + intervalMs - 1, intervalMs);
+      if (firstFull > startMs) startMs = firstFull;
     }
 
     // Count timestamps per closed bucket
@@ -618,14 +670,14 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
   Future<void> _init() async {
     _db = await ref.read(databaseProvider.future);
     if (_db == null || !mounted) return;
-    await _fetchRawData(showSpinner: true);
+    await _fetchRawData();
     _schedulePoll();
   }
 
-  Future<void> _fetchRawData({bool showSpinner = false}) async {
-    if (showSpinner) setState(() => _isLoading = true);
+  Future<void> _fetchRawData() async {
+    if (_db == null || !mounted) return;
+    setState(() => _fetching = true);
     try {
-      if (_db == null || !mounted) return;
       final maxMinutes = widget.config.intervalPresets.reduce(math.max);
       final totalWindow = Duration(minutes: maxMinutes * widget.config.howMany);
       _dataStart = DateTime.now().subtract(totalWindow);
@@ -635,20 +687,26 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
           orderBy: 'time ASC');
       if (!mounted) return;
 
+      // Replaces the seed wholesale rather than merging into it: the fetch
+      // covers everything the seed did, so nothing is kept and nothing is
+      // counted twice.
       _rawTimestamps = rows.map((r) => r.time).toList();
+      _coverageStartMs = null;
+      _hasData = true;
       _bucketCache.clear();
       _openCount.clear();
       _openStartMs.clear();
 
       // Build selected interval first
       _buildCache(_selectedInterval.inMinutes);
-      _isLoading = false;
       _pushToGraph(_graph, _selectedInterval.inMinutes);
 
       // Build remaining in background
       _buildRemainingCaches();
     } catch (_) {
-      if (mounted) setState(() => _isLoading = false);
+      // Stays on whatever it was drawing: the seed, or the empty frame.
+    } finally {
+      if (mounted) setState(() => _fetching = false);
     }
   }
 
@@ -803,6 +861,18 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
     return lo - loIdx;
   }
 
+  /// Whether a card over the last [minutes] can be believed: there is data,
+  /// and it reaches back that far.
+  bool _covers(int minutes) {
+    if (!_hasData) return false;
+    final coverage = _coverageStartMs;
+    if (coverage == null) return true;
+    return DateTime.now()
+            .subtract(Duration(minutes: minutes))
+            .millisecondsSinceEpoch >=
+        coverage;
+  }
+
   @override
   void dispose() {
     _pollTimer?.cancel();
@@ -813,10 +883,10 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
   Widget build(BuildContext context) {
     final presets = widget.config.intervalPresets;
 
-    if (_isLoading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
+    // No spinner standing in for the whole window: the cards, the interval
+    // toggle and the chart frame all draw on the first frame, from the
+    // readout's seed where there is one, and the fetch fills them in. See
+    // [_seedFromReadout].
     return Column(
       children: [
         _buildRateSummary(context, presets),
@@ -843,19 +913,34 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
               ),
             const SizedBox(width: 8),
             IconButton(
-              icon: _isLoading
+              icon: _fetching
                   ? const SizedBox(
                       width: 18,
                       height: 18,
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.refresh),
-              onPressed: _isLoading ? null : _fetchRawData,
+              onPressed: _fetching ? null : _fetchRawData,
               tooltip: 'Refresh',
             ),
           ],
         ),
         const SizedBox(height: 12),
-        Expanded(child: _graph.build(context)),
+        Expanded(
+          child: Stack(
+            children: [
+              Positioned.fill(child: _graph.build(context)),
+              // The seed is drawn and the deep history is still on its way.
+              // A chart with nothing in it yet draws this bar itself.
+              if (_fetching && _hasData)
+                const Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: LinearProgressIndicator(minHeight: 2),
+                ),
+            ],
+          ),
+        ),
       ],
     );
   }
@@ -877,7 +962,9 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    _formatRate(r),
+                    // Past the seed's reach a count is short, not zero: a
+                    // dash until the fetch can say.
+                    _covers(minutes) ? _formatRate(r) : '–',
                     style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                           fontWeight: FontWeight.bold,
                         ),

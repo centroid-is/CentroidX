@@ -8,9 +8,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../widgets/duration_field.dart';
 import 'common.dart';
 import 'option_variable.dart';
+import 'helper/database_recovery.dart';
 import 'helper/timeseries_notify_mixin.dart';
 import '../../providers/current_page_assets.dart';
 import '../../providers/database.dart';
+import '../../providers/timeseries.dart';
 import '../../widgets/graph.dart';
 import 'package:tfc/converter/color_converter.dart';
 import 'package:tfc_dart/converter/duration_converter.dart';
@@ -555,7 +557,7 @@ class _RatioNumberWidgetState extends ConsumerState<RatioNumberWidget>
 
   void _showBarChartDialog(
           BuildContext context, Duration activeSinceMinutes) =>
-      showRatioAnalysisDialog(context, ref, widget.config,
+      showRatioAnalysisDialog(context, widget.config,
           interval: activeSinceMinutes);
 }
 
@@ -564,40 +566,18 @@ class _RatioNumberWidgetState extends ConsumerState<RatioNumberWidget>
 ///
 /// Top-level rather than private to the widget's state so other surfaces —
 /// the 3rd-party side pane's chart button — can open it without faking a tap
-/// on the readout. Does nothing when there is no database to chart from.
-Future<void> showRatioAnalysisDialog(
-    BuildContext context, WidgetRef ref, RatioNumberConfig config,
-    {Duration? interval}) async {
-  final navigator = Navigator.of(context);
-  final activeSinceMinutes = interval ?? config.sinceMinutes;
-  final db = await ref.read(databaseProvider.future);
-  if (db == null || !navigator.context.mounted) return;
-
-  Future<List<TimeseriesData<dynamic>>> getQueue(String key) async {
-    final endTime = config.barsClockAligned
-        ? _clockAlignedEnd(DateTime.now(), activeSinceMinutes)
-        : DateTime.now();
-    try {
-      return await db.queryTimeseriesData(
-          key, endTime.subtract(activeSinceMinutes * config.howMany),
-          orderBy: 'time DESC');
-    } catch (_) {
-      return [];
-    }
-  }
-
-  final results = await Future.wait([
-    getQueue(config.key1),
-    getQueue(config.key2),
-  ]);
-  final dialogContext = navigator.context;
-  if (!dialogContext.mounted) return;
-  final key1Queue = results[0];
-  final key2Queue = results[1];
-
-  final size = MediaQuery.of(dialogContext).size;
+/// on the readout.
+///
+/// Opens on the tap. It used to await both keys' history first — five hours
+/// of raw rows on the plant's checkweighers — so for as long as the database
+/// took, the tap did nothing anyone could see, and read as a tap that had
+/// missed. The window now opens straight away on what the readout already
+/// holds and fills in behind it; see [RatioAnalysisView].
+void showRatioAnalysisDialog(BuildContext context, RatioNumberConfig config,
+    {Duration? interval}) {
+  final size = MediaQuery.of(context).size;
   showFloatingDialog(
-    context: dialogContext,
+    context: context,
     id: 'ratio:${identityHashCode(config)}',
     title: config.graphHeader ?? config.text ?? 'Ratio Analysis',
     icon: Icons.percent,
@@ -605,15 +585,17 @@ Future<void> showRatioAnalysisDialog(
     scrollable: false,
     builder: (context) => RatioAnalysisView(
       config: config,
-      key1Queue: key1Queue,
-      key2Queue: key2Queue,
-      initialInterval: activeSinceMinutes,
+      initialInterval: interval ?? config.sinceMinutes,
     ),
   );
 }
 
 class RatioAnalysisView extends ConsumerStatefulWidget {
   final RatioNumberConfig config;
+
+  /// History to open on, for a caller that already has it. Left empty —
+  /// which is what [showRatioAnalysisDialog] does — the view seeds itself
+  /// from the readout's live cache and fetches the rest.
   final List<TimeseriesData<dynamic>> key1Queue;
   final List<TimeseriesData<dynamic>> key2Queue;
   final Duration? initialInterval;
@@ -621,8 +603,8 @@ class RatioAnalysisView extends ConsumerStatefulWidget {
   const RatioAnalysisView({
     super.key,
     required this.config,
-    required this.key1Queue,
-    required this.key2Queue,
+    this.key1Queue = const [],
+    this.key2Queue = const [],
     this.initialInterval,
   });
 
@@ -637,6 +619,16 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
   late List<TimeseriesData<dynamic>> _key2Queue;
   bool _isLoading = false;
 
+  /// The opening fetch is in flight, with the seed on screen.
+  bool _filling = false;
+
+  /// While the queues hold only the readout's seed: the earliest instant the
+  /// seed speaks for. Buckets starting before it are drawn empty rather than
+  /// short. Null once the queues are the database's answer.
+  DateTime? _coverageStart;
+
+  Database? _db;
+
   // Cache: interval → (key1Data, key2Data)
   final Map<Duration,
           (List<TimeseriesData<dynamic>>, List<TimeseriesData<dynamic>>)>
@@ -646,12 +638,96 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
   void initState() {
     super.initState();
     _selectedInterval = widget.initialInterval ?? widget.config.sinceMinutes;
-    _key1Queue = widget.key1Queue;
-    _key2Queue = widget.key2Queue;
-    // Seed cache with initial data
-    _cache[_selectedInterval] = (_key1Queue, _key2Queue);
-    // Prefetch other intervals after first frame renders
-    WidgetsBinding.instance.addPostFrameCallback((_) => _prefetchAll());
+    if (widget.key1Queue.isNotEmpty || widget.key2Queue.isNotEmpty) {
+      _key1Queue = widget.key1Queue;
+      _key2Queue = widget.key2Queue;
+      _cache[_selectedInterval] = (_key1Queue, _key2Queue);
+    } else {
+      _seed(_selectedInterval);
+    }
+    // Opened before the database was up — a power cut brings the HMI back
+    // well ahead of Postgres — the window fills in when it arrives instead
+    // of staying on the seed. Same contract as the BPM window.
+    reinitOnDatabaseAvailable(
+      ref,
+      currentDatabase: () => _db,
+      onDatabaseAvailable: (_) {
+        if (mounted) _fill();
+      },
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) => _fill());
+  }
+
+  DateTime _endFor(Duration interval) => widget.config.barsClockAligned
+      ? _clockAlignedEnd(DateTime.now(), interval)
+      : DateTime.now();
+
+  /// Fills the queues for [interval] from the readouts' shared caches, so the
+  /// window has bars on its first frame.
+  ///
+  /// The readout the operator tapped is on [TimeseriesNotifyMixin], which
+  /// holds both keys back to its widest interval preset — four hours on the
+  /// plant's checkweighers — in the tracker every readout of those keys
+  /// shares. That covers every bucket at the short intervals and most of them
+  /// at 30 minutes; the fetch replaces it wholesale when it lands.
+  ///
+  /// The trackers are only read, never created: `ref.exists` first, because
+  /// reading an absent one would start a tracker and a history query of its
+  /// own. Without one — the window opened from a surface with no readout on
+  /// it — every bucket waits for the fetch.
+  void _seed(Duration interval) {
+    final end = _endFor(interval);
+    final want = end.subtract(interval * widget.config.howMany);
+    var coverage = want;
+    final queues = <List<TimeseriesData<dynamic>>>[];
+    for (final key in [widget.config.key1, widget.config.key2]) {
+      final provider = timeseriesTrackerProvider(key);
+      if (!ref.exists(provider)) {
+        _key1Queue = const [];
+        _key2Queue = const [];
+        _coverageStart = end;
+        return;
+      }
+      final tracker = ref.read(provider);
+      final held =
+          DateTime.now().subtract(Duration(minutes: tracker.windowMinutes));
+      if (held.isAfter(coverage)) coverage = held;
+      queues.add([
+        // Newest first, the order the query answers in.
+        for (final (time, value)
+            in tracker.cache.valuesSince(key, want).reversed)
+          TimeseriesData<dynamic>(value, time),
+      ]);
+    }
+    _key1Queue = queues[0];
+    _key2Queue = queues[1];
+    _coverageStart = coverage.isAfter(want) ? coverage : null;
+  }
+
+  /// The opening fetch: the database's answer for the interval on screen,
+  /// which replaces the seed wholesale — it covers everything the seed did,
+  /// so nothing is kept and nothing is counted twice. Then the other
+  /// presets, in the background, as before.
+  Future<void> _fill() async {
+    final db = await ref.read(databaseProvider.future);
+    if (db == null || !mounted) return;
+    _db = db;
+    final interval = _selectedInterval;
+    if (!_cache.containsKey(interval)) {
+      setState(() => _filling = true);
+      final data = await _fetchForInterval(db, interval);
+      if (!mounted) return;
+      _cache[interval] = data;
+      setState(() {
+        _filling = false;
+        if (_selectedInterval == interval) {
+          _key1Queue = data.$1;
+          _key2Queue = data.$2;
+          _coverageStart = null;
+        }
+      });
+    }
+    await _prefetchAll();
   }
 
   Future<void> _prefetchAll() async {
@@ -669,9 +745,7 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
 
   Future<(List<TimeseriesData<dynamic>>, List<TimeseriesData<dynamic>>)>
       _fetchForInterval(Database db, Duration interval) async {
-    final endTime = widget.config.barsClockAligned
-        ? _clockAlignedEnd(DateTime.now(), interval)
-        : DateTime.now();
+    final endTime = _endFor(interval);
     final since = interval * widget.config.howMany;
     Future<List<TimeseriesData<dynamic>>> safeQuery(String key) async {
       try {
@@ -693,7 +767,11 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
     setState(() => _isLoading = true);
     try {
       final db = await ref.read(databaseProvider.future);
-      if (db == null) return;
+      if (db == null) {
+        // Left spinning, the refresh button stayed disabled for good.
+        if (mounted) setState(() => _isLoading = false);
+        return;
+      }
       // Fetch current view first
       final data = await _fetchForInterval(db, _selectedInterval);
       if (!mounted) return;
@@ -701,6 +779,7 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
       setState(() {
         _key1Queue = data.$1;
         _key2Queue = data.$2;
+        _coverageStart = null;
         _isLoading = false;
       });
       // Then refresh all other cached intervals in background
@@ -725,8 +804,11 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
       setState(() {
         _key1Queue = cached.$1;
         _key2Queue = cached.$2;
+        _coverageStart = null;
       });
     } else {
+      // Not fetched yet: draw what the readout holds for it, then fetch.
+      setState(() => _seed(interval));
       _fetchData();
     }
   }
@@ -806,18 +888,34 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
         const SizedBox(height: 16),
         // Content area
         Expanded(
-          child: _showChart
-              ? RatioBarChart(
-                  config: widget.config,
-                  key1Queue: _key1Queue,
-                  key2Queue: _key2Queue,
-                  intervalOverride: _selectedInterval,
-                )
-              : RatioTableView(
-                  config: widget.config,
-                  key1Queue: _key1Queue,
-                  key2Queue: _key2Queue,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: _showChart
+                    ? RatioBarChart(
+                        config: widget.config,
+                        key1Queue: _key1Queue,
+                        key2Queue: _key2Queue,
+                        intervalOverride: _selectedInterval,
+                        coverageStart: _coverageStart,
+                      )
+                    : RatioTableView(
+                        config: widget.config,
+                        key1Queue: _key1Queue,
+                        key2Queue: _key2Queue,
+                      ),
+              ),
+              // The seed is on screen and the database's answer is on its
+              // way: say so along the top edge, without covering the bars.
+              if (_filling || _isLoading)
+                const Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: LinearProgressIndicator(minHeight: 2),
                 ),
+            ],
+          ),
         ),
       ],
     );
@@ -1026,12 +1124,20 @@ class RatioBarChart extends ConsumerWidget {
   final List<TimeseriesData<dynamic>> key2Queue;
   final Duration? intervalOverride;
 
+  /// The earliest instant the queues speak for, while they are a seed from
+  /// the readout rather than the database's answer. A bucket starting before
+  /// it is drawn empty — its bar would be short, then jump when the fetch
+  /// lands — and the bucket axis stays the same either way, so nothing moves
+  /// when it does.
+  final DateTime? coverageStart;
+
   const RatioBarChart({
     super.key,
     required this.config,
     required this.key1Queue,
     required this.key2Queue,
     this.intervalOverride,
+    this.coverageStart,
   });
 
   @override
@@ -1127,6 +1233,10 @@ class RatioBarChart extends ConsumerWidget {
     final result = <DateTime, int>{};
 
     for (final bucket in buckets) {
+      if (coverageStart != null && bucket.isBefore(coverageStart!)) {
+        result[bucket] = 0;
+        continue;
+      }
       final bucketEnd = bucket.add(intervalOverride ?? config.sinceMinutes);
       final count = dataPoints
           .where((point) =>

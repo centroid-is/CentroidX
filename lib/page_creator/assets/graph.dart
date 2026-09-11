@@ -921,44 +921,43 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
     // print('first result: ${res.entries.first.value.first.time}');
     // print('last result: ${res.entries.first.value.last.time}');
 
-    final result = <Map<String, dynamic>>[];
-
-    // for (final foo in res.entries) {
-    //   for (final value in foo.value) {
-    //     result.add({
-    //       'x': value.time.millisecondsSinceEpoch.toDouble(),
-    //       'y': value.value, // todo
-    //       's': foo.key
-    //     });
-    //   }
-    // }
-
-    for (final entry in keys.entries) {
-      final axisKey = entry.key;
-      for (final series in entry.value) {
-        final tableName = _stateMan!.resolveKey(series.key);
-        final List<TimeseriesData<dynamic>> data;
-        if (widget.config.aggregation == Aggregation.minMaxLast) {
-          data = await db.queryTimeseriesDataDownsampled(
-              tableName, range.start, range.end);
-        } else {
-          data = await db.queryTimeseriesData(tableName, range.end,
-              from: range.start);
-        }
-        for (final e in data) {
-          dynamic value = e.value;
-          if (series.member?.isNotEmpty ?? false) {
-            value = extractSeriesMemberValue(value, series.member!);
-            if (value == null) continue;
-          } else if (value is bool) {
-            value = e.value ? 1.0 : 0.0;
-          }
-          final x = e.time.millisecondsSinceEpoch.toDouble();
-          result.addAll(_unpackData(x, axisKey, value, series.legend));
-        }
+    Future<List<Map<String, dynamic>>> querySeries(
+        String axisKey, GraphSeriesConfig series) async {
+      final tableName = _stateMan!.resolveKey(series.key);
+      final List<TimeseriesData<dynamic>> data;
+      if (widget.config.aggregation == Aggregation.minMaxLast) {
+        data = await db.queryTimeseriesDataDownsampled(
+            tableName, range.start, range.end);
+      } else {
+        data = await db.queryTimeseriesData(tableName, range.end,
+            from: range.start);
       }
+      final rows = <Map<String, dynamic>>[];
+      for (final e in data) {
+        dynamic value = e.value;
+        if (series.member?.isNotEmpty ?? false) {
+          value = extractSeriesMemberValue(value, series.member!);
+          if (value == null) continue;
+        } else if (value is bool) {
+          value = e.value ? 1.0 : 0.0;
+        }
+        final x = e.time.millisecondsSinceEpoch.toDouble();
+        rows.addAll(_unpackData(x, axisKey, value, series.legend));
+      }
+      return rows;
     }
-    return result;
+
+    // Every series in flight at once. Awaited one after another, a trend of
+    // three lines -- the throughput chart comparing all three lines is one --
+    // waited out three round trips back to back before drawing anything. The
+    // tables are independent, so the chart now waits for the slowest one
+    // instead of the sum. `Future.wait` still surfaces the first failure,
+    // which is what `_init` turns into the message on the chart.
+    final perSeries = await Future.wait([
+      for (final entry in keys.entries)
+        for (final series in entry.value) querySeries(entry.key, series),
+    ]);
+    return [for (final rows in perSeries) ...rows];
   }
 
   Widget _buildTooltip(cs.DataPointInfo point) {
