@@ -541,29 +541,35 @@ class Graph {
     return Column(
       children: [
         Expanded(
-          // `passthrough`, with the chart as the only unpositioned child, so
-          // it is laid out under exactly the constraints it had before there
-          // was a Stack here. A Stack of nothing but positioned children
-          // takes the biggest size its constraints allow instead of the
-          // chart's own, which moved the plot and the button row under it --
-          // 15 000 pixels of drift in the conveyor trend golden.
-          child: Stack(
-            fit: StackFit.passthrough,
-            children: [
-              _chartWidget,
-              // Still fetching: a hairline across the top of the plot rather
-              // than a spinner in the middle of it. The plot area, the legend
-              // and the button row are already where they will stay, so the
-              // data arriving fills the frame in instead of replacing it.
-              if (_isLoading && !_errored)
-                const Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  child: LinearProgressIndicator(minHeight: 2),
-                ),
-            ],
-          ),
+          // The Stack exists only while the hairline does.
+          //
+          // Still fetching: a hairline across the top of the plot rather than
+          // a spinner in the middle of it, so the plot area, the legend and
+          // the button row are already where they will stay and the data
+          // fills the frame in instead of replacing it.
+          //
+          // A chart that HAS data is laid out exactly as it was before this
+          // file grew a bar -- no Stack, no extra box in the tree. Wrapping
+          // it unconditionally moved the conveyor trend popup's axis labels
+          // on macOS (they wrapped to two lines in the golden and to one in
+          // CI, shifting the whole plot: 15 506 px). The same render was
+          // byte-identical on Windows, so the trigger is a sub-pixel width
+          // difference at a wrap boundary that only macOS's text metrics
+          // reach. A widget that is not in the tree cannot cause it.
+          child: _isLoading && !_errored
+              ? Stack(
+                  fit: StackFit.passthrough,
+                  children: [
+                    _chartWidget,
+                    const Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: LinearProgressIndicator(minHeight: 2),
+                    ),
+                  ],
+                )
+              : _chartWidget,
         ),
         if (noData != null) noData,
         if (noData != null)

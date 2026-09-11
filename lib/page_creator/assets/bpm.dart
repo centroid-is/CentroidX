@@ -926,23 +926,25 @@ class _BpmChartViewState extends ConsumerState<_BpmChartView> {
         ),
         const SizedBox(height: 12),
         Expanded(
-          // Unpositioned child + passthrough: the chart keeps the constraints
-          // it had before the Stack. See the note in widgets/graph.dart.
-          child: Stack(
-            fit: StackFit.passthrough,
-            children: [
-              _graph.build(context),
-              // The seed is drawn and the deep history is still on its way.
-              // A chart with nothing in it yet draws this bar itself.
-              if (_fetching && _hasData)
-                const Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  child: LinearProgressIndicator(minHeight: 2),
-                ),
-            ],
-          ),
+          // The seed is drawn and the deep history is still on its way; a
+          // chart with nothing in it yet draws this bar itself. No bar, no
+          // Stack: the chart is then laid out exactly as it would be without
+          // this window's loading state at all. See the note in
+          // widgets/graph.dart for what an unconditional Stack cost.
+          child: _fetching && _hasData
+              ? Stack(
+                  fit: StackFit.passthrough,
+                  children: [
+                    _graph.build(context),
+                    const Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: LinearProgressIndicator(minHeight: 2),
+                    ),
+                  ],
+                )
+              : _graph.build(context),
         ),
       ],
     );

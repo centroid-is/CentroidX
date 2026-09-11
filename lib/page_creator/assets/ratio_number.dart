@@ -818,6 +818,20 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
     final presets =
         widget.config.intervalPresets.map((m) => Duration(minutes: m)).toList();
 
+    final content = _showChart
+        ? RatioBarChart(
+            config: widget.config,
+            key1Queue: _key1Queue,
+            key2Queue: _key2Queue,
+            intervalOverride: _selectedInterval,
+            coverageStart: _coverageStart,
+          )
+        : RatioTableView(
+            config: widget.config,
+            key1Queue: _key1Queue,
+            key2Queue: _key2Queue,
+          );
+
     return Column(
       children: [
         // Control bar. A single flowing row rather than the centred Stack
@@ -888,35 +902,23 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
         const SizedBox(height: 16),
         // Content area
         Expanded(
-          // Unpositioned child + passthrough: the chart keeps the constraints
-          // it had before the Stack. See the note in widgets/graph.dart.
-          child: Stack(
-            fit: StackFit.passthrough,
-            children: [
-              _showChart
-                  ? RatioBarChart(
-                      config: widget.config,
-                      key1Queue: _key1Queue,
-                      key2Queue: _key2Queue,
-                      intervalOverride: _selectedInterval,
-                      coverageStart: _coverageStart,
-                    )
-                  : RatioTableView(
-                      config: widget.config,
-                      key1Queue: _key1Queue,
-                      key2Queue: _key2Queue,
+          // The seed is on screen and the database's answer is on its way:
+          // say so along the top edge, without covering the bars. Nothing to
+          // say, no Stack -- see the note in widgets/graph.dart.
+          child: _filling || _isLoading
+              ? Stack(
+                  fit: StackFit.passthrough,
+                  children: [
+                    content,
+                    const Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: LinearProgressIndicator(minHeight: 2),
                     ),
-              // The seed is on screen and the database's answer is on its
-              // way: say so along the top edge, without covering the bars.
-              if (_filling || _isLoading)
-                const Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  child: LinearProgressIndicator(minHeight: 2),
-                ),
-            ],
-          ),
+                  ],
+                )
+              : content,
         ),
       ],
     );
