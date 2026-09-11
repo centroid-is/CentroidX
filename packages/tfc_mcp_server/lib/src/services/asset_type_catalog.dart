@@ -717,6 +717,41 @@ class AssetTypeCatalog {
       ],
     ),
     AssetTypeInfo(
+      assetName: 'WebViewAssetConfig',
+      displayName: 'Web page',
+      category: 'Visualization',
+      description:
+          'A live web page rendered by a real browser (WKWebView via '
+          'webview_flutter). Available on macOS only — the eLinux stations, '
+          'Linux desktop and Windows have no browser engine, and show a '
+          'placeholder naming the reason instead. For a dashboard that must '
+          'render everywhere, use GrafanaPanelConfig, which is a server-side '
+          'PNG.',
+      properties: [
+        AssetPropertyInfo(
+            name: 'url',
+            type: 'String',
+            description:
+                'Address to show, e.g. https://grafana.plant/d/abc/line-1. '
+                'Only http and https are accepted; anything else renders the '
+                'unconfigured placeholder.'),
+        AssetPropertyInfo(
+            name: 'reloadSeconds',
+            type: 'int',
+            description:
+                'Seconds between reloads; 0 means never. A reload '
+                're-navigates to the configured address, so a tile that '
+                'wandered comes home. Offered values: 0, 30, 60, 300, 900.'),
+        AssetPropertyInfo(
+            name: 'interactive',
+            type: 'bool',
+            description:
+                'Let operators click and scroll (default false). Leave off '
+                'for wall-mounted stations: a tap on a link cannot be undone '
+                'from the floor.'),
+      ],
+    ),
+    AssetTypeInfo(
       assetName: 'GraphAssetConfig',
       displayName: 'Graph',
       category: 'Visualization',
