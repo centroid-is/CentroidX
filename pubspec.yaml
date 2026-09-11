@@ -79,6 +79,10 @@ dependencies:
   media_kit: ^1.2.6
   media_kit_video: ^2.0.1
   media_kit_libs_video: ^1.0.7
+  # Endorses webview_flutter_wkwebview on macOS; there is no Linux, eLinux or
+  # Windows implementation, which is why WebViewAssetConfig renders a
+  # placeholder rather than a browser everywhere else. See the class doc.
+  webview_flutter: ^4.14.1
 dev_dependencies:
   build_runner: ^2.4.15
   json_serializable: ^6.9.4
