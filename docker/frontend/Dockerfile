@@ -161,6 +161,16 @@ RUN missing=$(for f in ./${BINARY} lib/*.so; do \
         exit 1; \
     fi
 
+# CEF also needs lib/locales/*.pak beside libcef.so, which no ldd can see.
+# Without one, Chromium CHECK-fails in the browser and in every zygote as soon
+# as the first Web page tile opens, and the HMI dies with it: SIGTRAP in
+# libcef.so, and the only log line is "locale_file_path.empty() for locale".
+# The plugin's CMake is what ships them; see packages/webview_cef/elinux.
+RUN if [ -f lib/libcef.so ] && [ ! -f lib/locales/en-US.pak ]; then \
+        echo "lib/libcef.so is bundled but lib/locales/en-US.pak is not: CEF would crash on first use"; \
+        exit 1; \
+    fi
+
 USER centroid
 
 CMD ["/bin/sh", "-c", "LD_LIBRARY_PATH=./lib ./${BINARY} --bundle=. --fullscreen --onscreen-keyboard"]

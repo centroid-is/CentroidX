@@ -26,7 +26,7 @@ So this copy keeps `linux` and `elinux` and drops the rest.
 * `macos:` and `windows:` from `pubspec.yaml`'s `flutter.plugin.platforms`.
 
 `common/`, `lib/`, `linux/`, `elinux/` and `third/` are byte-for-byte upstream
-except for the one fix below.
+except for the two eLinux CMake fixes below.
 
 ## What was changed
 
@@ -44,12 +44,22 @@ Replaced with the `flutter` and `flutter_wrapper_plugin` targets that
 flutter-elinux provides, which is how `packages/media_kit_video_elinux` — a
 working eLinux plugin in this repo — consumes the same things.
 
+**`elinux/CMakeLists.txt` — shipping `locales/`.** Upstream installed CEF's
+`locales/` with a plain `install(DIRECTORY)` plus a POST_BUILD copy. The
+flutter-elinux app template requires CMake 3.15, so under CMP0082 a plugin's
+install rules run *before* the template's `file(REMOVE_RECURSE bundle/)`, and
+the wipe deletes them. The image shipped with no locales at all, and the first
+Web page tile crashed the whole HMI (Chromium's locale `CHECK`, SIGTRAP in
+`libcef.so`). The install is now deferred with `cmake_language(DEFER)` to run
+after the wipe. `docker/frontend/Dockerfile` fails the build if
+`lib/locales/en-US.pak` is missing.
+
 ## Updating
 
 Re-download the published archive, copy `common/ lib/ linux/ elinux/ third/`
-over, and re-apply the two pubspec deletions and the eLinux CMake fix above.
-Check upstream first: if the `../example/...` paths are gone, that fix is no
-longer needed.
+over, and re-apply the two pubspec deletions and both eLinux CMake fixes above.
+Check upstream first: if the `../example/...` paths are gone, the first fix is
+no longer needed.
 
 ## Cost to be aware of
 
