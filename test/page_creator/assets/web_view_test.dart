@@ -115,6 +115,53 @@ void main() {
       expect(restored.coordinates.x, 0.25);
     });
 
+    test('theme parameter fields survive a round trip', () {
+      final config = WebViewAssetConfig(
+        url: 'https://grafana.plant/public-dashboards/tok',
+        themeParam: 'theme',
+        themeDarkValue: 'midnight',
+        themeLightValue: 'day',
+      );
+
+      final json = config.toJson();
+      expect(json['themeParam'], 'theme');
+      expect(json['themeDarkValue'], 'midnight');
+      expect(json['themeLightValue'], 'day');
+
+      final restored = WebViewAssetConfig.fromJson(json);
+      expect(restored.themeParam, 'theme');
+      expect(restored.themeDarkValue, 'midnight');
+      expect(restored.themeLightValue, 'day');
+    });
+
+    test('a tile that never used the theme parameter saves no new keys', () {
+      // Existing pages must save byte-for-byte what they saved before: the
+      // fields are omitted while null rather than written as null.
+      final json = WebViewAssetConfig(url: 'https://plant/dash').toJson();
+      expect(json.containsKey('themeParam'), isFalse);
+      expect(json.containsKey('themeDarkValue'), isFalse);
+      expect(json.containsKey('themeLightValue'), isFalse);
+    });
+
+    test('JSON saved before the theme parameter existed still loads', () {
+      final restored = WebViewAssetConfig.fromJson({
+        'asset_name': 'WebViewAssetConfig',
+        'coordinates': {'x': 0.1, 'y': 0.2},
+        'size': {'width': 0.25, 'height': 0.2},
+        'url': 'https://plant/dash?from=now-6h',
+        'reloadSeconds': 60,
+        'interactive': false,
+      });
+
+      expect(restored.themeParam, isNull);
+      expect(restored.themeDarkValue, isNull);
+      expect(restored.themeLightValue, isNull);
+      expect(restored.effectiveUrl(Brightness.dark).toString(),
+          'https://plant/dash?from=now-6h',
+          reason: 'feature off: the configured URL is loaded as written');
+      expect(restored.toJson().containsKey('themeParam'), isFalse);
+    });
+
     test('defaults are a blank, non-interactive, never-reloading tile', () {
       final config = WebViewAssetConfig();
       expect(config.url, isEmpty);
@@ -163,6 +210,169 @@ void main() {
     test('rejects a URL with no host', () {
       expect(parseWebViewUrl('https://'), isNull);
       expect(parseWebViewUrl('not a url'), isNull);
+    });
+  });
+
+  group('withQueryParameter', () {
+    test('appends to a URL with no query', () {
+      expect(
+        withQueryParameter(Uri.parse('https://g.plant/d/x'), 'theme', 'dark')
+            .toString(),
+        'https://g.plant/d/x?theme=dark',
+      );
+    });
+
+    test('replaces an existing parameter where it stands', () {
+      expect(
+        withQueryParameter(
+                Uri.parse('https://g.plant/d/x?orgId=1&theme=light&from=now-6h'),
+                'theme',
+                'dark')
+            .toString(),
+        'https://g.plant/d/x?orgId=1&theme=dark&from=now-6h',
+      );
+    });
+
+    test('collapses a repeated parameter to the one value', () {
+      expect(
+        withQueryParameter(
+                Uri.parse('https://g.plant/?theme=a&x=1&theme=b'), 'theme', 'dark')
+            .toString(),
+        'https://g.plant/?theme=dark&x=1',
+      );
+    });
+
+    test('keeps every other parameter verbatim, repeats and encoding included',
+        () {
+      // Grafana template variables repeat (var-host=a&var-host=b), and a
+      // round trip through queryParameters would merge them and re-encode
+      // %20 as +.
+      expect(
+        withQueryParameter(
+                Uri.parse(
+                    'https://g.plant/d/x?var-host=a&var-host=b&q=a%20b&flag'),
+                'theme',
+                'light')
+            .toString(),
+        'https://g.plant/d/x?var-host=a&var-host=b&q=a%20b&flag&theme=light',
+      );
+    });
+
+    test('keeps the fragment', () {
+      expect(
+        withQueryParameter(
+                Uri.parse('https://g.plant/d/x?orgId=1#viewPanel=4'), 'theme', 'dark')
+            .toString(),
+        'https://g.plant/d/x?orgId=1&theme=dark#viewPanel=4',
+      );
+      expect(
+        withQueryParameter(Uri.parse('https://g.plant/d/x#top'), 'theme', 'dark')
+            .toString(),
+        'https://g.plant/d/x?theme=dark#top',
+      );
+    });
+
+    test('matches an encoded parameter name', () {
+      expect(
+        withQueryParameter(
+                Uri.parse('https://g.plant/?ui%20theme=x&a=1'), 'ui theme', 'dark')
+            .toString(),
+        'https://g.plant/?ui+theme=dark&a=1',
+      );
+    });
+
+    test('encodes a value that needs it', () {
+      expect(
+        withQueryParameter(Uri.parse('https://g.plant/'), 'theme', 'a&b')
+            .queryParameters['theme'],
+        'a&b',
+      );
+    });
+  });
+
+  group('effectiveWebViewUrl', () {
+    const grafana = 'https://grafana.plant/public-dashboards/tok?orgId=1';
+
+    test('off when the parameter name is null, empty or blank', () {
+      for (final name in [null, '', '   ']) {
+        for (final b in Brightness.values) {
+          expect(
+            effectiveWebViewUrl(grafana, brightness: b, themeParam: name)
+                .toString(),
+            grafana,
+            reason: 'themeParam ${name == null ? 'null' : '"$name"'} is off',
+          );
+        }
+      }
+    });
+
+    test('sends dark and light by default', () {
+      expect(
+        effectiveWebViewUrl(grafana,
+                brightness: Brightness.dark, themeParam: 'theme')
+            .toString(),
+        '$grafana&theme=dark',
+      );
+      expect(
+        effectiveWebViewUrl(grafana,
+                brightness: Brightness.light, themeParam: 'theme')
+            .toString(),
+        '$grafana&theme=light',
+      );
+    });
+
+    test('sends the configured values when set', () {
+      Uri? at(Brightness b) => effectiveWebViewUrl(grafana,
+          brightness: b,
+          themeParam: 'mode',
+          darkValue: 'night',
+          lightValue: 'day');
+      expect(at(Brightness.dark)!.queryParameters['mode'], 'night');
+      expect(at(Brightness.light)!.queryParameters['mode'], 'day');
+    });
+
+    test('a blank value falls back to the default', () {
+      expect(
+        effectiveWebViewUrl(grafana,
+                brightness: Brightness.dark,
+                themeParam: 'theme',
+                darkValue: '  ')!
+            .queryParameters['theme'],
+        'dark',
+      );
+    });
+
+    test('replaces a theme already typed into the address', () {
+      expect(
+        effectiveWebViewUrl(
+          'https://grafana.plant/public-dashboards/tok?theme=light&orgId=1',
+          brightness: Brightness.dark,
+          themeParam: 'theme',
+        ).toString(),
+        'https://grafana.plant/public-dashboards/tok?theme=dark&orgId=1',
+      );
+    });
+
+    test('trims the parameter name', () {
+      expect(
+        effectiveWebViewUrl(grafana,
+                brightness: Brightness.dark, themeParam: ' theme ')
+            .toString(),
+        '$grafana&theme=dark',
+      );
+    });
+
+    test('an address that is not browsable stays null', () {
+      expect(
+        effectiveWebViewUrl('javascript:alert(1)',
+            brightness: Brightness.dark, themeParam: 'theme'),
+        isNull,
+      );
+      expect(
+        effectiveWebViewUrl('',
+            brightness: Brightness.dark, themeParam: 'theme'),
+        isNull,
+      );
     });
   });
 
@@ -431,6 +641,167 @@ void main() {
 
       await tester.pump(const Duration(minutes: 30));
       expect(surface.navigations, hasLength(1));
+    });
+  });
+
+  group('following the HMI theme', () {
+    const base = 'https://grafana.plant/public-dashboards/tok?orgId=1';
+
+    Widget themed(WebViewAssetConfig config, Brightness brightness,
+            {Color? seed}) =>
+        MaterialApp(
+          theme: ThemeData(
+            brightness: brightness,
+            colorSchemeSeed: seed,
+          ),
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 240,
+              child: WebViewAssetView(config: config),
+            ),
+          ),
+        );
+
+    testWidgets('the loaded URL flips with the theme brightness',
+        (tester) async {
+      final surface = _FakeSurface();
+      var built = 0;
+      WebViewAssetView.debugSurfaceFactory = (_) {
+        built++;
+        return surface;
+      };
+      final config = WebViewAssetConfig(url: base, themeParam: 'theme');
+
+      await tester.pumpWidget(themed(config, Brightness.light));
+      await tester.pump();
+      expect(surface.navigations.map((u) => u.toString()),
+          ['$base&theme=light']);
+
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pumpAndSettle();
+      expect(surface.navigations.map((u) => u.toString()),
+          ['$base&theme=light', '$base&theme=dark']);
+
+      await tester.pumpWidget(themed(config, Brightness.light));
+      await tester.pumpAndSettle();
+      expect(surface.navigations.last.toString(), '$base&theme=light');
+      expect(surface.navigations, hasLength(3));
+
+      expect(built, 1,
+          reason: 'a theme flip re-navigates the browser, it does not '
+              'build a new one');
+      expect(surface.disposed, isFalse);
+    });
+
+    testWidgets('an unrelated rebuild does not reload', (tester) async {
+      final surface = _FakeSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+      final config = WebViewAssetConfig(url: base, themeParam: 'theme');
+
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pump();
+      expect(surface.navigations, hasLength(1));
+
+      // Same brightness, different theme: didChangeDependencies fires, the
+      // effective URL does not move.
+      await tester.pumpWidget(
+          themed(config, Brightness.dark, seed: const Color(0xFF00897B)));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pumpAndSettle();
+
+      expect(surface.navigations, hasLength(1));
+    });
+
+    testWidgets('a tile without a theme parameter ignores theme flips',
+        (tester) async {
+      final surface = _FakeSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+      final config = WebViewAssetConfig(url: base);
+
+      await tester.pumpWidget(themed(config, Brightness.light));
+      await tester.pump();
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pumpAndSettle();
+
+      expect(surface.navigations.map((u) => u.toString()), [base]);
+    });
+
+    testWidgets('a reload tick keeps the current theme', (tester) async {
+      final surface = _FakeSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+      final config = WebViewAssetConfig(
+          url: base, themeParam: 'theme', reloadSeconds: 30);
+
+      await tester.pumpWidget(themed(config, Brightness.light));
+      await tester.pump();
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 30));
+
+      expect(surface.navigations.last.toString(), '$base&theme=dark');
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets('setting the parameter in the editor re-navigates',
+        (tester) async {
+      final first = _FakeSurface();
+      final second = _FakeSurface();
+      var calls = 0;
+      WebViewAssetView.debugSurfaceFactory =
+          (_) => calls++ == 0 ? first : second;
+      final config = WebViewAssetConfig(url: base);
+
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pump();
+      config.themeParam = 'theme';
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pump();
+
+      expect(second.navigations.single.toString(), '$base&theme=dark');
+    });
+  });
+
+  group('config editor theme fields', () {
+    Future<void> pumpEditor(WidgetTester tester, WebViewAssetConfig config) async {
+      tester.view.physicalSize = const Size(420, 1200);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(builder: (context) => config.configure(context)),
+        ),
+      ));
+    }
+
+    testWidgets('value fields appear once a parameter name is typed',
+        (tester) async {
+      if (!kWebViewEnabled) return;
+      final config = WebViewAssetConfig(url: 'https://grafana.plant/d/x');
+      await pumpEditor(tester, config);
+
+      expect(find.text('Theme URL parameter'), findsOneWidget);
+      expect(find.text('Dark value'), findsNothing);
+
+      await tester.enterText(
+          find.byKey(const ValueKey('web-view-theme-param')), 'theme');
+      await tester.pump();
+      expect(config.themeParam, 'theme');
+      expect(find.text('Dark value'), findsOneWidget);
+      expect(find.text('Light value'), findsOneWidget);
+
+      await tester.enterText(
+          find.byKey(const ValueKey('web-view-theme-dark')), ' night ');
+      await tester.pump();
+      expect(config.themeDarkValue, 'night');
+
+      await tester.enterText(
+          find.byKey(const ValueKey('web-view-theme-param')), '  ');
+      await tester.pump();
+      expect(config.themeParam, isNull,
+          reason: 'clearing the name turns the feature back off');
+      expect(find.text('Dark value'), findsNothing);
     });
   });
 

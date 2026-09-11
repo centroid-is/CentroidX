@@ -749,6 +749,30 @@ class AssetTypeCatalog {
                 'Let operators click and scroll (default false). Leave off '
                 'for wall-mounted stations: a tap on a link cannot be undone '
                 'from the floor.'),
+        AssetPropertyInfo(
+            name: 'themeParam',
+            type: 'String?',
+            description:
+                'Optional query parameter that makes the page follow the '
+                "HMI's dark/light theme, e.g. \"theme\" for Grafana (which "
+                'honours ?theme=dark|light, public dashboards included). When '
+                'set, the loaded address carries <themeParam>=<value for the '
+                'current theme>, replacing any existing parameter of that name '
+                'in url, and the page reloads when the HMI theme flips. Omit or '
+                'leave empty (the default) to load url exactly as written. '
+                'Brightness only; there is no arbitrary-colour parameter.'),
+        AssetPropertyInfo(
+            name: 'themeDarkValue',
+            type: 'String?',
+            description:
+                'Value sent in themeParam while the HMI is dark. Omit for '
+                'the default "dark".'),
+        AssetPropertyInfo(
+            name: 'themeLightValue',
+            type: 'String?',
+            description:
+                'Value sent in themeParam while the HMI is light. Omit for '
+                'the default "light".'),
       ],
     ),
     AssetTypeInfo(
