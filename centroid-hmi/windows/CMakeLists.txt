@@ -32,6 +32,31 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# flutter_inappwebview_windows (the WebView2 plugin behind the Web page asset)
+# is written against <experimental/coroutine>, the pre-C++20 coroutine header.
+# MSVC 14.51 turned the deprecation of that header into a hard error:
+#
+#   error C2338: static assertion failed: 'error STL1011: The /await compiler
+#   option, <experimental/coroutine>, ... are deprecated by Microsoft and will
+#   be REMOVED SOON. ... You can define
+#   _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS to suppress this
+#   error for now.'
+#
+# This is the escape hatch that message names. Set here, before the plugins are
+# added below, so it reaches them: a directory-level definition applies to
+# every add_subdirectory() that follows, and the plugin's own CMakeLists is
+# generated into an ephemeral directory we do not own and cannot patch.
+#
+# It is a stay of execution, not a fix — "REMOVED SOON" is Microsoft's wording.
+# When a toolset finally deletes the header this stops working and the real
+# answer is a plugin built on C++20 <coroutine>, i.e. an upstream fix or a
+# different package. Worth noticing that this is load-bearing before then.
+#
+# Found because CI is on MSVC 14.51.36231 while the plant PC that developed
+# this is on 14.50.35717, where the same code only warned: a green local
+# Windows build proves nothing about this particular failure.
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by
