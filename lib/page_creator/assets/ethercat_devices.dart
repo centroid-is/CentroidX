@@ -105,15 +105,34 @@ class _EtherCatDeviceTableState extends ConsumerState<EtherCatDeviceTable> {
   /// masters were mapped would otherwise stay a sample until a restart.
   static const _rediscoverEvery = Duration(seconds: 5);
 
+  /// True once the widget is gone, so a lookup that was already in flight
+  /// cannot touch the tree or start the next one.
+  bool _disposed = false;
+
   @override
   void initState() {
     super.initState();
-    _discover();
-    _rediscover = Timer.periodic(_rediscoverEvery, (_) => _discover());
+    // Deferred to the first frame, and skipped entirely on the page editor's
+    // canvas: a palette tile is a picture of this asset, and asking a picture
+    // to go and find the plant's masters builds a StateMan behind it —
+    // whose teardown leaves a timer pending after the tree is gone, which is
+    // how `page_editor_golden_test`'s palette search found this.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_disposed || !_wantsLiveData) return;
+      _discover();
+      _rediscover = Timer.periodic(_rediscoverEvery, (_) => _discover());
+    });
   }
+
+  /// Whether this table is being used to watch the plant, rather than drawn
+  /// as an example of itself.
+  bool get _wantsLiveData =>
+      widget.config.buses.isNotEmpty ||
+      !AssetEditModeScope.isEditing(context);
 
   @override
   void dispose() {
+    _disposed = true;
     _rediscover?.cancel();
     super.dispose();
   }
@@ -127,6 +146,7 @@ class _EtherCatDeviceTableState extends ConsumerState<EtherCatDeviceTable> {
     } catch (_) {
       found = const [];
     }
+    if (_disposed) return;
     String sig(List<EcBusConfig> l) =>
         [for (final b in l) '${b.label}|${b.keys.join(',')}'].join(';');
     if (!mounted || sig(found) == sig(_discovered)) return;
