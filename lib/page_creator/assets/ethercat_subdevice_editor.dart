@@ -14,6 +14,7 @@ import '../../theme.dart' show HmiStateColors;
 import 'common.dart' show KeyField;
 import 'ethercat_asset.dart';
 import 'ethercat_autobind.dart';
+import 'ethercat_autocable.dart';
 import 'ethercat_masters.dart';
 import 'ethercat_subdevice.dart';
 import 'ethercat_subdevice_pane.dart';
@@ -367,6 +368,62 @@ class _BindingPreview extends StatelessWidget {
 }
 
 /// What "Bind EtherCAT devices by name" would do, for the confirm dialog.
+/// What drawing the cables from the PLC would add, before it adds it.
+class EcAutoCableReview extends StatelessWidget {
+  const EcAutoCableReview({super.key, required this.plan});
+
+  final EcAutoCablePlan plan;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          child: Text(
+            'Every cable the PLC\'s own topology puts between two bound '
+            'devices on this page. Nothing is drawn until you confirm, and it '
+            'is one undo step.',
+            style: theme.textTheme.bodySmall,
+          ),
+        ),
+        if (plan.cables.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Text('Will draw (${plan.cables.length})',
+                style: theme.textTheme.titleSmall),
+          ),
+          for (final c in plan.cables)
+            ListTile(
+              dense: true,
+              visualDensity: VisualDensity.compact,
+              leading: const Icon(Icons.cable, size: 18),
+              title: Text(c.label),
+              subtitle: Text(c.busLabel),
+            ),
+        ],
+        if (plan.notes.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Text('Left alone (${plan.notes.length})',
+                style: theme.textTheme.titleSmall),
+          ),
+          for (final n in plan.notes)
+            ListTile(
+              dense: true,
+              visualDensity: VisualDensity.compact,
+              leading: const Icon(Icons.info_outline, size: 18),
+              title: Text(n, style: theme.textTheme.bodySmall),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
 class EcAutoBindReview extends StatelessWidget {
   const EcAutoBindReview({super.key, required this.plan});
 

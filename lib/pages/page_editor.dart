@@ -20,6 +20,7 @@ import '../page_creator/assets/image_store.dart';
 import '../page_creator/assets/ethercat_link.dart';
 import '../page_creator/assets/ethercat_asset.dart';
 import '../page_creator/assets/ethercat_autobind.dart';
+import '../page_creator/assets/ethercat_autocable.dart';
 import '../page_creator/assets/ethercat_subdevice.dart' show EcBus, EcBusConfig;
 import '../page_creator/assets/ethercat_subdevice_editor.dart';
 import '../providers/state_man.dart';
@@ -2550,6 +2551,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   static const int _pasteAction = -11;
   static const int _deleteAction = -12;
   static const int _bindEtherCatAction = -13;
+  static const int _drawEtherCatCablesAction = -14;
 
   /// Assets a canvas action applies to: the whole selection when the asset
   /// acted on is part of it, otherwise just that asset. Mirrors [_moveAsset].
@@ -2856,6 +2858,14 @@ class _PageEditorState extends ConsumerState<PageEditor> {
               dense: true,
             ),
           ),
+          const PopupMenuItem<int>(
+            value: _drawEtherCatCablesAction,
+            child: ListTile(
+              leading: Icon(Icons.cable),
+              title: Text('Draw EtherCAT cables from the PLC…'),
+              dense: true,
+            ),
+          ),
         ],
         // Set off from the layout actions above: everything else rearranges,
         // this one destroys. Same targets rule though — the selection when
@@ -2923,9 +2933,63 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       await _handlePaste(at: pasteTarget);
     } else if (choice == _bindEtherCatAction) {
       await _bindEtherCatDevices();
+    } else if (choice == _drawEtherCatCablesAction) {
+      await _drawEtherCatCables();
     } else if (kChatEnabled) {
       await AiContextAction.runMenuItem(ref: ref, item: aiItems[choice]);
     }
+  }
+
+  /// Draws the cables the PLC's topology puts between this page's bound
+  /// devices, after showing what would be added. One undo step.
+  ///
+  /// The export knows the wiring: which subdevice each one plugs into, and on
+  /// which port. Drawing thirty runs by hand is thirty chances to draw a cable
+  /// the plant does not have.
+  Future<void> _drawEtherCatCables() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final Map<EcBusConfig, EcBus> buses;
+    try {
+      final sm = await ref.read(stateManProvider.future);
+      buses = await loadEcBuses(sm);
+    } catch (e) {
+      messenger?.showSnackBar(
+          SnackBar(content: Text('Could not read the EtherCAT masters: $e')));
+      return;
+    }
+    if (!mounted) return;
+
+    final plan = planEcAutoCables(assets, buses);
+    final n = plan.cables.length;
+    if (n == 0 && plan.notes.isEmpty) {
+      messenger?.showSnackBar(const SnackBar(
+        content: Text('No cables to draw. Bind the devices on this page '
+            'first, and check their masters are mapped.'),
+      ));
+      return;
+    }
+    final apply = await showStandardDialog<bool>(
+      context: context,
+      title: 'Draw EtherCAT cables',
+      subtitle: n == 0 ? 'Nothing to draw' : '$n cable${n == 1 ? '' : 's'}',
+      icon: Icons.cable,
+      builder: (_) => EcAutoCableReview(plan: plan),
+      actionsBuilder: (dialogContext) => [
+        PaneAction(
+          label: 'Cancel',
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+        ),
+        if (n > 0)
+          PaneAction.primary(
+            label: 'Draw $n',
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+          ),
+      ],
+    );
+    if (apply != true || !mounted) return;
+
+    _saveToHistory();
+    _updateState(() => applyEcAutoCables(assets, plan));
   }
 
   /// Binds every EtherCAT device on this page to its subdevice by name, after
