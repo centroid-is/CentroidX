@@ -258,6 +258,13 @@ Future<void> _expectAdditiveRoundTrip(Duration d) async {
   // which is the one thing the ceiling is for. Subtracting the baseline
   // removes the runner from the comparison instead of making room for it, and
   // leaves the slack covering jitter, which is what it was sized for.
+  // Warmed first, and discarded. The **first** round trip on a fresh socket
+  // carries costs that do not recur — the connect is complete but the path is
+  // cold. Measured on ubuntu: a 9 ms first trip against a 401 ms delayed trip
+  // that was itself only 1 ms over ideal, so subtracting the first trip took
+  // 391 ms below a 398 ms floor and failed a lever that had worked perfectly.
+  // That was this helper's own regression, introduced with the baseline.
+  await link.roundTrip(_pattern(_probeBytes));
   final baseline = await link.roundTrip(_pattern(_probeBytes));
 
   link.proxy.latency = d;
