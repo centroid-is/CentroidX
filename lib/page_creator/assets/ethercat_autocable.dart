@@ -13,7 +13,7 @@ library;
 
 import 'common.dart';
 import 'ethercat_asset.dart';
-import 'ethercat_autobind.dart' show ecAssetsOn;
+import 'ethercat_name_match.dart' show ecAssetsOn;
 import 'ethercat_link.dart';
 import 'ethercat_ports.dart';
 import 'ethercat_subdevice.dart';

@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/beckhoff.dart';
 import 'package:tfc/page_creator/assets/common.dart';
-import 'package:tfc/page_creator/assets/ethercat_autobind.dart';
+import 'package:tfc/page_creator/assets/ethercat_name_match.dart';
 import 'package:tfc/page_creator/assets/ethercat_subdevice.dart';
 import 'package:tfc/page_creator/assets/registry.dart';
 import 'package:tfc/page_creator/assets/schneider.dart';
@@ -50,7 +50,7 @@ void main() {
       ];
 
   test('binds the whole page, slices inside the rack included', () {
-    final plan = planEcAutoBind(page(), buses);
+    final plan = planEcNameMatches(page(), buses);
     expect(plan.unmatched, isEmpty);
     expect(plan.ambiguous, isEmpty);
     expect(plan.matched, hasLength(18));
@@ -58,7 +58,7 @@ void main() {
   });
 
   test('a drive label with a line break in it matches exactly', () {
-    final m = planEcAutoBind(page(), buses)
+    final m = planEcNameMatches(page(), buses)
         .matched
         .firstWhere((m) => m.asset is SchneiderATV320Config);
     expect(m.subdevice.position, 17);
@@ -69,8 +69,8 @@ void main() {
   });
 
   test('A1.01 is on two masters; the page\'s other matches decide it', () {
-    final plan = planEcAutoBind(page(), buses);
-    EcAutoBindMatch slice(String name) => plan.matched.firstWhere(
+    final plan = planEcNameMatches(page(), buses);
+    EcNameMatchMatch slice(String name) => plan.matched.firstWhere(
         (m) => m.asset is BeckhoffEL1008Config &&
             (m.asset as BeckhoffEL1008Config).nameOrId == name);
     expect(slice('A1.01').subdevice.position, 1);
@@ -82,13 +82,13 @@ void main() {
   test('with nothing on the page to decide it, a shared name is reported',
       () {
     final lone = make<BeckhoffEL1008Config>()..nameOrId = 'A1.01';
-    final plan = planEcAutoBind([lone], buses);
+    final plan = planEcNameMatches([lone], buses);
     expect(plan.matched, isEmpty);
     expect(plan.ambiguous.single.candidates, hasLength(2));
   });
 
   test('no subdevice by the name, or no name at all, is unmatched', () {
-    final plan = planEcAutoBind([
+    final plan = planEcNameMatches([
       make<BeckhoffEL1008Config>()..nameOrId = 'X9.99',
       make<BeckhoffEL1008Config>()..nameOrId = '',
     ], buses);
@@ -98,7 +98,7 @@ void main() {
   test('a suffix only counts at a dot', () {
     // `1.01` is the tail of ST101.A1.01 but not a name anything has.
     final plan =
-        planEcAutoBind([make<BeckhoffEL1008Config>()..nameOrId = '1.01'], buses);
+        planEcNameMatches([make<BeckhoffEL1008Config>()..nameOrId = '1.01'], buses);
     expect(plan.unmatched, hasLength(1));
   });
 
@@ -106,11 +106,11 @@ void main() {
     final assets = page();
     final drive = assets[2] as SchneiderATV320Config
       ..ecSubDevice = EcSubDeviceBinding(diagKey: 'mine', position: 3);
-    final plan = planEcAutoBind(assets, buses);
+    final plan = planEcNameMatches(assets, buses);
     expect(plan.skipped, [drive]);
     expect(plan.matched.any((m) => identical(m.asset, drive)), isFalse);
     expect(
-        planEcAutoBind(assets, buses, overwrite: true)
+        planEcNameMatches(assets, buses, overwrite: true)
             .matched
             .any((m) => identical(m.asset, drive)),
         isTrue);
@@ -118,11 +118,11 @@ void main() {
 
   test('apply writes the bindings, and a second pass has nothing to do', () {
     final assets = page();
-    applyEcAutoBind(planEcAutoBind(assets, buses));
+    applyEcNameMatches(planEcNameMatches(assets, buses));
     final psu = assets[1] as BeckhoffPS2001Config;
     expect(psu.ecSubDevice!.position, 16);
     expect(psu.isEcBound, isTrue);
-    final again = planEcAutoBind(assets, buses);
+    final again = planEcNameMatches(assets, buses);
     expect(again.matched, isEmpty);
     expect(again.skipped, hasLength(18));
   });

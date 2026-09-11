@@ -19,7 +19,7 @@ import '../page_creator/assets/image.dart';
 import '../page_creator/assets/image_store.dart';
 import '../page_creator/assets/ethercat_link.dart';
 import '../page_creator/assets/ethercat_asset.dart';
-import '../page_creator/assets/ethercat_autobind.dart';
+import '../page_creator/assets/ethercat_name_match.dart';
 import '../page_creator/assets/ethercat_autocable.dart';
 import '../page_creator/assets/ethercat_subdevice.dart' show EcBus, EcBusConfig;
 import '../page_creator/assets/ethercat_subdevice_editor.dart';
@@ -3015,14 +3015,14 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       return;
     }
 
-    final plan = planEcAutoBind(assets, buses);
+    final plan = planEcNameMatches(assets, buses);
     final n = plan.matched.length;
     final apply = await showStandardDialog<bool>(
       context: context,
       title: 'Bind EtherCAT devices',
       subtitle: n == 0 ? 'Nothing to bind' : '$n device${n == 1 ? '' : 's'}',
       icon: Icons.settings_ethernet,
-      builder: (_) => EcAutoBindReview(plan: plan),
+      builder: (_) => EcNameMatchReview(plan: plan),
       actionsBuilder: (dialogContext) => [
         PaneAction(
           label: 'Cancel',
@@ -3038,7 +3038,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     );
     if (apply != true || !mounted) return;
     _saveToHistory();
-    _updateState(() => applyEcAutoBind(plan));
+    _updateState(() => applyEcNameMatches(plan));
   }
 
   /// Right-click menu for empty canvas. One entry so far: paste, centred on

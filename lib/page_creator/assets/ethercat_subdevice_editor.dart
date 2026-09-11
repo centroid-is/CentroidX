@@ -13,7 +13,7 @@ import '../../providers/state_man.dart';
 import '../../theme.dart' show HmiStateColors;
 import 'common.dart' show KeyField;
 import 'ethercat_asset.dart';
-import 'ethercat_autobind.dart';
+import 'ethercat_name_match.dart';
 import 'ethercat_autocable.dart';
 import 'ethercat_masters.dart';
 import 'ethercat_subdevice.dart';
@@ -87,12 +87,12 @@ class _EcSubDeviceBindingEditorState extends ConsumerState<EcSubDeviceBindingEdi
     try {
       final sm = await ref.read(stateManProvider.future);
       final buses = await loadEcBuses(sm);
-      final plan = planEcAutoBind([widget.asset], buses, overwrite: true);
+      final plan = planEcNameMatches([widget.asset], buses, overwrite: true);
       if (!mounted) return;
       final name = widget.asset.ecName.replaceAll(RegExp(r'\s+'), ' ').trim();
       setState(() {
         if (plan.matched.isNotEmpty) {
-          applyEcAutoBind(plan);
+          applyEcNameMatches(plan);
           final m = plan.matched.single;
           _custom = false;
           _findResult = 'Bound to ${m.subdevice.label} on ${m.bus.label}.';
@@ -424,10 +424,10 @@ class EcAutoCableReview extends StatelessWidget {
   }
 }
 
-class EcAutoBindReview extends StatelessWidget {
-  const EcAutoBindReview({super.key, required this.plan});
+class EcNameMatchReview extends StatelessWidget {
+  const EcNameMatchReview({super.key, required this.plan});
 
-  final EcAutoBindPlan plan;
+  final EcNameMatchPlan plan;
 
   static String _assetLabel(EtherCatAsset a) {
     final name = a.ecName.replaceAll(RegExp(r'\s+'), ' ').trim();

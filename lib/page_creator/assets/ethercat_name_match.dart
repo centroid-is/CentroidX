@@ -20,8 +20,8 @@ import 'ethercat_subdevice.dart';
 /// A subdevice on a master, as a candidate for one asset.
 typedef EcCandidate = ({EcBusConfig bus, EcSubDevice subdevice});
 
-class EcAutoBindMatch {
-  const EcAutoBindMatch({
+class EcNameMatchMatch {
+  const EcNameMatchMatch({
     required this.asset,
     required this.bus,
     required this.subdevice,
@@ -44,26 +44,26 @@ class EcAutoBindMatch {
       );
 }
 
-class EcAutoBindAmbiguity {
-  const EcAutoBindAmbiguity({required this.asset, required this.candidates});
+class EcNameMatchAmbiguity {
+  const EcNameMatchAmbiguity({required this.asset, required this.candidates});
 
   final EtherCatAsset asset;
   final List<EcCandidate> candidates;
 }
 
-class EcAutoBindPlan {
-  const EcAutoBindPlan({
+class EcNameMatchPlan {
+  const EcNameMatchPlan({
     this.matched = const [],
     this.unmatched = const [],
     this.ambiguous = const [],
     this.skipped = const [],
   });
 
-  final List<EcAutoBindMatch> matched;
+  final List<EcNameMatchMatch> matched;
 
   /// No subdevice on any master carries the name — or the asset has no name.
   final List<EtherCatAsset> unmatched;
-  final List<EcAutoBindAmbiguity> ambiguous;
+  final List<EcNameMatchAmbiguity> ambiguous;
 
   /// Already bound, and left alone because the plan was not asked to
   /// overwrite.
@@ -79,12 +79,12 @@ Iterable<EtherCatAsset> ecAssetsOn(Iterable<Asset> assets) sync* {
 }
 
 /// What binding [page] by name would do, without doing it.
-EcAutoBindPlan planEcAutoBind(
+EcNameMatchPlan planEcNameMatches(
   Iterable<Asset> page,
   Map<EcBusConfig, EcBus> buses, {
   bool overwrite = false,
 }) {
-  final matched = <EcAutoBindMatch>[];
+  final matched = <EcNameMatchMatch>[];
   final unmatched = <EtherCatAsset>[];
   final skipped = <EtherCatAsset>[];
   final pending = <(EtherCatAsset, List<EcCandidate>)>[];
@@ -98,7 +98,7 @@ EcAutoBindPlan planEcAutoBind(
     if (hits.isEmpty) {
       unmatched.add(asset);
     } else if (hits.length == 1) {
-      matched.add(EcAutoBindMatch(
+      matched.add(EcNameMatchMatch(
           asset: asset, bus: hits.single.bus, subdevice: hits.single.subdevice));
     } else {
       pending.add((asset, hits));
@@ -126,25 +126,25 @@ EcAutoBindPlan planEcAutoBind(
   }
   if (tied) pageMaster = null;
 
-  final ambiguous = <EcAutoBindAmbiguity>[];
+  final ambiguous = <EcNameMatchAmbiguity>[];
   for (final (asset, hits) in pending) {
     final onPage = [
       for (final h in hits)
         if (identical(h.bus, pageMaster)) h,
     ];
     if (onPage.length == 1) {
-      matched.add(EcAutoBindMatch(
+      matched.add(EcNameMatchMatch(
         asset: asset,
         bus: onPage.single.bus,
         subdevice: onPage.single.subdevice,
         viaPageMaster: true,
       ));
     } else {
-      ambiguous.add(EcAutoBindAmbiguity(asset: asset, candidates: hits));
+      ambiguous.add(EcNameMatchAmbiguity(asset: asset, candidates: hits));
     }
   }
 
-  return EcAutoBindPlan(
+  return EcNameMatchPlan(
     matched: matched,
     unmatched: unmatched,
     ambiguous: ambiguous,
@@ -177,7 +177,7 @@ List<EcCandidate> _candidates(
 }
 
 /// Writes [plan]'s bindings onto their assets.
-void applyEcAutoBind(EcAutoBindPlan plan) {
+void applyEcNameMatches(EcNameMatchPlan plan) {
   for (final m in plan.matched) {
     m.asset.ecSubDevice = m.binding;
   }

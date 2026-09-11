@@ -64,43 +64,12 @@ abstract class EtherCatAsset extends BaseAsset implements NetworkPorted {
   List<String> get allKeys =>
       {...super.allKeys, ...?ecSubDevice?.keys}.toList();
 
-  static const String bulkEtherCatGroup = 'EtherCAT';
-
-  /// The master's two arrays, so a selection of thirty drives gets its bus in
-  /// one edit.
-  ///
-  /// The exception to [TextBulkProperty]'s rule against key fields: that rule
-  /// guards against pointing many assets at one signal, and these keys are
-  /// meant to be shared — every subdevice on a master reads the same array.
-  /// The position stays out: it is the one thing that differs per device.
-  @JsonKey(includeFromJson: false, includeToJson: false)
-  @override
-  List<BulkProperty> get bulkProperties => [
-        ...super.bulkProperties,
-        TextBulkProperty(
-          id: 'EtherCatAsset.ecSubDevice.diagKey',
-          label: 'Diagnostics array',
-          group: bulkEtherCatGroup,
-          read: () => ecSubDevice?.diagKey,
-          apply: (value) => _setKeys(diagKey: value ?? ''),
-        ),
-        TextBulkProperty(
-          id: 'EtherCatAsset.ecSubDevice.infoKey',
-          label: 'Subdevice info array',
-          group: bulkEtherCatGroup,
-          read: () => ecSubDevice?.infoKey,
-          apply: (value) => _setKeys(infoKey: value ?? ''),
-        ),
-      ];
-
-  void _setKeys({String? diagKey, String? infoKey}) {
-    final b = ecSubDevice ??= EcSubDeviceBinding();
-    if (diagKey != null) b.diagKey = diagKey;
-    if (infoKey != null) b.infoKey = infoKey;
-    // A binding with nothing left in it is no binding, and must not save as
-    // an empty `ecSubDevice: {}` on every asset the pane touched.
-    if (b.isEmpty) ecSubDevice = null;
-  }
+  // No bulk rows here, deliberately. The master's arrays are tag keys, and
+  // `TextBulkProperty` does not carry key fields: pointing a selection at one
+  // signal is the mistake that rule exists to prevent, and
+  // `bulk_property_test` holds the line. Shared-by-design or not, a master is
+  // set per device in the binding editor, or on a whole page at once by
+  // matching names — where every match is shown before it is applied.
 }
 
 /// [EtherCatAsset.ecName] for the assets that carry a `nameOrId` — every
