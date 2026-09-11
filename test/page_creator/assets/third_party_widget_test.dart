@@ -209,6 +209,39 @@ void main() {
           reason: 'The editor KeyField label must not appear at runtime.');
     });
 
+    testWidgets('the palletising row pane names the station count and shows '
+        'no Status section', (tester) async {
+      // The row publishes no handshake — see [hasStatusTable] — so the pane
+      // must omit the Status section entirely rather than draw a column of
+      // permanently-unknown diodes. The station count reaches the title the
+      // same way the strapper count does.
+      final config = ThirdPartyEquipmentConfig(
+        kind: ThirdPartyEquipmentKind.optimarPalletiser,
+        robotStations: 3,
+        runKey: 'ST301.PK01.PAL01.Running',
+        notes: 'Guarded row — key the gate before entering.',
+      );
+      await tester.pumpWidget(wrap(SizedBox(
+        width: 320,
+        height: 220,
+        child: ThirdPartyEquipment(config: config),
+      )));
+
+      await tester.tap(find.byType(ThirdPartyEquipment));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(SidePane), findsOneWidget);
+      expect(find.textContaining('3 stations'), findsWidgets,
+          reason: 'Station count must reach the pane title.');
+      expect(find.textContaining('Optimar'), findsWidgets,
+          reason: 'The supplier names the machine on the pane.');
+      expect(find.text('STATUS'), findsNothing,
+          reason: 'No handshake to read, so no Status section.');
+      // The rest of the pane is unaffected.
+      expect(find.text('NOTES'), findsOneWidget);
+      expect(find.text('EQUIPMENT'), findsOneWidget);
+    });
+
     testWidgets('tapping the same machine again toggles the pane shut',
         (tester) async {
       final config = ThirdPartyEquipmentConfig(runKey: '');
@@ -904,13 +937,16 @@ void main() {
       expect(find.text('Build checkweighers'), findsNothing);
     });
 
-    // Used to assert the field was SpeedBatcher-only. Every kind's pane has a
-    // Status section, so every kind must be able to point its diodes at keys
-    // — with the field gated to the SpeedBatcher the other machines' diodes
-    // could never leave the unknown state.
-    testWidgets('every kind exposes a status key field that writes the config',
-        (tester) async {
-      for (final kind in ThirdPartyEquipmentKind.values) {
+    // Used to assert the field was SpeedBatcher-only. Every kind with a diode
+    // table must be able to point those diodes at keys — with the field gated
+    // to the SpeedBatcher the other machines' diodes could never leave the
+    // unknown state. Driven off [hasStatusTable] rather than a kind list, for
+    // the same reason the subscription loops above are: the naming is what
+    // rots when a kind crosses over.
+    testWidgets(
+        'every kind with a diode table exposes a status key field that writes '
+        'the config', (tester) async {
+      for (final kind in ThirdPartyEquipmentKind.values.where(hasStatusTable)) {
         final config = ThirdPartyEquipmentConfig(kind: kind);
         await tester.pumpWidget(wrap(
           Builder(builder: (context) => config.configure(context)),
@@ -935,6 +971,37 @@ void main() {
                 'config.statusKey.');
 
         // Fresh tree per kind — the editor holds per-widget controllers.
+        await tester.pumpWidget(const SizedBox());
+      }
+    });
+
+    // The other half of that invariant. A kind the PLC publishes no handshake
+    // for gets NO status key field: it would feed nothing, since the pane
+    // draws no Status section for such a kind and the extra loose diodes read
+    // complete keys of their own. A field that silently feeds nothing is the
+    // failure this guards.
+    testWidgets('a kind with no diode table offers no status key field',
+        (tester) async {
+      final tableless =
+          ThirdPartyEquipmentKind.values.where((k) => !hasStatusTable(k));
+      expect(tableless, isNotEmpty,
+          reason: 'this test is vacuous if every kind has a table.');
+
+      for (final kind in tableless) {
+        final config = ThirdPartyEquipmentConfig(kind: kind);
+        await tester.pumpWidget(wrap(
+          Builder(builder: (context) => config.configure(context)),
+        ));
+        await tester.pumpAndSettle();
+
+        expect(find.widgetWithText(TextField, 'Status Struct Key'), findsNothing,
+            reason: '${kind.name} publishes no struct.');
+        expect(find.widgetWithText(TextField, 'Status Key Prefix'), findsNothing,
+            reason: '${kind.name} has no suffixes to append.');
+        // The escape hatch is still there: a loose permit can be added as an
+        // extra diode reading its own complete key.
+        expect(find.text('Extra status diodes'), findsOneWidget);
+
         await tester.pumpWidget(const SizedBox());
       }
     });
