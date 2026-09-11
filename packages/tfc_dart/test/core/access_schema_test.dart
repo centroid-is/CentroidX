@@ -1,4 +1,4 @@
-// Schema v6 — the access control tables, their migration and their seed.
+// Schema v6/v7 — the access control tables, their migrations and their seed.
 //
 // SQLite only. The `from < 6` branch's Postgres arm is raw
 // `CREATE TABLE IF NOT EXISTS` DDL and is not exercised here: a live server is
@@ -83,10 +83,10 @@ void main() {
     // `access_key_binding` (`access_template_table_test.dart`) and
     // `app_user.station_account` (`station_account_column_test.dart`) all
     // arrive in the same v6 arm this suite covers.
-    test('schema version is 6', () async {
+    test('schema version is 7', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 6);
+      expect(db.schemaVersion, 7);
     });
 
     test('seeds exactly four roles', () async {
@@ -264,10 +264,10 @@ void main() {
 
       final row =
           await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 6,
+      expect(row.read<int>('user_version'), 7,
           reason: 'a v5 database opens straight to the current version — '
-              'onUpgrade(5, 6) runs the one access branch, which is the whole '
-              'milestone');
+              'onUpgrade(5, 7) runs the access branch and then the '
+              'page-whitelist branch');
     });
   });
 
@@ -420,6 +420,171 @@ void main() {
 
       final rows = await db.customSelect('SELECT * FROM audit_entry').get();
       expect(rows.first.read<bool>('allowed'), isFalse);
+    });
+  });
+
+  // The page-visibility whitelist columns. See
+  // `docs/page-visibility-whitelist-design.md` §2. The Postgres arm of this
+  // branch is two `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements and is
+  // no more exercised here than the v6 Postgres DDL is; `_columnNames` below
+  // is what stands behind the SQLite side.
+  group('v6 -> v7 upgrade', () {
+    late Directory tempDir;
+    late File dbFile;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('tfc_v7_schema_test');
+      dbFile = File('${tempDir.path}/app.sqlite');
+    });
+
+    tearDown(() {
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    Future<Set<String>> columnNames(GeneratedDatabase db, String table) async {
+      final rows = await db.customSelect('PRAGMA table_info($table)').get();
+      return rows.map((r) => r.read<String>('name')).toSet();
+    }
+
+    /// Builds a database at v6: both `allowed_pages` columns dropped and
+    /// `user_version` rewound, so the next open runs `onUpgrade(6, 7)`.
+    Future<void> makeV6Database() async {
+      final db = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      await db.customSelect('SELECT 1').getSingle();
+
+      // An account that predates the column — the row whose behaviour must not
+      // change across the upgrade.
+      await db.customStatement(
+        "INSERT INTO app_user "
+        "(username, role_name, password_hash, salt, created_at, station_account) "
+        "VALUES ('jon', 'Engineering', 'hash', 'salt', '2026-09-01T00:00:00Z', 0)",
+      );
+
+      await db.customStatement('ALTER TABLE app_role DROP COLUMN allowed_pages');
+      await db.customStatement('ALTER TABLE app_user DROP COLUMN allowed_pages');
+      await db.customStatement('PRAGMA user_version = 6');
+      await db.close();
+    }
+
+    Future<AppDatabase> reopen() async {
+      final db = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      await db.customSelect('SELECT 1').getSingle();
+      return db;
+    }
+
+    test('adds allowed_pages to app_role and app_user', () async {
+      await makeV6Database();
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_role'), contains('allowed_pages'));
+      expect(await columnNames(db, 'app_user'), contains('allowed_pages'));
+    });
+
+    test('every carried-over row upgrades to NULL, not to a whitelist',
+        () async {
+      // The whole behaviour-preserving claim. A seeded role landing on '[]'
+      // would blank every page on the floor at upgrade; an account landing on
+      // '[]' or on a populated array would mint a personal exemption that no
+      // later role whitelist could bind.
+      await makeV6Database();
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      final roles = await db.customSelect('SELECT * FROM app_role').get();
+      expect(roles, hasLength(4));
+      for (final row in roles) {
+        expect(row.read<String?>('allowed_pages'), isNull,
+            reason: '${row.read<String>('name')} must carry over unrestricted');
+      }
+
+      final users = await db.customSelect('SELECT * FROM app_user').get();
+      expect(users, hasLength(1));
+      expect(users.first.read<String?>('allowed_pages'), isNull,
+          reason: 'a v6 account follows its role, and NULL is how that is '
+              'spelled — it is not "sees every page"');
+    });
+
+    test('leaves schema version at 7', () async {
+      await makeV6Database();
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      final row = await db.customSelect('PRAGMA user_version').getSingle();
+      expect(row.read<int>('user_version'), 7);
+    });
+
+    test('a v5 database reaches v7 in one open, with both columns', () async {
+      // The `from < 6` arm creates the tables from the current definitions,
+      // which already carry the column — so the `from < 7` arm must NOT try to
+      // add it again. This is the case the `from >= 6` guard exists for; drop
+      // it and SQLite throws "duplicate column name" here.
+      final db = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      await db.customSelect('SELECT 1').getSingle();
+      await db.customStatement('DROP TABLE audit_entry');
+      await db.customStatement('DROP TABLE app_user');
+      await db.customStatement('DROP TABLE app_role');
+      await db.customStatement('PRAGMA user_version = 5');
+      await db.close();
+
+      final upgraded = await reopen();
+      addTearDown(() => upgraded.close());
+
+      expect(await columnNames(upgraded, 'app_role'),
+          contains('allowed_pages'));
+      expect(await columnNames(upgraded, 'app_user'),
+          contains('allowed_pages'));
+      final row =
+          await upgraded.customSelect('PRAGMA user_version').getSingle();
+      expect(row.read<int>('user_version'), 7);
+    });
+  });
+
+  group('the Postgres DDL names the same columns as the tables', () {
+    // Source-derived parity, the only thing standing behind the raw Postgres
+    // statements — no test connects to a server. It reads the migration source
+    // and asserts every `allowed_pages` mention a reader would expect is
+    // there, in both the v6 CREATE TABLE literals (a fresh Postgres install
+    // runs those) and the v7 ALTER statements (an upgraded one runs these).
+    late String source;
+
+    setUpAll(() {
+      source = File('lib/core/database_drift.dart').readAsStringSync();
+    });
+
+    test('the v6 CREATE TABLE literals carry allowed_pages', () {
+      expect(
+        source,
+        contains('CREATE TABLE IF NOT EXISTS app_role (name TEXT PRIMARY KEY, '
+            'groups TEXT NOT NULL, seeded BOOLEAN NOT NULL DEFAULT FALSE, '
+            'allowed_pages TEXT)'),
+      );
+      expect(source, contains('station_account BOOLEAN NOT NULL DEFAULT FALSE, '
+          'allowed_pages TEXT)'));
+    });
+
+    test('the v7 arm alters both tables idempotently', () {
+      // IF NOT EXISTS is not decoration: several SVN stations share one
+      // Postgres database and each of them runs this branch when it opens.
+      expect(
+        source,
+        contains('ALTER TABLE app_role ADD COLUMN IF NOT EXISTS '
+            'allowed_pages TEXT'),
+      );
+      expect(
+        source,
+        contains('ALTER TABLE app_user ADD COLUMN IF NOT EXISTS '
+            'allowed_pages TEXT'),
+      );
     });
   });
 }

@@ -59,10 +59,10 @@ void main() {
       }
     });
 
-    test('schema version is 6', () async {
+    test('schema version is 7', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 6);
+      expect(db.schemaVersion, 7);
     });
 
     test('MCP tables support basic CRUD operations', () async {

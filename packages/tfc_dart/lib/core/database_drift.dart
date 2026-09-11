@@ -98,6 +98,25 @@ class AppRole extends Table {
 
   /// True for the rows the v6 migration seeded. Informational only.
   BoolColumn get seeded => boolean().withDefault(const Constant(false))();
+
+  /// The page-visibility whitelist (schema v7): a JSON array of page paths,
+  /// or SQL NULL for "this role sees every page".
+  ///
+  /// Written by `encodeAllowedPagesColumn` and read by
+  /// `decodeAllowedPagesColumn`. **NULL and `'[]'` are different claims** —
+  /// NULL is no whitelist, `'[]'` is a whitelist naming nothing, i.e. block
+  /// all — so this column is nullable rather than defaulting to an empty
+  /// array. Every row carried over from v6 gets NULL and therefore behaves
+  /// exactly as it did before the column existed.
+  ///
+  /// Authorization data, which is why it lives here rather than beside the
+  /// pages in `page_editor_data`: that preference is classified `configure`,
+  /// and anybody who can edit a page must not be able to re-scope who sees
+  /// which pages. See `docs/page-visibility-whitelist-design.md` §1a.
+  ///
+  /// Keep it small, for the same reason [groups] says so: the backend config
+  /// watcher fires on preference writes and `pg_notify` has an 8000-byte cap.
+  TextColumn get allowedPages => text().nullable()();
 }
 
 /// A user: a name, a password hash, and exactly one role.
@@ -136,6 +155,22 @@ class AppUser extends Table {
   /// otherwise, which is also what an account carried over from v5 gets.
   BoolColumn get stationAccount =>
       boolean().withDefault(const Constant(false))();
+
+  /// This account's personal page whitelist (schema v7), or NULL to follow
+  /// whatever [AppRole.allowedPages] says.
+  ///
+  /// Three states, and the null one is the subtle one: **NULL means inherit
+  /// the role**, not "sees every page". Every account carried over from v6
+  /// lands on NULL, and if that meant unrestricted then the upgrade would mint
+  /// a personal exemption for every existing account — the first role
+  /// whitelist anybody configured would govern nobody who already existed.
+  /// `effectiveAllowedPages` is where that rule is written down.
+  ///
+  /// A non-null value **replaces** the role's whitelist rather than
+  /// intersecting or unioning with it, so both directions of exception are
+  /// expressible. It can widen what this account *sees*; it can never widen
+  /// what this account may *do*, because the group gate is ANDed on top.
+  TextColumn get allowedPages => text().nullable()();
 }
 
 /// The human-action audit trail: append-only, never pruned.
@@ -465,7 +500,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   }
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
 
   /// The `audit_entry` indexes, created outside Drift because Drift's
   /// `@TableIndex` cannot express `DESC` and every one of these is a
@@ -709,9 +744,9 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
               // a reader would expect: see [AccessKeyBindingTable.templateName]
               // for why a dangling binding has to be storable.
               await m.database.customStatement(
-                  'CREATE TABLE IF NOT EXISTS app_role (name TEXT PRIMARY KEY, groups TEXT NOT NULL, seeded BOOLEAN NOT NULL DEFAULT FALSE)');
+                  'CREATE TABLE IF NOT EXISTS app_role (name TEXT PRIMARY KEY, groups TEXT NOT NULL, seeded BOOLEAN NOT NULL DEFAULT FALSE, allowed_pages TEXT)');
               await m.database.customStatement(
-                  'CREATE TABLE IF NOT EXISTS app_user (username TEXT PRIMARY KEY, role_name TEXT NOT NULL REFERENCES app_role(name), password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at TEXT NOT NULL, last_login_at TEXT, station_account BOOLEAN NOT NULL DEFAULT FALSE)');
+                  'CREATE TABLE IF NOT EXISTS app_user (username TEXT PRIMARY KEY, role_name TEXT NOT NULL REFERENCES app_role(name), password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at TEXT NOT NULL, last_login_at TEXT, station_account BOOLEAN NOT NULL DEFAULT FALSE, allowed_pages TEXT)');
               await m.database.customStatement(
                   'CREATE TABLE IF NOT EXISTS audit_entry (id SERIAL PRIMARY KEY, at TEXT NOT NULL, who TEXT NOT NULL, station TEXT NOT NULL, role_name TEXT NOT NULL, surface TEXT NOT NULL, item_key TEXT NOT NULL, member TEXT, old_value TEXT, new_value TEXT, group_required TEXT NOT NULL, allowed BOOLEAN NOT NULL, origin TEXT NOT NULL DEFAULT \'operator\', action_id TEXT NOT NULL, reason TEXT)');
               await m.database.customStatement(
@@ -722,6 +757,40 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
             await _createAuditIndexes(m);
             await _createAccessBindingIndexes(m);
             await _seedAccessRoles();
+          }
+          // The page-visibility whitelist, at both levels. One nullable column
+          // per identity table and nothing else: every existing row — the four
+          // seeded roles included — upgrades to NULL, which is "no whitelist"
+          // on a role and "follow the role" on a user, so a station that
+          // upgrades behaves identically until somebody turns the mode on.
+          // See `docs/page-visibility-whitelist-design.md` §2.
+          //
+          // A station that ran the v6 arm above in this same upgrade already
+          // has both columns, because the CREATE TABLE literals there carry
+          // them. `addColumn` on SQLite would then fail, and the Postgres
+          // `IF NOT EXISTS` would be a no-op — so the SQLite side is guarded
+          // by `from >= 6` rather than by hoping the order works out.
+          if (from < 7) {
+            if (native) {
+              // Only when the tables predate this upgrade. `from < 6` created
+              // them fresh from the table definitions, which already include
+              // the column.
+              if (from >= 6) {
+                await m.addColumn(appRole, appRole.allowedPages);
+                await m.addColumn(appUser, appUser.allowedPages);
+              }
+            } else {
+              // Raw `IF NOT EXISTS` DDL, and the v6 arm's warning applies
+              // unchanged: several SVN stations share one Postgres database
+              // and each of them runs this branch when it opens, so it has to
+              // be safe to run twice. No test executes this arm — what stands
+              // behind these two strings is the source-derived column-parity
+              // check in `access_schema_test.dart`.
+              await m.database.customStatement(
+                  'ALTER TABLE app_role ADD COLUMN IF NOT EXISTS allowed_pages TEXT');
+              await m.database.customStatement(
+                  'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS allowed_pages TEXT');
+            }
           }
         },
       );

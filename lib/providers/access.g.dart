@@ -170,7 +170,7 @@ final firstUserWindowOpenProvider = FutureProvider<bool>.internal(
 // ignore: unused_element
 typedef FirstUserWindowOpenRef = FutureProviderRef<bool>;
 String _$accessSessionControllerHash() =>
-    r'8625ba0e8cdda7155596b5a8ab778cb8af9ea560';
+    r'bcd0d5cc5d7ec0a520a7c424863f22b5cc7c25aa';
 
 /// Who is standing at this panel, and what they may do.
 ///

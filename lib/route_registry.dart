@@ -70,6 +70,39 @@ class RouteRegistry {
     _routeGroups.clear();
   }
 
+  /// Replace the whole menu with [items], and redeclare every route group
+  /// from scratch.
+  ///
+  /// **The one writer.** `menuItems` is a mutable list on a process-global
+  /// singleton, and it used to be filled once before `runApp` from a
+  /// device-local cache — which is why the navigation bar could not change
+  /// when the pages did, or when somebody signed in. It is now a *mirror* of
+  /// `menuTreeProvider`, written here and nowhere else;
+  /// `test/providers/menu_test.dart` asserts from source that no other file
+  /// mutates it. Read the provider, not this list.
+  ///
+  /// [declareGroups] runs inside the same call so the layering cannot be
+  /// assembled wrong at a call site: clear, then the built-in raised routes,
+  /// then the groups the operator published pages for. Declaring is
+  /// last-writer-wins and idempotent, so the order is what decides, and a
+  /// customer page must be able to raise its own path while a page that
+  /// declares nothing leaves a built-in route's group alone.
+  ///
+  /// Clearing first is what fixes a staleness the boot-time-once call had:
+  /// `declareMenuRouteGroups` writes nothing for a page with no group, so a
+  /// `requiredGroup` *removed* in the page editor stayed declared until the
+  /// next restart. Redeclaring from empty unraises it on the next rebuild.
+  void replaceMenu(
+    List<MenuItem> items, {
+    required void Function() declareGroups,
+  }) {
+    menuItems
+      ..clear()
+      ..addAll(items);
+    _routeGroups.clear();
+    declareGroups();
+  }
+
   WidgetBuilder? getBuilder(String path) {
     return _routes[path];
   }

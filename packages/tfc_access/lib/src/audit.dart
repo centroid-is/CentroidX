@@ -46,12 +46,18 @@ import 'access_role.dart';
 /// Phase 6 adds a fifth surface, `'admin'`, for the writes the roles and users
 /// screens make. A role edit that grants somebody `force` and leaves no trace
 /// is the widest gap this product could ship with — re-scoping a role is the
-/// most consequential hand-made write in it. The itemKey vocabulary is nine
+/// most consequential hand-made write in it. The itemKey vocabulary is eleven
 /// strings:
 ///
-///     role.create | role.update | role.delete | role.rename
-///     user.create | user.delete | user.role   | user.password
+///     role.create | role.update | role.delete | role.rename | role.pages
+///     user.create | user.delete | user.role   | user.password | user.pages
 ///     user.station_account
+///
+/// `role.pages` and `user.pages` are the page-visibility whitelist at its two
+/// levels (`docs/page-visibility-whitelist-design.md`). They join the admin
+/// surface rather than the `'route'` write surface because what they change is
+/// authorization data in `app_role`/`app_user`, edited on the same screen by
+/// the same `users` gate as the other nine — not a route.
 ///
 /// Three things differ from the auth constructors, each on purpose:
 ///
@@ -60,7 +66,7 @@ import 'access_role.dart';
 ///    behind the trail viewer's existing `users` filter chip with no change to
 ///    the viewer — a row carrying an empty [groupRequired] would fall outside
 ///    every group filter instead.
-/// 2. [allowed] is a **parameter** on all nine. Each auth constructor *is* an
+/// 2. [allowed] is a **parameter** on all eleven. Each auth constructor *is* an
 ///    outcome and can hardcode it; an admin action can be refused by the `users`
 ///    gate, and a refused role edit is a row worth having. Allow-only
 ///    constructors would leave the store hand-building denial rows, which is the
@@ -68,7 +74,10 @@ import 'access_role.dart';
 /// 3. [oldValue] and [newValue] carry group sets encoded the one way this
 ///    codebase encodes them, `AccessRole.encodeGroups()` — a JSON array in
 ///    [AccessGroup.values] order — so `["operate"] -> ["operate","force"]` is
-///    legible in the viewer's generic old-to-new row.
+///    legible in the viewer's generic old-to-new row. The two `*.pages` rows
+///    use `encodeAllowedPagesColumn` for the same reason, and both value
+///    columns are **nullable** there: null is the meaningful "no whitelist"
+///    state, not a missing value.
 ///
 /// **The account or role acted upon goes in [member], never in [itemKey].** The
 /// itemKey vocabulary is a closed set the viewer filters on;
@@ -577,6 +586,84 @@ class AuditRecord {
         member: subject,
         oldValue: oldValue.toString(),
         newValue: newValue.toString(),
+        groupRequired: AccessGroup.users.name,
+        allowed: allowed,
+        origin: origin,
+        actionId: actionId,
+        reason: reason,
+      );
+
+  /// A role's page whitelist was changed.
+  ///
+  /// [oldPages] and [newPages] are `encodeAllowedPagesColumn` output — a
+  /// sorted JSON array, or **null** for "no whitelist". That null is the
+  /// point: the row reads `null -> ["/fillet"]` when the mode is switched on
+  /// and `["/fillet"] -> null` when it is switched off, so turning the feature
+  /// on and off for an audience is legible in the trail's generic old-to-new
+  /// columns rather than hidden inside an array diff.
+  ///
+  /// Ninth of the admin itemKeys. The subject — the role acted upon — goes in
+  /// [member], never in the itemKey, for the reason the class doc gives.
+  factory AuditRecord.rolePages({
+    required String who,
+    required String station,
+    required String roleName,
+    required String actionId,
+    required String subject,
+    required String? oldPages,
+    required String? newPages,
+    required bool allowed,
+    DateTime? at,
+    String? reason,
+    String origin = 'operator',
+  }) =>
+      AuditRecord(
+        at: at ?? clock.now(),
+        who: who,
+        station: station,
+        roleName: roleName,
+        surface: _adminSurface,
+        itemKey: 'role.pages',
+        member: subject,
+        oldValue: oldPages,
+        newValue: newPages,
+        groupRequired: AccessGroup.users.name,
+        allowed: allowed,
+        origin: origin,
+        actionId: actionId,
+        reason: reason,
+      );
+
+  /// One account's personal page whitelist was changed.
+  ///
+  /// Tenth of the admin itemKeys, and the one that records an *exception*: a
+  /// non-null value here overrides whatever the account's role allows, so a
+  /// row moving from null to an array is the moment that account stopped
+  /// following its role. Encoded exactly as [AuditRecord.rolePages], so the
+  /// two read alike in the viewer.
+  factory AuditRecord.userPages({
+    required String who,
+    required String station,
+    required String roleName,
+    required String actionId,
+    required String subject,
+    required String? oldPages,
+    required String? newPages,
+    required bool allowed,
+    DateTime? at,
+    String? reason,
+    String origin = 'operator',
+  }) =>
+      AuditRecord(
+        at: at ?? clock.now(),
+        who: who,
+        station: station,
+        roleName: roleName,
+        surface: _adminSurface,
+        itemKey: 'user.pages',
+        member: subject,
+        oldValue: oldPages,
+        newValue: newPages,
         groupRequired: AccessGroup.users.name,
         allowed: allowed,
         origin: origin,

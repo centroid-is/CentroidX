@@ -7,7 +7,7 @@ part of 'alarm_auto_navigation.dart';
 // **************************************************************************
 
 String _$alarmAutoNavigationHash() =>
-    r'6ce62ec707e8874877f7acf2a53051aded5a9c5b';
+    r'8e4553b908aadafe168da3879585dd742675fb42';
 
 /// The live navigator, and a signal to look at it.
 ///

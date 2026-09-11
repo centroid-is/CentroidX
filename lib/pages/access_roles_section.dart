@@ -65,6 +65,7 @@
 /// as raw text and cannot tell a prohibition from an implementation.
 library;
 
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tfc_access/tfc_access.dart';
@@ -74,6 +75,7 @@ import '../core/access_admin_store.dart';
 import '../providers/access.dart';
 import '../providers/access_admin.dart';
 import '../widgets/access_admin_notice.dart';
+import '../widgets/access_pages_editor.dart';
 import '../widgets/panes/pane_chrome.dart';
 import '../widgets/panes/standard_dialog.dart';
 
@@ -516,6 +518,16 @@ class _RoleTileState extends ConsumerState<_RoleTile> {
   /// and one `role.update`, not six — and Cancel must be able to mean it.
   Set<AccessGroup>? _draft;
 
+  /// The page whitelist draft, held beside [_draft] and opened with it.
+  ///
+  /// Null means "no whitelist" — this role sees every page — and the empty set
+  /// means a whitelist naming nothing. The two are different roles, so this
+  /// cannot be collapsed into an empty-means-none field. `_pagesTouched` is
+  /// what tells "the operator left it alone" from "the operator chose null",
+  /// which decides whether Save issues the `role.pages` write at all.
+  Set<String>? _pagesDraft;
+  bool _pagesTouched = false;
+
   /// The lockout refusal the last save came back with, rendered inline in place
   /// of a snackbar so the operator can see it beside the boxes they left as
   /// they were.
@@ -608,8 +620,13 @@ class _RoleTileState extends ConsumerState<_RoleTile> {
   void _toggle() => setState(() {
         if (_draft == null) {
           _draft = {...role.groups};
+          _pagesDraft =
+              role.allowedPages == null ? null : {...role.allowedPages!};
+          _pagesTouched = false;
         } else {
           _draft = null;
+          _pagesDraft = null;
+          _pagesTouched = false;
           _refusal = null;
         }
       });
@@ -667,6 +684,19 @@ class _RoleTileState extends ConsumerState<_RoleTile> {
                 _refusal = null;
               }),
             ),
+          // Which pages this role sees. Under the groups because groups say
+          // what the role may *do* and this says what it may *reach*, and the
+          // second only ever narrows the first.
+          AccessPagesEditor(
+            level: AccessPagesLevel.role,
+            owner: role.name,
+            selection: _pagesDraft,
+            onChanged: (next) => setState(() {
+              _pagesDraft = next;
+              _pagesTouched = true;
+              _refusal = null;
+            }),
+          ),
           if (refusal != null) ...[
             const SizedBox(height: 8),
             // The exception goes straight to the shared widget; this file
@@ -725,6 +755,43 @@ class _RoleTileState extends ConsumerState<_RoleTile> {
     }
 
     _saving = true;
+
+    // Two writes at most, each its own audit row: `role.update` for the
+    // groups and `role.pages` for the whitelist. Deliberately not one — they
+    // answer different filters in the trail, and `upsertRole` writes groups
+    // only precisely so that a stale value object cannot reset a whitelist.
+    //
+    // The pages write is issued only when the operator actually touched the
+    // block. Issuing it unconditionally would write a `role.pages` row on
+    // every group edit, with the same value on both sides.
+    final pagesChanged = _pagesTouched && !_samePages(_pagesDraft, role.allowedPages);
+    final groupsChanged = !const SetEquality<AccessGroup>().equals(draft, role.groups);
+
+    if (!groupsChanged && !pagesChanged) {
+      _saving = false;
+      if (mounted) setState(() => _draft = null);
+      return;
+    }
+
+    if (pagesChanged && !groupsChanged) {
+      final wrotePages = await _write(
+        context,
+        ref,
+        () => store.setRolePages(role.name, _pagesDraft),
+      );
+      _saving = false;
+      if (!wrotePages) return;
+      if (mounted) {
+        setState(() {
+          _draft = null;
+          _pagesTouched = false;
+          _refusal = null;
+        });
+      }
+      await _afterWrite(ref);
+      return;
+    }
+
     final wrote = await _write(
       context,
       ref,
@@ -740,18 +807,36 @@ class _RoleTileState extends ConsumerState<_RoleTile> {
         }
       },
     );
+    if (!wrote) {
+      _saving = false;
+      return;
+    }
+
+    // The groups landed; the pages follow, as their own row. If this one is
+    // refused the groups edit still stands — which is honest, because it did.
+    if (pagesChanged && mounted) {
+      await _write(context, ref, () => store.setRolePages(role.name, _pagesDraft));
+    }
     _saving = false;
-    if (!wrote) return;
 
     // Everything that needs this widget happens first…
     if (mounted) {
       setState(() {
         _draft = null;
+        _pagesTouched = false;
         _refusal = null;
       });
     }
     // …and the session refresh last, because it can unmount this subtree.
     await _afterWrite(ref);
+  }
+
+  /// Null (no whitelist) and the empty set (block all) are different answers
+  /// and must not compare equal — the comparison Save uses to decide whether
+  /// there is a `role.pages` write to make at all.
+  static bool _samePages(Set<String>? a, Set<String>? b) {
+    if (a == null || b == null) return a == null && b == null;
+    return const SetEquality<String>().equals(a, b);
   }
 
   Future<void> _rename() async {

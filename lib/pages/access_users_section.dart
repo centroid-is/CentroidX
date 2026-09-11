@@ -94,6 +94,7 @@ import '../core/access_admin_store.dart';
 import '../providers/access.dart';
 import '../providers/access_admin.dart';
 import '../widgets/access_admin_notice.dart';
+import '../widgets/access_pages_editor.dart';
 import '../widgets/panes/pane_chrome.dart';
 import '../widgets/panes/standard_dialog.dart';
 
@@ -341,6 +342,26 @@ const Key kAccessUsersHeaderKey = Key('access-users-header');
 Key kAccessUserRowKey(String username) => Key('access-user-row-$username');
 
 /// The station-account toggle on a user row.
+/// The Pages control on an account's row.
+Key kAccessUserPagesKey(String username) => Key('access-user-pages-$username');
+
+/// Save and Cancel inside an account's open Pages block.
+Key kAccessUserPagesSaveKey(String username) =>
+    Key('access-user-pages-save-$username');
+Key kAccessUserPagesCancelKey(String username) =>
+    Key('access-user-pages-cancel-$username');
+
+/// The marker beside the role of an account that overrides its role's pages.
+Key kAccessUserPagesOverrideKey(String username) =>
+    Key('access-user-pages-override-$username');
+
+/// Said beside the role, because that is where somebody moving the account to
+/// another role is looking — a personal page list survives the move, and this
+/// is what keeps that from being a surprise.
+const String kAccessUserPagesOverrideTag = 'own pages';
+
+const String kAccessUserPagesTooltip = 'Which pages this account sees';
+
 Key kAccessUserStationAccountKey(String username) =>
     Key('access-user-station-$username');
 
@@ -628,7 +649,11 @@ class AccessUsersSection extends ConsumerWidget {
 const int _kNameFlex = 3;
 const int _kRoleFlex = 3;
 const int _kWhenFlex = 3;
-const double _kActionsWidth = 192;
+/// Five 48 px icon buttons: pages, station account, role, password, delete.
+/// Widened from 192 when the Pages control joined them — a fixed width with
+/// one more button than it was sized for overflows the row rather than
+/// wrapping, which is how this number earns a comment.
+const double _kActionsWidth = 240;
 
 // ---------------------------------------------------------------------------
 // One row
@@ -671,7 +696,20 @@ class _UserTileState extends ConsumerState<_UserTile> {
   /// during the round trip is simply ignored.
   bool _busy = false;
 
+  /// The page-whitelist draft, or null while the block is closed.
+  ///
+  /// Two nullables, because the value being edited is itself nullable and the
+  /// two nulls mean different things: [_pagesOpen] says whether the block is
+  /// showing at all, and [_pagesDraft] null then means "this account follows
+  /// its role's pages". Collapsing them would make a closed row
+  /// indistinguishable from an open one set to inherit.
+  bool _pagesOpen = false;
+  Set<String>? _pagesDraft;
+
   AppUserData get user => widget.user;
+
+  /// Whether this account overrides its role's pages right now.
+  bool get _overridesPages => user.allowedPages != null;
 
   @override
   Widget build(BuildContext context) {
@@ -691,7 +729,31 @@ class _UserTileState extends ConsumerState<_UserTile> {
               ),
               Expanded(
                 flex: _kRoleFlex,
-                child: Text(user.roleName, key: kAccessUserRoleKey(user.username)),
+                // The tag sits against the role on purpose: a personal page
+                // list survives a move to another role, so the place somebody
+                // needs to be told is the place they change the role.
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(user.roleName,
+                          key: kAccessUserRoleKey(user.username)),
+                    ),
+                    if (_overridesPages) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        kAccessUserPagesOverrideTag,
+                        key: kAccessUserPagesOverrideKey(user.username),
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelSmall
+                            ?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant),
+                      ),
+                    ],
+                  ],
+                ),
               ),
               Expanded(
                 flex: _kWhenFlex,
@@ -723,6 +785,16 @@ class _UserTileState extends ConsumerState<_UserTile> {
                       onPressed: _toggleStationAccount,
                     ),
                     IconButton(
+                      key: kAccessUserPagesKey(user.username),
+                      icon: Icon(
+                          _overridesPages
+                              ? Icons.layers
+                              : Icons.layers_outlined,
+                          size: 18),
+                      tooltip: kAccessUserPagesTooltip,
+                      onPressed: _togglePages,
+                    ),
+                    IconButton(
                       key: kAccessUserChangeRoleKey(user.username),
                       icon: const Icon(Icons.badge_outlined, size: 18),
                       tooltip: 'Change role',
@@ -746,6 +818,42 @@ class _UserTileState extends ConsumerState<_UserTile> {
             ],
           ),
         ),
+        if (_pagesOpen)
+          Padding(
+            padding: const EdgeInsets.only(left: 16, bottom: 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // The same widget the roles section mounts, told which level
+                // it is on so the "no whitelist" option reads as *follows the
+                // role* here and as *sees every page* there.
+                AccessPagesEditor(
+                  level: AccessPagesLevel.user,
+                  owner: user.username,
+                  selection: _pagesDraft,
+                  onChanged: (next) => setState(() => _pagesDraft = next),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      key: kAccessUserPagesCancelKey(user.username),
+                      onPressed: _togglePages,
+                      child: const Text('Cancel'),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton(
+                      key: kAccessUserPagesSaveKey(user.username),
+                      onPressed: _savePages,
+                      child: const Text('Save'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         if (refusal != null) ...[
           const SizedBox(height: 4),
           // The exception goes straight to the shared widget; this file builds
@@ -756,6 +864,49 @@ class _UserTileState extends ConsumerState<_UserTile> {
         ],
       ],
     );
+  }
+
+  /// Opens or closes the Pages block, seeding the draft from the stored
+  /// column each time it opens so a cancelled edit really is discarded.
+  void _togglePages() => setState(() {
+        if (_pagesOpen) {
+          _pagesOpen = false;
+          _pagesDraft = null;
+          return;
+        }
+        _pagesOpen = true;
+        _pagesDraft = decodeAllowedPagesColumn(user.allowedPages);
+      });
+
+  /// Writes the draft as one `user.pages` row.
+  ///
+  /// Nothing here is gated. A session without `users` may open this block and
+  /// tick boxes; Save is what asks, and the refusal reaches the shared prompt
+  /// — signing in from there and pressing Save again is the intended flow,
+  /// the same as everywhere else on this screen.
+  Future<void> _savePages() async {
+    if (_busy) return;
+    _busy = true;
+    final wrote = await _write(
+      context,
+      ref,
+      () => widget.store.setUserPages(user.username, _pagesDraft),
+      onRefused: _showRefusal,
+      vanished: user.username,
+    );
+    _busy = false;
+    if (!wrote) return;
+    if (mounted) {
+      setState(() {
+        _pagesOpen = false;
+        _pagesDraft = null;
+        _refusal = null;
+      });
+    }
+    // The session refresh last, because it can unmount this subtree — and it
+    // is what makes the menu on this panel follow an edit to the account that
+    // is signed in on it.
+    await _afterWrite(ref);
   }
 
   /// Moves the account onto another role.

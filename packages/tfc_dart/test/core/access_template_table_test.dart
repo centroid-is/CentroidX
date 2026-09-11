@@ -81,12 +81,12 @@ void main() {
       }
     });
 
-    test('schema version is 6', () async {
+    test('schema version is 7', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
       // Read off an open database rather than grepped out of the source: the
       // value the migrator actually compares `from` against.
-      expect(db.schemaVersion, 6);
+      expect(db.schemaVersion, 7);
     });
 
     test('creates the access_key_binding template_name index', () async {
@@ -302,13 +302,13 @@ void main() {
     // running the seed against rows that exist; that idempotency is asserted
     // directly in `access_schema_test.dart` through `seedAccessRolesForTest`.
 
-    test('leaves schema version at 6', () async {
+    test('leaves schema version at the current version', () async {
       await makeV5Database();
       final db = await reopen();
       addTearDown(() => db.close());
 
       final row = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 6);
+      expect(row.read<int>('user_version'), 7);
     });
   });
 }

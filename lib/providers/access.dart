@@ -450,7 +450,7 @@ class AccessSessionController extends _$AccessSessionController {
     /// needs it, and resuming writes an audit row.
     Future<AccessSession> floor() async =>
         await _resumePanelAccount(repo) ??
-        AccessSession.anonymous(await _anonymousGroups(repo));
+        await _anonymousSession(repo);
 
     final raw = await _readStoredSession();
     if (raw == null) return floor();
@@ -505,22 +505,80 @@ class AccessSessionController extends _$AccessSessionController {
         displayName: stored.displayName,
       ),
       groups: role.groups,
+      // Re-resolved from the database like the groups are, and for the same
+      // reason: the payload cannot carry one, so a hand-edited preferences
+      // file cannot widen what this panel sees.
+      allowedPages: await _effectivePages(repo, role, stored.username),
       expiresAt: stored.expiresAt,
     );
   }
 
-  Future<Set<AccessGroup>> _anonymousGroups(AccessRepository? repo) async {
-    if (repo == null) {
-      // No database. Fall back to the seeded Operator groups rather than
-      // throwing: a logged-out panel that cannot jog a conveyor because
-      // Postgres blinked is a stopped line. The seeded set is the narrowest
-      // Operator has ever been, so this is the conservative floor and not a
-      // guess.
-      return {
-        ...kSeedRoles.firstWhere((r) => r.name == kOperatorRoleName).groups,
-      };
+  /// The pages a session built on [role] for [username] may see.
+  ///
+  /// The composition point: the account's own whitelist replaces its role's
+  /// when it has one, and inherits the role's when it does not
+  /// (`effectiveAllowedPages`). Resolved here, once, so that nothing
+  /// downstream of the session has to know two levels exist.
+  ///
+  /// [username] null is an anonymous session — no `app_user` row, so nothing
+  /// to override with, and the role's whitelist *is* the session's.
+  ///
+  /// **An unreadable user row composes as inherit, not as block.** The row
+  /// cannot be read exactly when the database is unreachable, and the ruling
+  /// for that window is the same one `anonymousRole` makes: a panel that
+  /// blanks its pages because Postgres blinked is worse than one showing pages
+  /// whose controls still refuse.
+  Future<Set<String>?> _effectivePages(
+    AccessRepository? repo,
+    AccessRole role,
+    String? username,
+  ) async {
+    if (repo == null || username == null) {
+      return effectiveAllowedPages(user: null, role: role.allowedPages);
     }
-    return repo.anonymousGroups();
+    try {
+      final row = await repo.user(username);
+      return effectiveAllowedPages(
+        user: decodeAllowedPagesColumn(row?.allowedPages),
+        role: role.allowedPages,
+      );
+    } on Object catch (e) {
+      Logger().w(
+        'Could not read the page whitelist for "$username" — falling back to '
+        'the role\'s: $e',
+      );
+      return effectiveAllowedPages(user: null, role: role.allowedPages);
+    }
+  }
+
+  /// The whole anonymous identity — groups and pages — from one read.
+  ///
+  /// Anonymous resolves to [kOperatorRoleName] and has no `app_user` row, so
+  /// the Operator role is the session. Reading both halves from one
+  /// [AccessRepository.anonymousRole] call is what stops the groups and the
+  /// whitelist coming from two reads of a row somebody is editing.
+  Future<AccessRole> _anonymousRole(AccessRepository? repo) async {
+    if (repo == null) {
+      // No database. The seeded Operator role — and, deliberately, **no**
+      // whitelist: see [_effectivePages] for why this window fails open.
+      return AccessRole(
+        name: kOperatorRoleName,
+        groups: {
+          ...kSeedRoles.firstWhere((r) => r.name == kOperatorRoleName).groups,
+        },
+        seeded: true,
+      );
+    }
+    return repo.anonymousRole();
+  }
+
+  /// The anonymous session, groups and pages together.
+  Future<AccessSession> _anonymousSession(AccessRepository? repo) async {
+    final role = await _anonymousRole(repo);
+    return AccessSession.anonymous(
+      role.groups,
+      operatorAllowedPages: role.allowedPages,
+    );
   }
 
   Future<AccessRole?> _roleOrNull(AccessRepository repo, String name) async {
@@ -594,6 +652,7 @@ class AccessSessionController extends _$AccessSessionController {
     final session = AccessSession(
       user: user,
       groups: role.groups,
+      allowedPages: await _effectivePages(repo, role, user.username),
       // Never-expiring two ways: the station-wide disable (null timeout) or
       // the account's own v8 flag. The flag wins even under a normal
       // timeout — the freezer display's identity does not time out anywhere.
@@ -904,6 +963,10 @@ class AccessSessionController extends _$AccessSessionController {
     final extended = AccessSession(
       user: session.user,
       groups: session.groups,
+      // Carried forward unchanged. An activity extension re-resolves nothing —
+      // it must not silently widen or narrow what is visible, and it runs on
+      // every pointer-down, where a database read would be indefensible.
+      allowedPages: session.allowedPages,
       // A session with no expiry — the station-wide disable or a station
       // account — has nothing to extend, and an activity extension must not
       // conjure one onto it.
@@ -1083,7 +1146,7 @@ class AccessSessionController extends _$AccessSessionController {
     }
 
     _onPanelSession = false;
-    state = AsyncData(AccessSession.anonymous(await _anonymousGroups(repo)));
+    state = AsyncData(await _anonymousSession(repo));
   }
 
   /// This panel's committed account as a live session, or null.
@@ -1191,6 +1254,7 @@ class AccessSessionController extends _$AccessSessionController {
         stationAccount: true,
       ),
       groups: role.groups,
+      allowedPages: await _effectivePages(repo, role, username),
       // A panel does not time out. Nothing arms for a null `expiresAt` —
       // `_attach` and `poke` both already decline — so this needs no new
       // guard anywhere.
@@ -1209,7 +1273,8 @@ class AccessSessionController extends _$AccessSessionController {
   ///   `Operator` row saying that ticking a group there grants it to every
   ///   logged-out panel on the floor. `AccessRepository.anonymousGroups()` is
   ///   what resolves that claim, and until this method existed its only callers
-  ///   were [_anonymousGroups] — reached at build, at restore and at sign-out.
+  ///   were [_anonymousSession] — reached at build, at restore and at
+  ///   sign-out.
   ///   So without this call the banner warns about a change the app does not
   ///   apply until something else happens to rebuild the session, which is
   ///   worse than no banner: it is a promise the screen does not keep.
@@ -1305,11 +1370,11 @@ class AccessSessionController extends _$AccessSessionController {
     }
     if (_disposed) return;
 
-    // The anonymous arm. `_anonymousGroups` keeps its own fallback to the
+    // The anonymous arm. `_anonymousSession` keeps its own fallback to the
     // seeded Operator set when there is no repository, which is the same
     // conservative floor a build resolves on.
     if (!session.isElevated) {
-      state = AsyncData(AccessSession.anonymous(await _anonymousGroups(repo)));
+      state = AsyncData(await _anonymousSession(repo));
       return;
     }
 
@@ -1334,6 +1399,9 @@ class AccessSessionController extends _$AccessSessionController {
     }
 
     final String roleNameNow;
+    // The account's own whitelist column, lifted out of the try beside the
+    // role name so the session below composes from the same single read.
+    final String? userPagesNow;
     try {
       final row = await repo.user(username);
       if (row == null) {
@@ -1341,6 +1409,7 @@ class AccessSessionController extends _$AccessSessionController {
         return;
       }
       roleNameNow = row.roleName;
+      userPagesNow = row.allowedPages;
     } on Object catch (e) {
       await drop('the app_user row could not be read: $e');
       return;
@@ -1361,6 +1430,13 @@ class AccessSessionController extends _$AccessSessionController {
         displayName: session.user!.displayName,
       ),
       groups: role.groups,
+      // Composed from the row this method already read, rather than from a
+      // second read that could disagree with it. This is what makes an edit on
+      // the access screen change the menu on this panel without a restart.
+      allowedPages: effectiveAllowedPages(
+        user: decodeAllowedPagesColumn(userPagesNow),
+        role: role.allowedPages,
+      ),
       expiresAt: session.expiresAt,
     );
     state = AsyncData(next);

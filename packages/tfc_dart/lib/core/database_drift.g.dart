@@ -6573,8 +6573,14 @@ class $AppRoleTable extends AppRole with TableInfo<$AppRoleTable, AppRoleData> {
       type: DriftSqlType.bool,
       requiredDuringInsert: false,
       defaultValue: const Constant(false));
+  static const VerificationMeta _allowedPagesMeta =
+      const VerificationMeta('allowedPages');
   @override
-  List<GeneratedColumn> get $columns => [name, groups, seeded];
+  late final GeneratedColumn<String> allowedPages = GeneratedColumn<String>(
+      'allowed_pages', aliasedName, true,
+      type: DriftSqlType.string, requiredDuringInsert: false);
+  @override
+  List<GeneratedColumn> get $columns => [name, groups, seeded, allowedPages];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -6601,6 +6607,12 @@ class $AppRoleTable extends AppRole with TableInfo<$AppRoleTable, AppRoleData> {
       context.handle(_seededMeta,
           seeded.isAcceptableOrUnknown(data['seeded']!, _seededMeta));
     }
+    if (data.containsKey('allowed_pages')) {
+      context.handle(
+          _allowedPagesMeta,
+          allowedPages.isAcceptableOrUnknown(
+              data['allowed_pages']!, _allowedPagesMeta));
+    }
     return context;
   }
 
@@ -6616,6 +6628,8 @@ class $AppRoleTable extends AppRole with TableInfo<$AppRoleTable, AppRoleData> {
           .read(DriftSqlType.string, data['${effectivePrefix}groups'])!,
       seeded: attachedDatabase.typeMapping
           .read(DriftSqlType.bool, data['${effectivePrefix}seeded'])!,
+      allowedPages: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}allowed_pages']),
     );
   }
 
@@ -6638,14 +6652,39 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
 
   /// True for the rows the v6 migration seeded. Informational only.
   final bool seeded;
+
+  /// The page-visibility whitelist (schema v7): a JSON array of page paths,
+  /// or SQL NULL for "this role sees every page".
+  ///
+  /// Written by `encodeAllowedPagesColumn` and read by
+  /// `decodeAllowedPagesColumn`. **NULL and `'[]'` are different claims** —
+  /// NULL is no whitelist, `'[]'` is a whitelist naming nothing, i.e. block
+  /// all — so this column is nullable rather than defaulting to an empty
+  /// array. Every row carried over from v6 gets NULL and therefore behaves
+  /// exactly as it did before the column existed.
+  ///
+  /// Authorization data, which is why it lives here rather than beside the
+  /// pages in `page_editor_data`: that preference is classified `configure`,
+  /// and anybody who can edit a page must not be able to re-scope who sees
+  /// which pages. See `docs/page-visibility-whitelist-design.md` §1a.
+  ///
+  /// Keep it small, for the same reason [groups] says so: the backend config
+  /// watcher fires on preference writes and `pg_notify` has an 8000-byte cap.
+  final String? allowedPages;
   const AppRoleData(
-      {required this.name, required this.groups, required this.seeded});
+      {required this.name,
+      required this.groups,
+      required this.seeded,
+      this.allowedPages});
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
     map['name'] = Variable<String>(name);
     map['groups'] = Variable<String>(groups);
     map['seeded'] = Variable<bool>(seeded);
+    if (!nullToAbsent || allowedPages != null) {
+      map['allowed_pages'] = Variable<String>(allowedPages);
+    }
     return map;
   }
 
@@ -6654,6 +6693,9 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
       name: Value(name),
       groups: Value(groups),
       seeded: Value(seeded),
+      allowedPages: allowedPages == null && nullToAbsent
+          ? const Value.absent()
+          : Value(allowedPages),
     );
   }
 
@@ -6664,6 +6706,7 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
       name: serializer.fromJson<String>(json['name']),
       groups: serializer.fromJson<String>(json['groups']),
       seeded: serializer.fromJson<bool>(json['seeded']),
+      allowedPages: serializer.fromJson<String?>(json['allowedPages']),
     );
   }
   @override
@@ -6673,20 +6716,30 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
       'name': serializer.toJson<String>(name),
       'groups': serializer.toJson<String>(groups),
       'seeded': serializer.toJson<bool>(seeded),
+      'allowedPages': serializer.toJson<String?>(allowedPages),
     };
   }
 
-  AppRoleData copyWith({String? name, String? groups, bool? seeded}) =>
+  AppRoleData copyWith(
+          {String? name,
+          String? groups,
+          bool? seeded,
+          Value<String?> allowedPages = const Value.absent()}) =>
       AppRoleData(
         name: name ?? this.name,
         groups: groups ?? this.groups,
         seeded: seeded ?? this.seeded,
+        allowedPages:
+            allowedPages.present ? allowedPages.value : this.allowedPages,
       );
   AppRoleData copyWithCompanion(AppRoleCompanion data) {
     return AppRoleData(
       name: data.name.present ? data.name.value : this.name,
       groups: data.groups.present ? data.groups.value : this.groups,
       seeded: data.seeded.present ? data.seeded.value : this.seeded,
+      allowedPages: data.allowedPages.present
+          ? data.allowedPages.value
+          : this.allowedPages,
     );
   }
 
@@ -6695,37 +6748,42 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
     return (StringBuffer('AppRoleData(')
           ..write('name: $name, ')
           ..write('groups: $groups, ')
-          ..write('seeded: $seeded')
+          ..write('seeded: $seeded, ')
+          ..write('allowedPages: $allowedPages')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(name, groups, seeded);
+  int get hashCode => Object.hash(name, groups, seeded, allowedPages);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is AppRoleData &&
           other.name == this.name &&
           other.groups == this.groups &&
-          other.seeded == this.seeded);
+          other.seeded == this.seeded &&
+          other.allowedPages == this.allowedPages);
 }
 
 class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
   final Value<String> name;
   final Value<String> groups;
   final Value<bool> seeded;
+  final Value<String?> allowedPages;
   final Value<int> rowid;
   const AppRoleCompanion({
     this.name = const Value.absent(),
     this.groups = const Value.absent(),
     this.seeded = const Value.absent(),
+    this.allowedPages = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   AppRoleCompanion.insert({
     required String name,
     required String groups,
     this.seeded = const Value.absent(),
+    this.allowedPages = const Value.absent(),
     this.rowid = const Value.absent(),
   })  : name = Value(name),
         groups = Value(groups);
@@ -6733,12 +6791,14 @@ class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
     Expression<String>? name,
     Expression<String>? groups,
     Expression<bool>? seeded,
+    Expression<String>? allowedPages,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
       if (name != null) 'name': name,
       if (groups != null) 'groups': groups,
       if (seeded != null) 'seeded': seeded,
+      if (allowedPages != null) 'allowed_pages': allowedPages,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -6747,11 +6807,13 @@ class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
       {Value<String>? name,
       Value<String>? groups,
       Value<bool>? seeded,
+      Value<String?>? allowedPages,
       Value<int>? rowid}) {
     return AppRoleCompanion(
       name: name ?? this.name,
       groups: groups ?? this.groups,
       seeded: seeded ?? this.seeded,
+      allowedPages: allowedPages ?? this.allowedPages,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -6768,6 +6830,9 @@ class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
     if (seeded.present) {
       map['seeded'] = Variable<bool>(seeded.value);
     }
+    if (allowedPages.present) {
+      map['allowed_pages'] = Variable<String>(allowedPages.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -6780,6 +6845,7 @@ class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
           ..write('name: $name, ')
           ..write('groups: $groups, ')
           ..write('seeded: $seeded, ')
+          ..write('allowedPages: $allowedPages, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -6837,6 +6903,12 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
       type: DriftSqlType.bool,
       requiredDuringInsert: false,
       defaultValue: const Constant(false));
+  static const VerificationMeta _allowedPagesMeta =
+      const VerificationMeta('allowedPages');
+  @override
+  late final GeneratedColumn<String> allowedPages = GeneratedColumn<String>(
+      'allowed_pages', aliasedName, true,
+      type: DriftSqlType.string, requiredDuringInsert: false);
   @override
   List<GeneratedColumn> get $columns => [
         username,
@@ -6845,7 +6917,8 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
         salt,
         createdAt,
         lastLoginAt,
-        stationAccount
+        stationAccount,
+        allowedPages
       ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -6901,6 +6974,12 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
           stationAccount.isAcceptableOrUnknown(
               data['station_account']!, _stationAccountMeta));
     }
+    if (data.containsKey('allowed_pages')) {
+      context.handle(
+          _allowedPagesMeta,
+          allowedPages.isAcceptableOrUnknown(
+              data['allowed_pages']!, _allowedPagesMeta));
+    }
     return context;
   }
 
@@ -6924,6 +7003,8 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
           .read(DriftSqlType.dateTime, data['${effectivePrefix}last_login_at']),
       stationAccount: attachedDatabase.typeMapping
           .read(DriftSqlType.bool, data['${effectivePrefix}station_account'])!,
+      allowedPages: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}allowed_pages']),
     );
   }
 
@@ -6952,14 +7033,30 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
   final DateTime createdAt;
   final DateTime? lastLoginAt;
 
-  /// Schema v8: a station account's sessions never expire.
+  /// A station account's sessions never expire.
   ///
   /// The panel-PC flag — the freezer display signs in once as its area
   /// account and lives signed in. On the USER rather than the station so a
   /// human signing in on the same panel keeps the inactivity window. The
   /// default is false: every account is a person until somebody says
-  /// otherwise, and the v8 migration backfills existing rows the same way.
+  /// otherwise, which is also what an account carried over from v5 gets.
   final bool stationAccount;
+
+  /// This account's personal page whitelist (schema v7), or NULL to follow
+  /// whatever [AppRole.allowedPages] says.
+  ///
+  /// Three states, and the null one is the subtle one: **NULL means inherit
+  /// the role**, not "sees every page". Every account carried over from v6
+  /// lands on NULL, and if that meant unrestricted then the upgrade would mint
+  /// a personal exemption for every existing account — the first role
+  /// whitelist anybody configured would govern nobody who already existed.
+  /// `effectiveAllowedPages` is where that rule is written down.
+  ///
+  /// A non-null value **replaces** the role's whitelist rather than
+  /// intersecting or unioning with it, so both directions of exception are
+  /// expressible. It can widen what this account *sees*; it can never widen
+  /// what this account may *do*, because the group gate is ANDed on top.
+  final String? allowedPages;
   const AppUserData(
       {required this.username,
       required this.roleName,
@@ -6967,7 +7064,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       required this.salt,
       required this.createdAt,
       this.lastLoginAt,
-      required this.stationAccount});
+      required this.stationAccount,
+      this.allowedPages});
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
@@ -6980,6 +7078,9 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       map['last_login_at'] = Variable<DateTime>(lastLoginAt);
     }
     map['station_account'] = Variable<bool>(stationAccount);
+    if (!nullToAbsent || allowedPages != null) {
+      map['allowed_pages'] = Variable<String>(allowedPages);
+    }
     return map;
   }
 
@@ -6994,6 +7095,9 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           ? const Value.absent()
           : Value(lastLoginAt),
       stationAccount: Value(stationAccount),
+      allowedPages: allowedPages == null && nullToAbsent
+          ? const Value.absent()
+          : Value(allowedPages),
     );
   }
 
@@ -7008,6 +7112,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
       lastLoginAt: serializer.fromJson<DateTime?>(json['lastLoginAt']),
       stationAccount: serializer.fromJson<bool>(json['stationAccount']),
+      allowedPages: serializer.fromJson<String?>(json['allowedPages']),
     );
   }
   @override
@@ -7021,6 +7126,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       'createdAt': serializer.toJson<DateTime>(createdAt),
       'lastLoginAt': serializer.toJson<DateTime?>(lastLoginAt),
       'stationAccount': serializer.toJson<bool>(stationAccount),
+      'allowedPages': serializer.toJson<String?>(allowedPages),
     };
   }
 
@@ -7031,7 +7137,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           String? salt,
           DateTime? createdAt,
           Value<DateTime?> lastLoginAt = const Value.absent(),
-          bool? stationAccount}) =>
+          bool? stationAccount,
+          Value<String?> allowedPages = const Value.absent()}) =>
       AppUserData(
         username: username ?? this.username,
         roleName: roleName ?? this.roleName,
@@ -7040,6 +7147,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
         createdAt: createdAt ?? this.createdAt,
         lastLoginAt: lastLoginAt.present ? lastLoginAt.value : this.lastLoginAt,
         stationAccount: stationAccount ?? this.stationAccount,
+        allowedPages:
+            allowedPages.present ? allowedPages.value : this.allowedPages,
       );
   AppUserData copyWithCompanion(AppUserCompanion data) {
     return AppUserData(
@@ -7055,6 +7164,9 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       stationAccount: data.stationAccount.present
           ? data.stationAccount.value
           : this.stationAccount,
+      allowedPages: data.allowedPages.present
+          ? data.allowedPages.value
+          : this.allowedPages,
     );
   }
 
@@ -7067,14 +7179,15 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           ..write('salt: $salt, ')
           ..write('createdAt: $createdAt, ')
           ..write('lastLoginAt: $lastLoginAt, ')
-          ..write('stationAccount: $stationAccount')
+          ..write('stationAccount: $stationAccount, ')
+          ..write('allowedPages: $allowedPages')
           ..write(')'))
         .toString();
   }
 
   @override
   int get hashCode => Object.hash(username, roleName, passwordHash, salt,
-      createdAt, lastLoginAt, stationAccount);
+      createdAt, lastLoginAt, stationAccount, allowedPages);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -7085,7 +7198,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           other.salt == this.salt &&
           other.createdAt == this.createdAt &&
           other.lastLoginAt == this.lastLoginAt &&
-          other.stationAccount == this.stationAccount);
+          other.stationAccount == this.stationAccount &&
+          other.allowedPages == this.allowedPages);
 }
 
 class AppUserCompanion extends UpdateCompanion<AppUserData> {
@@ -7096,6 +7210,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
   final Value<DateTime> createdAt;
   final Value<DateTime?> lastLoginAt;
   final Value<bool> stationAccount;
+  final Value<String?> allowedPages;
   final Value<int> rowid;
   const AppUserCompanion({
     this.username = const Value.absent(),
@@ -7105,6 +7220,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     this.createdAt = const Value.absent(),
     this.lastLoginAt = const Value.absent(),
     this.stationAccount = const Value.absent(),
+    this.allowedPages = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   AppUserCompanion.insert({
@@ -7115,6 +7231,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     required DateTime createdAt,
     this.lastLoginAt = const Value.absent(),
     this.stationAccount = const Value.absent(),
+    this.allowedPages = const Value.absent(),
     this.rowid = const Value.absent(),
   })  : username = Value(username),
         roleName = Value(roleName),
@@ -7129,6 +7246,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     Expression<DateTime>? createdAt,
     Expression<DateTime>? lastLoginAt,
     Expression<bool>? stationAccount,
+    Expression<String>? allowedPages,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -7139,6 +7257,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
       if (createdAt != null) 'created_at': createdAt,
       if (lastLoginAt != null) 'last_login_at': lastLoginAt,
       if (stationAccount != null) 'station_account': stationAccount,
+      if (allowedPages != null) 'allowed_pages': allowedPages,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -7151,6 +7270,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
       Value<DateTime>? createdAt,
       Value<DateTime?>? lastLoginAt,
       Value<bool>? stationAccount,
+      Value<String?>? allowedPages,
       Value<int>? rowid}) {
     return AppUserCompanion(
       username: username ?? this.username,
@@ -7160,6 +7280,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
       createdAt: createdAt ?? this.createdAt,
       lastLoginAt: lastLoginAt ?? this.lastLoginAt,
       stationAccount: stationAccount ?? this.stationAccount,
+      allowedPages: allowedPages ?? this.allowedPages,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -7188,6 +7309,9 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     if (stationAccount.present) {
       map['station_account'] = Variable<bool>(stationAccount.value);
     }
+    if (allowedPages.present) {
+      map['allowed_pages'] = Variable<String>(allowedPages.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -7204,6 +7328,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
           ..write('createdAt: $createdAt, ')
           ..write('lastLoginAt: $lastLoginAt, ')
           ..write('stationAccount: $stationAccount, ')
+          ..write('allowedPages: $allowedPages, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -13827,12 +13952,14 @@ typedef $$AppRoleTableCreateCompanionBuilder = AppRoleCompanion Function({
   required String name,
   required String groups,
   Value<bool> seeded,
+  Value<String?> allowedPages,
   Value<int> rowid,
 });
 typedef $$AppRoleTableUpdateCompanionBuilder = AppRoleCompanion Function({
   Value<String> name,
   Value<String> groups,
   Value<bool> seeded,
+  Value<String?> allowedPages,
   Value<int> rowid,
 });
 
@@ -13873,6 +14000,9 @@ class $$AppRoleTableFilterComposer
   ColumnFilters<bool> get seeded => $composableBuilder(
       column: $table.seeded, builder: (column) => ColumnFilters(column));
 
+  ColumnFilters<String> get allowedPages => $composableBuilder(
+      column: $table.allowedPages, builder: (column) => ColumnFilters(column));
+
   Expression<bool> appUserRefs(
       Expression<bool> Function($$AppUserTableFilterComposer f) f) {
     final $$AppUserTableFilterComposer composer = $composerBuilder(
@@ -13912,6 +14042,10 @@ class $$AppRoleTableOrderingComposer
 
   ColumnOrderings<bool> get seeded => $composableBuilder(
       column: $table.seeded, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get allowedPages => $composableBuilder(
+      column: $table.allowedPages,
+      builder: (column) => ColumnOrderings(column));
 }
 
 class $$AppRoleTableAnnotationComposer
@@ -13931,6 +14065,9 @@ class $$AppRoleTableAnnotationComposer
 
   GeneratedColumn<bool> get seeded =>
       $composableBuilder(column: $table.seeded, builder: (column) => column);
+
+  GeneratedColumn<String> get allowedPages => $composableBuilder(
+      column: $table.allowedPages, builder: (column) => column);
 
   Expression<T> appUserRefs<T extends Object>(
       Expression<T> Function($$AppUserTableAnnotationComposer a) f) {
@@ -13980,24 +14117,28 @@ class $$AppRoleTableTableManager extends RootTableManager<
             Value<String> name = const Value.absent(),
             Value<String> groups = const Value.absent(),
             Value<bool> seeded = const Value.absent(),
+            Value<String?> allowedPages = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppRoleCompanion(
             name: name,
             groups: groups,
             seeded: seeded,
+            allowedPages: allowedPages,
             rowid: rowid,
           ),
           createCompanionCallback: ({
             required String name,
             required String groups,
             Value<bool> seeded = const Value.absent(),
+            Value<String?> allowedPages = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppRoleCompanion.insert(
             name: name,
             groups: groups,
             seeded: seeded,
+            allowedPages: allowedPages,
             rowid: rowid,
           ),
           withReferenceMapper: (p0) => p0
@@ -14050,6 +14191,7 @@ typedef $$AppUserTableCreateCompanionBuilder = AppUserCompanion Function({
   required DateTime createdAt,
   Value<DateTime?> lastLoginAt,
   Value<bool> stationAccount,
+  Value<String?> allowedPages,
   Value<int> rowid,
 });
 typedef $$AppUserTableUpdateCompanionBuilder = AppUserCompanion Function({
@@ -14060,6 +14202,7 @@ typedef $$AppUserTableUpdateCompanionBuilder = AppUserCompanion Function({
   Value<DateTime> createdAt,
   Value<DateTime?> lastLoginAt,
   Value<bool> stationAccount,
+  Value<String?> allowedPages,
   Value<int> rowid,
 });
 
@@ -14109,6 +14252,9 @@ class $$AppUserTableFilterComposer
   ColumnFilters<bool> get stationAccount => $composableBuilder(
       column: $table.stationAccount,
       builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get allowedPages => $composableBuilder(
+      column: $table.allowedPages, builder: (column) => ColumnFilters(column));
 
   $$AppRoleTableFilterComposer get roleName {
     final $$AppRoleTableFilterComposer composer = $composerBuilder(
@@ -14160,6 +14306,10 @@ class $$AppUserTableOrderingComposer
       column: $table.stationAccount,
       builder: (column) => ColumnOrderings(column));
 
+  ColumnOrderings<String> get allowedPages => $composableBuilder(
+      column: $table.allowedPages,
+      builder: (column) => ColumnOrderings(column));
+
   $$AppRoleTableOrderingComposer get roleName {
     final $$AppRoleTableOrderingComposer composer = $composerBuilder(
         composer: this,
@@ -14207,6 +14357,9 @@ class $$AppUserTableAnnotationComposer
 
   GeneratedColumn<bool> get stationAccount => $composableBuilder(
       column: $table.stationAccount, builder: (column) => column);
+
+  GeneratedColumn<String> get allowedPages => $composableBuilder(
+      column: $table.allowedPages, builder: (column) => column);
 
   $$AppRoleTableAnnotationComposer get roleName {
     final $$AppRoleTableAnnotationComposer composer = $composerBuilder(
@@ -14259,6 +14412,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             Value<DateTime> createdAt = const Value.absent(),
             Value<DateTime?> lastLoginAt = const Value.absent(),
             Value<bool> stationAccount = const Value.absent(),
+            Value<String?> allowedPages = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppUserCompanion(
@@ -14269,6 +14423,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             createdAt: createdAt,
             lastLoginAt: lastLoginAt,
             stationAccount: stationAccount,
+            allowedPages: allowedPages,
             rowid: rowid,
           ),
           createCompanionCallback: ({
@@ -14279,6 +14434,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             required DateTime createdAt,
             Value<DateTime?> lastLoginAt = const Value.absent(),
             Value<bool> stationAccount = const Value.absent(),
+            Value<String?> allowedPages = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppUserCompanion.insert(
@@ -14289,6 +14445,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             createdAt: createdAt,
             lastLoginAt: lastLoginAt,
             stationAccount: stationAccount,
+            allowedPages: allowedPages,
             rowid: rowid,
           ),
           withReferenceMapper: (p0) => p0

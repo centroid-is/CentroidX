@@ -368,6 +368,16 @@ system will not object. A grep in the existing workflow is enough.
 | Process tags | **Access templates** bound per key — see §7b. No asset config change at all. | unrestricted |
 | Config keys | Pattern match on the preference key in `AccessPolicy` — see the corrected table below | `administer` |
 | Routes | Optional `AccessGroup` on `RouteRegistry.registerRoute()` | `operate` |
+| Pages | A per-role and per-account **page whitelist** — see [page-visibility-whitelist-design.md](page-visibility-whitelist-design.md) | no whitelist (every page) |
+
+The Pages row is a later addition and composes with Routes rather than
+replacing it: the group a page needs is still asked first, and the whitelist
+can only narrow the answer. It fails **closed** — a stored path matching no
+page matches nothing, and an unreadable column denies — because an entry that
+failed open would show the page the whitelist exists to hide. The same note
+records the change it made to enforcement: page-manager routes now carry a
+gate of their own (`PageAccessGate`), which closes the deep-link hole this
+spec's §6 warns about in general terms.
 
 Tags fail **open** (an unbound key is unrestricted); config keys fail **closed**
 (anything unrecognised needs `administer`). That asymmetry is intentional: a
