@@ -256,10 +256,35 @@ const String kAccessUserSetPasswordConfirmLabel = 'Set password';
 /// to point them — but there is deliberately no must-change-at-next-login flag
 /// to set, for the same reason there is no length floor and no expiry: this
 /// screen has no password policy, and a forced change is one.
+///
+/// **Two sentences, because the promise is not true of every row.** A station
+/// account is not offered the account menu and `changeOwnPassword` refuses it,
+/// so telling an administrator resetting `freezer` that "the person can change
+/// it themselves" would send them to a control that does not exist for that
+/// account — and the administrator resetting a panel account is precisely the
+/// person who must not be told that. [kAccessUserSetPasswordNoteFor] picks.
 const String kAccessUserSetPasswordNote =
     'The new password works immediately and the old one stops working. The '
     'account is not signed out and is not asked to change it again — but the '
     'person can change it themselves from the app bar once signed in.';
+
+/// The same note for a station account, with the self-service half replaced by
+/// what is true instead.
+///
+/// It names this screen as the way it changes, because it is the only one: a
+/// panel account's password is commissioning material, shared across every
+/// panel committed to it, and there is nobody whose "own" password it is.
+const String kAccessUserSetPasswordStationNote =
+    'The new password works immediately and the old one stops working. The '
+    'account is not signed out. This is a station account, so it is not '
+    'offered the app bar\'s change-password menu — this screen is where its '
+    'password changes.';
+
+/// Which of the two notes a row gets.
+String kAccessUserSetPasswordNoteFor({required bool stationAccount}) =>
+    stationAccount
+        ? kAccessUserSetPasswordStationNote
+        : kAccessUserSetPasswordNote;
 
 /// The username field was blank. First of the three checks.
 const String kAccessUserBlankUsernameNote = 'Enter a username.';
@@ -847,6 +872,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
       builder: (_) => _SetPasswordDialog(
         username: user.username,
         store: widget.store,
+        stationAccount: user.stationAccount,
       ),
     );
     if (changed != true || !mounted) return;
@@ -1415,10 +1441,19 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
 /// confirming action is disabled for the duration of the derivation rather than
 /// for lack of a permission.
 class _SetPasswordDialog extends StatefulWidget {
-  const _SetPasswordDialog({required this.username, required this.store});
+  const _SetPasswordDialog({
+    required this.username,
+    required this.store,
+    required this.stationAccount,
+  });
 
   final String username;
   final AccessAdminStore store;
+
+  /// Whether this row is a panel account. Only the note varies on it — the
+  /// write is identical, because an administrator resetting a station account
+  /// is exactly as legitimate as resetting anybody else's.
+  final bool stationAccount;
 
   @override
   State<_SetPasswordDialog> createState() => _SetPasswordDialogState();
@@ -1494,7 +1529,11 @@ class _SetPasswordDialogState extends State<_SetPasswordDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _note(context, kAccessUserSetPasswordNote),
+          _note(
+            context,
+            kAccessUserSetPasswordNoteFor(
+                stationAccount: widget.stationAccount),
+          ),
           const SizedBox(height: 12),
           TextField(
             key: kAccessUserPasswordFieldKey,

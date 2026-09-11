@@ -713,25 +713,26 @@ class AccessSessionController extends _$AccessSessionController {
     // password to change — OIDC, one day — simply does not implement it, and
     // this returns `unavailable` instead of throwing behind an affordance that
     // should not have been offered. `access_status_action.dart` asks the same
-    // question before offering it, so in practice this is the second answer to
-    // a question already answered.
+    // question before offering the menu, so in practice this is the second
+    // answer to a question already answered — and on the day the answer turns
+    // to "no", neither site needs editing.
     //
     // This also absorbs the no-database case without a separate branch: the
     // provider yields null when no Postgres is configured and during the boot
-    // window, and null is not a `PasswordSelfService`. Both are the same
-    // normal state `accessRepositoryProvider` documents, and both deserve the
-    // same answer.
+    // window, and null is not a `PasswordSelfService`. Both are the same normal
+    // state `accessRepositoryProvider` documents, and both deserve the same
+    // answer.
     //
-    // The cast is not redundant with the test above it, and cannot throw.
-    // `PasswordSelfService` is not a subtype of `AuthProvider` — the two are
-    // deliberately unrelated interfaces — and Dart only promotes a variable to
-    // a subtype of its declared type. So the `is!` test narrows nothing, and
-    // the cast is what gives the call a receiver. It is guarded by the line
-    // directly above it.
-    if (resolved is! PasswordSelfService) {
+    // An if-case rather than `is!` plus a cast. `PasswordSelfService` is not a
+    // subtype of `AuthProvider` — the two are deliberately unrelated
+    // interfaces — so an `is!` test would narrow nothing and the call would
+    // still need an `as` behind it. The pattern binds the capability directly.
+    final PasswordSelfService auth;
+    if (resolved case final PasswordSelfService capable) {
+      auth = capable;
+    } else {
       return AccessPasswordChangeResult.unavailable;
     }
-    final auth = resolved as PasswordSelfService;
 
     final PasswordChangeResult outcome;
     try {
@@ -931,10 +932,18 @@ class AccessSessionController extends _$AccessSessionController {
   ///
   /// Every call site writes exactly one row: login, login.failed, logout, the
   /// two timeout paths, and the two outcomes of [changeOwnPassword] that were
-  /// judged rather than prevented. There are deliberately branches that write
-  /// none — `signIn`'s `unavailable` path and both of
-  /// [changeOwnPassword]'s — each commented where it happens, and all for the
-  /// same reason: an outage is not somebody doing something.
+  /// judged rather than prevented.
+  ///
+  /// There are deliberately more branches that write none than branches that
+  /// write. `signIn`'s `unavailable` path; and four of [changeOwnPassword]'s —
+  /// nobody signed in, the station-account refusal, no provider or one without
+  /// the capability, and the throw. Each is commented where it happens, and all
+  /// for one reason: a row here asserts that somebody did something, and an
+  /// outage, a guard and a request that was never made are none of them.
+  ///
+  /// [changeOwnPassword]'s `accountMissing` writes none either, for a different
+  /// reason worth keeping separate — the account being gone is not a password
+  /// event, and the session drop it triggers deliberately records nothing.
   ///
   /// **No `reason` is prompted for on any auth event.** The free-text reason
   /// prompt belongs to `configure` and `administer` *writes* and arrives in

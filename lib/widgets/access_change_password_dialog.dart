@@ -110,10 +110,13 @@ const String kAccessChangePasswordWrongCurrentNote =
 const String kAccessChangePasswordNotSignedInNote =
     'Your session ended. Sign in again to change your password.';
 
-/// Everything else: no database, the provider threw, the account was deleted
-/// mid-session, or a station account reached a screen it is not offered.
+/// Everything else: no database or a provider with no password to change, the
+/// provider threw, or a station account reached a screen it is not offered.
 ///
-/// One sentence for four causes, and it points at the log rather than guessing
+/// An account deleted mid-session is **not** on this list. That one ends the
+/// session, so it says so — see [kAccessChangePasswordNotSignedInNote].
+///
+/// One sentence for three causes, and it points at the log rather than guessing
 /// between them — the same shape, and very nearly the same words,
 /// `access_users_section.dart` uses for a write that failed. It must stay a
 /// fixed string: the caught error is exactly the thing that must not be

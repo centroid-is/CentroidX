@@ -2,13 +2,14 @@
 /// affordance, the sign-in dialog, and the account menu and change-password
 /// form that hang off the badge.
 ///
-/// Eleven images, one per state that looks different:
+/// Twelve images, one per state that looks different:
 ///
 /// * `access_appbar_anonymous.png`   — nobody signed in: the Sign in icon, no name.
 /// * `access_appbar_elevated.png`    — signed in: who, their role, and Sign out, in orange.
 /// * `access_account_menu.png`       — the same badge with its account menu open.
 /// * `access_change_password_dialog.png` — the self-service form at rest.
 /// * `access_change_password_dialog_dark.png` — the same form on the dark scheme.
+/// * `access_change_password_dialog_dark_error.png` — and its refusal, where a colour carries meaning.
 /// * `access_change_password_dialog_error.png` — the same form after a wrong current password.
 /// * `access_sign_in_dialog.png`     — the form at rest, honesty subtitle showing.
 /// * `access_sign_in_dialog_error.png` — the same form after a rejected password.
@@ -135,6 +136,20 @@ class _FixedSession extends AccessSessionController {
 
   @override
   void poke() {}
+}
+
+/// Stands in for `LocalAuthProvider` where only the capability matters.
+class _CapableAuth implements AuthProvider, PasswordSelfService {
+  @override
+  Future<AuthenticatedUser?> authenticate(String u, String p) async => null;
+
+  @override
+  Future<PasswordChangeResult> changePassword({
+    required String username,
+    required String currentPassword,
+    required String newPassword,
+  }) async =>
+      PasswordChangeResult.ok;
 }
 
 /// The fictional panel account in the commitment image. Not a real account.
@@ -284,6 +299,10 @@ Widget _accountMenuHost({required ThemeData theme}) {
   return ProviderScope(
     overrides: [
       accessSessionProvider.overrideWith(() => _FixedSession(_elevated())),
+      // The badge only offers the menu when the resolved provider can change a
+      // password. Without this the image would capture a bar with no menu on
+      // it, and the golden would silently document the wrong thing.
+      authProviderProvider.overrideWith((ref) async => _CapableAuth()),
     ],
     child: RepaintBoundary(
       key: _accountMenuBoundary,
@@ -561,6 +580,36 @@ void main() {
       await expectLater(
         find.byKey(_changePasswordBoundary),
         matchesGoldenFile('goldens/access_change_password_dialog_dark.png'),
+      );
+    });
+
+    testWidgets('change-password dialog, dark, after a wrong current password',
+        (tester) async {
+      // The error row is `colorScheme.error` on the dark surface — the token
+      // family the solarized-outline lesson came from, and the one state of
+      // this form where a colour carries meaning rather than decoration.
+      _sizeView(tester, const Size(700, 700));
+      await tester.pumpWidget(_changePasswordHost(
+        theme: dark,
+        result: AccessPasswordChangeResult.wrongCurrentPassword,
+      ));
+      await _settle(tester);
+
+      await tester.enterText(
+          find.byKey(kAccessChangePasswordCurrentKey), 'not-my-password');
+      await tester.enterText(
+          find.byKey(kAccessChangePasswordNewKey), 'battery staple');
+      await tester.enterText(
+          find.byKey(kAccessChangePasswordConfirmKey), 'battery staple');
+      await tester.tap(find.byKey(kAccessChangePasswordSubmitKey));
+      await _settle(tester);
+
+      expect(find.text(kAccessChangePasswordWrongCurrentNote), findsOneWidget);
+
+      await expectLater(
+        find.byKey(_changePasswordBoundary),
+        matchesGoldenFile(
+            'goldens/access_change_password_dialog_dark_error.png'),
       );
     });
 

@@ -1152,6 +1152,7 @@ void main() {
     test('the right current password changes it and writes one row', () async {
       final h = await signedIn();
       final before = h.session!;
+      final storedBefore = await h.storedPayload();
       h.sink.rows.clear();
 
       final result = await h.notifier.changeOwnPassword(
@@ -1184,6 +1185,10 @@ void main() {
       expect(after.expiresAt, before.expiresAt,
           reason: 'a password change is not activity — the countdown must not '
               'be extended by it');
+      expect(await h.storedPayload(), storedBefore,
+          reason: 'and nothing re-persisted it — the in-memory expiry being '
+              'unchanged would not catch a `_persist` that rewrote the same '
+              'value with a new clock');
     });
 
     test('neither password reaches the audit row', () async {
@@ -1345,6 +1350,28 @@ void main() {
       // a different event from the one on screen.
       final h = await signedIn();
       h.sink.rows.clear();
+
+      // The row is inserted and then deleted, rather than never existing.
+      // `refreshGroupsFromRoles` drops on `repo.user()` returning null, so a
+      // test with no row at all passes for the wrong reason — it would keep
+      // passing if the delete stopped happening. Written straight through
+      // drift because `AccessRepository.deleteUser` refuses to remove the last
+      // account holding `users`, and this test is about what becomes of a
+      // session whose row is gone, not about how it went.
+      await h.db.into(h.db.appUser).insert(AppUserCompanion.insert(
+            username: 'jon',
+            roleName: 'Engineering',
+            // Never verified: the auth provider is faked, and nothing on this
+            // path reads the stored form.
+            passwordHash: 'unused-by-this-test',
+            salt: 'unused-by-this-test',
+            createdAt: DateTime.utc(2026, 1, 1),
+          ));
+      expect(await h.repository.user('jon'), isNotNull);
+
+      await (h.db.delete(h.db.appUser)
+            ..where((t) => t.username.equals('jon')))
+          .go();
       h.auth.vanished.add('jon');
 
       final result = await h.notifier.changeOwnPassword(

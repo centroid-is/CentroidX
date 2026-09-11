@@ -55,6 +55,29 @@ class _FakeSessionController extends AccessSessionController {
   }
 }
 
+/// An auth provider that can change a password — what `LocalAuthProvider` is.
+///
+/// The badge only offers the account menu when the resolved provider implements
+/// [PasswordSelfService], so a test that wants the menu has to supply one.
+class _CapableAuthProvider implements AuthProvider, PasswordSelfService {
+  @override
+  Future<AuthenticatedUser?> authenticate(String u, String p) async => null;
+
+  @override
+  Future<PasswordChangeResult> changePassword({
+    required String username,
+    required String currentPassword,
+    required String newPassword,
+  }) async =>
+      PasswordChangeResult.ok;
+}
+
+/// An auth provider with no password to change — the shape OIDC will have.
+class _IncapableAuthProvider implements AuthProvider {
+  @override
+  Future<AuthenticatedUser?> authenticate(String u, String p) async => null;
+}
+
 /// A one-route Beamer shell around `BaseScaffold`, the same shape
 /// `base_scaffold_backarrow_test.dart` uses -- `BaseScaffold` reads
 /// `context.currentBeamLocation`, so it needs a router above it.
@@ -110,6 +133,10 @@ Widget _host({
   AccessSignInOpener? openSignIn,
   AccessChangePasswordOpener? openChangePassword,
   ThemeData? theme,
+  /// What `authProviderProvider` resolves to. Null means "no database", which
+  /// is also what every test predating the account menu gets — the badge fails
+  /// closed and shows no menu, which is why none of them needed changing.
+  AuthProvider? auth,
 }) {
   // Each opener is only passed when the test supplies one, so the
   // "the default opener is the real dialog" assertions still see the
@@ -129,7 +156,10 @@ Widget _host({
   }
 
   return ProviderScope(
-    overrides: [accessSessionProvider.overrideWith(() => controller)],
+    overrides: [
+      accessSessionProvider.overrideWith(() => controller),
+      authProviderProvider.overrideWith((ref) async => auth),
+    ],
     child: MaterialApp(
       theme: theme,
       home: Scaffold(
@@ -414,6 +444,7 @@ void main() {
         controller: _FakeSessionController(session: _elevated()),
         openSignIn: (_, __) async {},
         openChangePassword: (_, __) async => opened++,
+        auth: _CapableAuthProvider(),
       ));
       await tester.pumpAndSettle();
 
@@ -439,6 +470,7 @@ void main() {
         ),
         openSignIn: (_, __) async {},
         openChangePassword: (_, __) async {},
+        auth: _CapableAuthProvider(),
       ));
       await tester.pumpAndSettle();
 
@@ -455,6 +487,7 @@ void main() {
         controller: controller,
         openSignIn: (_, __) async {},
         openChangePassword: (_, __) async {},
+        auth: _CapableAuthProvider(),
       ));
       await tester.pumpAndSettle();
 
@@ -475,6 +508,7 @@ void main() {
         ),
         openSignIn: (_, __) async {},
         openChangePassword: (_, __) async {},
+        auth: _CapableAuthProvider(),
       ));
       await tester.pumpAndSettle();
 
@@ -487,6 +521,41 @@ void main() {
     testWidgets('is absent when nobody is signed in', (tester) async {
       await tester.pumpWidget(_host(
         controller: _FakeSessionController(session: _anonymous),
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async {},
+        auth: _CapableAuthProvider(),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessAccountMenuKey), findsNothing);
+    });
+
+    testWidgets('is absent when the provider has no password to change',
+        (tester) async {
+      // The OIDC shape, and the test that makes `PasswordSelfService`'s promise
+      // enforceable rather than merely stated. Without this the menu would keep
+      // rendering on the day a provider without the capability arrives, and
+      // every use of it would dead-end in a sentence about a log.
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(session: _elevated()),
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async {},
+        auth: _IncapableAuthProvider(),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessAccountMenuKey), findsNothing);
+      expect(find.text('anna'), findsOneWidget,
+          reason: 'the identity is still shown — only the menu is withheld');
+      expect(find.byTooltip('Sign out'), findsOneWidget,
+          reason: 'and signing out is unaffected by any of this');
+    });
+
+    testWidgets('is absent when there is no database at all', (tester) async {
+      // Fails closed. A missing menu is a non-event; a menu that cannot work is
+      // a support call.
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(session: _elevated()),
         openSignIn: (_, __) async {},
         openChangePassword: (_, __) async {},
       ));

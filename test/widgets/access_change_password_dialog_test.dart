@@ -8,6 +8,7 @@
 library;
 
 import 'dart:async';
+import 'dart:io' show File;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -352,6 +353,38 @@ void main() {
       controller.gate!.complete();
       await tester.pumpAndSettle();
     });
+  });
+
+  test('no source on this path interpolates a password into a string', () {
+    // The same cheap scan `local_auth_provider_test.dart` runs over its own
+    // source, extended to the two other files that hold a password in a named
+    // variable. A behavioural test can only cover the branches it happens to
+    // walk; this one fails on a log line added to a branch nothing exercises.
+    //
+    // Both files log today — the controller on its throw path, and neither on
+    // any path that has a plaintext in hand — so this is guarding the next edit
+    // rather than the current one.
+    for (final path in [
+      'lib/providers/access.dart',
+      'lib/widgets/access_change_password_dialog.dart',
+    ]) {
+      final source = File(path).readAsStringSync();
+      expect(source, isNotEmpty,
+          reason: 'the file must actually be found, or this passes vacuously');
+
+      for (final forbidden in [
+        r'$currentPassword',
+        r'${currentPassword',
+        r'$newPassword',
+        r'${newPassword',
+        r'$password',
+        r'${password',
+      ]) {
+        expect(source, isNot(contains(forbidden)),
+            reason: '$path interpolates a credential into a string; it '
+                'outlives the change it came from');
+      }
+    }
   });
 
   testWidgets('cancel submits nothing', (tester) async {

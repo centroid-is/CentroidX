@@ -156,7 +156,14 @@ class _ElevatedBadge extends ConsumerWidget {
           // itself as an administrator doing so. `changeOwnPassword` refuses
           // these sessions as well; this is the half that stops the affordance
           // being visible in the first place.
-          if (user.stationAccount)
+          //
+          // **Nor when the signed-in identity has no password here to change.**
+          // See [_canChangePassword]: this is the half of the capability
+          // interface's promise that lives at the offering site, and without it
+          // the promise is only half kept — the menu would still render under
+          // an OIDC provider and every use of it would dead-end in a sentence
+          // about a log.
+          if (user.stationAccount || !_canChangePassword(ref))
             Flexible(child: identity)
           else
             Flexible(
@@ -192,6 +199,27 @@ class _ElevatedBadge extends ConsumerWidget {
     );
   }
 }
+
+/// Whether the signed-in identity has a password this application can change.
+///
+/// The offering half of `PasswordSelfService`'s promise. The interface exists
+/// so that a second implementation — OIDC, one day — needs no call site edited;
+/// that promise is only kept if the site that *offers* the affordance asks the
+/// same question the controller does. Without this, an OIDC station would show
+/// a menu whose one entry dead-ends in "the log has the details", and the
+/// interface would have bought nothing.
+///
+/// **Fails closed, and quietly.** Anything other than a resolved provider that
+/// implements the capability — still loading, errored, no database, a provider
+/// without it — means no menu. A missing menu is a non-event; a menu that
+/// cannot work is a support call. The app bar rebuilds on every navigation, so
+/// this must not flicker a control in and out: the provider is `keepAlive`, so
+/// it resolves once per app run and stays resolved.
+///
+/// Watched rather than read, so the menu appears if the answer changes — which
+/// it does exactly once, when the database connects during boot.
+bool _canChangePassword(WidgetRef ref) =>
+    ref.watch(authProviderProvider).valueOrNull is PasswordSelfService;
 
 /// The account menu's entries.
 ///
