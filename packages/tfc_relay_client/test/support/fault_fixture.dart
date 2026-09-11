@@ -73,8 +73,8 @@ import 'package:tfc_relay_server/tfc_relay_server.dart';
 import 'package:tfc_stateman_contract/channel_harness.dart';
 import 'package:tfc_stateman_contract/faults.dart';
 import 'package:tfc_stateman_contract/testing/fake_state_man.dart';
-import 'package:tfc_stateman_contract/tfc_stateman_contract.dart'
-    show budgetScale;
+import 'package:tfc_stateman_contract/testing/runner_budget.dart'
+    show budgetScale, useRunnerBudgets;
 
 import 'frame_seam.dart';
 import 'permissive_resolver.dart';
@@ -217,6 +217,9 @@ Future<FaultFixture> faultFixture({
   Duration? connectTimeout,
   RelayErrorHandler? onError,
 }) async {
+  // See `until` below: the runner scale arms itself rather than waiting for
+  // a per-file call.
+  useRunnerBudgets();
   if (tls != null && corrupt != null) {
     throw ArgumentError('a TLS leg has no frame seam, so `corrupt:` would be '
         'silently ignored: the panel dials through its own pinned client and '
@@ -319,6 +322,15 @@ Future<void> until(
   bool Function() done, {
   Duration budget = const Duration(seconds: 5),
 }) async {
+  // **Self-arming, rather than relying on each file to call it.** The scale is
+  // a property of the machine, not of the case, and wiring
+  // `useRunnerBudgets()` into every `main()` means every new fault file is one
+  // forgotten line away from running the unscaled numbers on a hosted agent.
+  // That is not hypothetical: `half_open_gate_test` timed out at a bare 5000 ms
+  // — no "x 4.0 for this runner" in the message — because it was never wired,
+  // while its neighbours were. Idempotent, so calling it per wait costs
+  // nothing.
+  useRunnerBudgets();
   final allowed = budget * budgetScale;
   final deadline = DateTime.now().add(allowed);
   while (!done()) {
