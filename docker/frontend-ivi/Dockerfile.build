@@ -161,20 +161,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     libnspr4 \
     libasound2t64 \
-    libatk1.0-0t64 \
-    libatk-bridge2.0-0t64 \
-    libatspi2.0-0t64 \
-    libcups2t64 \
-    libxcomposite1 \
-    libxdamage1 \
     && rm -rf /var/lib/apt/lists/*
 
-# libnss3 through libxdamage1 are CEF's runtime dependencies, for the Web page
-# asset's browser. CEF itself is not installed here — the plugin's CMake
-# downloads it at build time and it ships in the bundle — but libcef.so names
-# every one of them in its DT_NEEDED, so missing any one stops the whole app
-# from loading, not just the browser. The ldd check at the end of this stage
-# fails the build instead.
+# The last three are CEF's runtime dependencies, for the Web page asset's
+# browser. CEF itself is not installed here — the plugin's CMake downloads it
+# at build time and it ships in the bundle — but it will not start without
+# them. They are not the full set (docker/frontend/Dockerfile has the rest):
+# the webview plugin here is the Linux-desktop GTK build, and ivi-homescreen
+# has no GTK plugin registrar, so it is never loaded on this image and the Web
+# page asset shows its placeholder regardless.
 
 # Hacks for amplify secure storage (arch-agnostic)
 RUN LIBDIR=$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
@@ -204,10 +199,12 @@ RUN ln -s bundle/lib lib
 RUN chown -R centroid:centroid $APP_DIR \
     && chmod +x ./homescreen
 
-# Fail the build, not the station: every library the binary or the bundle
-# names must resolve in this image. A bundled plugin that pulls in a new
-# system library otherwise ships an image that cannot start.
-RUN missing=$(for f in ./homescreen bundle/lib/*.so; do \
+# Fail the build, not the station: every library homescreen names must
+# resolve in this image. Only homescreen, not bundle/lib/*.so as
+# docker/frontend/Dockerfile checks: the bundle's plugins are the GTK desktop
+# builds, linked against libflutter_linux_gtk.so (stripped above) and GTK, and
+# homescreen never loads them, so checking them would demand GTK for nothing.
+RUN missing=$(for f in ./homescreen; do \
         LD_LIBRARY_PATH=./bundle/lib ldd "$f" | grep 'not found' | sed "s|^[[:space:]]*|$f: |"; \
     done); \
     if [ -n "$missing" ]; then \
