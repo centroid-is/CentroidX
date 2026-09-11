@@ -1177,7 +1177,7 @@ List<String> timerOffenders(Directory directory) {
       if (_isDocComment(line)) continue;
       if (line.contains('Timer.periodic(') &&
           !periodicTimerAllowList.containsKey(name)) {
-        offenders.add('${file.path}:${i + 1}: $line');
+        offenders.add('${_fwd(file.path)}:${i + 1}: $line');
       }
       // `Timer.run` is exempt and does not match this spelling anyway: it
       // cannot outlive the turn it was scheduled in and it holds nothing open
@@ -1188,9 +1188,9 @@ List<String> timerOffenders(Directory directory) {
       // anybody decided it should exist.
       if (line.contains('Timer(')) {
         if (!line.contains('_timer')) {
-          offenders.add('${file.path}:${i + 1}: $line');
+          offenders.add('${_fwd(file.path)}:${i + 1}: $line');
         } else if (!retainedTimerAllowList.containsKey(name)) {
-          offenders.add('${file.path}:${i + 1}: $line');
+          offenders.add('${_fwd(file.path)}:${i + 1}: $line');
         }
       }
     }
@@ -1228,7 +1228,7 @@ List<String> mentionsOf(Directory directory, String needle) {
   for (final file in dartFilesIn(directory)) {
     final lines = file.readAsLinesSync();
     for (var i = 0; i < lines.length; i++) {
-      if (lines[i].contains(needle)) hits.add('${file.path}:${i + 1}');
+      if (lines[i].contains(needle)) hits.add('${_fwd(file.path)}:${i + 1}');
     }
   }
   return hits;
@@ -1257,7 +1257,7 @@ List<String> upstreamAwaitSites(Directory directory) {
       if (_isAnyComment(line)) continue;
       if (!line.contains('await')) continue;
       if (!_upstreamCall.hasMatch(line)) continue;
-      sites.add('${file.path}:${i + 1}: ${line.trim()}');
+      sites.add('${_fwd(file.path)}:${i + 1}: ${line.trim()}');
     }
   }
   return sites;
@@ -1294,7 +1294,7 @@ List<String> unawaitedUpstreamSites(Directory directory) {
       if (_isAnyComment(line)) continue;
       if (line.contains('await')) continue;
       if (!_upstreamCall.hasMatch(line)) continue;
-      sites.add('${file.path}:${i + 1}: ${line.trim()}');
+      sites.add('${_fwd(file.path)}:${i + 1}: ${line.trim()}');
     }
   }
   return sites;
@@ -1310,7 +1310,7 @@ List<String> upstreamWriteSites(Directory directory) {
       final line = lines[i];
       if (_isAnyComment(line)) continue;
       if (!line.contains('.write(')) continue;
-      sites.add('${file.path}:${i + 1}: ${line.trim()}');
+      sites.add('${_fwd(file.path)}:${i + 1}: ${line.trim()}');
     }
   }
   return sites;
@@ -1335,7 +1335,7 @@ List<String> unimplementedMemberSites(Directory directory) {
       final line = lines[i];
       if (_isAnyComment(line)) continue;
       if (!line.contains('UnimplementedError(')) continue;
-      sites.add('${file.path}:${i + 1}: ${line.trim()}');
+      sites.add('${_fwd(file.path)}:${i + 1}: ${line.trim()}');
     }
   }
   return sites;
@@ -1385,7 +1385,7 @@ List<String> harnessLeverSites(Directory directory) {
       final line = lines[i];
       if (_isAnyComment(line)) continue;
       if (!declaration.hasMatch(line)) continue;
-      sites.add('${file.path}:${i + 1}: ${line.trim()}');
+      sites.add('${_fwd(file.path)}:${i + 1}: ${line.trim()}');
     }
   }
   return sites;
@@ -1400,7 +1400,7 @@ List<String> forwarderSites(Directory directory) {
       final line = lines[i];
       if (_isAnyComment(line)) continue;
       if (!line.contains(forwarderSpelling)) continue;
-      sites.add('${file.path}:${i + 1}: ${line.trim()}');
+      sites.add('${_fwd(file.path)}:${i + 1}: ${line.trim()}');
     }
   }
   return sites;
@@ -1432,7 +1432,7 @@ List<String> seamImportFiles(Directory directory) {
               (statement.contains('tfc_dart/tfc_dart.dart') &&
                   !statement.contains(' show '));
       if (reachesSeam) {
-        files.add('${file.path}:${i + 1}');
+        files.add('${_fwd(file.path)}:${i + 1}');
         break;
       }
     }
@@ -1455,7 +1455,7 @@ List<String> writeCallSitesUnder(Directory directory) {
       if (_isAnyComment(line)) continue;
       if (line.contains('insertTimeseriesData') ||
           line.contains('registerRetentionPolicy')) {
-        sites.add('${file.path}:${i + 1}');
+        sites.add('${_fwd(file.path)}:${i + 1}');
       }
     }
   }
@@ -1492,7 +1492,7 @@ List<String> unhandledFireAndForgetSites(Directory directory) {
       if (_isAnyComment(line)) continue;
       if (!line.contains('unawaited(')) continue;
       if (line.contains('.catchError(') || line.contains('onError')) continue;
-      sites.add('${file.path}:${i + 1}: ${line.trim()}');
+      sites.add('${_fwd(file.path)}:${i + 1}: ${line.trim()}');
     }
   }
   return sites;
@@ -1546,7 +1546,7 @@ List<String> soakDeterminismOffenders(Directory directory) {
     final name = file.uri.pathSegments.last;
     if (soakDeterminismAllowList.containsKey(name)) continue;
     for (final hit in nonDeterministicLines(file.readAsStringSync())) {
-      offenders.add('${file.path}:${hit.replaceFirst('line ', '')}');
+      offenders.add('${_fwd(file.path)}:${hit.replaceFirst('line ', '')}');
     }
   }
   return offenders;
@@ -1567,8 +1567,24 @@ List<String> literalPortLines(Directory directory) {
       if (_isAnyComment(line)) continue;
       if (!line.toLowerCase().contains('port')) continue;
       if (!_portLiteral.hasMatch(line)) continue;
-      hits.add('${file.path}:${i + 1}: ${line.trim()}');
+      hits.add('${_fwd(file.path)}:${i + 1}: ${line.trim()}');
     }
   }
   return hits;
 }
+
+/// [path] with Windows separators normalised to `/`.
+///
+/// Every sweep in this file mints a location as `<path>:<line>` and several
+/// then compare it against a `/`-spelled literal — `declaredSeamFiles` holds
+/// `collect/timescale_sink.dart`, for instance. On Windows `File.path` comes
+/// back with backslashes, so those compares match nothing and the sweep reports
+/// an empty set as though the seam had vanished: measured on
+/// `relay-packages-test (windows-latest)` as "collect/timescale_sink.dart is
+/// missing or duplicated" against a file that was present and imported exactly
+/// once.
+///
+/// Normalised at the **mint**, not at each compare, so a sweep added later
+/// inherits it. Only one of these sites had failed; the rest are the same
+/// literal compare waiting for a different sweep to be unlucky.
+String _fwd(String path) => path.replaceAll(r'\', '/');

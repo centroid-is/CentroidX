@@ -134,11 +134,24 @@ void main() {
           environment: environment,
         );
 
+    /// What the child process actually said, for a failure that would otherwise
+    /// report only a number.
+    ///
+    /// `exitCode` is asserted before `stderr`, so when the exit code is wrong
+    /// the output never reaches the report — which is how
+    /// `relay-packages-test (windows-latest)` produced three failures reading
+    /// "Expected: <64> Actual: <1>" and nothing else. 1 is not a code this
+    /// program sets: `bin/relay_gateway.dart:79` sets 64 and returns, so a 1
+    /// means it died before reaching that line, and *why* is in the output.
+    String said(ProcessResult r) => 'exit=${r.exitCode}\n'
+        '--- stderr ---\n${r.stderr}\n--- stdout ---\n${r.stdout}';
+
     test('started bare, it says on stderr that it is not the deployable',
         () async {
       final result = await runGateway(const <String>[]);
 
-      expect(result.exitCode, 64, reason: 'no --config is EX_USAGE');
+      expect(result.exitCode, 64,
+          reason: 'no --config is EX_USAGE. ${said(result)}');
       expect(result.stderr as String, contains(bannerMark));
     }, timeout: const Timeout(Duration(minutes: 3)));
 
@@ -147,7 +160,7 @@ void main() {
 
       expect(result.exitCode, 64,
           reason: '--harness must not be pushed into a different exit path; '
-              'still no --config, so still EX_USAGE');
+              'still no --config, so still EX_USAGE. ${said(result)}');
       expect(result.stderr as String, isNot(contains(bannerMark)));
     }, timeout: const Timeout(Duration(minutes: 3)));
 
@@ -157,7 +170,7 @@ void main() {
         environment: const <String, String>{'CENTROIDX_RELAY_HARNESS': '1'},
       );
 
-      expect(result.exitCode, 64);
+      expect(result.exitCode, 64, reason: said(result));
       expect(result.stderr as String, isNot(contains(bannerMark)));
     }, timeout: const Timeout(Duration(minutes: 3)));
   });
