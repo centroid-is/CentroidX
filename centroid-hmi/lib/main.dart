@@ -68,6 +68,7 @@ import 'package:tfc/core/secure_storage/macos.dart';
 import 'package:tfc/core/secure_storage/other.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import 'package:tfc/widgets/access_session_ended_notice.dart';
 import 'package:tfc/widgets/proposal_banner.dart';
 import 'package:tfc/widgets/onscreen_keyboard.dart';
 import 'package:tfc/marionette/route_logger.dart';
@@ -751,7 +752,12 @@ RoutesLocationBuilder createLocationBuilder(
       routes['/'] = (context, state, args) => BeamPage(
             key: const ValueKey('/'),
             title: 'Home',
-            child: RouteRedirect(target: fallback),
+            // `from` is what stops this stub -- which Beamer keeps mounted
+            // underneath every page on a station with no Home -- from beaming
+            // away from whatever the operator is looking at. See
+            // `route_redirect.dart`: this is the widget that painted the panel
+            // white for the whole of a signed-out session.
+            child: RouteRedirect(from: '/', target: fallback),
           );
     }
     // Refuse direct navigation to pages that exist but are not reachable
@@ -761,7 +767,7 @@ RoutesLocationBuilder createLocationBuilder(
       routes[path] = (context, state, args) => BeamPage(
             key: ValueKey('redirect-$path'),
             title: 'Redirecting',
-            child: RouteRedirect(target: fallback),
+            child: RouteRedirect(from: path, target: fallback),
           );
     }
   }
@@ -933,6 +939,12 @@ class MyApp extends ConsumerWidget {
                 children: [
                   navigatorChild!, // existing HMI content
                   const ProposalBanner(),
+                  // Says the session ended, once, from the one place in the
+                  // app that is mounted exactly once. A session ending is
+                  // otherwise entirely silent, and a silently signed-out panel
+                  // is indistinguishable from a hung one to the person
+                  // standing at it. Renders nothing until it fires.
+                  const AccessSessionEndedNotice(),
                   if (kKnowledgeEnabled && drawingVisible) const DrawingOverlay(),
                   if (kChatEnabled && chatEnabled && chatVisible) const ChatOverlay(),
                   // Chat FAB and MCP indicator — hidden when a nav
