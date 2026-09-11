@@ -30,6 +30,7 @@ import 'package:tfc_dart/core/database_drift.dart' as drift;
 import 'package:tfc_dart/core/relay/backend_data_services.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' show StateManApi;
+import 'package:tfc_stateman_contract/testing/runner_budget.dart';
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart'
     show StateManDataHarness, runDataServicesContract;
 
@@ -539,6 +540,8 @@ String _stripDartComments(String source) => source
     .join('\n');
 
 void main() {
+  useRunnerBudgets();
+
   group('BackendTimeseries', () {
     test('a recorded series comes back in order, mapped onto the wire type',
         () async {

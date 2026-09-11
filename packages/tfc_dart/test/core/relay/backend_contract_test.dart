@@ -55,8 +55,11 @@ import 'package:test/test.dart';
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
 
 import '../../support/harnessed_backend_state_man.dart';
+import 'package:tfc_stateman_contract/testing/runner_budget.dart';
 
 void main() {
+  useRunnerBudgets();
+
   var ran = 0;
 
   final before = contractCasesRegistered;

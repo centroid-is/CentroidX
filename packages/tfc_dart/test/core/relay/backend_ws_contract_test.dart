@@ -86,8 +86,11 @@ import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
 
 import '../../support/backend_ws_harness.dart';
 import '../../support/harnessed_backend_state_man.dart';
+import 'package:tfc_stateman_contract/testing/runner_budget.dart';
 
 void main() {
+  useRunnerBudgets();
+
   // The real on-disk `Database` and `Preferences` `composeBackendRelay`
   // requires, once per file. Registered before anything else in `main` so the
   // ordering is visible rather than inferred.

@@ -60,6 +60,7 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
+import 'package:tfc_stateman_contract/testing/runner_budget.dart';
 
 /// The five flags `contractCases` is a function of, as one leg declares them.
 typedef LegFlags = ({
@@ -207,6 +208,8 @@ Set<String> _casesFor(LegFlags flags) => contractCases(
     ).keys.toSet();
 
 void main() {
+  useRunnerBudgets();
+
   late Map<String, Set<String>> judged;
   late Map<String, LegFlags> flags;
 
