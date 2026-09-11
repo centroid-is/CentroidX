@@ -1,9 +1,9 @@
-#ifndef RUNNER_SESSION_REBUILD_GATE_H_
-#define RUNNER_SESSION_REBUILD_GATE_H_
+#ifndef RUNNER_ENGINE_REBUILD_GATE_H_
+#define RUNNER_ENGINE_REBUILD_GATE_H_
 
 #include <string>
 
-// Decides WHEN an RDP session change may rebuild the Flutter engine.
+// Decides WHEN the Flutter engine may be rebuilt, whatever asked for it.
 //
 // # The bug this exists to fix
 //
@@ -37,6 +37,33 @@
 // rebuild runs after startup finishes -- and the debounce is kept alongside it
 // for the duplicates it was always good at.
 //
+// # Why every trigger goes through here, not just session changes
+//
+// The first version of this guarded the session-change path only. On
+// 2026-09-11 08:28 a station woke from sleep and the SAME fault arrived by the
+// other road:
+//
+//   08:28:30.579 RECOVERING in place: no frames presented ... attempt 3
+//   08:28:30.580 [engine] epoch 3 STOPPING after 20.3 s, reason=gpu loss
+//                recovery; Dart main() was NEVER seen, app startup was STILL
+//                IN FLIGHT -- this teardown interrupts it.
+//
+// The GPU watchdog'"'"'s own recovery path tore down a startup that had not even
+// reached main(), and did it three times, backing its tick off 5 s -> 10 s ->
+// 20 s while the app never started. It did not self-recover; an operator had
+// to restart it.
+//
+// A guard that covers one of two callers of DestroyController is not a guard.
+// Every rebuild request -- session change, GPU-loss recovery, power resume --
+// is asked here, and the reason string is the only thing that differs.
+//
+// Note what this gate does NOT fix about that recurrence: it stops the
+// teardown, but the watchdog would go on declaring a fresh loss every couple
+// of ticks while the rebuild sat queued, and `recovery_attempts_` would climb
+// to the escalation limit. The other half of the fix lives in
+// GpuWatchdog::SetJudgeable -- an engine that has not started cannot be
+// judged by the absence of frames.
+//
 // "Startup finished" is reported by the app itself over the runner channel
 // (see dart_liveness.h and lib/core/runner_liveness.dart) once its OPC UA
 // clients have settled, because that is the work the interrupted teardown
@@ -49,7 +76,7 @@
 
 namespace tfc {
 
-class SessionRebuildGate {
+class EngineRebuildGate {
  public:
   struct Config {
     // One disconnect or reconnect emits several WM_WTSSESSION_CHANGE messages
@@ -92,8 +119,8 @@ class SessionRebuildGate {
     bool startup_timed_out = false;
   };
 
-  SessionRebuildGate() : SessionRebuildGate(Config()) {}
-  explicit SessionRebuildGate(Config config) : config_(config) {}
+  EngineRebuildGate() : EngineRebuildGate(Config()) {}
+  explicit EngineRebuildGate(Config config) : config_(config) {}
 
   // A new engine has been created; its startup is in flight from here.
   void EngineCreated(unsigned long long now_ms);
@@ -130,8 +157,8 @@ class SessionRebuildGate {
 
 // The log line for a decision, or an empty string when there is nothing to
 // say. Beside the state machine so the wording is testable.
-std::string DescribeSessionRebuild(const SessionRebuildGate::Decision& decision);
+std::string DescribeEngineRebuild(const EngineRebuildGate::Decision& decision);
 
 }  // namespace tfc
 
-#endif  // RUNNER_SESSION_REBUILD_GATE_H_
+#endif  // RUNNER_ENGINE_REBUILD_GATE_H_
