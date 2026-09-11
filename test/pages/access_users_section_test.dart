@@ -361,6 +361,14 @@ void main() {
     return UncontrolledProviderScope(
       container: c,
       child: MaterialApp(
+        // No splash, for an environment reason rather than a design one: the
+        // Material 3 ink sparkle loads `shaders/ink_sparkle.frag`, and on this
+        // SDK the bundled asset carries Vulkan stages only — so a tap whose
+        // ripple actually animates throws "does not contain appropriate
+        // runtime stage data for current backend (SkSL)" and fails the test
+        // for something no screen here is about. Nothing in this file asserts
+        // a ripple; the goldens live in `access_admin_golden_test.dart`.
+        theme: ThemeData(splashFactory: NoSplash.splashFactory),
         home: Scaffold(
           body: AccessDeniedPrompt(
             child: SingleChildScrollView(

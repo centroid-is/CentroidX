@@ -164,9 +164,14 @@ class _Harness {
 const String _kStation = 'test-panel';
 
 /// [timeout] is what an account with **no** stored minutes resolves to: the
-/// default. An account that has a value of its own gets that many
-/// *milliseconds* instead — the countdown runs on real timers, and a window
-/// measured in minutes cannot be waited out in a test.
+/// default. An account that has a value of its own gets ten milliseconds per
+/// stored minute — the countdown runs on real timers, and a window measured in
+/// minutes cannot be waited out in a test.
+///
+/// Ten, rather than one, because the stored number still has to be a legal
+/// one: `AccessRepository.setInactivityTimeout` refuses anything outside
+/// 1..480, so the scale decides how long a test window can be. At ×10 the
+/// ceiling is a comfortable 4.8s instead of 480ms.
 Future<_Harness> _harness({
   Duration timeout = const Duration(minutes: 15),
   Map<String, ({String password, String roleName})>? users,
@@ -202,7 +207,7 @@ Future<_Harness> _harness({
       auditSinkProvider.overrideWith((ref) async => sink),
       stationNameProvider.overrideWithValue(_kStation),
       inactivityTimeoutResolverProvider.overrideWithValue((minutes) =>
-          minutes == null ? timeout : Duration(milliseconds: minutes)),
+          minutes == null ? timeout : Duration(milliseconds: minutes * 10)),
     ],
   );
   addTearDown(container.dispose);
@@ -402,10 +407,11 @@ void main() {
         await h.notifier.signIn('jon', 'correct horse');
       });
 
-      expect(h.session!.inactivityTimeout, const Duration(milliseconds: 20));
-      expect(h.session!.expiresAt, pinned.add(const Duration(milliseconds: 20)),
-          reason: 'the harness maps stored minutes to milliseconds; what is '
-              'asserted is that the row decided the window, not the default');
+      expect(h.session!.inactivityTimeout, const Duration(milliseconds: 200));
+      expect(h.session!.expiresAt, pinned.add(const Duration(milliseconds: 200)),
+          reason: 'the harness scales stored minutes into milliseconds; what '
+              'is asserted is that the row decided the window, not the '
+              'default');
     });
 
     test('an account with no value of its own gets the default', () async {
@@ -434,10 +440,10 @@ void main() {
       await h.repository.setInactivityTimeout('sigga', 90);
 
       await h.notifier.signIn('jon', 'correct horse');
-      expect(h.session!.inactivityTimeout, const Duration(milliseconds: 20));
+      expect(h.session!.inactivityTimeout, const Duration(milliseconds: 200));
 
       await h.notifier.signIn('sigga', 'hunter2');
-      expect(h.session!.inactivityTimeout, const Duration(milliseconds: 90),
+      expect(h.session!.inactivityTimeout, const Duration(milliseconds: 900),
           reason: 'signing in over another session must take the new '
               'account\'s window, not keep the previous one\'s');
     });
@@ -1209,7 +1215,7 @@ void main() {
       await h.repository.setInactivityTimeout('jon', 100);
       await h.notifier.refreshGroupsFromRoles();
 
-      expect(h.session!.inactivityTimeout, const Duration(milliseconds: 100));
+      expect(h.session!.inactivityTimeout, const Duration(milliseconds: 1000));
       expect(h.session!.expiresAt!.isBefore(before), isTrue,
           reason: 'an administrator narrowing the window must narrow the '
               'session already running under it');
@@ -1224,7 +1230,7 @@ void main() {
       final h = await signedInJon(minutes: 200);
       final before = h.session!.expiresAt!;
 
-      await h.repository.setInactivityTimeout('jon', 5000);
+      await h.repository.setInactivityTimeout('jon', 400);
       await h.notifier.refreshGroupsFromRoles();
 
       expect(h.session!.expiresAt, before,
@@ -1266,7 +1272,7 @@ void main() {
       final session = await restart.settle();
 
       expect(session.isElevated, isTrue);
-      expect(session.inactivityTimeout, const Duration(milliseconds: 50));
+      expect(session.inactivityTimeout, const Duration(milliseconds: 500));
       expect(
           session.expiresAt!
               .isBefore(clock.now().add(const Duration(minutes: 1))),
