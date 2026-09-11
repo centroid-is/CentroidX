@@ -1257,7 +1257,8 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   /// Parses proposal JSON and merges it into [_temporaryPages].
   ///
   /// For `_proposal_type: 'page'`: expects keys like `title`, `key`, `assets`,
-  /// `mirroring_disabled`. Creates or replaces a page entry.
+  /// `mirroring_disabled`, `zoom_pan_disabled`. Creates or replaces a page
+  /// entry.
   ///
   /// For `_proposal_type: 'asset'`: expects `key`, `title`, `children` (list
   /// of asset JSON). Adds assets to the page identified by `key`, or creates
@@ -1561,6 +1562,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     final title = proposal['title'] as String? ?? 'AI Proposal';
     final key = proposal['key'] as String? ?? '/$title';
     final mirroringDisabled = proposal['mirroring_disabled'] as bool? ?? false;
+    final zoomPanDisabled = proposal['zoom_pan_disabled'] as bool? ?? false;
 
     List<Asset> assets = [];
     if (proposal['assets'] is List) {
@@ -1614,6 +1616,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       menuItem: MenuItem(label: title, path: key, icon: Icons.auto_awesome),
       assets: assets,
       mirroringDisabled: mirroringDisabled,
+      zoomPanDisabled: zoomPanDisabled,
     );
 
     _temporaryPages[key] = page;
@@ -5133,6 +5136,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
                     children: updatedChildren,
                   ),
                   mirroringDisabled: updatedPage.mirroringDisabled,
+                  zoomPanDisabled: updatedPage.zoomPanDisabled,
                   navigationPriority: updatedPage.navigationPriority,
                   published: updatedPage.published,
                 );
