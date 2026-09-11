@@ -57,6 +57,13 @@ AlarmActive _active(String uid, {AlarmLevel level = AlarmLevel.error}) {
 class _FakeAlarmMan implements AlarmMan {
   final subject = BehaviorSubject<Set<AlarmActive>>.seeded({});
 
+  /// Auto-navigation off. This file is about the *pulse*; with the jump on,
+  /// the alarm it fires would beam the scaffold to /baader/overview and the
+  /// badge under test would be the one page the bar deliberately leaves
+  /// quiet. See `test/widgets/alarm_auto_navigation_end_to_end_test.dart`.
+  @override
+  final AlarmManConfig config = AlarmManConfig(alarms: []);
+
   @override
   Stream<Set<AlarmActive>> activeAlarms() => subject.stream;
 

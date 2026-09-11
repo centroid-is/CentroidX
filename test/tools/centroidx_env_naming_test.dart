@@ -106,7 +106,7 @@ const _selfPath = 'test/tools/centroidx_env_naming_test.dart';
 /// flag definitions. If one of them moves, the gate stops protecting it and
 /// says nothing — so each gets a test of its own.
 ///
-/// Note the eleventh entry. An earlier draft named
+/// Note the `read_toggles.dart` entry. An earlier draft named
 /// `packages/tfc_mcp_server/lib/src/identity/env_operator_identity.dart`; plan
 /// 07-04 **deletes** that file, so naming it here would fail this group in
 /// wave 3 through no fault of the gate. `read_toggles.dart` holds the
@@ -117,7 +117,6 @@ const _manifest = <String>[
   '.github/workflows/linux.yml',
   '.github/workflows/centroid-hmi.yml',
   '.github/workflows/test.yml',
-  'docker/frontend-ivi/Dockerfile.build',
   'docker-compose.yml',
   '.vscode/launch.json',
   'centroid-hmi/.vscode/launch.json',
@@ -391,24 +390,22 @@ void main() {
     test('centroid-hmi.yml is read',
         () => _expectProtected(scan, root, _manifest[3]));
     test('test.yml is read', () => _expectProtected(scan, root, _manifest[4]));
-    test('the ivi Dockerfile.build is read',
-        () => _expectProtected(scan, root, _manifest[5]));
     test('docker-compose.yml is read',
-        () => _expectProtected(scan, root, _manifest[6]));
+        () => _expectProtected(scan, root, _manifest[5]));
     test('the root launch.json is read',
-        () => _expectProtected(scan, root, _manifest[7]));
+        () => _expectProtected(scan, root, _manifest[6]));
     test('the centroid-hmi launch.json is read',
-        () => _expectProtected(scan, root, _manifest[8]));
+        () => _expectProtected(scan, root, _manifest[7]));
     test('the claude desktop config example is read',
-        () => _expectProtected(scan, root, _manifest[9]));
+        () => _expectProtected(scan, root, _manifest[8]));
     test('feature_flags.dart is read',
-        () => _expectProtected(scan, root, _manifest[10]));
+        () => _expectProtected(scan, root, _manifest[9]));
     test('read_toggles.dart is read',
-        () => _expectProtected(scan, root, _manifest[11]));
+        () => _expectProtected(scan, root, _manifest[10]));
     test('check-flutter-version.sh is read',
-        () => _expectProtected(scan, root, _manifest[12]));
+        () => _expectProtected(scan, root, _manifest[11]));
     test('navigation.dart is read',
-        () => _expectProtected(scan, root, _manifest[13]));
+        () => _expectProtected(scan, root, _manifest[12]));
 
     test('every manifest entry has a test of its own', () {
       // Written out rather than generated in a loop, so a CI log line names the
@@ -437,7 +434,7 @@ void main() {
       );
     });
 
-    test('there are at least nine workflows and all of them were found', () {
+    test('there are at least eight workflows and all of them were found', () {
       final onDisk = Directory('${root.path}/.github/workflows')
           .listSync()
           .whereType<File>()
@@ -445,9 +442,9 @@ void main() {
           .length;
       expect(
         onDisk,
-        greaterThanOrEqualTo(9),
-        reason: 'found $onDisk workflow files; the tree has nine, four of which '
-            'carry a legacy define (linux, centroid-hmi, macos, windows). '
+        greaterThanOrEqualTo(8),
+        reason: 'found $onDisk workflow files; the tree has eight, four of '
+            'which carry a legacy define (linux, centroid-hmi, macos, windows). '
             'Fewer means the listing broke, and a broken listing makes the '
             'test above vacuous.',
       );

@@ -456,6 +456,8 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
                 ],
               ),
             ),
+          const AlarmAutoNavigateSetting(),
+          const Divider(height: 1),
           Expanded(
             child: Padding(
               padding: const EdgeInsets.all(16.0),
@@ -613,6 +615,53 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The plant-wide "jump to the alarm's page" switch.
+///
+/// On this page rather than in Preferences because it is a decision about
+/// alarms, and because the roles that may edit an alarm are exactly the roles
+/// that should be making it: `alarm_man_config` is `configure` in
+/// `kPrefAccessRules`, so the switch and the alarms it sits above are guarded
+/// by one rule rather than two.
+///
+/// Which page an alarm jumps to is not set here, and deliberately has no field
+/// anywhere: it is the page an operator put an Alarm beacon on, the same fact
+/// that already decides which navigation entry pulses. See
+/// `lib/providers/alarm_auto_navigation.dart`.
+class AlarmAutoNavigateSetting extends ConsumerStatefulWidget {
+  const AlarmAutoNavigateSetting({super.key});
+
+  @override
+  ConsumerState<AlarmAutoNavigateSetting> createState() =>
+      _AlarmAutoNavigateSettingState();
+}
+
+class _AlarmAutoNavigateSettingState
+    extends ConsumerState<AlarmAutoNavigateSetting> {
+  @override
+  Widget build(BuildContext context) {
+    final alarmMan = ref.watch(alarmManProvider).valueOrNull;
+    // Nothing to switch until there is an alarm manager to switch it on, and
+    // a tile that renders enabled-but-inert would be worse than no tile: the
+    // operator would flip it and it would not stick.
+    if (alarmMan == null) return const SizedBox.shrink();
+
+    return SwitchListTile(
+      key: const ValueKey('alarm-editor-auto-navigate'),
+      value: alarmMan.config.autoNavigate,
+      onChanged: (value) => setState(() => alarmMan.setAutoNavigate(value)),
+      secondary: const Icon(Icons.open_in_new),
+      title: const Text('Go to the alarm\'s page when it raises'),
+      subtitle: Text(
+        alarmMan.config.autoNavigate
+            ? 'The screen follows a raising alarm to the page its beacon is '
+                'on, if the signed-in user can open that page. A second alarm '
+                'only takes over if it is more severe.'
+            : 'The screen stays where it is. Navigation entries still pulse.',
       ),
     );
   }

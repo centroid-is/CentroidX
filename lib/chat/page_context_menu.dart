@@ -18,6 +18,7 @@ String buildPageContextBlock(String pagePath, AssetPage page) {
   buf.writeln('Name: ${page.menuItem.label}');
   buf.writeln('Path: $pagePath');
   buf.writeln('Mirroring disabled: ${page.mirroringDisabled}');
+  buf.writeln('Zoom and pan disabled: ${page.zoomPanDisabled}');
   buf.writeln('Assets (${page.assets.length}):');
 
   for (final asset in page.assets) {

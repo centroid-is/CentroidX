@@ -18,6 +18,7 @@ import 'package:tfc/providers/access.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/base_scaffold.dart';
 import 'package:tfc/theme.dart';
+import 'package:tfc/widgets/access_change_password_dialog.dart';
 import 'package:tfc/widgets/access_sign_in_dialog.dart';
 import 'package:tfc/widgets/access_status_action.dart';
 import 'package:tfc_access/tfc_access.dart';
@@ -54,6 +55,29 @@ class _FakeSessionController extends AccessSessionController {
   }
 }
 
+/// An auth provider that can change a password — what `LocalAuthProvider` is.
+///
+/// The badge only offers the account menu when the resolved provider implements
+/// [PasswordSelfService], so a test that wants the menu has to supply one.
+class _CapableAuthProvider implements AuthProvider, PasswordSelfService {
+  @override
+  Future<AuthenticatedUser?> authenticate(String u, String p) async => null;
+
+  @override
+  Future<PasswordChangeResult> changePassword({
+    required String username,
+    required String currentPassword,
+    required String newPassword,
+  }) async =>
+      PasswordChangeResult.ok;
+}
+
+/// An auth provider with no password to change — the shape OIDC will have.
+class _IncapableAuthProvider implements AuthProvider {
+  @override
+  Future<AuthenticatedUser?> authenticate(String u, String p) async => null;
+}
+
 /// A one-route Beamer shell around `BaseScaffold`, the same shape
 /// `base_scaffold_backarrow_test.dart` uses -- `BaseScaffold` reads
 /// `context.currentBeamLocation`, so it needs a router above it.
@@ -87,12 +111,14 @@ AccessSession _elevated({
   String username = 'anna',
   String roleName = 'Supervisor',
   String? displayName,
+  bool stationAccount = false,
 }) =>
     AccessSession(
       user: AuthenticatedUser(
         username: username,
         roleName: roleName,
         displayName: displayName,
+        stationAccount: stationAccount,
       ),
       groups: const {AccessGroup.setpoints},
       expiresAt: DateTime.now().add(const Duration(minutes: 15)),
@@ -105,10 +131,35 @@ final AccessSession _anonymous = AccessSession.anonymous(const {});
 Widget _host({
   required _FakeSessionController controller,
   AccessSignInOpener? openSignIn,
+  AccessChangePasswordOpener? openChangePassword,
   ThemeData? theme,
+  /// What `authProviderProvider` resolves to. Null means "no database", which
+  /// is also what every test predating the account menu gets — the badge fails
+  /// closed and shows no menu, which is why none of them needed changing.
+  AuthProvider? auth,
 }) {
+  // Each opener is only passed when the test supplies one, so the
+  // "the default opener is the real dialog" assertions still see the
+  // constructor's own defaults rather than a stand-in this helper injected.
+  Widget action() {
+    if (openSignIn != null && openChangePassword != null) {
+      return AccessStatusAction(
+        openSignIn: openSignIn,
+        openChangePassword: openChangePassword,
+      );
+    }
+    if (openSignIn != null) return AccessStatusAction(openSignIn: openSignIn);
+    if (openChangePassword != null) {
+      return AccessStatusAction(openChangePassword: openChangePassword);
+    }
+    return const AccessStatusAction();
+  }
+
   return ProviderScope(
-    overrides: [accessSessionProvider.overrideWith(() => controller)],
+    overrides: [
+      accessSessionProvider.overrideWith(() => controller),
+      authProviderProvider.overrideWith((ref) async => auth),
+    ],
     child: MaterialApp(
       theme: theme,
       home: Scaffold(
@@ -116,11 +167,7 @@ Widget _host({
           alignment: Alignment.topRight,
           child: Row(
             mainAxisSize: MainAxisSize.min,
-            children: [
-              openSignIn == null
-                  ? const AccessStatusAction()
-                  : AccessStatusAction(openSignIn: openSignIn),
-            ],
+            children: [action()],
           ),
         ),
       ),
@@ -386,6 +433,140 @@ void main() {
     test('the default opener is the real sign-in dialog', () {
       expect(const AccessStatusAction().openSignIn,
           same(showAccessSignInDialog));
+    });
+  });
+
+  group('the account menu', () {
+    testWidgets('a personal session can open it and change its password',
+        (tester) async {
+      var opened = 0;
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(session: _elevated()),
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async => opened++,
+        auth: _CapableAuthProvider(),
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(kAccessAccountMenuKey));
+      await tester.pumpAndSettle();
+
+      expect(find.text(kAccessAccountMenuChangePasswordLabel), findsOneWidget);
+
+      await tester.tap(find.text(kAccessAccountMenuChangePasswordLabel));
+      await tester.pumpAndSettle();
+
+      expect(opened, 1);
+    });
+
+    testWidgets('a station account is not offered it', (tester) async {
+      // A committed panel resumes its account with nobody having presented a
+      // credential, and the account is shared — so there is no "your own
+      // password" to change. It belongs to an administrator on the users
+      // screen, where it records itself as an administrator doing it.
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(
+          session: _elevated(username: 'freezer', stationAccount: true),
+        ),
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async {},
+        auth: _CapableAuthProvider(),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessAccountMenuKey), findsNothing);
+      expect(find.text('freezer'), findsOneWidget,
+          reason: 'the identity is still shown — only the menu is withheld');
+    });
+
+    testWidgets('sign-out stays one tap, menu or no menu', (tester) async {
+      // Spec §5 requires logging out to be explicit and one tap from the app
+      // bar. Folding sign-out into the menu would have made it two.
+      final controller = _FakeSessionController(session: _elevated());
+      await tester.pumpWidget(_host(
+        controller: controller,
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async {},
+        auth: _CapableAuthProvider(),
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Sign out'));
+      await tester.pumpAndSettle();
+
+      expect(controller.signOutCalls, 1);
+    });
+
+    testWidgets('costs nothing against the app-bar width budget',
+        (tester) async {
+      // The menu hangs off text that was already there, so the elevated row is
+      // no wider than it was — which is what keeps the clock and the alarm
+      // banner centred.
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(
+          session: _elevated(displayName: 'a' * 60),
+        ),
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async {},
+        auth: _CapableAuthProvider(),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.getSize(find.byType(AccessStatusAction)).width,
+        lessThanOrEqualTo(kAccessStatusActionMaxWidth),
+      );
+    });
+
+    testWidgets('is absent when nobody is signed in', (tester) async {
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(session: _anonymous),
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async {},
+        auth: _CapableAuthProvider(),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessAccountMenuKey), findsNothing);
+    });
+
+    testWidgets('is absent when the provider has no password to change',
+        (tester) async {
+      // The OIDC shape, and the test that makes `PasswordSelfService`'s promise
+      // enforceable rather than merely stated. Without this the menu would keep
+      // rendering on the day a provider without the capability arrives, and
+      // every use of it would dead-end in a sentence about a log.
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(session: _elevated()),
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async {},
+        auth: _IncapableAuthProvider(),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessAccountMenuKey), findsNothing);
+      expect(find.text('anna'), findsOneWidget,
+          reason: 'the identity is still shown — only the menu is withheld');
+      expect(find.byTooltip('Sign out'), findsOneWidget,
+          reason: 'and signing out is unaffected by any of this');
+    });
+
+    testWidgets('is absent when there is no database at all', (tester) async {
+      // Fails closed. A missing menu is a non-event; a menu that cannot work is
+      // a support call.
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(session: _elevated()),
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async {},
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessAccountMenuKey), findsNothing);
+    });
+
+    test('the default opener is the real change-password dialog', () {
+      expect(const AccessStatusAction().openChangePassword,
+          same(showAccessChangePasswordDialog));
     });
   });
 

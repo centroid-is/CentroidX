@@ -168,6 +168,7 @@ void main() {
         TargetPlatform.android,
         TargetPlatform.iOS,
         TargetPlatform.windows,
+        TargetPlatform.linux,
       ]) {
         expect(WebViewAvailability.check(isWeb: false, platform: platform),
             isTrue,
@@ -175,15 +176,11 @@ void main() {
       }
     });
 
-    test('the platforms that would need a browser we ship do not', () {
-      for (final platform in [
-        TargetPlatform.linux,
-        TargetPlatform.fuchsia,
-      ]) {
-        expect(WebViewAvailability.check(isWeb: false, platform: platform),
-            isFalse,
-            reason: '$platform would need a bundled browser engine');
-      }
+    test('a platform with no port at all does not', () {
+      expect(
+          WebViewAvailability.check(
+              isWeb: false, platform: TargetPlatform.fuchsia),
+          isFalse);
     });
 
     test('windows is the WebView2 platform, and nothing else is', () {
@@ -211,6 +208,47 @@ void main() {
               isWeb: true, platform: TargetPlatform.windows),
           isFalse,
           reason: 'a browser tab is not WebView2');
+    });
+
+    test('linux is the CEF platform, and nothing else is', () {
+      // Covers the eLinux stations too: flutter-elinux reports
+      // TargetPlatform.linux, indistinguishable from the desktop build here,
+      // and deliberately so — packages/webview_cef carries a port for each and
+      // the plugin registrant picks at build time.
+      expect(
+          WebViewAvailability.usesCef(
+              isWeb: false, platform: TargetPlatform.linux),
+          isTrue);
+      for (final platform in [
+        TargetPlatform.macOS,
+        TargetPlatform.iOS,
+        TargetPlatform.android,
+        TargetPlatform.windows,
+        TargetPlatform.fuchsia,
+      ]) {
+        expect(WebViewAvailability.usesCef(isWeb: false, platform: platform),
+            isFalse,
+            reason: '$platform has a browser it does not have to ship');
+      }
+      expect(
+          WebViewAvailability.usesCef(
+              isWeb: true, platform: TargetPlatform.linux),
+          isFalse,
+          reason: 'a browser tab is not CEF');
+    });
+
+    test('the three engines never claim the same platform', () {
+      // The factory checks WebView2 then CEF then falls through to
+      // webview_flutter, so an overlap would silently give one platform the
+      // wrong engine rather than fail.
+      for (final platform in TargetPlatform.values) {
+        final two = WebViewAvailability.usesWebView2(
+            isWeb: false, platform: platform);
+        final cef =
+            WebViewAvailability.usesCef(isWeb: false, platform: platform);
+        expect(two && cef, isFalse,
+            reason: '$platform is claimed by both WebView2 and CEF');
+      }
     });
 
     test('web is excluded even though an iframe would be trivial', () {

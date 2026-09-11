@@ -20,6 +20,14 @@ class AssetPage {
   final List<Asset> assets;
   @JsonKey(name: 'mirroring_disabled')
   bool mirroringDisabled;
+
+  /// Whether the runtime page view refuses to zoom and pan, so operators see
+  /// the whole page exactly as laid out. It stays on the canvas; the page
+  /// editor's canvas still zooms, because placing assets needs it.
+  ///
+  /// Defaults to false, including for page data written before this existed.
+  @JsonKey(name: 'zoom_pan_disabled', defaultValue: false)
+  bool zoomPanDisabled;
   @JsonKey(name: 'navigation_priority')
   int? navigationPriority;
 
@@ -43,6 +51,7 @@ class AssetPage {
       {required this.menuItem,
       required this.assets,
       required this.mirroringDisabled,
+      this.zoomPanDisabled = false,
       this.navigationPriority,
       this.published = true});
 
@@ -55,6 +64,7 @@ class AssetPage {
     MenuItem? menuItem,
     List<Asset>? assets,
     bool? mirroringDisabled,
+    bool? zoomPanDisabled,
     int? navigationPriority,
     bool? published,
   }) {
@@ -62,6 +72,7 @@ class AssetPage {
       menuItem: menuItem ?? this.menuItem,
       assets: assets ?? this.assets,
       mirroringDisabled: mirroringDisabled ?? this.mirroringDisabled,
+      zoomPanDisabled: zoomPanDisabled ?? this.zoomPanDisabled,
       navigationPriority: navigationPriority ?? this.navigationPriority,
       published: published ?? this.published,
     );
@@ -626,6 +637,7 @@ class _CreatePageWidgetState extends State<CreatePageWidget> {
   late TextEditingController _labelController;
   late IconData _selectedIcon;
   late bool _mirroringDisabled;
+  late bool _zoomPanDisabled;
   late bool _published;
 
   /// Whether an existing page's address should follow its new name.
@@ -645,6 +657,7 @@ class _CreatePageWidgetState extends State<CreatePageWidget> {
     _selectedIcon = widget.initialPage?.menuItem.icon ??
         (widget.isSection ? Icons.folder : Icons.pageview);
     _mirroringDisabled = widget.initialPage?.mirroringDisabled ?? false;
+    _zoomPanDisabled = widget.initialPage?.zoomPanDisabled ?? false;
     _published = widget.initialPage?.published ?? true;
   }
 
@@ -814,6 +827,19 @@ class _CreatePageWidgetState extends State<CreatePageWidget> {
                     }),
               ],
             ),
+            Row(
+              children: [
+                const Text('Zoom and Pan Disabled: '),
+                Switch(
+                    key: const ValueKey('page-zoom-pan-disabled'),
+                    value: _zoomPanDisabled,
+                    onChanged: (value) {
+                      setState(() {
+                        _zoomPanDisabled = value;
+                      });
+                    }),
+              ],
+            ),
           ],
           const SizedBox(height: 16),
           SwitchListTile(
@@ -863,6 +889,7 @@ class _CreatePageWidgetState extends State<CreatePageWidget> {
                     menuItem: menuItem,
                     assets: widget.initialPage?.assets ?? [],
                     mirroringDisabled: _mirroringDisabled,
+                    zoomPanDisabled: _zoomPanDisabled,
                     navigationPriority: widget.initialPage?.navigationPriority,
                     published: _published,
                   );

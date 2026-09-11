@@ -6,7 +6,7 @@ part of 'menu.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$menuTreeHash() => r'656dbcb662f24e15783d59e6ee4976575bb28f9f';
+String _$menuTreeHash() => r'7f2ff2b814506d08c08766d6d15f9776075cd6a9';
 
 /// The full menu tree: every published page and every built-in entry, composed
 /// live and session-blind.
@@ -40,7 +40,7 @@ final menuTreeProvider = Provider<List<MenuItem>>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef MenuTreeRef = ProviderRef<List<MenuItem>>;
-String _$visibleMenuHash() => r'25a054a41df623f9aeaba1bbd0132c0adb53f768';
+String _$visibleMenuHash() => r'f5e4afaeb2408fa619c93e8a23122af0b0bca550';
 
 /// [menuTreeProvider] filtered by [resolvePageAccess], for the session in
 /// force.
