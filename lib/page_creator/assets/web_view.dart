@@ -72,6 +72,21 @@
 /// configured URL afresh rather than calling `reload()`, so a tile that *did*
 /// wander — because it is interactive, or because the page redirected itself —
 /// comes home on the next tick without anyone touching it.
+///
+/// ## Following the HMI theme
+///
+/// A Grafana dashboard drawn light on a dark HMI is a white slab on the wall.
+/// [WebViewAssetConfig.themeParam] names a query parameter (`theme`, for
+/// Grafana) that the loaded address carries, set to a dark or light value for
+/// the brightness the HMI is rendering with. A theme flip re-navigates the
+/// browser; nothing else does. Off unless configured, so an existing tile
+/// loads exactly what it always loaded.
+///
+/// Every engine, the reload tick included, loads [effectiveWebViewUrl] rather
+/// than the raw [WebViewAssetConfig.url]. The editor-canvas placeholder shows
+/// only the host, which the parameter never changes. There is no web build to
+/// apply it to (see above); an `<iframe>` would take its `src` from the same
+/// function.
 library;
 
 import 'dart:async';
@@ -124,10 +139,38 @@ class WebViewAssetConfig extends BaseAsset {
   /// accidental tap on a link is unrecoverable from the floor.
   bool interactive;
 
+  /// Name of a query parameter that tells the site which theme to draw, e.g.
+  /// `theme` for Grafana. Null or empty turns the feature off, which is the
+  /// default — the configured URL is then loaded exactly as typed.
+  ///
+  /// When set, the loaded address carries `<themeParam>=<value>` for the
+  /// brightness the HMI is actually rendering, and the page is re-navigated
+  /// when the operator flips the HMI theme. See [effectiveUrl].
+  ///
+  /// Grafana honours `?theme=dark|light` on public dashboards
+  /// (`/public-dashboards/<token>`) as well as on normal ones. There is no
+  /// parameter for an arbitrary colour, so this follows brightness only.
+  ///
+  /// This and the two values below are omitted from the JSON while null, so a
+  /// tile that never used the feature saves exactly what it saved before.
+  @JsonKey(includeIfNull: false)
+  String? themeParam;
+
+  /// Value sent in [themeParam] while the HMI is dark. Null means `dark`.
+  @JsonKey(includeIfNull: false)
+  String? themeDarkValue;
+
+  /// Value sent in [themeParam] while the HMI is light. Null means `light`.
+  @JsonKey(includeIfNull: false)
+  String? themeLightValue;
+
   WebViewAssetConfig({
     this.url = '',
     this.reloadSeconds = 0,
     this.interactive = false,
+    this.themeParam,
+    this.themeDarkValue,
+    this.themeLightValue,
   }) {
     size = const RelativeSize(width: 0.25, height: 0.2);
   }
@@ -151,6 +194,18 @@ class WebViewAssetConfig extends BaseAsset {
   /// on a plant screen.
   @JsonKey(includeFromJson: false, includeToJson: false)
   bool get isConfigured => parseWebViewUrl(url) != null;
+
+  /// The address to actually load while the HMI renders with [brightness]:
+  /// [url] with the theme parameter applied, or null when [url] is not
+  /// browsable. Identical to `parseWebViewUrl(url)` while [themeParam] is
+  /// unset.
+  Uri? effectiveUrl(Brightness brightness) => effectiveWebViewUrl(
+        url,
+        brightness: brightness,
+        themeParam: themeParam,
+        darkValue: themeDarkValue,
+        lightValue: themeLightValue,
+      );
 
   // Gated like DrawingViewerConfig: a flag-off build still deserializes a
   // saved page carrying this asset, it just renders the unavailable
@@ -179,6 +234,81 @@ Uri? parseWebViewUrl(String raw) {
   if (uri.scheme != 'http' && uri.scheme != 'https') return null;
   if (uri.host.isEmpty) return null;
   return uri;
+}
+
+/// Value sent for a dark HMI when the config leaves it unset.
+const String kWebViewThemeDarkDefault = 'dark';
+
+/// Value sent for a light HMI when the config leaves it unset.
+const String kWebViewThemeLightDefault = 'light';
+
+/// [raw] as a browsable URL with the theme query parameter applied for
+/// [brightness], or null when [raw] is not browsable (see [parseWebViewUrl]).
+///
+/// [themeParam] null or blank leaves the URL untouched. [darkValue] and
+/// [lightValue] null or blank fall back to `dark` and `light`.
+///
+/// The one place a configured address becomes the address a browser is
+/// pointed at — every engine, and anything added later (an `<iframe>` on a
+/// web build would take its `src` from here), goes through it so none of them
+/// can disagree about which theme a page was asked for.
+Uri? effectiveWebViewUrl(
+  String raw, {
+  required Brightness brightness,
+  String? themeParam,
+  String? darkValue,
+  String? lightValue,
+}) {
+  final uri = parseWebViewUrl(raw);
+  if (uri == null) return null;
+  final name = themeParam?.trim() ?? '';
+  if (name.isEmpty) return uri;
+  String pick(String? configured, String fallback) {
+    final v = configured?.trim() ?? '';
+    return v.isEmpty ? fallback : v;
+  }
+
+  final value = brightness == Brightness.dark
+      ? pick(darkValue, kWebViewThemeDarkDefault)
+      : pick(lightValue, kWebViewThemeLightDefault);
+  return withQueryParameter(uri, name, value);
+}
+
+/// [uri] with query parameter [name] set to [value].
+///
+/// The first existing occurrence of [name] is replaced where it stands and any
+/// further occurrences are dropped; when there is none the pair is appended.
+/// Every other parameter is kept *verbatim* — same order, same encoding — and
+/// so is the fragment. That is why this edits the raw query string rather than
+/// round-tripping through `queryParameters`, which would re-encode (`%20`
+/// becoming `+`), and merge repeated keys like Grafana's `var-host=a&var-host=b`.
+Uri withQueryParameter(Uri uri, String name, String value) {
+  final pair =
+      '${Uri.encodeQueryComponent(name)}=${Uri.encodeQueryComponent(value)}';
+  final pieces = uri.query.isEmpty ? const <String>[] : uri.query.split('&');
+  final out = <String>[];
+  var placed = false;
+  for (final piece in pieces) {
+    final eq = piece.indexOf('=');
+    final rawKey = eq < 0 ? piece : piece.substring(0, eq);
+    String key;
+    try {
+      key = Uri.decodeQueryComponent(rawKey);
+    } catch (_) {
+      // A malformed escape (ArgumentError or FormatException, depending on
+      // the SDK) cannot be the parameter we are looking for — its name
+      // decodes cleanly — so keep it as it came.
+      key = rawKey;
+    }
+    if (key != name) {
+      out.add(piece);
+    } else if (!placed) {
+      out.add(pair);
+      placed = true;
+    }
+  }
+  if (!placed) out.add(pair);
+  return uri.replace(query: out.join('&'));
 }
 
 /// The platforms a webview is implemented for, and which engine serves them.
@@ -339,16 +469,30 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
   /// canvas and merely decline to paint it.
   bool _editing = false;
 
+  /// The brightness the HMI is rendering with, which picks the theme query
+  /// parameter's value (see [WebViewAssetConfig.themeParam]).
+  ///
+  /// Kept in a field because it can only be read from [didChangeDependencies]
+  /// — which is also exactly where a theme flip arrives — while [_start],
+  /// [didUpdateWidget] and the reload timer all need it.
+  Brightness _brightness = Brightness.light;
+
   WebViewAssetConfig get config => widget.config;
+
+  /// What the browser should be showing right now.
+  Uri? get _effectiveUrl => config.effectiveUrl(_brightness);
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _editing = AssetEditModeScope.isEditing(context);
+    _brightness = Theme.of(context).brightness;
     if (_editing) {
       _stop();
     } else if (_surface == null && !_unavailable) {
       _start();
+    } else {
+      _followTheme();
     }
     // No setState in here or in _start/_stop: both run immediately before a
     // build (didChangeDependencies and didUpdateWidget are each followed by
@@ -359,12 +503,32 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
   void didUpdateWidget(WebViewAssetView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (_editing) return;
-    final wanted = parseWebViewUrl(config.url)?.toString();
+    final wanted = _effectiveUrl?.toString();
     if (wanted != _loadedUrl) {
       _restart();
     } else if (config.reloadSeconds != _armedInterval) {
       _armTimer();
     }
+  }
+
+  /// Re-navigates the running browser when a theme flip changed the address
+  /// it should be on.
+  ///
+  /// Runs on every dependency change, but only navigates when the effective
+  /// URL actually moved — so an unrelated inherited change (a colour tweak
+  /// within the same brightness, a MediaQuery update) costs one string
+  /// comparison and no reload, and a tile with no theme parameter never
+  /// reloads on a theme flip at all, its effective URL being the same in
+  /// both. Navigates the existing browser in place rather than restarting
+  /// it: nothing about the engine changed, only the address.
+  void _followTheme() {
+    final surface = _surface;
+    final uri = _effectiveUrl;
+    if (surface == null || uri == null) return;
+    final wanted = uri.toString();
+    if (wanted == _loadedUrl) return;
+    _loadedUrl = wanted;
+    unawaited(surface.navigate(uri).catchError((Object _) {}));
   }
 
   void _restart() {
@@ -384,7 +548,7 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
   }
 
   void _start() {
-    final uri = parseWebViewUrl(config.url);
+    final uri = _effectiveUrl;
     if (uri == null) return;
     _loadedUrl = uri.toString();
     final factory = WebViewAssetView.debugSurfaceFactory ?? _defaultFactory;
@@ -463,7 +627,9 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
     if (seconds <= 0) return;
     _reloadTimer = Timer.periodic(Duration(seconds: seconds), (_) {
       final surface = _surface;
-      final uri = parseWebViewUrl(config.url);
+      // The effective address, so a reload keeps the theme the page is
+      // currently being asked for.
+      final uri = _effectiveUrl;
       if (surface == null || uri == null) return;
       unawaited(surface.navigate(uri).catchError((Object _) {}));
     });
@@ -903,6 +1069,13 @@ String webViewReloadLabel(int seconds) {
   return minutes == 1 ? '1 minute' : '$minutes minutes';
 }
 
+/// Trimmed [value], or null when there is nothing left — so clearing a field
+/// puts the config back to "unset" and the key back out of the saved JSON.
+String? _nullIfBlank(String value) {
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
 class _WebViewAssetConfigEditor extends StatefulWidget {
   final WebViewAssetConfig config;
   const _WebViewAssetConfigEditor({required this.config});
@@ -934,6 +1107,56 @@ class _WebViewAssetConfigEditorState extends State<_WebViewAssetConfigEditor> {
             ),
             onChanged: (value) => setState(() => config.url = value.trim()),
           ),
+          const SizedBox(height: 8),
+          // Keyed: the value fields below come and go with this one, and
+          // without keys a TextFormField further down could be handed the
+          // wrong element (and so the wrong text) when they appear.
+          TextFormField(
+            key: const ValueKey('web-view-theme-param'),
+            initialValue: config.themeParam ?? '',
+            decoration: const InputDecoration(
+              labelText: 'Theme URL parameter',
+              hintText: 'theme',
+              helperText: 'For sites like Grafana that take a theme '
+                  'parameter: follows the HMI\'s dark/light theme. '
+                  'Empty sends nothing.',
+              helperMaxLines: 2,
+            ),
+            onChanged: (value) =>
+                setState(() => config.themeParam = _nullIfBlank(value)),
+          ),
+          if ((config.themeParam ?? '').trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    key: const ValueKey('web-view-theme-dark'),
+                    initialValue: config.themeDarkValue ?? '',
+                    decoration: const InputDecoration(
+                      labelText: 'Dark value',
+                      hintText: kWebViewThemeDarkDefault,
+                    ),
+                    onChanged: (value) => setState(
+                        () => config.themeDarkValue = _nullIfBlank(value)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextFormField(
+                    key: const ValueKey('web-view-theme-light'),
+                    initialValue: config.themeLightValue ?? '',
+                    decoration: const InputDecoration(
+                      labelText: 'Light value',
+                      hintText: kWebViewThemeLightDefault,
+                    ),
+                    onChanged: (value) => setState(
+                        () => config.themeLightValue = _nullIfBlank(value)),
+                  ),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 16),
           Text('Reload', style: theme.textTheme.titleMedium),
           DropdownButton<int>(

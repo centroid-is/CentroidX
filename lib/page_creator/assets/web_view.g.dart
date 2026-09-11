@@ -11,6 +11,9 @@ WebViewAssetConfig _$WebViewAssetConfigFromJson(Map<String, dynamic> json) =>
       url: json['url'] as String? ?? '',
       reloadSeconds: (json['reloadSeconds'] as num?)?.toInt() ?? 0,
       interactive: json['interactive'] as bool? ?? false,
+      themeParam: json['themeParam'] as String?,
+      themeDarkValue: json['themeDarkValue'] as String?,
+      themeLightValue: json['themeLightValue'] as String?,
     )
       ..variant = json['asset_name'] as String
       ..id = json['id'] as String?
@@ -35,6 +38,9 @@ Map<String, dynamic> _$WebViewAssetConfigToJson(WebViewAssetConfig instance) =>
       'url': instance.url,
       'reloadSeconds': instance.reloadSeconds,
       'interactive': instance.interactive,
+      if (instance.themeParam case final value?) 'themeParam': value,
+      if (instance.themeDarkValue case final value?) 'themeDarkValue': value,
+      if (instance.themeLightValue case final value?) 'themeLightValue': value,
     };
 
 const _$TextPosEnumMap = {
