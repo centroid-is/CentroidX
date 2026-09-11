@@ -18,6 +18,11 @@ import '../page_creator/assets/editor_clipboard.dart';
 import '../page_creator/assets/image.dart';
 import '../page_creator/assets/image_store.dart';
 import '../page_creator/assets/ethercat_link.dart';
+import '../page_creator/assets/ethercat_asset.dart';
+import '../page_creator/assets/ethercat_autobind.dart';
+import '../page_creator/assets/ethercat_subdevice.dart' show EcBus, EcBusConfig;
+import '../page_creator/assets/ethercat_subdevice_editor.dart';
+import '../providers/state_man.dart';
 import '../page_creator/assets/link_edit_overlay.dart';
 import '../page_creator/assets/registry.dart';
 import '../providers/page_images.dart';
@@ -2544,6 +2549,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   static const int _copyAction = -10;
   static const int _pasteAction = -11;
   static const int _deleteAction = -12;
+  static const int _bindEtherCatAction = -13;
 
   /// Assets a canvas action applies to: the whole selection when the asset
   /// acted on is part of it, otherwise just that asset. Mirrors [_moveAsset].
@@ -2838,6 +2844,19 @@ class _PageEditorState extends ConsumerState<PageEditor> {
             enabled: canSendToBack,
           ),
         ),
+        // Page-wide whatever was clicked: matching names is only worth doing
+        // against every device the page draws, slices in racks included.
+        if (ecAssetsOn(assets).isNotEmpty) ...[
+          const PopupMenuDivider(),
+          const PopupMenuItem<int>(
+            value: _bindEtherCatAction,
+            child: ListTile(
+              leading: Icon(Icons.settings_ethernet),
+              title: Text('Bind EtherCAT devices by name…'),
+              dense: true,
+            ),
+          ),
+        ],
         // Set off from the layout actions above: everything else rearranges,
         // this one destroys. Same targets rule though — the selection when
         // the clicked asset is in it, otherwise just that asset.
@@ -2902,9 +2921,60 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       _copyAssets(targets);
     } else if (choice == _pasteAction) {
       await _handlePaste(at: pasteTarget);
+    } else if (choice == _bindEtherCatAction) {
+      await _bindEtherCatDevices();
     } else if (kChatEnabled) {
       await AiContextAction.runMenuItem(ref: ref, item: aiItems[choice]);
     }
+  }
+
+  /// Binds every EtherCAT device on this page to its subdevice by name, after
+  /// showing what would change. The whole lot is one undo step.
+  Future<void> _bindEtherCatDevices() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final Map<EcBusConfig, EcBus> buses;
+    try {
+      final sm = await ref.read(stateManProvider.future);
+      buses = await loadEcBuses(sm);
+    } catch (e) {
+      messenger?.showSnackBar(
+          SnackBar(content: Text('Could not read the EtherCAT masters: $e')));
+      return;
+    }
+    if (!mounted) return;
+    if (buses.isEmpty) {
+      messenger?.showSnackBar(const SnackBar(
+        content: Text('No EtherCAT masters are mapped yet. Map each '
+            'ECT_Diag.Device_<n>_Diag and Device_<n>_SlaveInfo, then try '
+            'again.'),
+      ));
+      return;
+    }
+
+    final plan = planEcAutoBind(assets, buses);
+    final n = plan.matched.length;
+    final apply = await showStandardDialog<bool>(
+      context: context,
+      title: 'Bind EtherCAT devices',
+      subtitle: n == 0 ? 'Nothing to bind' : '$n device${n == 1 ? '' : 's'}',
+      icon: Icons.settings_ethernet,
+      builder: (_) => EcAutoBindReview(plan: plan),
+      actionsBuilder: (dialogContext) => [
+        PaneAction(
+          label: 'Cancel',
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+        ),
+        if (n > 0)
+          PaneAction.primary(
+            label: 'Bind $n',
+            icon: Icons.link,
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+          ),
+      ],
+    );
+    if (apply != true || !mounted) return;
+    _saveToHistory();
+    _updateState(() => applyEcAutoBind(plan));
   }
 
   /// Right-click menu for empty canvas. One entry so far: paste, centred on
@@ -3663,6 +3733,21 @@ class _PageEditorState extends ConsumerState<PageEditor> {
           child: Column(
             children: [
               Expanded(child: asset.configure(paneContext)),
+              // Under the form, like the tech-doc picker: which subdevice a box
+              // stands for is a fact about the hardware, not the kind of box.
+              // Capped and scrolled so a tall form keeps its room.
+              if (asset is EtherCatAsset)
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.sizeOf(paneContext).height * 0.45,
+                  ),
+                  child: SingleChildScrollView(
+                    child: EcSubDeviceBindingEditor(
+                      key: ObjectKey(asset),
+                      asset: asset,
+                    ),
+                  ),
+                ),
               if (kKnowledgeEnabled && asset is BaseAsset)
                 Padding(
                   padding: const EdgeInsets.only(top: 8.0),

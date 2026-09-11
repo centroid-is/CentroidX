@@ -30,6 +30,18 @@ void main() {
       }
     });
 
+    test('every EtherCAT device type documents its ecSubDevice binding', () {
+      final byName = {for (final t in AssetTypeCatalog.all) t.assetName: t};
+      for (final name in AssetTypeCatalog.etherCatAssetTypes) {
+        expect(byName, contains(name), reason: '$name is not in the catalog');
+        expect(byName[name]!.properties.map((p) => p.name), contains('ecSubDevice'),
+            reason: '$name must describe ecSubDevice');
+      }
+      expect(byName['BeckhoffCX5340Config']!.properties.map((p) => p.name),
+          isNot(contains('ecSubDevice')),
+          reason: 'a CX rack is the master, not a subdevice');
+    });
+
     test('assetNames are unique', () {
       final names = AssetTypeCatalog.all.map((e) => e.assetName).toList();
       expect(names.toSet().length, equals(names.length),

@@ -614,6 +614,9 @@ class _EndPicker extends StatelessWidget {
     // one this end already points at.
     final selected = end.assetId;
     final ports = _portsFor(selected);
+    // A stored X1/X2 on a device that now declares A–D is still that
+    // socket: show the port it resolves to rather than a blank.
+    final shown = findPort(ports, end.port)?.id;
     return Row(
       children: [
         Expanded(
@@ -636,8 +639,8 @@ class _EndPicker extends StatelessWidget {
               end.assetId = v;
               if (v != null) {
                 final available = _portsFor(v);
-                if (!available.contains(end.port)) {
-                  end.port = available.isEmpty ? null : available.first;
+                if (findPort(available, end.port) == null) {
+                  end.port = available.isEmpty ? null : available.first.id;
                 }
               }
               onChanged();
@@ -647,10 +650,11 @@ class _EndPicker extends StatelessWidget {
         const SizedBox(width: 8),
         Expanded(
           child: DropdownButtonFormField<String>(
-            initialValue: ports.contains(end.port) ? end.port : null,
+            initialValue: shown,
             decoration: const InputDecoration(labelText: 'Port'),
             items: [
-              for (final p in ports) DropdownMenuItem(value: p, child: Text(p)),
+              for (final p in ports)
+                DropdownMenuItem(value: p.id, child: Text(p.id)),
             ],
             onChanged: (v) {
               end.port = v;
@@ -662,10 +666,10 @@ class _EndPicker extends StatelessWidget {
     );
   }
 
-  List<String> _portsFor(String? assetId) {
+  List<NetworkPort> _portsFor(String? assetId) {
     if (assetId == null) return const [];
     for (final a in candidates) {
-      if (a.id == assetId) return [for (final p in portsOf(a)) p.id];
+      if (a.id == assetId) return portsOf(a);
     }
     return const [];
   }

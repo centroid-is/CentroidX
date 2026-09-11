@@ -8,6 +8,9 @@ import 'package:rxdart/rxdart.dart';
 import 'package:open62541/open62541.dart' show DynamicValue;
 
 import 'common.dart';
+import 'ethercat_asset.dart';
+import 'ethercat_subdevice_editor.dart';
+import 'link_anchors.dart' show NetworkPort;
 import '../../painter/beckhoff/cu2508.dart';
 import '../../painter/beckhoff/cx5010.dart';
 import '../../painter/beckhoff/ek1100.dart';
@@ -361,7 +364,20 @@ class _CXxxxxConfigContentState extends State<_CXxxxxConfigContent> {
                               context: context,
                               title: sub.runtimeType.toString(),
                               subtitle: 'Configuration',
-                              builder: (_) => sub.configure(context),
+                              // A slice is a subdevice of its own: its binding
+                              // goes under its form, the same way the page
+                              // editor adds it under a top-level device.
+                              builder: (_) => sub is EtherCatAsset
+                                  ? Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        sub.configure(context),
+                                        EcSubDeviceBindingEditor(asset: sub),
+                                      ],
+                                    )
+                                  : sub.configure(context),
                             ),
                             trailing: IconButton(
                               icon: const Icon(Icons.delete),
@@ -386,7 +402,11 @@ class _CXxxxxConfigContentState extends State<_CXxxxxConfigContent> {
 }
 
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEK1100Config extends BaseAsset {
+class BeckhoffEK1100Config extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEk1100Ports;
+
   @override
   String get displayName => 'Beckhoff EK1100';
   @override
@@ -409,6 +429,7 @@ class BeckhoffEK1100Config extends BaseAsset {
   /// which is what every page saved before the field existed deserialises
   /// to, so those drawings are unchanged.
   @JsonKey(defaultValue: '')
+  @override
   String nameOrId = '';
 
   BeckhoffEK1100Config();
@@ -615,7 +636,20 @@ class _EK1100ConfigContentState extends State<_EK1100ConfigContent> {
                               context: context,
                               title: sub.runtimeType.toString(),
                               subtitle: 'Configuration',
-                              builder: (_) => sub.configure(context),
+                              // A slice is a subdevice of its own: its binding
+                              // goes under its form, the same way the page
+                              // editor adds it under a top-level device.
+                              builder: (_) => sub is EtherCatAsset
+                                  ? Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        sub.configure(context),
+                                        EcSubDeviceBindingEditor(asset: sub),
+                                      ],
+                                    )
+                                  : sub.configure(context),
                             ),
                             trailing: IconButton(
                               icon: const Icon(Icons.delete),
@@ -640,12 +674,17 @@ class _EK1100ConfigContentState extends State<_EK1100ConfigContent> {
 }
 
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL1008Config extends BaseAsset {
+class BeckhoffEL1008Config extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
   @override
   String get displayName => 'Beckhoff EL1008';
   @override
   String get category => 'Beckhoff Devices';
 
+  @override
   String nameOrId;
   String? descriptionsKey;
   String? rawStateKey;
@@ -784,12 +823,17 @@ class _EL1008ConfigContentState extends State<_EL1008ConfigContent> {
 }
 
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL2008Config extends BaseAsset {
+class BeckhoffEL2008Config extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
   @override
   String get displayName => 'Beckhoff EL2008';
   @override
   String get category => 'Beckhoff Devices';
 
+  @override
   String nameOrId;
   String? descriptionsKey;
   String? rawStateKey;
@@ -988,12 +1032,17 @@ class _BeckhoffEL2008 extends ConsumerWidget {
 }
 
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL9222Config extends BaseAsset {
+class BeckhoffEL9222Config extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
   @override
   String get displayName => 'Beckhoff EL9222';
   @override
   String get category => 'Beckhoff Devices';
 
+  @override
   String nameOrId;
 
   /// Key of the terminal's `ST_EL9222_5500` struct. Without it the module is
@@ -2009,12 +2058,17 @@ class TriangleBoxPainter extends CustomPainter {
 }
 
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL3054Config extends BaseAsset {
+class BeckhoffEL3054Config extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
   @override
   String get displayName => 'Beckhoff EL3054';
   @override
   String get category => 'Beckhoff Devices';
 
+  @override
   String nameOrId;
   String? descriptionsKey;
   String? stateKey;
@@ -2309,7 +2363,11 @@ class _BeckhoffEL3054 extends ConsumerWidget {
 /// loose BOOLs, not a struct. See `el2912.dart` for what the face and the
 /// pane make of them, and why the terminal's own output lamps stay dark.
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL2912Config extends BaseAsset {
+class BeckhoffEL2912Config extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
   @override
   String get displayName => 'Beckhoff EL2912';
   @override
@@ -2318,6 +2376,7 @@ class BeckhoffEL2912Config extends BaseAsset {
   @override
   List<String> get searchKeywords => const ['twinsafe', 'safety', 'output'];
 
+  @override
   String nameOrId;
 
   /// `Fieldvoltage Underrange` off the terminal's DEVICEIO module.
@@ -2522,7 +2581,11 @@ class _BeckhoffEL2912 extends ConsumerWidget {
 ///
 /// See `ps2001.dart` for the decode and the operator surface.
 @JsonSerializable(explicitToJson: true)
-class BeckhoffPS2001Config extends BaseAsset {
+class BeckhoffPS2001Config extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
   @override
   String get displayName => 'Beckhoff PS2001';
   @override
@@ -2532,6 +2595,7 @@ class BeckhoffPS2001Config extends BaseAsset {
   List<String> get searchKeywords =>
       const ['power supply', 'psu', '24v', 'ps2000'];
 
+  @override
   String nameOrId;
 
   /// Key of the unit's `ST_PS2001_2410` struct. Without it the supply is a
@@ -2768,7 +2832,11 @@ class _BeckhoffPS2001 extends ConsumerWidget {
 /// terminal points are unused, so they are drawn unlabelled rather than
 /// given invented signal names.
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL6070Config extends BaseAsset {
+class BeckhoffEL6070Config extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
   @override
   String get displayName => 'Beckhoff EL6070';
   @override
@@ -2785,6 +2853,7 @@ class BeckhoffEL6070Config extends BaseAsset {
   /// which is what every page saved before the field existed deserialises
   /// to, so those drawings are unchanged.
   @JsonKey(defaultValue: '')
+  @override
   String nameOrId = '';
 
   BeckhoffEL6070Config();
@@ -2827,7 +2896,11 @@ class BeckhoffEL6070Config extends BaseAsset {
 /// topology page it is where one rack's terminal block hands over to the
 /// next.
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEK1110Config extends BaseAsset {
+class BeckhoffEK1110Config extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEk1110Ports;
+
   @override
   String get displayName => 'Beckhoff EK1110';
   @override
@@ -2844,6 +2917,7 @@ class BeckhoffEK1110Config extends BaseAsset {
   /// which is what every page saved before the field existed deserialises
   /// to, so those drawings are unchanged.
   @JsonKey(defaultValue: '')
+  @override
   String nameOrId = '';
 
   BeckhoffEK1110Config();
@@ -2880,7 +2954,11 @@ class BeckhoffEK1110Config extends BaseAsset {
 /// anything. The name is what makes the drawing useful, so it is
 /// configurable: a page with three CU2508s wants to say which is which.
 @JsonSerializable(explicitToJson: true)
-class BeckhoffCU2508Config extends BaseAsset {
+class BeckhoffCU2508Config extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kCu2508Ports;
+
   @override
   String get displayName => 'Beckhoff CU2508';
   @override
@@ -2890,6 +2968,7 @@ class BeckhoffCU2508Config extends BaseAsset {
   List<String> get searchKeywords =>
       const ['port multiplier', 'switch', 'ethercat', 'network'];
 
+  @override
   String nameOrId;
 
   BeckhoffCU2508Config({required this.nameOrId});
@@ -2967,7 +3046,11 @@ class _CU2508ConfigContentState extends State<_CU2508ConfigContent> {
 /// carried by [EPBoxVariant.isLive] rather than by two near-identical
 /// classes. See `assets/ep_box.dart`.
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEPBoxConfig extends BaseAsset {
+class BeckhoffEPBoxConfig extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEpBoxPorts;
+
   @override
   String get displayName => 'Beckhoff ${variantModel.model}';
   @override
@@ -2983,6 +3066,7 @@ class BeckhoffEPBoxConfig extends BaseAsset {
   @JsonKey(name: 'variant_model')
   EPBoxVariant variantModel;
 
+  @override
   String nameOrId;
 
   /// Key of the box's `ST_EP2338_0002`. Meaningless on an EP1918, which

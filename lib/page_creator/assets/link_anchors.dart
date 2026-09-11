@@ -32,7 +32,18 @@ class NetworkPort {
   /// this is nearly always "in" or "out" and worth saying.
   final String? description;
 
-  const NetworkPort(this.id, this.side, {this.at = 0.5, this.description});
+  /// Other names a stored cable end may carry for this port — the implicit
+  /// `X1`/`X2` of a device that has since declared its real sockets. Resolved
+  /// by [findPort]; a stored end is never rewritten to match.
+  final List<String> aliases;
+
+  const NetworkPort(
+    this.id,
+    this.side, {
+    this.at = 0.5,
+    this.description,
+    this.aliases = const [],
+  });
 }
 
 /// An asset that a cable can plug into.
@@ -56,6 +67,32 @@ const List<NetworkPort> kImplicitPorts = [
   NetworkPort('X1', PortSide.left, description: 'EtherCAT in'),
   NetworkPort('X2', PortSide.right, description: 'EtherCAT out'),
 ];
+
+/// The four ports every EtherCAT subdevice controller has, named as the PLC and
+/// TwinCAT name them: A in on the left, B out on the right, and the two
+/// junction ports below and above so a branch leaves the chain at a right
+/// angle. The fallback for an EtherCAT device that declares nothing better.
+const List<NetworkPort> kEcSubDevicePorts = [
+  NetworkPort('A', PortSide.left, description: 'In', aliases: ['X1']),
+  NetworkPort('B', PortSide.right, description: 'Out', aliases: ['X2']),
+  NetworkPort('C', PortSide.bottom, description: 'Branch'),
+  NetworkPort('D', PortSide.top, description: 'Branch'),
+];
+
+/// The port of [ports] that [id] names: by id first, then by alias.
+///
+/// Per device, not a global rename: `X2` is B on a terminal and C on an
+/// EK1100, and only the device knows which.
+NetworkPort? findPort(List<NetworkPort> ports, String? id) {
+  if (id == null) return null;
+  for (final p in ports) {
+    if (p.id == id) return p;
+  }
+  for (final p in ports) {
+    if (p.aliases.contains(id)) return p;
+  }
+  return null;
+}
 
 /// The ports [asset] offers, declared or assumed.
 List<NetworkPort> portsOf(Asset asset) {
@@ -96,13 +133,7 @@ class PageLinkAnchors implements LinkAnchors {
     // than nowhere: a cable to the middle of the device reads as "plugged in
     // somewhere on this box", which is true and fixable, where a vanished end
     // reads as a bug.
-    NetworkPort? spec;
-    for (final p in ports) {
-      if (p.id == port) {
-        spec = p;
-        break;
-      }
-    }
+    final spec = findPort(ports, port);
     if (spec == null) return _centre(asset);
 
     final w = asset.size.width, h = asset.size.height;

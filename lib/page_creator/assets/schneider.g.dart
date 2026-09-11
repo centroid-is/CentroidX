@@ -23,7 +23,10 @@ SchneiderATV320Config _$SchneiderATV320ConfigFromJson(
       ..text = json['text'] as String?
       ..textPos = $enumDecodeNullable(_$TextPosEnumMap, json['textPos'])
       ..techDocId = (json['techDocId'] as num?)?.toInt()
-      ..plcAssetKey = json['plcAssetKey'] as String?;
+      ..plcAssetKey = json['plcAssetKey'] as String?
+      ..ecSubDevice = json['ecSubDevice'] == null
+          ? null
+          : EcSubDeviceBinding.fromJson(json['ecSubDevice'] as Map<String, dynamic>);
 
 Map<String, dynamic> _$SchneiderATV320ConfigToJson(
         SchneiderATV320Config instance) =>
@@ -36,6 +39,7 @@ Map<String, dynamic> _$SchneiderATV320ConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
+      if (instance.ecSubDevice?.toJson() case final value?) 'ecSubDevice': value,
       'label': instance.label,
       'labelFontSize': instance.labelFontSize,
       'hmisKey': instance.hmisKey,
