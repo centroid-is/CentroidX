@@ -115,13 +115,26 @@ String newAssetId() {
 /// originals. References *out* of the group are deliberately left alone — a
 /// cable copied on its own still runs where it ran.
 void reidentifyAssets(List<Asset> copies) {
+  // Children too: a rack's slices are assets in their own right, a cable can
+  // plug into one, and a pasted rack whose slices kept the original's ids
+  // would leave every such cable naming two different slices.
+  final all = <Asset>[];
+  void walk(Iterable<Asset> assets) {
+    for (final a in assets) {
+      all.add(a);
+      walk(a.childAssets);
+    }
+  }
+
+  walk(copies);
+
   final idMap = <String, String>{};
-  for (final asset in copies) {
+  for (final asset in all) {
     final old = asset.id;
     if (old != null) idMap[old] = asset.assignNewId();
   }
   if (idMap.isEmpty) return;
-  for (final asset in copies) {
+  for (final asset in all) {
     asset.remapAssetIds(idMap);
   }
 }

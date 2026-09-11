@@ -36,6 +36,11 @@ class SchneiderATV320Config extends EtherCatAsset {
   @JsonKey(includeFromJson: false, includeToJson: false)
   @override
   List<NetworkPort> get networkPorts => kAtv320Ports;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['ATV320 EtherCAT'];
   @override
   String get category => 'Schneider Devices';
 

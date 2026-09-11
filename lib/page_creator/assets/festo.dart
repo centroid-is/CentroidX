@@ -102,6 +102,11 @@ class FestoVTUGConfig extends EtherCatAsset with EcNamedByNameOrId {
   @override
   List<NetworkPort> get networkPorts => kEcInOutPorts;
 
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['CTEU-EtherCAT Modular'];
+
   @override
   String get category => 'Festo Devices';
 

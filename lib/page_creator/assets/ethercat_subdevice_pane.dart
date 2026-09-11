@@ -17,6 +17,7 @@ import '../../theme.dart' show HmiStateColors;
 import '../../widgets/panes/pane_chrome.dart';
 import '../../widgets/panes/side_pane.dart';
 import 'ethercat_command.dart';
+import 'ethercat_ports.dart';
 import 'ethercat_subdevice.dart';
 
 /// The state colour for [health], from the page's scheme.
@@ -321,7 +322,10 @@ class EcSubDevicePaneBody extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            for (final p in EcPort.values)
+            // Only the sockets this part has: four rows for a two-port drive
+            // would be two rows of "Not connected" that can never be anything
+            // else.
+            for (final p in ecShownPorts(bus, subdevice))
               _PortRow(bus: bus, subdevice: subdevice, port: p, states: states),
           ],
         ),

@@ -45,6 +45,18 @@ abstract class EtherCatAsset extends BaseAsset implements NetworkPorted {
   @override
   List<NetworkPort> get networkPorts => kEcSubDevicePorts;
 
+  /// The `p_stat_sModel` strings the PLC uses for the hardware this asset
+  /// draws — `'EL1008'`, `'ATV320 EtherCAT'`.
+  ///
+  /// [networkPorts] is this part's real socket layout, and the PLC publishes
+  /// four port slots for every subdevice whether they exist or not. Naming the
+  /// models here is what lets a table row look up its own hardware's sockets
+  /// and stop drawing the two an ATV320 has never had. Empty means the class
+  /// stands for no particular part, and rows fall back to what the topology
+  /// and the counters show.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  List<String> get ecModels => const [];
+
   /// The binding's keys sit one level down, where the introspection in
   /// `BaseAsset.allKeys` cannot see them.
   @JsonKey(includeFromJson: false, includeToJson: false)
