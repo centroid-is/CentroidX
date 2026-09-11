@@ -26,7 +26,8 @@ SchneiderATV320Config _$SchneiderATV320ConfigFromJson(
       ..plcAssetKey = json['plcAssetKey'] as String?
       ..ecSubDevice = json['ecSubDevice'] == null
           ? null
-          : EcSubDeviceBinding.fromJson(json['ecSubDevice'] as Map<String, dynamic>);
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>);
 
 Map<String, dynamic> _$SchneiderATV320ConfigToJson(
         SchneiderATV320Config instance) =>
@@ -39,7 +40,8 @@ Map<String, dynamic> _$SchneiderATV320ConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
-      if (instance.ecSubDevice?.toJson() case final value?) 'ecSubDevice': value,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'label': instance.label,
       'labelFontSize': instance.labelFontSize,
       'hmisKey': instance.hmisKey,

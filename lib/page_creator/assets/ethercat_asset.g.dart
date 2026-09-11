@@ -19,7 +19,8 @@ Map<String, dynamic> _$EtherCatAssetToJson(EtherCatAsset instance) =>
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
-      if (instance.ecSubDevice?.toJson() case final value?) 'ecSubDevice': value,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
     };
 
 const _$TextPosEnumMap = {

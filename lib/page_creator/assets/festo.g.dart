@@ -45,7 +45,8 @@ FestoVTUGConfig _$FestoVTUGConfigFromJson(Map<String, dynamic> json) =>
       ..plcAssetKey = json['plcAssetKey'] as String?
       ..ecSubDevice = json['ecSubDevice'] == null
           ? null
-          : EcSubDeviceBinding.fromJson(json['ecSubDevice'] as Map<String, dynamic>);
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>);
 
 Map<String, dynamic> _$FestoVTUGConfigToJson(FestoVTUGConfig instance) =>
     <String, dynamic>{
@@ -57,7 +58,8 @@ Map<String, dynamic> _$FestoVTUGConfigToJson(FestoVTUGConfig instance) =>
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
-      if (instance.ecSubDevice?.toJson() case final value?) 'ecSubDevice': value,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'nameOrId': instance.nameOrId,
       'stateKey': instance.stateKey,
       'slices': instance.slices.map((e) => e.toJson()).toList(),
