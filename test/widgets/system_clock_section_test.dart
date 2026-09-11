@@ -458,8 +458,8 @@ void main() {
   testWidgets('reordering servers keeps the operator order', (tester) async {
     // timesyncd tries servers in order, so the list is a preference ranking,
     // not a set. Also guards the index adjustment onReorder needs and
-    // onReorderItem does not -- we are on onReorder because the ivi image
-    // builds on a Flutter that predates the newer callback.
+    // onReorderItem does not -- see the callback in system_clock_section.dart
+    // for why the repo is still on onReorder.
     final timeSync = FakeTimeSync(status: syncStatus(message: healthyMessage()));
     await pumpSection(
       tester,

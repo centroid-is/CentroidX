@@ -3,12 +3,13 @@
 /// Playback is media_kit (libmpv), which is what actually plays RTSP on the
 /// desktop platforms (macOS/Windows/Linux — Linux needs the distro's libmpv
 /// package at runtime) and, through package:media_kit_video_elinux, on the
-/// flutter-elinux stations. Platforms without the native pieces — the
-/// ivi-homescreen stations, `flutter test` — get a "playback unavailable"
-/// placeholder instead of a crash. libmpv missing shows up when the player is
-/// constructed, which happens inside a try/catch and never at import time; a
-/// missing video output only shows up later, asynchronously, and lands on the
-/// same placeholder via [RtspCameraStatus.unavailable].
+/// flutter-elinux stations. Platforms without the native pieces — `flutter
+/// test`, an eLinux build without package:media_kit_video_elinux — get a
+/// "playback unavailable" placeholder instead of a crash. libmpv missing shows
+/// up when the player is constructed, which happens inside a try/catch and
+/// never at import time; a missing video output only shows up later,
+/// asynchronously, and lands on the same placeholder via
+/// [RtspCameraStatus.unavailable].
 ///
 /// A dropped stream retries on its own every [RtspCameraView.retryDelay]; an
 /// operator should never have to touch a camera tile to bring it back.
@@ -412,8 +413,8 @@ class _MediaKitPlayback implements RtspCameraPlayback {
         _player = _construct() {
     _controller = VideoController(_player);
     // The native video output is created asynchronously, so a platform that
-    // has libmpv but no way to render its frames (ivi-homescreen; an eLinux
-    // build without package:media_kit_video_elinux) fails here rather than in
+    // has libmpv but no way to render its frames (an eLinux build without
+    // package:media_kit_video_elinux) fails here rather than in
     // _construct. Nothing else listens to this future: without the handler the
     // failure is an unhandled async error and the tile spins forever.
     unawaited(_controller.platform.future.then<void>(

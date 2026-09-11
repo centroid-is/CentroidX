@@ -715,10 +715,14 @@ class _NtpServerEditorState extends State<_NtpServerEditor> {
                   shrinkWrap: true,
                   buildDefaultDragHandles: false,
                   itemCount: _servers.length,
-                  // onReorder, not the newer onReorderItem: the ivi image
-                  // builds on Flutter 3.38.7 (docker/frontend-ivi's
-                  // FLUTTER_VERSION), which predates it. Deprecated here,
-                  // absent there — and absent loses.
+                  // onReorder, not the newer onReorderItem. The original reason
+                  // was the ivi image's Flutter 3.38.7, which predated the new
+                  // callback; that image is gone, but every other
+                  // ReorderableListView in the repo (server_config,
+                  // key_repository, page_editor) is still on onReorder and they
+                  // should move together — a half-migrated codebase is where
+                  // the off-by-one below gets applied to a callback that
+                  // already adjusted it.
                   // ignore: deprecated_member_use
                   onReorder: (oldIndex, newIndex) => setState(() {
                     if (newIndex > oldIndex) newIndex -= 1;
