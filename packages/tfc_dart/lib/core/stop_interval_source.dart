@@ -222,4 +222,49 @@ class StopIntervalSource {
     }
     return mergeIntervals(gathered, now: now);
   }
+
+  /// The individual activations that make up one stretch of a merged lane.
+  ///
+  /// [mergedFor] unions everything under a group into anonymous bars, so a
+  /// bar an operator taps can only say how many stops it absorbed. This is
+  /// the way back to *which* ones, without expanding the tree and hunting
+  /// for them — the whole point of a downtime view is that the answer is one
+  /// gesture away.
+  ///
+  /// Bounds are inclusive: [mergeIntervals] unions intervals that merely
+  /// touch, so a contributor can start exactly where the stretch does, and an
+  /// exclusive test would drop it.
+  ///
+  /// Ordered longest first, then by start, then by uid. The uid is not
+  /// decoration: `List.sort` is not stable, so without a total order two
+  /// activations of equal length and start come back in whichever order the
+  /// sort happened to leave them, and a test that pins the list flakes.
+  ///
+  /// Callers are free to re-order — the group callout reads its own list
+  /// chronologically, because a merged stretch is one downtime event and the
+  /// first alarm to fire is usually the cause.
+  List<StopActivation> activationsIn(
+    Iterable<String> alarmUids, {
+    required DateTime from,
+    required DateTime to,
+    required DateTime now,
+  }) {
+    final wanted = alarmUids.toSet();
+    final hits = <StopActivation>[];
+    for (final activation in all) {
+      if (!wanted.contains(activation.alarmUid)) continue;
+      final interval = activation.interval;
+      if (interval.start.isAfter(to)) continue;
+      if (interval.endAt(now).isBefore(from)) continue;
+      hits.add(activation);
+    }
+    hits.sort((a, b) {
+      final byLength =
+          b.interval.lengthAt(now).compareTo(a.interval.lengthAt(now));
+      if (byLength != 0) return byLength;
+      final byStart = a.start.compareTo(b.start);
+      return byStart != 0 ? byStart : a.alarmUid.compareTo(b.alarmUid);
+    });
+    return hits;
+  }
 }

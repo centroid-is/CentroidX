@@ -154,6 +154,35 @@ void main() {
     });
   });
 
+  group('every registered asset carries its id through JSON', () {
+    // The one guard against a stale `.g.dart`. An asset whose generated code
+    // predates the `id` field still compiles, still renders and still saves —
+    // it just drops the id on the way out, so every cable plugged into it
+    // unplugs itself on the next page load. `FestoVTUGConfig` was exactly
+    // that on main. Testing one asset by hand does not catch the next one;
+    // sweeping the palette does.
+    for (final entry in AssetRegistry.defaultFactories.entries) {
+      test('${entry.key}', () {
+        final asset = entry.value();
+        final id = asset.ensureId();
+
+        final json = asset.toJson();
+        expect(json['id'], id,
+            reason: '${entry.key} does not write its id — regenerate '
+                'its .g.dart with build_runner');
+
+        final parsed = AssetRegistry.parse({
+          'assets': [json]
+        });
+        expect(parsed, hasLength(1),
+            reason: '${entry.key} did not survive AssetRegistry.parse');
+        expect(parsed.single.id, id,
+            reason: '${entry.key} does not read its id back — regenerate '
+                'its .g.dart with build_runner');
+      });
+    }
+  });
+
   group('copy through the clipboard JSON', () {
     test('a round trip through the copy format carries the id', () {
       // `_copyAssets` encodes exactly this shape; if the id did not survive

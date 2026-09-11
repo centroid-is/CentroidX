@@ -352,6 +352,12 @@ void main() {
   /// Signs [username] in on the **real** controller, so the session in force is
   /// elevated and the `users` gate above the section is open.
   Future<void> signIn(WidgetTester tester, String username) async {
+    // Let `build()` resolve first. It is async, and a `state` written by
+    // `signIn` while it is still in flight is overwritten when it completes —
+    // so a test that signs in on a freshly-read notifier can silently end up
+    // anonymous. In the app this cannot happen: `BaseScaffold` listens to the
+    // session from the first frame, long before any sign-in surface opens.
+    await container!.read(accessSessionProvider.future);
     final result = await container!
         .read(accessSessionProvider.notifier)
         .signIn(username, 'correct horse');

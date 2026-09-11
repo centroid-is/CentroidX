@@ -1,6 +1,7 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:async';
+
+import 'package:logger/logger.dart';
 
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -25,6 +26,10 @@ import 'collector.dart';
 import 'value_freshness.dart';
 
 part 'state_man.g.dart';
+
+/// File-level logger. These diagnostics used to go to stderr, which in a
+/// windowed MSIX build with no console is discarded outright.
+final Logger _log = Logger();
 
 /// Reads `key_mappings`, seeding a default when the station has none.
 ///
@@ -178,18 +183,22 @@ Future<StateMan> stateMan(Ref ref) async {
             final result = stateMan.updateKeyMappings(
                 await fetchKeyMappings(newPrefs, systemWrites: systemPrefs));
             if (result.requiresReload) {
-              stderr.writeln('key_mappings: full reload required '
+              _log.i('key_mappings: full reload required '
                   '(${result.reloadReasons.join('; ')})');
               ref.invalidateSelf();
             }
-          } catch (error) {
-            stderr.writeln('Failed to apply key_mappings change: $error');
+          } catch (error, stack) {
+            // A key mapping that fails to apply is the direct cause of a dead
+            // key on a page, and this is the only record that it happened.
+            _log.e('Failed to apply key_mappings change: $error',
+                error: error, stackTrace: stack);
           }
         });
       }
     },
-    onError: (error) {
-      stderr.writeln('Error in preferences listener: $error');
+    onError: (error, stack) {
+      _log.e('Error in preferences listener: $error',
+          error: error, stackTrace: stack);
     },
   );
 
@@ -298,7 +307,7 @@ Future<StateMan> stateMan(Ref ref) async {
     // already failed — an undialable gateway would otherwise present as a
     // panel whose config screens never finish loading, with nothing said.
     if (gateway.isGateway) prefsSlot.fail(e, stack);
-    stderr.writeln('Error parsing key mappings: $e');
+    _log.e('Error parsing key mappings: $e');
     rethrow;
   }
 }

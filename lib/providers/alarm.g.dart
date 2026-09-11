@@ -6,7 +6,7 @@ part of 'alarm.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$alarmManHash() => r'ea8aadd9c7dc22165c76855048a3093db9a3e176';
+String _$alarmManHash() => r'7e2d1c0c1866b4e43b8086ae7c00bf110b56f857';
 
 /// Where this panel's alarms come from, which depends on the transport.
 ///

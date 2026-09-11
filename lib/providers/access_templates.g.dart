@@ -58,7 +58,7 @@ final tagBindingResolverProvider = Provider<TagBindingResolver>.internal(
 // ignore: unused_element
 typedef TagBindingResolverRef = ProviderRef<TagBindingResolver>;
 String _$accessTemplateStoreHash() =>
-    r'04bfd21b4d40ac270767ca13b8facb2bc0bd3f19';
+    r'7343096be48fe6014f3d5952c770f3913ed3a013';
 
 /// The `users`-gated CRUD over both authorization tables, or null when this
 /// station has no database.
@@ -67,6 +67,11 @@ String _$accessTemplateStoreHash() =>
 /// Postgres configured, and again during the boot window before the connection
 /// opens. The loader below treats null as "nothing is bound", which is the
 /// deliberate ungated case.
+///
+/// **In gateway mode the store is non-null with no database at all** — a
+/// [RelayedAccessTemplateStore] over the panel's one relay client, because in
+/// gateway mode the templates live behind the backend and the database route
+/// must be genuinely unnecessary, not merely unused (17-12, ACCESS-01).
 ///
 /// The session is a **callback**, `sessionInForce(ref)`, and never a watch —
 /// see `access_policy.dart`'s library doc for the reasoning. A watch here would

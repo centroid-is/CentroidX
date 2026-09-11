@@ -247,7 +247,11 @@ AccessSession _anonymous() =>
 const Key _boundary = Key('access_admin_golden');
 
 /// An empty in-memory device-local store: the card then shows the default
-/// 15 minutes, which is what a fresh station shows.
+/// 15 minutes and an uncommitted panel, which is what a fresh station shows.
+///
+/// `getString` is here for the panel-account read-out. A `Fake` throws on
+/// anything it does not implement, so leaving it out does not render a
+/// neutral card — it renders one with the read-out silently missing.
 class _MemoryPrefs extends Fake implements PreferencesApi {
   final Map<String, Object> _store = {};
 
@@ -256,6 +260,18 @@ class _MemoryPrefs extends Fake implements PreferencesApi {
 
   @override
   Future<void> setInt(String key, int value) async => _store[key] = value;
+
+  @override
+  Future<bool?> getBool(String key) async => _store[key] as bool?;
+
+  @override
+  Future<void> setBool(String key, bool value) async => _store[key] = value;
+
+  @override
+  Future<String?> getString(String key) async => _store[key] as String?;
+
+  @override
+  Future<void> setString(String key, String value) async => _store[key] = value;
 }
 
 List<Override> _overrides({
@@ -509,7 +525,7 @@ void main() {
     testWidgets('the Operator editor open, with the warning above the boxes',
         (tester) async {
       await withClock(Clock.fixed(_frozen), () async {
-        const size = Size(900, 1640);
+        const size = Size(900, 1700);
         _sizeView(tester, size);
 
         await tester.pumpWidget(_pageHost(

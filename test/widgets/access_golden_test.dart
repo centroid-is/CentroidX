@@ -1,12 +1,20 @@
 /// Goldens for the two access surfaces this phase puts in front of an
 /// operator: the app-bar affordance and the sign-in dialog.
 ///
-/// Four images, one per state that looks different:
+/// Seven images, one per state that looks different:
 ///
 /// * `access_appbar_anonymous.png`   — nobody signed in: the Sign in icon, no name.
 /// * `access_appbar_elevated.png`    — signed in: who, their role, and Sign out, in orange.
 /// * `access_sign_in_dialog.png`     — the form at rest, honesty subtitle showing.
 /// * `access_sign_in_dialog_error.png` — the same form after a rejected password.
+/// * `access_panel_commit_prompt.png` — the prompt a station account gets, over the form.
+/// * `access_session_card_committed.png`   — the Session card on a committed panel.
+/// * `access_session_card_uncommitted.png` — the same card on an uncommitted one.
+///
+/// The last pair is the read-out support reads. Both sentences are long, and
+/// the failure a `find.text` cannot catch is exactly the one that matters
+/// here: a line that ellipsises instead of wrapping tells the reader the
+/// panel's account is `freeze…`.
 ///
 /// **The muted (ISA-101) palette, not solarized.** `HmiStateColors.orange` is
 /// the token plan 01-08 added for an elevated session, and in the muted
@@ -40,14 +48,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FontLoader;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc/pages/access_session_section.dart';
 import 'package:tfc/providers/access.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/theme.dart' show muted;
 import 'package:tfc/widgets/access_sign_in_dialog.dart';
 import 'package:tfc/widgets/access_status_action.dart';
 import 'package:tfc_access/tfc_access.dart';
 
+import '../helpers/page_editor_harness.dart' show FakeEditorPreferences;
+
 const _appBarBoundary = Key('access_appbar_golden');
 const _dialogBoundary = Key('access_sign_in_dialog_golden');
+const _commitBoundary = Key('access_panel_commit_golden');
+const _sessionCardBoundary = Key('access_session_card_golden');
 
 /// A session that resolves immediately to whatever the image needs.
 ///
@@ -58,19 +72,34 @@ const _dialogBoundary = Key('access_sign_in_dialog_golden');
 /// under `AsyncLoading`, so a golden that let the real chain run could capture
 /// an empty app bar.
 class _FixedSession extends AccessSessionController {
-  _FixedSession(this._session, {this.result = AccessSignInResult.ok});
+  _FixedSession(this._session, {this.result = AccessSignInResult.ok, this.signsInAs});
 
-  final AccessSession _session;
+  AccessSession _session;
 
   /// What [signIn] answers. The error image needs `badCredentials`.
   final AccessSignInResult result;
+
+  /// Who a successful [signIn] publishes. The panel-commitment image needs a
+  /// station account, because the prompt it captures is only offered to one.
+  final AuthenticatedUser? signsInAs;
 
   @override
   Future<AccessSession> build() async => _session;
 
   @override
-  Future<AccessSignInResult> signIn(String username, String password) async =>
-      result;
+  Future<AccessSignInResult> signIn(String username, String password) async {
+    final user = signsInAs;
+    if (result == AccessSignInResult.ok && user != null) {
+      // Assigned to the field as well as to `state`, so a `build()` that has
+      // not resolved yet cannot land behind this and publish the old session.
+      _session = AccessSession(user: user, groups: const {AccessGroup.operate});
+      state = AsyncData(_session);
+    }
+    return result;
+  }
+
+  @override
+  Future<bool> commitPanelAccount() async => true;
 
   @override
   Future<void> signOut() async {}
@@ -78,6 +107,13 @@ class _FixedSession extends AccessSessionController {
   @override
   void poke() {}
 }
+
+/// The fictional panel account in the commitment image. Not a real account.
+const _freezer = AuthenticatedUser(
+  username: 'freezer',
+  roleName: kOperatorRoleName,
+  stationAccount: true,
+);
 
 /// The fictional operator in the images. Not a real account (T-01-71).
 AccessSession _elevated() => AccessSession(
@@ -169,6 +205,91 @@ Widget _dialogHost({required ThemeData theme, required _FixedSession session}) {
       ),
     ),
   );
+}
+
+/// The sign-in form with a route-pushed dialog on top of it.
+///
+/// The boundary sits **above** `MaterialApp`, unlike [_dialogHost]'s. A
+/// confirm dialog is a pushed route and renders in the Navigator's overlay; a
+/// boundary inside the `Scaffold` would capture the form with a hole where the
+/// prompt is.
+Widget _commitHost({required ThemeData theme, required _FixedSession session}) {
+  return ProviderScope(
+    overrides: [
+      accessSessionProvider.overrideWith(() => session),
+      firstUserWindowOpenProvider.overrideWith((ref) async => false),
+    ],
+    child: RepaintBoundary(
+      key: _commitBoundary,
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: Consumer(
+          builder: (context, ref, _) {
+            // Listened from the first frame, as `BaseScaffold` does. Without
+            // it the notifier is not built until `_submit` reads it, and the
+            // session `signIn` publishes is clobbered by the pending `build()`
+            // completing behind it.
+            ref.watch(accessSessionProvider);
+            return Scaffold(
+              backgroundColor: theme.colorScheme.surface,
+              body: const Center(
+                child: SizedBox(
+                  width: 620,
+                  height: 620,
+                  child: AccessSignInDialog(),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    ),
+  );
+}
+
+/// The Session card, with the panel committed to [panelAccount] or to nobody.
+///
+/// The audit sink is overridden to a no-op rather than left real: the card
+/// records a row on every change it makes, and a golden must not need a
+/// database to render a card it is not changing anything on.
+Widget _sessionCardHost({required ThemeData theme, String? panelAccount}) {
+  final prefs = FakeEditorPreferences();
+  if (panelAccount != null) {
+    prefs.setString(kAccessPanelAccountPrefKey, panelAccount);
+  }
+  return ProviderScope(
+    overrides: [
+      localPreferencesProvider.overrideWithValue(prefs),
+      accessSessionAuditProvider.overrideWithValue(
+        (station: 'ST301', audit: _NullAudit()),
+      ),
+    ],
+    child: MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: theme,
+      home: Scaffold(
+        backgroundColor: theme.colorScheme.surface,
+        body: Center(
+          child: RepaintBoundary(
+            key: _sessionCardBoundary,
+            // Scrollable, as `access_admin.dart` mounts it: a bare `Center`
+            // hands the card the whole viewport height and it captures with a
+            // third of the image empty below the last line.
+            child: const SizedBox(
+              width: 620,
+              child: SingleChildScrollView(child: AccessSessionSection()),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _NullAudit implements AuditSink {
+  @override
+  Future<void> record(AuditRecord entry) async {}
 }
 
 /// Bounded settle.
@@ -296,6 +417,68 @@ void main() {
       await expectLater(
         find.byKey(_dialogBoundary),
         matchesGoldenFile('goldens/access_sign_in_dialog_error.png'),
+      );
+    });
+
+    testWidgets('the panel commitment prompt', (tester) async {
+      _sizeView(tester, const Size(700, 760));
+      await tester.pumpWidget(
+        _commitHost(
+          theme: light,
+          session: _FixedSession(_anonymous(), signsInAs: _freezer),
+        ),
+      );
+      await _settle(tester);
+
+      // Driven, not fabricated: the prompt is reached the way an operator
+      // reaches it, so the image cannot show a dialog the app would never
+      // actually put on screen.
+      await tester.enterText(find.byKey(kAccessSignInUsernameKey), 'freezer');
+      await tester.enterText(find.byKey(kAccessSignInPasswordKey), 'panel pw');
+      await tester.tap(find.byKey(kAccessSignInSubmitKey));
+      await _settle(tester);
+
+      // The long sentence is the subject of this image — it has to be legible
+      // and wrapped, not ellipsised, which is the failure a `find.text` alone
+      // would not catch (see the honesty-line comment in the dialog).
+      expect(find.text(kAccessSignInCommitTitle('freezer')), findsOneWidget);
+      expect(find.text(kAccessSignInCommitMessage('freezer')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await expectLater(
+        find.byKey(_commitBoundary),
+        matchesGoldenFile('goldens/access_panel_commit_prompt.png'),
+      );
+    });
+
+    testWidgets('the Session card on a committed panel', (tester) async {
+      _sizeView(tester, const Size(700, 460));
+      await tester.pumpWidget(
+        _sessionCardHost(theme: light, panelAccount: 'freezer'),
+      );
+      await _settle(tester);
+
+      expect(find.text(kAccessSessionPanelCommittedNote('freezer')),
+          findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await expectLater(
+        find.byKey(_sessionCardBoundary),
+        matchesGoldenFile('goldens/access_session_card_committed.png'),
+      );
+    });
+
+    testWidgets('the Session card on an uncommitted panel', (tester) async {
+      _sizeView(tester, const Size(700, 460));
+      await tester.pumpWidget(_sessionCardHost(theme: light));
+      await _settle(tester);
+
+      expect(find.text(kAccessSessionPanelUncommittedNote), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await expectLater(
+        find.byKey(_sessionCardBoundary),
+        matchesGoldenFile('goldens/access_session_card_uncommitted.png'),
       );
     });
   });

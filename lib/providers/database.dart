@@ -1,5 +1,6 @@
-import 'dart:io' as io;
 import 'dart:async';
+
+import 'package:logger/logger.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
@@ -10,6 +11,10 @@ import '../core/gateway_config.dart';
 import 'gateway.dart';
 
 part 'database.g.dart';
+
+/// File-level logger. These diagnostics used to go to stderr, which in a
+/// windowed MSIX build with no console is discarded outright.
+final Logger _log = Logger();
 
 @Riverpod(keepAlive: true)
 Future<Database?> database(Ref ref) async {
@@ -66,7 +71,10 @@ Future<Database?> database(Ref ref) async {
   } catch (e) {
     // close() now properly kills the DriftIsolate via shutdownAll()
     await appDb?.close();
-    io.stderr.writeln('Error opening database: $e');
+    // The database is unreachable and a retry loop is about to start that
+    // reports nothing. This is the "trends are empty and nobody knows why"
+    // line, and on stderr nobody ever saw it.
+    _log.e('Error opening database: $e');
     _scheduleRetry(ref, config);
     ref.onDispose(() {
       _retryTimer?.cancel();

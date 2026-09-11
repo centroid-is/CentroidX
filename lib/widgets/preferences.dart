@@ -1,5 +1,6 @@
 import 'dart:convert';
-import 'dart:io' as io;
+
+import 'package:logger/logger.dart';
 
 import 'package:flutter/material.dart';
 import 'package:tfc/widgets/panes/database_stats_pane.dart';
@@ -26,6 +27,10 @@ import '../theme.dart';
 import 'package:tfc_dart/core/preferences.dart';
 // The settings type only — see the note in `pages/server_config.dart`.
 import 'package:tfc_dart/core/database_config.dart';
+
+/// File-level logger. These diagnostics used to go to stderr, which in a
+/// windowed MSIX build with no console is discarded outright.
+final Logger _log = Logger();
 
 /// Appearance settings section for the preferences page.
 ///
@@ -410,7 +415,9 @@ class _McpServerSectionState extends ConsumerState<McpServerSection> {
                   setState(
                       () => _config = _config.copyWith(toggles: newToggles));
                   await _saveConfig();
-                  io.stderr.writeln(
+                  // An audit trail written to a discarded stream is not an
+                  // audit trail. This is the only record of who toggled what.
+                  _log.i(
                     'AUDIT: toggle_change key=${meta.key} '
                     'value=$value '
                     'timestamp=${DateTime.now().toIso8601String()}',

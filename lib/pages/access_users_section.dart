@@ -381,11 +381,11 @@ String kAccessUserStationAccountTitle(String username, bool making) => making
     : 'Make "$username" a person again?';
 
 String kAccessUserStationAccountMessage(bool making) => making
-    ? 'Its sessions will never expire: a panel signed in as this account '
-        'stays signed in until an explicit sign-out, across restarts. The '
+    ? 'Its sessions will never expire on inactivity. Signing in as it on a '
+        'panel then offers to keep that panel signed in across restarts. The '
         'change is recorded.'
-    : 'Its sessions will expire on inactivity again, like any person\'s. '
-        'The change is recorded.';
+    : 'Its sessions will expire on inactivity again, like any person\'s. Any '
+        'panel committed to it returns to anonymous. The change is recorded.';
 
 /// The four cells, one key each, so a test asserts the *column* rather than
 /// some text that happens to be on screen.

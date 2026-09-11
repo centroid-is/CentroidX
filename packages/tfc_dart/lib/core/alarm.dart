@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+
+import 'package:logger/logger.dart';
 
 import 'package:collection/collection.dart';
 import 'package:json_annotation/json_annotation.dart';
@@ -33,6 +34,10 @@ import 'fuzzy_match.dart';
 import 'alarm.dart' as shared;
 
 part 'alarm.g.dart';
+
+/// File-level logger. These diagnostics used to go to stderr, which in a
+/// windowed MSIX build with no console is discarded outright.
+final Logger _log = Logger();
 
 @JsonEnum()
 enum AlarmLevel {
@@ -455,7 +460,7 @@ class AlarmMan implements AlarmSource {
             if (existing != null) {
               _removeActiveAlarm(existing, stamp);
             } else {
-              stderr.writeln(
+              _log.w(
                   'Did not find existing active alarm for alarmNotification: $alarmNotification');
             }
           } else {
@@ -487,7 +492,9 @@ class AlarmMan implements AlarmSource {
           }
           _activeAlarmsController.add(_activeAlarms);
         }, onError: (error, stack) {
-          stderr.writeln('Alarm stream error: $error');
+          // "Why did this alarm never fire" ends here. On stderr it ended
+          // nowhere.
+          _log.e('Alarm stream error: $error', error: error, stackTrace: stack);
         });
       }
     };
@@ -527,7 +534,7 @@ class AlarmMan implements AlarmSource {
       alarmMan._history.addAll(await alarmMan.getRecentAlarms());
       alarmMan._historyController.add(alarmMan._history.buffer);
     } catch (e) {
-      stderr.writeln('Error loading history: $e');
+      _log.e('Error loading alarm history: $e');
     }
     return alarmMan;
   }
@@ -821,7 +828,11 @@ class Alarm {
                 evaluation.bindings.values.map((v) => v.sourceTimestamp),
             clock: clock,
             skewWarnAfter: skewWarnAfter,
-            onSkew: (skew, sourceTime) => stderr.writeln(
+            // Was `stderr.writeln`; main moved this file to the logger in
+            // #477 for the reason recorded there — on a windowed MSIX build
+            // with no console, stderr is discarded, and a clock fault that
+            // reports nowhere is the one this warning exists to surface.
+            onSkew: (skew, sourceTime) => _log.w(
                 'Alarm ${config.uid} rule $i: the plant instant $sourceTime is '
                 '${skew.inSeconds}s from this station\'s clock. Recorded '
                 'unchanged — clamping it would hide a clock fault.'),

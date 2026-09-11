@@ -21,10 +21,16 @@ import 'access_role.dart';
 /// login, logout and failed attempts land in the table. So `'auth'` is a fourth
 /// surface value, with its own itemKey vocabulary:
 ///
-///     login | login.failed | logout | session.timeout
+///     login | login.failed | logout | session.timeout | session.resume
 ///
 /// and an **empty** [groupRequired], because signing in is not gated on a
-/// group. The named constructors below are what fix that vocabulary, so no
+/// group.
+///
+/// `session.resume` is the fifth and the only one no person performs: a panel
+/// committed to a station account returns to that account when a human's
+/// session over it ends. It is a row precisely *because* nobody did it — the
+/// trail would otherwise show a human's `logout` and then writes attributed to
+/// an account that never logged in. The named constructors below are what fix that vocabulary, so no
 /// consumer has to invent column values and the Phase 5 trail viewer has
 /// something exact to filter on.
 ///
@@ -220,6 +226,48 @@ class AuditRecord {
         surface: _authSurface,
         itemKey: 'session.timeout',
         oldValue: roleName,
+        groupRequired: '',
+        allowed: true,
+        actionId: actionId,
+        reason: reason,
+      );
+
+  /// A committed panel returned to its station account.
+  ///
+  /// Not a sign-in: nobody typed a password, and no [AuthProvider] was
+  /// consulted. The credential was presented once, when the panel was
+  /// committed; this row is the panel coming back to the identity it already
+  /// held after a human's session over it ended, timed out, or the panel
+  /// restarted.
+  ///
+  /// It is deliberately **not** an [AuditRecord.login]. A `login` row means a
+  /// credential was accepted at that instant, and a month later nobody can tell
+  /// a real sign-in from a resume if the two share an itemKey — which matters
+  /// exactly when somebody is asking whether a person was at the panel.
+  ///
+  /// [roleName] is the role resolved *at resume*, not the one stored when the
+  /// panel was committed: the account's role may have been changed in between,
+  /// and the row must say what the panel actually came back holding. It is
+  /// repeated in [newValue] so the trail reads as a transition without a join.
+  ///
+  /// `allowed: true` — the panel returning to its baseline is the system
+  /// working, like [sessionTimeout] and unlike [loginFailed].
+  factory AuditRecord.sessionResume({
+    required String who,
+    required String station,
+    required String roleName,
+    required String actionId,
+    DateTime? at,
+    String? reason,
+  }) =>
+      AuditRecord(
+        at: at ?? clock.now(),
+        who: who,
+        station: station,
+        roleName: roleName,
+        surface: _authSurface,
+        itemKey: 'session.resume',
+        newValue: roleName,
         groupRequired: '',
         allowed: true,
         actionId: actionId,

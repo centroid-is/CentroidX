@@ -356,6 +356,23 @@ class GatewayStateMan implements StateMan {
     await _remote.dispose();
   }
 
+  /// Already settled: a gateway panel has no device clients to wait for.
+  ///
+  /// The member exists to let a rebuild wait while locally-configured OPC UA
+  /// and Modbus clients finish connecting or give up (#478). In gateway mode
+  /// this panel configures none — the gateway at the far end owns every client
+  /// and does its own settling there, which is the same division that makes a
+  /// null repository here design rather than fault.
+  ///
+  /// Returning a completed future is therefore the honest answer, not a stub:
+  /// there is nothing outstanding. Waiting on the relay link instead would
+  /// answer a different question, one [RemoteStateMan]'s own readiness already
+  /// answers, and would stall a rebuild on a link this method is not about.
+  @override
+  Future<void> connectionsSettled(
+          {Duration cap = const Duration(seconds: 120)}) async =>
+      Future<void>.value();
+
   @override
   void addSubscription({
     required String key,

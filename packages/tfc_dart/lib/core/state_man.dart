@@ -81,6 +81,8 @@ class ClientWrapper {
   StreamSubscription? _heartbeatSub;
   int _heartbeatGeneration = 0;
   DateTime? _lastHeartbeatTick;
+  Timer? _heartbeatRetryTimer;
+  bool _startingHeartbeat = false;
   bool _inactive = false;
   bool sessionLost = false;
   bool resendOnRecovery;
@@ -256,6 +258,13 @@ class ClientWrapper {
     // The event-driven status says connected — verify the data plane
     // agrees before rendering green.
     if (sessionLost || _inactive) return EffectiveDeviceStatus.opcuaUnhealthy;
+    // No clock is watching this client, so "connected" is an assertion
+    // nothing can ever contradict. Unhealthy immediately rather than after
+    // [heartbeatStartGrace]: the grace exists for a heartbeat that is still
+    // warming up, and this one is not coming.
+    if (heartbeatUnavailable != null) {
+      return EffectiveDeviceStatus.opcuaUnhealthy;
+    }
     final tick = _lastHeartbeatTick;
     if (tick == null) {
       final since = _connectedSince;
@@ -318,6 +327,116 @@ class ClientWrapper {
     return ConnectionStatus.disconnected;
   }
 
+  /// Whether a clock is currently watching this client.
+  bool get hasHeartbeat => _heartbeatSub != null;
+
+  /// Whether this client's heartbeat question has been answered either way:
+  /// it has a clock, or it has reported why it cannot have one.
+  ///
+  /// This is what "startup has finished" means for an OPC UA client, and it
+  /// is what [StateMan.connectionsSettled] waits on.
+  bool get heartbeatSettled => hasHeartbeat || heartbeatUnavailable != null;
+
+  /// Why this client has no clock watching it, or null when it has one.
+  ///
+  /// A client with no heartbeat is a client whose frozen session nobody can
+  /// notice — see [heartbeatStaleAfter] and the note above
+  /// [EffectiveDeviceStatus.opcuaUnhealthy]. That state used to be both
+  /// silent and invisible; now it is neither.
+  String? heartbeatUnavailable;
+
+  /// How long to wait before trying again after a failed [ensureHeartbeat].
+  ///
+  /// A server that cannot give out a subscription is usually not going to
+  /// manage it a second later either, and a per-client retry storm across
+  /// seven endpoints is its own incident. Long enough to be cheap, short
+  /// enough that a server which comes good is watched again within a minute.
+  static const heartbeatRetryDelay = Duration(seconds: 30);
+
+  /// Give this client a heartbeat, creating a subscription for it if nothing
+  /// else has.
+  ///
+  /// # Why this is not just [startHeartbeat]
+  ///
+  /// Heartbeats used to start in exactly one place: the lazy path that
+  /// creates a subscription the first time some *key* is monitored on this
+  /// server (see StateMan's `_subscribeKey`). A client that no page happens
+  /// to read from therefore never got a subscription, and so never got a
+  /// heartbeat, and so had no clock watching it at all.
+  ///
+  /// Measured on the station that froze on 2026-09-10: seven OPC UA clients,
+  /// and exactly ONE "Starting heartbeat" line in the whole run — seventeen
+  /// minutes in, and only after the second engine rebuild. Six of seven
+  /// clients could have been in the frozen-session state (TCP established,
+  /// channel formally open, no state event ever emitted again) for the entire
+  /// incident and nothing in the process would have said so, because that
+  /// failure emits nothing and only a clock can notice it.
+  ///
+  /// So every connected client gets one, whether or not any key routes to it.
+  /// The cost is one subscription and one monitored item (server time) per
+  /// otherwise idle endpoint.
+  Future<void> ensureHeartbeat() async {
+    if (_heartbeatSub != null || _startingHeartbeat) return;
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTimer = null;
+
+    final existing = subscriptionId;
+    if (existing != null) {
+      startHeartbeat(existing);
+      return;
+    }
+
+    _startingHeartbeat = true;
+    try {
+      if (!await worker.doTheWork()) {
+        // Subscription creation is already in flight elsewhere; that path
+        // starts the heartbeat itself. If it fails, the next connect — or
+        // the retry below, armed by whichever caller does fail — comes back
+        // here.
+        return;
+      }
+      try {
+        // Re-checked under the worker: the key path sets subscriptionId while
+        // holding it, so a subscription may have appeared while we queued.
+        final created = subscriptionId ??
+            await client
+                .subscriptionCreate(
+                  requestedPublishingInterval: config.publishingInterval,
+                  requestedMaxKeepAliveCount: 30,
+                )
+                .timeout(const Duration(seconds: 10));
+        subscriptionId = created;
+        heartbeatUnavailable = null;
+        startHeartbeat(created);
+      } catch (e) {
+        // Loud, because the consequence is invisible: this client will read
+        // "connected" forever if its data plane dies, and nothing will
+        // contradict it.
+        heartbeatUnavailable = '$e';
+        recordError('$e');
+        _logger.e('[${config.endpoint}] NO HEARTBEAT: could not create a '
+            'subscription to watch this client with ($e). Its session is now '
+            'unmonitored — a frozen session on this server will not be '
+            'detected. Retrying in ${heartbeatRetryDelay.inSeconds}s.');
+        _recomputeEffectiveStatus();
+        _armHeartbeatRetry();
+      } finally {
+        worker.complete();
+      }
+    } finally {
+      _startingHeartbeat = false;
+    }
+  }
+
+  void _armHeartbeatRetry() {
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTimer = Timer(heartbeatRetryDelay, () {
+      _heartbeatRetryTimer = null;
+      if (_connectionStatus == ConnectionStatus.disconnected) return;
+      unawaited(ensureHeartbeat());
+    });
+  }
+
   void startHeartbeat(int subId) {
     _heartbeatSub?.cancel();
     final serverTimeNode = NodeId.fromNumeric(0, 2258);
@@ -325,6 +444,14 @@ class ClientWrapper {
     // callbacks can fire after stopHeartbeat(). Each callback checks
     // its captured generation against the current one.
     final gen = ++_heartbeatGeneration;
+    // Clearing this changes the derived status, so push it rather than
+    // leaving a client that has just been given a clock reading unhealthy
+    // until the next 2 s health tick.
+    final wasUnavailable = heartbeatUnavailable != null;
+    heartbeatUnavailable = null;
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTimer = null;
+    if (wasUnavailable) _recomputeEffectiveStatus();
     _logger.i('[${config.endpoint}] Starting heartbeat on sub=$subId');
     _heartbeatSub = client.monitoredItems(
       {
@@ -423,6 +550,8 @@ class ClientWrapper {
 
   void dispose() {
     stopHeartbeat();
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTimer = null;
     _stopHealthTimer();
     _effectiveStatus$.close();
     _connectionController.close();
@@ -721,6 +850,31 @@ class OpcUaStateMan implements StateMan {
               });
             }
           }
+
+          // Every connected client gets a clock, not only the ones some page
+          // happens to read a key from.
+          //
+          // Heartbeats used to start in exactly one place: the lazy path that
+          // creates a subscription the first time a KEY is monitored on this
+          // server. A client no page reads from therefore never got a
+          // subscription, never got a heartbeat, and had nothing watching it
+          // at all. The station that froze on 2026-09-10 had seven clients
+          // and produced exactly ONE "Starting heartbeat" line in the whole
+          // run -- seventeen minutes in, and only after the second engine
+          // rebuild. Six of seven could have sat in the frozen-session state
+          // for the entire incident with nothing able to say so, because that
+          // failure emits nothing at all and only a clock can notice it.
+          //
+          // Deliberately placed AFTER the session-loss branch above, which
+          // stops the heartbeat and rebuilds it from the keys routed to this
+          // server. A server with no keys has none to rebuild from, so
+          // without this it would come back from a session loss permanently
+          // unwatched -- the same hole, reached by a different road.
+          //
+          // Unawaited: this listener is synchronous, and ensureHeartbeat is
+          // idempotent and guarded by the wrapper's SingleWorker against the
+          // key path racing it.
+          unawaited(wrapper.ensureHeartbeat());
         }
       }, onError: (e, s) {
         logger.e('[$alias] Failed to listen to state stream: $e, $s');
@@ -1451,8 +1605,67 @@ class OpcUaStateMan implements StateMan {
       _connMeta.subscribeAll(alias);
 
   /// Close the connection to the server.
+  Completer<void>? _settledCompleter;
+  Timer? _settledTimer;
+
+  /// Completes once every OPC UA client has either got a clock watching it or
+  /// said why it cannot have one — that is, once this isolate has stopped
+  /// bringing its connections up.
+  ///
+  /// The app reports this to the Windows runner as "startup complete", and
+  /// the runner refuses to rebuild the engine before it. That matters because
+  /// an engine rebuild destroys this isolate outright: on 2026-09-10 a
+  /// teardown landed 35 s into a bring-up that was still on
+  /// "ST101.PSU attempt 2", and the half-open clients it abandoned were
+  /// measured afterwards as 7 sockets stuck in CLOSE_WAIT with no worker
+  /// thread left alive to close them.
+  ///
+  /// [cap] bounds the wait: a server that never answers must delay a rebuild,
+  /// but not forever. Idempotent — every caller gets the same future.
+  Future<void> connectionsSettled(
+      {Duration cap = const Duration(seconds: 120)}) {
+    final existing = _settledCompleter;
+    if (existing != null) return existing.future;
+
+    final completer = Completer<void>();
+    _settledCompleter = completer;
+    final deadline = DateTime.now().add(cap);
+
+    void finish(String why) {
+      _settledTimer?.cancel();
+      _settledTimer = null;
+      if (completer.isCompleted) return;
+      logger.i('Connections settled: $why');
+      completer.complete();
+    }
+
+    void check() {
+      if (completer.isCompleted) return;
+      final unsettled =
+          clients.where((wrapper) => !wrapper.heartbeatSettled).toList();
+      if (unsettled.isEmpty) {
+        finish('${clients.length} OPC UA client(s), all with a heartbeat or a '
+            'stated reason they have none');
+        return;
+      }
+      if (!DateTime.now().isBefore(deadline)) {
+        finish('gave up waiting after ${cap.inSeconds}s; still unsettled: '
+            '${unsettled.map((w) => w.config.endpoint).join(', ')}');
+      }
+    }
+
+    check();
+    if (!completer.isCompleted) {
+      _settledTimer =
+          Timer.periodic(const Duration(seconds: 1), (_) => check());
+    }
+    return completer.future;
+  }
+
   Future<void> close() async {
     _shouldRun = false;
+    _settledTimer?.cancel();
+    _settledTimer = null;
     logger.d('Closing connection');
 
     // Dispose device clients (M2400, etc.)

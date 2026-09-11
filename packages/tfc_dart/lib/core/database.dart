@@ -19,6 +19,10 @@ export 'database_config.dart';
 export 'retention_policy.dart';
 
 
+/// File-level logger. These diagnostics used to go to stderr, which in a
+/// windowed MSIX build with no console is discarded outright.
+final Logger _log = Logger();
+
 // todo skoða
 // https://github.com/osaxma/postgresql-dart-replication-example/blob/main/example/listen_v3.dart
 
@@ -1537,8 +1541,12 @@ ORDER BY at.time;
     // }
 
     if (!retentionPolicies.containsKey(tableName)) {
-      stderr.writeln(
-          'Table $tableName does not exist, and no retention policy is set');
+      // Silent data loss: the timeseries table is never created and the
+      // historian simply stops recording that tag. Worth an error, and worth
+      // one that reaches the log file.
+      _log.e(
+          'Table $tableName does not exist, and no retention policy is set '
+          '-- nothing will be recorded for it');
       return false;
     }
 

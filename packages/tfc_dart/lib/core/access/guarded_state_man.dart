@@ -510,6 +510,10 @@ class GuardedStateMan implements StateMan {
       _inner.subscribeConnMeta(alias);
 
   @override
+  Future<void> connectionsSettled({Duration cap = const Duration(seconds: 120)}) =>
+      _inner.connectionsSettled(cap: cap);
+
+  @override
   Future<void> close() => _inner.close();
 
   /// Forwarded, and carrying the same [visibleForTesting] contract the inner

@@ -416,9 +416,52 @@ void main() {
     });
   });
 
+  group('AuditRecord.sessionResume', () {
+    AuditRecord build({String roleName = kOperatorRoleName}) =>
+        AuditRecord.sessionResume(
+          who: 'freezer',
+          station: 'st101',
+          roleName: roleName,
+          actionId: 'e' * 32,
+        );
+
+    test('fixes the auth vocabulary', () {
+      final record = build();
+      expect(record.surface, 'auth');
+      expect(record.itemKey, 'session.resume');
+      expect(record.allowed, isTrue);
+    });
+
+    test('newValue is the role resumed into', () {
+      expect(build().newValue, kOperatorRoleName);
+      expect(build(roleName: 'Shift Leader').newValue, 'Shift Leader');
+    });
+
+    test('groupRequired is empty', () {
+      expect(build().groupRequired, isEmpty);
+    });
+
+    test('is not a login', () {
+      // The distinction the trail is for: a `login` row means a credential was
+      // accepted at that instant. A resume means a panel came back to an
+      // identity it already held, with nobody at it. Collapsing the two would
+      // make "was a person here?" unanswerable a month later.
+      expect(build().itemKey, isNot('login'));
+      expect(
+        AuditRecord.login(
+          who: 'freezer',
+          station: 'st101',
+          roleName: kOperatorRoleName,
+          actionId: 'e' * 32,
+        ).itemKey,
+        isNot(build().itemKey),
+      );
+    });
+  });
+
   group('no auth record can carry a password', () {
     // The structural half of this assertion is the constructor signatures: none
-    // of the four auth factories takes a password, so a call passing one would
+    // of the five auth factories takes a password, so a call passing one would
     // not compile and this file would not run at all. The tests below cover the
     // other half — that a password handed to the *login flow* has no field on
     // the record it could land in, and that toString() does not leak the value

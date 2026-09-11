@@ -41,11 +41,12 @@ AlarmConfig alarm(
   required List<String> group,
   bool bindToGroup = false,
   AlarmLevel level = AlarmLevel.error,
+  String? description,
 }) =>
     AlarmConfig(
       uid: title.toLowerCase().replaceAll(' ', '-'),
       title: title,
-      description: title,
+      description: description ?? title,
       group: group,
       bindToGroup: bindToGroup,
       rules: [
@@ -65,7 +66,10 @@ final alarms = [
   alarm('Film reel empty', group: ['Line 3', 'Multivac']),
   alarm('Film tracking error',
       group: ['Line 3', 'Multivac'], level: AlarmLevel.warning),
-  alarm('Seal temperature out of band', group: ['Line 3', 'Multivac']),
+  alarm('Seal temperature out of band',
+      group: ['Line 3', 'Multivac'],
+      description: 'The sealing bar left its band while the cycle was '
+          'running. Product sealed in this state may not hold vacuum.'),
   alarm('Blank magazine empty', group: ['Line 3', 'Box erector BER01']),
   alarm('Glue temperature low',
       group: ['Line 3', 'Box erector BER01'], level: AlarmLevel.warning),
@@ -120,11 +124,34 @@ StopIntervalSource sampleSource() {
   return StopIntervalSource(closed: closedOnes, open: openOnes);
 }
 
+/// Six alarms across Line 3 running into one another, so a collapsed group
+/// draws them as one bar — the stretch whose old callout could only count.
+/// Six so the bubble has to leave two of them out, and say so.
+StopIntervalSource crowdedSource() => StopIntervalSource(
+      closed: [
+        for (final (uid, from, to, level) in [
+          ('seal-temperature-out-of-band', 50, 20, AlarmLevel.error),
+          ('film-reel-empty', 48, 25, AlarmLevel.error),
+          ('film-tracking-error', 46, 32, AlarmLevel.warning),
+          ('multivac-stopped', 44, 35, AlarmLevel.error),
+          ('blank-magazine-empty', 42, 36, AlarmLevel.error),
+          ('glue-temperature-low', 40, 22, AlarmLevel.warning),
+        ])
+          StopActivation(
+            alarmUid: uid,
+            interval:
+                AlarmInterval(start: ago(from), end: ago(to), level: level),
+          ),
+      ],
+      open: const [],
+    );
+
 Widget harness(
   StopTimelineSpec config,
   Brightness brightness, {
   Size size = const Size(900, 420),
   DateTimeRange? range,
+  StopIntervalSource? intervals,
 }) {
   return MaterialApp(
     debugShowCheckedModeBanner: false,
@@ -137,7 +164,7 @@ Widget harness(
           child: StopTimelineView(
             config: config,
             tree: AlarmTree.fromConfigs(alarms),
-            source: sampleSource(),
+            source: intervals ?? sampleSource(),
             range: range,
             onRangeChanged: (_) {},
             onIntervalChanged: (_) {},
@@ -270,6 +297,165 @@ void main() {
       await tester.pumpAndSettle();
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_standing_since_yesterday.png'));
+    }, skip: !Platform.isMacOS);
+
+    // --- callouts -------------------------------------------------------
+
+    /// Where the middle of an interval lands, in pixels right of the label
+    /// column, in the window the view opens on: the last three hours plus the
+    /// live pad for the configured twelve-hour period (10 minutes).
+    double xOfInterval(WidgetTester tester, DateTime start, DateTime end) {
+      final laneWidth =
+          tester.getRect(find.byType(StopTimelineView)).width - 210;
+      final windowStart = now.subtract(const Duration(hours: 3));
+      final windowEnd = now.add(const Duration(minutes: 10));
+      final span = windowEnd.difference(windowStart).inMicroseconds;
+      final mid = start.add(end.difference(start) ~/ 2);
+      return mid.difference(windowStart).inMicroseconds / span * laneWidth;
+    }
+
+    Future<void> tapLane(
+        WidgetTester tester, String rowKey, double dx) async {
+      final label =
+          tester.getRect(find.byKey(ValueKey('stop-timeline-row-$rowKey')));
+      await tester.tapAt(Offset(label.right + dx, label.center.dy));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> drillIntoMultivac(WidgetTester tester) async {
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+          find.byKey(const ValueKey('stop-timeline-row-g:Line 3/Multivac')));
+      await tester.pumpAndSettle();
+    }
+
+    for (final brightness in [Brightness.light, Brightness.dark]) {
+      final name = brightness == Brightness.light ? 'light' : 'dark';
+
+      testWidgets('an activation callout ($name)', (tester) async {
+        await pump(tester, harness(StopTimelineSpec(), brightness),
+            const Size(960, 480));
+        await drillIntoMultivac(tester);
+        // 'Film reel empty', 64..52 minutes ago.
+        await tapLane(tester, 'a:film-reel-empty',
+            xOfInterval(tester, ago(64), ago(52)));
+        await expectLater(find.byType(StopTimelineView),
+            matchesGoldenFile('goldens/stop_timeline_callout_$name.png'));
+      }, skip: !Platform.isMacOS);
+
+      testWidgets('an alarm identity callout ($name)', (tester) async {
+        await pump(tester, harness(StopTimelineSpec(), brightness),
+            const Size(960, 480));
+        await drillIntoMultivac(tester);
+        await tester.tap(find.byKey(const ValueKey(
+            'stop-timeline-row-a:seal-temperature-out-of-band')));
+        await tester.pumpAndSettle();
+        await expectLater(
+            find.byType(StopTimelineView),
+            matchesGoldenFile(
+                'goldens/stop_timeline_leaf_callout_$name.png'));
+      }, skip: !Platform.isMacOS);
+    }
+
+    // Light, where the edge golden below is dark: "still standing" is the one
+    // saturated colour in the bubble and has to hold in both schemes.
+    testWidgets('a callout on a standing activation', (tester) async {
+      await pump(tester, harness(StopTimelineSpec(), Brightness.light),
+          const Size(960, 480));
+      await drillIntoMultivac(tester);
+      // 'Seal temperature out of band' has been standing for nine minutes.
+      await tapLane(tester, 'a:seal-temperature-out-of-band',
+          xOfInterval(tester, ago(9), now));
+      await expectLater(find.byType(StopTimelineView),
+          matchesGoldenFile('goldens/stop_timeline_callout_standing.png'));
+    }, skip: !Platform.isMacOS);
+
+    testWidgets('a callout on the top row opens downward', (tester) async {
+      await pump(tester, harness(StopTimelineSpec(), Brightness.light),
+          const Size(960, 480));
+      // Line 3, collapsed and first: there is no room above it.
+      await tapLane(tester, 'g:Line 3', xOfInterval(tester, ago(64), ago(52)));
+      await expectLater(find.byType(StopTimelineView),
+          matchesGoldenFile('goldens/stop_timeline_callout_flipped.png'));
+    }, skip: !Platform.isMacOS);
+
+    testWidgets('a callout near the edge is clamped, tail off centre',
+        (tester) async {
+      await pump(tester, harness(StopTimelineSpec(), Brightness.dark),
+          const Size(960, 480));
+      await drillIntoMultivac(tester);
+      // The standing alarm runs to the live edge, hard against the right.
+      await tapLane(tester, 'a:seal-temperature-out-of-band',
+          xOfInterval(tester, ago(1), now));
+      await expectLater(find.byType(StopTimelineView),
+          matchesGoldenFile('goldens/stop_timeline_callout_edge.png'));
+    }, skip: !Platform.isMacOS);
+
+    testWidgets('a collapsed group callout names what stood under it',
+        (tester) async {
+      await pump(tester, harness(StopTimelineSpec(), Brightness.light),
+          const Size(960, 480));
+      await tester
+          .tap(find.byKey(const ValueKey('stop-timeline-row-g:Line 3')));
+      await tester.pumpAndSettle();
+      // Multivac collapsed: its bar is the union of everything inside it.
+      await tapLane(tester, 'g:Line 3/Multivac',
+          xOfInterval(tester, ago(120), ago(111)));
+      await expectLater(find.byType(StopTimelineView),
+          matchesGoldenFile('goldens/stop_timeline_group_callout.png'));
+    }, skip: !Platform.isMacOS);
+
+    // The case the count was hopeless for: one bar, six alarms in it, named
+    // in the order they fired, with the two that do not fit counted. Both
+    // schemes, because the list is the only place a severity mark sits on
+    // the bubble's own fill.
+    for (final (name, brightness) in const [
+      ('light', Brightness.light),
+      ('dark', Brightness.dark),
+    ]) {
+      testWidgets('a crowded group stretch, four named and two counted ($name)',
+          (tester) async {
+        await pump(
+            tester,
+            harness(StopTimelineSpec(), brightness,
+                intervals: crowdedSource()),
+            const Size(960, 480));
+        await tapLane(tester, 'g:Line 3', xOfInterval(tester, ago(50), ago(20)));
+        await expectLater(
+            find.byType(StopTimelineView),
+            matchesGoldenFile(
+                'goldens/stop_timeline_group_callout_crowded_$name.png'));
+      }, skip: !Platform.isMacOS);
+    }
+
+    testWidgets('a callout at strip height, where nothing else fits',
+        (tester) async {
+      await pump(
+          tester,
+          harness(StopTimelineSpec(), Brightness.dark,
+              size: const Size(620, 150)),
+          const Size(700, 240));
+      await tapLane(tester, 'g:Line 3', 300);
+      await expectLater(find.byType(StopTimelineView),
+          matchesGoldenFile('goldens/stop_timeline_callout_compact.png'));
+    }, skip: !Platform.isMacOS);
+
+    // --- hiding rows ----------------------------------------------------
+
+    testWidgets('rows switched off go pale and empty', (tester) async {
+      await pump(tester, harness(StopTimelineSpec(), Brightness.light),
+          const Size(960, 480));
+      await drillIntoMultivac(tester);
+      await tester.tap(
+          find.byKey(const ValueKey('stop-timeline-show-a:film-reel-empty')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(
+          const ValueKey('stop-timeline-show-g:Line 3/Afak SL-15-3')));
+      await tester.pumpAndSettle();
+      await expectLater(find.byType(StopTimelineView),
+          matchesGoldenFile('goldens/stop_timeline_hidden_rows.png'));
     }, skip: !Platform.isMacOS);
 
     testWidgets('a week-long picked range labels the days', (tester) async {

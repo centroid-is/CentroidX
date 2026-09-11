@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:beamer/beamer.dart';
 import 'package:dbus/dbus.dart';
@@ -12,6 +13,7 @@ import 'package:upgrader/upgrader.dart';
 import 'package:centroidx_upgrader/centroidx_upgrader.dart';
 
 import 'package:tfc/access_routes.dart';
+import 'package:tfc/core/runner_liveness.dart';
 import 'package:tfc/core/startup_url.dart';
 import 'package:tfc/core/update_channel.dart';
 import 'package:tfc/core/update_launch.dart';
@@ -57,6 +59,7 @@ import 'package:tfc/mcp/app_capture.dart';
 import 'package:tfc/providers/mcp_bridge.dart';
 import 'package:tfc/providers/navigator_key.dart';
 import 'package:tfc/providers/page_manager.dart';
+import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/providers/scaffold_messenger_key.dart';
 
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
@@ -151,7 +154,19 @@ String appFramesOf(StackTrace? stack) {
       .join('\n');
 }
 
-void main() {
+/// This isolate's liveness clock. Global because [_startApp] and the
+/// first-frame callback both need it and neither can be handed an argument.
+RunnerLiveness? _liveness;
+
+/// [args] are the Dart entrypoint arguments the Windows runner passes on every
+/// engine start: `--engine-epoch=N` and `--engine-reason=...`. An RDP session
+/// change destroys the engine and builds a new one, which is a whole new
+/// isolate running this function again -- three of them inside one frozen
+/// process on 2026-09-10, with nothing in either log to separate them. Now the
+/// first thing the app does is say which generation it is and why.
+void main(List<String> args) {
+  final engineEpoch = EngineEpoch.fromArguments(args);
+
   // Ignore SIGPIPE so broken-pipe writes become IOExceptions instead of
   // killing the process.  The MCP HTTP server, OPC UA client, and pdfium
   // background isolate all perform native socket/pipe IO that can trigger
@@ -203,20 +218,39 @@ void main() {
 
   if (_enableMarionette) {
     initMarionette();
+    _startLiveness(engineEpoch);
     _startApp(debugMode);
   } else {
     runZonedGuarded(
       () {
         WidgetsFlutterBinding.ensureInitialized();
+        _startLiveness(engineEpoch);
         _startApp(debugMode);
       },
       (error, stackTrace) {
-        stderr.writeln('Unhandled async error: $error');
-        stderr.writeln('$stackTrace');
+        // The logger, not stderr. FlutterError.onError above was routed here
+        // precisely so a red screen persists to disk; its asynchronous twin
+        // was left writing to stderr, which in a windowed MSIX build with no
+        // console goes nowhere at all. An unhandled async error is the single
+        // most valuable line this app can produce and it was being discarded.
+        logger.e('Unhandled async error: $error', error: error, stackTrace: stackTrace);
       },
       zoneSpecification: debugMode ? ZoneSpecification(print: _debugPrint) : null,
     );
   }
+}
+
+/// Arms the UI isolate's own clock.
+///
+/// Deliberately the FIRST thing done once a binding exists, and before any of
+/// the startup work in [_startApp]: the most informative stamp is the one that
+/// never arrives, and it can only fail to arrive from a timer that was armed.
+/// A station whose `main()` hangs loading preferences now produces "UI isolate
+/// NEVER stamped" in hmi-runner.log instead of nothing at all.
+void _startLiveness(EngineEpoch epoch) {
+  final liveness = RunnerLiveness(epoch: epoch, logger: logger);
+  _liveness = liveness;
+  liveness.start();
 }
 
 /// All initialisation that depends on a Flutter binding being present,
@@ -404,7 +438,10 @@ Future<void> _startApp([bool debugMode = false]) async {
             channel: channel,
             flutterPid: pid,
           ),
-          log: stderr.writeln,
+          // Reaches the log file; stderr in a windowed MSIX build does not,
+          // and "the updater would not start" is precisely the thing an
+          // operator reports as "the update button does nothing".
+          log: logger.w,
           show: (message) =>
               globalScaffoldMessengerKey.currentState?.showSnackBar(
             SnackBar(
@@ -423,6 +460,39 @@ Future<void> _startApp([bool debugMode = false]) async {
       ),
     ),
   ));
+
+  // Startup is not "runApp returned", and it is not the first frame either.
+  // The work an engine rebuild must not interrupt is the OPC UA bring-up:
+  // the 2026-09-10 teardown landed 35 s in, while this generation was still
+  // on "ST101.PSU attempt 2", and abandoned the half-open clients. So the
+  // boundary reported to the runner is "every client has a clock watching it
+  // or has said why it cannot" -- see StateMan.connectionsSettled.
+  SchedulerBinding.instance.addPostFrameCallback((_) {
+    unawaited(_reportStartupComplete());
+  });
+}
+
+/// Waits for this generation's connections to settle, then tells the runner.
+///
+/// Best effort by construction: every failure path still reports, because a
+/// runner that never hears "startup complete" holds a queued session-change
+/// rebuild until its own backstop timeout, and an operator who has just
+/// reconnected would be looking at a stale renderer in the meantime.
+Future<void> _reportStartupComplete() async {
+  final liveness = _liveness;
+  if (liveness == null) return;
+  try {
+    final context = globalScaffoldMessengerKey.currentContext;
+    if (context != null) {
+      final container = ProviderScope.containerOf(context, listen: false);
+      final stateMan = await container.read(stateManProvider.future);
+      await stateMan.connectionsSettled();
+    }
+  } catch (error) {
+    logger.w('Could not wait for connections to settle before reporting '
+        'startup complete: $error');
+  }
+  liveness.reportStartupComplete();
 }
 
 Completer<DBusClient> dbusCompleter = Completer();
@@ -589,10 +659,7 @@ RoutesLocationBuilder createLocationBuilder(
           child: DbusGate(
             title: 'About Linux',
             shared: dbusCompleter,
-            builder: (context, client, switchConnection) => AboutLinuxPage(
-              dbusClient: client,
-              onSwitchConnection: switchConnection,
-            ),
+            builder: (context, client, _) => AboutLinuxPage(dbusClient: client),
           ),
         ),
     '/advanced/page-editor': (context, state, args) => BeamPage(

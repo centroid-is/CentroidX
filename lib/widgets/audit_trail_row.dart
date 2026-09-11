@@ -108,12 +108,14 @@ const Key kAuditMarkPlaceholderKey = Key('audit-mark-placeholder');
 /// than adding a colour.
 const Key kAuditAuthMarkKey = Key('audit-auth-mark');
 
-/// The `itemKey` of a successful sign-in, one of the four the named
+/// The `itemKey` of a successful sign-in, one of the five the named
 /// constructors in `packages/tfc_access/lib/src/audit.dart` pin.
 ///
 /// Named because it is the only auth event this widget treats differently from
-/// the other three, and an exact comparison is what keeps `login.failed` out of
-/// it.
+/// the other four, and an exact comparison is what keeps `login.failed` out of
+/// it — and, since panels could be committed to a station account,
+/// `session.resume`, which is a panel returning to an identity rather than
+/// anybody signing in.
 const String kAuditAuthLoginItemKey = 'login';
 
 /// The inline origin chip. Absent on a hand-made write.

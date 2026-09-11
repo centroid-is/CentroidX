@@ -18,6 +18,18 @@
 /// row per change itself, through the same sink the guards use, with the
 /// same no-op suppression: an unchanged value writes nothing.
 ///
+/// ## Why the panel account is shown here
+///
+/// A committed panel is the one piece of session state nobody standing at the
+/// panel can see. It is device-local, it is not the signed-in identity (a
+/// human signed in *over* a committed panel sees their own name in the app
+/// bar), and the only way to end it — signing the panel's own account out —
+/// is not discoverable from any control. Support asking "what does this panel
+/// come back as?" had nowhere to look. It is a read-out, not a knob: the
+/// commitment is made at sign-in and ended by a sign-out, and adding a third
+/// way to change it here would be a second answer to a question that already
+/// has one.
+///
 /// ## Applying live
 ///
 /// `AccessSessionController.build` watches `inactivityTimeoutProvider`, so
@@ -66,6 +78,27 @@ const String kAccessSessionNeverExpireLabel = 'Sessions never expire';
 const String kAccessSessionNeverExpireNote =
     'For panels that live signed in as a station account. Anyone at this '
     'panel keeps the signed-in permissions until an explicit sign-out.';
+
+/// The panel-account read-out, for tests and for support to point at.
+const Key kAccessSessionPanelAccountKey = Key('access-session-panel-account');
+
+/// Its sub-heading. "Panel account" rather than "Commitment": it is the
+/// vocabulary the sign-in prompt already uses with the operator.
+const String kAccessSessionPanelHeading = 'Panel account';
+
+/// What a committed panel returns to, and the only way out — the same two
+/// promises the commit prompt makes, in the past tense.
+String kAccessSessionPanelCommittedNote(String username) =>
+    'This panel stays signed in as $username — across restarts, and whenever '
+    'a session opened over it ends or times out. Signing $username out '
+    'ends it.';
+
+/// The common case, said plainly rather than by omission: a blank where the
+/// account would be reads as "not loaded yet", not as "there is none".
+const String kAccessSessionPanelUncommittedNote =
+    'This panel is not signed in as an account of its own — it returns to '
+    'anonymous when a session ends. Signing in with a station account offers '
+    'to change that.';
 
 /// Shown when the input cannot be saved.
 final String kAccessSessionRangeError =
@@ -207,6 +240,8 @@ class _AccessSessionSectionState extends ConsumerState<AccessSessionSection> {
     final resolved = effective.hasValue;
     final neverExpires = resolved && effective.value == null;
 
+    final panel = ref.watch(panelAccountProvider);
+
     final stored = ref.watch(_storedMinutesProvider);
     if (!_seeded && resolved && stored.hasValue) {
       // Under a disabled expiry the effective answer is null; the field then
@@ -267,9 +302,74 @@ class _AccessSessionSectionState extends ConsumerState<AccessSessionSection> {
               value: neverExpires,
               onChanged: resolved ? (next) => _setNeverExpires(next) : null,
             ),
+            _PanelAccountNote(panel: panel),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// The panel-account read-out.
+///
+/// Renders nothing until the store has answered. The two sentences are
+/// opposites, so showing either one early is a claim, and a card that briefly
+/// says a committed panel is uncommitted is worse than a card that says
+/// nothing for one frame.
+///
+/// **The divider belongs to the note**, not to the card body. A store that
+/// never answers — a fake in a test, a device-local read that throws — would
+/// otherwise leave a rule across the card with nothing under it, which reads
+/// as a section that failed to load rather than as one that is not there.
+class _PanelAccountNote extends StatelessWidget {
+  const _PanelAccountNote({required this.panel});
+
+  final AsyncValue<String?> panel;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!panel.hasValue) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final username = panel.value;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Divider(height: 24),
+        _row(theme, username),
+      ],
+    );
+  }
+
+  Widget _row(ThemeData theme, String? username) {
+    return Row(
+      key: kAccessSessionPanelAccountKey,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          Icons.desktop_windows_outlined,
+          size: 18,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(kAccessSessionPanelHeading,
+                  style: theme.textTheme.bodyMedium),
+              const SizedBox(height: 2),
+              Text(
+                username == null
+                    ? kAccessSessionPanelUncommittedNote
+                    : kAccessSessionPanelCommittedNote(username),
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

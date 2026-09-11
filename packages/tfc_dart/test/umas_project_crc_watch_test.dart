@@ -31,6 +31,7 @@ import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:tfc_dart/core/state_man.dart'
     show ConnectionStatus, ModbusPollGroupConfig;
 import 'package:tfc_dart/core/umas_client.dart';
+import 'helpers/wait_until.dart';
 
 String _findProjectRoot() {
   var dir = Directory.current;
@@ -266,8 +267,14 @@ void main() {
       );
 
       try {
-        // Wait for initial table build.
-        await Future.delayed(const Duration(milliseconds: 400));
+        // Wait for the initial table build. A fixed 400ms sleep here was a
+        // race, not a wait: on a loaded runner the build had not happened yet
+        // and this counted 0 registrations (tfc-dart-test (windows-latest),
+        // 2026-09-10). Wait for the very thing the next line asserts on.
+        await waitUntil(
+          () => stubLog.any((l) => l.contains('MonitorPlc: registered')),
+          what: 'the initial table build registered the lone key',
+        );
         final registersAfterFirstBuild = stubLog
             .where((l) => l.contains('MonitorPlc: registered'))
             .length;

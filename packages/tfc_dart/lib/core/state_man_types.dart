@@ -928,5 +928,21 @@ abstract interface class StateMan {
     required DynamicValue? firstValue,
   });
 
+  /// Completes once every configured client has either connected or given up.
+  ///
+  /// Declared on the interface rather than only on `OpcUaStateMan` because
+  /// `GuardedStateMan` forwards the whole surface through an inner typed as
+  /// `StateMan`, so a member that exists only on the concrete class cannot be
+  /// forwarded — which is exactly how the merge of #478 surfaced here.
+  ///
+  /// [cap] bounds the wait: a server that never answers must delay a rebuild,
+  /// but not forever. Implementations are expected to be idempotent, handing
+  /// every caller the same future.
+  ///
+  /// Web-safe by construction, which this file requires: the signature is
+  /// `Future`, `Duration` and nothing else. See
+  /// `database_config_web_safe_test.dart`.
+  Future<void> connectionsSettled({Duration cap = const Duration(seconds: 120)});
+
   Future<void> close();
 }

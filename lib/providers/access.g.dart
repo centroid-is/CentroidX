@@ -30,7 +30,7 @@ final accessRepositoryProvider = FutureProvider<AccessRepository?>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef AccessRepositoryRef = FutureProviderRef<AccessRepository?>;
-String _$accessAuthorityHash() => r'7c761301ae522850d493ad79a8e8a4f6dd925525';
+String _$accessAuthorityHash() => r'8a162da4db3b69267c10090c81150a593e0b117e';
 
 /// What verifies a credential on this station — the gate's first question.
 ///
@@ -230,7 +230,7 @@ final firstUserWindowOpenProvider = FutureProvider<bool>.internal(
 // ignore: unused_element
 typedef FirstUserWindowOpenRef = FutureProviderRef<bool>;
 String _$accessSessionControllerHash() =>
-    r'4e9f57c4071ecc2e3c1dd29b1e74731a45c11da3';
+    r'ca9f658f189e0de9c27c19a8a21e3c14e29132e9';
 
 /// Who is standing at this panel, and what they may do.
 ///

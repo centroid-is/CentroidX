@@ -63,7 +63,25 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
+    # `actions/checkout` is a network operation against github.com, and it fails
+    # outright often enough to matter — 9 times in the 2.5 weeks to 2026-09-10,
+    # each one killing a whole job before a single useful step had run. Retried
+    # once here, and at every other checkout in this file.
+    #
+    # This cannot be factored into `.github/actions/` the way pub-get and
+    # setup-flutter are: a local composite action is loaded from the workspace,
+    # and the workspace does not exist until checkout has run. So the retry is
+    # written out at each site instead.
+    #
+    # Safe to repeat: checkout cleans the workspace on entry, so the second
+    # attempt does not inherit a half-finished first one.
     - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
 
     # Spec §6's invariant: nothing outside lib/providers/ may construct a
     # device-local preferences store, because such a store is not wrapped by
@@ -85,7 +103,7 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev
 
     - name: Get dependencies
-      run: flutter pub get
+      uses: ./.github/actions/pub-get
 
     - name: Run pages tests
       run: flutter test test/
@@ -132,6 +150,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
 
     - name: Set up Flutter
       uses: ./.github/actions/setup-flutter
@@ -144,8 +168,9 @@ jobs:
     # package, NOT the root one. Dropping it silently retargets this job at the
     # root package and re-runs what flutter-test already covers.
     - name: Get dependencies
-      working-directory: centroid-hmi
-      run: flutter pub get
+      uses: ./.github/actions/pub-get
+      with:
+        working-directory: centroid-hmi
 
     - name: Run centroid-hmi tests
       working-directory: centroid-hmi
@@ -178,18 +203,34 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
     - uses: dart-lang/setup-dart@v1
+
+    - name: Get dependencies (modbus_client)
+      uses: ./.github/actions/pub-get
+      with:
+        command: dart pub get
+        working-directory: packages/modbus_client
 
     - name: Test modbus_client
       working-directory: packages/modbus_client
       run: |
-        dart pub get
         dart test
+
+    - name: Get dependencies (modbus_client_tcp)
+      uses: ./.github/actions/pub-get
+      with:
+        command: dart pub get
+        working-directory: packages/modbus_client_tcp
 
     - name: Test modbus_client_tcp
       working-directory: packages/modbus_client_tcp
       run: |
-        dart pub get
         dart test
 
   # packages/jbtm is the M2400/M2200 weigher acquisition path — the code that
@@ -211,12 +252,23 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
     - uses: dart-lang/setup-dart@v1
+
+    - name: Get dependencies (jbtm)
+      uses: ./.github/actions/pub-get
+      with:
+        command: dart pub get
+        working-directory: packages/jbtm
 
     - name: Test jbtm
       working-directory: packages/jbtm
       run: |
-        dart pub get
         dart test --file-reporter "json:test-report.json"
 
     # A job that exists and runs nothing is the defect this job was added to
@@ -261,12 +313,23 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
     - uses: dart-lang/setup-dart@v1
+
+    - name: Get dependencies (tfc_mcp_server)
+      uses: ./.github/actions/pub-get
+      with:
+        command: dart pub get
+        working-directory: packages/tfc_mcp_server
 
     - name: Test tfc_mcp_server
       working-directory: packages/tfc_mcp_server
       run: |
-        dart pub get
         dart test
 
   # packages/tfc_access holds the access vocabulary -- groups, roles, sessions
@@ -286,12 +349,23 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
     - uses: dart-lang/setup-dart@v1
+
+    - name: Get dependencies (tfc_access)
+      uses: ./.github/actions/pub-get
+      with:
+        command: dart pub get
+        working-directory: packages/tfc_access
 
     - name: Test tfc_access
       working-directory: packages/tfc_access
       run: |
-        dart pub get
         dart analyze
         dart test
 
@@ -307,12 +381,23 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
     - uses: ./.github/actions/setup-flutter
+
+    - name: Get dependencies (centroidx_upgrader)
+      uses: ./.github/actions/pub-get
+      with:
+        command: flutter pub get
+        working-directory: packages/centroidx_upgrader
 
     - name: Test centroidx_upgrader
       working-directory: packages/centroidx_upgrader
       run: |
-        flutter pub get
         flutter test
 
   # The relay pipe's pure-Dart packages. tfc_relay_protocol had no CI job at
@@ -844,6 +929,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
 
     - uses: dart-lang/setup-dart@v1
 
@@ -921,8 +1012,10 @@ jobs:
         & "$env:PGBIN\psql.exe" -U postgres -d testdb -c "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"
 
     - name: Get dependencies
-      working-directory: packages/tfc_dart
-      run: dart pub get
+      uses: ./.github/actions/pub-get
+      with:
+        command: dart pub get
+        working-directory: packages/tfc_dart
 
     - name: Run tfc_dart tests
       working-directory: packages/tfc_dart
@@ -1047,6 +1140,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
 
     - name: Configure
       working-directory: centroid-hmi/windows/runner/test
@@ -1072,6 +1171,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
 
     - name: Configure
       working-directory: packages/media_kit_video_elinux
@@ -1121,6 +1226,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
+      id: checkout
+      continue-on-error: true
+
+    - name: Checkout (retry)
+      if: steps.checkout.outcome == 'failure'
+      uses: actions/checkout@v4
 
     - uses: actions/setup-python@v5
       with:
