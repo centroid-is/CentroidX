@@ -4,14 +4,32 @@
 /// `/render/d-solo/…` endpoint for a picture of one panel and paints the
 /// bytes, then asks again on a timer. Nothing about it is a browser.
 ///
-/// That is deliberate, and it is the only shape that works on the whole
-/// fleet. Embedding the real Grafana would mean a webview, `webview_flutter`
-/// is a platform-view API, and flutter-elinux has no platform views at all —
-/// the embedder never composites a foreign native surface into the Flutter
-/// scene. A texture-backed webview could be written (the way
-/// `package:media_kit_video_elinux` was), but it would be a browser engine to
-/// keep patched on plant-floor boxes. A PNG needs no native code and looks
-/// the same on eLinux, Windows and macOS.
+/// That is a trade, not a limitation of the platform. An earlier version of
+/// this comment claimed flutter-elinux has no platform views; it does.
+/// `plugins/platform_views_plugin.cc` serves the `flutter/platform_views`
+/// channel (create / dispose / resize / touch / offset) and
+/// `public/flutter_platform_views.h` exposes
+/// `FlutterDesktopRegisterPlatformViewFactory`, whose views are
+/// texture-backed — `SetTextureId` plus `Touch(device_id, type, x, y)`. So a
+/// webview on a station clips, transforms and z-orders like any other
+/// widget. What was missing was a browser plugin, and `webview_cef` now
+/// declares `elinux` alongside macOS, Windows and Linux.
+///
+/// The reasons to photograph rather than embed are therefore about cost, not
+/// possibility:
+///
+///   * Rendering is still a software copy either way — flutter-elinux gives
+///     plugins no EGL context, the wall `package:media_kit_video_elinux`
+///     already hit.
+///   * A browser is 200–500 MB on the station image and a thing to keep
+///     patched on the plant floor.
+///   * No single engine covers the fleet: WKWebView on macOS, WebView2 on
+///     Windows, CEF or WPE on eLinux, an iframe on web — four engines
+///     drawing the same dashboard four slightly different ways.
+///
+/// A PNG needs no native code and renders identically everywhere, which is
+/// why it is the default path. A webview asset, if one is ever written,
+/// should be opt-in beside this rather than a replacement for it.
 ///
 /// The cost is that the panel is a picture: no hover, no zoom, no
 /// drag-to-select a time range. For a wall-mounted station that is usually
