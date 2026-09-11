@@ -502,11 +502,267 @@ void main() {
       expect(source, isNotEmpty,
           reason: 'the file must actually be found, or this passes vacuously');
 
-      for (final forbidden in [r'$password', r'${password', r'$_password']) {
+      for (final forbidden in [
+        r'$password',
+        r'${password',
+        r'$_password',
+        // The change-password path's own parameter names. Same rule, same
+        // reason: this file logs on three branches of `changePassword`, and a
+        // credential interpolated into any of them outlives the change.
+        r'$currentPassword',
+        r'${currentPassword',
+        r'$newPassword',
+        r'${newPassword',
+      ]) {
         expect(source, isNot(contains(forbidden)),
             reason: 'a password in a log line or an exception message outlives '
                 'the login it came from');
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Self-service password change
+  //
+  // The contract is `PasswordChangeResult`'s three values plus the throw, and
+  // the same discipline as `authenticate` above: a judged request is a value, a
+  // failure of the machinery is a throw. The extra assertion this path carries
+  // that the login path does not is what it must *not* do — see the
+  // `touchLastLogin` test.
+  // -------------------------------------------------------------------------
+  group('changePassword', () {
+    /// Verifies [password] against whatever is stored for [username] right now.
+    ///
+    /// Reads the row back rather than calling `authenticate`, so the assertion
+    /// does not depend on the method under test's neighbour.
+    Future<bool> storedPasswordIs(String username, String password) async {
+      final row = await repo.user(username);
+      if (row == null) return false;
+      final stored = decodeStoredHash(row.passwordHash, saltB64: row.salt);
+      if (stored == null) return false;
+      return PasswordHasher.verify(password: password, stored: stored);
+    }
+
+    test('the right current password replaces it with the new one', () async {
+      final result = await provider.changePassword(
+        username: 'jon',
+        currentPassword: 'hunter2',
+        newPassword: 'letmein',
+      );
+
+      expect(result, PasswordChangeResult.ok);
+      expect(await storedPasswordIs('jon', 'letmein'), isTrue);
+      expect(await storedPasswordIs('jon', 'hunter2'), isFalse,
+          reason: 'the old password must stop working at once — the dialog '
+              'promises exactly that');
+    });
+
+    test('a wrong current password changes nothing', () async {
+      final before = (await repo.user('jon'))!;
+
+      final result = await provider.changePassword(
+        username: 'jon',
+        currentPassword: 'wrong',
+        newPassword: 'letmein',
+      );
+
+      expect(result, PasswordChangeResult.wrongCurrentPassword);
+
+      final after = (await repo.user('jon'))!;
+      expect(after.passwordHash, before.passwordHash,
+          reason: 'a refused change must not rewrite the row');
+      expect(after.salt, before.salt);
+      expect(await storedPasswordIs('jon', 'hunter2'), isTrue);
+    });
+
+    test('an empty current password is refused without a derivation', () async {
+      final counting = _CountingRepository(db);
+      final p = LocalAuthProvider(counting);
+
+      expect(
+        await p.changePassword(
+          username: 'jon',
+          currentPassword: '',
+          newPassword: 'letmein',
+        ),
+        PasswordChangeResult.wrongCurrentPassword,
+      );
+      expect(counting.userReads, 0,
+          reason: 'an empty current password cannot be right, so there is '
+              'nothing to look up');
+    });
+
+    test('an empty new password throws, carrying no credential', () async {
+      try {
+        await provider.changePassword(
+          username: 'jon',
+          currentPassword: 'hunter2',
+          newPassword: '',
+        );
+        fail('an empty new password must be refused');
+      } on ArgumentError catch (e) {
+        // The rule `AccessRepository.setPassword` set: the message must not be
+        // able to carry the credential into whatever logs the error.
+        expect(e.toString(), isNot(contains('hunter2')));
+        expect(e.invalidValue, isNull);
+      }
+
+      expect(await storedPasswordIs('jon', 'hunter2'), isTrue);
+    });
+
+    test('a deleted account is accountMissing, not a wrong password', () async {
+      // An administrator can delete an account while its owner has a session
+      // open. Telling that person their password is wrong would cost them the
+      // next ten minutes.
+      expect(
+        await provider.changePassword(
+          username: 'ghost',
+          currentPassword: 'hunter2',
+          newPassword: 'letmein',
+        ),
+        PasswordChangeResult.accountMissing,
+      );
+    });
+
+    test('an undecodable hash is refused, and says so in the log', () async {
+      // A row edited by hand in `psql`. Not a credential failure in spirit, but
+      // it is one in effect, and the alternative — a FormatException off a
+      // dialog — takes the screen down over a row the person at the panel did
+      // not write. The log line is the only place the real cause survives.
+      //
+      // The stored form has to be one `tryDecode` actually rejects. A bare
+      // string with no `$` is read as a *legacy* bare-base64 pbkdf2 hash and
+      // decodes fine; it fails later, in `verify`, and reaches the same
+      // refusal by a different route — covered by the test below.
+      await (db.update(db.appUser)..where((t) => t.username.equals('jon')))
+          .write(const AppUserCompanion(
+              passwordHash: Value(r'pbkdf2-sha256$notanumber$aGk=')));
+
+      expect(
+        await provider.changePassword(
+          username: 'jon',
+          currentPassword: 'hunter2',
+          newPassword: 'letmein',
+        ),
+        PasswordChangeResult.wrongCurrentPassword,
+      );
+      expect(
+        logOutput.lines.where((l) => l.startsWith('warning|')).join('\n'),
+        contains('edited outside'),
+      );
+    });
+
+    test('a hash that decodes but cannot verify is refused too', () async {
+      // The other route to the same answer: `tryDecode` accepts this as a
+      // legacy bare hash, and `PasswordHasher.verify` returns false rather than
+      // throwing on the base64 that is not base64. Refused, not thrown, and
+      // deliberately without the log line — nothing here knows the row is
+      // damaged rather than simply not matching.
+      await (db.update(db.appUser)..where((t) => t.username.equals('jon')))
+          .write(const AppUserCompanion(passwordHash: Value('not-a-hash')));
+
+      expect(
+        await provider.changePassword(
+          username: 'jon',
+          currentPassword: 'hunter2',
+          newPassword: 'letmein',
+        ),
+        PasswordChangeResult.wrongCurrentPassword,
+      );
+    });
+
+    test('an outage throws rather than reporting a wrong password', () async {
+      // The rule this whole file exists to pin: infrastructure is a throw. A
+      // database blip recorded as somebody failing to change their password is
+      // a trail nobody trusts.
+      final p = LocalAuthProvider(_OutageRepository(db));
+
+      expect(
+        () => p.changePassword(
+          username: 'jon',
+          currentPassword: 'hunter2',
+          newPassword: 'letmein',
+        ),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('does not touch last_login_at — a change is not a login', () async {
+      // The reason this method does not simply call `authenticate`. Moving the
+      // last-login timestamp on a password change makes it unable to answer
+      // "when was this account last actually used?", which is the question an
+      // administrator asks before deleting a stale account.
+      await repo.touchLastLogin('jon', DateTime.utc(2026, 1, 1));
+      final before = (await repo.user('jon'))!.lastLoginAt;
+
+      await provider.changePassword(
+        username: 'jon',
+        currentPassword: 'hunter2',
+        newPassword: 'letmein',
+      );
+
+      expect((await repo.user('jon'))!.lastLoginAt, before);
+    });
+
+    test('a legacy pbkdf2 row verifies and lands as argon2id', () async {
+      // The migration, by a second route. `authenticate` carries people forward
+      // on their next login; this carries them forward on their next password
+      // change, and for free — the row is being rewritten anyway, so there is
+      // no `needsRehash` decision to make.
+      await _plantLegacyPbkdf2Row(db, username: 'jon', password: 'hunter2');
+      expect((await repo.user('jon'))!.passwordHash, startsWith('pbkdf2'));
+
+      final result = await provider.changePassword(
+        username: 'jon',
+        currentPassword: 'hunter2',
+        newPassword: 'letmein',
+      );
+
+      expect(result, PasswordChangeResult.ok);
+      expect((await repo.user('jon'))!.passwordHash, startsWith('argon2id'));
+      expect(await storedPasswordIs('jon', 'letmein'), isTrue);
+    });
+
+    test('burns no dummy derivation — there is no name to enumerate', () async {
+      // `authenticate` pays for one on an unknown username so that "no such
+      // user" and "wrong password" cost the same. There is nothing to defend
+      // here: the username comes from the live session, not from a field
+      // anybody can type a guess into.
+      await provider.changePassword(
+        username: 'ghost',
+        currentPassword: 'hunter2',
+        newPassword: 'letmein',
+      );
+
+      expect(LocalAuthProvider.dummyDerivations, 0);
+    });
+
+    test('a new password identical to the old one is allowed', () async {
+      // Not a policy decision dressed as a bug fix: refusing it would be a rule
+      // nobody wrote down, on a screen whose stated position is that there is
+      // no password policy. The row genuinely changes — fresh salt.
+      final before = (await repo.user('jon'))!;
+
+      expect(
+        await provider.changePassword(
+          username: 'jon',
+          currentPassword: 'hunter2',
+          newPassword: 'hunter2',
+        ),
+        PasswordChangeResult.ok,
+      );
+
+      final after = (await repo.user('jon'))!;
+      expect(after.salt, isNot(before.salt));
+      expect(await storedPasswordIs('jon', 'hunter2'), isTrue);
+    });
+
+    test('is reachable through the capability interface', () async {
+      // How the provider layer finds it: `auth is PasswordSelfService`. When
+      // OIDC lands behind the same `AuthProvider` seam it will not implement
+      // this, and the affordance disappears with no call site edited.
+      expect(provider, isA<PasswordSelfService>());
+      expect(provider, isA<AuthProvider>());
     });
   });
 }

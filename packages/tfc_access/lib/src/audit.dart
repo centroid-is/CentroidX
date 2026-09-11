@@ -21,11 +21,19 @@ import 'access_role.dart';
 /// surface value, with its own itemKey vocabulary:
 ///
 ///     login | login.failed | logout | session.timeout | session.resume
+///     password.change | password.change.failed
 ///
 /// and an **empty** [groupRequired], because signing in is not gated on a
 /// group.
 ///
-/// `session.resume` is the fifth and the only one no person performs: a panel
+/// The last two are a person changing **their own** password, which is not
+/// gated on a group either — that is the whole point of it, and it is what
+/// separates them from `user.password` on the admin surface below. Both rows
+/// describe the same column in the same table; only one of them required a
+/// permission, and a trail that spelled them the same way could not answer
+/// "did somebody reset this account, or did its owner change it?".
+///
+/// `session.resume` is the only one of them no person performs: a panel
 /// committed to a station account returns to that account when a human's
 /// session over it ends. It is a row precisely *because* nobody did it — the
 /// trail would otherwise show a human's `logout` and then writes attributed to
@@ -38,20 +46,21 @@ import 'access_role.dart';
 /// Phase 6 adds a fifth surface, `'admin'`, for the writes the roles and users
 /// screens make. A role edit that grants somebody `force` and leaves no trace
 /// is the widest gap this product could ship with — re-scoping a role is the
-/// most consequential hand-made write in it. The itemKey vocabulary is eight
+/// most consequential hand-made write in it. The itemKey vocabulary is nine
 /// strings:
 ///
 ///     role.create | role.update | role.delete | role.rename
 ///     user.create | user.delete | user.role   | user.password
+///     user.station_account
 ///
-/// Three things differ from the auth four, each on purpose:
+/// Three things differ from the auth constructors, each on purpose:
 ///
 /// 1. [groupRequired] is `AccessGroup.users.name`, not empty. Signing in is not
 ///    gated; editing a role is. That one field is also what puts these rows
 ///    behind the trail viewer's existing `users` filter chip with no change to
 ///    the viewer — a row carrying an empty [groupRequired] would fall outside
 ///    every group filter instead.
-/// 2. [allowed] is a **parameter** on all eight. Each auth constructor *is* an
+/// 2. [allowed] is a **parameter** on all nine. Each auth constructor *is* an
 ///    outcome and can hardcode it; an admin action can be refused by the `users`
 ///    gate, and a refused role edit is a row worth having. Allow-only
 ///    constructors would leave the store hand-building denial rows, which is the
@@ -62,7 +71,7 @@ import 'access_role.dart';
 ///    legible in the viewer's generic old-to-new row.
 ///
 /// **The account or role acted upon goes in [member], never in [itemKey].** The
-/// itemKey vocabulary is a closed set of eight strings the viewer filters on;
+/// itemKey vocabulary is a closed set the viewer filters on;
 /// folding the subject in (`user.role.jon`) would make it unbounded, and an
 /// unbounded itemKey is an unfilterable one. The viewer already renders
 /// [itemKey] with its [member] suffix, so `user.role` on member `jon` reads
@@ -254,6 +263,86 @@ class AuditRecord {
         newValue: roleName,
         groupRequired: '',
         allowed: true,
+        actionId: actionId,
+        reason: reason,
+      );
+
+  /// Somebody changed **their own** password.
+  ///
+  /// An auth row, not an admin one, and the difference is the whole reason this
+  /// constructor exists next to [AuditRecord.userPassword]. That one is an
+  /// administrator reaching into somebody else's account through the `users`
+  /// gate; this one is an account's own holder, presenting the current password,
+  /// with no group required. [groupRequired] is empty here and
+  /// `AccessGroup.users.name` there, and a trail that spelled both `user.password`
+  /// could not tell a reset from a change — which is the first question anybody
+  /// asks of a password row.
+  ///
+  /// **No [member].** The subject and the actor are the same account by
+  /// construction: the username comes from the live session, and there is no
+  /// parameter through which it could be anything else. [who] carries it, and
+  /// filling [member] with the same string would render as `password.change.jon`
+  /// against `who = jon` in the viewer's itemKey-plus-member form — the same name
+  /// twice, saying nothing the first one did not.
+  ///
+  /// Takes no password, no hash and no salt, and has no parameter that could
+  /// carry one. The class doc's rule, on the constructor where it is most
+  /// tempting to break it.
+  factory AuditRecord.passwordChange({
+    required String who,
+    required String station,
+    required String roleName,
+    required String actionId,
+    DateTime? at,
+    String? reason,
+  }) =>
+      AuditRecord(
+        at: at ?? clock.now(),
+        who: who,
+        station: station,
+        roleName: roleName,
+        surface: _authSurface,
+        itemKey: 'password.change',
+        groupRequired: '',
+        allowed: true,
+        actionId: actionId,
+        reason: reason,
+      );
+
+  /// A self-service password change refused: the current password was wrong.
+  ///
+  /// Its own itemKey rather than an `allowed` flag on [AuditRecord.passwordChange],
+  /// following `login` and `login.failed` exactly — each auth constructor *is* an
+  /// outcome and hardcodes [allowed], because there is no branch where the caller
+  /// gets to decide.
+  ///
+  /// **Worth a row.** Repeated failures here are a different signal from repeated
+  /// `login.failed`s, and a worse one: they come from an *already elevated*
+  /// session, which is the shape of somebody at a panel its owner walked away
+  /// from, trying to take the account over rather than merely get in. Without this
+  /// row that attempt leaves no trace at all, because the session it was made from
+  /// was legitimately signed in.
+  ///
+  /// [who] is not truncated, and needs no truncating: unlike
+  /// [AuditRecord.loginFailed] there is no username field to paste a megabyte
+  /// into — the name comes from the session.
+  factory AuditRecord.passwordChangeFailed({
+    required String who,
+    required String station,
+    required String roleName,
+    required String actionId,
+    DateTime? at,
+    String? reason,
+  }) =>
+      AuditRecord(
+        at: at ?? clock.now(),
+        who: who,
+        station: station,
+        roleName: roleName,
+        surface: _authSurface,
+        itemKey: 'password.change.failed',
+        groupRequired: '',
+        allowed: false,
         actionId: actionId,
         reason: reason,
       );
