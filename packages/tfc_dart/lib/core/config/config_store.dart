@@ -434,15 +434,23 @@ class ConfigStore {
   /// Runs [task] on the sync engine's serialisation chain, so a notification
   /// apply cannot land in the middle of a caller's check-then-write.
   ///
-  /// [writeItems] deliberately does **not** join this chain: an operator's
-  /// save must not wait behind a five-minute sweep, and the compare-and-swap
-  /// is what protects it. A caller that has already decided something about
-  /// the snapshot is a different case — `config_undo.dart` asserts the state
-  /// its verdict was reached against and then writes, and an apply between
-  /// those two would invalidate the assert it just passed.
+  /// [writeItems] runs on it too. An earlier version kept it off, so that a
+  /// save would never wait behind a sweep, and trusted the compare-and-swap —
+  /// but the CAS guards the *remote* against a stale writer, not the snapshot
+  /// against an apply landing between a save's diff and its snapshot swap.
+  /// That gap is the one `_apply` reads across: a pull that had already
+  /// fetched "P is absent" when the save inserted P went on to delete P from
+  /// the snapshot and the mirror, and the page the operator had just created
+  /// vanished from their own editor until the next sweep. A sweep is one
+  /// short query per kind and the chain is idle between notifications, so
+  /// the wait a save pays is microseconds in the ordinary case and
+  /// milliseconds in the unusual one; the lost write was worth more.
   ///
-  /// The chain is idle between notifications, so in the ordinary case this
-  /// costs one microtask.
+  /// **Re-entrant.** A task already running on the chain that calls this
+  /// again — `config_undo.dart` asserts its verdict here and then calls
+  /// [writeItems], which is itself on the chain — runs [task] directly rather
+  /// than queueing it behind itself, which would deadlock. The chain marks its
+  /// zone, and that mark is what tells the two apart.
   ///
   /// A store with no engine runs [task] directly, and so does one whose engine
   /// was stopped between the queue and the run — a detach mid-flight. That is
@@ -451,7 +459,7 @@ class ConfigStore {
   /// success nobody made.
   Future<T> serialiseWrite<T>(Future<T> Function() task) async {
     final sync = _sync;
-    if (sync == null) return task();
+    if (sync == null || _ConfigSync.onChain) return task();
     final done = <T>[];
     await sync.serialise(() async => done.add(await task()));
     return done.isEmpty ? await task() : done.single;
@@ -498,6 +506,17 @@ class ConfigStore {
   /// same reason.
   @visibleForTesting
   Future<void> reconcile() => _sync?.reconcile() ?? Future<void>.value();
+
+  /// Brings the snapshot level with the remote now, rather than at the next
+  /// notification or sweep.
+  ///
+  /// For a caller that has just been told another station won a row and is
+  /// about to reload from the snapshot: the conflict is evidence the snapshot
+  /// is behind, so a reload that does not sweep first may show the operator
+  /// the layout they already had. Completes when the sweep has been applied;
+  /// resolves at once with nothing done when no remote is attached, which is
+  /// the ordinary offline case and not an error.
+  Future<void> resync() => _sync?.reconcile() ?? Future<void>.value();
 
   /// Whether the five-minute sweep is running. False for a store with no
   /// remote, which is the whole point: a widget test that never attached one
@@ -599,8 +618,26 @@ class ConfigStore {
     required String who,
     required String roleName,
     String? reason,
+  }) =>
+      serialiseWrite(() => _writeItems(
+            kinds: kinds,
+            wanted: wanted,
+            actionId: actionId,
+            who: who,
+            roleName: roleName,
+            reason: reason,
+          ));
+
+  Future<ConfigWriteResult> _writeItems({
+    required Set<ConfigKind> kinds,
+    required List<ConfigItem> wanted,
+    required String actionId,
+    required String who,
+    required String roleName,
+    String? reason,
   }) async {
     final attempted = _describeItems(kinds, wanted);
+    final seen = <String>{};
     for (final item in wanted) {
       // Scope, before kind. The snapshot this diff compares against is keyed
       // by (kind, id) and holds shared rows only, while `config_diff` keys by
@@ -627,6 +664,20 @@ class ConfigStore {
                 'inserted and never removed; name its kind in `kinds` or '
                 'leave it out.');
       }
+      // Two items with one identity would be collapsed by the diff, which
+      // keys by (kind, id, scope) and keeps whichever came last — so one of
+      // them would silently never be written, and nothing would say so. A
+      // caller that produced a duplicate has a bug upstream (two pages
+      // adopting one row, say), and that must surface here rather than as
+      // an asset that vanished from a mimic.
+      if (!seen.add(_snapshotKeyOf(item))) {
+        throw ArgumentError.value(
+            item.id,
+            'wanted',
+            'holds ${item.kind.wireName} "${item.id}" twice. The diff keys '
+                'by identity and would keep one of them at random; the '
+                'caller has to decide which is the real one.');
+      }
     }
 
     final remote = _remote;
@@ -640,6 +691,16 @@ class ConfigStore {
     }
 
     final stored = itemsOf(kinds);
+    // The revisions this save compares-and-swaps against, captured **once**,
+    // here, with the diff. A pull or a sweep may swap `_snapshot` at any await
+    // below — including between two statements of the transaction. Reading the
+    // revision off the live snapshot at that point would move the target under
+    // the CAS: another station's edit that the sync had just applied would be
+    // matched at its *new* revision and overwritten with a payload derived
+    // from the old one, which is precisely the lost write the CAS exists to
+    // refuse. The diff was computed against this list, so this list is what
+    // the CAS must guard with.
+    final storedByKey = {for (final item in stored) _snapshotKeyOf(item): item};
     // Ordinals become stored keys here, and here only: after the refusals, so
     // an offline save is still refused before any work, and immediately before
     // the diff, so what the diff compares is what will be written. An item
@@ -705,11 +766,12 @@ class ConfigStore {
         }
 
         for (final item in diff.changed) {
-          // The revision comes from the snapshot, never from a read inside
-          // this transaction: re-reading it here would turn the compare-and-
-          // swap back into the read-check-write it exists to replace, and the
+          // The revision comes from the list the diff was computed against,
+          // never from a read inside this transaction and never from the
+          // live `_snapshot`: re-reading it would turn the compare-and-swap
+          // back into the read-check-write it exists to replace, and the
           // window it closes is precisely the one another station writes in.
-          final stored = _snapshot[_snapshotKeyOf(item)]!;
+          final stored = storedByKey[_snapshotKeyOf(item)]!;
           final won = await (remote.update(remote.configItemTable)
                 ..where((t) => _identity(t, item) & t.rev.equals(stored.rev)))
               .write(ConfigItemTableCompanion(
@@ -796,9 +858,10 @@ class ConfigStore {
     try {
       await _writeMirror(diff, written);
     } catch (e) {
-      _logger.e('key_mappings mirror write failed after the shared write '
-          'committed; this station will read a stale row until the next '
-          'reconcile: $e');
+      _markMirrorDirty(diff, written);
+      _logger.e('config mirror write failed after the shared write '
+          'committed; this station serves the change from memory and the '
+          'mirror is repaired at the next sweep: $e');
     }
 
     await _nudgeExemptKinds(remote, diff);
@@ -890,15 +953,61 @@ class ConfigStore {
     try {
       await _writeMirror(diff, fresh);
     } catch (e) {
-      _logger.e('key_mappings mirror write failed while applying a shared '
-          'change; this station serves the change now and will re-read it at '
-          'the next sweep: $e');
+      // Remembered, because nothing else would repair it: the sweep compares
+      // the remote against the *snapshot*, which now holds the change, so it
+      // has no reason to re-read a row the mirror missed. Without the note
+      // the mirror stayed behind for the life of the process and the next
+      // offline boot served the pre-change wiring.
+      _markMirrorDirty(diff, fresh);
+      _logger.e('config mirror write failed while applying a shared change; '
+          'this station serves the change from memory and the mirror is '
+          'repaired at the next sweep: $e');
     }
 
     // No event for an apply that only moved revisions: every listener
     // re-points live subscriptions on one, and doing that for a write nobody
     // made is the noise this milestone exists to remove.
     if (diff.isNotEmpty) _changes.add(diff);
+  }
+
+  /// The mirror rows a write could not land, keyed as the snapshot is, each
+  /// with the last item known under that key — for the identity a delete
+  /// needs when the snapshot no longer holds it.
+  final Map<String, ConfigItem> _mirrorDirty = {};
+
+  void _markMirrorDirty(ConfigDiff diff, Map<String, ConfigItem> written) {
+    for (final item in diff.removed) {
+      _mirrorDirty[_snapshotKeyOf(item)] = item;
+    }
+    _mirrorDirty.addAll(written);
+  }
+
+  /// Retries the mirror rows [_markMirrorDirty] recorded, from what the
+  /// snapshot holds for them now: a key the snapshot has is upserted, a key it
+  /// no longer has is deleted. Run by the sweep; a failure leaves the keys
+  /// noted for the next one.
+  Future<void> _repairMirror() async {
+    if (_mirrorDirty.isEmpty) return;
+    final removed = <ConfigItem>[];
+    final written = <String, ConfigItem>{};
+    for (final entry in _mirrorDirty.entries) {
+      final current = _snapshot[entry.key];
+      if (current == null) {
+        removed.add(entry.value);
+      } else {
+        written[entry.key] = current;
+      }
+    }
+    try {
+      await _writeMirror(
+          ConfigDiff(added: const [], changed: const [], removed: removed),
+          written);
+      _mirrorDirty.clear();
+      _logger.i('config mirror repaired: ${written.length} row(s) rewritten, '
+          '${removed.length} removed');
+    } catch (e) {
+      _logger.w('config mirror repair failed; retried at the next sweep: $e');
+    }
   }
 
   /// Records how far the shared change log has been consumed, in memory and in

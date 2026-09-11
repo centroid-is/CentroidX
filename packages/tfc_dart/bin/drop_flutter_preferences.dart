@@ -53,8 +53,11 @@ library;
 
 import 'dart:io';
 
-import 'package:drift/drift.dart' show BooleanExpressionOperators, SqlDialect;
+import 'package:drift/drift.dart'
+    show BooleanExpressionOperators, SqlDialect, Variable;
 import 'package:logger/logger.dart';
+import 'package:tfc_dart/core/config/blob_migration.dart'
+    show kConfigLockNamespace;
 import 'package:tfc_dart/core/config/config_consistency.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart'
@@ -62,7 +65,7 @@ import 'package:tfc_dart/core/config/config_store.dart'
 import 'package:tfc_dart/core/config/key_mapping_migration.dart'
     show kKeyMappingsMigratedMarkerId;
 import 'package:tfc_dart/core/config/preference_migration.dart'
-    show PreferenceDisposition, classifyPreferenceKey;
+    show PreferenceDisposition, classifyPreferenceKey, kPreferenceMigrationLock;
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_connections.dart'
     show kMaxPoolConnectionsEnv, resolvePoolSize;
@@ -195,8 +198,38 @@ Future<DropResult> dropFlutterPreferences(
     refusals.add('the connection pool is $poolSize wide; the drop and its '
         'function removal are atomic only at a pool of one. Set '
         '$kMaxPoolConnectionsEnv to 1 (or leave it unset)');
+    return DropResult(outcome: DropOutcome.refused, refusals: refusals);
   }
 
+  // The gates and the drop in **one transaction, under the preference
+  // migration's own advisory lock**. The gates read the table; the drop
+  // destroys it; a station whose migration is mid-copy between the two —
+  // or a row written into the table after the unknown-key scan — would
+  // otherwise be destroyed unexamined. The lock is the transaction-scoped
+  // form, released by the COMMIT or ROLLBACK drift issues, and it is the
+  // same (namespace, id) the migration takes, so the two cannot overlap.
+  return db.transaction(() async {
+    final lock = await db.customSelect(
+      r'SELECT pg_try_advisory_xact_lock($1::int4, $2::int4) AS got',
+      variables: [
+        Variable.withInt(kConfigLockNamespace),
+        Variable.withInt(kPreferenceMigrationLock),
+      ],
+    ).getSingle();
+    if (!lock.read<bool>('got')) {
+      refusals.add('a station holds the preference migration lock right '
+          'now — it is mid-copy. Let it finish and run this again');
+      return DropResult(outcome: DropOutcome.refused, refusals: refusals);
+    }
+    return _gatesAndDrop(db, refusals: refusals, environment: environment);
+  });
+}
+
+Future<DropResult> _gatesAndDrop(
+  AppDatabase db, {
+  required List<String> refusals,
+  required Map<String, String> environment,
+}) async {
   // Gate 1 — the markers.
   final missingMarkers = <String>[];
   for (final entry in kRequiredMarkers.entries) {
@@ -219,13 +252,19 @@ Future<DropResult> dropFlutterPreferences(
         'marker omissions: ${blocking.map(_describe).join('; ')}');
   }
 
-  // Gate 3 — unknown keys.
-  final unknown = await _unknownKeys(db);
-  if (unknown.isNotEmpty) {
-    refusals.add('${unknown.length} key(s) in $kDroppedTable are not '
+  // Gate 3 — unknown keys, and migrated keys that never got their row.
+  final survey = await _surveyLegacyKeys(db);
+  if (survey.unknown.isNotEmpty) {
+    refusals.add('${survey.unknown.length} key(s) in $kDroppedTable are not '
         'classified as migrated or abandoned by this build, so dropping '
         'would destroy configuration nobody has accounted for: '
-        '${unknown.join(', ')}');
+        '${survey.unknown.join(', ')}');
+  }
+  if (survey.missingRows.isNotEmpty) {
+    refusals.add('${survey.missingRows.length} key(s) in $kDroppedTable are '
+        'classified as migrated but have no config_item row — a value the '
+        'migration could not read, or a key written after it ran — so the '
+        'table still holds the only copy: ${survey.missingRows.join(', ')}');
   }
 
   // Gate 4 — the confirmation.
@@ -245,13 +284,11 @@ Future<DropResult> dropFlutterPreferences(
     return DropResult(outcome: DropOutcome.refused, refusals: refusals);
   }
 
-  // One transaction: a table dropped without its function leaves an orphan
-  // nobody can account for, and a function dropped without its table leaves a
-  // trigger pointing at nothing.
-  await db.transaction(() async {
-    await db.customStatement('DROP TABLE IF EXISTS "$kDroppedTable"');
-    await db.customStatement('DROP FUNCTION IF EXISTS "$kDroppedFunction"()');
-  });
+  // In the same transaction as the gates: a table dropped without its
+  // function leaves an orphan nobody can account for, and a function dropped
+  // without its table leaves a trigger pointing at nothing.
+  await db.customStatement('DROP TABLE IF EXISTS "$kDroppedTable"');
+  await db.customStatement('DROP FUNCTION IF EXISTS "$kDroppedFunction"()');
 
   return DropResult(
     outcome: DropOutcome.dropped,
@@ -309,21 +346,49 @@ String _describe(ConfigInconsistency violation) =>
     '${violation.invariant.wireName} on ${violation.kindName}:'
     '${violation.entityId}@${violation.scopeName}';
 
-/// Every surviving key this build cannot account for.
+/// What the surviving keys come to: the ones this build cannot account for,
+/// and the ones it claims to have migrated but has no row for.
 ///
 /// Through 04-11's [classifyPreferenceKey], never a second copy of its tables:
 /// the classifier is the one definition of "known", and a list re-derived here
 /// would answer differently the moment somebody adds a family to one and not
 /// the other.
-Future<List<String>> _unknownKeys(AppDatabase db) async {
+///
+/// The second list is the gate the migration's own comment promised and this
+/// tool did not keep. The migration reports a known key whose stored value it
+/// could not read as *unknown* — but that report is a log line, not a row,
+/// and the classifier decides by name alone, so a week later the key read as
+/// migrated and the drop went through with the only copy of the value in
+/// the table it dropped. The same hole covered a key written into the table
+/// after the marker existed, which no later run of the migration picks up.
+/// Checking each migrated key for its row is what closes both.
+Future<({List<String> unknown, List<String> missingRows})> _surveyLegacyKeys(
+    AppDatabase db) async {
   final rows = await db.select(db.flutterPreferences).get();
-  final unknown = <String>[
-    for (final row in rows)
-      if (classifyPreferenceKey(row.key).disposition ==
-          PreferenceDisposition.unknown)
-        row.key,
-  ]..sort();
-  return unknown;
+  final unknown = <String>[];
+  final missingRows = <String>[];
+  for (final row in rows) {
+    final classified = classifyPreferenceKey(row.key);
+    switch (classified.disposition) {
+      case PreferenceDisposition.unknown:
+        unknown.add(row.key);
+      case PreferenceDisposition.abandon:
+        break;
+      case PreferenceDisposition.migrate:
+        // A null value is nothing to migrate, and the migration says so by
+        // reporting it; a table row with no value is not a copy of anything.
+        if (row.value == null) continue;
+        final present = await (db.select(db.configItemTable)
+              ..where((t) =>
+                  t.kind.equals(classified.kind!.wireName) &
+                  t.id.equals(classified.id!) &
+                  t.scope.equals(ConfigScope.shared.wireName))
+              ..limit(1))
+            .getSingleOrNull();
+        if (present == null) missingRows.add(row.key);
+    }
+  }
+  return (unknown: unknown..sort(), missingRows: missingRows..sort());
 }
 
 Future<void> main(List<String> args) async {

@@ -4,6 +4,7 @@ import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'package:tfc_dart/core/alarm.dart';
+import 'config_store.dart';
 import 'preferences.dart';
 import 'state_man.dart';
 part 'alarm.g.dart';
@@ -15,14 +16,22 @@ Future<AlarmMan> alarmMan(Ref ref) async {
   final prefs = await ref.read(preferencesProvider.future);
   final stateMan = await ref.read(stateManProvider.future);
 
-  // `AlarmMan.create` writes an empty default when `alarm_man_config` is
-  // absent — at boot, on a station that has never been configured, with nobody
-  // signed in, against a `configure` key. Seeding it here through the system
-  // path means `create` finds the key present and never writes, which leaves
-  // `packages/tfc_dart/lib/core/alarm.dart` untouched: its own `_saveConfig`
-  // stays on the guarded object, which is right, because it is reached only
-  // from addAlarm/removeAlarm/updateAlarm behind the `configure`-gated alarm
-  // editor and never from `ackAlarm`.
+  // "No alarm_man_config" means "this plant has none" only once the first
+  // reconcile has landed: the snapshot is filled from the local mirror, so a
+  // fresh station attached to a configured plant reads null until then. The
+  // seed below must not write an empty configuration into a plant with two
+  // hundred alarms — the store would refuse it as a conflict, and swallow
+  // that, but the *read* that follows would still be null for this boot.
+  // Settles at once when no remote is attached.
+  final store = (await ref.read(configStoreProvider.future)).inner;
+  await store.syncSettled;
+
+  // `AlarmMan.create` treats an absent `alarm_man_config` as empty and writes
+  // nothing. The seed lives here, through the system path — no check, no
+  // refusal offline — so that the row exists once a station has seen the
+  // plant, and `create` never has to write: its own `_saveConfig` stays on
+  // the guarded object, reached only from addAlarm/removeAlarm/updateAlarm
+  // behind the `configure`-gated alarm editor and never from `ackAlarm`.
   if (await prefs.getString('alarm_man_config') == null) {
     final systemPrefs = await ref.read(systemPreferencesProvider.future);
     await systemPrefs.setString(

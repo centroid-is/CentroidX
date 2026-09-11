@@ -41,6 +41,23 @@ import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 
 const String kStation = 'test-station';
+
+/// When the seeded action happened: two days ago, whatever today is. The
+/// page's default window is the last seven days from the real clock, so a
+/// literal date here is a test that expires a week after it was written.
+final DateTime kSeedAt =
+    DateTime.now().toUtc().subtract(const Duration(days: 2));
+
+/// A later change by another station, still inside the window.
+final DateTime kLaterAt = kSeedAt.add(const Duration(hours: 20));
+
+/// [at] as the dialog's timestamp formatter writes the day: `dd.MM.yy`,
+/// local time, so the assertion follows the seed rather than a literal.
+String dayOf(DateTime at) {
+  final d = at.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(d.day)}.${two(d.month)}.${two(d.year % 100)}';
+}
 const String kOtherStation = 'other-station';
 
 /// The wrapper, around a real database. See the library doc.
@@ -129,7 +146,7 @@ Future<void> seedChange(
   DateTime? at,
 }) async {
   final change = ConfigChange.of(
-    at: at ?? DateTime.utc(2026, 9, 3, 11, 42, 17),
+    at: at ?? kSeedAt,
     actionId: actionId,
     who: who,
     station: station,
@@ -155,7 +172,7 @@ Future<void> seedChange(
 /// One `audit_entry` header, so the action does not render as parentless.
 Future<void> seedAuditHeader(AppDatabase db, String actionId) async {
   await db.into(db.auditEntry).insert(AuditEntryCompanion.insert(
-        at: DateTime.utc(2026, 9, 3, 11, 42, 17),
+        at: kSeedAt,
         who: 'jon',
         station: kStation,
         roleName: 'Engineer',
@@ -524,7 +541,7 @@ void main() {
           after: v2,
           who: 'ingibjorg',
           station: kOtherStation,
-          at: DateTime.utc(2026, 9, 4, 8, 15));
+          at: kLaterAt);
 
       await pump(tester);
       await settle(tester);
@@ -544,7 +561,7 @@ void main() {
       final author =
           tester.widget<Text>(find.byKey(kConfigUndoBlockedAuthorKey));
       expect(author.data, contains('ingibjorg'));
-      expect(author.data, contains('04.09.26'));
+      expect(author.data, contains(dayOf(kLaterAt)));
       expect(find.byKey(kConfigUndoBlockedClauseKey), findsOneWidget);
 
       expect((await changeRows()), hasLength(2));
@@ -573,7 +590,7 @@ void main() {
           after: asset,
           who: 'ingibjorg',
           station: kOtherStation,
-          at: DateTime.utc(2026, 9, 4, 8, 15));
+          at: kLaterAt);
 
       await tester.tap(find.byKey(kConfigUndoConfirmButtonKey));
       await settle(tester);

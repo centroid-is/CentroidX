@@ -84,6 +84,22 @@ void main() {
     test('both halves of the rule are named, so a reader can find them', () {
       expect(kHistoryExemptKinds, {ConfigKind.pageImage});
       expect(kHistoryExemptPreferenceIds, {'server_config_envelope'});
+      expect(kHistoryExemptPreferenceIdPrefixes, {'chat.'});
+    });
+
+    test('a chat conversation is exempt by prefix; nothing else is', () {
+      // The whole transcript is rewritten on every message. Logging both
+      // sides per turn is O(N²) bytes in a table nothing prunes.
+      expect(historyExempt(ConfigKind.preference, 'chat.history'), isTrue);
+      expect(historyExempt(ConfigKind.preference, 'chat.conversation.7f3a'),
+          isTrue);
+      expect(historyExempt(ConfigKind.preference, 'chat'), isFalse,
+          reason: 'the prefix is `chat.`; a key merely starting with the '
+              'letters is not the assistant\'s');
+      expect(historyExempt(ConfigKind.preference, 'llm.selected_provider'),
+          isFalse, reason: 'a provider setting is configuration, and audited');
+      expect(historyExempt(ConfigKind.keyMapping, 'chat.history'), isFalse,
+          reason: 'the prefix rule is for preferences only');
     });
 
     test('a page image is exempt by its kind and by nothing else', () {

@@ -382,7 +382,7 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
   /// the clock: re-reading it would move the window's *start* forward by
   /// however long the page has been open, silently skipping the oldest rows —
   /// which are the ones this button was tapped to see.
-  void _loadMore(DateTime? oldestAt) {
+  void _loadMore(DateTime? oldestAt, int? oldestId) {
     if (oldestAt == null) return;
     final head = _pages.first;
     setState(() {
@@ -391,6 +391,7 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
         ConfigChangeQuery(
           window: head.window,
           before: oldestAt,
+          beforeId: oldestId,
           entityPrefix: head.entityPrefix,
           who: head.who,
           kinds: head.kinds,
@@ -464,7 +465,7 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
           Expanded(child: _list(actions)),
         if (actions.isNotEmpty && tail.reachedLimit) ...[
           _limitNote(context),
-          _loadMoreButton(pending ? null : tail.oldestAt),
+          _loadMoreButton(pending ? null : tail.oldestAt, tail.oldestId),
         ],
       ],
     );
@@ -608,7 +609,12 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
         itemCount: actions.length,
         itemBuilder: (context, index) {
           final action = actions[index];
+          // Keyed by the action, not by position: an undo prepends a new
+          // action and shifts every other one down, and an unkeyed list would
+          // hand each shifted action the State — expansion, cached diff — of
+          // the one that used to sit at its index.
           return Row(
+            key: ValueKey(action.actionId),
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(child: ConfigActionTile(action: action)),
@@ -650,6 +656,10 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
   /// operator cannot finish is a worse refusal than an immediate one — and the
   /// real enforcement is inside `executeUndo` regardless (T-04-10a).
   Future<void> _undo(HistoryAction action) async {
+    // Two taps in one frame both reach the callback the frame was built with;
+    // the disabled button is a frame late. One undo at a time is the rule,
+    // and this is where it is enforced.
+    if (_undoInFlight != null) return;
     final controller = ref.read(configUndoControllerProvider);
     setState(() => _undoInFlight = action.actionId);
     try {
@@ -698,6 +708,12 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
         case UndoUnavailable(:final message):
           _note(message);
       }
+    } on Object catch (error) {
+      // Everything the controller does not classify: a driver error out of
+      // the store's transaction, an argument error, a plan that could not be
+      // read. Left to escape, it landed in an async void handler and the
+      // operator saw a button that did nothing — and tapped it again.
+      if (mounted) _note('Undo failed: $error');
     } finally {
       if (mounted) {
         setState(() => _undoInFlight = null);
@@ -736,13 +752,15 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
   }
 
   /// The only way past the cap, and it is a tap.
-  Widget _loadMoreButton(DateTime? oldestAt) => Padding(
+  Widget _loadMoreButton(DateTime? oldestAt, int? oldestId) => Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
         child: Align(
           alignment: Alignment.centerLeft,
           child: TextButton.icon(
             key: kConfigHistoryLoadMoreKey,
-            onPressed: oldestAt == null ? null : () => _loadMore(oldestAt),
+            onPressed: oldestAt == null
+                ? null
+                : () => _loadMore(oldestAt, oldestId),
             icon: const Icon(Icons.expand_more, size: 16),
             label: const Text(kConfigHistoryLoadMoreLabel),
           ),

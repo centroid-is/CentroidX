@@ -253,7 +253,12 @@ class ConfigFieldRow extends StatelessWidget {
   /// invites reading it as a value that was there.
   String get value {
     if (change.noBaseline) return change.newValue ?? kAuditValueMissing;
-    if (change.newValue == null) return change.oldValue ?? kAuditValueMissing;
+    // The whole-entity delete: one side, no arrow. A *field* that an update
+    // removed is not that case — it has a name, and `old → —` is what says
+    // it went away; drawn as its old value alone it read as still set.
+    if (change.newValue == null && change.field == null) {
+      return change.oldValue ?? kAuditValueMissing;
+    }
     return '${change.oldValue ?? kAuditValueMissing} $kAuditTransitionArrow '
         '${change.newValue ?? kAuditValueMissing}';
   }
@@ -320,6 +325,15 @@ class ConfigChangeTileState extends State<ConfigChangeTile> {
   /// How many times [diffConfigEntities] has run for this tile. Read by the
   /// test that pins the memo — without it the assertion would pass vacuously.
   int diffCount = 0;
+
+  @override
+  void didUpdateWidget(covariant ConfigChangeTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The memo is of *this* record's diff. The tile is keyed by row id so an
+    // element rarely changes records, but a rebuild that does hand it another
+    // must not draw the old one's fields under the new one's title.
+    if (oldWidget.record != widget.record) _fields = null;
+  }
 
   List<FieldChange> _ensureFields() {
     final cached = _fields;
@@ -558,7 +572,10 @@ class ConfigActionTile extends StatelessWidget {
                 padding: const EdgeInsets.only(left: kConfigNestIndent),
                 child: AuditEntryLine(row: row, showDetail: true),
               ),
-            ConfigChangeChild(:final record) => ConfigChangeTile(record: record),
+            ConfigChangeChild(:final record) => ConfigChangeTile(
+                key: ValueKey(record.id),
+                record: record,
+              ),
           },
       ],
     );

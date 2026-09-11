@@ -703,6 +703,32 @@ void main() {
       expect(events, isEmpty);
     });
 
+    test('a save queued behind a sweep is diffed against what the sweep '
+        'applied, never against the snapshot it overtook', () async {
+      // The write runs on the sync engine's serialisation chain. Before it
+      // did, a pull that had read the remote before a save inserted a row
+      // went on to delete that row from the snapshot and the mirror after
+      // the save had swapped it in — the operator's new page vanished from
+      // their own editor until the next sweep.
+      await seedBothSides('CN04.Belt.Speed', 'old', rev: 3);
+      await store.open();
+      await otherStationEdits('CN04.Belt.Speed', 'theirs'); // rev 99
+
+      final sweep = store.reconcile();
+      final save = store.writeKeyMappings(mappingsOf({'CN04.Belt.Speed': 'mine'}),
+          actionId: 'action-11', who: 'jon', roleName: 'engineer');
+      await sweep;
+      final result = await save;
+
+      expect(result.diff.changed, hasLength(1));
+      final row = (await remoteMappingRows()).single;
+      expect(row.rev, 100,
+          reason: 'the save saw the swept revision 99 and swapped on it; '
+              'diffed against the overtaken snapshot it would have swapped '
+              'on 3 and lost');
+      expect(row.payload, contains('mine'));
+    });
+
     test('a delete whose row moved loses the same way', () async {
       await seedBothSides('CN04.Belt.Speed', 'a', rev: 3);
       await store.open();

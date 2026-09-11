@@ -72,6 +72,7 @@ Future<
   List<Asset> assets, {
   bool withRemote = true,
   AccessSession? session,
+  String? pageId,
 }) async {
   tester.view.physicalSize = const Size(1400, 1000);
   tester.view.devicePixelRatio = 1.0;
@@ -95,6 +96,7 @@ Future<
         assets: assets,
         mirroringDisabled: true,
         navigationPriority: 0,
+        id: pageId,
       ),
     },
     writeItems: (wanted, {reason}) => store.write(
@@ -178,6 +180,78 @@ void main() {
       expect(w.audit.rows.single.itemKey, 'page_editor_data',
           reason: '02-05 C-8: a new surface or a per-entity item key falls '
               'closed to administer and locks the operators out');
+    });
+
+    testWidgets('a page another station added while the editor was open '
+        'survives the save', (tester) async {
+      // The editor hands over the layout it was shown. Before the merge, a
+      // page added behind it was deleted on the next Ctrl+S — cleanly, the
+      // compare-and-swap matching because the snapshot had reconciled it.
+      final w = await _editorOver(tester, [
+        editorLed('CN04.Run', 0.2, 0.2),
+        editorLed('CN05.Run', 0.6, 0.2),
+      ]);
+      await _save(tester);
+
+      // Another station's page, written straight into the store behind the
+      // editor: the full page/asset set plus one page, as a save would.
+      final stored =
+          w.store.inner.itemsOf(const {ConfigKind.page, ConfigKind.asset});
+      await w.store.inner.writeItems(
+        kinds: const {ConfigKind.page, ConfigKind.asset},
+        wanted: [
+          ...stored,
+          ConfigItem.of(
+            kind: ConfigKind.page,
+            id: 'p-other-station',
+            value: {
+              'id': 'p-other-station',
+              'menu_item': {'label': 'Roe', 'path': '/roe', 'icon': 'home'},
+              'mirroring_disabled': false,
+            },
+          ),
+        ],
+        actionId: 'other-station',
+        who: 'olafur',
+        roleName: 'engineer',
+      );
+
+      await nudgeAsset(tester, 0.2, 0.2);
+      await _save(tester);
+
+      final pages = w.store.inner.itemsOf(const {ConfigKind.page});
+      expect(pages.map((p) => p.id), contains('p-other-station'),
+          reason: 'a page this editor never saw is not this editor\'s to '
+              'delete');
+      expect(pages, hasLength(2));
+    });
+
+    testWidgets('an asset added in the editor keeps its row across saves',
+        (tester) async {
+      // With the page already carrying an id, the rollout-day adoption does
+      // not run, so the ids a save mints have to come back onto the editor's
+      // own pages — or every save deletes the row the last one inserted.
+      final w = await _editorOver(
+        tester,
+        [editorLed('CN04.Run', 0.2, 0.2), editorLed('CN05.Run', 0.6, 0.2)],
+        pageId: 'p-home',
+      );
+      await _save(tester);
+      final first = w.store.inner
+          .itemsOf(const {ConfigKind.asset})
+          .map((i) => i.id)
+          .toSet();
+      expect(first, hasLength(2));
+
+      await nudgeAsset(tester, 0.2, 0.2);
+      await _save(tester);
+
+      final second = w.store.inner
+          .itemsOf(const {ConfigKind.asset})
+          .map((i) => i.id)
+          .toSet();
+      expect(second, first,
+          reason: 'the same two rows, not two deletes and two inserts');
     });
 
     testWidgets('the page blob is never written beside the rows',

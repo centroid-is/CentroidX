@@ -303,6 +303,32 @@ void main() {
               'test passes.');
     });
 
+    test('the cursor is (at, id), so a cap inside one action still pages on',
+        () async {
+      // One writeItems stamps every row of an action with one `at`. A strict
+      // `at <` cursor could not reach the rows past the cap that share the cap
+      // row's instant — they were hidden forever, under a note that blamed
+      // the filters.
+      final at = DateTime.utc(2026, 8, 30, 12);
+      await _seed(db, actionId: 'save', at: at, entityId: 'a0');
+      await _seed(db, actionId: 'save', at: at, entityId: 'a1');
+      await _seed(db, actionId: 'save', at: at, entityId: 'a2');
+
+      final first = await store.changesPage(ConfigChangeQuery(limit: 2));
+      expect(first.rows, hasLength(2));
+      expect(first.rawCount, 2);
+      expect(first.oldestAt, at);
+
+      final second = await store.changesPage(ConfigChangeQuery(
+        before: first.oldestAt,
+        beforeId: first.oldestId,
+        limit: 2,
+      ));
+      expect(second.rows.map((r) => r.change.entityId), ['a0'],
+          reason: 'the third row shares the instant and is older by id');
+      expect(second.rawCount, 1);
+    });
+
     test('before is a cursor that composes with the window', () async {
       await _seed(db, actionId: 'A', at: DateTime.utc(2026, 8, 29));
       await _seed(db, actionId: 'B', at: DateTime.utc(2026, 8, 30, 6));

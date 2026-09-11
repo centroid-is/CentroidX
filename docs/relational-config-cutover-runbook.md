@@ -362,11 +362,14 @@ depends on what this plant has, and none of them is something to match against
 a figure written down in advance. What is fixed is the **shape**.
 
 The names in brackets are **families**, sorted. There is one per migrated
-setting — `alarm_man_config`, `state_man_config`, `collector_config`,
+setting — `alarm_man_config`, `collector_config`,
 `page_editor_top_level_order`, `server_config_envelope` — plus `images` for
-the uploaded page images and `recipes` for the recipe buckets, which are the
-two that can hold more than one key each. A family with nothing to move simply
-does not appear.
+the uploaded page images, `recipes` for the recipe buckets, `chat` for the
+assistant's conversations and `llm` for the provider settings, which are the
+families that can hold more than one key each. A family with nothing to move
+simply does not appear. `state_man_config` is **abandoned**, not migrated:
+its only reader is the OS keychain, and a shared row of the PLC endpoints
+would be a plaintext copy in a replicated table for nobody.
 
 **Only one number on that line gates anything, and it is `unknown`.** Check,
 in this order:
@@ -376,8 +379,9 @@ in this order:
   section 3's work arriving late, and the drop in section 6 will refuse on
   them anyway.
 - **The line is there at all.** Its absence means the migration did not run.
-  The nearby log lines say why — the common one is *"skipped because the
-  key_mappings or pages migration has not run"*, which means the attach
+  The nearby log lines say why — the common one is *"Preference migration:
+  the pages migration has not run (no _migrated.pages row)"* (or
+  `key_mappings`), which means the attach
   ordering went wrong and this station is serving what it already had.
 - **The migrated and abandoned counts are information, not a gate.** Read them
   against what you know this plant has — if `alarm_man_config` is missing from
@@ -817,10 +821,10 @@ machine. CI compiled the same commit and reported, on
 green on macOS, Ubuntu and Windows for the app, `tfc_dart` and the MCP server,
 plus `elinux-build` and the Windows MSIX.
 
-**Both station images build in CI, and on a pull request CI also publishes
-them** to `ghcr.io/centroid-is/centroid-hmi:pr-465` and
-`centroid-hmi-ivi:pr-465`, alongside the backend images. That is worth stating
-plainly because the eLinux image — the one carrying the station's SQLite
+**The station image builds in CI, and on a pull request CI also publishes
+it** to `ghcr.io/centroid-is/centroid-hmi:pr-465`, alongside the backend
+images (the ivi-homescreen image was dropped on main in #497 and no longer
+exists). That is worth stating plainly because the eLinux image — the one carrying the station's SQLite
 preference store — was this milestone's largest untested surface, and it is no
 longer untested.
 

@@ -810,7 +810,17 @@ class Database {
         // `postgres`'s own refusal to use a connection it knows is gone
         // (`v3/connection.dart`: "Attempting to execute query, but connection
         // is not open."). Same class, one layer up.
-        msg.contains('connection is not open');
+        msg.contains('connection is not open') ||
+        // What a statement already on the wire gets when the socket dies under
+        // it: `PgException('The underlying socket to Postgres has been closed
+        // unexpectedly.')`. The arms above cover a connection that died
+        // *between* statements; this is the one that died *during* one, and
+        // without it a save mid-outage surfaced as a raw driver string rather
+        // than as "the shared database is unreachable".
+        msg.contains('closed unexpectedly') ||
+        // A statement that never came back at all — a hung rather than a
+        // reset peer — is not a different kind of outage to the operator.
+        e is TimeoutException;
   }
 
   /// The private name the existing call sites use, delegating to

@@ -186,6 +186,51 @@ void main() {
           const KeyMappingFingerprint(count: 2, revSum: 7));
     });
 
+    test('a rename changes it, though neither the count nor the rev sum moves',
+        () async {
+      // Rename = delete one row at rev 1, insert another at rev 1. Two
+      // integers over the rows cannot see it; the change log's high-water
+      // mark is what does, and a backend keyed on the first two alone kept
+      // subscribing under the old name forever.
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      await db.customSelect('SELECT 1').getSingle();
+
+      await _insert(db,
+          kind: ConfigKind.keyMapping,
+          id: 'pump3.speed',
+          scope: ConfigScope.shared,
+          rev: 1);
+      final before = await readSharedKeyMappingFingerprint(db);
+
+      await db.customStatement(
+          "DELETE FROM config_item WHERE kind = 'key_mapping' AND id = 'pump3.speed'");
+      await _insert(db,
+          kind: ConfigKind.keyMapping,
+          id: 'pump3.velocity',
+          scope: ConfigScope.shared,
+          rev: 1);
+      await db.into(db.configChangeTable).insert(
+            ConfigChangeTableCompanion.insert(
+              at: DateTime.utc(2026, 9, 1),
+              actionId: 'rename',
+              who: 'jon',
+              station: 'st1',
+              roleName: 'engineer',
+              kind: ConfigKind.keyMapping.wireName,
+              entityId: 'pump3.velocity',
+              scope: ConfigScope.shared.wireName,
+              op: 'insert',
+            ),
+          );
+
+      final after = await readSharedKeyMappingFingerprint(db);
+      expect(after.count, before.count);
+      expect(after.revSum, before.revSum);
+      expect(after, isNot(before),
+          reason: 'the change log moved, so the fingerprint moved');
+    });
+
     test('an update changes it without changing the count', () async {
       // Why the pair and not a row count alone: an edit to an existing key
       // leaves the count where it was. And why not a `config_change.id`

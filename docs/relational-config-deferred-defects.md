@@ -507,3 +507,98 @@ Flutter side's SIGTERM maps to `TerminateProcess`, so the process dies without
 closing its database or flushing its log. Inherent to the platform rather than
 to the fix, minor, and closing it would need a different shutdown channel
 (a control message over stdio, or a named event). **Not fixed. Jón's call.**
+
+---
+
+## Review pass, 2026-09-11 — what changed before the merge
+
+A review of the whole branch (five independent readers over the store, the
+page path, the history and undo surface, the MCP server and backend, and
+every consumer of `preferencesProvider`) found the defects below. **All were
+fixed on the branch**; they are recorded here because each one is the kind
+that would have shipped green.
+
+**Lost writes and stale saves.**
+
+- `ConfigStore.writeItems` read the compare-and-swap revision off the live
+  snapshot inside its transaction, after awaits, so a sync apply landing
+  mid-save moved the target: another station's edit was matched at its new
+  revision and overwritten. The CAS now guards with the revisions the diff
+  was computed against, and every write runs on the sync engine's
+  serialisation chain (re-entrant, so undo's assert-then-write still works).
+  The same class of race in `_apply` — a pull that read "row absent" before
+  a local insert, then deleted the row from the snapshot — is closed by the
+  same serialisation.
+- The page editor saved the whole plant from the layout it loaded when it
+  opened. A page another station added meanwhile was deleted, cleanly; an
+  edit to a page this operator never touched was overwritten. Saves now go
+  through `mergeForSave` (`page_codec.dart`), decided per page against what
+  the store holds and what the editor was shown; the key repository has the
+  per-item version (`config_merge.dart`) through `saveKeyMappings(baseline:)`.
+- Page settings edits (`CreatePageWidget`) rebuilt `AssetPage` without its
+  `id`, so a rename was a delete plus a re-insert that restamped every asset
+  on the page. An asset added in the editor was minted a fresh id on every
+  save, because the id landed on the JSON copy the save uses and never came
+  back. Two pages at one path were collapsed by `pagesJsonOf` and the second
+  deleted by the next save; the merge now refuses the path.
+- Image collection ran from a station serving a fallback layout (every image
+  looked unreferenced) and took images another station had picked but not
+  yet saved a page for. It now skips fallback stations and keeps rows newer
+  than a day.
+
+**Migrations.**
+
+- `blob_migration.dart` counted any shared row of the kind as proof the
+  migration had run; a `seedDefaultIfEmpty` placeholder, or a station whose
+  copy rolled back, left the plant's real keys in the blob forever. The
+  marker is now the only gate, the copy writes over a seeded row (rev bumped,
+  logged as an update), and `noBlob` writes the marker so a plant that never
+  stored a blob is not refused by the sync engine and the preference
+  migration on every boot.
+- `state_man_config` was migrated into a shared, non-exempt row: PLC
+  endpoints and credentials in a replicated table and a permanent log, for
+  no reader (the app reads it `secret: true`). Abandoned by name.
+- `chat.*` and `llm.*` keys were unknown to the migration — chat history and
+  provider settings lost at the cutover, and the drop tool blocked forever.
+  Both are migrated; `chat.` rows are history-exempt, because a transcript
+  rewritten on every message would have been O(N²) bytes in a table nothing
+  prunes.
+- The drop tool verified marker presence and key *names*, never that a
+  migrated key had a row: a known key whose value the migration could not
+  read was dropped with its only copy. It now checks every migrated key for
+  its row, and runs its gates and the drop in one transaction under the
+  migration's advisory lock.
+- `AppDatabase.native` was `executor is NativeDatabase`, false for the
+  background executor `createLocal` opens, so the first upgrade of a local
+  mirror would have run the Postgres DDL against SQLite. Now the dialect.
+
+**Readers.**
+
+- The MCP server handed the `{type, value}` preference envelope back as the
+  document: every alarm tool saw zero alarms on a migrated plant. The
+  fixtures seeded the bare document, so no test could see it. Both fixed.
+- The backend's restart fingerprint (`count + Σrev`) could not see a key
+  rename; it now carries the change log's high-water mark as well.
+- `alarmManProvider` threw at boot when the snapshot had no
+  `alarm_man_config` — offline first boot, the degraded in-memory store, or
+  the attach race — because `AlarmMan.create` seeded through the checked
+  setter. `create` treats absence as empty and writes nothing; the provider
+  waits for the first sync before deciding the plant has none.
+- `page_editor_top_level_order` is written shared and was read device-local
+  at boot, so the menu order reverted on every restart. `PageManager.load`
+  reads the shared row from the mirror first.
+- History paging on a strict `at <` cursor could not reach the rows of an
+  action that straddled the 500-row cap; the cursor is `(at, id)`. The cap
+  and the cursor are judged on the raw row count, so an undecodable row does
+  not hide the Load-more control. Tiles are keyed by row and action; a
+  removed field renders as `old → —`; an unclassified undo error is told
+  rather than swallowed; double-tap is refused.
+- The raw preferences editor and the recipe dialog let a refused write
+  escape silently; both now say so.
+- `scripts/check-flutter-preferences-retired.sh` did not run in CI. It does.
+- `Database.isConnectionError` did not classify the driver's "socket closed
+  unexpectedly" (a statement on the wire when the peer dies) or a timeout.
+
+**Closed by this branch, and worth saying:** D-2 (the key-mapping listener
+is on a store with a stable identity), D-7 (04-11 landed). D-3, D-6, D-8 to
+D-10 stand as written.

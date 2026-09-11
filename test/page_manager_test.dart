@@ -1055,7 +1055,12 @@ void main() {
       expect(await prefs.getString(PageManager.storageKey), isNull);
     });
 
-    test('the top-level order lands before the rows do', () async {
+    test('the top-level order lands after the rows do', () async {
+      // The order is a shared row in its own transaction, and the page write
+      // can be refused — offline, a lost compare-and-swap, a merge conflict.
+      // Written first, a refused save left every station's menu describing a
+      // layout that never landed; written after, a refused save leaves
+      // nothing changed.
       final store = await _storeHolding({}, attachRemote: true);
       final prefs = FakePreferences();
       String? orderAtWriteTime;
@@ -1069,10 +1074,10 @@ void main() {
 
       await mgr.save();
 
-      expect(orderAtWriteTime, isNotNull,
-          reason: 'a stale menu order is cosmetic; a stale page set is the '
-              'wrong plant, so the order goes first');
-      expect(jsonDecode(orderAtWriteTime!), ['/', '/roe']);
+      expect(orderAtWriteTime, isNull,
+          reason: 'the rows go first; the order follows a write that landed');
+      expect(jsonDecode((await prefs.getString(PageManager.orderStorageKey))!),
+          ['/', '/roe']);
     });
 
     test('an empty order is still never written', () async {

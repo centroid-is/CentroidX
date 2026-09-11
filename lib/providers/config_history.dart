@@ -87,6 +87,7 @@ class ConfigHistoryResult {
     required this.changeRowCount,
     required this.reachedLimit,
     required this.oldestAt,
+    this.oldestId,
   });
 
   /// The grouped actions, newest action first.
@@ -103,8 +104,12 @@ class ConfigHistoryResult {
   final bool reachedLimit;
 
   /// The `at` of the oldest row returned, or null when there were none. The
-  /// "Load more" cursor.
+  /// "Load more" cursor, with [oldestId].
   final DateTime? oldestAt;
+
+  /// The `id` of the oldest row returned — the cursor's tiebreak among rows
+  /// written at one instant. See `ConfigChangeQuery.beforeId`.
+  final int? oldestId;
 
   /// Whether this view can see station-scoped changes. Always false.
   ///
@@ -156,7 +161,8 @@ Future<ConfigHistoryResult?> configHistoryActions(
   final store = await ref.watch(configChangeStoreProvider.future);
   if (store == null) return null;
 
-  final rows = await store.changes(query);
+  final page = await store.changesPage(query);
+  final rows = page.rows;
   final actionIds = rows.map((row) => row.change.actionId).toSet();
 
   // The audit store reads the same handle, so it is null only when the change
@@ -179,11 +185,15 @@ Future<ConfigHistoryResult?> configHistoryActions(
       auditTotalsByActionId: auditTotals,
       changeTotalsByActionId: changeTotals,
     ),
-    changeRowCount: rows.length,
-    reachedLimit: rows.length == query.limit,
+    changeRowCount: page.rawCount,
+    // Judged on the raw count, not the decoded list: a row this build cannot
+    // read is still a row the cap counted, and hiding Load-more over it
+    // would hide every row behind it too.
+    reachedLimit: page.rawCount >= query.limit,
     // The store orders newest first, so the last row is the oldest one and the
     // cursor the next page starts from.
-    oldestAt: rows.isEmpty ? null : rows.last.change.at,
+    oldestAt: page.oldestAt,
+    oldestId: page.oldestId,
   );
 }
 

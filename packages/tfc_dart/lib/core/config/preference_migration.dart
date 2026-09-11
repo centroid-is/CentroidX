@@ -128,6 +128,15 @@ const String kLegacyImageKeyPrefix = 'page_editor_image:';
 /// The suffix a recipe bucket's key carries.
 const String kLegacyRecipesKeySuffix = '.recipes';
 
+/// The prefix of the chat assistant's rows: `chat.history`,
+/// `chat.conversations`, `chat.active_conversation` and one
+/// `chat.conversation.<id>` per thread (`lib/providers/chat.dart`).
+const String kLegacyChatKeyPrefix = 'chat.';
+
+/// The prefix of the LLM provider settings: `llm.selected_provider` and the
+/// per-provider base URLs (`lib/llm/llm_provider.dart`).
+const String kLegacyLlmKeyPrefix = 'llm.';
+
 final Logger _logger = Logger();
 
 /// What one call to [migratePreferencesIntoRows] did.
@@ -342,6 +351,19 @@ const Map<String, String> kAbandonedPreferenceKeys = <String, String>{
       'device-local by design (update_channel.dart builds device-local '
           'preferences) so a development box on a prerelease channel does not '
           'move every HMI in the plant onto it',
+  // Consumers, enumerated: `StateManConfig.fromPrefs` and `toPrefs`
+  // (`state_man.dart`) read and write it with `secret: true`, which is the
+  // OS keychain and never a row; the backend takes its copy from a file
+  // (`CENTROID_STATEMAN_FILE_PATH`). Nothing reads a shared row of this
+  // name. A row of it would be the plant's PLC endpoints — and whatever
+  // credentials a plant put in them — copied into a table every station
+  // mirrors, and its change row copied into a log nothing prunes, for no
+  // reader at all.
+  'state_man_config':
+      'the PLC connection settings, read and written through the OS '
+          'keychain only (secret: true); no consumer reads a shared row of '
+          'it, and a plaintext copy in a replicated table would be a leak '
+          'with no purpose',
 };
 
 /// What [key] becomes. Pure; see [PreferenceClassification].
@@ -373,6 +395,26 @@ PreferenceClassification classifyPreferenceKey(String key) {
       id: id,
     );
   }
+  // The chat assistant's state and the LLM provider settings, both written
+  // through the shared store on the build being replaced, so a plant that has
+  // used the assistant carries them. Prefix families rather than exact names:
+  // `chat.conversation.<id>` is one row per thread.
+  if (key.startsWith(kLegacyChatKeyPrefix) &&
+      key.length > kLegacyChatKeyPrefix.length) {
+    return PreferenceClassification.migrate(
+      family: 'chat',
+      kind: ConfigKind.preference,
+      id: key,
+    );
+  }
+  if (key.startsWith(kLegacyLlmKeyPrefix) &&
+      key.length > kLegacyLlmKeyPrefix.length) {
+    return PreferenceClassification.migrate(
+      family: 'llm',
+      kind: ConfigKind.preference,
+      id: key,
+    );
+  }
   if (key.endsWith(kLegacyRecipesKeySuffix) &&
       key.length > kLegacyRecipesKeySuffix.length) {
     return PreferenceClassification.migrate(
@@ -398,7 +440,6 @@ PreferenceClassification classifyPreferenceKey(String key) {
 /// the same reason the store asks it inside its writer.
 const Set<String> kMigratedPreferenceKeys = <String>{
   'alarm_man_config',
-  'state_man_config',
   'collector_config',
   'page_editor_top_level_order',
   'server_config_envelope',
@@ -488,26 +529,39 @@ Future<PreferenceMigrationResult> copyPreferencesIntoRowsLocked(
         outcome: PreferenceMigrationOutcome.alreadyDone);
   }
 
-  for (final sibling in const {
-    'key_mappings': kKeyMappingsMigratedMarkerId,
-    'pages': kPagesMigratedMarkerId,
-  }.entries) {
-    if (await _hasMarker(db, sibling.value)) continue;
-    // A skip, never a throw. See the function doc above.
-    _logger.w('Preference migration: the ${sibling.key} migration has not '
-        'run (no ${sibling.value} row), so this one is skipping rather than '
-        'writing rows that migration is about to write differently. The '
-        'station comes up; re-check the attach ordering.');
-    return const PreferenceMigrationResult(
-        outcome: PreferenceMigrationOutcome.siblingsNotMigrated);
-  }
-
   final legacy = await _readLegacyTable(db);
   if (legacy == null) {
     _logger.i('Preference migration: flutter_preferences is gone; nothing '
         'to copy. This is every boot after 04-12 drops it.');
     return const PreferenceMigrationResult(
         outcome: PreferenceMigrationOutcome.noTable);
+  }
+
+  final legacyKeys = {for (final row in legacy) row.key};
+  for (final sibling in const {
+    'key_mappings': (blob: 'key_mappings', marker: kKeyMappingsMigratedMarkerId),
+    'pages': (blob: 'page_editor_data', marker: kPagesMigratedMarkerId),
+  }.entries) {
+    if (await _hasMarker(db, sibling.value.marker)) continue;
+    // A sibling whose blob was never stored has nothing to write differently,
+    // which is the whole of what this gate protects — so it is satisfied. The
+    // blob migrations do write their marker on `noBlob` now, but a plant that
+    // ran an earlier build of them, or one whose blob row was deleted by
+    // hand, would otherwise be refused here on every boot, forever, and come
+    // up without its alarms.
+    if (!legacyKeys.contains(sibling.value.blob)) {
+      _logger.i('Preference migration: no ${sibling.value.marker} row, but '
+          'there is no ${sibling.value.blob} blob for that migration to '
+          'move either; proceeding');
+      continue;
+    }
+    // A skip, never a throw. See the function doc above.
+    _logger.w('Preference migration: the ${sibling.key} migration has not '
+        'run (no ${sibling.value.marker} row), so this one is skipping rather '
+        'than writing rows that migration is about to write differently. The '
+        'station comes up; re-check the attach ordering.');
+    return const PreferenceMigrationResult(
+        outcome: PreferenceMigrationOutcome.siblingsNotMigrated);
   }
 
   final at = DateTime.now();

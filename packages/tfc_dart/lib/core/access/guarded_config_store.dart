@@ -15,6 +15,7 @@ import 'package:tfc_access/tfc_access.dart';
 
 import '../config/config_diff.dart';
 import '../config/config_item.dart';
+import '../config/config_merge.dart';
 import '../config/config_store.dart';
 import '../config/config_store_errors.dart';
 import '../config/key_mapping_codec.dart' as codec;
@@ -572,14 +573,28 @@ class GuardedConfigStore {
     await write();
   }
 
-  /// [save] for key mappings, and nothing more.
+  /// [save] for key mappings.
   ///
-  /// Exists so 02-06's call sites read as domain code; it carries no logic of
-  /// its own, and `guarded_config_store_test.dart` holds it to that.
+  /// Exists so 02-06's call sites read as domain code. With [baseline] — the
+  /// store's key mapping items as the editor loaded them — the wanted set is
+  /// first reconciled against what the store holds now through
+  /// `mergeItemsForSave`, so a key another station added, changed or removed
+  /// while the repository was open is kept, adopted or refused rather than
+  /// silently replaced with the editor's hour-old copy. Without it the save is
+  /// `save(keyMappingItems(wanted), kind: keyMapping)` and nothing more, which
+  /// `guarded_config_store_test.dart` holds it to.
   Future<ConfigWriteResult> saveKeyMappings(KeyMappings wanted,
-          {String? reason}) =>
-      save(codec.keyMappingItems(wanted),
-          kind: ConfigKind.keyMapping, reason: reason);
+      {String? reason, List<ConfigItem>? baseline}) {
+    var items = codec.keyMappingItems(wanted);
+    if (baseline != null) {
+      items = mergeItemsForSave(
+        wanted: items,
+        stored: _inner.keyMappingItems,
+        baseline: baseline,
+      );
+    }
+    return save(items, kind: ConfigKind.keyMapping, reason: reason);
+  }
 
   /// Writes the example mapping when the plant has none — the systemWrites
   /// analogue, with no check, `origin: 'system'` and one audit row.

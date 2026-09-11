@@ -272,28 +272,30 @@ void main() {
       expect((await changes()).length, logBefore);
     });
 
-    test('page rows already present are enough to count as migrated',
+    test('page rows already present are not enough: the marker is the gate',
         () async {
       await seedBlob(blob);
       await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
             kind: ConfigKind.page.wireName,
-            id: 'a page somebody else migrated',
+            id: 'a page somebody else left behind',
             scope: ConfigScope.shared.wireName,
             payload: '{}',
             updatedAt: DateTime.utc(2026, 1, 1),
             updatedBy: 'another station',
           ));
 
-      expect(await runCopy(), MigrationOutcome.alreadyDone);
-      expect(await changes(), isEmpty);
+      expect(await runCopy(), MigrationOutcome.migrated);
+      expect(await changes(), isNotEmpty);
+      expect((await rows()).map((r) => r.id), contains(kPagesMigratedMarkerId));
     });
 
-    test('a plant with no page_editor_data row is noBlob, not an empty '
-        'migration', () async {
+    test('a plant with no page_editor_data row is noBlob, and gets the marker',
+        () async {
       expect(await runCopy(), MigrationOutcome.noBlob);
-      expect(await rows(), isEmpty,
-          reason: 'no marker either: nothing was migrated, so nothing may '
-              'claim it was');
+      expect((await rows()).map((r) => r.id), [kPagesMigratedMarkerId],
+          reason: 'looked at and found nothing; the sweep and the preference '
+              'migration both read the marker to tell that from "not yet"');
+      expect(await runCopy(), MigrationOutcome.alreadyDone);
     });
 
     test('an unrecognisable blob throws and leaves nothing behind', () async {

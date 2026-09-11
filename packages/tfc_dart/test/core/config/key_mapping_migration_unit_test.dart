@@ -218,27 +218,37 @@ void main() {
       expect(await runCopy(), MigrationOutcome.alreadyDone);
     });
 
-    test('key mapping rows alone are enough to count as migrated', () async {
+    test('a seeded key mapping row does not count as migrated, and the blob '
+        'overwrites it', () async {
       await seedBlob(_blob);
+      // What `seedDefaultIfEmpty` — or a station whose copy rolled back —
+      // leaves behind. It must not read as proof the migration ran.
       await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
             kind: ConfigKind.keyMapping.wireName,
             id: 'CN04.Belt.Speed',
             scope: ConfigScope.shared.wireName,
             payload: '{}',
+            rev: const Value(1),
             updatedAt: DateTime.utc(2026, 1, 1),
             updatedBy: 'someone else',
           ));
 
-      expect(await runCopy(), MigrationOutcome.alreadyDone);
-      expect(await changes(), isEmpty);
+      expect(await runCopy(), MigrationOutcome.migrated);
+      final row = (await items()).singleWhere((r) => r.id == 'CN04.Belt.Speed');
+      expect(row.payload, isNot('{}'));
+      expect(row.rev, 2);
+      expect((await changes()).where((c) => c.entityId == 'CN04.Belt.Speed')
+          .single.op, 'update');
     });
 
-    test('no key_mappings row at all is noBlob, not an empty migration',
+    test('no key_mappings row at all is noBlob, and writes the marker',
         () async {
       expect(await runCopy(), MigrationOutcome.noBlob);
-      expect(await items(), isEmpty,
-          reason: 'no marker either: nothing was migrated, so nothing may '
-              'claim it was');
+      final rows = await items();
+      expect(rows.map((r) => r.id), [kKeyMappingsMigratedMarkerId],
+          reason: 'looked at and found nothing, which the sweep and the '
+              'preference migration both need to be able to read');
+      expect(await runCopy(), MigrationOutcome.alreadyDone);
     });
 
     test('an unrecognisable blob throws and leaves nothing behind', () async {

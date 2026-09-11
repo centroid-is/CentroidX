@@ -136,6 +136,42 @@ void main() {
       }
     });
 
+    test('state_man_config is abandoned: the keychain is its only reader', () {
+      final c = classifyPreferenceKey('state_man_config');
+      expect(c.disposition, PreferenceDisposition.abandon,
+          reason: 'StateManConfig reads and writes it secret: true. A shared '
+              'row of it is the plant\'s PLC endpoints and credentials copied '
+              'into a replicated table and a permanent log, for no reader');
+      expect(kMigratedPreferenceKeys, isNot(contains('state_man_config')));
+    });
+
+    test('the chat assistant\'s rows and the LLM settings migrate by prefix',
+        () {
+      for (final key in [
+        'chat.history',
+        'chat.conversations',
+        'chat.active_conversation',
+        'chat.conversation.7f3a',
+      ]) {
+        final c = classifyPreferenceKey(key);
+        expect(c.disposition, PreferenceDisposition.migrate, reason: key);
+        expect(c.family, 'chat', reason: key);
+        expect(c.kind, ConfigKind.preference, reason: key);
+        expect(c.id, key, reason: key);
+      }
+      for (final key in ['llm.selected_provider', 'llm.claude.base_url']) {
+        final c = classifyPreferenceKey(key);
+        expect(c.disposition, PreferenceDisposition.migrate, reason: key);
+        expect(c.family, 'llm', reason: key);
+        expect(c.id, key, reason: key);
+      }
+      // The bare prefix names nothing.
+      expect(classifyPreferenceKey('chat.').disposition,
+          PreferenceDisposition.unknown);
+      expect(classifyPreferenceKey('llm.').disposition,
+          PreferenceDisposition.unknown);
+    });
+
     test('update_channel is abandoned, never promoted to a shared row', () {
       final c = classifyPreferenceKey('update_channel');
 
@@ -483,7 +519,8 @@ void main() {
       // this one, and the store never handed to the sync engine. A station
       // that does not come up is worse than a migration that did not run.
       await seedMarker(kKeyMappingsMigratedMarkerId);
-      // No pages marker.
+      // No pages marker — and a pages blob that migration has yet to move.
+      await seedLegacy('page_editor_data', '{}');
       await seedLegacy('alarm_man_config', '{}');
 
       final result = await copyPreferencesIntoRowsLocked(db);
@@ -491,6 +528,22 @@ void main() {
       expect(result.outcome, PreferenceMigrationOutcome.siblingsNotMigrated);
       expect(await itemRows(), hasLength(1), reason: 'nothing was written');
       expect(await changeRows(), isEmpty);
+    });
+
+    test('a sibling with no blob to move is not waited for', () async {
+      // A plant that never customised its pages: no `page_editor_data` row,
+      // so the pages migration (on an older build of it) wrote no marker.
+      // Waiting for a marker that will never come would skip this migration
+      // on every boot, forever, and the plant would come up with no alarms.
+      await seedMarker(kKeyMappingsMigratedMarkerId);
+      await seedLegacy('alarm_man_config', '{"alarms":[]}');
+
+      final result = await copyPreferencesIntoRowsLocked(db);
+
+      expect(result.outcome, PreferenceMigrationOutcome.migrated);
+      expect(result.migratedByFamily, {'alarm_man_config': 1});
+      expect((await itemRows()).map((r) => r.id),
+          contains(kPreferencesMigratedMarkerId));
     });
 
     test('an already-dropped table is an outcome, not an error', () async {

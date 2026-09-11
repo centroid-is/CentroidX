@@ -206,10 +206,15 @@ void main() {
     /// proves nothing about the alarms an operator can actually see.
     Future<void> insertAlarms(List<Map<String, dynamic>> alarms) async {
       await createConfigItemTable();
+      // The envelope production writes, never the bare document — see
+      // `seedPreferenceRow` in helpers/config_rows.dart for why.
       await insertRow(
         kind: 'preference',
         id: 'alarm_man_config',
-        payload: {'alarms': alarms},
+        payload: {
+          'type': 'String',
+          'value': jsonEncode({'alarms': alarms}),
+        },
       );
     }
 

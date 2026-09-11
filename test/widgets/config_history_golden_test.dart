@@ -106,6 +106,17 @@ class _GoldenChangeStore extends Fake implements ConfigChangeStore {
   Future<List<ConfigChangeRecord>> changes(ConfigChangeQuery query) async =>
       rows;
 
+  /// What the provider reads: the same rows, with the raw count and the
+  /// cursor the page derives the cap and Load-more from.
+  @override
+  Future<ConfigChangePage> changesPage(ConfigChangeQuery query) async =>
+      ConfigChangePage(
+        rows: rows,
+        rawCount: rows.length,
+        oldestAt: rows.isEmpty ? null : rows.last.change.at,
+        oldestId: rows.isEmpty ? null : rows.last.id,
+      );
+
   @override
   Future<Map<String, int>> changeCountsByAction(
       Iterable<String> actionIds) async {

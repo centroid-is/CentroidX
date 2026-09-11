@@ -505,6 +505,33 @@ Future<UndoPlan> planUndo(GeneratedDatabase db, String actionId) async {
       continue;
     }
 
+    // The side the undo would write. Decoded here, guarded, for the same
+    // reason `_contentBlocker` guards the stored side: a change row is data
+    // written by another build, and a row this one cannot read must come
+    // back as a refusal an operator can see rather than a `FormatException`
+    // out of a button handler with nothing on screen.
+    final ConfigItem? item;
+    try {
+      item = first.oldValue == null
+          ? null
+          : ConfigItem.fromEntityJson(
+              _decodeEntity(first.oldValue!),
+              kind: kind,
+              id: key.id,
+              scope: scope,
+            );
+    } on Object {
+      blockers.add(UndoBlocker(
+        reason: UndoBlockReason.entityMoved,
+        kindName: key.kind,
+        entityId: key.id,
+        scopeName: key.scope,
+        summary: '"${key.id}" has a history row this station cannot read, '
+            'so what it held before this action cannot be put back.',
+      ));
+      continue;
+    }
+
     steps.add(UndoStep(
       kind: kind,
       entityId: key.id,
@@ -514,14 +541,7 @@ Future<UndoPlan> planUndo(GeneratedDatabase db, String actionId) async {
       // `stored` is the live row this check just compared against, so this is
       // an observation and not a guess. See [UndoStep.observedRev].
       observedRev: stored?.rev,
-      item: first.oldValue == null
-          ? null
-          : ConfigItem.fromEntityJson(
-              _decodeEntity(first.oldValue!),
-              kind: kind,
-              id: key.id,
-              scope: scope,
-            ),
+      item: item,
     ));
   }
 

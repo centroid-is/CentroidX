@@ -300,6 +300,32 @@ void main() {
   });
 
   group('readSharedPreferencePayload', () {
+    test('unwraps the {type, value} envelope every preference row carries',
+        () async {
+      // The shape `SharedRowPreferences` and the migration both write. Read
+      // as the document itself, `['alarms']` was null and the MCP server
+      // reported a plant with no alarms.
+      final db = _schemaDb();
+      addTearDown(db.close);
+
+      await _insert(db,
+          kind: ConfigKind.preference,
+          id: 'alarm_man_config',
+          payload: {
+            'type': 'String',
+            'value': jsonEncode({
+              'alarms': [
+                {'uid': 'a1'},
+                {'uid': 'a2'},
+              ]
+            }),
+          });
+
+      final value = await readSharedPreferencePayload(db, 'alarm_man_config');
+      expect((value!['alarms'] as List), hasLength(2));
+      expect(value.containsKey('type'), isFalse);
+    });
+
     test('decodes an object payload', () async {
       final db = _schemaDb();
       addTearDown(db.close);

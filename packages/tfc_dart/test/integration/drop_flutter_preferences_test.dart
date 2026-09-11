@@ -330,6 +330,24 @@ void main() {
       expect(await tableExists(), isTrue);
     });
 
+    test('a migrated key with no config_item row refuses, naming it', () async {
+      // The migration reports a known key it could not read as unknown — in
+      // a log line. A week later the classifier decides by name alone and
+      // would have called the key migrated; the row check is what stands in
+      // for the log line. The same gate covers a key written into the table
+      // after the marker existed, which no later run of the migration moves.
+      await seedMigratedPlant();
+      await seedLegacy('collector_config', '30');
+
+      final result =
+          await dropFlutterPreferences(database.db, environment: kConfirmed);
+
+      expect(result.outcome, DropOutcome.refused);
+      expect(result.refusals.single, contains('collector_config'));
+      expect(result.refusals.single, contains('no config_item row'));
+      expect(await tableExists(), isTrue);
+    });
+
     test('a clean drop takes the table AND the orphan notify function',
         () async {
       await seedMigratedPlant();

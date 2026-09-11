@@ -146,6 +146,28 @@ void main() {
       expect(await store.load(alsoKeep), fixtureBmpBytes);
     });
 
+    test('keepNewerThan spares an unreferenced image that was just stored',
+        () async {
+      // An image is stored when it is picked and referenced when its page is
+      // saved, on whichever station picked it. A collector on another
+      // station in between must not take it.
+      final fresh = await store.save(fixturePngBytes);
+
+      expect(
+          await store.removeUnreferenced({},
+              keepNewerThan:
+                  DateTime.now().subtract(const Duration(hours: 24))),
+          0);
+      expect(await store.storedIds(), {fresh});
+
+      // And a cut-off in the future spares nothing: the grace is by age.
+      expect(
+          await store.removeUnreferenced({},
+              keepNewerThan: DateTime.now().add(const Duration(hours: 1))),
+          1);
+      expect(await store.storedIds(), isEmpty);
+    });
+
     test('a collection that removes nothing writes nothing', () async {
       final keep = await store.save(fixturePngBytes);
       final before = await imageRows();

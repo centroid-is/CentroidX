@@ -141,7 +141,11 @@ void main() {
           'UPDATE config_item SET payload = ? '
           'WHERE kind = ? AND id = ? AND scope = ?',
           [
-            jsonEncode({'alarms': alarms}),
+            // The envelope production writes — see `seedPreferenceRow`.
+            jsonEncode({
+              'type': 'String',
+              'value': jsonEncode({'alarms': alarms}),
+            }),
             'preference',
             'alarm_man_config',
             'shared',
@@ -188,8 +192,11 @@ void main() {
         ],
       ).get();
       if (found.isEmpty) return const [];
-      final payload =
+      // The row is the `{type, value}` envelope; the document is its value.
+      final envelope =
           jsonDecode(found.first.read<String>('payload')) as Map<String, dynamic>;
+      final payload =
+          jsonDecode(envelope['value'] as String) as Map<String, dynamic>;
       return payload['alarms'] as List<dynamic>;
     }
 

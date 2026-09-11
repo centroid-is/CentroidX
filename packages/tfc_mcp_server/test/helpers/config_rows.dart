@@ -200,15 +200,22 @@ Future<void> seedKeyMappings(
   }
 }
 
-/// One shared `preference` row — `alarm_man_config` and its like.
+/// One shared `preference` row — `alarm_man_config` and its like — **in the
+/// envelope production writes**: `{"type": "String", "value": "<json>"}`, the
+/// shape `SharedRowPreferences` and the preference migration both store.
 ///
-/// Plan 04-11 migrates the preferences; until it has, production reads null
-/// here and so does a test that does not call this.
+/// The envelope is not optional here. The fixtures used to insert the bare
+/// document, and every MCP test passed against a shape no row ever held —
+/// while on a migrated plant the service handed the envelope back as the
+/// document and reported zero alarms.
 Future<void> seedPreferenceRow(
   GeneratedDatabase db,
   String key,
   Object? value,
 ) async {
   await createConfigItemTable(db);
-  await insertConfigRow(db, kind: 'preference', id: key, payload: value);
+  await insertConfigRow(db,
+      kind: 'preference',
+      id: key,
+      payload: {'type': 'String', 'value': jsonEncode(value)});
 }

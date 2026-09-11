@@ -96,16 +96,20 @@ class ConfigService implements KeyMappingLookup {
   /// has migrated yet, and a caller that treats null as "not configured" is
   /// right on both sides of the cutover. It is the same answer this service
   /// gave for a missing `flutter_preferences` key.
-  Future<Map<String, dynamic>?> _preferenceJson(String key) {
-    return _prefCache.getOrCompute(key, () async {
-      try {
-        return await readSharedPreferencePayload(_db, key);
-      } catch (_) {
-        // `config_item` is created by tfc_dart's migration. A server pointed
-        // at a database that has not run it must still answer.
-        return null;
-      }
-    });
+  Future<Map<String, dynamic>?> _preferenceJson(String key) async {
+    try {
+      return await _prefCache.getOrCompute(
+          key, () => readSharedPreferencePayload(_db, key));
+    } catch (_) {
+      // `config_item` is created by tfc_dart's migration. A server pointed
+      // at a database that has not run it must still answer — but the
+      // failure is **not cached**: it used to be, and a connection reset
+      // during one read then answered "no such preference" for the whole
+      // five-minute TTL, which for `alarm_man_config` is a plant with no
+      // alarms and for the key mappings an empty key universe handed to the
+      // access-template tools. The cache holds answers, not outages.
+      return null;
+    }
   }
 
   /// The whole shared layout, in the shape `page_editor_data` held: one entry
@@ -124,15 +128,14 @@ class ConfigService implements KeyMappingLookup {
   /// Empty while the migration has not run, for the same reason
   /// [_preferenceJson] is null then.
   Future<Map<String, dynamic>> _pagesJson() async {
-    final cached = await _prefCache.getOrCompute('page_editor_data#rows',
-        () async {
-      try {
-        return pagesJsonOf(await readSharedPageLayout(_db));
-      } catch (_) {
-        return null;
-      }
-    });
-    return cached ?? const {};
+    try {
+      final cached = await _prefCache.getOrCompute('page_editor_data#rows',
+          () async => pagesJsonOf(await readSharedPageLayout(_db)));
+      return cached ?? const {};
+    } catch (_) {
+      // Not cached, for the reason [_preferenceJson] gives.
+      return const {};
+    }
   }
 
   /// The key mappings, from `config_item` rows.

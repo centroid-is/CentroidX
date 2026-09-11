@@ -41,6 +41,8 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_store_errors.dart'
+    show ConfigConflict;
 import 'package:tfc_dart/core/config/page_rows.dart'
     show bySortIndexThenId, pagesJsonOf;
 
@@ -421,4 +423,218 @@ Iterable<Asset> topLevelAssets(Map<String, AssetPage> pages) sync* {
   for (final path in paths) {
     yield* pages[path]!.assets;
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// The save-time merge
+// ---------------------------------------------------------------------------
+
+/// Reconciles the layout an editor is about to save with what the plant holds
+/// **now**, so that a save is a replace of what this editor was shown and not
+/// of the whole plant.
+///
+/// `ConfigStore.writeItems` replaces within kinds: every stored page and asset
+/// absent from [wanted] is deleted, and every present one is written over.
+/// An editor hands over the layout it loaded when it was opened, and it can
+/// have been open for an hour. Without this, a page another station added
+/// in that hour was deleted — cleanly, because this station's snapshot had
+/// already reconciled the row, so the compare-and-swap matched — and an edit
+/// another station made to a page this operator never touched was overwritten
+/// with the copy from an hour ago. The per-row CAS protects the window since
+/// the last sync; it says nothing about the window since the editor opened.
+/// This is what says something about it.
+///
+/// [baseline] is what the editor was shown: the store's page and asset items
+/// at the moment it loaded. The merge is decided **per page**, pages being
+/// the unit an operator edits, with a page's assets as part of it:
+///
+///   * A stored page the baseline never held — added elsewhere since — is
+///     **kept**, as stored, unless the editor holds the same id (which can
+///     only mean an adoption or a genuine collision): identical content is
+///     nothing to write, different content is a [ConfigConflict].
+///   * A stored page that has **moved** since the baseline — its row or any
+///     asset on it at a different revision, or an asset added or removed — is
+///     kept as stored when the editor left the page exactly as loaded, and is
+///     a [ConfigConflict] when the operator changed it too, or deleted it.
+///   * A baseline page the store no longer holds — deleted elsewhere since —
+///     is dropped when the editor left it as loaded, and is a [ConfigConflict]
+///     when the operator edited it.
+///   * Everything else is the editor's to decide, as before.
+///
+/// A null [baseline] is an editor opened on a fallback layout — the blob, or
+/// the built-in default — with no row identities to compare against. Its
+/// pages win where the ids coincide (that is the rollout-day adoption), and
+/// every stored page it does not hold is kept: a station on the blob must not
+/// erase the plant's rows on its first save.
+///
+/// Two pages may not share a path. `pagesJsonOf` keys the layout by path, so
+/// a second page at the same path is invisible everywhere and deleted by the
+/// next save. The merge is the one place both sides are in hand, so it is
+/// where that is refused — as a [ConfigConflict] naming the path.
+///
+/// Pure: reads only, no store, no clock. `sortIndex` on a kept stored page's
+/// assets is its stored key, which `assignSortKeys` reads as an ordinal within
+/// that page alone — monotonic, so the run is kept and nothing is rewritten.
+List<ConfigItem> mergeForSave({
+  required List<ConfigItem> wanted,
+  required List<ConfigItem> stored,
+  required List<ConfigItem>? baseline,
+}) {
+  final wantedPages = _groupByPage(wanted);
+  final storedPages = _groupByPage(stored);
+  final basePages = baseline == null ? null : _groupByPage(baseline);
+
+  // What is emitted, by page id. Starts as the editor's layout.
+  final keep = <String, _PageGroup>{...wantedPages};
+
+  for (final entry in storedPages.entries) {
+    final id = entry.key;
+    final theirs = entry.value;
+    final ours = wantedPages[id];
+
+    if (basePages == null) {
+      // A fallback layout: keep what the editor never saw, let it win where
+      // the ids coincide (adoption).
+      if (ours == null) keep[id] = theirs;
+      continue;
+    }
+
+    final base = basePages[id];
+    if (base == null) {
+      // Added elsewhere since this editor loaded.
+      if (ours == null) {
+        keep[id] = theirs;
+        continue;
+      }
+      if (_fingerprint(ours) == _fingerprint(theirs)) continue;
+      throw ConfigConflict.created(id);
+    }
+
+    if (_moved(theirs, base)) {
+      final expected = base.page?.rev ?? 0;
+      if (ours == null) {
+        // Deleted here, changed there.
+        throw ConfigConflict(id, expectedRev: expected);
+      }
+      if (_fingerprint(ours) == _fingerprint(base)) {
+        // Untouched here: theirs is the newer truth.
+        keep[id] = theirs;
+        continue;
+      }
+      throw ConfigConflict(id, expectedRev: expected);
+    }
+    // Unmoved: the editor decides, and already has.
+  }
+
+  if (basePages != null) {
+    for (final entry in basePages.entries) {
+      final id = entry.key;
+      if (storedPages.containsKey(id)) continue;
+      final ours = wantedPages[id];
+      if (ours == null) continue; // Deleted on both sides.
+      if (_fingerprint(ours) == _fingerprint(entry.value)) {
+        // Deleted elsewhere, untouched here: their delete stands.
+        keep.remove(id);
+        continue;
+      }
+      throw ConfigConflict(id, expectedRev: entry.value.page?.rev ?? 0);
+    }
+  }
+
+  final owners = <String, String>{};
+  for (final group in keep.values) {
+    final page = group.page;
+    if (page == null) continue;
+    final path = _pathOf(page);
+    if (path == null) continue;
+    final other = owners[path];
+    if (other != null && other != page.id) throw ConfigConflict.created(path);
+    owners[path] = page.id;
+  }
+
+  return [
+    for (final group in keep.values)
+      if (group.page case final page?) page,
+    for (final group in keep.values) ...group.assets,
+  ];
+}
+
+/// Carries the identities a save minted or adopted back onto the pages an
+/// editor is still holding.
+///
+/// The editor saves a **JSON copy** of its pages (`PageManager.copyPages`),
+/// and it is the copy that `pageItems` stamps ids onto. Without this the
+/// editor's own pages never learn them: an asset added in this session is
+/// minted a fresh id on every save, so each save deletes the row the last one
+/// inserted and inserts another, and the asset's history is cut at every
+/// Ctrl+S. Matched by path and by position, which is exact — the copy is a
+/// structural clone of [into] — and only ever fills an id that is missing.
+void adoptIdentitiesFrom(
+    Map<String, AssetPage> from, Map<String, AssetPage> into) {
+  for (final entry in into.entries) {
+    final saved = from[entry.key];
+    if (saved == null) continue;
+    final page = entry.value;
+    page.id ??= saved.id;
+    if (saved.assets.length != page.assets.length) continue;
+    for (var i = 0; i < page.assets.length; i++) {
+      page.assets[i].id ??= saved.assets[i].id;
+    }
+  }
+}
+
+class _PageGroup {
+  ConfigItem? page;
+  final List<ConfigItem> assets = [];
+}
+
+Map<String, _PageGroup> _groupByPage(Iterable<ConfigItem> items) {
+  final groups = <String, _PageGroup>{};
+  for (final item in items) {
+    switch (item.kind) {
+      case ConfigKind.page:
+        (groups[item.id] ??= _PageGroup()).page = item;
+      case ConfigKind.asset:
+        final parent = item.parentId;
+        if (parent != null) (groups[parent] ??= _PageGroup()).assets.add(item);
+      case ConfigKind.keyMapping:
+      case ConfigKind.preference:
+      case ConfigKind.pageImage:
+        break;
+    }
+  }
+  return groups;
+}
+
+/// Whether [stored] is at different revisions from [base], or holds a
+/// different set of assets — anything another station committed since.
+bool _moved(_PageGroup stored, _PageGroup base) {
+  if (stored.page?.rev != base.page?.rev) return true;
+  final baseRevs = {for (final asset in base.assets) asset.id: asset.rev};
+  if (baseRevs.length != stored.assets.length) return true;
+  for (final asset in stored.assets) {
+    if (baseRevs[asset.id] != asset.rev) return true;
+  }
+  return false;
+}
+
+/// The page's content — its own payload and its assets in paint order, each
+/// by id and payload. Position is compared by order and not by key, because
+/// an editor's items carry ordinals where stored rows carry gapped keys.
+String _fingerprint(_PageGroup group) {
+  final ordered = [...group.assets]..sort(bySortIndexThenId);
+  return canonicalJson({
+    'page': group.page == null ? null : jsonDecode(group.page!.payload),
+    'assets': [
+      for (final asset in ordered)
+        {'id': asset.id, 'payload': jsonDecode(asset.payload)},
+    ],
+  });
+}
+
+String? _pathOf(ConfigItem page) {
+  final menuItem = page.decode()[_menuItemField];
+  final path = menuItem is Map ? menuItem['path'] : null;
+  return path is String && path.isNotEmpty ? path : null;
 }

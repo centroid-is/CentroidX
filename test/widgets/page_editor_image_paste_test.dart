@@ -10,6 +10,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc/pages/page_editor.dart' show imageCollectionGrace;
 
 import 'package:tfc/page_creator/assets/editor_clipboard.dart';
 import 'package:tfc/page_creator/assets/image.dart';
@@ -146,6 +147,10 @@ void main() {
 
   testWidgets('saving deletes orphaned image blobs but keeps referenced ones',
       (tester) async {
+    // The collector spares anything stored in the last day; this test is
+    // about what it takes once that grace is over.
+    imageCollectionGrace = Duration.zero;
+    addTearDown(() => imageCollectionGrace = const Duration(hours: 24));
     final prefs = await pumpEditorWith(tester, []);
     final store = await imageStoreOf(prefs);
     final orphan = await store.save(fixtureJpegBytes);

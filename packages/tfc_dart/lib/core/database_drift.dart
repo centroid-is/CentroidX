@@ -615,6 +615,11 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
         'ON config_change (kind, entity_id, scope, id)',
     'CREATE INDEX IF NOT EXISTS idx_config_change_action '
         'ON config_change (action_id)',
+    // The history page's default read: `ORDER BY at DESC, id DESC LIMIT 500`
+    // over a time window, on a table that is never pruned. Without this it is
+    // a sequential scan plus a sort that grows for the life of the plant.
+    'CREATE INDEX IF NOT EXISTS idx_config_change_at '
+        'ON config_change (at DESC, id DESC)',
   ];
 
   /// Create the [_configIndexStatements] indexes.
@@ -1031,11 +1036,25 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // drift schema entirely, the way the indexes above do.
           if (from < 9) {
             await _createConfigChangeNotifyTrigger(m);
+            // Idempotent, and run again here for the index that joined the
+            // list after the v8 arm had already stamped a database.
+            await _createConfigIndexes(m);
           }
         },
       );
 
-  bool get native => executor is NativeDatabase;
+  /// Whether this database is SQLite — the local mirror, or a test.
+  ///
+  /// Read off the executor's dialect and **not** `executor is NativeDatabase`,
+  /// which is what this was: [createLocal] opens the mirror through
+  /// `NativeDatabase.createInBackground`, whose executor is a
+  /// `DatabaseConnection` over a lazy delegate and never a `NativeDatabase`,
+  /// so the old test was false for every `config.sqlite` the app opens. The
+  /// migration arms branch on this, and the first upgrade of a local mirror
+  /// would have run the Postgres DDL against SQLite — including a
+  /// `CHECK (scope = 'shared')` that rejects every row a station owns. The
+  /// same trap [postgres] documents against itself, one dialect over.
+  bool get native => executor.dialect == SqlDialect.sqlite;
   bool get postgres => executor is PgDatabase;
 
   /// Check if the database is reachable by running a real query.

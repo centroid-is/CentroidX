@@ -86,6 +86,18 @@ const Set<ConfigKind> kHistoryExemptKinds = {ConfigKind.pageImage};
 /// like any other.
 const Set<String> kHistoryExemptPreferenceIds = {'server_config_envelope'};
 
+/// Preference id **prefixes** whose rows carry no history.
+///
+/// `chat.` is the chat assistant's own state — the conversation index, the
+/// active conversation and one `chat.conversation.<id>` row per thread, each
+/// rewritten in full on every message. Logging those would append both the
+/// old and the new transcript to `config_change` per turn: an N-turn
+/// conversation costs O(N²) bytes in a table nothing prunes, replicated into
+/// every station's mirror — the C-3 storage bomb rebuilt for chat. A
+/// conversation is not plant configuration and nobody undoes one, so the
+/// log is silent about it, the way it is about a page image.
+const Set<String> kHistoryExemptPreferenceIdPrefixes = {'chat.'};
+
 /// Whether writes to `(kind, id)` are kept out of `config_change` entirely.
 ///
 /// Asked by every change-row writer immediately before it would insert. The
@@ -94,7 +106,10 @@ const Set<String> kHistoryExemptPreferenceIds = {'server_config_envelope'};
 /// exactly like any other. Only its history is not kept.
 bool historyExempt(ConfigKind kind, String id) =>
     kHistoryExemptKinds.contains(kind) ||
-    (kind == ConfigKind.preference && kHistoryExemptPreferenceIds.contains(id));
+    (kind == ConfigKind.preference &&
+        (kHistoryExemptPreferenceIds.contains(id) ||
+            kHistoryExemptPreferenceIdPrefixes
+                .any((prefix) => id.startsWith(prefix))));
 
 /// The marker that tells a reconcile nudge from the trigger's own empty
 /// payload.

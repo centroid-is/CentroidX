@@ -255,20 +255,35 @@ Future<MigrationOutcome> copyBlobIntoRowsLocked(
   required String label,
   String itemNoun = 'items',
 }) async {
-  if (await _alreadyMigrated(db, kinds: kinds, markerId: markerId)) {
+  if (await _alreadyMigrated(db, markerId: markerId)) {
     _logger.i('$label migration: already migrated; nothing to do');
     return MigrationOutcome.alreadyDone;
   }
 
   final blob = await _readBlob(db, prefKey);
   if (blob == null) {
+    // The marker is written all the same. It records that this plant was
+    // looked at and had nothing to move — which is exactly the answer the
+    // sync engine's empty-remote guard and the preference migration's sibling
+    // gate need from it. Without it a plant that never stored this blob would
+    // have "no rows and no marker" forever: every sweep against a legitimately
+    // empty remote refused, and the preference migration skipped on every
+    // boot.
+    await _insertItem(db, _markerItem(markerId), at: DateTime.now());
     _logger.i('$label migration: no $prefKey row in flutter_preferences; '
-        'nothing to copy');
+        'nothing to copy. Marker written, so this is asked once.');
     return MigrationOutcome.noBlob;
   }
 
   // Throws on anything unrecognisable, and the transaction unwinds with it.
   final parsed = parse(blob);
+  for (final item in parsed) {
+    if (!kinds.contains(item.kind)) {
+      throw StateError('$label migration: the parser produced a '
+          '${item.kind.wireName} item ("${item.id}"), which is not one of the '
+          'kinds this migration may write ($kinds)');
+    }
+  }
 
   // The codecs emit `sortIndex` as a rank; the store holds it as a gapped key.
   // With no stored keys to preserve this degenerates to `(ordinal + 1) *
@@ -282,34 +297,14 @@ Future<MigrationOutcome> copyBlobIntoRowsLocked(
   final station = Platform.localHostname;
 
   for (final item in items) {
-    await _insertItem(db, item, at: at);
-    // Built through `ConfigChange.of` rather than by hand: it is what
-    // guarantees each side is `encodeEntity()` and therefore restorable.
-    await _insertChange(
-      db,
-      ConfigChange.of(
-        at: at,
-        actionId: actionId,
-        who: _migrationActor,
-        station: station,
-        roleName: _migrationRole,
-        after: item,
-      ),
-    );
+    await _writeItem(db, item,
+        at: at, actionId: actionId, station: station);
   }
 
   // Last, and no change row of its own: the marker is bookkeeping, not a piece
   // of the plant's configuration, and a history that listed it would invite an
   // undo that re-armed the migration.
-  await _insertItem(
-    db,
-    ConfigItem.of(
-      kind: ConfigKind.preference,
-      id: markerId,
-      value: {'type': 'String', 'value': at.toIso8601String()},
-    ),
-    at: at,
-  );
+  await _insertItem(db, _markerItem(markerId, at: at), at: at);
 
   _logger.i('$label migration: ${items.length} $itemNoun copied from '
       'flutter_preferences to config_item');
@@ -318,33 +313,123 @@ Future<MigrationOutcome> copyBlobIntoRowsLocked(
 
 /// Whether the shared store already holds this migration's result.
 ///
-/// Either a shared row of one of [kinds] or the marker: the rows answer the
-/// ordinary case in one indexed lookup, the marker answers the plant that
-/// legitimately has none.
+/// **The marker, and only the marker.** An earlier version also answered yes
+/// to "any shared row of one of the kinds exists", and that read a boot
+/// default as proof the migration had run: a fresh station attached to an
+/// empty plant seeds `exampleKey` through `seedDefaultIfEmpty`, and a station
+/// whose copy was then rolled back — power cut, dropped connection — or that
+/// simply lost the lock race found one `key_mapping` row, answered
+/// `alreadyDone`, and the plant's four hundred real keys never left the blob.
+/// Silently, and on every boot after.
 ///
-/// The marker is why "are there any rows?" is not a complete answer on its
-/// own. A plant with no pages — or one whose pages were all deleted after the
-/// migration — would re-run the copy on every boot forever, and each re-run
-/// would resurrect what an operator deleted on purpose. The flag has to be
-/// about the migration, not about the rows.
+/// So the marker is the whole gate — the rule `preference_migration.dart`
+/// already states for itself — and the copy writes **over** any row a seed
+/// left behind (see [_writeItem]), because the blob is the plant's
+/// configuration and the seed is a placeholder.
+///
+/// A plant with no pages, or one whose pages were all deleted after the
+/// migration, is exactly why the flag is about the migration and not about
+/// the rows: re-running the copy would resurrect what an operator deleted.
 Future<bool> _alreadyMigrated(
   AppDatabase db, {
-  required Set<ConfigKind> kinds,
   required String markerId,
 }) async {
   final t = db.configItemTable;
-  Expression<bool> anyKind = const Constant(false);
-  for (final kind in kinds) {
-    anyKind = anyKind | t.kind.equals(kind.wireName);
-  }
   final query = db.selectOnly(t)
     ..addColumns([t.id])
     ..where(t.scope.equals(ConfigScope.shared.wireName) &
-        (anyKind |
-            (t.kind.equals(ConfigKind.preference.wireName) &
-                t.id.equals(markerId))))
+        t.kind.equals(ConfigKind.preference.wireName) &
+        t.id.equals(markerId))
     ..limit(1);
   return (await query.get()).isNotEmpty;
+}
+
+/// The marker row: a `String` preference holding when the migration ran.
+ConfigItem _markerItem(String markerId, {DateTime? at}) => ConfigItem.of(
+      kind: ConfigKind.preference,
+      id: markerId,
+      value: {
+        'type': 'String',
+        'value': (at ?? DateTime.now()).toIso8601String(),
+      },
+    );
+
+/// Writes [item] over whatever is stored, and its change row.
+///
+/// The ordinary case is an insert. The case this exists for is a row that is
+/// already there — a `seedDefaultIfEmpty` placeholder, or a station's boot
+/// default — which the blob overwrites: the blob is what the plant configured
+/// and the seed is what a station invented while it could not see the blob.
+/// A row that already holds exactly this content is left alone rather than
+/// rewritten, because writing identical bytes would log an edit nobody made.
+///
+/// An existing row's `rev` is carried forward and bumped rather than reset,
+/// so a station holding the old revision loses its next compare-and-swap
+/// instead of matching a number that means something else now. Same shape,
+/// same reasons, as `preference_migration.dart`'s writer.
+Future<void> _writeItem(
+  AppDatabase db,
+  ConfigItem item, {
+  required DateTime at,
+  required String actionId,
+  required String station,
+}) async {
+  final existing = await (db.select(db.configItemTable)
+        ..where((t) =>
+            t.kind.equals(item.kind.wireName) &
+            t.id.equals(item.id) &
+            t.scope.equals(item.scope.wireName)))
+      .getSingleOrNull();
+  final before = existing == null
+      ? null
+      : ConfigItem(
+          kind: item.kind,
+          id: item.id,
+          scope: item.scope,
+          parentId: existing.parentId,
+          sortIndex: existing.sortIndex,
+          payload: existing.payload,
+          rev: existing.rev,
+        );
+  if (before != null && before.sameContentAs(item)) return;
+
+  final companion = ConfigItemTableCompanion.insert(
+    kind: item.kind.wireName,
+    id: item.id,
+    scope: item.scope.wireName,
+    parentId: Value(item.parentId),
+    sortIndex: Value(item.sortIndex),
+    payload: item.payload,
+    rev: Value((existing?.rev ?? 0) + 1),
+    updatedAt: at,
+    updatedBy: _migrationActor,
+  );
+  if (existing == null) {
+    await db.into(db.configItemTable).insert(companion);
+  } else {
+    await (db.update(db.configItemTable)
+          ..where((t) =>
+              t.kind.equals(item.kind.wireName) &
+              t.id.equals(item.id) &
+              t.scope.equals(item.scope.wireName)))
+        .write(companion);
+  }
+  // Built through `ConfigChange.of` rather than by hand: it is what
+  // guarantees each side is `encodeEntity()` and therefore restorable, and
+  // what makes the row an `update` when a seed was overwritten rather than an
+  // `insert` that would contradict the row it describes.
+  await _insertChange(
+    db,
+    ConfigChange.of(
+      at: at,
+      actionId: actionId,
+      who: _migrationActor,
+      station: station,
+      roleName: _migrationRole,
+      before: before,
+      after: item,
+    ),
+  );
 }
 
 /// The stored blob, or null when there is nothing to migrate.
@@ -359,7 +444,7 @@ Future<String?> _readBlob(AppDatabase db, String prefKey) async {
   return row?.value;
 }
 
-/// One `config_item` row at `rev` 1 — a row this database has written once.
+/// One `config_item` row at `rev` 1 — the marker, which nothing seeds.
 Future<void> _insertItem(AppDatabase db, ConfigItem item,
         {required DateTime at}) =>
     db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(

@@ -50,6 +50,7 @@ import 'package:drift/drift.dart';
 
 import 'config_item.dart';
 import 'config_item_table.dart';
+import 'preference_payload.dart' show decodePreferencePayload;
 
 /// The JSON field holding a page's assets — the field the rows replace, and
 /// the field [pagesJsonOf] puts back.
@@ -102,12 +103,19 @@ Future<List<ConfigItem>> readSharedPageLayout(GeneratedDatabase db) async {
 /// missing `flutter_preferences` key. A reader that treats null as "not
 /// configured" is therefore correct across the cutover in both directions.
 ///
-/// The payload is decoded, and decoded *again* if the first pass yields a
-/// string: `flutter_preferences` stores a JSON document as a string in a text
-/// column, and whether the migration keeps that string or lifts the document
-/// into the payload directly is 04-11's decision, not this file's. Accepting
-/// both is not a guess at the answer — it is declining to encode one here and
-/// have it silently disagree later.
+/// **Every preference row is a typed envelope**, `{"type": "String", "value":
+/// "<the document>"}` — `preference_payload.dart`'s shape, written by
+/// `SharedRowPreferences` and by the migration alike — so the value is lifted
+/// out of the envelope first, through the same decoder every other reader
+/// uses, and *then* decoded as the JSON document it is. Reading the envelope
+/// itself as the document is the mistake this used to make: `alarm_man_config`
+/// came back as `{type, value}`, `['alarms']` was null, and the MCP server
+/// reported a plant with no alarms.
+///
+/// A payload that is not an envelope — a bare JSON object, as a hand-written
+/// row or a fixture might hold, or a JSON document held as a string — is
+/// accepted as the document directly, so a row written before the envelope
+/// existed still reads.
 ///
 /// Anything that is not a JSON object once decoded reads as null: a scalar
 /// preference is not a config document, and returning one would push the type
@@ -129,6 +137,13 @@ Future<Map<String, dynamic>?> readSharedPreferencePayload(
   Object? decoded;
   try {
     decoded = jsonDecode(row.payload);
+    if (decoded is Map &&
+        decoded.containsKey('type') &&
+        decoded.containsKey('value')) {
+      // The envelope. Its `value` is the preference — for a config document,
+      // the document's JSON text.
+      decoded = decodePreferencePayload(row.payload);
+    }
     if (decoded is String) decoded = jsonDecode(decoded);
   } on FormatException {
     return null;

@@ -16,6 +16,7 @@ import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
+import 'package:tfc_dart/core/config/config_item.dart' show ConfigItem;
 import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
 import '../widgets/fuzzy_search_bar.dart';
@@ -316,6 +317,13 @@ class _KeyRow {
 
 class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
   KeyMappings? _keyMappings;
+
+  /// The store's key mapping items as this page loaded them — what a save is
+  /// a save *over*. Handed to `saveKeyMappings` so a key another station
+  /// added, changed or removed while this page was open is kept, adopted or
+  /// refused rather than replaced with the copy on screen. Refreshed after
+  /// every successful save and every load.
+  List<ConfigItem>? _baselineItems;
 
   /// Encoded snapshot of the last persisted mappings, used for the unsaved
   /// check. Kept as a string so the comparison is one cached encode instead
@@ -825,6 +833,7 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       // out of preferences.
       final store = await ref.read(configStoreProvider.future);
       _keyMappings = store.inner.keyMappings;
+      _baselineItems = store.inner.keyMappingItems;
       _invalidateDerived();
       _savedJson = _currentJson();
       final prefs = await ref.read(preferencesProvider.future);
@@ -879,7 +888,11 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       // The guarded store writes one row per key that actually moved, records
       // one bounded audit row, and throws rather than reporting a success it
       // did not have. The three arms below are its three refusals.
-      await store.saveKeyMappings(_keyMappings!);
+      await store.saveKeyMappings(_keyMappings!, baseline: _baselineItems);
+      // The next save is measured against what the store holds now, not
+      // against the open. Keys the merge kept from another station are in
+      // the store and not on screen; a reload shows them.
+      _baselineItems = store.inner.keyMappingItems;
       // `json` rather than a fresh read of the store: the store serves its
       // keys in sorted order, and re-encoding from it would make a repository
       // whose on-screen order differs (a duplicated key sits beside its

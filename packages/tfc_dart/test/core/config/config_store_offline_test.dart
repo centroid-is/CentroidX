@@ -18,6 +18,7 @@
 /// operator who is online.
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNotNull, isNull;
@@ -272,6 +273,19 @@ void main() {
           Database.isConnectionError('PgException: Attempting to execute '
               'query, but connection is not open.'),
           isTrue);
+      // The message a statement already on the wire gets when the socket
+      // dies under it — the *during* case, where the two above are the
+      // *between* cases.
+      expect(
+          Database.isConnectionError('PgException: The underlying socket to '
+              'Postgres has been closed unexpectedly.'),
+          isTrue);
+      expect(
+          Database.isConnectionError(
+              TimeoutException('statement', const Duration(seconds: 30))),
+          isTrue,
+          reason: 'a peer that hangs is not a different outage to the '
+              'operator than one that resets');
       // Still not everything with a stack trace in it: a broken statement is
       // an engineer's problem and telling an operator to wait for the database
       // would be a lie.

@@ -43,6 +43,7 @@ const _configIndexes = [
   'idx_config_item_scope_kind',
   'idx_config_change_entity',
   'idx_config_change_action',
+  'idx_config_change_at',
 ];
 
 /// Returns the set of named index names in the given [db].
@@ -174,7 +175,7 @@ void main() {
               'below would be asserted against a database that already has '
               'everything it creates');
 
-      await db.migration.onUpgrade(Migrator(db), 8, 9);
+      await db.migration.onUpgrade(Migrator(db), 7, 8);
 
       var tables = await _tableNames(db);
       var indexes = await _indexNames(db);
@@ -194,7 +195,7 @@ void main() {
       // emits `CREATE TABLE IF NOT EXISTS` too. The Postgres arm's
       // idempotency rests on its own `IF NOT EXISTS` literals and is
       // unexercised here, exactly as that arm's comment says.
-      await db.migration.onUpgrade(Migrator(db), 8, 9);
+      await db.migration.onUpgrade(Migrator(db), 7, 8);
 
       tables = await _tableNames(db);
       indexes = await _indexNames(db);

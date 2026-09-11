@@ -11,6 +11,8 @@ import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/page_rows.dart' show fallbackPagePathFor;
 import 'package:tfc_dart/core/config/config_store.dart';
+import 'package:tfc_dart/core/config/preference_payload.dart'
+    show decodePreferencePayload;
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc/converter/icon.dart';
 import '../core/config/page_codec.dart';
@@ -213,6 +215,17 @@ class PageManager {
   final Future<ConfigWriteResult> Function(List<ConfigItem> wanted,
       {String? reason})? writeItems;
 
+  /// The page and asset rows [pages] were loaded from, as they stood then —
+  /// what a save is a save *over*.
+  ///
+  /// Set by [load] when the rows were the source, null when they were not.
+  /// [save] hands it to `mergeForSave` so that a page another station added,
+  /// changed or deleted since this layout was loaded is kept, adopted or
+  /// refused rather than silently replaced with the copy from an hour ago.
+  /// The editor carries its own copy across the manager rebuilds a save
+  /// triggers, and re-reads it after every successful save and reload.
+  List<ConfigItem>? baselineItems;
+
   /// Where the pages in memory came from — see [PageSource].
   PageSource get source => _source;
   PageSource _source = PageSource.notLoaded;
@@ -249,14 +262,19 @@ class PageManager {
   /// 3. **The built-in default layout**, in memory. Persisted nowhere — see
   ///    [store] for the seed write that used to be here and why it is gone.
   ///
-  /// [topLevelOrder] still comes from [prefs] at every step: it is a
-  /// device-local preference, not shared configuration, until Phase 4.
+  /// [topLevelOrder] is a **shared** preference row since 04-11, and is read
+  /// from [store]'s mirror first: the pre-`runApp` manager is built over the
+  /// device-local store, which never held the shared row — so without this
+  /// read the menu came up in registration order on every restart, whatever
+  /// the operator had arranged. [prefs] is the fallback, for a manager with
+  /// no store and for the one-shot import of the old local copy.
   ///
   /// It does not throw. A mirror that will not read and a blob that will not
   /// parse are both logged and fallen through, because a panel that comes up
   /// degraded beats one that does not come up.
   Future<void> load() async {
-    final orderJson = await prefs.getString(orderStorageKey);
+    final orderJson =
+        _storedTopLevelOrderJson() ?? await prefs.getString(orderStorageKey);
     if (orderJson != null) {
       try {
         topLevelOrder = (jsonDecode(orderJson) as List).cast<String>();
@@ -273,6 +291,7 @@ class PageManager {
     };
 
     if (_loadFromRows()) return;
+    baselineItems = null;
 
     final jsonString = await prefs.getString(storageKey);
     if (jsonString != null) {
@@ -315,6 +334,7 @@ class PageManager {
       final fromRows = pagesOf(items);
       if (fromRows.isEmpty) return false;
       pages = fromRows;
+      baselineItems = items;
       _source = PageSource.rows;
       return true;
     } catch (e) {
@@ -322,6 +342,24 @@ class PageManager {
           'back to its stored layout: $e');
       return false;
     }
+  }
+
+  /// The shared `page_editor_top_level_order` row out of [store]'s mirror, or
+  /// null when there is no store, no row, or a row this build cannot read.
+  String? _storedTopLevelOrderJson() {
+    final store = this.store;
+    if (store == null) return null;
+    try {
+      for (final item in store.itemsOf(const {ConfigKind.preference})) {
+        if (item.id != orderStorageKey) continue;
+        final value = decodePreferencePayload(item.payload);
+        return value is String ? value : null;
+      }
+    } catch (e) {
+      _logger.w('The stored menu order could not be read; falling back to '
+          'the device-local copy: $e');
+    }
+    return null;
   }
 
   /// The layout a station that has never stored one comes up on.
@@ -451,11 +489,20 @@ class PageManager {
   /// editor's three arms are those three types. A green snackbar over a write
   /// that reached nothing is C-11, and it is what this shape prevents.
   ///
-  /// **[topLevelOrder] is written first, and deliberately.** It is a
-  /// device-local preference and the rows are the plant's shared truth: if
-  /// only one of the two lands, a menu in yesterday's order is a cosmetic
-  /// complaint and a page set in yesterday's shape is the wrong plant on the
-  /// screen. The empty-order guard below is unchanged.
+  /// **[topLevelOrder] is written after the rows.** It is a shared row of its
+  /// own, in its own transaction, and a page write can be refused — offline,
+  /// a lost compare-and-swap, a merge conflict. Written first, a refused save
+  /// left every station's menu in an order describing a layout that never
+  /// landed. Written after, a refused save leaves nothing changed, and a menu
+  /// order that fails after the rows landed is a cosmetic complaint rather
+  /// than the wrong plant on the screen. The empty-order guard is unchanged.
+  ///
+  /// The items handed over are **merged** against what the store holds now,
+  /// with [baselineItems] as what this layout was loaded from — see
+  /// `mergeForSave`. That is what turns "replace within kinds" into "replace
+  /// what this editor was shown", and it is what refuses, as a
+  /// `ConfigConflict`, a page that moved on another station while it was also
+  /// edited here.
   ///
   /// The blob is **not** dual-written on the rows path. Two records of one
   /// layout are two records that can disagree, and the blob's readers go
@@ -468,9 +515,19 @@ class PageManager {
       return null;
     }
 
-    await _saveTopLevelOrder();
     _adoptStoredIdentities();
-    return writeItems(pageItems(pages), reason: reason);
+    var items = pageItems(pages);
+    final store = this.store;
+    if (store != null) {
+      items = mergeForSave(
+        wanted: items,
+        stored: store.itemsOf(const {ConfigKind.page, ConfigKind.asset}),
+        baseline: baselineItems,
+      );
+    }
+    final result = await writeItems(items, reason: reason);
+    await _saveTopLevelOrder();
+    return result;
   }
 
   /// An empty order is never worth writing: it only arises on a manager that
@@ -555,6 +612,7 @@ class PageManager {
     final json = manager.toJson();
     manager.fromJson(json);
     manager._source = _source;
+    manager.baselineItems = baselineItems;
     return manager;
   }
 
@@ -1120,6 +1178,10 @@ class _CreatePageWidgetState extends State<CreatePageWidget> {
                   final page = AssetPage(
                     menuItem: menuItem,
                     assets: widget.initialPage?.assets ?? [],
+                    // The row's identity, or the settings edit turns into a delete and a
+                    // re-insert that restamps every asset on the page — the field-by-field
+                    // rebuild trap [AssetPage.copyWith]'s doc names.
+                    id: widget.initialPage?.id,
                     mirroringDisabled: _mirroringDisabled,
                     zoomPanDisabled: _zoomPanDisabled,
                     navigationPriority: widget.initialPage?.navigationPriority,

@@ -96,12 +96,12 @@ void main() {
   });
 
   group('the gate, generalised to a set of kinds', () {
-    test('a row of any kind in kinds is enough to count as migrated',
-        () async {
+    test('a row of a kind in kinds is not enough: only the marker is', () async {
       await seedBlob(_blob);
-      // An asset row and no page row: the half a plant with section pages
-      // could never reach, but the arm that matters is that *either* kind
-      // answers the gate.
+      // A row a station seeded, or a station whose copy was rolled back left
+      // behind. Reading it as "the migration ran" is how a plant's real
+      // configuration stayed in the blob forever, silently — see
+      // `_alreadyMigrated`'s doc.
       await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
             kind: ConfigKind.asset.wireName,
             id: 'someone-elses-asset',
@@ -111,8 +111,41 @@ void main() {
             updatedBy: 'someone else',
           ));
 
-      expect(await runCopy(), MigrationOutcome.alreadyDone);
-      expect(await changes(), isEmpty);
+      expect(await runCopy(), MigrationOutcome.migrated);
+      expect(await changes(), hasLength(4));
+      final rows = await items();
+      expect(rows.map((r) => r.id), contains('someone-elses-asset'),
+          reason: 'a row the blob does not name is not this migration\'s to '
+              'remove');
+      expect(rows.map((r) => r.id), contains(_markerId));
+    });
+
+    test('a row the blob names is overwritten, logged as an update, rev bumped',
+        () async {
+      await seedBlob(_blob);
+      // The seed: same identity as a blob item, placeholder content, rev 1.
+      await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
+            kind: ConfigKind.page.wireName,
+            id: 'p1',
+            scope: ConfigScope.shared.wireName,
+            payload: '{"seeded":true}',
+            rev: const Value(1),
+            updatedAt: DateTime.utc(2026, 1, 1),
+            updatedBy: 'a station that could not see the blob',
+          ));
+
+      expect(await runCopy(), MigrationOutcome.migrated);
+
+      final p1 = (await items()).singleWhere((r) => r.id == 'p1');
+      expect(p1.payload, isNot(contains('seeded')),
+          reason: 'the blob is the plant\'s configuration; the seed is a '
+              'placeholder');
+      expect(p1.rev, 2,
+          reason: 'carried forward and bumped, so a station holding rev 1 '
+              'loses its next compare-and-swap rather than matching');
+      final log = (await changes()).where((c) => c.entityId == 'p1').single;
+      expect(log.op, 'update');
+      expect(log.oldValue, contains('seeded'));
     });
 
     test('a row of a kind outside kinds is not', () async {
@@ -255,9 +288,17 @@ void main() {
           reason: 'the blob is Phase 4\'s to drop, not this migration\'s');
     });
 
-    test('no blob at all is noBlob, and writes no marker', () async {
+    test('no blob at all is noBlob, and writes the marker alone', () async {
       expect(await runCopy(), MigrationOutcome.noBlob);
-      expect(await items(), isEmpty);
+      final rows = await items();
+      expect(rows.map((r) => r.id), [_markerId],
+          reason: 'a plant that never stored this blob has been looked at, '
+              'and the marker is what says so: without it every sweep '
+              'against a legitimately empty remote is refused and the '
+              'preference migration never runs');
+      expect(await changes(), isEmpty);
+
+      expect(await runCopy(), MigrationOutcome.alreadyDone);
     });
 
     test('a second run writes nothing', () async {

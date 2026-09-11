@@ -31,7 +31,8 @@ library;
 import 'package:drift/drift.dart';
 import 'package:meta/meta.dart';
 
-import '../database_drift.dart' show $ConfigItemTableTable, ConfigItemRow;
+import '../database_drift.dart'
+    show $ConfigChangeTableTable, $ConfigItemTableTable, ConfigItemRow;
 import 'config_item.dart';
 import 'preference_payload.dart' show decodePreferencePayload;
 
@@ -75,7 +76,20 @@ Future<List<ConfigItem>> readSharedKeyMappingItems(GeneratedDatabase db) async {
 /// both are properties of the rows as they stand right now, so a reader that
 /// missed the moment of the change still sees the difference afterwards.
 ///
-/// Two integers over the wire, whatever the configuration weighs.
+/// [KeyMappingFingerprint.latestChangeId] is the third term, and it exists
+/// for the write the first two cannot see: a **rename**. Renaming a key is one
+/// row deleted and one inserted in the same action, both at `rev` 1, so the
+/// count and the sum come out exactly where they were — and a backend keyed
+/// on those two alone kept subscribing under the old name forever. Every
+/// ordinary write appends change rows, so the log's highest id moves whenever
+/// the first two do not. It is *added* to them rather than replacing them
+/// because of the `SERIAL` caveat above: a late-committing lower id never
+/// moves the maximum, and it is the revisions that catch that one. A
+/// history-exempt row (the `server_config_envelope` ciphertext) writes no
+/// change row, and its edit is caught by [revSum] — the two nets cover each
+/// other's hole.
+///
+/// Three integers over the wire, whatever the configuration weighs.
 Future<KeyMappingFingerprint> readSharedKeyMappingFingerprint(
         GeneratedDatabase db) =>
     readSharedConfigFingerprint(db, const {ConfigKind.keyMapping});
@@ -101,17 +115,26 @@ Future<KeyMappingFingerprint> readSharedKeyMappingFingerprint(
 Future<KeyMappingFingerprint> readSharedConfigFingerprint(
     GeneratedDatabase db, Set<ConfigKind> kinds) async {
   if (kinds.isEmpty) return const KeyMappingFingerprint(count: 0, revSum: 0);
+  final wireNames = [for (final kind in kinds) kind.wireName];
   final table = _configItems(db);
   final count = table.id.count();
   final revSum = table.rev.sum();
   final row = await (db.selectOnly(table)
         ..addColumns([count, revSum])
-        ..where(table.kind.isIn([for (final kind in kinds) kind.wireName]) &
+        ..where(table.kind.isIn(wireNames) &
             table.scope.equals(ConfigScope.shared.wireName)))
+      .getSingle();
+  final changes = $ConfigChangeTableTable(db);
+  final latest = changes.id.max();
+  final logRow = await (db.selectOnly(changes)
+        ..addColumns([latest])
+        ..where(changes.kind.isIn(wireNames) &
+            changes.scope.equals(ConfigScope.shared.wireName)))
       .getSingle();
   return KeyMappingFingerprint(
     count: row.read(count) ?? 0,
     revSum: row.read(revSum) ?? 0,
+    latestChangeId: logRow.read(latest) ?? 0,
   );
 }
 
@@ -123,7 +146,11 @@ Future<KeyMappingFingerprint> readSharedConfigFingerprint(
 /// depends on is spelled out here rather than assumed.
 @immutable
 class KeyMappingFingerprint {
-  const KeyMappingFingerprint({required this.count, required this.revSum});
+  const KeyMappingFingerprint({
+    required this.count,
+    required this.revSum,
+    this.latestChangeId = 0,
+  });
 
   /// Shared `key_mapping` rows.
   final int count;
@@ -132,18 +159,24 @@ class KeyMappingFingerprint {
   /// also what an un-migrated database reads as.
   final int revSum;
 
+  /// The highest `config_change.id` written for the watched kinds, or zero
+  /// when the log holds none. See [readSharedKeyMappingFingerprint].
+  final int latestChangeId;
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is KeyMappingFingerprint &&
           other.count == count &&
-          other.revSum == revSum;
+          other.revSum == revSum &&
+          other.latestChangeId == latestChangeId;
 
   @override
-  int get hashCode => Object.hash(count, revSum);
+  int get hashCode => Object.hash(count, revSum, latestChangeId);
 
   @override
-  String toString() => 'KeyMappingFingerprint(count: $count, rev: $revSum)';
+  String toString() => 'KeyMappingFingerprint(count: $count, rev: $revSum, '
+      'latest change: $latestChangeId)';
 }
 
 /// `config_item` attached to [db].

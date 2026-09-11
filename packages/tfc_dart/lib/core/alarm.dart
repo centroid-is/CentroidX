@@ -399,19 +399,23 @@ class AlarmMan {
 
   /// The app's constructor: the configuration comes out of the store, and the
   /// store stays for the editor to save through.
+  ///
+  /// **A missing `alarm_man_config` is an empty configuration, and nothing is
+  /// written here.** This used to seed the empty default through the checked
+  /// setter, which on the row store meant: with Postgres unreachable, or a
+  /// mirror that has not synced yet, or at boot before any session, the seed
+  /// was refused — `AccessDenied` on a `configure` key with nobody signed in,
+  /// or the offline refusal — and the throw took `alarmManProvider` and
+  /// every alarm widget down with it. Seeding is the app layer's, through the
+  /// system path (`lib/providers/alarm.dart`), which knows when "absent" means
+  /// the plant has none and when it means this station has not read it yet.
   static Future<AlarmMan> create(Preferences preferences, StateMan stateMan,
       {historyToDb = false}) async {
-    var configJson = await preferences.getString('alarm_man_config');
-    if (configJson == null) {
-      configJson = await preferences.getString('alarm_man_config');
-      if (configJson == null) {
-        await preferences.setString(
-            'alarm_man_config', jsonEncode(AlarmManConfig(alarms: [])));
-        configJson = await preferences.getString('alarm_man_config');
-      }
-    }
+    final configJson = await preferences.getString('alarm_man_config');
     return _build(
-      config: AlarmManConfig.fromJson(jsonDecode(configJson!)),
+      config: configJson == null
+          ? AlarmManConfig(alarms: [])
+          : AlarmManConfig.fromJson(jsonDecode(configJson)),
       preferences: preferences,
       database: preferences.database,
       stateMan: stateMan,
@@ -589,6 +593,8 @@ class AlarmMan {
           'alarm configuration.');
     }
     _writeConfig(prefs);
+  }
+
   /// Turns the auto-navigation flag on or off and persists it.
   ///
   /// Assigns before saving so a caller that reads [config] back in the same

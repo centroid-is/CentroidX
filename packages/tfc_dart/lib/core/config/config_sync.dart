@@ -133,6 +133,11 @@ const String kConfigChangeChannel = 'config_change';
 /// `updated_by` on the watermark row. Not a person: no operator wrote it.
 const String _syncWriter = 'sync';
 
+/// The zone value that marks code running on the serialisation chain, so a
+/// task on it that asks to be serialised again is run in place rather than
+/// queued behind itself. See [ConfigStore.serialiseWrite].
+const Symbol _kOnSyncChain = #tfcConfigSyncChain;
+
 /// One row's identity to this engine: its kind and its id.
 ///
 /// A record rather than a bare id, because a page path and a mapping key may
@@ -217,10 +222,40 @@ class _ConfigSync {
     _swallow(channel?.cancel() ?? Future<void>.value());
   }
 
+  /// Whether the caller is already running on the chain.
+  static bool get onChain => Zone.current[_kOnSyncChain] == true;
+
+  /// How many tasks are on the chain right now — running, or queued behind
+  /// one that is. Zero means the chain is idle.
+  int _inFlight = 0;
+
   /// Runs [body] after everything already queued, and hands back a future the
   /// caller may await. Tests do; the app never has to.
+  ///
+  /// [body] runs in a zone carrying [_kOnSyncChain], which is what lets a
+  /// write it performs recognise that it is already serialised.
+  ///
+  /// **An idle chain runs [body] directly rather than chaining it on the last
+  /// task's completed future.** A `.then` on an already-completed future
+  /// schedules its callback as a microtask in the zone that *future* was
+  /// created in, not the caller's. A store built outside a widget test's
+  /// fake-async zone — in `setUp` — therefore left every write it was asked
+  /// for in the test body waiting on a real microtask the fake-async loop
+  /// never drains, and the test hung until the runner killed it. Chaining
+  /// behind a task that is genuinely in flight registers a listener instead,
+  /// and a listener runs in the zone it was registered from.
   Future<void> serialise(Future<void> Function() body) {
-    final result = _pending.then((_) => _stopped ? null : body());
+    Future<void> run() async {
+      _inFlight++;
+      try {
+        if (_stopped) return;
+        await runZoned(body, zoneValues: {_kOnSyncChain: true});
+      } finally {
+        _inFlight--;
+      }
+    }
+
+    final result = _inFlight == 0 ? run() : _pending.then((_) => run());
     // The chain itself must never carry an error forward, or one failed pull
     // would poison every apply after it.
     _pending = result.catchError((Object _) {});
@@ -358,14 +393,18 @@ class _ConfigSync {
         if (!revs.containsKey(ref)) candidates.add(ref);
       }
 
-      // A sweep that refused every kind it could have moved has read nothing
-      // it is willing to act on, so it must not claim the change log either:
-      // advancing here would carry the watermark past the migration's own
-      // change rows and the pull would never re-read them.
-      if (candidates.isEmpty && refused.isNotEmpty) return;
-
       if (candidates.isNotEmpty) await _apply(candidates);
-      if (advanceWatermark) await _store._advanceWatermark(advanceTo);
+      // A sweep that refused a kind has read change rows it is not willing
+      // to act on, so it must not claim the log up to them: advancing here
+      // would carry the watermark past that kind's rows — the migration's own,
+      // on the cutover boot — and the pull would never re-read them. The
+      // other kinds' rows were applied by the revision comparison just above,
+      // so nothing is lost by leaving the watermark where it was; the next
+      // sweep after the migration lands advances it.
+      if (advanceWatermark && refused.isEmpty) {
+        await _store._advanceWatermark(advanceTo);
+      }
+      await _store._repairMirror();
     } catch (e) {
       _logger.w('config reconcile abandoned; the next sweep retries it: $e');
     }

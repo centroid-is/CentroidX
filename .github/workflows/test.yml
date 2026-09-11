@@ -77,6 +77,15 @@ jobs:
       shell: bash
       run: bash scripts/check-preferences-construction.sh
 
+    # The other code-side gate of the flutter_preferences retirement: no
+    # production code may read or write the table the cutover drops. A gate
+    # that runs only on a developer's machine is the failure it exists to
+    # catch, one level up.
+    - name: Check that flutter_preferences stays retired
+      if: runner.os == 'Linux'
+      shell: bash
+      run: bash scripts/check-flutter-preferences-retired.sh
+
     - name: Set up Flutter
       uses: ./.github/actions/setup-flutter
 

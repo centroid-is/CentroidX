@@ -79,6 +79,28 @@ class ConfigChangeRecord {
   String toString() => 'ConfigChangeRecord(#$id ${change.toString()})';
 }
 
+/// One page of the log, as [ConfigChangeStore.changesPage] reads it.
+class ConfigChangePage {
+  const ConfigChangePage({
+    required this.rows,
+    required this.rawCount,
+    required this.oldestAt,
+    required this.oldestId,
+  });
+
+  /// The rows this build could decode, newest first.
+  final List<ConfigChangeRecord> rows;
+
+  /// How many rows the `LIMIT` returned, decodable or not.
+  final int rawCount;
+
+  /// The `at` of the last raw row, or null when there were none.
+  final DateTime? oldestAt;
+
+  /// The `id` of the last raw row, or null when there were none.
+  final int? oldestId;
+}
+
 /// One entity's history, and whether the log is entitled to have one.
 ///
 /// ## The distinction this type exists for
@@ -211,7 +233,8 @@ class ConfigHistoryFilters {
   /// a different question from "did anyone this week" and a search confined to
   /// the loaded window is a wrong answer that looks like a right one;
   /// otherwise seven days back from [now].
-  ConfigChangeQuery toQuery({required DateTime now, DateTime? before}) {
+  ConfigChangeQuery toQuery(
+      {required DateTime now, DateTime? before, int? beforeId}) {
     final AuditWindow? window;
     if (range != null) {
       window = range;
@@ -227,6 +250,7 @@ class ConfigHistoryFilters {
     return ConfigChangeQuery(
       window: window,
       before: before,
+      beforeId: beforeId,
       entityPrefix: entityPrefix,
       who: who,
       kinds: kinds,
@@ -265,6 +289,7 @@ class ConfigChangeQuery {
   ConfigChangeQuery({
     this.window,
     this.before,
+    this.beforeId,
     String entityPrefix = '',
     this.who,
     Iterable<ConfigKind> kinds = const [],
@@ -279,8 +304,22 @@ class ConfigChangeQuery {
   /// The time bound, or null for **the whole table** — the search escape.
   final AuditWindow? window;
 
-  /// The "Load more" cursor: rows strictly older than this.
+  /// The "Load more" cursor: rows older than this — strictly, unless
+  /// [beforeId] is given.
   final DateTime? before;
+
+  /// The other half of the cursor: with [before], rows *at* that instant with
+  /// a smaller id are included too.
+  ///
+  /// One `ConfigStore.writeItems` stamps every change row of an action with
+  /// one `at`, so a nine-asset save is nine rows at one instant. A cursor on
+  /// `at` alone, strict, cannot land inside such a group: the rows past the
+  /// cap that share the cap row's `at` are excluded by the strict comparison
+  /// on every page after, and can never be reached — while the action still
+  /// renders with a "hidden by filters" note that blames the wrong thing.
+  /// `(at, id)` is a total order over the log, so the cursor can stand
+  /// anywhere in it.
+  final int? beforeId;
 
   /// Trimmed. Empty means no entity constraint.
   final String entityPrefix;
@@ -304,6 +343,7 @@ class ConfigChangeQuery {
       other is ConfigChangeQuery &&
           other.window == window &&
           other.before == before &&
+          other.beforeId == beforeId &&
           other.entityPrefix == entityPrefix &&
           other.who == who &&
           other.limit == limit &&
@@ -311,12 +351,12 @@ class ConfigChangeQuery {
           _sameStrings(other.scopeWireNames, scopeWireNames);
 
   @override
-  int get hashCode => Object.hash(window, before, entityPrefix, who, limit,
-      Object.hashAll(kinds), Object.hashAll(scopeWireNames));
+  int get hashCode => Object.hash(window, before, beforeId, entityPrefix, who,
+      limit, Object.hashAll(kinds), Object.hashAll(scopeWireNames));
 
   @override
   String toString() => 'ConfigChangeQuery(window: ${window ?? "whole table"}, '
-      'before: $before, entity: "$entityPrefix", who: $who, '
+      'before: $before/$beforeId, entity: "$entityPrefix", who: $who, '
       'kinds: ${kinds.map((k) => k.wireName)}, scopes: $scopeWireNames, '
       'limit: $limit)';
 }
@@ -417,7 +457,19 @@ class ConfigChangeStore {
   /// alternative — a hand-rolled `ESCAPE` clause — diverges between SQLite and
   /// Postgres, so this shape was chosen rather than overlooked. Every value in
   /// every clause reaches the database as a bound variable.
-  Future<List<ConfigChangeRecord>> changes(ConfigChangeQuery query) async {
+  Future<List<ConfigChangeRecord>> changes(ConfigChangeQuery query) async =>
+      (await changesPage(query)).rows;
+
+  /// [changes], with what the page needs and the decoded list cannot say.
+  ///
+  /// [ConfigChangePage.rawCount] is how many rows the `LIMIT` returned
+  /// **before** decoding, and [ConfigChangePage.oldestAt] /
+  /// [ConfigChangePage.oldestId] name the last raw row. Both matter on a
+  /// mixed-version site: a row written by a newer build is skipped by
+  /// [_decode], and a page that judged "reached the cap" or "the cursor" by
+  /// the decoded list would hide the Load-more control, and the rows behind
+  /// it, on the strength of one row it could not read.
+  Future<ConfigChangePage> changesPage(ConfigChangeQuery query) async {
     final statement = _db.select(_db.configChangeTable)
       ..where((t) {
         Expression<bool>? predicate;
@@ -450,7 +502,15 @@ class ConfigChangeStore {
 
         final before = query.before;
         if (before != null) {
-          and(atText.isSmallerThanValue(asStored(before)));
+          final beforeId = query.beforeId;
+          final olderInstant = atText.isSmallerThanValue(asStored(before));
+          // The `(at, id)` total order: strictly older instants, plus the
+          // rows at the cursor's own instant that were written before it.
+          and(beforeId == null
+              ? olderInstant
+              : olderInstant |
+                  (atText.equals(asStored(before)) &
+                      t.id.isSmallerThanValue(beforeId)));
         }
 
         if (query.entityPrefix.isNotEmpty) {
@@ -478,10 +538,16 @@ class ConfigChangeStore {
       ])
       ..limit(query.limit);
 
-    return [
-      for (final row in await statement.get())
-        if (_decode(row) case final record?) record,
-    ];
+    final raw = await statement.get();
+    return ConfigChangePage(
+      rows: [
+        for (final row in raw)
+          if (_decode(row) case final record?) record,
+      ],
+      rawCount: raw.length,
+      oldestAt: raw.isEmpty ? null : raw.last.at,
+      oldestId: raw.isEmpty ? null : raw.last.id,
+    );
   }
 
   /// The true number of rows each of [actionIds] produced, counted over the

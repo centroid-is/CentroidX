@@ -208,11 +208,23 @@ class PageImageStore {
   /// nothing else: replace-within-kind does the deleting. The set is built
   /// from what is *kept* rather than from what is dropped, so an id the caller
   /// named survives even if this store has never heard of it (T-04-09c).
-  Future<int> removeUnreferenced(Set<String> referenced) async {
+  ///
+  /// [keepNewerThan], when given, also keeps every row written after that
+  /// moment whether or not anything references it: an image is stored when it
+  /// is picked and referenced when its page is saved, on whichever station
+  /// picked it, and a collector on another station running in that window
+  /// would otherwise take it.
+  Future<int> removeUnreferenced(Set<String> referenced,
+      {DateTime? keepNewerThan}) async {
     final stored = _rows();
+    bool recent(ConfigItem item) {
+      final at = item.updatedAt;
+      return keepNewerThan != null && at != null && at.isAfter(keepNewerThan);
+    }
+
     final keep = [
       for (final entry in stored.entries)
-        if (referenced.contains(entry.key)) entry.value,
+        if (referenced.contains(entry.key) || recent(entry.value)) entry.value,
     ];
     final removed = stored.length - keep.length;
     // Nothing to collect is not a write. Said here and not left to the
