@@ -1787,19 +1787,28 @@ void main() {
           .contains(PalletMagazinePainter.pallet.bottomRight), isTrue);
     });
 
-    test('the lane and the well share an edge, so they read as one machine',
-        () {
-      // Drawn clear of the well the lane looked like a separate conveyor
-      // parked alongside. Exact equality is the point -- "close" is what
-      // produced two boxes with a hairline gap between them.
-      expect(PalletMagazinePainter.lane.left,
-          PalletMagazinePainter.well.right);
+    test('the pallet is drawn in EUR proportions at the kind\'s own aspect '
+        'ratio', () {
+      // The reason the rect is not simply 1200 x 800 in unit fractions. Unit
+      // space maps onto [thirdPartyMachineArea], which is WIDER than the asset
+      // box because the LED header takes height off the top -- so a pallet
+      // authored at 3:2 in unit space draws at nearly 2:1. This is the check
+      // that the numbers that were hand-tuned to cancel that out still do.
+      const kind = ThirdPartyEquipmentKind.palletMagazine;
+      final size = Size(720, 720 / kind.aspectRatio());
+      final area = thirdPartyMachineArea(size);
+      final p = PalletMagazinePainter.pallet;
+      final drawn = (p.width * area.width) / (p.height * area.height);
+      expect(drawn, closeTo(1200 / 800, 0.12),
+          reason: 'the glyph has to look like a pallet, and a pallet is 3:2');
     });
 
-    test('the lane discharges across the middle of the stack', () {
-      expect(PalletMagazinePainter.lane.center.dy,
-          closeTo(PalletMagazinePainter.pallet.center.dy, 0.02),
-          reason: 'a pallet leaves along its own centreline');
+    test('the well fills the frame, now that nothing is drawn beside it', () {
+      // The discharge lane used to take the right third. Whatever replaces
+      // these numbers, the magazine must not go back to being a small box in
+      // the corner of its own asset.
+      expect(PalletMagazinePainter.well.width, greaterThan(0.8));
+      expect(PalletMagazinePainter.well.height, greaterThan(0.8));
     });
 
     test('the offset stack stays inside the unit box', () {

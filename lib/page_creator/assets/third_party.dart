@@ -214,11 +214,15 @@ extension ThirdPartyEquipmentKindInfo on ThirdPartyEquipmentKind {
             kPalletiserDepthMm;
       case ThirdPartyEquipmentKind.palletMagazine:
         // Landscape, from the pallet out: the EUR pallet lies 1200 along the
-        // flow by 800 across, the four-post frame adds roughly a guide
-        // clearance either side, and the discharge lane runs out of one end.
-        // Derived, not measured — the drawing gives no frame dimension, which
-        // is why [footprint] does not quote one either.
-        return 1.4;
+        // flow by 800 across and the four-post frame adds roughly a guide
+        // clearance either side, so about 1500 x 1100. Derived, not measured —
+        // the drawing gives no frame dimension, which is why [footprint] does
+        // not quote one either.
+        //
+        // Was 1.4 while a discharge lane was drawn beside the well and had to
+        // fit in the same box. The lane is gone — a belt is a real conveyor
+        // asset, not a painted rectangle — so this is the frame alone.
+        return 1500 / 1100;
     }
   }
 

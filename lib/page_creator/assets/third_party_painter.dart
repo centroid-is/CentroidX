@@ -1430,11 +1430,18 @@ void _orientedBox(
 /// Empty pallet magazine — balloon 031 on the SVN palletiser layout.
 ///
 /// A pallet dispenser: a stack of empty EUR pallets stands in a four-post well,
-/// and the lowest pallet is released onto the lane beneath and driven out to
-/// the wagon. Plan view, so what an operator looks down on is the TOP pallet of
-/// the stack inside the frame — the stack's depth is the one thing a plan view
-/// cannot show, which is why the two offset outlines behind it are drawn at
-/// all.
+/// and the lowest pallet is released out of the bottom of it. Plan view, so
+/// what an operator looks down on is the TOP pallet of the stack inside the
+/// frame — the stack's depth is the one thing a plan view cannot show, which is
+/// why the two offset outlines behind it are drawn at all.
+///
+/// The machine is the WELL and nothing else. The discharge lane this used to
+/// draw beside it — a roller box with flow chevrons — is gone: the belt a
+/// released pallet leaves on is a conveyor, and a conveyor on this HMI is a
+/// real `ConveyorConfig` that animates from its own drive, not a painted
+/// rectangle that cannot. Dropping it also gave the magazine back the third of
+/// its width the lane was spending, so the pallet is now drawn at something
+/// near its true 3:2.
 ///
 /// The pallet itself is drawn the way this HMI ALREADY draws one. The
 /// `pallet_top` glyph in the TfcIcons font (see `pallet_icons.png`) shows a
@@ -1459,16 +1466,18 @@ class PalletMagazinePainter extends ThirdPartyMachinePainter {
     super.mirrorY,
   });
 
-  /// The well the stack stands in, between the four corner guides.
-  static const Rect well = Rect.fromLTRB(0.05, 0.09, 0.63, 0.91);
+  /// The well the stack stands in, between the four corner guides. Fills the
+  /// frame now that nothing is drawn beside it.
+  static const Rect well = Rect.fromLTRB(0.075, 0.05, 0.925, 0.95);
 
   /// The top pallet of the stack, inset inside the well by the guide clearance.
-  static const Rect pallet = Rect.fromLTRB(0.10, 0.17, 0.58, 0.83);
-
-  /// The discharge lane. Its left edge is the well's right edge, so the two
-  /// share a line and read as one machine — drawn clear of it, the lane looked
-  /// like a separate conveyor that happened to be parked alongside.
-  static const Rect lane = Rect.fromLTRB(0.63, 0.32, 0.97, 0.68);
+  ///
+  /// Sized so the pallet comes out at roughly a EUR pallet's 3:2 once unit
+  /// space is mapped onto the machine area, which is WIDER than the asset box
+  /// (the LED header eats height off the top). Picking 1200 x 800 as unit
+  /// fractions directly would draw a pallet half again too long -- see the
+  /// proportions test in `third_party_config_test.dart`.
+  static const Rect pallet = Rect.fromLTRB(0.16, 0.13, 0.84, 0.87);
 
   /// Deck slots across the pallet, matching the `pallet_top` icon.
   static const int deckSlotColumns = 2;
@@ -1515,8 +1524,8 @@ class PalletMagazinePainter extends ThirdPartyMachinePainter {
     //    small asset size they are the last thing that should degrade. An
     //    angle reads as a guide; the plain squares this used to draw read as
     //    feet.
-    const armX = 0.075;
-    const armY = 0.11;
+    const armX = 0.09;
+    const armY = 0.12;
     for (final (cx, sx) in [(well.left, 1.0), (well.right, -1.0)]) {
       for (final (cy, sy) in [(well.top, 1.0), (well.bottom, -1.0)]) {
         canvas.drawPath(
@@ -1528,14 +1537,6 @@ class PalletMagazinePainter extends ThirdPartyMachinePainter {
         );
       }
     }
-
-    // -- The discharge lane out to the wagon: rollers across it, and a chevron
-    //    saying which way a released pallet leaves.
-    canvas.drawRect(u.r(lane.left, lane.top, lane.right, lane.bottom), stroke);
-    _crossTicks(canvas, u, detail,
-        ul: lane.left, ur: lane.right, ut: lane.top, ub: lane.bottom, count: 5);
-    _chevronsAcross(canvas, u, stroke,
-        cy: lane.center.dy, left: lane.left + 0.03, right: lane.right - 0.03);
   }
 
   /// The deck slots, two columns by three rows inside the pallet — the
