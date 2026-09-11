@@ -29,7 +29,27 @@ jobs:
     name: Linux Build
     runs-on: ubuntu-latest
     steps:
+      # `actions/checkout` is a network operation against github.com, and it fails
+      # outright often enough to matter — 9 times in the 2.5 weeks to 2026-09-10,
+      # each one killing a whole job before a single useful step had run. Retried
+      # once here, and at every other checkout in this file.
+      #
+      # This cannot be factored into `.github/actions/` the way pub-get and
+      # setup-flutter are: a local composite action is loaded from the workspace,
+      # and the workspace does not exist until checkout has run. So the retry is
+      # written out at each site instead.
+      #
+      # Safe to repeat: checkout cleans the workspace on entry, so the second
+      # attempt does not inherit a half-finished first one.
       - uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Checkout (retry)
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
 
