@@ -888,23 +888,24 @@ class _RatioAnalysisViewState extends ConsumerState<RatioAnalysisView> {
         const SizedBox(height: 16),
         // Content area
         Expanded(
+          // Unpositioned child + passthrough: the chart keeps the constraints
+          // it had before the Stack. See the note in widgets/graph.dart.
           child: Stack(
+            fit: StackFit.passthrough,
             children: [
-              Positioned.fill(
-                child: _showChart
-                    ? RatioBarChart(
-                        config: widget.config,
-                        key1Queue: _key1Queue,
-                        key2Queue: _key2Queue,
-                        intervalOverride: _selectedInterval,
-                        coverageStart: _coverageStart,
-                      )
-                    : RatioTableView(
-                        config: widget.config,
-                        key1Queue: _key1Queue,
-                        key2Queue: _key2Queue,
-                      ),
-              ),
+              _showChart
+                  ? RatioBarChart(
+                      config: widget.config,
+                      key1Queue: _key1Queue,
+                      key2Queue: _key2Queue,
+                      intervalOverride: _selectedInterval,
+                      coverageStart: _coverageStart,
+                    )
+                  : RatioTableView(
+                      config: widget.config,
+                      key1Queue: _key1Queue,
+                      key2Queue: _key2Queue,
+                    ),
               // The seed is on screen and the database's answer is on its
               // way: say so along the top edge, without covering the bars.
               if (_filling || _isLoading)

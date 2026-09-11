@@ -541,9 +541,16 @@ class Graph {
     return Column(
       children: [
         Expanded(
+          // `passthrough`, with the chart as the only unpositioned child, so
+          // it is laid out under exactly the constraints it had before there
+          // was a Stack here. A Stack of nothing but positioned children
+          // takes the biggest size its constraints allow instead of the
+          // chart's own, which moved the plot and the button row under it --
+          // 15 000 pixels of drift in the conveyor trend golden.
           child: Stack(
+            fit: StackFit.passthrough,
             children: [
-              Positioned.fill(child: _chartWidget),
+              _chartWidget,
               // Still fetching: a hairline across the top of the plot rather
               // than a spinner in the middle of it. The plot area, the legend
               // and the button row are already where they will stay, so the
