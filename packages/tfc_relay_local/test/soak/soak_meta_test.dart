@@ -3694,11 +3694,41 @@ List<String> _credentialHits(String path) {
 
 String _tempJournal() {
   final dir = Directory.systemTemp.createTempSync('relay-soak-meta-');
-  addTearDown(() {
-    if (dir.existsSync()) dir.deleteSync(recursive: true);
-  });
+  addTearDown(() => _deleteTempTolerantly(dir));
   return dir.path;
 }
+
+/// Deletes a temp directory, tolerating a Windows handle that has not closed.
+///
+/// `deleteSync(recursive: true)` throws `PathAccessException: The process
+/// cannot access the file because it is being used by another process` when any
+/// handle under the directory is still open. POSIX unlinks regardless, which is
+/// why this only ever bites on the Windows agent — measured there as
+/// `relay-soak-meta-*` failing teardown and taking an otherwise green case with
+/// it.
+///
+/// Retries briefly, because the lingering handle is usually milliseconds from
+/// closing, and then **gives up without failing**: this is cleanup, not a
+/// property. The OS reclaims its own temp directory, and a case that passed its
+/// assertions has not become wrong because a directory outlived it. The give-up
+/// is printed rather than silent, so a genuine handle leak is still visible to
+/// anyone reading the log.
+void _deleteTempTolerantly(Directory dir) {
+  for (var attempt = 0; attempt < 5; attempt++) {
+    if (!dir.existsSync()) return;
+    try {
+      dir.deleteSync(recursive: true);
+      return;
+    } on FileSystemException {
+      sleep(const Duration(milliseconds: 100));
+    }
+  }
+  if (dir.existsSync()) {
+    print('note: could not delete ${dir.path} — a handle is still open. '
+        'Left for the OS; the case itself is unaffected.');
+  }
+}
+
 
 /// A freshness source whose panels hold still, for the unit arms.
 final class _Source implements SoakFreshnessSource {
