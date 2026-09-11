@@ -1,16 +1,29 @@
 /// A live web page on the HMI canvas.
 ///
 /// This is the real thing — a browser rendering the page, not a screenshot of
-/// it — which is why it exists on exactly one of our platforms.
+/// it — which is why it exists on some of our platforms and not others.
 ///
-/// ## Why macOS only
+/// ## Where it works, and why
 ///
-/// `webview_flutter` is a platform-view API, and it ships implementations for
-/// Android, iOS and macOS. On macOS that is `webview_flutter_wkwebview`, i.e.
-/// WKWebView: the system's browser, out-of-process, patched by the OS. There
-/// is nothing to bundle and nothing for us to keep up to date.
+/// Two engines, chosen on one principle: **use the browser the operating
+/// system already ships and patches, never one we bundle.**
 ///
-/// The platforms we actually run on the plant floor have no implementation:
+///   * **macOS** — WKWebView, via `webview_flutter`'s
+///     `webview_flutter_wkwebview`.
+///   * **Windows** — WebView2, via `flutter_inappwebview_windows`. The Edge
+///     runtime is a Windows component, serviced by Windows Update, so again
+///     there is nothing of ours to keep current.
+///
+/// Windows goes through the *federated implementation package directly*
+/// rather than the `flutter_inappwebview` umbrella. The umbrella endorses
+/// Android, iOS, macOS and web as well, so depending on it would add native
+/// plugins to every platform's build; `flutter_inappwebview_windows` declares
+/// `windows` alone and is invisible to the others. Note also that this file
+/// imports only `flutter_inappwebview_platform_interface` — the Windows
+/// package is a pure dependency whose `dartPluginClass` registers itself, so
+/// no import here is platform-conditional.
+///
+/// Still without an implementation:
 ///
 ///   * **flutter-elinux** — the stations. The embedder *does* have platform
 ///     views (`FlutterDesktopRegisterPlatformViewFactory`, texture-backed), so
@@ -18,10 +31,19 @@
 ///     candidates are `webview_cef` (which already carries an eLinux port) and
 ///     WPE WebKit (in Debian, so apt-tracked). Both mean shipping a browser
 ///     engine on boxes we have to keep patched — a few hundred megabytes and a
-///     standing obligation. Not a decision this asset makes.
-///   * **Linux desktop / Windows** — possible via WebView2 or CEF, same
-///     trade-off, no implementation wired up here.
+///     standing obligation, which is exactly what macOS and Windows avoid.
+///     Not a decision this asset makes.
+///   * **Linux desktop** — possible via CEF, same trade-off, not wired up.
 ///   * **Web** — an `<iframe>` would be trivial, but there is no web target.
+///
+/// ## WebView2 can be absent
+///
+/// WKWebView is part of macOS and cannot be missing. WebView2 is a separate
+/// runtime, and although it ships with Windows 11 and current Windows 10, a
+/// stripped or offline-imaged box can lack it. Asking costs a channel call,
+/// so [WebViewSurface.isAvailable] is a `Future` and the tile may flip to the
+/// unavailable placeholder shortly *after* it started — which is still far
+/// better than the blank white rectangle a dead engine would otherwise leave.
 ///
 /// So: where a webview exists, show one; everywhere else say so plainly and
 /// keep the tile findable. That is [WebViewAvailability] and the placeholder
@@ -48,6 +70,7 @@ import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform, visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:json_annotation/json_annotation.dart';
+import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../core/feature_flags.dart';
@@ -147,11 +170,12 @@ Uri? parseWebViewUrl(String raw) {
   return uri;
 }
 
-/// The platforms `webview_flutter` has an implementation for.
+/// The platforms a webview is implemented for, and which engine serves them.
 ///
-/// Pure and parameterised so the placeholder path is testable on a Mac, where
-/// `defaultTargetPlatform` would otherwise always say "supported" and the
-/// unsupported branch could only ever be exercised in production.
+/// Pure and parameterised so every branch is testable from any machine:
+/// `defaultTargetPlatform` on a dev box says "supported", so without the
+/// parameters the unsupported branch could only ever run in production — and
+/// the Windows branch could only ever be checked on Windows.
 @visibleForTesting
 class WebViewAvailability {
   const WebViewAvailability._();
@@ -160,7 +184,23 @@ class WebViewAvailability {
     TargetPlatform.macOS,
     TargetPlatform.android,
     TargetPlatform.iOS,
+    TargetPlatform.windows,
   };
+
+  /// Platforms served by WebView2 rather than by `webview_flutter`.
+  ///
+  /// Separate from [supportedPlatforms] because the two engines have
+  /// different absence modes: WKWebView is part of the OS, WebView2 is a
+  /// runtime that can be missing. See [WebViewSurface.isAvailable].
+  static const Set<TargetPlatform> webView2Platforms = {
+    TargetPlatform.windows,
+  };
+
+  /// Whether [platform] is served by WebView2.
+  static bool usesWebView2({bool? isWeb, TargetPlatform? platform}) {
+    if (isWeb ?? kIsWeb) return false;
+    return webView2Platforms.contains(platform ?? defaultTargetPlatform);
+  }
 
   /// Whether a webview can be built here. Defaults to the ambient platform.
   static bool check({bool? isWeb, TargetPlatform? platform}) {
@@ -185,6 +225,19 @@ abstract class WebViewSurface {
   Future<void> navigate(Uri uri);
 
   Future<void> dispose();
+}
+
+/// Implemented *in addition to* [WebViewSurface] by a surface whose engine
+/// can be missing from a machine we otherwise support.
+///
+/// A separate interface rather than a member with a default, because Dart's
+/// `implements` inherits no concrete members: putting it on [WebViewSurface]
+/// would force the engine that cannot be absent — and every fake in every
+/// test — to grow a member none of them care about. An absent-able engine
+/// opts in; [WebViewAssetView] asks only those that do.
+abstract class WebViewSurfaceAvailability {
+  /// False when the engine is not installed on this machine.
+  Future<bool> get isAvailable;
 }
 
 /// Builds the browser for [config], or null where this platform has none.
@@ -285,18 +338,54 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
       return;
     }
     _surface = surface;
+    _probeAvailability(surface);
     unawaited(surface.navigate(uri).catchError((Object _) {
       // A failed navigation leaves whatever the browser is showing, and
       // re-navigating on the next reload tick is the recovery.
       //
-      // Observed on macOS 2026-09-11: an unreachable host leaves the tile
+      // The two engines disagree here, and the difference matters on a wall.
+      //
+      // macOS, observed 2026-09-11: an unreachable host leaves the tile
       // *blank white*, not on a browser error page — WKWebView paints nothing
-      // for a provisional navigation that never commits. On a wall that reads
-      // as a broken tile rather than an unreachable one. Surfacing it
-      // properly means the NavigationDelegate (onWebResourceError), not this
-      // catch, which only ever sees the channel call failing.
+      // for a provisional navigation that never commits. That reads as a
+      // broken tile rather than an unreachable one. Surfacing it properly
+      // means the NavigationDelegate (onWebResourceError), not this catch,
+      // which only ever sees the channel call failing. Still a known gap.
+      //
+      // Windows, observed 2026-09-11 against WebView2 152.0.4191.66: the same
+      // unreachable host paints Edge's own "Hmmm… can't reach this page" and
+      // additionally fires onReceivedError. So the gap above is a macOS gap,
+      // not a shared one — a Windows tile already says something truthful
+      // without us doing anything. Worth knowing before someone "fixes" this
+      // for both platforms and regresses Windows into a custom placeholder
+      // that says less than Edge's page does.
     }));
     _armTimer();
+  }
+
+  /// Asks an absent-able engine whether it is really there, and flips the
+  /// tile to the placeholder if it is not.
+  ///
+  /// Only WebView2 answers this; see [WebViewSurfaceAvailability]. It runs
+  /// after the surface is already built and navigating, because the check is
+  /// a channel round trip — so a Windows box with no runtime shows the
+  /// browser tile for an instant and then the honest placeholder, rather than
+  /// a white rectangle for ever.
+  void _probeAvailability(WebViewSurface surface) {
+    if (surface is! WebViewSurfaceAvailability) return;
+    unawaited(
+      (surface as WebViewSurfaceAvailability).isAvailable.then((ok) {
+        // `_surface != surface` means a restart overtook this probe and the
+        // answer is about a browser nobody is looking at any more.
+        if (ok || !mounted || _surface != surface) return;
+        setState(() {
+          _teardown();
+          _unavailable = true;
+          _loadedUrl = null;
+          _armedInterval = null;
+        });
+      }).catchError((Object _) {}),
+    );
   }
 
   void _armTimer() {
@@ -400,10 +489,19 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
   }
 }
 
-/// The real browser: WKWebView on macOS, via `webview_flutter`.
+/// The real browser: WebView2 on Windows, WKWebView on macOS.
 WebViewSurface? _defaultFactory(WebViewAssetConfig config) {
   if (!WebViewAvailability.check()) return null;
   try {
+    if (WebViewAvailability.usesWebView2()) {
+      // Null when the Windows package did not register itself, which is what
+      // a platform with no implementation looks like from here. Checked
+      // rather than left to the factory's `assert`: asserts are compiled out
+      // of a release build, where the same case would instead be a null-check
+      // Error from `instance!`.
+      if (InAppWebViewPlatform.instance == null) return null;
+      return _WebView2Surface(config);
+    }
     return _PlatformWebViewSurface(config);
   } catch (_) {
     // Bare catch: a missing platform implementation surfaces as an
@@ -435,6 +533,109 @@ class _PlatformWebViewSurface implements WebViewSurface {
     // the widget. Pointing it at a blank page first stops a video or a
     // polling dashboard from carrying on in a detached web process.
     await _controller.loadRequest(Uri.parse('about:blank'));
+  }
+}
+
+/// WebView2 on Windows, through `flutter_inappwebview`'s platform interface.
+///
+/// Shaped differently from the WKWebView surface because the API is: the
+/// widget is created with its first address baked in as `initialUrlRequest`,
+/// and the controller that can navigate afterwards only arrives later, via
+/// `onWebViewCreated`. [navigate] therefore has to work in three situations —
+/// before the widget is built, after it is built but before the controller
+/// exists, and normally — which is what [_wanted] and [_initialUrl] are for.
+class _WebView2Surface implements WebViewSurface, WebViewSurfaceAvailability {
+  _WebView2Surface(WebViewAssetConfig config);
+
+  PlatformInAppWebViewWidget? _widget;
+  PlatformInAppWebViewController? _controller;
+
+  /// The most recent [navigate] target, whether or not it has been applied.
+  Uri? _wanted;
+
+  /// What went into `initialUrlRequest`, so [_onCreated] can tell an address
+  /// that is already loading from one that arrived while we had no controller.
+  String? _initialUrl;
+
+  bool _disposed = false;
+
+  @override
+  Future<void> navigate(Uri uri) async {
+    _wanted = uri;
+    final controller = _controller;
+    // No controller yet: [build] will bake this in, or [_onCreated] will
+    // apply it. Either way it is not lost, and it is not an error.
+    if (controller == null || _disposed) return;
+    await controller.loadUrl(urlRequest: URLRequest(url: WebUri(uri.toString())));
+  }
+
+  // Typed `dynamic` because that is what the platform interface declares:
+  // the callback is handed `controllerFromPlatform?.call(c) ?? c`, and we
+  // pass no `controllerFromPlatform`, so what arrives is the raw controller.
+  void _onCreated(dynamic raw) {
+    if (raw is! PlatformInAppWebViewController) return;
+    final controller = raw;
+    _controller = controller;
+    final wanted = _wanted?.toString();
+    // Only if the address moved on while the browser was starting — otherwise
+    // initialUrlRequest is already loading it and a second load would be a
+    // visible double-fetch.
+    if (_disposed || wanted == null || wanted == _initialUrl) return;
+    unawaited(controller
+        .loadUrl(urlRequest: URLRequest(url: WebUri(wanted)))
+        .catchError((Object _) {}));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Created once and cached: constructing the platform widget again on a
+    // later build would tear down the browser and start a new one on every
+    // frame the parent happens to rebuild.
+    final widget = _widget ??= PlatformInAppWebViewWidget(
+      PlatformInAppWebViewWidgetCreationParams(
+        initialUrlRequest: _wanted == null
+            ? null
+            : URLRequest(url: WebUri((_initialUrl = _wanted.toString()))),
+        onWebViewCreated: _onCreated,
+      ),
+    );
+    return widget.build(context);
+  }
+
+  /// Asks WebView2 whether it is installed at all.
+  ///
+  /// `getAvailableVersion` answers null when the runtime is absent; the call
+  /// itself throws if the plugin cannot reach the native side, which is the
+  /// same answer for our purposes.
+  @override
+  Future<bool> get isAvailable async {
+    try {
+      final environment = InAppWebViewPlatform.instance
+          ?.createPlatformWebViewEnvironment(
+              const PlatformWebViewEnvironmentCreationParams());
+      if (environment == null) return false;
+      final version = await environment.getAvailableVersion();
+      return version != null && version.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<void> dispose() async {
+    _disposed = true;
+    final controller = _controller;
+    _controller = null;
+    final widget = _widget;
+    _widget = null;
+    // Same reason as the WKWebView surface: park the page so a video or a
+    // polling dashboard stops running in a browser nobody can see any more.
+    if (controller != null) {
+      await controller
+          .loadUrl(urlRequest: URLRequest(url: WebUri('about:blank')))
+          .catchError((Object _) {});
+    }
+    widget?.dispose();
   }
 }
 
