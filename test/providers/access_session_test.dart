@@ -1339,9 +1339,10 @@ void main() {
     });
 
     test('an account deleted mid-session drops the session', () async {
-      // Not a wrong password and not an outage. The person sees their session
-      // end, which is the true story — `refreshGroupsFromRoles` owns that drop
-      // and clears the stored session on the way.
+      // Not a wrong password and not an outage. The session is floored, and the
+      // answer matches what the app bar is about to show: no identity. A
+      // message about a log beside a badge that just disappeared would describe
+      // a different event from the one on screen.
       final h = await signedIn();
       h.sink.rows.clear();
       h.auth.vanished.add('jon');
@@ -1351,7 +1352,7 @@ void main() {
         newPassword: 'battery staple',
       );
 
-      expect(result, AccessPasswordChangeResult.unavailable);
+      expect(result, AccessPasswordChangeResult.notSignedIn);
       expect(h.session!.isElevated, isFalse);
       expect(
         h.sink.rows.where((r) => r.itemKey.startsWith('password.')),

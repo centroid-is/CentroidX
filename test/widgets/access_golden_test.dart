@@ -2,12 +2,13 @@
 /// affordance, the sign-in dialog, and the account menu and change-password
 /// form that hang off the badge.
 ///
-/// Ten images, one per state that looks different:
+/// Eleven images, one per state that looks different:
 ///
 /// * `access_appbar_anonymous.png`   — nobody signed in: the Sign in icon, no name.
 /// * `access_appbar_elevated.png`    — signed in: who, their role, and Sign out, in orange.
 /// * `access_account_menu.png`       — the same badge with its account menu open.
 /// * `access_change_password_dialog.png` — the self-service form at rest.
+/// * `access_change_password_dialog_dark.png` — the same form on the dark scheme.
 /// * `access_change_password_dialog_error.png` — the same form after a wrong current password.
 /// * `access_sign_in_dialog.png`     — the form at rest, honesty subtitle showing.
 /// * `access_sign_in_dialog_error.png` — the same form after a rejected password.
@@ -421,7 +422,7 @@ void _sizeView(WidgetTester tester, Size size) {
 }
 
 void main() {
-  final (light, _) = muted();
+  final (light, dark) = muted();
 
   setUpAll(() async {
     Future<void> loadFont(String family, String path) async {
@@ -544,6 +545,22 @@ void main() {
       await expectLater(
         find.byKey(_changePasswordBoundary),
         matchesGoldenFile('goldens/access_change_password_dialog_error.png'),
+      );
+    });
+
+    testWidgets('change-password dialog, dark', (tester) async {
+      // The dark variant earns its own image rather than being assumed from the
+      // light one. Neither scheme in this repo sets `colorScheme.outline`, so a
+      // border that reads fine on the light surface can come out invisible on
+      // the dark one — and the three field outlines are most of this form's
+      // structure.
+      _sizeView(tester, const Size(700, 700));
+      await tester.pumpWidget(_changePasswordHost(theme: dark));
+      await _settle(tester);
+
+      await expectLater(
+        find.byKey(_changePasswordBoundary),
+        matchesGoldenFile('goldens/access_change_password_dialog_dark.png'),
       );
     });
 

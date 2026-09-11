@@ -270,25 +270,28 @@ enum AccessPasswordChangeResult {
   /// The current password did not verify.
   wrongCurrentPassword,
 
-  /// It could not be attempted, or could not be finished: no database, the
-  /// provider threw, the signed-in account has been deleted, or the session
+  /// It could not be attempted: no database, the provider threw, or the session
   /// belongs to a station account.
   ///
-  /// Four causes, one answer, deliberately. Each of them is a fact about the
-  /// station or the account rather than about what was typed, none of them is
-  /// anything the person at the panel can act on differently, and the message
-  /// for all four points at the log — which is where the four *are*
-  /// distinguished.
+  /// Three causes, one answer, deliberately. Each is a fact about the station or
+  /// the account rather than about what was typed, none is anything the person
+  /// at the panel can act on differently, and the message for all three points
+  /// at the log — which is where the three *are* distinguished.
   unavailable,
 
-  /// Nobody is signed in.
+  /// Nobody is signed in — either already, or as of a moment ago.
   ///
-  /// Reachable in practice, not defensive padding: the inactivity countdown
-  /// keeps running while the dialog is open, and a session that expires between
-  /// opening the form and submitting it lands here. Its own value because it is
-  /// the one case with a useful next step — sign in again — and saying
-  /// "could not be changed, the log has the details" to somebody whose session
-  /// simply timed out would be a lie with a wild goose chase attached.
+  /// Two ways in, and neither is defensive padding. The inactivity countdown
+  /// keeps running while the dialog is open, so a session can expire between
+  /// opening the form and submitting it. And the signed-in account can be
+  /// deleted by an administrator mid-session, which
+  /// [AccessSessionController.changeOwnPassword] answers by flooring the
+  /// session and then reporting it here.
+  ///
+  /// Its own value because it is the one case with a useful next step — sign in
+  /// again — and because the app bar has just stopped showing an identity.
+  /// Saying "could not be changed, the log has the details" while the badge
+  /// disappears would describe a different event from the one on screen.
   notSignedIn,
 }
 
@@ -648,6 +651,14 @@ class AccessSessionController extends _$AccessSessionController {
   /// because "change the password, kick out the other sessions" is what the
   /// reader expects from a web application, and this is not one.
   ///
+  /// **A session that expires between the guard below and the write still gets
+  /// its change.** That is correct, not a race to close: the operation is
+  /// authorised by the current password, which was just presented and verified,
+  /// not by the session. The session decides whether the affordance is offered
+  /// and whose account is meant; it is not the credential. Refusing here would
+  /// throw away a correct password because a countdown elapsed during the two
+  /// derivations the change itself was paying for.
+  ///
   /// ## Station accounts are refused
   ///
   /// A station account's password is commissioning material. It is changed on
@@ -765,10 +776,17 @@ class AccessSessionController extends _$AccessSessionController {
         // deliberately write none either. `refreshGroupsFromRoles` already owns
         // this exact situation — it re-resolves the session and drops it to the
         // floor when the account has vanished, clearing the stored session on
-        // the way — so the person sees their session end, which is the true
-        // story and a far more useful one than a sentence about passwords.
+        // the way.
         await refreshGroupsFromRoles();
-        return AccessPasswordChangeResult.unavailable;
+
+        // `notSignedIn`, not `unavailable`, and the reason is on the screen
+        // rather than in the enum: the line above has just floored the session,
+        // so the app bar's badge disappears in the same frame this answer is
+        // rendered in. "The password could not be changed, the log has the
+        // details" next to an identity visibly vanishing is two unrelated
+        // stories; "your session ended" is the one the person is watching
+        // happen, and by the time it is shown it is the literal truth.
+        return AccessPasswordChangeResult.notSignedIn;
     }
   }
 
