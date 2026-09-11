@@ -116,9 +116,13 @@ void main() {
         EtherCatDeviceTable(config: EtherCatDeviceTableConfig()),
         _FakeStateMan()));
     await tester.pump();
-    expect(find.byType(TextField), findsOneWidget);
-    final field = tester.widget<TextField>(find.byType(TextField));
-    expect(field.decoration?.hintText, contains('Sample'));
+    expect(find.textContaining('Sample'), findsOneWidget);
+    // A picture of the table, not a working one. The page editor's palette
+    // shows this tile next to its own search box, and a second text field on
+    // screen breaks every `enterText(find.byType(TextField))` in the editor's
+    // tests — which is how this was found.
+    expect(find.byType(TextField), findsNothing);
+    expect(find.text('ST101.A1.01'), findsOneWidget);
   });
 
   group('reset commands', () {

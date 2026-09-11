@@ -144,6 +144,9 @@ class _EtherCatDeviceTableState extends ConsumerState<EtherCatDeviceTable> {
         buses: ecSampleBuses(),
         caption: 'Sample — add a master in the editor',
         initialProblemsOnly: config.problemsOnly,
+        // A picture of the table, not a working one: this is what the palette
+        // tile shows, and a tile must not hold a focusable field.
+        interactive: false,
       );
     }
     return EcKeyValues(
@@ -220,6 +223,7 @@ class EcDeviceTableView extends StatefulWidget {
     this.initialProblemsOnly = false,
     this.onOpen,
     this.caption,
+    this.interactive = true,
   });
 
   final List<EcBus> buses;
@@ -231,6 +235,14 @@ class EcDeviceTableView extends StatefulWidget {
 
   /// Shown in the toolbar in place of the search box's hint.
   final String? caption;
+
+  /// Whether the toolbar's search box is a real field.
+  ///
+  /// False where the table is a picture of itself — the palette tile, an
+  /// asset dropped before its masters are named. A thumbnail must not hold a
+  /// focusable text field: the page editor's own palette has one, and a
+  /// second one on screen breaks anything that types into "the" search box.
+  final bool interactive;
 
   @override
   State<EcDeviceTableView> createState() => _EcDeviceTableViewState();
@@ -334,6 +346,7 @@ class _EcDeviceTableViewState extends State<EcDeviceTableView> {
             buses: widget.buses,
             states: states,
             caption: widget.caption,
+            interactive: widget.interactive,
             problemsOnly: _problemsOnly,
             onProblemsOnly: (v) => setState(() => _problemsOnly = v),
             onQuery: (v) => setState(() => _query = v.trim()),
@@ -377,6 +390,7 @@ class _Toolbar extends StatelessWidget {
     required this.buses,
     required this.states,
     required this.caption,
+    required this.interactive,
     required this.problemsOnly,
     required this.onProblemsOnly,
     required this.onQuery,
@@ -385,6 +399,7 @@ class _Toolbar extends StatelessWidget {
   final List<EcBus> buses;
   final HmiStateColors states;
   final String? caption;
+  final bool interactive;
   final bool problemsOnly;
   final ValueChanged<bool> onProblemsOnly;
   final ValueChanged<String> onQuery;
@@ -424,26 +439,30 @@ class _Toolbar extends StatelessWidget {
           SizedBox(
             width: 200,
             height: 30,
-            child: TextField(
-              onChanged: onQuery,
-              style: const TextStyle(fontSize: 12),
-              decoration: InputDecoration(
-                isDense: true,
-                hintText: caption ?? 'Find a device',
-                prefixIcon: const Icon(Icons.search, size: 16),
-                prefixIconConstraints:
-                    const BoxConstraints(minWidth: 28, minHeight: 28),
-                border: const OutlineInputBorder(),
-                contentPadding:
-                    const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
-              ),
-            ),
+            child: interactive
+                ? TextField(
+                    onChanged: onQuery,
+                    style: const TextStyle(fontSize: 12),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      hintText: caption ?? 'Find a device',
+                      prefixIcon: const Icon(Icons.search, size: 16),
+                      prefixIconConstraints:
+                          const BoxConstraints(minWidth: 28, minHeight: 28),
+                      border: const OutlineInputBorder(),
+                      contentPadding: const EdgeInsets.symmetric(
+                          vertical: 6, horizontal: 8),
+                    ),
+                  )
+                : _SearchBoxPicture(
+                    label: caption ?? 'Find a device', theme: theme),
           ),
           const SizedBox(width: 8),
           FilterChip(
             label: const Text('Problems only'),
             selected: problemsOnly,
-            onSelected: onProblemsOnly,
+            // Inert in a thumbnail, like the search box beside it.
+            onSelected: interactive ? onProblemsOnly : null,
             visualDensity: VisualDensity.compact,
             labelStyle: const TextStyle(fontSize: 12),
           ),
@@ -466,6 +485,43 @@ class _Toolbar extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.right,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A search box that is only a drawing of one.
+///
+/// Same shape and weight as the real field so a thumbnail reads as the table
+/// it stands for, with nothing to focus and nothing to type into.
+class _SearchBoxPicture extends StatelessWidget {
+  const _SearchBoxPicture({required this.label, required this.theme});
+
+  final String label;
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) {
+    final hint = theme.hintColor;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        border: Border.all(color: theme.dividerColor),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.search, size: 16, color: hint),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12, color: hint),
             ),
           ),
         ],
