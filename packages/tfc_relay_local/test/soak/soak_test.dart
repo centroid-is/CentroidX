@@ -366,7 +366,13 @@ Future<SoakDriver> _runSoak(
   /// thresholds are settled.
   const knownOpenCheckers = <String>{'freshnessHonesty', 'boundedMemory'};
 
-  final isShortArm = duration == shortArm;
+  // **Anything that is not the full nightly arm**, not just `shortArm`. The
+  // determinism case runs the same storm twice at twelve seconds to compare
+  // journals, so an `== shortArm` test missed it and the two known-open
+  // checkers failed it exactly as they failed the ninety-second lane. The rule
+  // is "only the RELAY_SOAK arm judges these", and this is that rule spelled
+  // the way it is meant.
+  final isShortArm = duration != fullArm;
   final recorded = isShortArm
       ? [
           for (final v in all)
