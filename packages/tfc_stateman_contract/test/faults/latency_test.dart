@@ -241,14 +241,36 @@ void main() {
 /// Sets [d] on a fresh link and asserts the round trip is `2d` plus [_slack].
 Future<void> _expectAdditiveRoundTrip(Duration d) async {
   final link = await _link();
+
+  // **The link's own cost, measured on this link, before any delay is set.**
+  //
+  // The band below is about the delay this proxy *injects*, and comparing a
+  // delayed round trip against `2d` alone silently folds in whatever the
+  // undelayed round trip costs on this machine. That is about a millisecond on
+  // a developer's laptop and tens of milliseconds on a hosted agent:
+  // `relay-packages-test (windows-latest)` measured 184 ms against a 175 ms
+  // ceiling at d=50 ms, so 84 ms of it was the runner and only 100 ms was the
+  // lever.
+  //
+  // Widening the slack is not available as a fix. It has to stay under the
+  // smallest ideal round trip this file produces (100 ms, at d=50 ms) or a
+  // proxy that doubled its delay instead of adding it would pass the ceiling —
+  // which is the one thing the ceiling is for. Subtracting the baseline
+  // removes the runner from the comparison instead of making room for it, and
+  // leaves the slack covering jitter, which is what it was sized for.
+  final baseline = await link.roundTrip(_pattern(_probeBytes));
+
   link.proxy.latency = d;
 
-  final rtt = await link.roundTrip(_pattern(_probeBytes));
+  final measured = await link.roundTrip(_pattern(_probeBytes));
+  final rtt = measured - baseline;
   // Printed as well as asserted: a CI failure that reads "412 ms" says the
   // rig was slow, and one that reads "3 ms" says the mode did not engage.
   // The assertion alone cannot tell those apart.
   print('latency ${d.inMilliseconds} ms per direction: round trip '
-      '${rtt.inMilliseconds} ms (ideal ${(d * 2).inMilliseconds} ms)');
+      '${measured.inMilliseconds} ms less a ${baseline.inMilliseconds} ms '
+      'undelayed baseline = ${rtt.inMilliseconds} ms attributable to the lever '
+      '(ideal ${(d * 2).inMilliseconds} ms)');
 
   // Microseconds because `inInclusiveRange` is a numeric matcher; the bounds
   // are the additive Durations, never a proportion of `d`.
