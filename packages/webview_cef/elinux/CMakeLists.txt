@@ -89,45 +89,49 @@ set_target_properties(${CEF_TARGET} PROPERTIES INSTALL_RPATH "$ORIGIN")
 set_target_properties(${CEF_TARGET} PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE)
 set_target_properties(${CEF_TARGET} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CEF_TARGET_OUT_DIR})
 
-set(INSTALL_BUNDLE_APPLICATION_DIR_WEBVIEW_CEV "${PROJECT_BINARY_DIR}")
-get_filename_component(INSTALL_BUNDLE_APPLICATION_DIR_WEBVIEW_CEV "${INSTALL_BUNDLE_APPLICATION_DIR_WEBVIEW_CEV}" DIRECTORY)
-get_filename_component(INSTALL_BUNDLE_APPLICATION_DIR_WEBVIEW_CEV "${INSTALL_BUNDLE_APPLICATION_DIR_WEBVIEW_CEV}" DIRECTORY)
-set(INSTALL_BUNDLE_APPLICATION_DIR_WEBVIEW_CEV "${INSTALL_BUNDLE_APPLICATION_DIR_WEBVIEW_CEV}/bundle/lib")
-
 set(cef_library_list "")
 foreach(FILE ${CEF_BINARY_FILES})
   list(APPEND cef_library_list ${CEF_BINARY_DIR}/${FILE})
 endforeach()
 
 foreach(FILE ${CEF_RESOURCE_FILES})
-  if(IS_DIRECTORY "${CEF_RESOURCE_DIR}/${FILE}")
-    # Ensure we copy the contents of the directory (like locales/*.pak)
-    install(DIRECTORY "${CEF_RESOURCE_DIR}/${FILE}/"
-            DESTINATION "${INSTALL_BUNDLE_APPLICATION_DIR_WEBVIEW_CEV}/${FILE}"
-            COMPONENT Runtime)
-  else()
+  if(NOT IS_DIRECTORY "${CEF_RESOURCE_DIR}/${FILE}")
     list(APPEND cef_library_list "${CEF_RESOURCE_DIR}/${FILE}")
   endif()
 endforeach(FILE)
 #######################################cef end#######################################
 
-# Copy locales directory into bundle/lib/locales
-file(GLOB CEF_LOCALE_FILES "${CEF_RESOURCE_DIR}/locales/*.pak")
-foreach(LOCALE_FILE ${CEF_LOCALE_FILES})
-  install(FILES "${LOCALE_FILE}"
-          DESTINATION "${INSTALL_BUNDLE_APPLICATION_DIR_WEBVIEW_CEV}/locales"
-          COMPONENT Runtime)
-endforeach()
-
-# Also copy at build time so it works without cmake --install
-add_custom_command(TARGET ${PLUGIN_NAME} POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory
-    "${INSTALL_BUNDLE_APPLICATION_DIR_WEBVIEW_CEV}/locales"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    "${CEF_RESOURCE_DIR}/locales"
-    "${INSTALL_BUNDLE_APPLICATION_DIR_WEBVIEW_CEV}/locales"
-  COMMENT "Copying CEF locales to bundle"
-)
+# CEF's locales/ directory. Chromium CHECKs for a <locale>.pak at startup in
+# every process, so without one the browser and both zygotes die on int3 the
+# moment the first Web page tile opens, and take the HMI with them. The only
+# trace is "locale_file_path.empty() for locale" in the log. Seen on a station
+# 2026-09-11.
+#
+# It cannot ride webview_cef_bundled_libraries, which installs flat files into
+# lib/. Nor can it be an ordinary install() here: the flutter-elinux app
+# template requires CMake 3.15, so CMP0082 runs this subdirectory's install
+# rules where include(flutter/generated_plugins.cmake) sits, which is BEFORE
+# the template's install(CODE "file(REMOVE_RECURSE bundle/)") that then deletes
+# them. Upstream's install(DIRECTORY) and its POST_BUILD copy both died that
+# way. (The Linux desktop template requires 3.13, CMP0082 OLD, so linux/ is
+# unaffected.)
+#
+# So the install() is deferred to the end of the top-level directory, after
+# the wipe. DEFER evaluates its arguments when it runs, in the top-level scope
+# where none of our variables exist, so EVAL bakes the source path in now and
+# leaves INSTALL_BUNDLE_LIB_DIR to be read then. That variable is the
+# template's own lib/, where libcef.so lands and where CEF looks for locales/.
+if(CMAKE_VERSION VERSION_LESS 3.19)
+  message(FATAL_ERROR
+    "webview_cef (elinux) needs CMake >= 3.19 for cmake_language(DEFER) to "
+    "ship CEF's locales; found ${CMAKE_VERSION}")
+endif()
+cmake_language(EVAL CODE "
+  cmake_language(DEFER DIRECTORY \"${CMAKE_SOURCE_DIR}\" CALL install
+    DIRECTORY \"${CEF_RESOURCE_DIR}/locales/\"
+    DESTINATION \"\${INSTALL_BUNDLE_LIB_DIR}/locales\"
+    COMPONENT Runtime)
+")
 
 set(webview_cef_bundled_libraries
   ""

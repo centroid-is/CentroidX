@@ -166,8 +166,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # The last three are CEF's runtime dependencies, for the Web page asset's
 # browser. CEF itself is not installed here — the plugin's CMake downloads it
 # at build time and it ships in the bundle — but it will not start without
-# them, and a browser that fails to launch is indistinguishable from a build
-# with no CEF at all.
+# them. They are not the full set (docker/frontend/Dockerfile has the rest):
+# the webview plugin here is the Linux-desktop GTK build, and ivi-homescreen
+# has no GTK plugin registrar, so it is never loaded on this image and the Web
+# page asset shows its placeholder regardless.
 
 # Hacks for amplify secure storage (arch-agnostic)
 RUN LIBDIR=$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
@@ -196,6 +198,20 @@ RUN ln -s bundle/lib lib
 
 RUN chown -R centroid:centroid $APP_DIR \
     && chmod +x ./homescreen
+
+# Fail the build, not the station: every library homescreen names must
+# resolve in this image. Only homescreen, not bundle/lib/*.so as
+# docker/frontend/Dockerfile checks: the bundle's plugins are the GTK desktop
+# builds, linked against libflutter_linux_gtk.so (stripped above) and GTK, and
+# homescreen never loads them, so checking them would demand GTK for nothing.
+RUN missing=$(for f in ./homescreen; do \
+        LD_LIBRARY_PATH=./bundle/lib ldd "$f" | grep 'not found' | sed "s|^[[:space:]]*|$f: |"; \
+    done); \
+    if [ -n "$missing" ]; then \
+        echo "Unresolved shared libraries; install the packages that provide them:"; \
+        echo "$missing"; \
+        exit 1; \
+    fi
 
 USER centroid
 

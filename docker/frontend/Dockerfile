@@ -83,6 +83,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     libnspr4 \
     libasound2t64 \
+    libatk1.0-0t64 \
+    libatk-bridge2.0-0t64 \
+    libatspi2.0-0t64 \
+    libcups2t64 \
+    libxcomposite1 \
+    libxdamage1 \
     curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -94,15 +100,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # this image's size; the video output that consumes its frames is
 # packages/media_kit_video_elinux.
 
-# libnss3 / libnspr4 / libasound2t64 are CEF's runtime dependencies, needed by
-# the Web page asset's browser (packages/webview_cef). CEF itself is not
-# installed here — it is downloaded at build time by the plugin's CMake and
-# lands in the app bundle alongside the binary — but it will not start without
-# these. libfontconfig1 is also required and is already above.
+# libnss3 through libxdamage1 are CEF's runtime dependencies, needed by the
+# Web page asset's browser (packages/webview_cef). CEF itself is not installed
+# here — it is downloaded at build time by the plugin's CMake and lands in the
+# app bundle alongside the binary — but it will not start without these.
+# libfontconfig1 is also required and is already above.
 #
-# Absent them the browser fails to launch and every Web page tile shows its
-# "not available" placeholder, which looks identical to a build with no CEF at
-# all. See WebViewSurfaceAvailability in lib/page_creator/assets/web_view.dart.
+# They are not optional: libcef.so names every one of them in its DT_NEEDED,
+# and the webview plugin and the app binary inherit that. Missing any one, the
+# dynamic loader refuses to start the app at all — "error while loading shared
+# libraries: libatk-1.0.so.0" in a restart loop, and no HMI on the station.
+# The ldd check at the end of this stage fails the build instead.
 
 # Hacks for amplify secure storage
 RUN ln -s /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0 /usr/lib/x86_64-linux-gnu/libgio-2.0.so
@@ -140,6 +148,28 @@ RUN curl -sL "https://github.com/bblanchon/pdfium-binaries/releases/download/${P
 
 RUN chown -R centroid:centroid $APP_DIR \
     && chmod +x $APP_DIR/${BINARY}
+
+# Fail the build, not the station: every library the binary or the bundle
+# names must resolve in this image. A bundled plugin that pulls in a new
+# system library otherwise ships an image that cannot start.
+RUN missing=$(for f in ./${BINARY} lib/*.so; do \
+        LD_LIBRARY_PATH=./lib ldd "$f" | grep 'not found' | sed "s|^[[:space:]]*|$f: |"; \
+    done); \
+    if [ -n "$missing" ]; then \
+        echo "Unresolved shared libraries; install the packages that provide them:"; \
+        echo "$missing"; \
+        exit 1; \
+    fi
+
+# CEF also needs lib/locales/*.pak beside libcef.so, which no ldd can see.
+# Without one, Chromium CHECK-fails in the browser and in every zygote as soon
+# as the first Web page tile opens, and the HMI dies with it: SIGTRAP in
+# libcef.so, and the only log line is "locale_file_path.empty() for locale".
+# The plugin's CMake is what ships them; see packages/webview_cef/elinux.
+RUN if [ -f lib/libcef.so ] && [ ! -f lib/locales/en-US.pak ]; then \
+        echo "lib/libcef.so is bundled but lib/locales/en-US.pak is not: CEF would crash on first use"; \
+        exit 1; \
+    fi
 
 USER centroid
 
