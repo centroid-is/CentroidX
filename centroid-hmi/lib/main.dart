@@ -76,6 +76,8 @@ import 'package:tfc/widgets/panes/standard_dialog.dart';
 
 import 'marionette_init.dart';
 import 'navigation.dart';
+import 'package:tfc/providers/menu.dart';
+import 'package:tfc/widgets/page_access_gate.dart';
 
 /// Enable with: --dart-define=MARIONETTE=true
 const _enableMarionette = bool.fromEnvironment('MARIONETTE');
@@ -333,25 +335,20 @@ Future<void> _startApp([bool debugMode = false]) async {
 
   final extraMenuItems = pageManager.getRootMenuItems();
 
-  // Home comes from the page manager like every other page — it is not
-  // pinned here, so deleting it in the page editor really removes it.
-  // Built-ins (Alarm View, History View) and the pages share one persisted
-  // top-level order, editable in the page editor's Pages dialog.
-  final topLevelMenuItems = buildTopLevelMenuItems(
-    isLinux: Platform.isLinux,
-    pageMenuItems: extraMenuItems,
-    // History View sits under Advanced unless the operator promoted it to
-    // the top level in the page editor (recorded in the top-level order).
-    historyAtTopLevel: historyViewIsTopLevel(pageManager.topLevelOrder),
+  // The first menu, composed by the same function the provider will use.
+  // `registry` is seeded here because the boot sequence below — the route
+  // table and the startup-path resolution — runs before there is a
+  // `ProviderScope` to read `menuTreeProvider` from. From the first frame
+  // onwards the provider owns this list and rewrites it whenever the pages
+  // change; nothing else may.
+  final topLevelMenuItems = _composeTopLevelMenu(pageManager);
+  registry.replaceMenu(
+    topLevelMenuItems,
+    declareGroups: () {
+      installRaisedRoutes();
+      declareMenuRouteGroups(topLevelMenuItems);
+    },
   );
-  for (final menuItem in topLevelMenuItems) {
-    registry.addMenuItem(menuItem);
-  }
-
-  // Everything is registered; now put the top level — built-ins included — in
-  // the order arranged in the page editor. No stored order leaves the
-  // registration order above untouched.
-  pageManager.sortTopLevel(registry.menuItems);
 
   final locationBuilder = createLocationBuilder(
     extraMenuItems,
@@ -419,6 +416,17 @@ Future<void> _startApp([bool debugMode = false]) async {
       // is powered off or behind a cut link leaves the page blank for the ten
       // seconds the connection takes to give up.
       bootstrapPageManagerProvider.overrideWithValue(pageManager),
+      // How `menuTreeProvider` assembles the whole top-level menu. The
+      // composition lives here in the shell because it knows the Advanced
+      // entry list and the platform flags; the provider lives in the package
+      // and cannot reach back for them. Injecting it is what lets the menu be
+      // recomposed whenever the pages change instead of once at boot — see
+      // the pipeline note in `lib/providers/menu.dart`.
+      //
+      // One composition, two callers: the boot sequence above builds the
+      // first menu with the same function, so what the provider produces on
+      // its first build is what the app already had.
+      menuComposerProvider.overrideWithValue(_composeTopLevelMenu),
     ],
     child: UpgradeAlert(
       upgrader: upgrader,
@@ -515,18 +523,12 @@ RoutesLocationBuilder createLocationBuilder(
   List<MenuItem> extraMenuItems, {
   Iterable<String> pagePaths = const [],
 }) {
-  // Declare the raised routes before anything can read them. The navigation
-  // menu resolves a path's group through RouteRegistry, and this is the one
-  // function every boot passes through before a menu is rendered, so the menu
-  // and the route table cannot disagree about which entries are locked.
-  installRaisedRoutes();
-
-  // Then layer the groups the operator published pages and sections for, which
-  // resolves section inheritance as it walks. AFTER installRaisedRoutes, never
-  // before: declaring is idempotent and last-writer-wins, and a customer page
-  // must be able to raise its own path while a page that declares nothing
-  // leaves a built-in route's group exactly as installRaisedRoutes left it.
-  declareMenuRouteGroups(RouteRegistry().menuItems);
+  // Route groups are declared by `RouteRegistry.replaceMenu`, which the boot
+  // sequence calls once and `menuTreeProvider` calls on every recomposition —
+  // clear, built-ins, then the operator's pages, in that order inside one
+  // method so the layering cannot be assembled wrong at a call site. Nothing
+  // is declared here: doing it in two places is how the menu and the route
+  // table start disagreeing about which entries are locked.
 
   // Wraps a raised route's child in its gate. Two things here are deliberate:
   //
@@ -724,10 +726,24 @@ RoutesLocationBuilder createLocationBuilder(
       routes[menuItem.path!] = (context, state, args) => BeamPage(
             key: ValueKey(menuItem.path!),
             title: menuItem.label,
-            child: Consumer(
-              builder: (context, ref, _) {
-                return AssetView(pageName: menuItem.path!);
-              },
+            // The enforcement point for the plant's own pages. Until this
+            // landed, a page raised above `operate` in the page editor was
+            // dropped from the menu and still opened to anyone who typed its
+            // URL — hiding was the whole of the guard, which is the failure
+            // mode the spec names. The gate also asks the page whitelist.
+            //
+            // Free on an unrestricted station: an undeclared page short-
+            // circuits on `operate` and a session with no whitelist admits
+            // every path, so the gate returns the child with nothing around
+            // it, exactly as before.
+            child: PageAccessGate(
+              path: menuItem.path!,
+              title: menuItem.label,
+              child: Consumer(
+                builder: (context, ref, _) {
+                  return AssetView(pageName: menuItem.path!);
+                },
+              ),
             ),
           );
     }
@@ -1014,4 +1030,34 @@ class MyApp extends ConsumerWidget {
       child: BeamerProvider(routerDelegate: routerDelegate, child: app),
     );
   }
+}
+
+/// How the whole top-level menu is assembled from the page manager.
+///
+/// The one composition, called from two places: the boot sequence, which needs
+/// a menu before there is a `ProviderScope`, and `menuComposerProvider`, which
+/// is how `menuTreeProvider` recomposes it whenever the pages change. Two
+/// copies of this would be two menus that drift apart the first time either
+/// is edited.
+///
+/// It lives in the shell rather than in the package because it knows the
+/// Advanced entry list, the platform flags and the built-ins; the provider
+/// lives in the package and is handed this as a callback.
+List<MenuItem> _composeTopLevelMenu(PageManager pageManager) {
+  // Home comes from the page manager like every other page — it is not pinned
+  // here, so deleting it in the page editor really removes it. Built-ins
+  // (Alarm View, History View) and the pages share one persisted top-level
+  // order, editable in the page editor's Pages dialog.
+  final items = buildTopLevelMenuItems(
+    isLinux: Platform.isLinux,
+    pageMenuItems: pageManager.getRootMenuItems(),
+    // History View sits under Advanced unless the operator promoted it to the
+    // top level in the page editor (recorded in the top-level order).
+    historyAtTopLevel: historyViewIsTopLevel(pageManager.topLevelOrder),
+  );
+  // Then the order arranged in the page editor — built-ins included. No stored
+  // order leaves the composition order above untouched. Ordering happens here,
+  // before any visibility filtering, so the two stay separate concerns.
+  pageManager.sortTopLevel(items);
+  return items;
 }

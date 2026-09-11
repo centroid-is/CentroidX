@@ -22,6 +22,7 @@ import '../providers/access.dart';
 import '../providers/theme.dart';
 import '../providers/alarm.dart';
 import '../providers/nav_alarm.dart';
+import '../providers/menu.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessSession;
 import 'package:tfc_dart/core/alarm.dart';
 import 'alarm.dart';
@@ -306,8 +307,13 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     if (ref.read(accessSessionProvider).valueOrNull?.isElevated ?? false) {
       return;
     }
+    // The full tree, deliberately, not `visibleMenu`. `resolveStartupPath`
+    // answers "is this path routable"; whether *this* person may open it is
+    // the route gate's question, and it answers with an honest refusal page.
+    // Resolving against the filtered view instead would silently re-target
+    // somebody's startup page to a different one.
     final target =
-        resolveStartupPath(stored, menuItems: RouteRegistry().menuItems);
+        resolveStartupPath(stored, menuItems: ref.read(menuTreeProvider));
     final beamer = Beamer.of(context);
     if (beamer.configuration.uri.path == target) return;
     beamer.beamToNamed(target);
@@ -338,6 +344,12 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     final navAlarmLevels =
         ref.watch(navigationAlarmsProvider).valueOrNull ?? const {};
     final navCurrentPath = currentBeamPath(context);
+
+    // The menu this session may see. Watched — so signing in or out rebuilds
+    // the bar with the destinations that identity has, which is the whole
+    // point of the provider. It is derived from the pages and the session and
+    // nothing else; nothing on the plant-connection side is on this path.
+    final visibleMenu = ref.watch(visibleMenuProvider);
 
     // How much of the bar the right-hand cluster needs — see the centre
     // region's margin comment below. Read off the session rather than fixed,
@@ -538,22 +550,36 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
           : widget.floatingActionButton,
       floatingActionButtonLocation:
           _isFullscreen ? FloatingActionButtonLocation.startFloat : null,
-      bottomNavigationBar: _isFullscreen
+      // Built from `visibleMenu`, never from `RouteRegistry().menuItems`.
+      //
+      // Three things index into one list here — the destinations, the selected
+      // index and the tap handler — and they must be the *same* list. A
+      // filtered render list beside an unfiltered tap list sends a tap to the
+      // wrong page, which is the defect class the popup's "sized from the
+      // entries that will actually be shown" comment records one widget down.
+      // `VisibleMenu` owns the mapping so there is nowhere for the two to
+      // disagree.
+      //
+      // No bar below two destinations: Material's NavigationBar asserts it,
+      // and a session whitelisted down to one page is a real state now. The
+      // app bar — with its sign-in control — is still there, so this is not a
+      // dead end; fullscreen mode has always rendered a bar-less scaffold.
+      bottomNavigationBar: _isFullscreen || !visibleMenu.showsBar
           ? null
           : NavigationBar(
               // Same null-safe path source as the back-arrow gate: an
               // unguarded `as BeamState` here would defeat currentBeamPath's
               // guard — both run in the same build pass, so the scaffold
               // would fail to build anyway if this threw.
-              selectedIndex: findTopLevelIndexForBeamer(
-                    RouteRegistry().root,
-                    null,
-                    currentBeamPath(context) ?? '/',
-                  ) ??
-                  0,
+              //
+              // Null — the current page is not one this session can see, which
+              // happens on sign-out — selects nothing rather than the wrong
+              // thing. Index 0 would highlight whatever happens to be first.
+              selectedIndex:
+                  visibleMenu.indexOfPath(currentBeamPath(context) ?? '/') ?? 0,
               labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
               destinations: [
-                ...RouteRegistry().menuItems.map<Widget>((item) {
+                ...visibleMenu.topLevel.map<Widget>((item) {
                   if (item.children.isEmpty) {
                     return NavigationDestination(
                         icon: NavAlarmBadge(
@@ -585,7 +611,9 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                 // when nothing is open, so the two never fight.
                 closeSidePane(immediate: true);
                 closeAllFloatingDialogs();
-                final item = RouteRegistry().menuItems[index];
+                // The same filtered list the destinations were built from.
+                if (index < 0 || index >= visibleMenu.topLevel.length) return;
+                final item = visibleMenu.topLevel[index];
                 beamSafelyKids(context, item, askGuard: false);
               }),
             ),
