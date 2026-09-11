@@ -108,6 +108,18 @@ class _RecordingRepository extends AccessRepository {
     calls.add('setPassword:$username');
     return super.setPassword(username, password);
   }
+
+  @override
+  Future<void> setRoleAllowedPages(String name, Set<String>? pages) {
+    calls.add('setRoleAllowedPages:$name');
+    return super.setRoleAllowedPages(name, pages);
+  }
+
+  @override
+  Future<void> setUserAllowedPages(String username, Set<String>? pages) {
+    calls.add('setUserAllowedPages:$username');
+    return super.setUserAllowedPages(username, pages);
+  }
 }
 
 /// A repository whose chosen write throws once, from inside the call.
@@ -522,6 +534,85 @@ void main() {
       );
     });
 
+    test('setRolePages records role.pages, with null as a legible value',
+        () async {
+      await repository.upsertRole(_shiftLead());
+      final store = buildStore();
+
+      await store.setRolePages('Line Lead', {'/', '/fillet'});
+
+      final row = sink.rows.single;
+      expect(row.itemKey, 'role.pages');
+      expect(row.member, 'Line Lead');
+      expect(row.oldValue, isNull,
+          reason: 'null is the meaningful "no whitelist" state, so the row '
+              'reads null -> [...] when the mode is switched on');
+      expect(row.newValue, '["/","/fillet"]');
+      expect(row.allowed, isTrue);
+      expect((await repository.role('Line Lead'))!.allowedPages,
+          {'/', '/fillet'});
+    });
+
+    test('setRolePages records the switch back off as array -> null', () async {
+      await repository.upsertRole(_shiftLead());
+      await repository.setRoleAllowedPages('Line Lead', {'/'});
+      final store = buildStore();
+
+      await store.setRolePages('Line Lead', null);
+
+      final row = sink.rows.single;
+      expect(row.oldValue, '["/"]');
+      expect(row.newValue, isNull);
+      expect((await repository.role('Line Lead'))!.allowedPages, isNull);
+    });
+
+    test('setRolePages records block-all as an empty array, not as null',
+        () async {
+      // The state the feature was asked for by name. If this recorded null the
+      // trail could not tell "sees nothing" from "sees everything".
+      await repository.upsertRole(_shiftLead());
+      final store = buildStore();
+
+      await store.setRolePages('Line Lead', <String>{});
+
+      expect(sink.rows.single.newValue, '[]');
+      expect((await repository.role('Line Lead'))!.allowedPages, isEmpty);
+    });
+
+    test('setRolePages naming no role throws and writes nothing', () async {
+      final store = buildStore();
+      await expectLater(
+        () => store.setRolePages('Nobody', {'/'}),
+        throwsA(isA<MissingRoleError>()),
+      );
+      expect(sink.rows, isEmpty);
+    });
+
+    test('setUserPages records user.pages on the account, not the role',
+        () async {
+      await repository.createUser(
+          username: 'bob', password: 'pw', roleName: 'Shift Leader');
+      final store = buildStore();
+
+      await store.setUserPages('bob', {'/fillet'});
+
+      final row = sink.rows.single;
+      expect(row.itemKey, 'user.pages');
+      expect(row.member, 'bob');
+      expect(row.oldValue, isNull);
+      expect(row.newValue, '["/fillet"]');
+      expect((await repository.user('bob'))!.allowedPages, '["/fillet"]');
+    });
+
+    test('setUserPages naming no account throws and writes nothing', () async {
+      final store = buildStore();
+      await expectLater(
+        () => store.setUserPages('nobody', {'/'}),
+        throwsA(isA<UserNotFoundException>()),
+      );
+      expect(sink.rows, isEmpty);
+    });
+
     test('updateRole refuses a role that does not exist, recording nothing',
         () async {
       final store = buildStore();
@@ -791,6 +882,22 @@ void main() {
       await expectGated(
           'user.password', (s) => s.setUserPassword('bob', 'new-one'));
       expect((await repository.listUsers()).single.passwordHash, before);
+    });
+
+    test('setRolePages', () async {
+      await repository.upsertRole(_shiftLead());
+      repository.calls.clear();
+      await expectGated('role.pages', (s) => s.setRolePages('Line Lead', {'/'}));
+      expect((await repository.role('Line Lead'))!.allowedPages, isNull,
+          reason: 'a refused whitelist edit must not reach the column');
+    });
+
+    test('setUserPages', () async {
+      await repository.createUser(
+          username: 'bob', password: 'pw', roleName: 'Shift Leader');
+      repository.calls.clear();
+      await expectGated('user.pages', (s) => s.setUserPages('bob', {'/'}));
+      expect((await repository.user('bob'))!.allowedPages, isNull);
     });
   });
 

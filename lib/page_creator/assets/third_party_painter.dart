@@ -1,3 +1,5 @@
+import 'dart:math' show pi;
+
 import 'package:flutter/material.dart';
 
 // ---------------------------------------------------------------------------
@@ -24,6 +26,22 @@ import 'package:flutter/material.dart';
 //   Strapping     Afak SL-15-3 with StrapX heads — 2665 x 1815 mm, three
 //                 arches in series over one belt, three coil dispensers on a
 //                 rear gantry, ~530 mm boxes at 15/min.
+//   Palletiser    Optimar drawing 10-N1230-1, "Foundation Requirements for
+//                 Robots Ph-1 / Robotic Palletizing Stations for white boxes"
+//                 (abuana, 28/04/2026, 1:50 on A2). A FOUNDATION drawing, so
+//                 the floor plan is exact and nothing above knee height is on
+//                 it: stations on a 3500 mm pitch (robot centres 5210 / 8710 /
+//                 12210), ~3.9 m pallet lane each, Ø1800 pad carrying a Ø1250
+//                 base plate on a Ø1110 bolt circle, 8 x M20 chemical anchors,
+//                 2250 kg per robot and double-door cabinets. The drawing's
+//                 transfer rail and pallet magazine are not drawn — they are
+//                 hall-wide and sit outside the guarding this asset shows.
+//   Pallet mag.   balloon 031 on the SVN palletiser layout (the same drawing
+//                 the three Optimar stations are ballooned on) plus generic
+//                 four-post pallet-dispenser geometry — the drawing carries no
+//                 text at 031 and no make has been identified. The one hard
+//                 figure is the pallet: EUR 1200 x 800, whose deck the glyph
+//                 is drawn to. The frame around it is NOT dimensioned.
 //
 // Painters are PURE — primitives in, pixels out. ZERO subscriptions, ZERO
 // Riverpod, ZERO state. Same contract as `sensor_painter.dart`.
@@ -152,6 +170,8 @@ abstract class ThirdPartyMachinePainter extends CustomPainter {
   const ThirdPartyMachinePainter({
     required this.color,
     required this.strokeWidth,
+    this.mirrorX = false,
+    this.mirrorY = false,
   });
 
   /// Outline colour of the machine drawing. The dotted boundary and the
@@ -160,6 +180,23 @@ abstract class ThirdPartyMachinePainter extends CustomPainter {
 
   /// Outline stroke width in logical pixels.
   final double strokeWidth;
+
+  /// Flip the machine drawing left-to-right.
+  ///
+  /// Every kind here is CHIRAL — the Multivac's film unwind is at one end, the
+  /// palletiser's robot stands on one side of its lane, the strapper's cabinet
+  /// is at the discharge end. A hall that runs the other way needs the glyph
+  /// to run the other way too, and rotating 180° is not the same thing: that
+  /// turns the machine upside down as well, which puts a cabinet at the front
+  /// and a discharge at the back.
+  ///
+  /// Applied to the machine glyph ONLY. The dotted boundary is symmetric so it
+  /// makes no difference, and the run LED is composited by the widget, not
+  /// painted here, so it stays in the corner an operator looks for it in.
+  final bool mirrorX;
+
+  /// Flip the machine drawing front-to-back. See [mirrorX].
+  final bool mirrorY;
 
   /// Draws the machine glyph in unit space [u].
   ///
@@ -187,8 +224,18 @@ abstract class ThirdPartyMachinePainter extends CustomPainter {
       ..strokeJoin = StrokeJoin.round
       ..strokeCap = StrokeCap.round;
 
-    paintMachine(
-        canvas, UnitSpace(thirdPartyMachineArea(size)), stroke, detail);
+    final area = thirdPartyMachineArea(size);
+    final flipped = mirrorX || mirrorY;
+    if (flipped) {
+      // Flip about the machine area's own centre, so a mirrored glyph still
+      // fills the same rect rather than sliding out of the boundary.
+      canvas.save();
+      canvas.translate(area.center.dx, area.center.dy);
+      canvas.scale(mirrorX ? -1.0 : 1.0, mirrorY ? -1.0 : 1.0);
+      canvas.translate(-area.center.dx, -area.center.dy);
+    }
+    paintMachine(canvas, UnitSpace(area), stroke, detail);
+    if (flipped) canvas.restore();
   }
 
   void _paintBoundary(Canvas canvas, Size size) {
@@ -209,7 +256,9 @@ abstract class ThirdPartyMachinePainter extends CustomPainter {
   bool shouldRepaint(covariant ThirdPartyMachinePainter oldDelegate) =>
       oldDelegate.runtimeType != runtimeType ||
       oldDelegate.color != color ||
-      oldDelegate.strokeWidth != strokeWidth;
+      oldDelegate.strokeWidth != strokeWidth ||
+      oldDelegate.mirrorX != mirrorX ||
+      oldDelegate.mirrorY != mirrorY;
 }
 
 /// Walks [path] with a `PathMetric` and emits alternating on/off segments.
@@ -306,8 +355,16 @@ void _chevrons(
   }
 }
 
+/// Fraction of a cell [_cavityGrid] leaves as a gap between cells — the web
+/// between thermoforming cavities, and the air between cases on a pallet.
+///
+/// Shared rather than local so a painter that has to line something up with a
+/// cell (the case the palletiser is setting down) computes the same rect the
+/// grid drew.
+const double kCavityGapFraction = 0.22;
+
 /// A `rows x cols` grid of small rounded cells — plan-view shorthand for the
-/// cavities in a thermoforming tool.
+/// cavities in a thermoforming tool, or for a layer of cases on a pallet.
 void _cavityGrid(
   Canvas canvas,
   UnitSpace u,
@@ -319,7 +376,7 @@ void _cavityGrid(
   required int rows,
   required int cols,
 }) {
-  const gap = 0.22; // fraction of a cell left as web between cavities
+  const gap = kCavityGapFraction;
   final cellW = (ur - ul) / cols;
   final cellH = (ub - ut) / rows;
   for (int row = 0; row < rows; row++) {
@@ -376,7 +433,12 @@ void _transverseReel(
 /// True footprint is ~5437 x 1002 mm — a very long, narrow machine. Place the
 /// asset near that aspect ratio or the stations bunch up.
 class MultivacPainter extends ThirdPartyMachinePainter {
-  const MultivacPainter({required super.color, required super.strokeWidth});
+  const MultivacPainter({
+    required super.color,
+    required super.strokeWidth,
+    super.mirrorX,
+    super.mirrorY,
+  });
 
   @override
   void paintMachine(Canvas canvas, UnitSpace u, Paint stroke, Paint detail) {
@@ -472,7 +534,12 @@ class MultivacPainter extends ThirdPartyMachinePainter {
 /// lane and it sits in its bed; leave it empty and the bed still reads as a
 /// conveyor.
 class SpeedBatcherPainter extends ThirdPartyMachinePainter {
-  const SpeedBatcherPainter({required super.color, required super.strokeWidth});
+  const SpeedBatcherPainter({
+    required super.color,
+    required super.strokeWidth,
+    super.mirrorX,
+    super.mirrorY,
+  });
 
   /// Buffer cells across the infeed end (2 columns x 2 rows in the sketch).
   static const int bufferColumns = 2;
@@ -640,7 +707,12 @@ class SpeedBatcherPainter extends ThirdPartyMachinePainter {
 /// discharge end carrying a bearing housing at each end. Finer internals are
 /// not resolvable from the screenshot, so they are not invented here.
 class FishAlignerPainter extends ThirdPartyMachinePainter {
-  const FishAlignerPainter({required super.color, required super.strokeWidth});
+  const FishAlignerPainter({
+    required super.color,
+    required super.strokeWidth,
+    super.mirrorX,
+    super.mirrorY,
+  });
 
   /// The two belt runs, either side of the lane the fish travels down.
   static const Rect upperBelt = Rect.fromLTRB(0.02, 0.06, 0.72, 0.34);
@@ -757,7 +829,12 @@ void _rotationGlyph(
 /// comes from the site CAD rather than a generic catalogue machine, but the
 /// nameplate is still needed for the label and for ordering spares.
 class BoxErectorPainter extends ThirdPartyMachinePainter {
-  const BoxErectorPainter({required super.color, required super.strokeWidth});
+  const BoxErectorPainter({
+    required super.color,
+    required super.strokeWidth,
+    super.mirrorX,
+    super.mirrorY,
+  });
 
   /// Flat blanks drawn in the magazine stack. Cosmetic — the real hopper holds
   /// a couple of hundred.
@@ -849,6 +926,8 @@ class StrappingLinePainter extends ThirdPartyMachinePainter {
   const StrappingLinePainter({
     required super.color,
     required super.strokeWidth,
+    super.mirrorX,
+    super.mirrorY,
     this.machines = maxMachines,
   }) : assert(machines >= 1 && machines <= maxMachines);
 
@@ -968,5 +1047,523 @@ class StrappingLinePainter extends ThirdPartyMachinePainter {
     canvas.drawRect(
         u.r(cx - half * 0.8, 0.87, cx + half * 0.8, frameBottom - 0.01),
         detail);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Optimar robotic palletising stations
+// ---------------------------------------------------------------------------
+
+/// Plan view of the Optimar palletising area, [stations] stations in a row.
+///
+/// Drawn from Optimar drawing 10-N1230-1, "Foundation Requirements for Robots
+/// Ph-1 / Robotic Palletizing Stations for white boxes" (abuana, 28/04/2026,
+/// 1:50 on A2) — the only drawing we have of this area, and a foundation
+/// drawing rather than a GA, so it fixes the floor plan exactly and says
+/// nothing about anything above knee height.
+///
+/// What the drawing settles, and what this therefore draws:
+///
+///  * The area is a ROW of identical stations, not one cell. Ph-1 is three of
+///    them on a 3500 mm pitch (robot centres at 5210 / 8710 / 12210 off the
+///    building datum).
+///  * Each station is one PALLET LANE running front to back, about 3.9 m long,
+///    with the robot standing BESIDE it — not at the head of it. The robot
+///    reaches sideways across the lane, which is why the arm is drawn swung.
+///  * The robot stands on a round foundation: a Ø1800 pad carrying a Ø1250
+///    base plate on a Ø1110 bolt circle, 8 x M20 chemical anchors, 2250 kg
+///    per robot (detail A on the drawing).
+///  * A control cabinet with DOUBLE DOORS stands at the head of each station —
+///    the drawing shows both door swings, which is what the cabinets are
+///    recognised by from above.
+///
+/// What it does NOT settle: the make of the robot arm itself. The station is
+/// Optimar's (the drawing's own notice block reads "Find us at optimar.no");
+/// the arm on the pad is somebody else's 6-axis machine and the foundation
+/// drawing never names it.
+///
+/// The area gets wider as stations are added, so the kind's aspect ratio
+/// follows [stations] — the same arrangement the strapping line uses for its
+/// head count. The drawing always fills its box.
+class OptimarPalletiserPainter extends ThirdPartyMachinePainter {
+  const OptimarPalletiserPainter({
+    required super.color,
+    required super.strokeWidth,
+    super.mirrorX,
+    super.mirrorY,
+    this.stations = 2,
+  }) : assert(stations >= 1 && stations <= maxStations);
+
+  /// Stations Ph-1 is built for.
+  static const int maxStations = 3;
+
+  /// Palletising stations standing in the row.
+  final int stations;
+
+  /// The band the stations themselves occupy, front to back — effectively the
+  /// whole box.
+  ///
+  /// The drawing also carries a transfer rail along the front of the row and a
+  /// pallet magazine standing off it. Both are DELIBERATELY not drawn: they
+  /// serve the whole hall rather than any one station, they sit OUTSIDE the
+  /// guarding this asset is about, and at the sizes these boxes get placed at
+  /// they cost a third of the height to say nothing an operator reads off a
+  /// mimic. The stations get that height instead.
+  static const double rowTop = 0.02;
+  static const double rowBottom = 0.98;
+
+  /// One station's pallet lane, as fractions of that station's own width.
+  static const double laneLeft = 0.08;
+  static const double laneRight = 0.46;
+
+  /// Where the robot stands within its station: beside the lane, and BEHIND
+  /// the position it works on, so the arm is drawn swung across the lane
+  /// rather than reaching straight out sideways.
+  ///
+  /// The angle this produces is the same at every station count: a station is
+  /// always one pitch wide on the page, so the run and the rise both scale
+  /// with the box and their ratio does not move.
+  static const double robotX = 0.72;
+  static const double robotY = 0.71;
+
+  /// Unit y the gripper is drawn at — clear of the stop between pallet
+  /// positions, so the case reads as going onto the middle one rather than
+  /// straddling two.
+  static const double placementY = 0.49;
+
+  /// Radius of the Ø1800 foundation pad, and of the Ø1250 base plate on it.
+  ///
+  /// Both are drawn as true circles off the shortest side rather than scaled
+  /// per axis, so the pad stays round however wide the row gets. The 1250:1800
+  /// ratio between them is the drawing's, and is what makes the pad read as a
+  /// plate on a pad rather than as one thick ring.
+  static const double padRadius = 0.150;
+  static const double plateRadius = padRadius * 1250 / 1800;
+
+  /// Unit x of station [i]'s left edge, and one station's width.
+  static double stationWidthFor(int stations) => 1.0 / stations;
+  static double stationLeftFor(int i, int stations) => i * stationWidthFor(stations);
+
+  /// Unit x-centre of each station's robot, left to right.
+  static List<double> robotCentresFor(int stations) {
+    final w = stationWidthFor(stations);
+    return [for (int i = 0; i < stations; i++) i * w + robotX * w];
+  }
+
+  /// Unit rect of station [i]'s pallet lane.
+  static Rect laneRectFor(int i, int stations) {
+    final w = stationWidthFor(stations);
+    final sx = i * w;
+    return Rect.fromLTRB(sx + laneLeft * w, 0.06, sx + laneRight * w, 0.93);
+  }
+
+  @override
+  bool shouldRepaint(covariant ThirdPartyMachinePainter oldDelegate) =>
+      super.shouldRepaint(oldDelegate) ||
+      (oldDelegate is OptimarPalletiserPainter &&
+          oldDelegate.stations != stations);
+
+  @override
+  void paintMachine(Canvas canvas, UnitSpace u, Paint stroke, Paint detail) {
+    for (int i = 0; i < stations; i++) {
+      _station(canvas, u, stroke, detail, index: i);
+    }
+
+    _fence(canvas, u, stroke, detail);
+  }
+
+  /// One station: its pallet lane, the robot beside it, and the cabinet at its
+  /// head.
+  void _station(
+    Canvas canvas,
+    UnitSpace u,
+    Paint stroke,
+    Paint detail, {
+    required int index,
+  }) {
+    final w = stationWidthFor(stations);
+    final sx = index * w;
+    double lx(double f) => sx + f * w;
+
+    // -- Pallet lane, running front to back --
+    final lane = laneRectFor(index, stations);
+    canvas.drawRect(u.r(lane.left, lane.top, lane.right, lane.bottom), stroke);
+    // Chain slats across the lane. Lengthwise, not cross: the lane runs UP the
+    // page, so its slats lie across it.
+    _lengthwiseTicks(canvas, u, detail,
+        ul: lane.left, ur: lane.right, ut: lane.top, ub: lane.bottom,
+        count: 13);
+
+    // Three pallet positions along the lane, divided by the stops between
+    // them. The one at the back is built, the one under the robot is being
+    // built, the one at the front has just come in empty.
+    const splitA = 0.38;
+    const splitB = 0.67;
+    for (final y in const [splitA, splitB]) {
+      canvas.drawLine(u.p(lane.left, y), u.p(lane.right, y), stroke);
+    }
+    // Back: built and waiting to go out.
+    _palletOnLane(canvas, u, stroke, detail,
+        lane: lane, top: lane.top + 0.02, bottom: splitA - 0.02, cases: 4);
+    // Middle: the one the robot is working on.
+    _palletOnLane(canvas, u, stroke, detail,
+        lane: lane, top: splitA + 0.02, bottom: splitB - 0.02, cases: 0);
+    // Front: just arrived, still empty.
+    _palletOnLane(canvas, u, stroke, detail,
+        lane: lane, top: splitB + 0.02, bottom: lane.bottom - 0.02, cases: 0);
+
+    // -- Robot on its foundation --
+    // Only the Ø1800 pad here; the Ø1250 base plate is drawn by [_arm], over
+    // the shoulder casting, so the column reads as complete rather than as a
+    // circle sliced by the arm's edge.
+    final centre = u.p(lx(robotX), robotY);
+    canvas.drawCircle(centre, u.rad(padRadius), detail);
+
+    // It swings across the lane to the pallet it is building.
+    final target = u.p(lane.center.dx, placementY);
+    _arm(canvas, u, stroke, detail, from: centre, to: target);
+
+    // -- Control cabinet at the head of the station, doors open to the front --
+    _cabinet(canvas, u, stroke, detail,
+        left: lx(0.56), top: 0.06, right: lx(0.94), bottom: 0.22);
+  }
+
+  /// A pallet standing at one position on the lane, with [cases] cases on it.
+  ///
+  /// [cases] of 0 draws the bare pallet — deck boards and nothing else, which
+  /// is what an empty position looks like from above and what tells it from a
+  /// built one at a glance.
+  void _palletOnLane(
+    Canvas canvas,
+    UnitSpace u,
+    Paint stroke,
+    Paint detail, {
+    required Rect lane,
+    required double top,
+    required double bottom,
+    required int cases,
+  }) {
+    final inset = lane.width * 0.10;
+    final l = lane.left + inset;
+    final r = lane.right - inset;
+    if (bottom - top <= 0.02) return;
+    canvas.drawRect(u.r(l, top, r, bottom), stroke);
+    if (cases <= 0) {
+      // Bare deck.
+      _lengthwiseTicks(canvas, u, detail,
+          ul: l, ur: r, ut: top, ub: bottom, count: 3);
+      return;
+    }
+    // A 2 x 2 case layer, which is what a 600 x 400 case makes of a
+    // 1200 x 800 pallet.
+    final padX = (r - l) * 0.06;
+    final padY = (bottom - top) * 0.08;
+    _cavityGrid(canvas, u, detail,
+        ul: l + padX, ut: top + padY, ur: r - padX, ub: bottom - padY,
+        rows: 2, cols: 2);
+  }
+
+  /// The arm, swung out from the pad and reaching across the lane.
+  ///
+  /// Seen from straight above a 6-axis arm projects onto a single line out of
+  /// the base, because axes 2, 3 and 5 all pitch in the vertical plane it is
+  /// swung into. What tells it from a gantry in plan is the run of joint hubs
+  /// down that line and the gripper turned on the end of it.
+  void _arm(
+    Canvas canvas,
+    UnitSpace u,
+    Paint stroke,
+    Paint detail, {
+    required Offset from,
+    required Offset to,
+  }) {
+    final span = to - from;
+    if (span.distance == 0) return;
+    final dir = span / span.distance;
+    Offset at(double t) => from + span * t;
+
+    // The shoulder casting runs BACK past the column, which is where the
+    // counterweight sits on a palletiser and what stops the column reading as
+    // a circle sliced by a straight edge.
+    _armSegment(canvas, stroke, at(-0.16), at(0.34), u.rad(0.048));
+    _armSegment(canvas, stroke, at(0.34), at(0.68), u.rad(0.033));
+
+    // The column, over the shoulder, so the base reads as complete.
+    canvas.drawCircle(from, u.rad(plateRadius), stroke);
+    canvas.drawCircle(from, u.rad(0.018), detail); // axis 1
+    canvas.drawCircle(at(0.34), u.rad(0.022), detail); // axes 2/3
+    canvas.drawCircle(at(0.68), u.rad(0.015), detail); // wrist
+
+    // -- The gripper: an open rectangular frame, turned by the wrist --
+    //
+    // Not a suction pad. The drawing shows a large open frame the width of the
+    // lane, which is a clamp/layer gripper — it takes the case around its
+    // sides, and drawing cups here would claim a tool the station does not
+    // have.
+    final head = at(0.96);
+    _orientedBox(canvas, stroke, head, dir,
+        halfLength: u.rad(0.058), halfWidth: u.rad(0.100));
+    _orientedBox(canvas, detail, head, dir,
+        halfLength: u.rad(0.036), halfWidth: u.rad(0.078));
+  }
+
+  /// A control cabinet with both door swings drawn.
+  ///
+  /// The swings are the point: from above a cabinet is an anonymous rectangle,
+  /// and it is the pair of quarter-circle door arcs that names it — which is
+  /// exactly how it is drawn on the Optimar drawing.
+  void _cabinet(
+    Canvas canvas,
+    UnitSpace u,
+    Paint stroke,
+    Paint detail, {
+    required double left,
+    required double top,
+    required double right,
+    required double bottom,
+  }) {
+    canvas.drawRect(u.r(left, top, right, bottom), stroke);
+
+    // Two doors hinged at the outer edges, both opening towards the front.
+    // The left leaf swings from pointing right (closed) to pointing front;
+    // the right leaf from pointing left. Both end up straight out the front,
+    // which is why only the start angle differs.
+    final leaf = (right - left) / 2;
+    for (final (hinge, startAngle) in [
+      (left, 0.0),
+      (right, pi / 2),
+    ]) {
+      final centre = u.p(hinge, bottom);
+      // Radius in device pixels off the leaf's own width, so the arc matches
+      // the door it belongs to however wide the row gets.
+      final radius = (u.p(hinge + leaf, bottom) - centre).dx.abs();
+      canvas.drawArc(Rect.fromCircle(center: centre, radius: radius),
+          startAngle, pi / 2, false, detail);
+      // The open leaf itself.
+      canvas.drawLine(
+          centre, Offset(centre.dx, centre.dy + radius), detail);
+    }
+  }
+
+  /// The guarding around the station row.
+  ///
+  /// Broken where things actually pass through: each pallet lane crosses the
+  /// back. A post is drawn at every free end, which is what stops a broken
+  /// perimeter reading as a fault.
+  void _fence(Canvas canvas, UnitSpace u, Paint stroke, Paint detail) {
+    final posts = <Offset>[];
+    void run(double x1, double y1, double x2, double y2) {
+      canvas.drawLine(u.p(x1, y1), u.p(x2, y2), stroke);
+    }
+
+    // Sides.
+    run(0.0, rowTop, 0.0, rowBottom);
+    run(1.0, rowTop, 1.0, rowBottom);
+
+    // Back, broken by each lane.
+    double x = 0.0;
+    for (int i = 0; i < stations; i++) {
+      final lane = laneRectFor(i, stations);
+      if (lane.left > x) {
+        run(x, rowTop, lane.left, rowTop);
+        posts.add(u.p(lane.left, rowTop));
+      }
+      posts.add(u.p(lane.right, rowTop));
+      x = lane.right;
+    }
+    if (x < 1.0) run(x, rowTop, 1.0, rowTop);
+
+    // Front, unbroken.
+    run(0.0, rowBottom, 1.0, rowBottom);
+
+    // Divider between neighbouring stations, so the row reads as N cells
+    // rather than one long room.
+    for (int i = 1; i < stations; i++) {
+      final sx = stationLeftFor(i, stations);
+      run(sx, rowTop, sx, rowBottom);
+    }
+
+    final postHalf = u.rad(0.013);
+    for (final p in posts) {
+      canvas.drawRect(
+          Rect.fromCenter(
+              center: p, width: postHalf * 2, height: postHalf * 2),
+          detail);
+    }
+  }
+}
+
+/// A rectangle running from [from] to [to] with [halfWidth] either side — one
+/// arm segment seen from directly above.
+///
+/// Built as a path rather than a rotated `drawRect` so the stroke width stays
+/// uniform: the machine areas are non-square, and `canvas.rotate` inside a
+/// non-uniformly mapped space would thin the stroke on one axis.
+void _armSegment(
+    Canvas canvas, Paint paint, Offset from, Offset to, double halfWidth) {
+  final along = to - from;
+  if (along.distance == 0) return;
+  final across = Offset(-along.dy, along.dx) / along.distance * halfWidth;
+  canvas.drawPath(
+      Path()
+        ..moveTo((from + across).dx, (from + across).dy)
+        ..lineTo((to + across).dx, (to + across).dy)
+        ..lineTo((to - across).dx, (to - across).dy)
+        ..lineTo((from - across).dx, (from - across).dy)
+        ..close(),
+      paint);
+}
+
+/// A box centred on [centre], its length along the unit vector [dir].
+void _orientedBox(
+  Canvas canvas,
+  Paint paint,
+  Offset centre,
+  Offset dir, {
+  required double halfLength,
+  required double halfWidth,
+}) {
+  _armSegment(canvas, paint, centre - dir * halfLength,
+      centre + dir * halfLength, halfWidth);
+}
+
+/// Empty pallet magazine — balloon 031 on the SVN palletiser layout.
+///
+/// A pallet dispenser: a stack of empty EUR pallets stands in a four-post well,
+/// and the lowest pallet is released out of the bottom of it. Plan view, so
+/// what an operator looks down on is the TOP pallet of the stack inside the
+/// frame — the stack's depth is the one thing a plan view cannot show, which is
+/// why the two offset outlines behind it are drawn at all.
+///
+/// The machine is the WELL and nothing else. The discharge lane this used to
+/// draw beside it — a roller box with flow chevrons — is gone: the belt a
+/// released pallet leaves on is a conveyor, and a conveyor on this HMI is a
+/// real `ConveyorConfig` that animates from its own drive, not a painted
+/// rectangle that cannot. Dropping it also gave the magazine back the third of
+/// its width the lane was spending, so the pallet is now drawn at something
+/// near its true 3:2.
+///
+/// The pallet itself is drawn the way this HMI ALREADY draws one. The
+/// `pallet_top` glyph in the TfcIcons font (see `pallet_icons.png`) shows a
+/// deck as a rectangle with its gaps as slots, two columns by three rows, and
+/// that is the shape an operator here has been reading as "pallet" since before
+/// this asset existed. Drawing the real EUR deck instead — five boards across,
+/// gaps as wide as the boards — was tried first and renders as a picket fence
+/// at asset size: ten near-evenly-spaced verticals with no alternation visible,
+/// indistinguishable from a grille. Matching the icon beats matching the
+/// timber.
+///
+/// The retaining pawls are NOT drawn. They were, as tabs on the well's long
+/// sides, and at asset size they read as four more posts — noise that cost the
+/// corner guides their meaning. The mechanism that holds the stack up is not
+/// something the operator sees from above or acts on; the stack, the guides and
+/// the lane are.
+class PalletMagazinePainter extends ThirdPartyMachinePainter {
+  const PalletMagazinePainter({
+    required super.color,
+    required super.strokeWidth,
+    super.mirrorX,
+    super.mirrorY,
+  });
+
+  /// The well the stack stands in, between the four corner guides. Fills the
+  /// frame now that nothing is drawn beside it.
+  static const Rect well = Rect.fromLTRB(0.075, 0.05, 0.925, 0.95);
+
+  /// The top pallet of the stack, inset inside the well by the guide clearance.
+  ///
+  /// Sized so the pallet comes out at roughly a EUR pallet's 3:2 once unit
+  /// space is mapped onto the machine area, which is WIDER than the asset box
+  /// (the LED header eats height off the top). Picking 1200 x 800 as unit
+  /// fractions directly would draw a pallet half again too long -- see the
+  /// proportions test in `third_party_config_test.dart`.
+  static const Rect pallet = Rect.fromLTRB(0.16, 0.13, 0.84, 0.87);
+
+  /// Deck slots across the pallet, matching the `pallet_top` icon.
+  static const int deckSlotColumns = 2;
+  static const int deckSlotRows = 3;
+
+  /// How far each pallet below the top one is offset, so the stack reads as a
+  /// stack rather than as a doubled line. Cosmetic — the real magazine holds
+  /// many more than three.
+  static const double stackOffset = 0.018;
+
+  @override
+  void paintMachine(Canvas canvas, UnitSpace u, Paint stroke, Paint detail) {
+    // Machine frame.
+    canvas.drawRRect(u.rr(0.0, 0.0, 1.0, 1.0, 0.03), stroke);
+
+    // -- The stack: two pallets showing from under the top one, offset down
+    //    and right so the steps all run the same way.
+    //
+    //    Only the two edges that would actually be VISIBLE past the top pallet
+    //    are drawn, not a full rect each. Full rects put four more lines
+    //    THROUGH the top pallet's deck, and the slots stopped reading as slots
+    //    — the stack has to sit behind the pallet, not across it.
+    for (int i = 2; i >= 1; i--) {
+      final d = stackOffset * i;
+      canvas.drawPath(
+        Path()
+          ..moveTo(u.p(pallet.right + d, pallet.top + d).dx,
+              u.p(pallet.right + d, pallet.top + d).dy)
+          ..lineTo(u.p(pallet.right + d, pallet.bottom + d).dx,
+              u.p(pallet.right + d, pallet.bottom + d).dy)
+          ..lineTo(u.p(pallet.left + d, pallet.bottom + d).dx,
+              u.p(pallet.left + d, pallet.bottom + d).dy),
+        detail,
+      );
+    }
+
+    // -- The top pallet, at full stroke, with its deck slots.
+    canvas.drawRect(
+        u.r(pallet.left, pallet.top, pallet.right, pallet.bottom), stroke);
+    _deckSlots(canvas, u, detail);
+
+    // -- The four corner guides the stack stands between, as angle brackets
+    //    pointing in. Full stroke: they are the machine's silhouette, and at a
+    //    small asset size they are the last thing that should degrade. An
+    //    angle reads as a guide; the plain squares this used to draw read as
+    //    feet.
+    const armX = 0.09;
+    const armY = 0.12;
+    for (final (cx, sx) in [(well.left, 1.0), (well.right, -1.0)]) {
+      for (final (cy, sy) in [(well.top, 1.0), (well.bottom, -1.0)]) {
+        canvas.drawPath(
+          Path()
+            ..moveTo(u.p(cx + sx * armX, cy).dx, u.p(cx + sx * armX, cy).dy)
+            ..lineTo(u.p(cx, cy).dx, u.p(cx, cy).dy)
+            ..lineTo(u.p(cx, cy + sy * armY).dx, u.p(cx, cy + sy * armY).dy),
+          stroke,
+        );
+      }
+    }
+  }
+
+  /// The deck slots, two columns by three rows inside the pallet — the
+  /// `pallet_top` icon's arrangement.
+  void _deckSlots(Canvas canvas, UnitSpace u, Paint detail) {
+    const padX = 0.055;
+    const padY = 0.085;
+    const gapX = 0.05;
+    const gapY = 0.055;
+    final inner = Rect.fromLTRB(
+      pallet.left + (pallet.right - pallet.left) * padX,
+      pallet.top + (pallet.bottom - pallet.top) * padY,
+      pallet.right - (pallet.right - pallet.left) * padX,
+      pallet.bottom - (pallet.bottom - pallet.top) * padY,
+    );
+    final gx = (pallet.right - pallet.left) * gapX;
+    final gy = (pallet.bottom - pallet.top) * gapY;
+    final slotW =
+        (inner.width - gx * (deckSlotColumns - 1)) / deckSlotColumns;
+    final slotH = (inner.height - gy * (deckSlotRows - 1)) / deckSlotRows;
+    for (int c = 0; c < deckSlotColumns; c++) {
+      for (int r = 0; r < deckSlotRows; r++) {
+        final left = inner.left + c * (slotW + gx);
+        final top = inner.top + r * (slotH + gy);
+        canvas.drawRect(
+            u.r(left, top, left + slotW, top + slotH), detail);
+      }
+    }
   }
 }

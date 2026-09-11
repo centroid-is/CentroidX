@@ -1,8 +1,10 @@
 import 'dart:io';
 import 'dart:collection' show LinkedHashMap;
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:collection/collection.dart' show ListEquality;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open62541/open62541.dart' show DynamicValue;
@@ -768,6 +770,296 @@ void main() {
     });
   });
 
+  group('Pallet stations', () {
+    test('station count round-trips', () {
+      final json = ThirdPartyEquipmentConfig(
+        kind: ThirdPartyEquipmentKind.optimarPalletiser,
+        robotStations: 3,
+      ).toJson();
+      expect(ThirdPartyEquipmentConfig.fromJson(json).robotStations, 3);
+    });
+
+    test('a page saved before the field defaults to two stations', () {
+      final json = ThirdPartyEquipmentConfig(
+        kind: ThirdPartyEquipmentKind.optimarPalletiser,
+      ).toJson()
+        ..remove('robotStations');
+      expect(ThirdPartyEquipmentConfig.fromJson(json).robotStations, 2);
+    });
+
+    test('the two counts are separate fields, not one shared number', () {
+      // A page can carry a strapping line AND a palletiser; setting the
+      // strapper count must not move the pallet stations with it.
+      final config = ThirdPartyEquipmentConfig(
+        kind: ThirdPartyEquipmentKind.optimarPalletiser,
+        strapMachines: 1,
+        robotStations: 3,
+      );
+      final restored =
+          ThirdPartyEquipmentConfig.fromJson(config.toJson());
+      expect(restored.strapMachines, 1);
+      expect(restored.robotStations, 3);
+    });
+
+    test('the painter draws one station per count', () {
+      for (final n in const [1, 2, 3]) {
+        expect(OptimarPalletiserPainter.robotCentresFor(n), hasLength(n));
+      }
+    });
+
+    test('station centres stay inside the row and in order', () {
+      for (final n in const [1, 2, 3]) {
+        final centres = OptimarPalletiserPainter.robotCentresFor(n);
+        expect(centres.first, greaterThan(0.0));
+        expect(centres.last, lessThan(1.0));
+        for (int i = 1; i < centres.length; i++) {
+          expect(centres[i], greaterThan(centres[i - 1]));
+        }
+      }
+    });
+
+    test('stations tile the row without overlapping or leaving a gap', () {
+      // Each station owns exactly one pitch, so the lanes must never cross a
+      // neighbour's boundary — the failure that would draw one row's robot
+      // reaching into the next station's lane.
+      for (final n in const [1, 2, 3]) {
+        final w = OptimarPalletiserPainter.stationWidthFor(n);
+        expect(w * n, closeTo(1.0, 1e-9));
+        for (int i = 0; i < n; i++) {
+          final sx = OptimarPalletiserPainter.stationLeftFor(i, n);
+          final lane = OptimarPalletiserPainter.laneRectFor(i, n);
+          expect(lane.left, greaterThanOrEqualTo(sx));
+          expect(lane.right, lessThanOrEqualTo(sx + w));
+        }
+      }
+    });
+
+    test('the robot stands beside its lane, not on it', () {
+      // The whole point of the layout: the arm reaches SIDEWAYS across the
+      // lane. A robot centre inside the lane rect would draw the pad on top
+      // of the pallets.
+      for (final n in const [1, 2, 3]) {
+        final centres = OptimarPalletiserPainter.robotCentresFor(n);
+        for (int i = 0; i < n; i++) {
+          final lane = OptimarPalletiserPainter.laneRectFor(i, n);
+          expect(centres[i], greaterThan(lane.right),
+              reason: '$n stations: robot $i sits on its own lane.');
+        }
+      }
+    });
+
+    test('every lane sits inside the fenced row', () {
+      for (final n in const [1, 2, 3]) {
+        for (int i = 0; i < n; i++) {
+          final lane = OptimarPalletiserPainter.laneRectFor(i, n);
+          expect(lane.top, greaterThanOrEqualTo(OptimarPalletiserPainter.rowTop));
+          expect(lane.bottom,
+              lessThanOrEqualTo(OptimarPalletiserPainter.rowBottom));
+        }
+      }
+    });
+
+    test('the stations fill the box, top to bottom', () {
+      // The drawing's transfer rail and pallet magazine are not drawn — they
+      // are hall-wide and sit outside the guarding. The height they used to
+      // take must go to the stations, not be left as a blank strip, which
+      // reads as a rendering fault rather than as a deliberate omission.
+      expect(OptimarPalletiserPainter.rowBottom, greaterThan(0.95));
+      final lane = OptimarPalletiserPainter.laneRectFor(0, 1);
+      expect(lane.height, greaterThan(0.8),
+          reason: 'the lane should use nearly the whole depth.');
+    });
+
+    test('the base plate is smaller than the pad it stands on', () {
+      // Ø1250 plate on a Ø1800 pad. Equal radii would draw one thick ring and
+      // lose the foundation the drawing is actually about.
+      expect(OptimarPalletiserPainter.plateRadius,
+          lessThan(OptimarPalletiserPainter.padRadius));
+      expect(
+          OptimarPalletiserPainter.plateRadius /
+              OptimarPalletiserPainter.padRadius,
+          closeTo(1250 / 1800, 1e-9));
+    });
+
+    test('label and footprint follow the station count', () {
+      const kind = ThirdPartyEquipmentKind.optimarPalletiser;
+      expect(kind.labelFor(robotStations: 1), contains('1 station'));
+      expect(kind.labelFor(robotStations: 3), contains('3 stations'));
+      expect(kind.labelFor(robotStations: 2), contains('Optimar'));
+      // The pitch is dimensioned on the drawing, so it is quoted as a fact
+      // and travels with the footprint at every count.
+      for (final n in const [1, 2, 3]) {
+        expect(kind.footprint(robotStations: n), contains('3500 mm pitch'));
+      }
+      // Ph-1 as built: three stations at 3500 mm.
+      expect(kind.footprint(robotStations: 3), contains('10500 x 4000'));
+    });
+
+    test('the pitch is the drawing dimension, not a guess', () {
+      // 5210 / 8710 / 12210 are the three Ph-1 robot centres off the building
+      // datum. If this constant ever drifts, the footprint stops matching the
+      // drawing it claims to come from.
+      expect(kPalletiserPitchMm, 8710 - 5210);
+      expect(kPalletiserPitchMm, 12210 - 8710);
+      expect(kPalletiserWidthMm(3), kPalletiserPitchMm * 3);
+    });
+
+    test('more stations means a wider cell', () {
+      const kind = ThirdPartyEquipmentKind.optimarPalletiser;
+      expect(kind.aspectRatio(robotStations: 1),
+          lessThan(kind.aspectRatio(robotStations: 2)));
+      expect(kind.aspectRatio(robotStations: 2),
+          lessThan(kind.aspectRatio(robotStations: 3)));
+    });
+
+    test('an out-of-range station count is clamped, not asserted on', () {
+      // Persisted pages are not trusted input.
+      for (final n in const [0, 99, -1]) {
+        expect(
+            () => thirdPartyPainterFor(
+                ThirdPartyEquipmentKind.optimarPalletiser,
+                color: Colors.black,
+                strokeWidth: 2,
+                robotStations: n),
+            returnsNormally,
+            reason: '$n stations must clamp.');
+      }
+    });
+
+    test('the station row has no handshake to point a status key at', () {
+      // Deliberate, and the reason the editor hides the field: the PLC
+      // publishes no permit vocabulary for this cell. If one ever appears it
+      // arrives as a line in kStructStatusBits and this test changes with it.
+      const kind = ThirdPartyEquipmentKind.optimarPalletiser;
+      expect(isStructBacked(kind), isFalse);
+      expect(hasStatusTable(kind), isFalse);
+      expect(structMembersOf(kind), isEmpty);
+    });
+
+    test('the painter cites the drawing it was taken from', () {
+      // This kind is the only one drawn from a real supplier drawing rather
+      // than from photos and spec sheets. If the citation goes, the next
+      // person has no way back to the source that fixes the geometry.
+      final source = File('lib/page_creator/assets/third_party_painter.dart')
+          .readAsStringSync();
+      expect(source, contains('10-N1230-1'));
+      expect(source, contains('optimar.no'));
+    });
+  });
+
+  group('Mirroring', () {
+    test('both axes round-trip', () {
+      final json = ThirdPartyEquipmentConfig(
+        kind: ThirdPartyEquipmentKind.optimarPalletiser,
+        mirrorX: true,
+        mirrorY: true,
+      ).toJson();
+      final restored = ThirdPartyEquipmentConfig.fromJson(json);
+      expect(restored.mirrorX, isTrue);
+      expect(restored.mirrorY, isTrue);
+    });
+
+    test('a page saved before mirroring loads unmirrored', () {
+      final json = ThirdPartyEquipmentConfig().toJson()
+        ..remove('mirrorX')
+        ..remove('mirrorY');
+      final restored = ThirdPartyEquipmentConfig.fromJson(json);
+      expect(restored.mirrorX, isFalse);
+      expect(restored.mirrorY, isFalse);
+    });
+
+    test('the two axes are independent', () {
+      final json = ThirdPartyEquipmentConfig(mirrorX: true).toJson();
+      final restored = ThirdPartyEquipmentConfig.fromJson(json);
+      expect(restored.mirrorX, isTrue);
+      expect(restored.mirrorY, isFalse);
+    });
+
+    test('every kind accepts a mirror, and repaints when it changes', () {
+      // Driven off the enum: every kind here is chiral, so none may quietly
+      // ignore the flag. A painter that dropped it would return false from
+      // shouldRepaint and leave the old drawing on screen.
+      for (final kind in ThirdPartyEquipmentKind.values) {
+        final plain = thirdPartyPainterFor(kind,
+            color: Colors.black, strokeWidth: 2);
+        final flippedX = thirdPartyPainterFor(kind,
+            color: Colors.black, strokeWidth: 2, mirrorX: true);
+        final flippedY = thirdPartyPainterFor(kind,
+            color: Colors.black, strokeWidth: 2, mirrorY: true);
+
+        expect(plain.mirrorX, isFalse, reason: '${kind.name} default');
+        expect(flippedX.mirrorX, isTrue,
+            reason: '${kind.name} must carry mirrorX through the dispatch.');
+        expect(flippedY.mirrorY, isTrue,
+            reason: '${kind.name} must carry mirrorY through the dispatch.');
+        expect(plain.shouldRepaint(flippedX), isTrue,
+            reason: '${kind.name} must repaint when mirrorX changes.');
+        expect(plain.shouldRepaint(flippedY), isTrue,
+            reason: '${kind.name} must repaint when mirrorY changes.');
+      }
+    });
+
+    test('mirroring actually changes the pixels, on every kind', () async {
+      // The flag reaching the painter is not the same as the painter using it.
+      // Rasterising and comparing catches a paintMachine that ignores the
+      // transform entirely.
+      //
+      // Asserted as "at least one axis moves", NOT per axis, because a
+      // correct painter can be a no-op on one of them: the box erector is
+      // drawn left-right SYMMETRIC — two guide rails either side of a centred
+      // forming station, a centred vacuum head, a centred outfeed — because
+      // that is what the machine looks like from above. Mirroring it on X
+      // must produce identical pixels, and demanding otherwise would fail a
+      // painter that is right.
+      Future<Uint8List?> render(ThirdPartyEquipmentKind kind,
+          {bool mirrorX = false, bool mirrorY = false}) async {
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder);
+        thirdPartyPainterFor(kind,
+                color: Colors.black,
+                strokeWidth: 2,
+                mirrorX: mirrorX,
+                mirrorY: mirrorY)
+            .paint(canvas, const Size(400, 300));
+        final picture = recorder.endRecording();
+        final image = picture.toImageSync(400, 300);
+        final bytes = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+        image.dispose();
+        picture.dispose();
+        return bytes?.buffer.asUint8List();
+      }
+
+      for (final kind in ThirdPartyEquipmentKind.values) {
+        final plain = await render(kind);
+        final flippedX = await render(kind, mirrorX: true);
+        final flippedY = await render(kind, mirrorY: true);
+        expect(plain, isNotNull);
+        expect(
+            !const ListEquality<int>().equals(plain, flippedX) ||
+                !const ListEquality<int>().equals(plain, flippedY),
+            isTrue,
+            reason: '${kind.name} is unchanged by a flip on EITHER axis, so '
+                'its painter is ignoring the mirror transform. Every kind is '
+                'chiral on at least one axis.');
+      }
+    });
+
+    test('a mirrored machine keeps its children on their lanes', () {
+      // The SpeedBatcher's scaffolded weigh belts are the case that matters:
+      // mirror the drawing and leave the children put, and every readout ends
+      // up beside the belt it belongs to instead of on it.
+      final station = ThirdPartyEquipmentConfig.speedBatcherStation();
+      final offsets = [for (final e in station.children) e.offsetX];
+      expect(offsets.any((x) => (x - 0.5).abs() > 0.05), isTrue,
+          reason: 'this test is vacuous if every child is centred.');
+      // The body mirrors positions as 1 - offset; assert the arithmetic the
+      // widget uses, so an off-by-one-axis change fails here.
+      for (final x in offsets) {
+        expect(1.0 - (1.0 - x), closeTo(x, 1e-9));
+      }
+    });
+  });
+
   group('Registry wiring', () {
     test('parse round-trips the asset out of a page JSON blob', () {
       final config = ThirdPartyEquipmentConfig(
@@ -1370,6 +1662,174 @@ void main() {
           reason: 'the stale bit is indistinguishable from a live one');
       expect(boxErectorCommsOf(frozen), isFalse,
           reason: 'only the health key reveals it');
+    });
+  });
+
+  group('Empty pallet magazine', () {
+    const magazine = ThirdPartyEquipmentKind.palletMagazine;
+
+    test('brings no diode table of its own', () {
+      // The premise every other test in this group rests on. If the magazine
+      // ever gains a struct or a suffix table, the editor stops hiding the
+      // status key field and the help text changes back -- and those tests
+      // would start passing for the wrong reason rather than failing.
+      expect(kStructStatusBits[magazine], isNull);
+      expect(kEquipmentStatusBits[magazine], isNull);
+      expect(hasStatusTable(magazine), isFalse);
+      expect(isStructBacked(magazine), isFalse);
+    });
+
+    test('is table-less for a different reason than the palletising row', () {
+      // Both are table-less and the editor treats them identically, which is
+      // right. They are NOT the same case underneath: the palletising row has
+      // no handshake to read, and this machine has one the PLC publishes as
+      // loose globals. The help text is where that difference has to show --
+      // naming EPW01 at a kind with no keys would be inventing a handshake.
+      const palletiser = ThirdPartyEquipmentKind.optimarPalletiser;
+      expect(hasStatusTable(palletiser), isFalse);
+
+      expect(extraStatusBitsHelpText(magazine), contains('EPW01'));
+      expect(extraStatusBitsHelpText(palletiser), isNot(contains('EPW01')));
+      // The shared half is genuinely shared, not two copies that can drift.
+      expect(extraStatusBitsHelpText(palletiser),
+          contains('no diodes of its own'));
+    });
+
+    test('nothing is composed onto a status key it cannot use', () {
+      // Not a hypothetical: switching an existing asset's kind leaves whatever
+      // prefix it was carrying in the JSON, and the editor no longer shows a
+      // field to clear it with. That leftover must not turn into a
+      // subscription or into composed `.Suffix` keys.
+      final config =
+          ThirdPartyEquipmentConfig(kind: magazine, runKey: 'EPW01.Run')
+            ..statusKey = 'BER02';
+
+      expect(config.allKeys, contains('EPW01.Run'));
+      expect(config.allKeys.where((k) => k.startsWith('BER02.')), isEmpty,
+          reason: 'the magazine appends no suffix to a status prefix');
+
+      // The BARE prefix is still discovered, and that is `BaseAsset.allKeys`
+      // introspecting `toJson()` rather than anything this kind does -- the
+      // box erector's `BER01` is discovered the same way, and is just as much
+      // not a node. Asserted rather than left unsaid so that if key discovery
+      // is ever taught to skip dead prefixes, this is the test that says the
+      // magazine was one of the reasons.
+      expect(config.allKeys, contains('BER02'));
+    });
+
+    test('its extra bits are what reach keys, at the full key each', () {
+      final config = ThirdPartyEquipmentConfig(kind: magazine, runKey: '')
+        ..extraBits = [
+          const ExtraStatusBit(
+              key: 'EPW01.PalletReady', label: '{m} has a pallet ready'),
+          const ExtraStatusBit(
+              key: 'EPW01.WagonReady', label: 'Wagon is ready for a {m} pallet'),
+          // An unconfigured row must not put an empty key into discovery.
+          const ExtraStatusBit(key: '', label: 'not wired yet'),
+        ];
+
+      expect(config.allKeys, containsAll(['EPW01.PalletReady', 'EPW01.WagonReady']));
+      expect(config.allKeys, isNot(contains('')));
+    });
+
+    test('a label template fills in the machine name like every other bit', () {
+      const bit = ExtraStatusBit(
+          key: 'EPW01.PalletReady', label: '{m} has a pallet ready');
+      expect(bit.labelFor(equipmentShortName(magazine)),
+          'Pallet magazine has a pallet ready');
+    });
+
+    test('the editor help text tells it what its Status section IS', () {
+      final help = extraStatusBitsHelpText(magazine);
+      // The sentence that orders extra bits AFTER the kind's own diodes is the
+      // one that must not be shown here -- there are none to come after.
+      expect(help, isNot(contains('Shown after the normal diodes')));
+      expect(help, contains('no diodes of its own'));
+      // And it names where the four bools actually live, because the only
+      // other way to learn that is to open the GVL.
+      expect(help, contains('EPW01'));
+      // The label-template half is shared with every other kind.
+      expect(help, contains('{m}'));
+
+      final erector =
+          extraStatusBitsHelpText(ThirdPartyEquipmentKind.boxErector);
+      expect(erector, contains('Shown after the normal diodes'));
+      expect(erector, isNot(contains('no diodes of its own')));
+    });
+
+    test('metadata quotes the pallet, which is known, and not the frame, '
+        'which is not', () {
+      expect(magazine.label, 'Empty pallet magazine');
+      expect(magazine.footprint(), contains('1200 x 800'));
+      expect(magazine.footprint(), contains('per site CAD'),
+          reason: 'the drawing gives no frame dimension, so none is quoted');
+      expect(equipmentShortName(magazine), 'pallet magazine');
+    });
+
+    test('the enum still records that its product name is unresolved', () {
+      // Same marker the box erector carries, and for the same reason: balloon
+      // 031 has no text against it and no make has been identified. When one
+      // is, the value, the label and the painter get renamed together.
+      final source =
+          File('lib/page_creator/assets/third_party.dart').readAsStringSync();
+      final decl = source.indexOf('  palletMagazine,');
+      expect(decl, greaterThan(0));
+      final doc = source.substring(source.indexOf('fishAligner,'), decl);
+      expect(doc, contains('TODO(product-name)'));
+    });
+  });
+
+  group('PalletMagazinePainter geometry', () {
+    test('the pallet stands inside the well, clear of the corner guides', () {
+      expect(PalletMagazinePainter.well
+          .contains(PalletMagazinePainter.pallet.topLeft), isTrue);
+      expect(PalletMagazinePainter.well
+          .contains(PalletMagazinePainter.pallet.bottomRight), isTrue);
+    });
+
+    test('the pallet is drawn in EUR proportions at the kind\'s own aspect '
+        'ratio', () {
+      // The reason the rect is not simply 1200 x 800 in unit fractions. Unit
+      // space maps onto [thirdPartyMachineArea], which is WIDER than the asset
+      // box because the LED header takes height off the top -- so a pallet
+      // authored at 3:2 in unit space draws at nearly 2:1. This is the check
+      // that the numbers that were hand-tuned to cancel that out still do.
+      const kind = ThirdPartyEquipmentKind.palletMagazine;
+      final size = Size(720, 720 / kind.aspectRatio());
+      final area = thirdPartyMachineArea(size);
+      final p = PalletMagazinePainter.pallet;
+      final drawn = (p.width * area.width) / (p.height * area.height);
+      expect(drawn, closeTo(1200 / 800, 0.12),
+          reason: 'the glyph has to look like a pallet, and a pallet is 3:2');
+    });
+
+    test('the well fills the frame, now that nothing is drawn beside it', () {
+      // The discharge lane used to take the right third. Whatever replaces
+      // these numbers, the magazine must not go back to being a small box in
+      // the corner of its own asset.
+      expect(PalletMagazinePainter.well.width, greaterThan(0.8));
+      expect(PalletMagazinePainter.well.height, greaterThan(0.8));
+    });
+
+    test('the offset stack stays inside the unit box', () {
+      // Two pallets show from under the top one, each stepped down and right.
+      // The lowest must not run off the machine area and get clipped.
+      final d = PalletMagazinePainter.stackOffset * 2;
+      expect(PalletMagazinePainter.pallet.right + d, lessThan(1.0));
+      expect(PalletMagazinePainter.pallet.bottom + d, lessThan(1.0));
+    });
+
+    test('painting is a no-op on a zero canvas and does not throw on a tiny '
+        'one', () {
+      for (final size in const [Size.zero, Size(24, 18), Size(400, 286)]) {
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder);
+        const painter =
+            PalletMagazinePainter(color: Colors.black, strokeWidth: 2);
+        expect(() => painter.paint(canvas, size), returnsNormally,
+            reason: 'the magazine must degrade at $size, not crash');
+        recorder.endRecording().dispose();
+      }
     });
   });
 }

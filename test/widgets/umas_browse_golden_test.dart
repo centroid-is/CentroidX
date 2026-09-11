@@ -20,6 +20,8 @@ import 'package:tfc_dart/core/umas_client.dart';
 import 'package:tfc_dart/core/umas_types.dart';
 
 import 'package:tfc/widgets/browse_panel.dart';
+import 'package:tfc/widgets/panes/standard_dialog.dart';
+import 'package:tfc/widgets/resizable_overlay_frame.dart';
 import 'package:tfc/widgets/umas_browse.dart';
 
 // ---------------------------------------------------------------------------
@@ -170,13 +172,41 @@ Future<ModbusResponseCode> _fakeSend(ModbusRequest request) async {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// What the goldens frame.
+///
+/// [ResizableOverlayFrame] has no [RepaintBoundary] of its own — its resize
+/// handles are deliberately positioned OUTSIDE its bounds under
+/// `Clip.none` — so `matchesGoldenFile` walks up to the nearest boundary and
+/// captures the whole surface regardless of what is named here. That is the
+/// right image anyway: half of what changed is that this window now FLOATS,
+/// and a crop to its own bounds would show neither the page behind it nor
+/// where on that page it sits. Named for what it actually captures.
+final _browseSurface = find.byType(MaterialApp);
+
 /// Pump a BrowsePanel inside a MaterialApp with Solarized-like dark theme.
+///
+/// The surface is deliberately larger than the dialog's 920x600 so the
+/// goldens show a window FLOATING over the page — at the default 800x600 the
+/// shell's `_fit` would clamp it to the full surface and the border, the
+/// centring and the corner grip would all be flush against the edge, which is
+/// the one thing these images exist to show.
 Future<void> _showUmasBrowse(WidgetTester tester) async {
+  tester.view
+    ..physicalSize = const Size(1200, 800)
+    ..devicePixelRatio = 1.0;
+  addTearDown(tester.view.reset);
+  // The registry is static: a dialog left open leaks its id into the next
+  // test, where the same alias would be a no-op re-open.
+  addTearDown(closeAllFloatingDialogs);
+
   final client = UmasClient(sendFn: _fakeSend);
   final dataSource = UmasBrowseDataSource(client);
 
   await tester.pumpWidget(
     MaterialApp(
+      // The banner is a rotated ribbon in the top-right corner of the
+      // surface, and the surface is what gets captured.
+      debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(useMaterial3: true),
       home: Builder(
         builder: (context) => Scaffold(
@@ -283,7 +313,7 @@ void main() {
         (tester) async {
       await _showUmasBrowse(tester);
       await expectLater(
-        find.byType(Dialog),
+        _browseSurface,
         matchesGoldenFile('goldens/umas_browse_initial.png'),
       );
     });
@@ -306,7 +336,7 @@ void main() {
       // GVL with its five variables is what "showing variables" means here.
 
       await expectLater(
-        find.byType(Dialog),
+        _browseSurface,
         matchesGoldenFile('goldens/umas_browse_expanded.png'),
       );
     });
@@ -328,7 +358,7 @@ void main() {
       await tester.pumpAndSettle();
 
       await expectLater(
-        find.byType(Dialog),
+        _browseSurface,
         matchesGoldenFile('goldens/umas_browse_selected.png'),
       );
     });

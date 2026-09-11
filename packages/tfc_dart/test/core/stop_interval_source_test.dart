@@ -53,6 +53,55 @@ void main() {
       expect(source.hasOpen, isFalse);
     });
 
+    test('an active entry that already cleared is closed at its clear time',
+        () {
+      // An ack-required alarm stays in the active set after its condition
+      // drops, carrying the clear time in `deactivated`. The machine is
+      // running again — drawing it as still-growing downtime would bill the
+      // line for however long the ack takes.
+      final source = StopIntervalSource.fromAlarms(
+        history: const [],
+        active: [activation('a', from: 0, to: 15)],
+      );
+      expect(source.open, isEmpty);
+      expect(source.closed, hasLength(1));
+      expect(source.closed.single.interval.end, at(15));
+      expect(source.hasOpen, isFalse);
+    });
+
+    test('one alarm standing under two rules is one lane interval', () {
+      // AlarmMan keys actives by (uid, rule): a config with a warning rule
+      // and an error rule both true is two open activations for one uid.
+      // The lane series' sorted-disjoint invariant would reject them raw.
+      final source = StopIntervalSource.fromAlarms(
+        history: const [],
+        active: [
+          activation('a', from: 0, level: AlarmLevel.warning),
+          activation('a', from: 3),
+        ],
+      );
+      final series = source.seriesFor('a', now: at(30));
+      expect(series.intervals, hasLength(1));
+      expect(series.intervals.single.isOpen, isTrue);
+      expect(series.intervals.single.level, AlarmLevel.error,
+          reason: 'the merged interval carries the worst standing severity');
+      expect(series.statsIn(at(0), at(30)).total, const Duration(minutes: 30));
+    });
+
+    test('the same activation from the ring and the database is one stop',
+        () {
+      // The clear record reaches the source twice: AlarmMan\'s in-memory
+      // ring instance, and later the database row rebuilt as a fresh
+      // instance. Identity can\'t pair them; (uid, start, level) does.
+      final ringInstance = activation('a', from: 0, to: 10);
+      final dbRow = activation('a', from: 0, to: 10);
+      final source = StopIntervalSource.fromAlarms(
+        history: [dbRow, ringInstance],
+        active: const [],
+      );
+      expect(source.closed, hasLength(1));
+    });
+
     test('the live set becomes open intervals', () {
       final source = StopIntervalSource.fromAlarms(
         history: const [],
@@ -174,6 +223,84 @@ void main() {
       // 0-10, 20-50, 60-80(open) = 10 + 30 + 20
       expect(series.statsIn(at(0), at(100)).total, const Duration(minutes: 60));
       expect(series.statsIn(at(0), at(100)).isOpen, isTrue);
+    });
+  });
+
+  group('what a merged stretch was made of', () {
+    final source = StopIntervalSource.fromAlarms(
+      history: [
+        activation('film', from: 0, to: 10),
+        activation('film', from: 30, to: 40),
+        activation('seal', from: 20, to: 50, level: AlarmLevel.warning),
+        activation('link', from: 200, to: 210),
+      ],
+      active: [activation('seal', from: 60)],
+    );
+    // The stretch a collapsed group draws for 20-50: seal 20-50 with film
+    // 30-40 inside it.
+    final stretch = source.mergedFor(['film', 'seal'], now: at(80))[1];
+
+    test('names every activation the stretch absorbed', () {
+      final inside = source.activationsIn(['film', 'seal'],
+          from: stretch.start, to: stretch.end!, now: at(80));
+      expect(inside.map((e) => e.alarmUid), ['seal', 'film']);
+      expect(inside.length, stretch.count);
+    });
+
+    test('the longest comes first, whatever order it started in', () {
+      final inside = source.activationsIn(['film', 'seal'],
+          from: stretch.start, to: stretch.end!, now: at(80));
+      // seal stood 30 minutes, film 10 — film started later but is second on
+      // length, not on start.
+      expect(inside.first.interval.lengthAt(at(80)),
+          const Duration(minutes: 30));
+    });
+
+    test('a contributor touching the edge is inside, not dropped', () {
+      // film 0-10 starts exactly where its own stretch does.
+      final first = source.mergedFor(['film', 'seal'], now: at(80)).first;
+      final inside = source.activationsIn(['film', 'seal'],
+          from: first.start, to: first.end!, now: at(80));
+      expect(inside.map((e) => e.alarmUid), ['film']);
+    });
+
+    test('an open contributor is measured against the clock', () {
+      final open = source.mergedFor(['film', 'seal'], now: at(80)).last;
+      final inside = source.activationsIn(['film', 'seal'],
+          from: open.start, to: at(80), now: at(80));
+      expect(inside.single.alarmUid, 'seal');
+      expect(inside.single.isOpen, isTrue);
+      expect(
+          inside.single.interval.lengthAt(at(80)), const Duration(minutes: 20));
+    });
+
+    test('alarms outside the asked-for set never appear', () {
+      final inside = source.activationsIn(['film', 'seal'],
+          from: at(0), to: at(300), now: at(300));
+      expect(inside.map((e) => e.alarmUid), isNot(contains('link')));
+    });
+
+    test('equal-length activations come back in a fixed order', () {
+      // List.sort is not stable, so ties need a total order or a test that
+      // pins the list flakes.
+      final tied = StopIntervalSource.fromAlarms(
+        history: [
+          activation('zulu', from: 0, to: 10),
+          activation('alpha', from: 0, to: 10),
+        ],
+        active: const [],
+      );
+      final inside = tied.activationsIn(['zulu', 'alpha'],
+          from: at(0), to: at(10), now: at(50));
+      expect(inside.map((e) => e.alarmUid), ['alpha', 'zulu']);
+    });
+
+    test('a stretch with nothing in it reports nothing', () {
+      // film cleared at 40 and never came back; seal is excluded because it
+      // is still standing and so reaches every later window.
+      final inside =
+          source.activationsIn(['film'], from: at(100), to: at(150), now: at(300));
+      expect(inside, isEmpty);
     });
   });
 }

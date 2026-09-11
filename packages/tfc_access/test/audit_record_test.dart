@@ -416,9 +416,168 @@ void main() {
     });
   });
 
+  group('AuditRecord.sessionResume', () {
+    AuditRecord build({String roleName = kOperatorRoleName}) =>
+        AuditRecord.sessionResume(
+          who: 'freezer',
+          station: 'st101',
+          roleName: roleName,
+          actionId: 'e' * 32,
+        );
+
+    test('fixes the auth vocabulary', () {
+      final record = build();
+      expect(record.surface, 'auth');
+      expect(record.itemKey, 'session.resume');
+      expect(record.allowed, isTrue);
+    });
+
+    test('newValue is the role resumed into', () {
+      expect(build().newValue, kOperatorRoleName);
+      expect(build(roleName: 'Shift Leader').newValue, 'Shift Leader');
+    });
+
+    test('groupRequired is empty', () {
+      expect(build().groupRequired, isEmpty);
+    });
+
+    test('is not a login', () {
+      // The distinction the trail is for: a `login` row means a credential was
+      // accepted at that instant. A resume means a panel came back to an
+      // identity it already held, with nobody at it. Collapsing the two would
+      // make "was a person here?" unanswerable a month later.
+      expect(build().itemKey, isNot('login'));
+      expect(
+        AuditRecord.login(
+          who: 'freezer',
+          station: 'st101',
+          roleName: kOperatorRoleName,
+          actionId: 'e' * 32,
+        ).itemKey,
+        isNot(build().itemKey),
+      );
+    });
+  });
+
+  group('AuditRecord.passwordChange', () {
+    AuditRecord build({String roleName = 'Engineering', String? reason}) =>
+        AuditRecord.passwordChange(
+          who: 'jon',
+          station: 'st101',
+          roleName: roleName,
+          actionId: 'f' * 32,
+          reason: reason,
+        );
+
+    test('fixes the auth vocabulary', () {
+      final record = build();
+      expect(record.surface, 'auth');
+      expect(record.itemKey, 'password.change');
+      expect(record.allowed, isTrue);
+    });
+
+    test('groupRequired is empty — self-service is gated on nothing', () {
+      // The single field that separates this from `user.password`, and the
+      // reason both can describe the same column without the trail losing the
+      // distinction. An admin reset carries `users` here; this carries nothing,
+      // because nothing was required.
+      expect(build().groupRequired, isEmpty);
+    });
+
+    test('carries no member: the actor is the subject', () {
+      // The viewer renders itemKey with its member suffix. Filling member with
+      // the same name `who` already carries would render the name twice and say
+      // nothing the first one did not.
+      expect(build().member, isNull);
+      expect(build().who, 'jon');
+    });
+
+    test('leaves both value columns null', () {
+      // Nothing about a password has an old-to-new form that is safe to write
+      // down, and the constructor has no parameter that could fill these.
+      expect(build().oldValue, isNull);
+      expect(build().newValue, isNull);
+    });
+
+    test('accepts a reason', () {
+      expect(build(reason: 'quarterly rotation').reason, 'quarterly rotation');
+    });
+
+    test('is not an admin reset', () {
+      // The question the trail must be able to answer: did somebody reset this
+      // account, or did its owner change it? Two itemKeys on two surfaces is
+      // what makes that answerable.
+      final admin = AuditRecord.userPassword(
+        who: 'admin',
+        station: 'st101',
+        roleName: 'Engineering',
+        actionId: 'a' * 32,
+        subject: 'jon',
+        allowed: true,
+      );
+      expect(build().itemKey, isNot(admin.itemKey));
+      expect(build().surface, isNot(admin.surface));
+      expect(build().groupRequired, isNot(admin.groupRequired));
+    });
+  });
+
+  group('AuditRecord.passwordChangeFailed', () {
+    AuditRecord build() => AuditRecord.passwordChangeFailed(
+          who: 'jon',
+          station: 'st101',
+          roleName: 'Engineering',
+          actionId: 'f' * 32,
+        );
+
+    test('fixes the auth vocabulary and hardcodes the refusal', () {
+      final record = build();
+      expect(record.surface, 'auth');
+      expect(record.itemKey, 'password.change.failed');
+      expect(record.allowed, isFalse);
+    });
+
+    test('groupRequired is empty', () {
+      expect(build().groupRequired, isEmpty);
+    });
+
+    test('leaves both value columns null', () {
+      expect(build().oldValue, isNull);
+      expect(build().newValue, isNull);
+    });
+
+    test('is a distinct row from the success', () {
+      // The `login` / `login.failed` pairing, one layer in. Repeated rows here
+      // come from an already-elevated session, which is a worse signal than a
+      // repeated failed login and would otherwise leave no trace at all.
+      expect(
+        build().itemKey,
+        isNot(AuditRecord.passwordChange(
+          who: 'jon',
+          station: 'st101',
+          roleName: 'Engineering',
+          actionId: 'f' * 32,
+        ).itemKey),
+      );
+    });
+
+    test('does not truncate who — it is not typed input', () {
+      // Unlike loginFailed, there is no username field to paste into: the name
+      // comes from the live session. A name longer than the login cap is a
+      // database fact, not an attack, and must survive intact.
+      final long = 'j' * (AuditRecord.maxAttemptedUsernameLength + 20);
+      final record = AuditRecord.passwordChangeFailed(
+        who: long,
+        station: 'st101',
+        roleName: 'Engineering',
+        actionId: 'f' * 32,
+      );
+      expect(record.who, long);
+    });
+  });
+
   group('no auth record can carry a password', () {
     // The structural half of this assertion is the constructor signatures: none
-    // of the four auth factories takes a password, so a call passing one would
+    // of the seven auth factories takes a password, so a call passing one would
     // not compile and this file would not run at all. The tests below cover the
     // other half — that a password handed to the *login flow* has no field on
     // the record it could land in, and that toString() does not leak the value

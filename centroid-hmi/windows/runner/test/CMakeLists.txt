@@ -69,6 +69,24 @@ add_executable(egl_storm_detector_test
 )
 target_include_directories(egl_storm_detector_test PRIVATE "..")
 
+# The one detector that watches the Dart side rather than the renderer. Pure
+# logic -- the method channel that feeds it lives in flutter_window.cpp, the
+# thresholds and the wording it produces are tested here.
+add_executable(dart_liveness_test
+  "dart_liveness_test.cpp"
+  "../dart_liveness.cpp"
+)
+target_include_directories(dart_liveness_test PRIVATE "..")
+
+# When an RDP session change may rebuild the engine. The 3 s debounce it
+# replaces could not collapse a disconnect/reconnect pair 35 s apart, and the
+# teardown that resulted landed on an unfinished startup -- see the header.
+add_executable(engine_rebuild_gate_test
+  "engine_rebuild_gate_test.cpp"
+  "../engine_rebuild_gate.cpp"
+)
+target_include_directories(engine_rebuild_gate_test PRIVATE "..")
+
 # The drop-target reference-count model behind the 2026-09-02 crash. Pure
 # logic, no Windows headers -- the one real RevokeDragDrop the fix needs lives
 # in flutter_window.cpp, the reasoning it depends on is tested here.
@@ -96,7 +114,8 @@ endif()
 
 set(RUNNER_TEST_TARGETS gpu_watchdog_test gpu_diagnosis_test log_rotation_test
     log_throttle_test output_target_test crash_record_test
-    path_utils_test egl_storm_detector_test drag_drop_lifetime_test)
+    path_utils_test egl_storm_detector_test drag_drop_lifetime_test
+    dart_liveness_test engine_rebuild_gate_test)
 if(WIN32)
   list(APPEND RUNNER_TEST_TARGETS stderr_interposer_test)
 endif()
@@ -117,6 +136,8 @@ add_test(NAME path_utils COMMAND path_utils_test)
 add_test(NAME gpu_diagnosis COMMAND gpu_diagnosis_test)
 add_test(NAME egl_storm_detector COMMAND egl_storm_detector_test)
 add_test(NAME drag_drop_lifetime COMMAND drag_drop_lifetime_test)
+add_test(NAME dart_liveness COMMAND dart_liveness_test)
+add_test(NAME engine_rebuild_gate COMMAND engine_rebuild_gate_test)
 if(WIN32)
   add_test(NAME stderr_interposer COMMAND stderr_interposer_test)
 endif()

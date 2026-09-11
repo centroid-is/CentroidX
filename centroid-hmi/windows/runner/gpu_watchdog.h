@@ -116,6 +116,16 @@ class GpuWatchdog {
     // is not holding, and the process exits so something above it can act.
     unsigned long long loss_window_ms = 600000;  // 10 minutes
     int max_losses_in_window = 3;
+
+    // --- The judgement hold -----------------------------------------------
+    //
+    // Longest the host may keep the watchdog from judging (see SetJudgeable).
+    // A backstop against a host bug, NOT the primary bound: the rebuild gate
+    // releases a queued rebuild after its own, shorter timeout, so in normal
+    // operation this never expires. If it does, judging resumes and says so,
+    // because a watchdog that can be silenced indefinitely by the code it
+    // watches is the 2026-08-31 failure with extra steps.
+    unsigned long long max_judgement_hold_ms = 240000;  // 4 minutes
   };
 
   // What the host should do in response to an event.
@@ -178,6 +188,42 @@ class GpuWatchdog {
   // screen.
   Action OnRendererLost(LossCause cause, unsigned long long now_ms);
 
+  // Whether the absence of frames means anything right now.
+  //
+  // Set false by the host while a freshly created engine has not yet reached
+  // Dart main(), and while a rebuild is already queued waiting for a startup
+  // to finish. In both cases "no frames presented" measures something other
+  // than a lost device, and acting on it is actively harmful:
+  //
+  // On 2026-09-11 08:28 a station woke from sleep, and each recovery rebuild
+  // was judged 20 s later -- two ticks at the backed-off interval -- against
+  // an engine that had not yet run main() at all. Every judgement said "no
+  // frames presented", every one rebuilt, and every rebuild restarted the
+  // startup it had just interrupted. Three attempts in, the tick period had
+  // backed off to 20 s, the app had never started, and it never recovered:
+  // an operator had to restart it. The watchdog was measuring startup latency
+  // and calling it device loss.
+  //
+  // Idempotent: holding while already held does NOT restart the cap clock, so
+  // a repeated call cannot extend the hold indefinitely.
+  //
+  // Deliberately does not touch OnRendererLost. A device that positively
+  // reports itself removed is evidence, not an inference from silence, and it
+  // is true whether or not the app has finished starting.
+  void SetJudgeable(bool judgeable, unsigned long long now_ms);
+
+  // True while the host has asked for judgement to be held AND the cap has
+  // not run out. Exposed so the tick log can say why a probe went unjudged
+  // rather than leaving a reader to wonder why the count is not moving.
+  bool judgement_held(unsigned long long now_ms) const;
+
+  // True exactly once, on the first tick after a hold outlived its cap, so
+  // the host can say so without keeping a latch of its own. A hold that
+  // expires means the app never became judgeable -- worth a line, because it
+  // is the state in which this class resumes rebuilding an engine that may
+  // simply be slow.
+  bool ConsumeJudgementHoldExpired();
+
   // Stop watching, permanently. The host calls this when carrying out an
   // action threw: the window procedure that drives the watchdog is noexcept,
   // so an exception escaping it aborts the process. Failing safe here costs
@@ -229,6 +275,12 @@ class GpuWatchdog {
   unsigned long long loss_window_start_ms_ = 0;
   int losses_in_window_ = 0;
   bool window_open_ = false;
+
+  // Judgement hold: whether the host has asked for it, and when it began.
+  bool judgement_holding_ = false;
+  unsigned long long judgement_hold_since_ms_ = 0;
+  // Latched once a hold outlives its cap, so the host can say so exactly once.
+  bool judgement_hold_expired_ = false;
 };
 
 // Parses CENTROID_GPU_WATCHDOG. Returns |fallback| when unset or unrecognised.

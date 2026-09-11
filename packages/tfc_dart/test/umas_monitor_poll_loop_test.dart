@@ -24,6 +24,7 @@ import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:tfc_dart/core/state_man.dart'
     show ConnectionStatus, EffectiveDeviceStatus, ModbusPollGroupConfig;
 import 'package:tfc_dart/core/umas_types.dart' show UmasSessionState;
+import 'helpers/wait_until.dart';
 
 String _findProjectRoot() {
   var dir = Directory.current;
@@ -180,13 +181,35 @@ void main() {
 
       try {
         // Wait for the table to build (issues monitorReset + readPlcStatus
-        // + browse + monitorRegister) before counting ticks.
-        await Future.delayed(const Duration(milliseconds: 400));
+        // + browse + monitorRegister) before counting ticks. This waits for
+        // the build to become observable rather than sleeping a guessed
+        // 400ms: on a loaded runner the build had not finished inside that
+        // window and the poll count came back 1 instead of >=3
+        // (tfc-dart-test (windows-latest), 2026-09-10).
+        await waitUntil(
+          () => stubLog.any((l) => l.contains('MonitorPlc: registered')),
+          what: 'the initial MonitorPlc table build registered its keys',
+        );
         final logSizeAfterBuild = stubLog.length;
 
-        // 200ms window at 50ms cadence ≈ 4 polls.
-        await Future.delayed(const Duration(milliseconds: 200));
-        final logSizeAfterPolls = stubLog.length;
+        // Let the poll loop run. The property under test is the *ratio* --
+        // one MonitorPlc roundtrip per tick rather than one per key -- so
+        // measure it against the ticks that actually elapsed instead of the
+        // ticks a fixed 200ms sleep was assumed to contain. That assumption
+        // is what made this test fragile; the batching claim itself is not
+        // timing-dependent at all.
+        const cadenceMs = 50;
+        final elapsed = Stopwatch()..start();
+        await waitUntil(
+          () =>
+              stubLog
+                  .sublist(logSizeAfterBuild)
+                  .where((l) => l.contains('FC90 subFunc=0x50'))
+                  .length >=
+              3,
+          what: 'the MonitorPlc poll loop issued 3 batched reads',
+        );
+        elapsed.stop();
 
         // Count MonitorPlc ReadAll requests since the table built. Each
         // logs as "MonitorPlc ReadAll: no data for ..." OR the response
@@ -197,11 +220,15 @@ void main() {
             .where((l) => l.contains('FC90 subFunc=0x50'))
             .toList();
 
+        final ticks = (elapsed.elapsedMilliseconds / cadenceMs).ceil();
         expect(pollLines.length, greaterThanOrEqualTo(3),
-            reason: 'expected ≥3 MonitorPlc polls in 200ms at 50ms cadence; '
+            reason: 'the wait above only returns once 3 polls are in the log; '
                 'got ${pollLines.length}');
-        expect(pollLines.length, lessThanOrEqualTo(8),
-            reason: 'one roundtrip per tick — got ${pollLines.length}, '
+        // Three keys are registered, so per-key reads would be ~3x the ticks.
+        expect(pollLines.length, lessThanOrEqualTo(ticks + 2),
+            reason: 'one roundtrip per tick — got ${pollLines.length} over '
+                '~$ticks ticks (${elapsed.elapsedMilliseconds}ms at '
+                '${cadenceMs}ms cadence), '
                 'which would indicate per-key reads instead of batched');
 
         // And the subscribers must have observed live data for ALL three

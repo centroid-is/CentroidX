@@ -33,7 +33,15 @@ minimal roles/users screen.
   (`mcp_bridge_notifier.dart:104`) is where this would grow later.
 - Per-user OPC UA sessions or PLC-side validation. See §8 — this spec ships a
   guardrail, not an enforcement boundary, and must say so in its own UI copy.
-- Plant-facing user self-service, password reset flows, password policy.
+- Password policy of any kind: length floors, complexity rules, expiry, forced
+  change at next login. Also admin-initiated *recovery* flows — there is no
+  "forgot password" and no reset link, because there is no second channel to
+  send one down. An administrator resets a password on the users screen, in
+  person.
+
+  A signed-in person changing *their own* password is **not** on this list any
+  more: it shipped, from the app bar's account menu, and it verifies the current
+  password first. See §11.
 - Changing `lib/pages/dbus_login.dart`. Not because it is unrelated — it is the
   mechanism *underneath* `administer`. D-Bus is how the app makes system-level
   changes (IP settings and the like), and its credential is a **station
@@ -360,6 +368,16 @@ system will not object. A grep in the existing workflow is enough.
 | Process tags | **Access templates** bound per key — see §7b. No asset config change at all. | unrestricted |
 | Config keys | Pattern match on the preference key in `AccessPolicy` — see the corrected table below | `administer` |
 | Routes | Optional `AccessGroup` on `RouteRegistry.registerRoute()` | `operate` |
+| Pages | A per-role and per-account **page whitelist** — see [page-visibility-whitelist-design.md](page-visibility-whitelist-design.md) | no whitelist (every page) |
+
+The Pages row is a later addition and composes with Routes rather than
+replacing it: the group a page needs is still asked first, and the whitelist
+can only narrow the answer. It fails **closed** — a stored path matching no
+page matches nothing, and an unreadable column denies — because an entry that
+failed open would show the page the whitelist exists to hide. The same note
+records the change it made to enforcement: page-manager routes now carry a
+gate of their own (`PageAccessGate`), which closes the deep-link hole this
+spec's §6 warns about in general terms.
 
 Tags fail **open** (an unbound key is unrestricted); config keys fail **closed**
 (anything unrecognised needs `administer`). That asymmetry is intentional: a
@@ -648,4 +666,6 @@ Recorded so they are not silently forgotten:
 - Four-eyes approval, building on the MCP proposal flow.
 - Real enforcement: per-user OPC UA sessions, or PLC-side validation in
   `~/Projects/sildarvinnsla`.
-- Plant-facing user self-service and password policy.
+- Password policy, and admin-initiated password recovery. Self-service *change*
+  shipped — see the account menu in `lib/widgets/access_change_password_dialog.dart`
+  — but nothing enforces, expires or can recover a password.

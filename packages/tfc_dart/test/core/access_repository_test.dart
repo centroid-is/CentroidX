@@ -1240,4 +1240,166 @@ void main() {
       }
     });
   });
+
+  // The page-visibility whitelist. `docs/page-visibility-whitelist-design.md`.
+  group('the page whitelist on a role', () {
+    test('a fresh role has none, so it sees every page', () async {
+      final operator = await repo.role(kOperatorRoleName);
+      expect(operator!.allowedPages, isNull);
+    });
+
+    test('setRoleAllowedPages round-trips a list', () async {
+      await repo.setRoleAllowedPages(kOperatorRoleName, {'/', '/fillet'});
+      expect((await repo.role(kOperatorRoleName))!.allowedPages,
+          {'/', '/fillet'});
+    });
+
+    test('the empty set is block-all and reads back as empty, not null',
+        () async {
+      // The state the feature was asked for by name. If this came back null
+      // the mode would be unexpressible.
+      await repo.setRoleAllowedPages(kOperatorRoleName, <String>{});
+      final role = await repo.role(kOperatorRoleName);
+      expect(role!.allowedPages, isNotNull);
+      expect(role.allowedPages, isEmpty);
+    });
+
+    test('null clears it back to unrestricted', () async {
+      await repo.setRoleAllowedPages(kOperatorRoleName, {'/'});
+      await repo.setRoleAllowedPages(kOperatorRoleName, null);
+      expect((await repo.role(kOperatorRoleName))!.allowedPages, isNull);
+    });
+
+    test('naming no role throws rather than writing nothing quietly',
+        () async {
+      expect(
+        () => repo.setRoleAllowedPages('Nobody', {'/'}),
+        throwsA(isA<MissingRoleError>()),
+      );
+    });
+
+    test('upsertRole does not clobber a whitelist when saving groups',
+        () async {
+      // The roles screen saves groups from a value object it built before the
+      // pages were loaded. If that write reset the column, ticking a group box
+      // would silently show the role every page.
+      await repo.setRoleAllowedPages(kOperatorRoleName, {'/fillet'});
+      await repo.upsertRole(const AccessRole(
+        name: kOperatorRoleName,
+        groups: {AccessGroup.operate, AccessGroup.setpoints},
+      ));
+      final role = await repo.role(kOperatorRoleName);
+      expect(role!.groups, {AccessGroup.operate, AccessGroup.setpoints});
+      expect(role.allowedPages, {'/fillet'},
+          reason: 'a groups save must leave the whitelist alone');
+    });
+
+    test('renameRole preserves the whitelist', () async {
+      // The dangerous direction: dropping the column on rename fails OPEN —
+      // the renamed role would come back unrestricted.
+      await repo.upsertRole(const AccessRole(
+        name: 'Packing',
+        groups: {AccessGroup.operate},
+      ));
+      await repo.setRoleAllowedPages('Packing', {'/packing'});
+
+      await repo.renameRole('Packing', 'Packing Hall');
+
+      final renamed = await repo.role('Packing Hall');
+      expect(renamed!.allowedPages, {'/packing'},
+          reason: 'renaming a role must not widen what it sees');
+    });
+
+    test('renameRole preserves an empty (block-all) whitelist too', () async {
+      await repo.upsertRole(const AccessRole(
+        name: 'Locked',
+        groups: {AccessGroup.operate},
+      ));
+      await repo.setRoleAllowedPages('Locked', <String>{});
+      await repo.renameRole('Locked', 'Locked Out');
+      expect((await repo.role('Locked Out'))!.allowedPages, isEmpty);
+    });
+
+    test('deleting a role takes its whitelist with it — nothing dangles',
+        () async {
+      await repo.upsertRole(const AccessRole(
+        name: 'Temp',
+        groups: {AccessGroup.operate},
+      ));
+      await repo.setRoleAllowedPages('Temp', {'/a'});
+      await repo.deleteRole('Temp');
+      expect(await repo.role('Temp'), isNull);
+    });
+  });
+
+  group('the page whitelist on a user', () {
+    setUp(() async {
+      await repo.createFirstUser(username: 'jon', password: 'pw');
+    });
+
+    test('a fresh account has none, meaning it follows its role', () async {
+      final row = await repo.user('jon');
+      expect(row!.allowedPages, isNull);
+    });
+
+    test('setUserAllowedPages round-trips, including the empty set', () async {
+      await repo.setUserAllowedPages('jon', {'/fillet'});
+      expect((await repo.user('jon'))!.allowedPages, '["/fillet"]');
+
+      await repo.setUserAllowedPages('jon', <String>{});
+      expect((await repo.user('jon'))!.allowedPages, '[]');
+
+      await repo.setUserAllowedPages('jon', null);
+      expect((await repo.user('jon'))!.allowedPages, isNull);
+    });
+
+    test('naming no account throws', () async {
+      expect(
+        () => repo.setUserAllowedPages('nobody', {'/'}),
+        throwsA(isA<UserNotFoundException>()),
+      );
+    });
+
+    test('setRole preserves a personal override', () async {
+      // The exception names the person, not the (person, role) pairing.
+      //
+      // A second Engineering account first: moving the only users-holder off
+      // Engineering is refused by the lockout invariant, which is a different
+      // rule and not the one under test here.
+      await repo.createUser(
+        username: 'ann',
+        password: 'pw',
+        roleName: 'Engineering',
+      );
+      await repo.setUserAllowedPages('jon', {'/fillet'});
+      await repo.setRole('jon', kOperatorRoleName);
+      expect((await repo.user('jon'))!.allowedPages, '["/fillet"]');
+    });
+  });
+
+  group('anonymousRole', () {
+    test('carries the Operator row whole — groups and pages together',
+        () async {
+      await repo.setRoleAllowedPages(kOperatorRoleName, {'/'});
+      final role = await repo.anonymousRole();
+      expect(role.name, kOperatorRoleName);
+      expect(role.groups, {AccessGroup.operate});
+      expect(role.allowedPages, {'/'});
+    });
+
+    test('falls back to the seeded role — unrestricted — with no row', () async {
+      // An outage must not blank every page on a panel. The write guards still
+      // refuse; visibility is not the surface where failing closed is worth it.
+      await db.customStatement('DELETE FROM app_user');
+      await db.customStatement("DELETE FROM app_role WHERE name = 'Operator'");
+      final role = await repo.anonymousRole();
+      expect(role.groups, {AccessGroup.operate});
+      expect(role.allowedPages, isNull);
+    });
+
+    test('anonymousGroups still answers the same groups', () async {
+      await repo.setRoleAllowedPages(kOperatorRoleName, <String>{});
+      expect(await repo.anonymousGroups(), {AccessGroup.operate});
+    });
+  });
 }

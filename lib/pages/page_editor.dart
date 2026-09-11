@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
-import 'dart:io' show Platform, stderr;
+import 'dart:io' show Platform;
+
+import 'package:logger/logger.dart';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart'
@@ -51,6 +53,10 @@ import 'package:tfc_dart/core/config/config_item.dart' show ConfigKind;
 import 'package:tfc_dart/core/config/config_store_errors.dart'
     show ConfigConflict, ConfigStoreOfflineException;
 import '../core/config/page_codec.dart' show pagesOf;
+
+/// File-level logger. Diagnostics here must survive a windowed MSIX build
+/// with no console, which is the one thing stderr cannot do.
+final Logger _log = Logger();
 
 /// Hit-tests whether a pointer position falls inside an asset's rotated
 /// visual rect. The marquee gate uses this to decide between starting a
@@ -1255,7 +1261,8 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   /// Parses proposal JSON and merges it into [_temporaryPages].
   ///
   /// For `_proposal_type: 'page'`: expects keys like `title`, `key`, `assets`,
-  /// `mirroring_disabled`. Creates or replaces a page entry.
+  /// `mirroring_disabled`, `zoom_pan_disabled`. Creates or replaces a page
+  /// entry.
   ///
   /// For `_proposal_type: 'asset'`: expects `key`, `title`, `children` (list
   /// of asset JSON). Adds assets to the page identified by `key`, or creates
@@ -1559,6 +1566,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     final title = proposal['title'] as String? ?? 'AI Proposal';
     final key = proposal['key'] as String? ?? '/$title';
     final mirroringDisabled = proposal['mirroring_disabled'] as bool? ?? false;
+    final zoomPanDisabled = proposal['zoom_pan_disabled'] as bool? ?? false;
 
     List<Asset> assets = [];
     if (proposal['assets'] is List) {
@@ -1612,6 +1620,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       menuItem: MenuItem(label: title, path: key, icon: Icons.auto_awesome),
       assets: assets,
       mirroringDisabled: mirroringDisabled,
+      zoomPanDisabled: zoomPanDisabled,
     );
 
     _temporaryPages[key] = page;
@@ -1695,7 +1704,12 @@ class _PageEditorState extends ConsumerState<PageEditor> {
             // substituting a default is how a proposed LED column arrived
             // with the preview's two LEDs instead of the three it carried,
             // with nothing logged and nothing shown to the operator.
-            stderr.writeln(
+            // The logger, not stderr: in a windowed MSIX build stderr has
+            // nowhere to go, so this warning -- the one that names the asset
+            // whose override was dropped -- was written and then discarded on
+            // every station. It cost three failed attempts to diagnose a
+            // wrong-looking proposal on 2026-09-10.
+            _log.w(
                 'PageEditor: config override for "$assetName" could not be '
                 'parsed, falling back to the default asset: $e');
           }
@@ -5267,6 +5281,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
                     children: updatedChildren,
                   ),
                   mirroringDisabled: updatedPage.mirroringDisabled,
+                  zoomPanDisabled: updatedPage.zoomPanDisabled,
                   navigationPriority: updatedPage.navigationPriority,
                   published: updatedPage.published,
                 );

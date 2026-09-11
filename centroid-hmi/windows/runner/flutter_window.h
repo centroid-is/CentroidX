@@ -2,11 +2,18 @@
 #define RUNNER_FLUTTER_WINDOW_H_
 
 #include <flutter/dart_project.h>
+#include <flutter/encodable_value.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter/method_call.h>
+#include <flutter/method_channel.h>
+#include <flutter/method_result.h>
 
 #include <atomic>
 #include <memory>
+#include <string>
 
+#include "dart_liveness.h"
+#include "engine_rebuild_gate.h"
 #include "gpu_device_probe.h"
 #include "stderr_interposer.h"
 #include "gpu_diagnosis.h"
@@ -36,11 +43,35 @@ class FlutterWindow : public Win32Window {
 
   // Builds a FlutterViewController and attaches its view as this window's
   // child content. Returns false if the engine failed to start.
-  bool CreateController();
+  //
+  // |reason| says why a new engine is being started. It is logged as an
+  // explicit epoch boundary AND handed to Dart as an entrypoint argument, so
+  // the app's own log says which generation wrote each line. Working out that
+  // the 2026-09-10 freeze contained THREE engine generations took hours of
+  // elapsed-time arithmetic across thousands of lines, because every restart
+  // was silent on both sides of the boundary.
+  bool CreateController(const char* reason);
 
   // Tears the FlutterViewController down. This runs egl::Manager's destructor
   // inside the engine, which calls eglTerminate() and releases the D3D device.
-  void DestroyController();
+  //
+  // |reason| is logged with how long the generation lived and how far Dart got
+  // in it -- the teardown that caused the freeze landed on an engine that was
+  // still starting up, and nothing said so.
+  void DestroyController(const char* reason);
+
+  // --- The runner channel: what Dart tells the runner -----------------------
+  //
+  // A method channel the UI isolate calls, whose messages land in
+  // hmi-runner.log. See dart_liveness.h for why a signal from inside the
+  // isolate is the only one that can see this class of freeze.
+  void OnRunnerChannelCall(
+      const flutter::MethodCall<flutter::EncodableValue>& call,
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+
+  // Asks DartLiveness whether the silence is worth a line, and writes it.
+  // Called from the watchdog tick, on the platform thread.
+  void EvaluateDartLiveness(unsigned long long now_ms);
 
   // --- GPU watchdog adapter -----------------------------------------------
   //
@@ -143,13 +174,52 @@ class FlutterWindow : public Win32Window {
   // defaults to exit, and an RDP disconnect must not end the process. This
   // rebuild also does not count toward the escalation guard -- it is expected
   // maintenance, not a fault.
-  void RebuildForSessionChange(const char* why);
+  void RequestEngineRebuild(const char* why);
+
+  // Carries out a rebuild the gate has released, either immediately or from
+  // the queue. |reason| is the gate's, already coalesced.
+  void PerformEngineRebuild(const std::string& reason);
+
+  // Tells the watchdog whether the absence of frames currently means
+  // anything. It does not while a fresh engine has yet to reach Dart main(),
+  // nor while a rebuild is already queued -- see GpuWatchdog::SetJudgeable.
+  void UpdateWatchdogJudgeable();
 
   // The project to run.
   flutter::DartProject project_;
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // --- Engine generations ---------------------------------------------------
+  //
+  // Every RDP session change destroys the controller and builds a new one,
+  // and destroying it shuts the Dart isolate down: a "rebuild" is a whole new
+  // main(), not a re-render. One frozen station held three generations' worth
+  // of log lines with nothing to separate them. Each generation now gets a
+  // number, both sides of the boundary log it, and Dart is told its own so
+  // every line it writes can be attributed.
+  long long engine_epoch_ = 0;
+  unsigned long long epoch_started_tick_ = 0;
+  // What Dart last said about its own startup, for the teardown line.
+  bool dart_startup_complete_ = false;
+  bool dart_main_seen_ = false;
+
+  // Watches for the UI isolate going quiet. Fed by the runner channel,
+  // consulted on every watchdog tick.
+  tfc::DartLiveness dart_liveness_;
+
+  // Decides when a session change may rebuild the engine. Replaces the bare
+  // time-based debounce, which could not collapse a disconnect/reconnect pair
+  // 35 s apart and so let a teardown land on an unfinished startup. See
+  // engine_rebuild_gate.h.
+  tfc::EngineRebuildGate rebuild_gate_;
+
+  // Owned by the controller's messenger, so it is torn down with it.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      runner_channel_;
+  // Liveness stamps arrive every few seconds and are only worth sampling.
+  tfc::LogThrottle liveness_log_;
 
   // Watchdog state. Touched only on the platform thread.
   tfc::GpuWatchdog watchdog_;
@@ -176,7 +246,7 @@ class FlutterWindow : public Win32Window {
   // no frames. It stays blind to a loss confined to ANGLE's own device -- see
   // the note in gpu_diagnosis.h on why that device cannot be reached -- and
   // for that class the frame probe is NOT a detector either -- see
-  // RebuildForSessionChange for the 2026-09-01 measurement that disproves it.
+  // RequestEngineRebuild for the 2026-09-01 measurement that disproves it.
   // Remote session changes are handled there instead.
   tfc::GpuDeviceProbe device_probe_;
   // Latches so the transition is logged once rather than every tick.
@@ -187,10 +257,6 @@ class FlutterWindow : public Win32Window {
   // posted message; the platform thread declares the loss.
   tfc::StderrInterposer stderr_interposer_;
 
-  // When the renderer was last rebuilt for a session change, so that the
-  // several messages one disconnect/reconnect emits cost one rebuild, not
-  // several. 0 means never.
-  unsigned long long last_session_rebuild_ms_ = 0;
 
   // --- Instrumentation ------------------------------------------------------
   //

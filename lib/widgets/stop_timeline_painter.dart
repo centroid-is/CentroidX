@@ -55,6 +55,10 @@ class StopLanePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // CustomPaint does not clip. An interval that started before the window
+    // maps to a negative x, and without this clip its bar paints straight
+    // across the label column to the left of the lane.
+    canvas.clipRect(Offset.zero & size);
     canvas.drawRect(
         Offset.zero & size, Paint()..color = laneColor);
 
@@ -137,6 +141,7 @@ class StopTimelineChromePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    canvas.clipRect(Offset.zero & size);
     final w = window.value;
 
     // Unscheduled time is not downtime. Hatched so it reads as "the plant was
@@ -184,6 +189,9 @@ class StopTimelineChromePainter extends CustomPainter {
   bool shouldRepaint(StopTimelineChromePainter old) =>
       old.excluded != excluded ||
       old.lineColor != lineColor ||
+      old.hourLineColor != hourLineColor ||
+      old.hatchColor != hatchColor ||
+      old.nowColor != nowColor ||
       old.futureColor != futureColor;
 }
 
@@ -214,6 +222,9 @@ class StopTimelineBrushPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // Same clip as the lanes: an interval reaching outside the period must
+    // not paint across the day label beside the strip.
+    canvas.clipRect(Offset.zero & size);
     canvas.drawRect(Offset.zero & size, Paint()..color = trackColor);
 
     final clock = now();

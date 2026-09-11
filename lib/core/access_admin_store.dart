@@ -73,7 +73,7 @@ const AccessGroup kAccessAdminGroup = AccessGroup.users;
 /// [session] is the session the gate read, so the deny row names whoever was
 /// refused rather than whoever the session became a moment later. The builder
 /// is what lets [AccessAdminStore._requireUsers] be shared across eight writes
-/// whose rows are built by eight *different* named constructors: there is no
+/// whose rows are built by as many *different* named constructors: there is no
 /// generic row builder in this file, and there must not be one.
 typedef _RowBuilder = AuditRecord Function(
   AccessSession session,
@@ -81,20 +81,27 @@ typedef _RowBuilder = AuditRecord Function(
   bool allowed,
 );
 
-/// The eight writes that decide who may do what, and the two reads that show
-/// it.
+/// The writes that decide who may do what, and the two reads that show it.
 ///
 /// Writes — [createRole], [updateRole], [deleteRole], [renameRole],
-/// [createUser], [deleteUser], [setUserRole], [setUserPassword] — all ask for
+/// [setRolePages], [createUser], [deleteUser], [setUserRole],
+/// [setUserStationAccount], [setUserPassword], [setUserPages] — all ask for
 /// [kAccessAdminGroup] and all leave a row, denials included. Reads — [roles]
 /// and [listUsers] — are ungated and unaudited: looking at the roster is not an
 /// authorization change, and a row per render would bury the writes that
 /// matter. The route the screen sits on is the enforcement for reads.
 ///
-/// **Eight writes, eight itemKeys, and that is the whole list.** If you find
-/// yourself adding a ninth, stop: it has no itemKey, which means it has no
-/// audit row, which means it is not a write this store may perform. No disable,
-/// no export, no bulk anything.
+/// **One itemKey per write, and that is the whole list.** If you find yourself
+/// adding one without an itemKey, stop: no itemKey means no audit row, which
+/// means it is not a write this store may perform. No disable, no export, no
+/// bulk anything.
+///
+/// [setRolePages] and [setUserPages] were added by the page-visibility
+/// whitelist (`docs/page-visibility-whitelist-design.md` §8), which is the
+/// decision that widened this list. They belong here rather than beside the
+/// pages for the reason §1a gives: a page whitelist is authorization data, and
+/// authorization data behind a `configure` gate would let anybody who can edit
+/// a page re-scope who sees which pages.
 ///
 /// The itemKeys fall into two prefixes — `role.` and `user.` — which are
 /// distinct strings, so a Phase 5 filter for one does not drag in the other.
@@ -305,6 +312,59 @@ class AccessAdminStore {
 
     if (existing == null) throw MissingRoleError(role.name);
     await _repository.upsertRole(role);
+    await _recordAllowed(actionId, row);
+  }
+
+  /// Replaces [name]'s page whitelist. Requires [kAccessAdminGroup].
+  ///
+  /// [pages] null clears it — the role sees every page again; the empty set is
+  /// a whitelist naming nothing, i.e. block all. Both are legal writes and the
+  /// row distinguishes them: `null -> ["/a"]` is the mode being switched on,
+  /// `["/a"] -> null` is it being switched off.
+  ///
+  /// **`users`, like every other write in this file, and not `configure`.**
+  /// What pages an audience may see is authorization data. Classify it with
+  /// the page editor and anybody who can author a page could re-scope who sees
+  /// which pages — including widening their own view. That is the same
+  /// confusion the `AccessKeyBindingTable` ruling closed.
+  ///
+  /// No lockout guard, deliberately: a whitelist cannot remove
+  /// [AccessGroup.users] from anybody, and the Advanced routes — the access
+  /// screen among them — answer to groups alone and are not whitelistable, so
+  /// no whitelist state can take away the screen that repairs a bad whitelist.
+  ///
+  /// The current value is read **before** the gate so `oldValue` is available
+  /// for the row, which is this file's convention: a read is not an
+  /// authorization event.
+  ///
+  /// Throws [MissingRoleError] when there is no such role, so a typo does not
+  /// report success having written nothing.
+  Future<void> setRolePages(
+    String name,
+    Set<String>? pages, {
+    String origin = _operatorOrigin,
+    String? reason,
+  }) async {
+    final existing = await _repository.role(name);
+
+    AuditRecord row(AccessSession session, String actionId, bool allowed) =>
+        AuditRecord.rolePages(
+          who: _who(session),
+          station: _station,
+          roleName: session.roleName,
+          actionId: actionId,
+          subject: name,
+          oldPages: existing?.encodeAllowedPages(),
+          newPages: encodeAllowedPagesColumn(pages),
+          allowed: allowed,
+          reason: reason,
+          origin: origin,
+        );
+
+    final actionId = await _requireUsers(itemKey: _rolePages, row: row);
+
+    if (existing == null) throw MissingRoleError(name);
+    await _repository.setRoleAllowedPages(name, pages);
     await _recordAllowed(actionId, row);
   }
 
@@ -539,6 +599,49 @@ class AccessAdminStore {
     await _recordAllowed(actionId, row);
   }
 
+  /// Replaces [username]'s personal page whitelist. Requires
+  /// [kAccessAdminGroup].
+  ///
+  /// [pages] null clears the override, putting the account back under its
+  /// role's whitelist — which is **not** "sees every page". The empty set is a
+  /// personal block-all that outranks whatever the role allows.
+  ///
+  /// A non-null value replaces the role's whitelist rather than merging with
+  /// it, so this write can widen what one account *sees* past its role. It
+  /// cannot widen what that account may *do*: every write guard in the product
+  /// asks groups, which this does not touch. And it is not an escalation path,
+  /// because setting it takes the same `users` gate as editing the role would.
+  ///
+  /// Throws [UserNotFoundException] when there is no such account.
+  Future<void> setUserPages(
+    String username,
+    Set<String>? pages, {
+    String origin = _operatorOrigin,
+    String? reason,
+  }) async {
+    final existing = await _repository.user(username);
+
+    AuditRecord row(AccessSession session, String actionId, bool allowed) =>
+        AuditRecord.userPages(
+          who: _who(session),
+          station: _station,
+          roleName: session.roleName,
+          actionId: actionId,
+          subject: username,
+          oldPages: existing?.allowedPages,
+          newPages: encodeAllowedPagesColumn(pages),
+          allowed: allowed,
+          reason: reason,
+          origin: origin,
+        );
+
+    final actionId = await _requireUsers(itemKey: _userPages, row: row);
+
+    if (existing == null) throw UserNotFoundException(username);
+    await _repository.setUserAllowedPages(username, pages);
+    await _recordAllowed(actionId, row);
+  }
+
   /// Resets [username]'s password to [password]. Requires [kAccessAdminGroup].
   ///
   /// **The credential goes to the repository and nowhere else.** It is not
@@ -667,4 +770,6 @@ class AccessAdminStore {
   static const String _userRole = 'user.role';
   static const String _userPassword = 'user.password';
   static const String _userStationAccount = 'user.station_account';
+  static const String _rolePages = 'role.pages';
+  static const String _userPages = 'user.pages';
 }

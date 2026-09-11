@@ -716,6 +716,65 @@ class AssetTypeCatalog {
       ],
     ),
     AssetTypeInfo(
+      assetName: 'WebViewAssetConfig',
+      displayName: 'Web page',
+      category: 'Visualization',
+      description:
+          'A live web page rendered by a real browser (WKWebView via '
+          'webview_flutter). Available on macOS only — the eLinux stations, '
+          'Linux desktop and Windows have no browser engine, and show a '
+          'placeholder naming the reason instead. For a dashboard that must '
+          'render everywhere, use GrafanaPanelConfig, which is a server-side '
+          'PNG.',
+      properties: [
+        AssetPropertyInfo(
+            name: 'url',
+            type: 'String',
+            description:
+                'Address to show, e.g. https://grafana.plant/d/abc/line-1. '
+                'Only http and https are accepted; anything else renders the '
+                'unconfigured placeholder.'),
+        AssetPropertyInfo(
+            name: 'reloadSeconds',
+            type: 'int',
+            description:
+                'Seconds between reloads; 0 means never. A reload '
+                're-navigates to the configured address, so a tile that '
+                'wandered comes home. Offered values: 0, 30, 60, 300, 900.'),
+        AssetPropertyInfo(
+            name: 'interactive',
+            type: 'bool',
+            description:
+                'Let operators click and scroll (default false). Leave off '
+                'for wall-mounted stations: a tap on a link cannot be undone '
+                'from the floor.'),
+        AssetPropertyInfo(
+            name: 'themeParam',
+            type: 'String?',
+            description:
+                'Optional query parameter that makes the page follow the '
+                "HMI's dark/light theme, e.g. \"theme\" for Grafana (which "
+                'honours ?theme=dark|light, public dashboards included). When '
+                'set, the loaded address carries <themeParam>=<value for the '
+                'current theme>, replacing any existing parameter of that name '
+                'in url, and the page reloads when the HMI theme flips. Omit or '
+                'leave empty (the default) to load url exactly as written. '
+                'Brightness only; there is no arbitrary-colour parameter.'),
+        AssetPropertyInfo(
+            name: 'themeDarkValue',
+            type: 'String?',
+            description:
+                'Value sent in themeParam while the HMI is dark. Omit for '
+                'the default "dark".'),
+        AssetPropertyInfo(
+            name: 'themeLightValue',
+            type: 'String?',
+            description:
+                'Value sent in themeParam while the HMI is light. Omit for '
+                'the default "light".'),
+      ],
+    ),
+    AssetTypeInfo(
       assetName: 'GraphAssetConfig',
       displayName: 'Graph',
       category: 'Visualization',

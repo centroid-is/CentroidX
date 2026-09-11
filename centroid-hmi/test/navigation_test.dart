@@ -9,7 +9,7 @@ library;
 
 import 'package:beamer/beamer.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart' show Consumer;
+import 'package:flutter_riverpod/flutter_riverpod.dart' show AsyncValue, Consumer;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/access_routes.dart';
 import 'package:tfc/models/menu_item.dart';
@@ -26,6 +26,9 @@ import 'package:tfc/pages/tech_doc_library.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/routes.dart';
 import 'package:tfc/widgets/access_gate.dart';
+import 'package:tfc/widgets/page_access_gate.dart';
+import 'package:tfc_access/tfc_access.dart' show AccessSession;
+import 'package:tfc_dart/core/access/access_repository.dart' show AccessRepository;
 import 'package:tfc/widgets/dbus_gate.dart';
 import 'package:tfc/widgets/route_redirect.dart';
 
@@ -451,12 +454,22 @@ void main() {
       });
 
       testWidgets('the menu and the route table agree about every raised route', (tester) async {
-        // installRaisedRoutes() runs as createLocationBuilder's first statement;
-        // dropped or moved below the map, the menu badge would go blank while
-        // the routes stayed locked. The registry is cleared in setUp, so this
-        // can only pass because createLocationBuilder declared them.
+        // Route groups are declared by `RouteRegistry.replaceMenu`, which the
+        // boot sequence calls before `createLocationBuilder` and which
+        // `menuTreeProvider` calls again on every recomposition. They used to
+        // be declared as a side effect of `createLocationBuilder`; moving them
+        // is what lets a group *removed* in the page editor stop being
+        // declared without a restart. The menu badge and the route gate read
+        // the same registry either way, which is what this test is for.
         expect(accessGroupForRoute('/advanced/page-editor').name, 'operate', reason: 'registry must start clear');
-        final lb = createLocationBuilder([_page('Chiller', '/chiller')], pagePaths: const ['/chiller']);
+
+        final menu = [_page('Chiller', '/chiller')];
+        RouteRegistry().replaceMenu(menu, declareGroups: () {
+          installRaisedRoutes();
+          declareMenuRouteGroups(menu);
+        });
+
+        final lb = createLocationBuilder(menu, pagePaths: const ['/chiller']);
         expect(lb.routes.containsKey('/chiller'), isTrue);
         expect(accessGroupForRoute('/advanced/page-editor').name, 'configure');
         expect(accessGroupForRoute('/advanced/alarm-editor').name, 'configure');
@@ -484,12 +497,42 @@ void main() {
         }
       });
 
-      testWidgets('a page-manager page is not a gate', (tester) async {
-        // "Nothing on the floor changes" is the phase boundary, and this is the
-        // assertion that carries it.
+      testWidgets('a page-manager page wears the page gate', (tester) async {
+        // This assertion used to read "a page-manager page is not a gate",
+        // which carried the access milestone's "nothing on the floor changes"
+        // boundary. It also described a hole: a page raised above `operate` in
+        // the page editor vanished from the menu and still opened to anyone
+        // who typed its URL, because hiding was the whole of the enforcement.
+        //
+        // `PageAccessGate` closes it, and asks the page-visibility whitelist
+        // at the same time. It is NOT an `AccessGate`: that one takes a group
+        // literal at the call site, this one takes the path, because a page's
+        // group lives in the registry and the whitelist is keyed on the path.
         final lb = createLocationBuilder([_page('Chiller', '/chiller')], pagePaths: const ['/chiller']);
         final page = await buildRoute(tester, lb, '/chiller');
+        expect(page.child, isA<PageAccessGate>());
         expect(page.child, isNot(isA<AccessGate>()));
+        expect((page.child as PageAccessGate).path, '/chiller');
+      });
+
+      testWidgets('the behaviour that boundary protected still holds', (tester) async {
+        // The gate is free on an unrestricted station: an undeclared page
+        // short-circuits on `operate` and a session with no whitelist admits
+        // every path, so the gate returns its child with nothing added around
+        // it. That — not the absence of a wrapper — is what "nothing on the
+        // floor changes" actually meant.
+        expect(accessGroupForRoute('/chiller').name, 'operate');
+        expect(
+          resolvePageAccess(
+            group: accessGroupForRoute('/chiller'),
+            path: '/chiller',
+            repository: const AsyncValue<AccessRepository?>.loading(),
+            session: const AsyncValue<AccessSession>.loading(),
+          ),
+          AccessGateState.allowed,
+          reason: 'an ordinary page opens before anything has resolved, which '
+              'is what keeps a booting panel from blanking its pages',
+        );
       });
     });
   });

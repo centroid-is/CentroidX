@@ -1,5 +1,6 @@
-import 'dart:io';
 import 'dart:async';
+
+import 'package:logger/logger.dart';
 
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,6 +17,10 @@ import 'preferences.dart';
 import 'collector.dart';
 
 part 'state_man.g.dart';
+
+/// File-level logger. These diagnostics used to go to stderr, which in a
+/// windowed MSIX build with no console is discarded outright.
+final Logger _log = Logger();
 
 /// How the inner, unguarded [StateMan] is built.
 typedef StateManFactory = Future<StateMan> Function({
@@ -91,17 +96,21 @@ Future<StateMan> stateMan(Ref ref) async {
           final result =
               stateMan.updateKeyMappings(store.keyMappings, diff: diff);
           if (result.requiresReload) {
-            stderr.writeln('key_mappings: full reload required '
+            _log.i('key_mappings: full reload required '
                 '(${result.reloadReasons.join('; ')})');
             ref.invalidateSelf();
           }
-        } catch (error) {
-          stderr.writeln('Failed to apply key_mappings change: $error');
+        } catch (error, stack) {
+          // A key mapping that fails to apply is the direct cause of a dead
+          // key on a page, and this is the only record that it happened.
+          _log.e('Failed to apply key_mappings change: $error',
+              error: error, stackTrace: stack);
         }
       });
     },
-    onError: (Object error) {
-      stderr.writeln('Error in the key mapping change listener: $error');
+    onError: (Object error, StackTrace stack) {
+      _log.e('Error in the key mapping change listener: $error',
+          error: error, stackTrace: stack);
     },
   );
 
@@ -144,7 +153,7 @@ Future<StateMan> stateMan(Ref ref) async {
     );
   } catch (e) {
     listener.cancel();
-    stderr.writeln('Error parsing key mappings: $e');
+    _log.e('Error parsing key mappings: $e');
     rethrow;
   }
 }

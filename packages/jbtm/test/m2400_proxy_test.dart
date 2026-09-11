@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:jbtm/jbtm.dart';
@@ -57,7 +58,7 @@ int socketsOnLocalPort(int port) {
       }
     }
     var count = 0;
-    for (final entry in Directory('/proc/self/fd').listSync()) {
+    for (final entry in _fdEntries()) {
       try {
         // A socket descriptor's /proc link target is literally
         // "socket:[inode]"; everything else is a file, pipe or anon_inode.
@@ -88,6 +89,56 @@ int socketsOnLocalPort(int port) {
     final colon = local.lastIndexOf(':');
     return colon >= 0 && int.tryParse(local.substring(colon + 1)) == port;
   }).length;
+}
+
+/// The entries of `/proc/self/fd`, as [FileSystemEntity]s that are never
+/// followed.
+///
+/// `Directory.listSync()` does not merely hand back names. With the default
+/// `followLinks: true` it resolves each entry to decide whether to return a
+/// `File`, a `Directory` or a `Link` — a `stat` *through* the symlink — and
+/// every name in this directory is a symlink. A descriptor closed between the
+/// kernel's `readdir` and that `stat` therefore makes **the listing itself**
+/// throw, not the per-entry read:
+///
+/// ```
+/// PathNotFoundException: Directory listing failed, path = '/proc/self/fd/14'
+///   test/m2400_proxy_test.dart 60:52  socketsOnLocalPort
+/// ```
+///
+/// which is a `for`-loop header, outside the `try` in [socketsOnLocalPort]
+/// that was written for exactly this race and could not see it. The window is
+/// wide open here by construction: `dart test` runs every VM suite as an
+/// isolate in one process, so the socket-heavy suites this file's own doc
+/// comment names are opening and closing descriptors in the same table while
+/// this scan walks it.
+///
+/// `followLinks: false` returns `Link`s without walking them, which closes the
+/// race for the reported case. The retry covers the narrower one underneath
+/// it — the entry vanishing before even the `lstat` that types it — and
+/// rethrows rather than reporting a short count, because a scan that silently
+/// returned fewer descriptors would turn a real leak into a pass.
+List<FileSystemEntity> _fdEntries() {
+  for (var attempt = 0;; attempt++) {
+    try {
+      return Directory('/proc/self/fd').listSync(followLinks: false);
+    } on FileSystemException {
+      if (attempt >= 4) rethrow;
+    }
+  }
+}
+
+/// Opens and closes descriptors as fast as it can, for as long as it is left
+/// alive. Runs in its own isolate — see the test that spawns it.
+///
+/// Top-level and one-argument because that is what [Isolate.spawn] takes.
+void _churnDescriptors(String dirPath) {
+  var i = 0;
+  while (true) {
+    final handle =
+        File('$dirPath/churn${i++ % 32}').openSync(mode: FileMode.write);
+    handle.closeSync();
+  }
 }
 
 /// Skip reason for descriptor-counting tests, or null when they can run.
@@ -700,5 +751,57 @@ void main() {
             'accepted',
       );
     }, skip: fdLeakSkip);
+
+    test('the descriptor scan survives descriptors closing underneath it',
+        () async {
+      // The scan is the measuring instrument for the two tests above, and it
+      // used to be able to throw instead of measuring — `dart test` runs every
+      // VM suite as an isolate in one process, so the socket-heavy suites are
+      // churning this descriptor table while the scan walks it, and an entry
+      // that vanished between readdir and the stat took the whole listing
+      // down. It failed CI on '/proc/self/fd/14'.
+      //
+      // Reproduced here by doing the churning deliberately: a burst of files
+      // opened and closed on every iteration, while the scan runs against a
+      // port nothing is listening on. The assertion is only "it did not
+      // throw" — the count is not the subject.
+      await proxy.start();
+      final listenPort = proxy.listenPort;
+
+      // The churn has to come from **another isolate**, not a future in this
+      // one. `socketsOnLocalPort` is synchronous from listing to last
+      // readlink, so nothing scheduled on this isolate's event loop can run
+      // part-way through it — a first attempt at this test closed its
+      // descriptors from an unawaited `Future` and raced nothing at all,
+      // because every round completed before the future was allowed to start.
+      // Isolates get their own thread and share the process descriptor table,
+      // which is exactly the arrangement that produces the failure in CI.
+      final scratch =
+          Directory.systemTemp.createTempSync('jbtm_fd_scan_race_test');
+      addTearDown(() => scratch.deleteSync(recursive: true));
+
+      final churn = await Isolate.spawn(_churnDescriptors, scratch.path);
+      addTearDown(() => churn.kill(priority: Isolate.immediate));
+
+      var scans = 0;
+      final deadline = DateTime.now().add(const Duration(seconds: 2));
+      while (DateTime.now().isBefore(deadline)) {
+        // The count is not the subject — surviving the walk is. Anything the
+        // scan reports is fine; throwing is not.
+        expect(socketsOnLocalPort(listenPort), isNonNegative);
+        scans++;
+      }
+
+      // Guards the guard: a scan that had somehow become a no-op would sail
+      // through the loop above without ever walking the table.
+      expect(scans, greaterThan(20),
+          reason: 'only $scans scans completed in 2s — too few to have raced '
+              'the churning isolate');
+      // Linux only, not `fdLeakSkip`. The race being guarded is specific to
+      // walking `/proc/self/fd`; the macOS branch shells out to `lsof`, which
+      // reports a snapshot taken in another process and cannot trip over a
+      // descriptor closing here. Running it there would spawn `lsof` for two
+      // solid seconds and then judge the result on how many spawns fitted.
+    }, skip: Platform.isLinux ? null : 'the /proc descriptor scan is Linux-only');
   });
 }

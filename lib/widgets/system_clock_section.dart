@@ -37,12 +37,33 @@ class SystemClockSection extends StatefulWidget {
   /// The stored list, shown as what this HMI will re-apply at startup.
   final List<String> storedServers;
 
+  /// Whether this session may change the clock — for rendering only. The
+  /// status half ignores it and always renders: "is the clock right?" is an
+  /// operator question, and locking the answer to it would be the reason
+  /// nobody notices a station whose timestamps are an hour out.
+  ///
+  /// Required, with no default. A `= true` here would be a fail-open access
+  /// parameter that a future caller acquires by forgetting about it, which is
+  /// the one defect class this file cannot afford.
+  final bool settingsAllowed;
+
+  /// Asked at tap time, before any setter runs. Return true to proceed; a
+  /// false return has already recorded the refusal and told the operator.
+  ///
+  /// Kept as a callback rather than reading Riverpod here so this widget stays
+  /// constructible from a plain `WidgetTester` with fakes and no
+  /// `ProviderScope` — which is what its unit tests and its seven golden
+  /// frames do.
+  final Future<bool> Function()? onBeforeChange;
+
   const SystemClockSection({
     super.key,
     required this.timeDate,
+    required this.settingsAllowed,
     this.timeSync,
     this.onServersChanged,
     this.storedServers = const [],
+    this.onBeforeChange,
   });
 
   @override
@@ -137,6 +158,16 @@ class _SystemClockSectionState extends State<SystemClockSection> {
     }
   }
 
+  /// Whether this action may proceed.
+  ///
+  /// Called as the *first* line of every entry point, ahead of the picker
+  /// dialogs — not inside [_run]. Guarding at the write would open a
+  /// six-hundred-entry timezone list, let the operator search it, take their
+  /// choice, and only then refuse. A refusal has already written its audit row
+  /// and published its prompt, so there is nothing to report from here.
+  Future<bool> _allow() async =>
+      widget.onBeforeChange == null || await widget.onBeforeChange!();
+
   /// The host clock, advanced locally since the last poll.
   DateTime? get _displayTime {
     final base = _timeAtPoll;
@@ -144,10 +175,17 @@ class _SystemClockSectionState extends State<SystemClockSection> {
     return base.add(_sincePoll.elapsed);
   }
 
-  Future<void> _setNtp(bool enabled) =>
-      _run(() => widget.timeDate.setNtp(enabled));
+  Future<void> _setNtp(bool enabled) async {
+    if (!await _allow()) return;
+    // The switch has already drawn itself in the new position; the refusal
+    // leaves `clock.ntpEnabled` untouched, so the next build snaps it back.
+    // The denial prompt is what says why.
+    if (!mounted) return;
+    await _run(() => widget.timeDate.setNtp(enabled));
+  }
 
   Future<void> _pickTimezone() async {
+    if (!await _allow() || !mounted) return;
     final current = _clock?.timezone ?? '';
     List<String> zones;
     try {
@@ -166,6 +204,7 @@ class _SystemClockSectionState extends State<SystemClockSection> {
   }
 
   Future<void> _editServers() async {
+    if (!await _allow() || !mounted) return;
     final sync = _sync;
     final result = await showDialog<List<String>>(
       context: context,
@@ -186,6 +225,7 @@ class _SystemClockSectionState extends State<SystemClockSection> {
   }
 
   Future<void> _setManualTime() async {
+    if (!await _allow() || !mounted) return;
     final now = _displayTime ?? DateTime.now();
     final date = await showDatePicker(
       context: context,
@@ -252,18 +292,32 @@ class _SystemClockSectionState extends State<SystemClockSection> {
           _Message(icon: Icons.lock_outline, text: _actionError!, error: true),
         ],
         const SizedBox(height: 8),
+        // The settings half. Locked controls stay visible, enabled and
+        // tappable — `access_lock_badge.dart`'s ruling: a greyed row teaches
+        // the operator the panel is broken, while a tap that refuses tells
+        // them which permission they need and offers a way to get it. The
+        // badge is advisory; `onBeforeChange` in [_run] is the check.
         _SettingTile(
           icon: Icons.schedule,
           label: 'Time zone',
           value: clock.timezone.isEmpty ? '—' : clock.timezone,
+          locked: !widget.settingsAllowed,
           onTap: _busy ? null : _pickTimezone,
         ),
         SwitchListTile(
           secondary: const Icon(Icons.sync),
-          title: const Text('Network time (NTP)'),
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Network time (NTP)'),
+              if (!widget.settingsAllowed) const _LockGlyph(),
+            ],
+          ),
           subtitle: Text(_ntpSubtitle(clock, health)),
           value: clock.ntpEnabled,
-          // A host with no NTP client has nothing to switch.
+          // A host with no NTP client has nothing to switch. A locked session
+          // still gets a live switch on purpose: it snaps back when the guard
+          // refuses, and the denial prompt is what explains why.
           onChanged: !clock.canNtp || _busy ? null : _setNtp,
         ),
         if (!clock.ntpEnabled)
@@ -271,6 +325,7 @@ class _SystemClockSectionState extends State<SystemClockSection> {
             icon: Icons.edit_calendar,
             label: 'Set clock manually',
             value: 'Only while network time is off',
+            locked: !widget.settingsAllowed,
             onTap: _busy ? null : _setManualTime,
           ),
         if (clock.rtcDrift != null &&
@@ -291,6 +346,7 @@ class _SystemClockSectionState extends State<SystemClockSection> {
             onEditServers: _busy || widget.onServersChanged == null
                 ? null
                 : _editServers,
+            locked: !widget.settingsAllowed,
           ),
         ] else if (clock.ntpEnabled)
           _Message(
@@ -395,11 +451,13 @@ class _SyncDetail extends StatelessWidget {
   final TimeSyncStatus sync;
   final List<String> storedServers;
   final VoidCallback? onEditServers;
+  final bool locked;
 
   const _SyncDetail({
     required this.sync,
     required this.storedServers,
     this.onEditServers,
+    this.locked = false,
   });
 
   @override
@@ -461,6 +519,7 @@ class _SyncDetail extends StatelessWidget {
           sync: sync,
           storedServers: storedServers,
           onEdit: onEditServers,
+          locked: locked,
         ),
       ],
     );
@@ -471,11 +530,13 @@ class _ServerList extends StatelessWidget {
   final TimeSyncStatus sync;
   final List<String> storedServers;
   final VoidCallback? onEdit;
+  final bool locked;
 
   const _ServerList({
     required this.sync,
     required this.storedServers,
     this.onEdit,
+    this.locked = false,
   });
 
   @override
@@ -493,12 +554,14 @@ class _ServerList extends StatelessWidget {
                   style: theme.textTheme.titleSmall
                       ?.copyWith(fontWeight: FontWeight.w600)),
             ),
-            if (onEdit != null)
+            if (onEdit != null) ...[
               TextButton.icon(
                 onPressed: onEdit,
                 icon: const Icon(Icons.edit, size: 18),
                 label: const Text('Edit'),
               ),
+              if (locked) const _LockGlyph(),
+            ],
           ],
         ),
         if (effective.isEmpty)
@@ -525,6 +588,21 @@ class _ServerList extends StatelessWidget {
           _provenance(),
           style: theme.textTheme.bodySmall
               ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        ),
+        const SizedBox(height: 8),
+        const _InfoPill(
+          icon: Icons.terminal,
+          // The list edited here is runtime-only — `SetRuntimeNTPServers` is
+          // the only setter systemd exposes on the bus, and timesyncd forgets
+          // it on restart. The HMI re-applies it at startup, which works until
+          // the HMI is the thing that did not start. Anyone who wants the host
+          // to own the list has to go around this page entirely, and the route
+          // is a file in a container this process cannot write — so it is
+          // worth one line here rather than only in docs/polkit/README.md.
+          text: 'To have the host own the list instead: ssh to this station, '
+              'set NTP= in /etc/systemd/timesyncd.conf, and restart '
+              'systemd-timesyncd. Those show above as "From '
+              '/etc/systemd/timesyncd.conf on the host" and outlive the HMI.',
         ),
       ],
     );
@@ -637,10 +715,14 @@ class _NtpServerEditorState extends State<_NtpServerEditor> {
                   shrinkWrap: true,
                   buildDefaultDragHandles: false,
                   itemCount: _servers.length,
-                  // onReorder, not the newer onReorderItem: the ivi image
-                  // builds on Flutter 3.38.7 (docker/frontend-ivi's
-                  // FLUTTER_VERSION), which predates it. Deprecated here,
-                  // absent there — and absent loses.
+                  // onReorder, not the newer onReorderItem. The original reason
+                  // was the ivi image's Flutter 3.38.7, which predated the new
+                  // callback; that image is gone, but every other
+                  // ReorderableListView in the repo (server_config,
+                  // key_repository, page_editor) is still on onReorder and they
+                  // should move together — a half-migrated codebase is where
+                  // the off-by-one below gets applied to a callback that
+                  // already adjusted it.
                   // ignore: deprecated_member_use
                   onReorder: (oldIndex, newIndex) => setState(() {
                     if (newIndex > oldIndex) newIndex -= 1;
@@ -805,27 +887,101 @@ class _SectionHeading extends StatelessWidget {
   }
 }
 
+/// The lock this section draws beside a control the session cannot use.
+///
+/// Not `GroupLockBadge`: that one is a `ConsumerWidget` and reads the session
+/// itself, and this file is deliberately Riverpod-free so its tests and its
+/// golden frames can build it from fakes alone. The two draw the same glyph in
+/// the same colour for the same reason — not orange, which means forced, and
+/// not red, because a lock is not a fault.
+class _LockGlyph extends StatelessWidget {
+  const _LockGlyph();
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'Locked. Needs the "administer" permission.',
+      child: Padding(
+        padding: const EdgeInsets.only(left: 8),
+        child: Icon(
+          Icons.lock_outline,
+          size: 16,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+}
+
 class _SettingTile extends StatelessWidget {
   final IconData icon;
   final String label;
   final String value;
   final VoidCallback? onTap;
 
+  /// Draws the lock and swaps the chevron for it. Advisory only — the tile
+  /// stays tappable, and the guard in [_SystemClockSectionState._run] is what
+  /// actually refuses.
+  final bool locked;
+
   const _SettingTile({
     required this.icon,
     required this.label,
     required this.value,
     this.onTap,
+    this.locked = false,
   });
 
   @override
   Widget build(BuildContext context) {
     return ListTile(
       leading: Icon(icon),
-      title: Text(label),
+      title: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(label),
+          if (locked) const _LockGlyph(),
+        ],
+      ),
       subtitle: Text(value),
       trailing: onTap == null ? null : const Icon(Icons.chevron_right),
       onTap: onTap,
+    );
+  }
+}
+
+/// A boxed aside: standing guidance that is true whatever the clock is doing.
+///
+/// Deliberately not a [_Message], which is for something that has happened —
+/// a refusal, a drifting RTC. A tinted, bounded box keeps a paragraph of
+/// how-to from reading as one more status line in a column of status lines.
+class _InfoPill extends StatelessWidget {
+  final IconData icon;
+  final String text;
+
+  const _InfoPill({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = theme.colorScheme.onSurfaceVariant;
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(text,
+                style: theme.textTheme.bodySmall?.copyWith(color: color)),
+          ),
+        ],
+      ),
     );
   }
 }

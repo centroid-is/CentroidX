@@ -263,6 +263,37 @@ This is not a defect to fix. It is the same fact as section 1: anyone with
 `psql` is outside everything this design can see. Record the break-glass in
 whatever the site uses for change control, because the HMI cannot.
 
+### Repairing a page whitelist
+
+A role or an account can be restricted to a list of pages
+([page-visibility-whitelist-design.md](page-visibility-whitelist-design.md)),
+including a list naming nothing. A whitelist set too tight is **not** a
+lockout and needs no break-glass: it cannot take away the screen that repairs
+it. Two independent reasons, and both are enforced rather than remembered:
+
+* The Advanced routes — the access screen among them — answer to groups alone
+  and are not whitelistable. No whitelist state can hide `/advanced/access`
+  beyond the `users` gate it already has, and the last-`users`-holder
+  invariant guarantees somebody still holds that group.
+* Signing in is not a page. The app bar carries the sign-in control on every
+  screen, and the refusal page a hidden page shows carries one of its own — so
+  a panel whitelisted down to nothing is still a panel somebody can sign in at.
+
+So the repair is the ordinary one: open Advanced → Access as any `users`
+holder and change the Pages block. If the station is genuinely unreachable for
+an unrelated reason, the `psql` equivalent is one statement per level, and
+`NULL` is the "no whitelist" value:
+
+```sql
+UPDATE app_role SET allowed_pages = NULL WHERE name = 'Operator';
+UPDATE app_user SET allowed_pages = NULL WHERE username = 'lina';
+```
+
+`NULL` and `'[]'` are **not** the same. `NULL` removes the whitelist; `'[]'`
+is a whitelist naming nothing, which hides every page. Writing `'[]'` here by
+reflex is the one way to make this worse rather than better. The same audit
+consequence as above applies: a change made in `psql` leaves no row.
+
 ### The database-outage rule, and the cost it accepts
 
 Route gating raises nine routes above `operate` — Phase 2's six, plus

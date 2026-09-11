@@ -250,7 +250,11 @@ AccessSession _anonymous() =>
 const Key _boundary = Key('access_admin_golden');
 
 /// An empty in-memory device-local store: the card then shows the default
-/// 15 minutes, which is what a fresh station shows.
+/// 15 minutes and an uncommitted panel, which is what a fresh station shows.
+///
+/// `getString` is here for the panel-account read-out. A `Fake` throws on
+/// anything it does not implement, so leaving it out does not render a
+/// neutral card — it renders one with the read-out silently missing.
 class _MemoryPrefs extends Fake implements PreferencesApi {
   final Map<String, Object> _store = {};
 
@@ -259,6 +263,18 @@ class _MemoryPrefs extends Fake implements PreferencesApi {
 
   @override
   Future<void> setInt(String key, int value) async => _store[key] = value;
+
+  @override
+  Future<bool?> getBool(String key) async => _store[key] as bool?;
+
+  @override
+  Future<void> setBool(String key, bool value) async => _store[key] = value;
+
+  @override
+  Future<String?> getString(String key) async => _store[key] as String?;
+
+  @override
+  Future<void> setString(String key, String value) async => _store[key] = value;
 }
 
 List<Override> _overrides({
@@ -463,7 +479,7 @@ void main() {
 
     tearDown(() => RouteRegistry().menuItems.clear());
 
-    testWidgets('the page, elevated, with the honesty note collapsed',
+    testWidgets('the page, elevated, with the honesty note at its foot',
         (tester) async {
       await withClock(Clock.fixed(_frozen), () async {
         const size = Size(900, 1120);
@@ -480,10 +496,10 @@ void main() {
         // frame that had not decided yet.
         expect(find.byKey(kAccessAdminHonestySummaryKey), findsOneWidget);
         expect(find.byKey(kAccessAdminLoadingKey), findsNothing);
-        // Collapsed, which is the settled default. An `ExpansionTile` caught
-        // mid-expansion would make this baseline a function of how many frames the
-        // harness pumped.
-        expect(find.byKey(kAccessAdminHonestyRecordsKey), findsNothing);
+        // One sentence, with nothing to open. The note used to be an
+        // `ExpansionTile`, and one caught mid-expansion would have made this
+        // baseline a function of how many frames the harness pumped.
+        expect(find.byType(ExpansionTile), findsNothing);
 
         // Both lists rendered rather than either terminal state.
         expect(find.byKey(kAccessRolesSectionKey), findsOneWidget);
@@ -512,7 +528,12 @@ void main() {
     testWidgets('the Operator editor open, with the warning above the boxes',
         (tester) async {
       await withClock(Clock.fixed(_frozen), () async {
-        const size = Size(900, 1640);
+        // Tall enough for the whole open editor: the seven group checkboxes,
+        // and below them the Pages block with its two mode options and a row
+        // per page. Raised from 1700 when the Pages block landed —
+        // `_expectNothingClipped` is what caught the truncation rather than
+        // letting a cut-off image quietly match its own new baseline.
+        const size = Size(900, 2000);
         _sizeView(tester, size);
 
         await tester.pumpWidget(_pageHost(

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/access_routes.dart';
 import 'package:tfc/models/menu_item.dart';
+import 'package:tfc/providers/menu.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/widgets/access_lock_badge.dart';
 import 'package:tfc/widgets/nav_dropdown.dart';
@@ -178,7 +179,18 @@ Widget buildTestNavDropdownWithNestedNavigator(
 /// has to tap an entry.
 class _NavBarLocation extends BeamLocation<BeamState> {
   final MenuItem menuItem;
-  _NavBarLocation(this.menuItem)
+
+  /// Whether to feed `NavDropdown` from [visibleMenuProvider] — the way
+  /// `BaseScaffold` feeds it — instead of from [menuItem] directly.
+  ///
+  /// Hiding entries this session cannot open is the provider's job; the popup
+  /// itself no longer filters anything. A host that handed `NavDropdown` an
+  /// unfiltered tree would be exercising a wiring the app does not have, so
+  /// the access group below opts in and the layout tests, which care only
+  /// about popup geometry, keep passing their fixture straight through.
+  final bool filtered;
+
+  _NavBarLocation(this.menuItem, {this.filtered = false})
       : super(RouteInformation(uri: Uri.parse('/test')));
 
   /// Matches the app's own bottom bar closely enough for the popup arithmetic.
@@ -194,7 +206,13 @@ class _NavBarLocation extends BeamLocation<BeamState> {
             alignment: Alignment.bottomCenter,
             child: SizedBox(
               height: barHeight,
-              child: NavDropdown(menuItem: menuItem),
+              child: filtered
+                  ? Consumer(builder: (context, ref, _) {
+                      final visible = ref.watch(visibleMenuProvider).topLevel;
+                      if (visible.isEmpty) return const SizedBox.shrink();
+                      return NavDropdown(menuItem: visible.first);
+                    })
+                  : NavDropdown(menuItem: menuItem),
             ),
           ),
         ),
@@ -281,8 +299,11 @@ Widget _buildTestNavBar({
   );
 }
 
-BeamerDelegate _buildTestNavBarDelegate(MenuItem menuItem) => BeamerDelegate(
-      locationBuilder: (routeInformation, _) => _NavBarLocation(menuItem),
+BeamerDelegate _buildTestNavBarDelegate(MenuItem menuItem,
+        {bool filtered = false}) =>
+    BeamerDelegate(
+      locationBuilder: (routeInformation, _) =>
+          _NavBarLocation(menuItem, filtered: filtered),
     );
 
 /// The [AccessLockBadge] inside the popup row labelled [label].
@@ -559,7 +580,8 @@ void main() {
         await tester.pumpWidget(_buildTestNavBar(
           overrides:
               _accessOverrides(session: session, repository: repository),
-          delegate: delegate ?? _buildTestNavBarDelegate(_accessTestMenuItem()),
+          delegate: delegate ??
+              _buildTestNavBarDelegate(_accessTestMenuItem(), filtered: true),
         ));
         await tester.pumpAndSettle();
         await tester.tap(find.text('Advanced'));
@@ -600,7 +622,8 @@ void main() {
 
       testWidgets('a hidden entry is not in the menu to be tapped',
           (tester) async {
-        final delegate = _buildTestNavBarDelegate(_accessTestMenuItem());
+        final delegate =
+            _buildTestNavBarDelegate(_accessTestMenuItem(), filtered: true);
         await openMenu(tester, delegate: delegate);
 
         expect(find.text('Page Editor'), findsNothing,

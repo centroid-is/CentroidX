@@ -4,6 +4,9 @@
 #include <ole2.h>
 #include <wtsapi32.h>
 
+#include <flutter/standard_method_codec.h>
+
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -11,6 +14,9 @@
 #include <sstream>
 #include <string>
 #include <typeinfo>
+#include <utility>
+#include <variant>
+#include <vector>
 
 #include "flutter/generated_plugin_registrant.h"
 #include "runner_log.h"
@@ -36,6 +42,12 @@ constexpr UINT kWatchdogTickMessage = WM_APP + 0x47;
 // Posted from the stderr reader thread when the engine's own error output
 // crosses the context-lost storm threshold. wparam carries the match count.
 constexpr UINT kEglStormMessage = WM_APP + 0x48;
+
+// Posted to ourselves when a session-change rebuild that was queued behind an
+// unfinished startup becomes due. Posted, never done inline, because the point
+// at which it becomes due is inside a method call from the very engine the
+// rebuild destroys.
+constexpr UINT kEngineRebuildDueMessage = WM_APP + 0x49;
 
 // The stale WM_TIMER id. Nothing arms it any more -- see the note on the tick
 // in flutter_window.h -- but a build that rolls back and forward could leave
@@ -91,14 +103,95 @@ bool WatchdogEnabledFromEnvironment() {
 // normal shutdown (0) and a crash-handler exit.
 constexpr int kGpuLossExitCode = 109;
 
-// One disconnect or reconnect emits several WM_WTSSESSION_CHANGE messages
-// within a second or so. One rebuild answers all of them.
-constexpr unsigned long long kSessionRebuildDebounceMs = 3000;
-
 constexpr const char* kTag = "[gpu-watchdog]";
+
+// Engine-generation boundaries and everything the UI isolate reports about
+// itself get their own tag, because they answer a different question from the
+// GPU watchdog's and are read at a different time. `findstr [engine]` on
+// hmi-runner.log now lists every restart of a run in order, with reasons.
+constexpr const char* kEngineTag = "[engine]";
+constexpr const char* kDartTag = "[dart]";
+
+// The method channel the UI isolate reports on. Its Dart half lives in
+// lib/core/runner_liveness.dart.
+constexpr const char* kRunnerChannel = "centroid/runner";
 
 void LogWatchdog(const std::string& message) {
   tfc::RunnerLogLine(kTag, message);
+}
+
+void LogEngine(const std::string& message) {
+  tfc::RunnerLogLine(kEngineTag, message);
+}
+
+void LogDart(const std::string& message) {
+  tfc::RunnerLogLine(kDartTag, message);
+}
+
+// --- Reading a method call's arguments without trusting them ----------------
+//
+// Everything below tolerates a missing or wrongly typed field rather than
+// throwing: this is diagnostics, and a diagnostic that can end the process it
+// is diagnosing is worse than none.
+
+const flutter::EncodableMap* ArgumentsOf(
+    const flutter::MethodCall<flutter::EncodableValue>& call) {
+  return std::get_if<flutter::EncodableMap>(call.arguments());
+}
+
+long long IntArg(const flutter::EncodableMap* args, const char* name,
+                 long long fallback) {
+  if (args == nullptr) {
+    return fallback;
+  }
+  const auto it = args->find(flutter::EncodableValue(name));
+  if (it == args->end()) {
+    return fallback;
+  }
+  if (const auto* wide = std::get_if<int64_t>(&it->second)) {
+    return static_cast<long long>(*wide);
+  }
+  if (const auto* narrow = std::get_if<int32_t>(&it->second)) {
+    return static_cast<long long>(*narrow);
+  }
+  return fallback;
+}
+
+unsigned long long UnsignedArg(const flutter::EncodableMap* args,
+                               const char* name) {
+  const long long value = IntArg(args, name, 0);
+  return value < 0 ? 0ull : static_cast<unsigned long long>(value);
+}
+
+bool BoolArg(const flutter::EncodableMap* args, const char* name) {
+  if (args == nullptr) {
+    return false;
+  }
+  const auto it = args->find(flutter::EncodableValue(name));
+  if (it == args->end()) {
+    return false;
+  }
+  const auto* value = std::get_if<bool>(&it->second);
+  return value != nullptr && *value;
+}
+
+std::string StringArg(const flutter::EncodableMap* args, const char* name) {
+  if (args == nullptr) {
+    return std::string();
+  }
+  const auto it = args->find(flutter::EncodableValue(name));
+  if (it == args->end()) {
+    return std::string();
+  }
+  const auto* value = std::get_if<std::string>(&it->second);
+  return value == nullptr ? std::string() : *value;
+}
+
+std::string SecondsSince(unsigned long long then, unsigned long long now) {
+  char buffer[32];
+  std::snprintf(buffer, sizeof(buffer), "%.1f",
+                (now > then ? now - then : 0) / 1000.0);
+  return buffer;
 }
 
 }  // namespace
@@ -115,6 +208,10 @@ FlutterWindow::FlutterWindow(const flutter::DartProject& project)
   hint_log_ = tfc::LogThrottle(tfc::LogThrottle::Config{10, 20, 30000});
   send_failure_log_ = tfc::LogThrottle(tfc::LogThrottle::Config{5, 10, 30000});
   timer_thread_log_ = tfc::LogThrottle(tfc::LogThrottle::Config{3, 60, 300000});
+  // Stamps arrive every 10 s. A handful in full at the start of an episode,
+  // then one in sixty (ten minutes) -- enough to prove the isolate is still
+  // there overnight without adding 8,640 lines a day to the file.
+  liveness_log_ = tfc::LogThrottle(tfc::LogThrottle::Config{3, 60, 600000});
 }
 
 FlutterWindow::~FlutterWindow() {
@@ -123,8 +220,38 @@ FlutterWindow::~FlutterWindow() {
   StopWatchdogTimer();
 }
 
-bool FlutterWindow::CreateController() {
+bool FlutterWindow::CreateController(const char* reason) {
   RECT frame = GetClientArea();
+
+  engine_epoch_++;
+  epoch_started_tick_ = ::GetTickCount64();
+  // Startup is in flight from here until Dart says otherwise. A session
+  // change arriving in that window is queued rather than acted on -- see
+  // engine_rebuild_gate.h.
+  rebuild_gate_.EngineCreated(epoch_started_tick_);
+  dart_startup_complete_ = false;
+  dart_main_seen_ = false;
+  // A brand-new engine has presented nothing and started nothing. Judging it
+  // by the absence of frames measures how long it takes to boot.
+  UpdateWatchdogJudgeable();
+  dart_liveness_.EpochStarted(engine_epoch_, epoch_started_tick_);
+  liveness_log_.Reset();
+
+  // The boundary, on the native side of it. Its Dart counterpart is the
+  // "main() starting" line the app writes when it reads the arguments below.
+  LogEngine("epoch " + std::to_string(engine_epoch_) +
+            " STARTING, reason=" + (reason == nullptr ? "unspecified" : reason) +
+            ". A new engine is a new Dart isolate: everything the app was "
+            "doing is gone and main() runs again from the top.");
+
+  // Told to Dart rather than inferred by it. Flutter passes these straight to
+  // main(List<String> args), which is the earliest point the app can know
+  // which generation it is -- earlier than any channel could tell it, and the
+  // first log line it writes therefore already carries the epoch.
+  project_.set_dart_entrypoint_arguments(
+      {"--engine-epoch=" + std::to_string(engine_epoch_),
+       std::string("--engine-reason=") +
+           (reason == nullptr ? "unspecified" : reason)});
 
   // The size here must match the window dimensions to avoid unnecessary surface
   // creation / destruction in the startup path.
@@ -133,6 +260,9 @@ bool FlutterWindow::CreateController() {
   // Ensure that basic setup of the controller was successful.
   if (!flutter_controller_->engine() || !flutter_controller_->view()) {
     flutter_controller_ = nullptr;
+    LogEngine("epoch " + std::to_string(engine_epoch_) +
+              " did NOT start: FlutterViewController came back without an "
+              "engine or a view");
     LogWatchdog(
         "engine did NOT start: FlutterViewController came back without an "
         "engine or a view");
@@ -140,6 +270,17 @@ bool FlutterWindow::CreateController() {
   }
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+
+  // Opened before the first frame, because the messages worth having are the
+  // ones from a generation that never reaches one.
+  runner_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), kRunnerChannel,
+          &flutter::StandardMethodCodec::GetInstance());
+  runner_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) { this->OnRunnerChannelCall(call, std::move(result)); });
 
   // The engine posts this back to the platform thread, so it is safe to touch
   // watchdog state from it. It doubles as the stock runner template's "show the
@@ -178,7 +319,32 @@ bool FlutterWindow::CreateController() {
   return true;
 }
 
-void FlutterWindow::DestroyController() {
+void FlutterWindow::DestroyController(const char* reason) {
+  if (flutter_controller_ != nullptr) {
+    const unsigned long long now = ::GetTickCount64();
+    // The one line that was missing. On 2026-09-10 the second teardown landed
+    // 35 s into a startup that had not finished -- and the log had to be
+    // reconstructed from elapsed-since-logger-init arithmetic to see it at
+    // all. Now the teardown says how far Dart got before it was cut off.
+    LogEngine(
+        "epoch " + std::to_string(engine_epoch_) + " STOPPING after " +
+        SecondsSince(epoch_started_tick_, now) +
+        " s, reason=" + (reason == nullptr ? "unspecified" : reason) +
+        "; Dart main() " + (dart_main_seen_ ? "had started" : "was NEVER seen") +
+        ", app startup " +
+        (dart_startup_complete_
+             ? "had completed"
+             : "was STILL IN FLIGHT -- this teardown interrupts it") +
+        ". Everything this isolate opened, including its OPC UA clients, goes "
+        "with it; whatever it had not finished opening is orphaned.");
+  }
+
+  // The channel borrows the engine's messenger, so it is dropped first.
+  if (runner_channel_ != nullptr) {
+    runner_channel_->SetMethodCallHandler(nullptr);
+    runner_channel_ = nullptr;
+  }
+
   // Destroying the controller shuts the engine down, which takes egl::Manager
   // with it: eglTerminate() releases the lost D3D device so the next
   // eglInitialize() can create a healthy one.
@@ -231,7 +397,7 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
 
-  if (!CreateController()) {
+  if (!CreateController("initial start")) {
     return false;
   }
 
@@ -330,7 +496,7 @@ void FlutterWindow::OnDestroy() {
       session_notifications_registered_ = false;
     }
   }
-  DestroyController();
+  DestroyController("window destroyed");
 
   Win32Window::OnDestroy();
 }
@@ -619,27 +785,17 @@ void FlutterWindow::ApplyAction(const tfc::GpuWatchdog::Action& action) {
                 std::to_string(watchdog_.recovery_attempts()) +
                 " (loss episode " + std::to_string(watchdog_.losses_in_window()) +
                 " in the guard window).");
-    DestroyController();
-    // Deliberately does not touch first_frame_shown_. If the window was already
-    // shown it stays shown, and re-running Show() would undo an operator's
-    // maximise. If the GPU was dead before the very first frame, the flag is
-    // still false and the window has never appeared — then we do want the next
-    // successful frame to show it.
-    if (!CreateController()) {
-      LogWatchdog(
-          "engine restart FAILED -- will retry on the next tick, and escalate "
-          "to exit once the attempts are exhausted");
-    } else {
-      LogWatchdog(
-          "engine rebuilt; waiting for it to present a frame before calling "
-          "this a recovery");
-      // The old sentinel may be a corpse on a dead adapter. A fresh one gives
-      // the next report something true to say.
-      device_probe_.Reset();
-      device_probe_.Create();
-    }
+    // Through the gate, exactly like a session change. This path used to call
+    // DestroyController directly, and on 2026-09-11 it tore down an engine
+    // that had not reached Dart main() -- three times over, each teardown
+    // restarting the startup the previous one had interrupted, until the app
+    // never came up and an operator had to restart it. A guard that covers
+    // one of two callers of DestroyController is not a guard.
+    RequestEngineRebuild("gpu loss recovery");
     // CreateController's own ForceRedraw is the next probe; the watchdog
-    // already accounted for that.
+    // already accounted for that. When the gate queues instead, the probe is
+    // still armed and still answered by whichever engine is live -- it is only
+    // the JUDGEMENT that is held, in UpdateWatchdogJudgeable.
   }
 
   if (action.start_probe) {
@@ -702,7 +858,7 @@ void FlutterWindow::ExitAfterDeviceLoss() {
   // Take the engine down first: that runs egl::Manager's destructor, which
   // releases the dead D3D device, and it stops the raster thread producing
   // more EGL errors after the report.
-  DestroyController();
+  DestroyController("exiting after gpu loss");
 
   std::cerr.flush();
   std::fflush(nullptr);
@@ -750,35 +906,168 @@ void FlutterWindow::StartProbe() {
   flutter_controller_->ForceRedraw();
 }
 
-void FlutterWindow::RebuildForSessionChange(const char* why) {
+void FlutterWindow::UpdateWatchdogJudgeable() {
+  // Two conditions make "no frames presented" unreadable, and they are the two
+  // halves of the 2026-09-11 recurrence:
+  //
+  //   * the engine has not reached Dart main() yet -- there is nothing to
+  //     judge, only a startup to wait for; and
+  //   * a rebuild is already queued -- the engine is on its way out anyway,
+  //     and declaring a loss every couple of ticks until it goes would drive
+  //     recovery_attempts_ to the escalation limit and exit the process.
+  //
+  // A positively reported loss (the sentinel device saying it is removed, or
+  // the EGL storm on the engine's own stderr) is unaffected: that is evidence,
+  // not an inference from silence, and OnRendererLost does not consult this.
+  const bool judgeable = dart_main_seen_ && !rebuild_gate_.has_queued_request();
+  watchdog_.SetJudgeable(judgeable, ::GetTickCount64());
+}
+
+void FlutterWindow::RequestEngineRebuild(const char* why) {
   if (!watchdog_enabled_ || flutter_controller_ == nullptr) {
     return;
   }
 
   const unsigned long long now = ::GetTickCount64();
-  if (last_session_rebuild_ms_ != 0 &&
-      now - last_session_rebuild_ms_ < kSessionRebuildDebounceMs) {
+  const tfc::EngineRebuildGate::Decision decision =
+      rebuild_gate_.Request(why == nullptr ? "unspecified" : why, now);
+  const std::string line = DescribeEngineRebuild(decision);
+  if (!line.empty()) {
+    LogWatchdog(line);
+  }
+  if (decision.verdict != tfc::EngineRebuildGate::Verdict::kRebuildNow) {
+    // A rebuild is pending, so the absence of frames between now and it says
+    // nothing about the device. Without this the watchdog would declare a
+    // fresh loss every couple of ticks while the queue drained, and
+    // recovery_attempts_ would reach the escalation limit and exit the
+    // process -- turning a guard against one loop into a slower one.
+    UpdateWatchdogJudgeable();
     return;
   }
-  last_session_rebuild_ms_ = now;
+  PerformEngineRebuild(decision.reason);
+}
 
-  LogWatchdog(std::string("session change (") + why +
-              ") -- REBUILDING the renderer rather than probing it. The probe "
-              "cannot see this class of loss: the next-frame callback is "
-              "answered whether or not rasterisation succeeded.");
-
-  DestroyController();
+void FlutterWindow::PerformEngineRebuild(const std::string& reason) {
+  if (flutter_controller_ == nullptr) {
+    return;
+  }
+  const std::string rebuild_reason = reason;
+  DestroyController(rebuild_reason.c_str());
   // As in the loss recovery: leave first_frame_shown_ alone so an already
   // visible window stays visible and an operator's maximise survives.
-  if (!CreateController()) {
+  if (!CreateController(rebuild_reason.c_str())) {
     LogWatchdog(
         "session-change rebuild FAILED -- the window has no renderer; the "
         "tick will keep trying and the loss path can still escalate");
   } else {
-    LogWatchdog("renderer rebuilt after session change");
-    // The old sentinel may belong to the session's departed adapter.
+    LogWatchdog("renderer rebuilt (" + reason +
+                "); waiting for it to present a frame before calling this a "
+                "recovery");
+    // The old sentinel may belong to the departed adapter.
     device_probe_.Reset();
     device_probe_.Create();
+  }
+  // CreateController already held judgement for the new engine; this covers
+  // the failure branch, where the queue is empty but no engine was built.
+  UpdateWatchdogJudgeable();
+}
+
+void FlutterWindow::OnRunnerChannelCall(
+    const flutter::MethodCall<flutter::EncodableValue>& call,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  const flutter::EncodableMap* args = ArgumentsOf(call);
+  const unsigned long long now = ::GetTickCount64();
+  const std::string& method = call.method_name();
+
+  if (method == "mainStarting") {
+    dart_main_seen_ = true;
+    // The engine is demonstrably running, so its frames -- or the lack of them
+    // -- mean something again.
+    UpdateWatchdogJudgeable();
+    const long long epoch = IntArg(args, "epoch", -1);
+    const std::string reason = StringArg(args, "reason");
+    const std::string version = StringArg(args, "version");
+    // The line the 2026-09-10 investigation had to reconstruct by arithmetic.
+    LogDart("main() STARTING, epoch " + std::to_string(epoch) + ", reason=" +
+            (reason.empty() ? "unspecified" : reason) +
+            (version.empty() ? "" : ", build " + version) +
+            (epoch == engine_epoch_
+                 ? ""
+                 : " -- WARNING: the runner is on epoch " +
+                       std::to_string(engine_epoch_) +
+                       ", so this isolate belongs to an engine that is "
+                       "already gone"));
+    result->Success();
+    return;
+  }
+
+  if (method == "startupComplete") {
+    const long long epoch = IntArg(args, "epoch", -1);
+    if (epoch == engine_epoch_) {
+      dart_startup_complete_ = true;
+      rebuild_gate_.StartupComplete(now);
+      // A rebuild held back waiting for exactly this is now due. It is POSTED
+      // rather than done here: this handler is running inside a call from the
+      // engine, on the messenger owned by the controller a rebuild destroys.
+      // Tearing that down under its own call frame is how the last three
+      // engine-lifecycle bugs in this file were written. The posted message is
+      // handled once the engine's frame has unwound.
+      if (rebuild_gate_.has_queued_request()) {
+        ::PostMessage(GetHandle(), kEngineRebuildDueMessage, 0, 0);
+      }
+    }
+    LogDart("app startup COMPLETE for epoch " + std::to_string(epoch) +
+            " after " + SecondsSince(epoch_started_tick_, now) +
+            " s (runner clock). Until this line, a rebuild of this engine "
+            "interrupts an unfinished startup.");
+    result->Success();
+    return;
+  }
+
+  if (method == "liveness") {
+    tfc::DartLivenessStamp stamp;
+    stamp.epoch = IntArg(args, "epoch", -1);
+    stamp.uptime_ms = UnsignedArg(args, "uptimeMs");
+    stamp.ticks = UnsignedArg(args, "ticks");
+    stamp.frames = UnsignedArg(args, "frames");
+    stamp.lag_ms = UnsignedArg(args, "lagMs");
+    stamp.startup_complete = BoolArg(args, "startupComplete");
+
+    const tfc::DartLiveness::Decision decision =
+        dart_liveness_.OnStamp(stamp, now);
+    const std::string line = DescribeLiveness(decision, dart_liveness_.config());
+    if (!line.empty()) {
+      // First stamp and recovery are transitions: always worth a line.
+      LogDart(line);
+      liveness_log_.Reset();
+    } else if (decision.verdict ==
+               tfc::DartLiveness::Verdict::kNothingToSay) {
+      // The steady state. Sampled rather than printed in full, because the
+      // whole point of the previous incident's 9.7 MB log was that
+      // instrumentation must not become the fault it documents.
+      const tfc::LogThrottle::Decision throttle = liveness_log_.Record(now);
+      if (throttle.emit) {
+        LogDart("alive: epoch " + std::to_string(stamp.epoch) + ", tick " +
+                std::to_string(stamp.ticks) + ", uptime " +
+                SecondsSince(0, stamp.uptime_ms) + " s, " +
+                std::to_string(stamp.frames) +
+                " frame(s) since the last stamp, timer lag " +
+                std::to_string(stamp.lag_ms) + " ms" +
+                tfc::LogThrottle::DescribeSuppression(throttle));
+      }
+    }
+    result->Success();
+    return;
+  }
+
+  result->NotImplemented();
+}
+
+void FlutterWindow::EvaluateDartLiveness(unsigned long long now_ms) {
+  const tfc::DartLiveness::Decision decision = dart_liveness_.Evaluate(now_ms);
+  const std::string line = DescribeLiveness(decision, dart_liveness_.config());
+  if (!line.empty()) {
+    LogDart(line);
   }
 }
 
@@ -829,6 +1118,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   // the note on the tick in flutter_window.h.
   if (message == kWatchdogTickMessage) {
     const unsigned long long now = ::GetTickCount64();
+    const bool held = watchdog_.judgement_held(now);
     const tfc::LogThrottle::Decision decision = tick_log_.Record(now);
     if (decision.emit) {
       LogWatchdog(
@@ -838,8 +1128,45 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
           (watchdog_.probe_outstanding() ? "yes" : "no") + ", last frame " +
           std::to_string(now - last_frame_tick_) + " ms ago, sentinel " +
           (device_probe_.available() ? "watched" : "UNAVAILABLE") +
+          // Without this a reader sees a missed count that will not move and
+          // has no way to tell a healthy hold from a broken counter. On
+          // 2026-09-11 the opposite question -- why IS it moving -- took a
+          // dump to answer.
+          (held ? std::string(", judgement HELD (") +
+                      (dart_main_seen_ ? "a rebuild is queued"
+                                       : "Dart main() not seen yet") +
+                      ", so missing frames are not counted)"
+                : std::string()) +
           tfc::LogThrottle::DescribeSuppression(decision));
     }
+    if (watchdog_.ConsumeJudgementHoldExpired()) {
+      // Loud and unthrottled: from here the watchdog will start rebuilding an
+      // engine that may simply never have started, which is the loop this
+      // whole mechanism exists to break.
+      LogWatchdog(
+          "judgement hold EXPIRED -- this engine was given the full grace and "
+          "still never reported Dart main() or presented a frame. Resuming "
+          "normal judgement, which means the loss path can rebuild it again. "
+          "If this line repeats, the app is not starting and the fault is in "
+          "Dart, not the GPU.");
+    }
+
+    // A rebuild held back while an engine was starting is released here when
+    // that startup finishes without ever saying so -- the backstop for an app
+    // whose Dart side never reports completion. The channel's own
+    // startupComplete handler is the fast path.
+    const tfc::EngineRebuildGate::Decision released = rebuild_gate_.Poll(now);
+    if (released.verdict == tfc::EngineRebuildGate::Verdict::kRebuildNow) {
+      LogWatchdog(DescribeEngineRebuild(released));
+      PerformEngineRebuild(released.reason);
+      return 0;
+    }
+
+    // The Dart side is asked separately, because it is the half that the
+    // device probe, the frame probe and the sentinel are all blind to. This
+    // runs on the platform thread, driven by the timer-queue thread, so it
+    // keeps working while the message queue is saturated.
+    EvaluateDartLiveness(now);
 
     // Ask the device before counting silence. A positive answer is better
     // evidence than any number of unanswered probes, and it arrives sooner.
@@ -847,6 +1174,16 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       Dispatch(WatchdogEvent::kRendererLost, tfc::LossCause::kContextLost);
     } else {
       Dispatch(WatchdogEvent::kTick);
+    }
+    return 0;
+  }
+
+  if (message == kEngineRebuildDueMessage) {
+    const tfc::EngineRebuildGate::Decision released =
+        rebuild_gate_.Poll(::GetTickCount64());
+    if (released.verdict == tfc::EngineRebuildGate::Verdict::kRebuildNow) {
+      LogWatchdog(DescribeEngineRebuild(released));
+      PerformEngineRebuild(released.reason);
     }
     return 0;
   }
@@ -897,11 +1234,27 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
           const tfc::LogThrottle::Decision decision =
               hint_log_.Record(::GetTickCount64());
           if (decision.emit) {
-            LogWatchdog("hint: power resume -- probing" +
+            LogWatchdog("hint: power resume -- rebuilding the renderer" +
                         tfc::LogThrottle::DescribeSuppression(decision));
           }
           NoteLossHint(tfc::LossHint::kPowerResume, 0);
+          // A wake is its own trigger, and until 2026-09-11 it was not in the
+          // list of reasons at all -- the rebuilds it caused were logged as
+          // "gpu loss recovery", which is what made that morning look like a
+          // device fault rather than a slow start after a resume.
+          //
+          // Handled exactly like a remote session change, and for the same
+          // reason: a host waking from sleep resets the VM's virtual GPU, and
+          // the frame probe is blind to that class of loss (the next-frame
+          // callback is answered whether or not rasterisation succeeded --
+          // see the note on RequestEngineRebuild). Going through the gate
+          // means the wake gets ONE deliberate, coalesced rebuild with its
+          // own reason, instead of an emergent loop of loss recoveries; and
+          // the engine it builds is granted the startup grace every fresh
+          // engine gets, so a slow first frame after a resume is expected
+          // rather than panicked over.
           Dispatch(WatchdogEvent::kDeviceLossHint);
+          RequestEngineRebuild("power resume");
         }
       }
       break;
@@ -948,9 +1301,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
             // right response there. A REMOTE connect or disconnect swaps it,
             // and that is the case the probe is blind to.
             if (wparam == WTS_REMOTE_CONNECT) {
-              RebuildForSessionChange("remote connect");
+              RequestEngineRebuild("session change: remote connect");
             } else if (wparam == WTS_REMOTE_DISCONNECT) {
-              RebuildForSessionChange("remote disconnect");
+              RequestEngineRebuild("session change: remote disconnect");
             }
           }
           break;

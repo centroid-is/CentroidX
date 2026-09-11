@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+
+import 'package:logger/logger.dart';
 
 import 'package:collection/collection.dart';
 import 'package:json_annotation/json_annotation.dart';
@@ -27,6 +28,10 @@ import 'boolean_expression.dart';
 import 'fuzzy_match.dart';
 
 part 'alarm.g.dart';
+
+/// File-level logger. These diagnostics used to go to stderr, which in a
+/// windowed MSIX build with no console is discarded outright.
+final Logger _log = Logger();
 
 @JsonEnum()
 enum AlarmLevel {
@@ -185,7 +190,27 @@ class AlarmConfig {
 class AlarmManConfig {
   final List<AlarmConfig> alarms;
 
-  AlarmManConfig({required this.alarms});
+  /// Whether a raising alarm should pull the operator to the page that shows
+  /// it — the beacon's page, the same page whose navigation entry pulses.
+  ///
+  /// Plant-wide rather than per-station, and stored here rather than under a
+  /// preference key of its own: it belongs to the same `alarm_man_config`
+  /// blob the alarms themselves live in, which `kPrefAccessRules` already
+  /// classifies `configure`, so the switch is reachable by exactly the roles
+  /// that may edit an alarm and every flip lands in the audit trail without a
+  /// new rule.
+  ///
+  /// Off by default. A station that has been running for years must not start
+  /// yanking its operators between screens because it was upgraded; turning
+  /// this on is a decision somebody makes for a plant, once.
+  ///
+  /// Mutable, unlike [alarms] which is mutated in place: this is one bool and
+  /// [AlarmMan.setAutoNavigate] reassigns it, so the running [AlarmMan] and
+  /// the editor that flipped it agree without a reload.
+  @JsonKey(name: 'auto_navigate', defaultValue: false)
+  bool autoNavigate;
+
+  AlarmManConfig({required this.alarms, this.autoNavigate = false});
 
   factory AlarmManConfig.fromJson(Map<String, dynamic> json) =>
       _$AlarmManConfigFromJson(json);
@@ -343,7 +368,7 @@ class AlarmMan {
             if (existing != null) {
               _removeActiveAlarm(existing);
             } else {
-              stderr.writeln(
+              _log.w(
                   'Did not find existing active alarm for alarmNotification: $alarmNotification');
             }
           } else {
@@ -352,13 +377,20 @@ class AlarmMan {
                   e.notification.rule == alarmNotification.rule) {
                 e.pendingAck = true;
                 e.notification.active = false;
+                // The condition cleared *now*; the ack, whenever it comes, is
+                // paperwork. Recording the clear time here is what lets the
+                // downtime analysis end the stop when the machine restarted
+                // rather than when somebody got around to pressing OK.
+                e.deactivated = DateTime.now();
                 break;
               }
             }
           }
           _activeAlarmsController.add(_activeAlarms);
         }, onError: (error, stack) {
-          stderr.writeln('Alarm stream error: $error');
+          // "Why did this alarm never fire" ends here. On stderr it ended
+          // nowhere.
+          _log.e('Alarm stream error: $error', error: error, stackTrace: stack);
         });
       }
     };
@@ -432,7 +464,7 @@ class AlarmMan {
       alarmMan._history.addAll(await alarmMan.getRecentAlarms());
       alarmMan._historyController.add(alarmMan._history.buffer);
     } catch (e) {
-      stderr.writeln('Error loading history: $e');
+      _log.e('Error loading alarm history: $e');
     }
     return alarmMan;
   }
@@ -446,6 +478,10 @@ class AlarmMan {
   }
 
   void ackAlarm(AlarmActive alarm) {
+    // Guarded: an instance that already left the active set (double-tap on
+    // the ack button, a stale reference from the history list) must not be
+    // pushed into the history a second time.
+    if (!_activeAlarms.contains(alarm)) return;
     _removeActiveAlarm(alarm);
     _activeAlarmsController.add(_activeAlarms);
   }
@@ -462,12 +498,47 @@ class AlarmMan {
     alarms.removeWhere((e) => e.config.uid == alarm.uid);
   }
 
+  /// Replaces the alarm carrying [alarm]'s uid, leaving it where it was.
+  ///
+  /// In place, not remove-then-append. Nothing sorts the alarm editor's list:
+  /// it is `config.alarms` in stored order, and `alarms` -- a LinkedHashSet,
+  /// so insertion order -- behind it. Appending moved every alarm the
+  /// operator edited to the bottom of the list, and because [_saveConfig]
+  /// rewrites the whole `alarm_man_config` blob the move was persisted, so it
+  /// survived the reload the editor does right after saving.
+  ///
+  /// An alarm whose uid is not here yet is appended, which is how the
+  /// proposal flow creates one: the editor routes both create and update
+  /// through this method.
   void updateAlarm(AlarmConfig alarm) {
-    config.alarms.removeWhere((e) => e.uid == alarm.uid);
-    config.alarms.add(alarm);
+    final index = config.alarms.indexWhere((e) => e.uid == alarm.uid);
+    if (index == -1) {
+      config.alarms.add(alarm);
+    } else {
+      config.alarms[index] = alarm;
+    }
     _saveConfig();
-    alarms.removeWhere((e) => e.config.uid == alarm.uid);
-    alarms.add(Alarm(config: alarm));
+    _replaceLiveAlarm(alarm);
+  }
+
+  /// Swaps the live [Alarm] for one rebuilt from [alarm], at the position it
+  /// already held in [alarms].
+  ///
+  /// A Set has no index to assign through, so the order is restored by
+  /// rebuilding it. [Alarm] has no `==`, so identity applies and the
+  /// replacement never collides with the entry it replaces.
+  void _replaceLiveAlarm(AlarmConfig alarm) {
+    final replacement = Alarm(config: alarm);
+    if (!alarms.any((e) => e.config.uid == alarm.uid)) {
+      alarms.add(replacement);
+      return;
+    }
+    final rebuilt = alarms
+        .map((e) => e.config.uid == alarm.uid ? replacement : e)
+        .toList();
+    alarms
+      ..clear()
+      ..addAll(rebuilt);
   }
 
   List<AlarmActive> filterAlarms(List<AlarmActive> alarms, String searchQuery) {
@@ -518,6 +589,18 @@ class AlarmMan {
           'alarm configuration.');
     }
     _writeConfig(prefs);
+  /// Turns the auto-navigation flag on or off and persists it.
+  ///
+  /// Assigns before saving so a caller that reads [config] back in the same
+  /// turn — the alarm editor rebuilding its switch — sees the new value even
+  /// though the write is still in flight. A denied write (the guard, on a
+  /// session without `configure`) therefore leaves the in-memory flag ahead of
+  /// the stored one until the next load, which is the same shape every other
+  /// writer here has: [updateAlarm] mutates the list before `_saveConfig` too.
+  void setAutoNavigate(bool value) {
+    if (config.autoNavigate == value) return;
+    config.autoNavigate = value;
+    _saveConfig();
   }
 
   Future<void> _writeConfig(Preferences prefs) =>
@@ -525,7 +608,15 @@ class AlarmMan {
 
   void _removeActiveAlarm(AlarmActive alarm) {
     alarm.notification.active = false;
-    alarm.deactivated = DateTime.now();
+    // `??=`: an ack-required alarm already carries its clear time from the
+    // moment the condition dropped; stamping again here would silently turn
+    // "cleared at 03:12, acked at 07:40" into four and a half hours of
+    // invented downtime.
+    alarm.deactivated ??= DateTime.now();
+    // Leaving the set means there is nothing left to acknowledge. Clearing
+    // the flag (before the row is written) is what keeps a restored history
+    // row from ever growing an ack button again.
+    alarm.pendingAck = false;
     _history.add(alarm);
     _activeAlarms.remove(alarm);
     _historyController.add(_history.buffer);

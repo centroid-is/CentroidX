@@ -172,7 +172,7 @@ const List<String> kSystemWriteCallSitesOwed = <String>[];
 /// loading, or has errored.
 ///
 /// Anonymous holding the **seeded Operator groups**, mirroring
-/// `AccessSessionController._anonymousGroups`. The boot window is real — the
+/// `AccessSessionController._anonymousSession`. The boot window is real — the
 /// session resolves through the database and the guards are built before it
 /// answers — and the alternative, an empty group set, would refuse a jog on a
 /// panel that is merely still starting. It is the conservative floor rather

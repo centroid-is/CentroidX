@@ -28,6 +28,7 @@ Widget _build({
   required FakeTimeDate timeDate,
   FakeTimeSync? timeSync,
   List<String> storedServers = const [],
+  bool settingsAllowed = true,
 }) {
   return MaterialApp(
     debugShowCheckedModeBanner: false,
@@ -39,6 +40,8 @@ Widget _build({
           timeSync: timeSync,
           storedServers: storedServers,
           onServersChanged: (_) async {},
+          settingsAllowed: settingsAllowed,
+          onBeforeChange: () async => settingsAllowed,
         ),
       ),
     ),
@@ -50,6 +53,7 @@ Future<void> _pump(
   required FakeTimeDate timeDate,
   FakeTimeSync? timeSync,
   List<String> storedServers = const [],
+  bool settingsAllowed = true,
 }) async {
   await tester.binding.setSurfaceSize(_viewport);
   // 1:1 pixels — these are for reading, not pixel archaeology.
@@ -60,7 +64,11 @@ Future<void> _pump(
   await pumpAndLoad(
     tester,
     _build(
-        timeDate: timeDate, timeSync: timeSync, storedServers: storedServers),
+      timeDate: timeDate,
+      timeSync: timeSync,
+      storedServers: storedServers,
+      settingsAllowed: settingsAllowed,
+    ),
   );
 }
 
@@ -171,5 +179,25 @@ void main() {
       timeSync: FakeTimeSync(status: syncStatus(message: healthyMessage())),
     );
     await _expectGolden(tester, 'system_clock_rtc_drift.png');
+  });
+
+  testWidgets('locked for a session without administer', (tester) async {
+    // What an anonymous operator at the panel sees: the whole status half —
+    // the time, the timezone, the sync verdict, the servers — and a lock on
+    // each of the three things that would change the host. The route is not
+    // gated, and this frame is the argument for that.
+    await _pump(
+      tester,
+      timeDate: FakeTimeDate(),
+      timeSync: FakeTimeSync(
+        status: syncStatus(
+          runtime: const ['10.104.29.1', '0.debian.pool.ntp.org'],
+          message: healthyMessage(),
+        ),
+      ),
+      storedServers: const ['10.104.29.1', '0.debian.pool.ntp.org'],
+      settingsAllowed: false,
+    );
+    await _expectGolden(tester, 'system_clock_locked.png');
   });
 }

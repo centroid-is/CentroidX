@@ -32,7 +32,7 @@ const _accessTables = [
   'audit_entry',
 ];
 
-/// The relational configuration tables added in the v6→v7 migration.
+/// The relational configuration tables added in the v7→v8 migration.
 const _configTables = [
   'config_item',
   'config_change',
@@ -64,22 +64,22 @@ Future<String> _sqliteDdl(GeneratedDatabase db, String table) async {
   return rows.first.read<String>('sql');
 }
 
-/// The v8 `config_change` NOTIFY statements as the database would receive
+/// The v9 `config_change` NOTIFY statements as the database would receive
 /// them, joined for matching.
 ///
 /// The arm that runs them is Postgres-only and nothing in this package can
-/// execute it — the gap the v6 and v7 Postgres arms record about themselves.
+/// execute it — the gap the v6, v7 and v8 Postgres arms record about themselves.
 /// So what is left to assert is the text, and it is asserted against the
 /// runtime strings rather than the source, which carries Dart's escaping.
 String _notifyStatements() =>
     AppDatabase.configChangeNotifyStatementsForTest.join('\n');
 
-/// Undoes the v7 arm on an already-created database, leaving it shaped like a
-/// v6 one so the arm can then be run against it for real.
+/// Undoes the v8 arm on an already-created database, leaving it shaped like a
+/// v7 one so the arm can then be run against it for real.
 ///
-/// Dropping is how a v6 database is reached from here: `inMemoryForTest`
+/// Dropping is how a v7 database is reached from here: `inMemoryForTest`
 /// creates at the current schema version, so there is no other way to an older
-/// shape short of hand-writing the whole of v6.
+/// shape short of hand-writing the whole of v7.
 Future<void> _dropConfigSchema(GeneratedDatabase db) async {
   for (final index in _configIndexes) {
     await db.customStatement('DROP INDEX IF EXISTS $index');
@@ -116,10 +116,10 @@ void main() {
       }
     });
 
-    test('schema version is 8', () async {
+    test('schema version is 9', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 8);
+      expect(db.schemaVersion, 9);
     });
 
     test('fresh install creates the config tables and their indexes',
@@ -163,28 +163,28 @@ void main() {
       }
     });
 
-    test('a v6 database upgrades to v7, twice over', () async {
+    test('a v7 database upgrades to v8, twice over', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
       await db.customSelect('SELECT 1').getSingle();
 
       await _dropConfigSchema(db);
       expect(await _tableNames(db), isNot(contains('config_item')),
-          reason: 'the teardown must actually reach a v6 shape, or the arm '
+          reason: 'the teardown must actually reach a v7 shape, or the arm '
               'below would be asserted against a database that already has '
               'everything it creates');
 
-      await db.migration.onUpgrade(Migrator(db), 6, 7);
+      await db.migration.onUpgrade(Migrator(db), 8, 9);
 
       var tables = await _tableNames(db);
       var indexes = await _indexNames(db);
       for (final table in _configTables) {
         expect(tables, contains(table),
-            reason: 'the v7 arm must create $table');
+            reason: 'the v8 arm must create $table');
       }
       for (final index in _configIndexes) {
         expect(indexes, contains(index),
-            reason: 'the v7 arm must create $index');
+            reason: 'the v8 arm must create $index');
       }
 
       // Several SVN stations share one database and each of them runs the arm
@@ -194,7 +194,7 @@ void main() {
       // emits `CREATE TABLE IF NOT EXISTS` too. The Postgres arm's
       // idempotency rests on its own `IF NOT EXISTS` literals and is
       // unexercised here, exactly as that arm's comment says.
-      await db.migration.onUpgrade(Migrator(db), 6, 7);
+      await db.migration.onUpgrade(Migrator(db), 8, 9);
 
       tables = await _tableNames(db);
       indexes = await _indexNames(db);
@@ -206,8 +206,8 @@ void main() {
       }
     });
 
-    test('the v8 arm is a no-op on SQLite, run twice over', () async {
-      // The whole content of v8 is a Postgres trigger, so on SQLite there is
+    test('the v9 arm is a no-op on SQLite, run twice over', () async {
+      // The whole content of v9 is a Postgres trigger, so on SQLite there is
       // nothing to create and nothing to find afterwards. What this pins is
       // that the arm *runs* here without throwing: an `if (native)` written
       // the wrong way round, or a `customStatement` outside the dialect
@@ -219,14 +219,14 @@ void main() {
       await db.customSelect('SELECT 1').getSingle();
 
       final before = await _tableNames(db);
-      await db.migration.onUpgrade(Migrator(db), 7, 8);
-      await db.migration.onUpgrade(Migrator(db), 7, 8);
+      await db.migration.onUpgrade(Migrator(db), 8, 9);
+      await db.migration.onUpgrade(Migrator(db), 8, 9);
 
       expect(await _tableNames(db), before,
-          reason: 'the v8 arm must add nothing to a SQLite database');
+          reason: 'the v9 arm must add nothing to a SQLite database');
     });
 
-    test('the v8 NOTIFY trigger carries a constant empty payload', () async {
+    test('the v9 NOTIFY trigger carries a constant empty payload', () async {
       // The one property of this trigger that must never drift. `pg_notify`
       // does not truncate an oversized payload, it errors the statement that
       // fired it — so a trigger that carried the changed row, or the changed
@@ -245,7 +245,7 @@ void main() {
               'trigger exists to avoid');
     });
 
-    test('the v8 trigger is statement-level, insert-only and re-runnable',
+    test('the v9 trigger is statement-level, insert-only and re-runnable',
         () async {
       final source = _notifyStatements();
 

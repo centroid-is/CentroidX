@@ -22,7 +22,10 @@ import '../providers/access.dart';
 import '../providers/theme.dart';
 import '../providers/alarm.dart';
 import '../providers/nav_alarm.dart';
-import 'package:tfc_access/tfc_access.dart' show AccessSession;
+import '../providers/menu.dart';
+import '../providers/alarm_auto_navigation.dart';
+import '../access_routes.dart';
+import 'package:tfc_access/tfc_access.dart' show AccessGroup, AccessSession;
 import 'package:tfc_dart/core/alarm.dart';
 import 'alarm.dart';
 import 'nav_alarm_badge.dart';
@@ -131,6 +134,69 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
           (alarmMan) => alarmMan
               .activeAlarms()
               .map((activeAlarms) => (alarmMan, activeAlarms.toList())));
+
+  @override
+  void initState() {
+    super.initState();
+    // A raise that lands in the gap between one page's scaffold going and the
+    // next one's arriving would have nobody listening. The queue survives it --
+    // it lives on the keep-alive navigator, not here -- so the newly mounted
+    // scaffold drains it instead. After the first frame, because this reads
+    // the route the scaffold is being built for.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _takeAlarmNavigation();
+    });
+  }
+
+  /// Beams to the page an alarm just raised on, if there is one and if this is
+  /// a moment to move.
+  ///
+  /// Everything about *which* page is the navigator's call; what is decided
+  /// here is the pair of facts only a mounted scaffold holds -- where the
+  /// operator is standing, and what their session may open.
+  void _takeAlarmNavigation() {
+    final navigator = ref.read(alarmAutoNavigationProvider.notifier).navigator;
+    if (!navigator.hasPending) return;
+
+    final currentPath = currentBeamPath(context);
+
+    // Never off a raised page. `/advanced/page-editor`, the alarm editor and
+    // server config are all pages somebody had to sign in to open, and they
+    // are where unsaved work lives; an alarm that yanks an engineer out of a
+    // half-drawn mimic costs more than the jump is worth. Read off the route
+    // declaration rather than a list of paths, so a page published for
+    // `configure` in the page editor is covered the day it is created.
+    final suppressed =
+        accessGroupForRoute(currentPath) != AccessGroup.operate;
+
+    // The operator's own view of the menu, asked of the provider that builds
+    // it rather than of the group gate alone.
+    //
+    // The intent here is unchanged -- a page they cannot open would swap
+    // itself for the refusal notice the moment they landed on it, which is a
+    // worse answer than staying put. What changed is that "cannot open" grew a
+    // second half: since the page-visibility whitelist, a page can be refused
+    // for the audience it was published to as well as for the group it needs,
+    // and `accessRouteLocked` deliberately answers only the group half (it is
+    // the menu *badge's* question, and making it ask the session about every
+    // ordinary row would cost every row a subscription).
+    //
+    // `visibleMenu` is the composed answer and is what the navigation bar
+    // renders, so an alarm can only ever jump to somewhere the operator can
+    // actually see. `read`, not `watch`: this runs from a listener and a
+    // post-frame callback, never during build.
+    final visible = ref.read(visibleMenuProvider);
+    final target = navigator.take(
+      currentPath: currentPath,
+      canOpen: (path) => visible.indexOfPath(path) != null,
+      suppressed: suppressed,
+    );
+    if (target == null) return;
+
+    _logger.i('Alarm ${target.alarmUid} (${target.level.name}) '
+        'navigating to ${target.path}');
+    Beamer.of(context).beamToNamed(target.path);
+  }
 
   void _toggleFullscreen() {
     setState(() {
@@ -306,8 +372,13 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     if (ref.read(accessSessionProvider).valueOrNull?.isElevated ?? false) {
       return;
     }
+    // The full tree, deliberately, not `visibleMenu`. `resolveStartupPath`
+    // answers "is this path routable"; whether *this* person may open it is
+    // the route gate's question, and it answers with an honest refusal page.
+    // Resolving against the filtered view instead would silently re-target
+    // somebody's startup page to a different one.
     final target =
-        resolveStartupPath(stored, menuItems: RouteRegistry().menuItems);
+        resolveStartupPath(stored, menuItems: ref.read(menuTreeProvider));
     final beamer = Beamer.of(context);
     if (beamer.configuration.uri.path == target) return;
     beamer.beamToNamed(target);
@@ -326,6 +397,15 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
       if (wasElevated && !isElevated) unawaited(_returnToStartupPage());
     });
 
+    // A raising alarm asking for the screen. The counter is the signal; the
+    // target is taken from the navigator inside, because only this widget can
+    // answer where the operator is and what they may open. Registered in
+    // build for the same reason the listener above is: riverpod re-registers
+    // per rebuild and drops it on unmount.
+    ref.listen<int>(alarmAutoNavigationProvider, (_, __) {
+      _takeAlarmNavigation();
+    });
+
     // Retrieve the provider (if any)
     final globalLeftProvider = _tryGetGlobalAppBarLeftWidgetProvider(context);
 
@@ -338,6 +418,12 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
     final navAlarmLevels =
         ref.watch(navigationAlarmsProvider).valueOrNull ?? const {};
     final navCurrentPath = currentBeamPath(context);
+
+    // The menu this session may see. Watched — so signing in or out rebuilds
+    // the bar with the destinations that identity has, which is the whole
+    // point of the provider. It is derived from the pages and the session and
+    // nothing else; nothing on the plant-connection side is on this path.
+    final visibleMenu = ref.watch(visibleMenuProvider);
 
     // How much of the bar the right-hand cluster needs — see the centre
     // region's margin comment below. Read off the session rather than fixed,
@@ -538,22 +624,36 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
           : widget.floatingActionButton,
       floatingActionButtonLocation:
           _isFullscreen ? FloatingActionButtonLocation.startFloat : null,
-      bottomNavigationBar: _isFullscreen
+      // Built from `visibleMenu`, never from `RouteRegistry().menuItems`.
+      //
+      // Three things index into one list here — the destinations, the selected
+      // index and the tap handler — and they must be the *same* list. A
+      // filtered render list beside an unfiltered tap list sends a tap to the
+      // wrong page, which is the defect class the popup's "sized from the
+      // entries that will actually be shown" comment records one widget down.
+      // `VisibleMenu` owns the mapping so there is nowhere for the two to
+      // disagree.
+      //
+      // No bar below two destinations: Material's NavigationBar asserts it,
+      // and a session whitelisted down to one page is a real state now. The
+      // app bar — with its sign-in control — is still there, so this is not a
+      // dead end; fullscreen mode has always rendered a bar-less scaffold.
+      bottomNavigationBar: _isFullscreen || !visibleMenu.showsBar
           ? null
           : NavigationBar(
               // Same null-safe path source as the back-arrow gate: an
               // unguarded `as BeamState` here would defeat currentBeamPath's
               // guard — both run in the same build pass, so the scaffold
               // would fail to build anyway if this threw.
-              selectedIndex: findTopLevelIndexForBeamer(
-                    RouteRegistry().root,
-                    null,
-                    currentBeamPath(context) ?? '/',
-                  ) ??
-                  0,
+              //
+              // Null — the current page is not one this session can see, which
+              // happens on sign-out — selects nothing rather than the wrong
+              // thing. Index 0 would highlight whatever happens to be first.
+              selectedIndex:
+                  visibleMenu.indexOfPath(currentBeamPath(context) ?? '/') ?? 0,
               labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
               destinations: [
-                ...RouteRegistry().menuItems.map<Widget>((item) {
+                ...visibleMenu.topLevel.map<Widget>((item) {
                   if (item.children.isEmpty) {
                     return NavigationDestination(
                         icon: NavAlarmBadge(
@@ -585,7 +685,9 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
                 // when nothing is open, so the two never fight.
                 closeSidePane(immediate: true);
                 closeAllFloatingDialogs();
-                final item = RouteRegistry().menuItems[index];
+                // The same filtered list the destinations were built from.
+                if (index < 0 || index >= visibleMenu.topLevel.length) return;
+                final item = visibleMenu.topLevel[index];
                 beamSafelyKids(context, item, askGuard: false);
               }),
             ),

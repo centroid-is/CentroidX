@@ -44,7 +44,27 @@ jobs:
     steps:
       - name: Make safe directory
         run: git config --system --add safe.directory '*'
+      # `actions/checkout` is a network operation against github.com, and it fails
+      # outright often enough to matter — 9 times in the 2.5 weeks to 2026-09-10,
+      # each one killing a whole job before a single useful step had run. Retried
+      # once here, and at every other checkout in this file.
+      #
+      # This cannot be factored into `.github/actions/` the way pub-get and
+      # setup-flutter are: a local composite action is loaded from the workspace,
+      # and the workspace does not exist until checkout has run. So the retry is
+      # written out at each site instead.
+      #
+      # Safe to repeat: checkout cleans the workspace on entry, so the second
+      # attempt does not inherit a half-finished first one.
       - name: Checkout centroid-hmi
+        uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Checkout centroid-hmi (retry)
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
@@ -73,9 +93,29 @@ jobs:
         working-directory: centroid-hmi
         run: flutter-elinux create --platforms=elinux .
 
+      # libcef.so records ALSA and NSS/NSPR in its DT_NEEDED, so the link fails
+      # without them even though nothing of ours calls either:
+      #
+      #   libcef.so: undefined reference to `snd_pcm_readi@ALSA_0.9'
+      #   libcef.so: undefined reference to `PK11_GetAllTokens@NSS_3.2'
+      #
+      # These are the same three the runtime image installs (docker/frontend),
+      # here because tfc-toolchain does not carry them. libasound2t64, not
+      # libasound2 — trixie's t64 transition renamed it and the old name does
+      # not resolve at all. Lives in the workflow rather than the toolchain
+      # image so this PR is self-contained; folding it into tfc-toolchain and
+      # dropping this step is the tidier follow-up.
+      - name: Install CEF link dependencies
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libnss3 libnspr4 libasound2t64
+
       - name: Get Flutter Packages
-        working-directory: centroid-hmi
-        run: flutter-elinux pub get
+        uses: ./.github/actions/pub-get
+        with:
+          command: flutter-elinux pub get
+          working-directory: centroid-hmi
 
       - name: Build for eLinux
         working-directory: centroid-hmi
@@ -97,15 +137,24 @@ jobs:
           name: centroid-hmi-artifacts
           path: centroid-hmi/assets/
 
-  # `docker-build` and `backend-build` are also job ids in centroid-hmi-ivi.yml,
-  # so without a `name` both workflows publish identically-named checks on every
-  # PR. Job ids are unchanged — `needs:` below refers to them.
+  # The `name` says which embedder the image carries. It dates from when
+  # centroid-hmi-ivi.yml published a second image from the same job ids and the
+  # two checks were indistinguishable on a PR; that workflow is gone, but the
+  # name is still the useful one to read in the checks list.
   docker-build:
     name: Docker Image (flutter-elinux)
     needs: elinux-build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
+        uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Checkout repository (retry)
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
@@ -178,6 +227,14 @@ jobs:
         run: git config --system --add safe.directory '*'
       - name: Checkout centroid-hmi
         uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Checkout centroid-hmi (retry)
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
 
@@ -205,9 +262,29 @@ jobs:
         working-directory: centroid-hmi
         run: flutter-elinux create --platforms=elinux .
 
+      # libcef.so records ALSA and NSS/NSPR in its DT_NEEDED, so the link fails
+      # without them even though nothing of ours calls either:
+      #
+      #   libcef.so: undefined reference to `snd_pcm_readi@ALSA_0.9'
+      #   libcef.so: undefined reference to `PK11_GetAllTokens@NSS_3.2'
+      #
+      # These are the same three the runtime image installs (docker/frontend),
+      # here because tfc-toolchain does not carry them. libasound2t64, not
+      # libasound2 — trixie's t64 transition renamed it and the old name does
+      # not resolve at all. Lives in the workflow rather than the toolchain
+      # image so this PR is self-contained; folding it into tfc-toolchain and
+      # dropping this step is the tidier follow-up.
+      - name: Install CEF link dependencies
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libnss3 libnspr4 libasound2t64
+
       - name: Get Flutter Packages
-        working-directory: centroid-hmi
-        run: flutter-elinux pub get
+        uses: ./.github/actions/pub-get
+        with:
+          command: flutter-elinux pub get
+          working-directory: centroid-hmi
 
       - name: Build for eLinux
         working-directory: centroid-hmi
@@ -234,6 +311,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
+        uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Checkout repository (retry)
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
@@ -296,6 +381,14 @@ jobs:
         run: git config --system --add safe.directory '*'
       - name: Checkout centroid-hmi
         uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Checkout centroid-hmi (retry)
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
 
@@ -312,9 +405,29 @@ jobs:
         working-directory: centroid-hmi
         run: flutter-elinux create --platforms=elinux .
 
+      # libcef.so records ALSA and NSS/NSPR in its DT_NEEDED, so the link fails
+      # without them even though nothing of ours calls either:
+      #
+      #   libcef.so: undefined reference to `snd_pcm_readi@ALSA_0.9'
+      #   libcef.so: undefined reference to `PK11_GetAllTokens@NSS_3.2'
+      #
+      # These are the same three the runtime image installs (docker/frontend),
+      # here because tfc-toolchain does not carry them. libasound2t64, not
+      # libasound2 — trixie's t64 transition renamed it and the old name does
+      # not resolve at all. Lives in the workflow rather than the toolchain
+      # image so this PR is self-contained; folding it into tfc-toolchain and
+      # dropping this step is the tidier follow-up.
+      - name: Install CEF link dependencies
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libnss3 libnspr4 libasound2t64
+
       - name: Get Flutter Packages
-        working-directory: centroid-hmi
-        run: flutter-elinux pub get
+        uses: ./.github/actions/pub-get
+        with:
+          command: flutter-elinux pub get
+          working-directory: centroid-hmi
 
       - name: Build for eLinux
         working-directory: centroid-hmi
@@ -364,6 +477,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Checkout repository (retry)
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
 
@@ -396,6 +517,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
+        uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Checkout repository (retry)
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
@@ -453,6 +582,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
+        uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Checkout repository (retry)
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}

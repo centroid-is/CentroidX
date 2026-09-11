@@ -8,6 +8,7 @@ project(runner LANGUAGES CXX)
 # Any new source files that you add to the application should be added here.
 add_executable(${BINARY_NAME} WIN32
   "crash_handler.cpp"
+  "dart_liveness.cpp"
   "egl_storm_detector.cpp"
   "stderr_interposer.cpp"
   "crash_record.cpp"
@@ -21,6 +22,7 @@ add_executable(${BINARY_NAME} WIN32
   "output_target.cpp"
   "path_utils.cpp"
   "runner_log.cpp"
+  "engine_rebuild_gate.cpp"
   "utils.cpp"
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:dbus/dbus.dart';
@@ -13,7 +14,25 @@ import '../core/system_clock.dart';
 import '../dbus/generated/hostname1.dart' as hostname1;
 import '../dbus/generated/login1.dart' as login1;
 import '../providers/preferences.dart';
+import '../widgets/group_access_guard.dart';
 import '../widgets/system_clock_section.dart';
+
+/// What it takes to change this host: the clock, the timezone, the NTP
+/// servers, and the two buttons that stop the station.
+///
+/// `administer` is "server config, database, network, updates" — and it is
+/// what IP Settings next door already requires, so one sign-in covers both
+/// station-configuration pages rather than making an engineer authenticate
+/// twice to finish one job.
+///
+/// **The route itself stays open**, and that is the whole design here. Reading
+/// the hostname, the addresses and whether the clock is synchronised is
+/// operator work; a locked page would mean nobody notices a station whose
+/// historised samples are timestamped an hour out. `main.dart`'s route table
+/// says this page "reads system information and changes nothing", which stopped
+/// being true when the clock section landed — so the enforcement is on the
+/// controls that write, which is where it now is.
+const AccessGroup _hostGroup = AccessGroup.administer;
 
 class AboutLinuxPage extends ConsumerStatefulWidget {
   final DBusClient dbusClient;
@@ -24,17 +43,11 @@ class AboutLinuxPage extends ConsumerStatefulWidget {
   final TimeDateApi? timeDate;
   final TimeSyncApi? timeSync;
 
-  /// Returns to the connection chooser. Present because the page now
-  /// auto-connects to the local bus; without it a station that has no saved
-  /// credentials could never reach another machine's bus.
-  final VoidCallback? onSwitchConnection;
-
   const AboutLinuxPage({
     super.key,
     required this.dbusClient,
     this.timeDate,
     this.timeSync,
-    this.onSwitchConnection,
   });
 
   @override
@@ -266,6 +279,14 @@ class _AboutLinuxPageState extends ConsumerState<AboutLinuxPage> {
 
   // Add this method for poweroff
   Future<void> _handlePowerOff() async {
+    // Access before the confirm dialog: "are you sure?" then "no you may not"
+    // is two dialogs to say one thing, and the second is the one that matters.
+    if (!await guardGroupAction(ref, _hostGroup,
+        itemKey: 'system.power.poweroff')) {
+      return;
+    }
+    if (!mounted) return;
+
     final confirmed = await _showConfirmDialog(
       title: 'Power Off',
       message: 'Are you sure you want to power off the system?',
@@ -288,6 +309,12 @@ class _AboutLinuxPageState extends ConsumerState<AboutLinuxPage> {
 
   // Add this method for reboot
   Future<void> _handleReboot() async {
+    if (!await guardGroupAction(ref, _hostGroup,
+        itemKey: 'system.power.reboot')) {
+      return;
+    }
+    if (!mounted) return;
+
     final confirmed = await _showConfirmDialog(
       title: 'Reboot',
       message: 'Are you sure you want to reboot the system?',
@@ -328,152 +355,34 @@ class _AboutLinuxPageState extends ConsumerState<AboutLinuxPage> {
           }
 
           final info = snap.data!;
-          final chips = <Widget>[];
-          if (info.activeIPs.isNotEmpty) {
-            for (final ip in info.activeIPs) {
-              chips.add(Chip(
-                avatar: const Icon(Icons.public, size: 16),
-                label: Text(ip),
-              ));
-            }
-          }
 
-          // small helper to render a “fact” card
-          Widget fact({
-            required IconData icon,
-            required String label,
-            required String value,
-            String? caption,
-          }) {
-            if (value.isEmpty) return const SizedBox.shrink();
-            return Card(
-              elevation: 0,
-              margin: const EdgeInsets.symmetric(vertical: 6),
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(icon,
-                        size: 22, color: Theme.of(context).colorScheme.primary),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(label,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .labelLarge
-                                  ?.copyWith(fontWeight: FontWeight.w600)),
-                          const SizedBox(height: 4),
-                          Text(value,
-                              style: Theme.of(context).textTheme.bodyLarge,
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 4),
-                          if (caption != null && caption.isNotEmpty) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              caption,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onSurfaceVariant),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
+          // Watched once for the whole page, so the clock section's lock and
+          // the power buttons' cannot disagree, and all of them clear the
+          // instant an operator signs in.
+          final hostActionsAllowed = groupAllowed(ref, _hostGroup);
 
           return Padding(
             padding: const EdgeInsets.all(16),
             child: ListView(
               children: [
-                // Header card
-                Container(
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-                  child: Row(
-                    children: [
-                      const FaIcon(FontAwesomeIcons.linux, size: 28),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Hostname',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .labelLarge
-                                    ?.copyWith(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .onPrimaryContainer)),
-                            const SizedBox(height: 4),
-                            Text(
-                              info.hostname.isEmpty ? '—' : info.hostname,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleLarge
-                                  ?.copyWith(
-                                      fontWeight: FontWeight.w700,
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onPrimaryContainer),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            if (chips.isNotEmpty) ...[
-                              const SizedBox(height: 8),
-                              Wrap(spacing: 8, runSpacing: 6, children: chips),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 16),
-
-                // Facts
-                fact(
-                  icon: FontAwesomeIcons.microchip.data,
-                  label: 'Kernel',
-                  value: [
+                // Which machine this page is showing and what it is running,
+                // as one card: hostname and addresses in the header band, OS,
+                // kernel, build and support end as rows under it. They were
+                // two cards with a gap between them, which read as two
+                // unrelated answers to the same question.
+                AboutSystemCard(
+                  hostname: info.hostname,
+                  activeIPs: info.activeIPs,
+                  osPretty: info.osPretty,
+                  kernel: [
                     if (info.kernelName.isNotEmpty) info.kernelName,
                     if (info.kernelRelease.isNotEmpty) info.kernelRelease,
                   ].join(' ').trim(),
-                  caption: info.kernelVersion,
+                  kernelVersion: info.kernelVersion,
+                  supportEnd: info.osSupportEnd == null
+                      ? ''
+                      : _fmtDate(info.osSupportEnd!),
                 ),
-                if (info.osPretty.isNotEmpty)
-                  fact(
-                    icon: FontAwesomeIcons.boxArchive.data,
-                    label: 'Operating System',
-                    value: info.osPretty,
-                  ),
-                if (info.osSupportEnd != null)
-                  fact(
-                    icon: FontAwesomeIcons.calendarDay.data,
-                    label: 'Support End',
-                    value: _fmtDate(info.osSupportEnd!),
-                    caption: 'From org.freedesktop.hostname1 (local time).',
-                  ),
 
                 const SizedBox(height: 8),
                 const Divider(),
@@ -485,19 +394,10 @@ class _AboutLinuxPageState extends ConsumerState<AboutLinuxPage> {
                   timeSync: widget.timeSync ?? DBusTimeSync(widget.dbusClient),
                   storedServers: _storedNtpServers,
                   onServersChanged: _saveNtpServers,
+                  settingsAllowed: hostActionsAllowed,
+                  onBeforeChange: () => guardGroupAction(ref, _hostGroup,
+                      itemKey: 'system.clock'),
                 ),
-
-                if (widget.onSwitchConnection != null) ...[
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton.icon(
-                      onPressed: widget.onSwitchConnection,
-                      icon: const Icon(Icons.swap_horiz, size: 18),
-                      label: const Text('Connect to another machine'),
-                    ),
-                  ),
-                ],
 
                 const SizedBox(height: 24),
 
@@ -509,7 +409,14 @@ class _AboutLinuxPageState extends ConsumerState<AboutLinuxPage> {
                         onPressed: _handleReboot,
                         icon: const FaIcon(FontAwesomeIcons.arrowsRotate,
                             size: 18),
-                        label: const Text('Reboot'),
+                        label: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text('Reboot'),
+                            if (!hostActionsAllowed)
+                              const GroupLockBadge(group: _hostGroup),
+                          ],
+                        ),
                         style: FilledButton.styleFrom(
                           backgroundColor: Colors.orange,
                           padding: const EdgeInsets.symmetric(vertical: 14),
@@ -521,7 +428,14 @@ class _AboutLinuxPageState extends ConsumerState<AboutLinuxPage> {
                       child: FilledButton.icon(
                         onPressed: _handlePowerOff,
                         icon: const FaIcon(FontAwesomeIcons.powerOff, size: 18),
-                        label: const Text('Power Off'),
+                        label: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text('Power Off'),
+                            if (!hostActionsAllowed)
+                              const GroupLockBadge(group: _hostGroup),
+                          ],
+                        ),
                         style: FilledButton.styleFrom(
                           backgroundColor: Colors.red,
                           padding: const EdgeInsets.symmetric(vertical: 14),
@@ -542,6 +456,148 @@ class _AboutLinuxPageState extends ConsumerState<AboutLinuxPage> {
     String two(int n) => n.toString().padLeft(2, '0');
     return '${dt.year}-${two(dt.month)}-${two(dt.day)} '
         '${two(dt.hour)}:${two(dt.minute)}:${two(dt.second)}';
+  }
+}
+
+/// What this station is and what it is running, in one card.
+///
+/// The hostname and its addresses sit in the tinted header band; OS, kernel,
+/// build and support end are label/value rows in the body directly under it.
+/// They used to be two separate cards with a gap between them, which read as
+/// two unrelated answers to one question — "which machine am I looking at,
+/// and what is on it" — and cost a card edge and 12px of panel to say so.
+///
+/// Every row is conditional, so on a minimal image that answers hostname1's
+/// GetAll with very little, the body collapses away and the band stands alone
+/// rather than leaving an empty box with padding.
+@visibleForTesting
+class AboutSystemCard extends StatelessWidget {
+  final String hostname;
+  final List<String> activeIPs;
+  final String osPretty;
+  final String kernel;
+  final String kernelVersion;
+
+  /// Already formatted; empty when hostname1 reports no support end.
+  final String supportEnd;
+
+  const AboutSystemCard({
+    super.key,
+    required this.hostname,
+    required this.activeIPs,
+    required this.osPretty,
+    required this.kernel,
+    required this.kernelVersion,
+    required this.supportEnd,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final onContainer = theme.colorScheme.onPrimaryContainer;
+
+    final rows = <(String, String)>[
+      // "OS", not "Operating system", which wraps the 120px gutter onto two
+      // lines and makes the first row taller than the three below it. The
+      // value beside it says "Debian GNU/Linux 12"; nothing is lost.
+      if (osPretty.isNotEmpty) ('OS', osPretty),
+      if (kernel.isNotEmpty) ('Kernel', kernel),
+      // The full uname build string. Long, occasionally the thing you need,
+      // never the thing you came for — so it is a row like the others and is
+      // allowed to ellipsize rather than wrapping to four lines.
+      if (kernelVersion.isNotEmpty) ('Build', kernelVersion),
+      if (supportEnd.isNotEmpty) ('Support end', supportEnd),
+    ];
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            color: theme.colorScheme.primaryContainer,
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Row(
+              children: [
+                FaIcon(FontAwesomeIcons.linux, size: 22, color: onContainer),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        hostname.isEmpty ? '—' : hostname,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700, color: onContainer),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if (activeIPs.isNotEmpty)
+                        // Addresses as one line of text rather than a Wrap of
+                        // Chips: the chips were a second row of 32px-tall
+                        // widgets for two short strings, and this is the same
+                        // information.
+                        Row(
+                          children: [
+                            Icon(Icons.public, size: 14, color: onContainer),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                activeIPs.join('  ·  '),
+                                style: theme.textTheme.bodyMedium
+                                    ?.copyWith(color: onContainer),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (rows.isNotEmpty)
+            Container(
+              color: theme.colorScheme.surfaceContainerHighest,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final row in rows)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 3),
+                      child: Row(
+                        children: [
+                          // Same 120px label gutter as the Time sync rows
+                          // below, so the two blocks read as one table down
+                          // the page.
+                          SizedBox(
+                            width: 120,
+                            child: Text(row.$1,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: theme.colorScheme.onSurfaceVariant)),
+                          ),
+                          Expanded(
+                            child: Text(
+                              row.$2,
+                              style: theme.textTheme.bodyMedium,
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 2,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
   }
 }
 
