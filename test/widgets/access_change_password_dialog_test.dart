@@ -250,6 +250,28 @@ void main() {
       );
     });
 
+    testWidgets('a refusal puts the cursor back in the field that was wrong',
+        (tester) async {
+      // On a panel this is the difference between retyping and hunting for
+      // where to tap. Safe with an on-screen keyboard: the field is autofocus,
+      // so the keyboard is already up from the moment the dialog opened and
+      // focus never left a text field — this moves a cursor, it raises nothing.
+      final controller = _FakeSessionController(
+          results: const [AccessPasswordChangeResult.wrongCurrentPassword]);
+      await tester.pumpWidget(_host(controller: controller));
+      await _open(tester);
+      await _fill(tester);
+      await _submit(tester);
+
+      expect(
+        tester
+            .widget<TextField>(find.byKey(kAccessChangePasswordCurrentKey))
+            .focusNode!
+            .hasFocus,
+        isTrue,
+      );
+    });
+
     testWidgets('an expired session gets its own sentence', (tester) async {
       // The one failure with an obvious next step. Sending somebody to read a
       // log because their session timed out is a wild goose chase.

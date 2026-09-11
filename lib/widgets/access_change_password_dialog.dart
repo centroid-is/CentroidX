@@ -157,6 +157,16 @@ class _AccessChangePasswordDialogState
   final TextEditingController _next = TextEditingController();
   final TextEditingController _confirm = TextEditingController();
 
+  /// Focus for the current-password field, so a refusal can put the cursor back
+  /// where the person has to type.
+  ///
+  /// Safe on a panel with an on-screen keyboard, which is the reason to think
+  /// twice about programmatic focus at all: the field is `autofocus`, so the
+  /// keyboard is already raised from the moment the dialog opens and focus
+  /// never leaves a text field while it is up. The refocus moves a cursor
+  /// between fields; it does not raise anything.
+  final FocusNode _currentFocus = FocusNode();
+
   /// The inline note, or null when there is nothing to say. Cleared the moment
   /// any field is edited — a stale complaint about a value the operator has
   /// already corrected is noise.
@@ -176,6 +186,7 @@ class _AccessChangePasswordDialogState
     _current.dispose();
     _next.dispose();
     _confirm.dispose();
+    _currentFocus.dispose();
     super.dispose();
   }
 
@@ -238,6 +249,7 @@ class _AccessChangePasswordDialogState
         // twice, to punish a typo in a different field, is how a form makes
         // somebody give up.
         _current.clear();
+        _currentFocus.requestFocus();
         setState(() {
           _busy = false;
           _note = kAccessChangePasswordWrongCurrentNote;
@@ -293,6 +305,7 @@ class _AccessChangePasswordDialogState
           TextField(
             key: kAccessChangePasswordCurrentKey,
             controller: _current,
+            focusNode: _currentFocus,
             obscureText: true,
             autofocus: true,
             enabled: !_busy,
