@@ -83,6 +83,14 @@ dependencies:
   # Windows implementation, which is why WebViewAssetConfig renders a
   # placeholder rather than a browser everywhere else. See the class doc.
   webview_flutter: ^4.14.1
+  # CEF for the Linux desktop build and the eLinux stations, where no OS
+  # browser exists. Vendored rather than depended on: upstream ships one
+  # package declaring macos/windows/linux/elinux, and Flutter registers a
+  # plugin on every platform its own pubspec names — depending on it would
+  # download and compile ~600 MB of CEF into the macOS and Windows builds,
+  # which already have WKWebView and WebView2. See packages/webview_cef/README.
+  webview_cef:
+    path: packages/webview_cef
   # Windows web view: WebView2, the OS-provided engine, reached through the
   # federated implementation package *directly* rather than the
   # flutter_inappwebview umbrella. The umbrella endorses android/ios/macos/web

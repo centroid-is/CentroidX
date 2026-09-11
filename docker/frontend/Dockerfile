@@ -80,6 +80,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsecret-1-0 \
     sqlite3 \
     libmpv2 \
+    libnss3 \
+    libnspr4 \
+    libasound2t64 \
     curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -90,6 +93,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # not be located". It brings the ffmpeg libraries with it, which is most of
 # this image's size; the video output that consumes its frames is
 # packages/media_kit_video_elinux.
+
+# libnss3 / libnspr4 / libasound2t64 are CEF's runtime dependencies, needed by
+# the Web page asset's browser (packages/webview_cef). CEF itself is not
+# installed here — it is downloaded at build time by the plugin's CMake and
+# lands in the app bundle alongside the binary — but it will not start without
+# these. libfontconfig1 is also required and is already above.
+#
+# Absent them the browser fails to launch and every Web page tile shows its
+# "not available" placeholder, which looks identical to a build with no CEF at
+# all. See WebViewSurfaceAvailability in lib/page_creator/assets/web_view.dart.
 
 # Hacks for amplify secure storage
 RUN ln -s /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0 /usr/lib/x86_64-linux-gnu/libgio-2.0.so

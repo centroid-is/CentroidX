@@ -1,0 +1,27 @@
+name: webview_cef
+description: Vendored webview_cef, trimmed to the Linux and eLinux ports.
+version: 0.6.2
+# Vendored from https://github.com/hlwhl/webview_cef at v0.6.2, Linux and
+# eLinux only. See README.md for what was changed and why.
+publish_to: none
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"
+  flutter: ">=3.27.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  plugin:
+    platforms:
+      linux:
+        pluginClass: WebviewCefPlugin
+      elinux:
+        pluginClass: WebviewCefPlugin

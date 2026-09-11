@@ -23,24 +23,34 @@
 /// package is a pure dependency whose `dartPluginClass` registers itself, so
 /// no import here is platform-conditional.
 ///
+/// The Linux side has no such browser to borrow, so it breaks the principle
+/// deliberately rather than going without:
+///
+///   * **Linux desktop and flutter-elinux** — CEF, via the vendored
+///     `packages/webview_cef`. Both report `TargetPlatform.linux`; the plugin
+///     registrant picks the matching port at build time.
+///
+/// That is a browser engine *we* ship and therefore have to keep patched —
+/// a few hundred megabytes, downloaded at build time, with security updates
+/// tracked by bumping `CEF_VERSION` ourselves. It is the cost of the eLinux
+/// stations having no system webview at all, and it is why the dependency is
+/// vendored down to the Linux and eLinux ports: upstream declares macOS and
+/// Windows too, and depending on it unmodified would drag CEF into the two
+/// builds that already have a browser for free. WPE WebKit would be the
+/// lighter long-term answer — it is in Debian, so apt-tracked — but no
+/// Flutter plugin exists for it. See `packages/webview_cef/README.md`.
+///
 /// Still without an implementation:
 ///
-///   * **flutter-elinux** — the stations. The embedder *does* have platform
-///     views (`FlutterDesktopRegisterPlatformViewFactory`, texture-backed), so
-///     a webview is possible here; what is missing is a browser plugin. The
-///     candidates are `webview_cef` (which already carries an eLinux port) and
-///     WPE WebKit (in Debian, so apt-tracked). Both mean shipping a browser
-///     engine on boxes we have to keep patched — a few hundred megabytes and a
-///     standing obligation, which is exactly what macOS and Windows avoid.
-///     Not a decision this asset makes.
-///   * **Linux desktop** — possible via CEF, same trade-off, not wired up.
 ///   * **Web** — an `<iframe>` would be trivial, but there is no web target.
 ///
-/// ## WebView2 can be absent
+/// ## WebView2 and CEF can be absent
 ///
 /// WKWebView is part of macOS and cannot be missing. WebView2 is a separate
 /// runtime, and although it ships with Windows 11 and current Windows 10, a
-/// stripped or offline-imaged box can lack it. Asking costs a channel call,
+/// stripped or offline-imaged box can lack it. CEF can be absent in two more
+/// ways: missing from the image, or present but with `initCEFProcesses()`
+/// never called in the runner's `main()`. Asking costs a channel call,
 /// so [WebViewSurface.isAvailable] is a `Future` and the tile may flip to the
 /// unavailable placeholder shortly *after* it started — which is still far
 /// better than the blank white rectangle a dead engine would otherwise leave.
@@ -71,6 +81,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:json_annotation/json_annotation.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
+import 'package:webview_cef/webview_cef.dart' as cef;
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../core/feature_flags.dart';
@@ -185,7 +196,29 @@ class WebViewAvailability {
     TargetPlatform.android,
     TargetPlatform.iOS,
     TargetPlatform.windows,
+    TargetPlatform.linux,
   };
+
+  /// Platforms served by CEF rather than by an OS-provided browser.
+  ///
+  /// Both the Linux desktop build and the eLinux stations report
+  /// `TargetPlatform.linux` — Dart cannot tell them apart, and here it does
+  /// not need to: `packages/webview_cef` carries a port for each, and the
+  /// plugin registrant picks the right one at build time.
+  ///
+  /// Unlike WKWebView and WebView2, CEF is not on the machine at all unless
+  /// we put it there, and it additionally needs `initCEFProcesses()` to have
+  /// run in the runner's `main()`. Both absences look the same from Dart, and
+  /// both are caught by [WebViewSurfaceAvailability].
+  static const Set<TargetPlatform> cefPlatforms = {
+    TargetPlatform.linux,
+  };
+
+  /// Whether [platform] is served by CEF.
+  static bool usesCef({bool? isWeb, TargetPlatform? platform}) {
+    if (isWeb ?? kIsWeb) return false;
+    return cefPlatforms.contains(platform ?? defaultTargetPlatform);
+  }
 
   /// Platforms served by WebView2 rather than by `webview_flutter`.
   ///
@@ -502,6 +535,7 @@ WebViewSurface? _defaultFactory(WebViewAssetConfig config) {
       if (InAppWebViewPlatform.instance == null) return null;
       return _WebView2Surface(config);
     }
+    if (WebViewAvailability.usesCef()) return _CefSurface(config);
     return _PlatformWebViewSurface(config);
   } catch (_) {
     // Bare catch: a missing platform implementation surfaces as an
@@ -636,6 +670,76 @@ class _WebView2Surface implements WebViewSurface, WebViewSurfaceAvailability {
           .catchError((Object _) {});
     }
     widget?.dispose();
+  }
+}
+
+
+/// CEF on the Linux desktop build and the eLinux stations, through the
+/// vendored `packages/webview_cef`.
+///
+/// Unlike WKWebView and WebView2 this engine is one we ship ourselves, and it
+/// has two distinct ways of not being there: the CEF libraries missing from
+/// the image, and `initCEFProcesses()` not having run in the runner's
+/// `main()` — CEF re-executes the host binary as its own render and GPU
+/// children, so without that call the first browser never comes up. Neither
+/// is distinguishable from Dart and neither needs to be: both land on
+/// [isAvailable] returning false and the tile showing the placeholder.
+class _CefSurface implements WebViewSurface, WebViewSurfaceAvailability {
+  _CefSurface(WebViewAssetConfig config);
+
+  /// One process-wide CEF startup, shared by every tile on the page.
+  ///
+  /// `WebviewManager()` is a singleton and initialising it twice is not
+  /// meaningful, so the future is cached — including its failure, so a
+  /// machine without CEF pays one failed attempt rather than one per tile per
+  /// reload tick.
+  static Future<bool>? _managerReady;
+
+  static Future<bool> _startManager() => _managerReady ??= cef.WebviewManager()
+      .initialize()
+      .then((_) => true)
+      // Bare Object: a missing native side arrives as a PlatformException or
+      // a MissingPluginException, and a broken one can arrive as an Error.
+      .catchError((Object _) => false);
+
+  final cef.WebViewController _controller = cef.WebviewManager().createWebView();
+
+  /// Whether [_controller] has been initialised. Guards dispose: the
+  /// controller awaits a `late` completer that only `initialize` assigns, so
+  /// disposing one that never navigated throws a LateInitializationError
+  /// instead of tearing down.
+  bool _started = false;
+
+  @override
+  Future<bool> get isAvailable => _startManager();
+
+  @override
+  Future<void> navigate(Uri uri) async {
+    if (!await _startManager()) {
+      throw StateError('CEF is not available on this machine');
+    }
+    if (_started) {
+      await _controller.loadUrl(uri.toString());
+      return;
+    }
+    _started = true;
+    await _controller.initialize(uri.toString());
+  }
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<bool>(
+        valueListenable: _controller,
+        // False until the browser has a texture to paint. The empty box is
+        // deliberate rather than a spinner: WebViewAssetView already shows one
+        // while no surface has produced anything.
+        builder: (context, ready, _) =>
+            ready ? _controller.webviewWidget : const SizedBox.expand(),
+      );
+
+  @override
+  Future<void> dispose() async {
+    if (!_started) return;
+    await _controller.dispose();
   }
 }
 
