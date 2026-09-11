@@ -64,7 +64,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential python3 \
     libgtk-3-dev liblzma-dev libstdc++-14-dev \
     libsecret-1-dev libmpv-dev \
+    libnss3 libnspr4 libasound2t64 \
     && rm -rf /var/lib/apt/lists/*
+
+# libnss3 / libnspr4 / libasound2t64: CEF's libcef.so names ALSA and NSS in
+# its DT_NEEDED, so `flutter build linux` cannot link the Web page asset's
+# plugin (packages/webview_cef) without them, even though nothing of ours
+# calls either. libasound2t64, not libasound2 — trixie's t64 transition
+# renamed it and the old name does not resolve.
 
 # Install Flutter SDK (pinned to ensure engine hash matches ardera/flutter-ci releases)
 ARG FLUTTER_VERSION=3.38.7
@@ -151,7 +158,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsecret-1-0 \
     sqlite3 \
     dpkg-dev \
+    libnss3 \
+    libnspr4 \
+    libasound2t64 \
     && rm -rf /var/lib/apt/lists/*
+
+# The last three are CEF's runtime dependencies, for the Web page asset's
+# browser. CEF itself is not installed here — the plugin's CMake downloads it
+# at build time and it ships in the bundle — but it will not start without
+# them, and a browser that fails to launch is indistinguishable from a build
+# with no CEF at all.
 
 # Hacks for amplify secure storage (arch-agnostic)
 RUN LIBDIR=$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
