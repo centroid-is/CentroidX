@@ -5,13 +5,13 @@ import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:rxdart/rxdart.dart';
 import 'package:tfc/page_creator/assets/ethercat_command.dart';
 import 'package:tfc/page_creator/assets/ethercat_devices.dart';
-import 'package:tfc/page_creator/assets/ethercat_slave.dart';
+import 'package:tfc/page_creator/assets/ethercat_subdevice.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../../helpers/ethercat_fixtures.dart';
 
-/// Two slaves in OP and one out of it, on one master.
+/// Two subdevices in OP and one out of it, on one master.
 DynamicValue _info() => array([
       info('ST101.A1.01 (EL6070)', model: 'EL6070', addr: 1001),
       info('CVS01.CN01.FD01 (ATV320 EtherCAT)',
@@ -38,7 +38,7 @@ void main() {
         ),
       );
 
-  testWidgets('lists the slaves by their PLC names, with a summary',
+  testWidgets('lists the subdevices by their PLC names, with a summary',
       (tester) async {
     final sm = _FakeStateMan()
       ..push('d1', _diag())

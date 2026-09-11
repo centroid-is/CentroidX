@@ -1,12 +1,12 @@
-/// Every EtherCAT slave on the station, one dense row each.
+/// Every EtherCAT subdevice on the station, one dense row each.
 ///
 /// The mimic answers "where is it"; this answers "is anything wrong, and
-/// what". One row per slave across every master, in bus order, with the four
+/// what". One row per subdevice across every master, in bus order, with the four
 /// ports as four cells so a bad cable shows up as the same colour on two
 /// adjacent rows — the port that sends and the port that receives.
 ///
 /// Reads the two arrays `FB_EcDeviceDiag` publishes per master — one key
-/// mapping each, whatever the slave count — so a hundred rows cost two
+/// mapping each, whatever the subdevice count — so a hundred rows cost two
 /// subscriptions per master rather than two hundred.
 library;
 
@@ -21,8 +21,8 @@ import '../../theme.dart' show HmiStateColors;
 import '../../widgets/panes/side_pane.dart';
 import 'common.dart';
 import 'ethercat_masters.dart';
-import 'ethercat_slave.dart';
-import 'ethercat_slave_pane.dart';
+import 'ethercat_subdevice.dart';
+import 'ethercat_subdevice_pane.dart';
 
 part 'ethercat_devices.g.dart';
 
@@ -38,7 +38,7 @@ class EtherCatDeviceTableConfig extends BaseAsset {
   List<String> get searchKeywords => const [
         'ethercat',
         'devices',
-        'slaves',
+        'subdevices',
         'diagnostics',
         'table',
         'crc',
@@ -170,14 +170,14 @@ class _EtherCatDeviceTableState extends ConsumerState<EtherCatDeviceTable> {
           buses: live,
           busNotes: notes,
           initialProblemsOnly: config.problemsOnly,
-          onOpen: (bus, slave) {
+          onOpen: (bus, subdevice) {
             final cfg = buses.firstWhere((b) => b.label == bus.label,
                 orElse: () => buses.first);
             showSidePane(
               context: context,
-              id: 'ethercat-slave-${cfg.diagKey}-${slave.position}',
+              id: 'ethercat-subdevice-${cfg.diagKey}-${subdevice.position}',
               builder: (_) =>
-                  EcSlaveLivePane(bus: cfg, position: slave.position),
+                  EcSubDeviceLivePane(bus: cfg, position: subdevice.position),
             );
           },
         );
@@ -227,7 +227,7 @@ class EcDeviceTableView extends StatefulWidget {
   /// A word per master when its data is missing, keyed by label.
   final Map<String, String> busNotes;
   final bool initialProblemsOnly;
-  final void Function(EcBus bus, EcSlave slave)? onOpen;
+  final void Function(EcBus bus, EcSubDevice subdevice)? onOpen;
 
   /// Shown in the toolbar in place of the search box's hint.
   final String? caption;
@@ -240,7 +240,7 @@ class _EcDeviceTableViewState extends State<EcDeviceTableView> {
   late bool _problemsOnly = widget.initialProblemsOnly;
   String _query = '';
 
-  bool _matches(EcSlave s) {
+  bool _matches(EcSubDevice s) {
     if (_problemsOnly &&
         s.health != EcHealth.warning &&
         s.health != EcHealth.fault &&
@@ -263,16 +263,16 @@ class _EcDeviceTableViewState extends State<EcDeviceTableView> {
 
     final rows = <Widget Function(int index)>[];
     for (final bus in widget.buses) {
-      final shown = bus.slaves.where(_matches).toList();
+      final shown = bus.subdevices.where(_matches).toList();
       rows.add((_) => _BusHeader(
             bus: bus,
             note: widget.busNotes[bus.label],
             states: states,
           ));
       for (final s in shown) {
-        rows.add((i) => _SlaveRow(
+        rows.add((i) => _SubdeviceRow(
               bus: bus,
-              slave: s,
+              subdevice: s,
               states: states,
               zebra: i.isOdd,
               onTap: widget.onOpen == null
@@ -394,7 +394,7 @@ class _Toolbar extends StatelessWidget {
     final theme = Theme.of(context);
     var total = 0, ok = 0, warn = 0, fault = 0, unknown = 0;
     for (final b in buses) {
-      for (final s in b.slaves) {
+      for (final s in b.subdevices) {
         total++;
         switch (s.health) {
           case EcHealth.ok:
@@ -557,7 +557,7 @@ class _BusHeader extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w700),
           ),
           TextSpan(
-            text: '   ${bus.slaves.length} slaves · ',
+            text: '   ${bus.subdevices.length} subdevices · ',
             style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
           ),
           TextSpan(
@@ -572,17 +572,17 @@ class _BusHeader extends StatelessWidget {
   }
 }
 
-class _SlaveRow extends StatelessWidget {
-  const _SlaveRow({
+class _SubdeviceRow extends StatelessWidget {
+  const _SubdeviceRow({
     required this.bus,
-    required this.slave,
+    required this.subdevice,
     required this.states,
     required this.zebra,
     this.onTap,
   });
 
   final EcBus bus;
-  final EcSlave slave;
+  final EcSubDevice subdevice;
   final HmiStateColors states;
   final bool zebra;
   final VoidCallback? onTap;
@@ -591,8 +591,8 @@ class _SlaveRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final layout = _LayoutScope.of(context);
-    final d = slave.diag;
-    final health = slave.health;
+    final d = subdevice.diag;
+    final health = subdevice.health;
     final muted = theme.colorScheme.onSurfaceVariant;
     final stateText = d == null
         ? '—'
@@ -628,12 +628,12 @@ class _SlaveRow extends StatelessWidget {
               ),
               SizedBox(
                 width: _Col.pos,
-                child: Text('${slave.position}',
+                child: Text('${subdevice.position}',
                     style: TextStyle(color: muted)),
               ),
               Expanded(
                 child: Text(
-                  slave.label,
+                  subdevice.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontWeight: FontWeight.w500),
@@ -644,7 +644,7 @@ class _SlaveRow extends StatelessWidget {
                   width: _Col.model,
                   padding: const EdgeInsets.only(right: 8),
                   child: Text(
-                    slave.info?.model ?? '',
+                    subdevice.info?.model ?? '',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: muted),
@@ -713,11 +713,11 @@ class _SlaveRow extends StatelessWidget {
   }
 
   Widget _portCell(EcPort p) {
-    final d = slave.diag;
-    final health = bus.portHealth(slave, p);
+    final d = subdevice.diag;
+    final health = bus.portHealth(subdevice, p);
     final crc = d?.crcPort[p.index] ?? 0;
     final lost = d?.linkLostPort[p.index] ?? 0;
-    final n = bus.neighbour(slave, p);
+    final n = bus.neighbour(subdevice, p);
     final chip = EcPortChip(
       port: p,
       health: health,
@@ -754,7 +754,7 @@ class _SlaveRow extends StatelessWidget {
 /// ST101 — a terminal block, a line of drives, a junction with a branch — and
 /// with one of each thing the table exists to show.
 List<EcBus> ecSampleBuses() {
-  EcSlave s(
+  EcSubDevice s(
     String bus,
     int pos,
     String name,
@@ -768,17 +768,17 @@ List<EcBus> ecSampleBuses() {
     List<int> lost = const [0, 0, 0, 0],
     int stable = 9 * 86400,
   }) =>
-      EcSlave(
+      EcSubDevice(
         busLabel: bus,
         position: pos,
-        info: EcSlaveInfo(
+        info: EcSubDeviceInfo(
           name: '$name ($model)',
           model: model,
           physAddr: addr,
           prevPhysAddr: prev,
           prevPort: prevPort,
         ),
-        diag: EcSlaveDiag(
+        diag: EcSubDeviceDiag(
           deviceState: deviceState,
           linkState: linkState,
           crcSum: crc.fold(0, (a, b) => a + b),
@@ -875,7 +875,7 @@ class _EtherCatDeviceTableEditorState
                     ),
                     const SizedBox(height: 8),
                     KeyField(
-                      label: 'Slave info array key',
+                      label: 'Subdevice info array key',
                       initialValue: buses[i].infoKey,
                       onChanged: (v) => buses[i].infoKey = v,
                     ),

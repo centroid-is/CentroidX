@@ -10,7 +10,7 @@ library;
 
 import 'package:tfc_dart/core/state_man.dart' show KeyMappings;
 
-import 'ethercat_slave.dart';
+import 'ethercat_subdevice.dart';
 
 final RegExp _masterArray = RegExp(r'Device_(\d+)_(Diag|SlaveInfo|SlaveCount)$');
 
@@ -24,7 +24,7 @@ List<EcBusConfig> discoverEcMasters(KeyMappings mappings) {
   final found = <(String, int), EcBusConfig>{};
   for (final entry in mappings.nodes.entries) {
     final node = entry.value.opcuaNode;
-    // An `array_index` mapping is one slave, not a master's whole array.
+    // An `array_index` mapping is one subdevice, not a master's whole array.
     if (node != null && node.arrayIndex != null) continue;
     final match = _masterArray.firstMatch(node?.identifier ?? entry.key) ??
         _masterArray.firstMatch(entry.key);

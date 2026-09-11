@@ -1,21 +1,21 @@
-/// EtherCAT slave diagnostics, the way the PLC publishes them.
+/// EtherCAT subdevice diagnostics, the way the PLC publishes them.
 ///
 /// The PLC side is per *device*, not per cable: `FB_EcDeviceDiag` fills one
-/// `ST_EcSlaveDiag` per slave on a master, next to a static `ST_EcSlaveInfo`
+/// `ST_EcSlaveDiag` per subdevice on a master, next to a static `ST_EcSlaveInfo`
 /// generated from the same EtherCAT export (`ECT_Diag.Device_<n>_Diag` and
 /// `ECT_Diag.Device_<n>_SlaveInfo`, both `ARRAY[1..128]`, index = bus
-/// position). Every slave has four ports, A to D, and the per-port figures are
+/// position). Every subdevice has four ports, A to D, and the per-port figures are
 /// `[0..3]` arrays on the diag struct.
 ///
 /// A cable is therefore never a thing the PLC reports on. It is the pair of
 /// ports at its two ends, and its health is whatever those two ports say. That
-/// is what [EcBus.neighbour] and [EcSlaveDiag.portHealth] exist to answer.
+/// is what [EcBus.neighbour] and [EcSubDeviceDiag.portHealth] exist to answer.
 library;
 
 import 'package:json_annotation/json_annotation.dart';
 import 'package:open62541/open62541.dart' show DynamicValue;
 
-part 'ethercat_slave.g.dart';
+part 'ethercat_subdevice.g.dart';
 
 /// Member names on `ST_EcSlaveInfo`.
 abstract final class EcInfoFields {
@@ -45,7 +45,7 @@ abstract final class EcDiagFields {
   static const resetCrc = 'p_cmd_resetCrcCounter';
 }
 
-/// One of the four ports every EtherCAT slave controller has.
+/// One of the four ports every EtherCAT subdevice controller has.
 ///
 /// A is where the frame comes in; B, C and D are where it goes on. On a
 /// terminal A is the left E-bus contact and B the right one; on a coupler or a
@@ -64,8 +64,8 @@ enum EcPort {
 
   /// Reads a port name as stored on a cable end or in `p_stat_sPrevPort`.
   ///
-  /// `X1`/`X2` are the ports a device offers before it is bound to a slave
-  /// (see `kImplicitPorts`): in and out, which on an EtherCAT slave are A and
+  /// `X1`/`X2` are the ports a device offers before it is bound to a subdevice
+  /// (see `kImplicitPorts`): in and out, which on an EtherCAT subdevice are A and
   /// B. Accepting them here is what keeps a cable drawn before the binding
   /// existed meaning the same thing after it.
   static EcPort? parse(String? name) => switch (name?.trim().toUpperCase()) {
@@ -78,7 +78,7 @@ enum EcPort {
 }
 
 /// The EtherCAT state machine, from the low nibble of `deviceState`.
-enum EcSlaveState {
+enum EcSubDeviceState {
   unknown(0, '—'),
   init(1, 'INIT'),
   preOp(2, 'PREOP'),
@@ -86,7 +86,7 @@ enum EcSlaveState {
   safeOp(4, 'SAFEOP'),
   op(8, 'OP');
 
-  const EcSlaveState(this.raw, this.label);
+  const EcSubDeviceState(this.raw, this.label);
 
   final int raw;
 
@@ -94,7 +94,7 @@ enum EcSlaveState {
   /// this table have spent years reading it there.
   final String label;
 
-  static EcSlaveState fromRaw(int raw) {
+  static EcSubDeviceState fromRaw(int raw) {
     for (final s in values) {
       if (s.raw == raw) return s;
     }
@@ -104,7 +104,7 @@ enum EcSlaveState {
 
 /// What the low nibble of `linkState` says is wrong on the flagged ports.
 enum EcLinkFault {
-  /// 0x01: the slave did not answer at all.
+  /// 0x01: the subdevice did not answer at all.
   notPresent('Not present'),
 
   /// 0x02: a link without communication.
@@ -152,9 +152,9 @@ EcHealth worstHealth(Iterable<EcHealth> all) {
 /// carries, so a CRC figure only counts against a device while it is fresh.
 const Duration kEcCrcFreshWindow = Duration(hours: 1);
 
-/// `ST_EcSlaveInfo`, the static half: what the slave is and where it plugs in.
-class EcSlaveInfo {
-  const EcSlaveInfo({
+/// `ST_EcSlaveInfo`, the static half: what the subdevice is and where it plugs in.
+class EcSubDeviceInfo {
+  const EcSubDeviceInfo({
     required this.name,
     required this.model,
     required this.physAddr,
@@ -169,10 +169,10 @@ class EcSlaveInfo {
   /// Fixed EtherCAT address, 1001 upwards.
   final int physAddr;
 
-  /// The upstream slave's [physAddr]; 0 when this slave hangs off the master.
+  /// The upstream subdevice's [physAddr]; 0 when this subdevice hangs off the master.
   final int prevPhysAddr;
 
-  /// Which port on the upstream slave this one plugs into.
+  /// Which port on the upstream subdevice this one plugs into.
   final EcPort? prevPort;
 
   /// True for the unused tail of the 128-slot array.
@@ -186,13 +186,13 @@ class EcSlaveInfo {
     return name;
   }
 
-  static EcSlaveInfo? tryParse(DynamicValue value) {
+  static EcSubDeviceInfo? tryParse(DynamicValue value) {
     if (!value.isObject) return null;
     if (!value.contains(EcInfoFields.physAddr) &&
         !value.contains(EcInfoFields.name)) {
       return null;
     }
-    return EcSlaveInfo(
+    return EcSubDeviceInfo(
       name: _str(value, EcInfoFields.name),
       model: _str(value, EcInfoFields.model),
       physAddr: _int(value, EcInfoFields.physAddr),
@@ -203,8 +203,8 @@ class EcSlaveInfo {
 }
 
 /// `ST_EcSlaveDiag`, the live half.
-class EcSlaveDiag {
-  const EcSlaveDiag({
+class EcSubDeviceDiag {
+  const EcSubDeviceDiag({
     required this.deviceState,
     required this.linkState,
     required this.crcSum,
@@ -229,7 +229,7 @@ class EcSlaveDiag {
   /// cable getting better.
   final int crcStableSeconds;
 
-  /// Per-port CRC totals, A to D. Refreshed one slave at a time, so on a long
+  /// Per-port CRC totals, A to D. Refreshed one subdevice at a time, so on a long
   /// bus a figure can be several seconds behind the sum.
   final List<int> crcPort;
 
@@ -241,15 +241,15 @@ class EcSlaveDiag {
   /// HMI does not simply repeat it.
   final bool plcOk;
 
-  EcSlaveState get state => EcSlaveState.fromRaw(deviceState & 0x0F);
+  EcSubDeviceState get state => EcSubDeviceState.fromRaw(deviceState & 0x0F);
   bool get error => deviceState & 0x10 != 0;
 
   /// What is wrong on the flagged ports, if anything.
   EcLinkFault? get linkFault => EcLinkFault.fromLinkState(linkState);
 
-  /// The slave answered. A slave that is not present has no ports worth
+  /// The subdevice answered. A subdevice that is not present has no ports worth
   /// judging; everything it would say is missing.
-  bool get present => linkState & 0x01 == 0 && state != EcSlaveState.unknown;
+  bool get present => linkState & 0x01 == 0 && state != EcSubDeviceState.unknown;
 
   bool get crcFresh =>
       crcSum > 0 && crcStableSeconds < kEcCrcFreshWindow.inSeconds;
@@ -258,7 +258,7 @@ class EcSlaveDiag {
 
   /// Whether `linkState` flags [port].
   ///
-  /// A fault with no port bits at all (a slave that is simply gone) is read as
+  /// A fault with no port bits at all (a subdevice that is simply gone) is read as
   /// every port: it has no working link on any of them.
   bool portFlagged(EcPort port) {
     if (linkFault == null) return false;
@@ -272,7 +272,7 @@ class EcSlaveDiag {
   /// nothing is plugged into is unused rather than fine, unless it has figures
   /// of its own, in which case it is not as unused as the export thinks.
   EcHealth portHealth(EcPort port, {required bool inUse}) {
-    // A fault that names no port (a slave that is simply gone) says nothing
+    // A fault that names no port (a subdevice that is simply gone) says nothing
     // about a socket nothing was ever plugged into. Painting those red too
     // would turn one missing drive into four alarms.
     if (portFlagged(port) && (inUse || linkState & 0xF0 != 0)) {
@@ -295,7 +295,7 @@ class EcSlaveDiag {
   /// Recent CRC errors and link drops since the last reset are a warning.
   EcHealth get health {
     final fault = linkFault;
-    if (state != EcSlaveState.op || error) return EcHealth.fault;
+    if (state != EcSubDeviceState.op || error) return EcHealth.fault;
     if (fault != null && fault != EcLinkFault.additionalLink) {
       return EcHealth.fault;
     }
@@ -305,7 +305,7 @@ class EcSlaveDiag {
     return EcHealth.ok;
   }
 
-  static EcSlaveDiag? tryParse(DynamicValue value) {
+  static EcSubDeviceDiag? tryParse(DynamicValue value) {
     if (!value.isObject) return null;
     if (!value.contains(EcDiagFields.deviceState) &&
         !value.contains(EcDiagFields.state)) {
@@ -313,12 +313,12 @@ class EcSlaveDiag {
     }
     var deviceState = _int(value, EcDiagFields.deviceState);
     // A PLC revision that only publishes the decoded enum still says what
-    // state the slave is in.
+    // state the subdevice is in.
     if (!value.contains(EcDiagFields.deviceState)) {
       deviceState = _int(value, EcDiagFields.state) |
           (_bool(value, EcDiagFields.error) ? 0x10 : 0);
     }
-    return EcSlaveDiag(
+    return EcSubDeviceDiag(
       deviceState: deviceState,
       linkState: _int(value, EcDiagFields.linkState),
       crcSum: _int(value, EcDiagFields.crcSum),
@@ -340,24 +340,24 @@ class EcSlaveDiag {
 
 /// Whatever is on the other end of one port.
 class EcNeighbour {
-  const EcNeighbour.master() : slave = null, port = null;
-  const EcNeighbour(EcSlave this.slave, this.port);
+  const EcNeighbour.master() : subdevice = null, port = null;
+  const EcNeighbour(EcSubDevice this.subdevice, this.port);
 
   /// Null for the master itself.
-  final EcSlave? slave;
+  final EcSubDevice? subdevice;
 
-  /// The port on [slave] this link lands on.
+  /// The port on [subdevice] this link lands on.
   final EcPort? port;
 
-  bool get isMaster => slave == null;
+  bool get isMaster => subdevice == null;
 
   String get label =>
-      isMaster ? 'Master' : '${slave!.label} · ${port?.letter ?? '?'}';
+      isMaster ? 'Master' : '${subdevice!.label} · ${port?.letter ?? '?'}';
 }
 
-/// One slave: where it sits, what it is, and what it is doing.
-class EcSlave {
-  EcSlave({
+/// One subdevice: where it sits, what it is, and what it is doing.
+class EcSubDevice {
+  EcSubDevice({
     required this.busLabel,
     required this.position,
     this.info,
@@ -368,8 +368,8 @@ class EcSlave {
 
   /// 1-based, the PLC array index. Bus position is one less.
   final int position;
-  final EcSlaveInfo? info;
-  final EcSlaveDiag? diag;
+  final EcSubDeviceInfo? info;
+  final EcSubDeviceDiag? diag;
 
   String get label {
     final n = info?.shortName;
@@ -379,15 +379,15 @@ class EcSlave {
   EcHealth get health => diag?.health ?? EcHealth.unknown;
 }
 
-/// One EtherCAT master's slaves, joined up.
+/// One EtherCAT master's subdevices, joined up.
 ///
 /// Built from the two arrays as delivered. Either may be missing — the info
 /// array before its first read arrives, the diag array on a PLC that has not
 /// been downloaded yet — and the bus still lists what it can.
 class EcBus {
-  EcBus(this.label, this.slaves)
+  EcBus(this.label, this.subdevices)
       : _byAddr = {
-          for (final s in slaves)
+          for (final s in subdevices)
             if (s.info != null && s.info!.physAddr != 0) s.info!.physAddr: s,
         };
 
@@ -396,10 +396,10 @@ class EcBus {
     DynamicValue? info,
     DynamicValue? diag,
   }) {
-    final infos = _elements(info, EcSlaveInfo.tryParse);
-    final diags = _elements(diag, EcSlaveDiag.tryParse);
+    final infos = _elements(info, EcSubDeviceInfo.tryParse);
+    final diags = _elements(diag, EcSubDeviceDiag.tryParse);
 
-    // The info array names every slave the export knows; the rest of its 128
+    // The info array names every subdevice the export knows; the rest of its 128
     // slots are empty. Without it, the diag array's filled slots are the best
     // available answer to "how many".
     int count;
@@ -419,7 +419,7 @@ class EcBus {
 
     return EcBus(label, [
       for (var i = 0; i < count; i++)
-        EcSlave(
+        EcSubDevice(
           busLabel: label,
           position: i + 1,
           info: i < infos.length ? infos[i] : null,
@@ -429,27 +429,27 @@ class EcBus {
   }
 
   final String label;
-  final List<EcSlave> slaves;
-  final Map<int, EcSlave> _byAddr;
+  final List<EcSubDevice> subdevices;
+  final Map<int, EcSubDevice> _byAddr;
 
-  EcSlave? at(int position) =>
-      position >= 1 && position <= slaves.length ? slaves[position - 1] : null;
+  EcSubDevice? at(int position) =>
+      position >= 1 && position <= subdevices.length ? subdevices[position - 1] : null;
 
-  /// What [port] on [slave] is plugged into, or null when nothing is.
+  /// What [port] on [subdevice] is plugged into, or null when nothing is.
   ///
-  /// The info array only records each slave's *upstream* link: port A goes to
+  /// The info array only records each subdevice's *upstream* link: port A goes to
   /// `prevPhysAddr` on `prevPort`. Ports B to D are the reverse lookup — the
-  /// slaves that name this one as their upstream on that port. The frame
-  /// always enters a slave on A, so that is where each of them lands.
-  EcNeighbour? neighbour(EcSlave slave, EcPort port) {
-    final info = slave.info;
+  /// subdevices that name this one as their upstream on that port. The frame
+  /// always enters a subdevice on A, so that is where each of them lands.
+  EcNeighbour? neighbour(EcSubDevice subdevice, EcPort port) {
+    final info = subdevice.info;
     if (info == null) return null;
     if (port == EcPort.a) {
       if (info.prevPhysAddr == 0) return const EcNeighbour.master();
       final up = _byAddr[info.prevPhysAddr];
       return up == null ? null : EcNeighbour(up, info.prevPort);
     }
-    for (final s in slaves) {
+    for (final s in subdevices) {
       final si = s.info;
       if (si == null || si.prevPhysAddr != info.physAddr) continue;
       if (si.prevPort == port) return EcNeighbour(s, EcPort.a);
@@ -457,14 +457,14 @@ class EcBus {
     return null;
   }
 
-  /// [port]'s health on [slave], with the topology filled in.
-  EcHealth portHealth(EcSlave slave, EcPort port) {
-    final diag = slave.diag;
+  /// [port]'s health on [subdevice], with the topology filled in.
+  EcHealth portHealth(EcSubDevice subdevice, EcPort port) {
+    final diag = subdevice.diag;
     if (diag == null) return EcHealth.unknown;
-    return diag.portHealth(port, inUse: neighbour(slave, port) != null);
+    return diag.portHealth(port, inUse: neighbour(subdevice, port) != null);
   }
 
-  int count(EcHealth h) => slaves.where((s) => s.health == h).length;
+  int count(EcHealth h) => subdevices.where((s) => s.health == h).length;
 }
 
 /// One master, as the table knows it: a name and the keys of its arrays.

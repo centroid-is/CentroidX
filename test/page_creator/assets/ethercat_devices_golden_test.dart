@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FontLoader;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/ethercat_devices.dart';
-import 'package:tfc/page_creator/assets/ethercat_slave.dart';
-import 'package:tfc/page_creator/assets/ethercat_slave_pane.dart';
+import 'package:tfc/page_creator/assets/ethercat_subdevice.dart';
+import 'package:tfc/page_creator/assets/ethercat_subdevice_pane.dart';
 import 'package:tfc/theme.dart';
 
 import '../../helpers/golden_tolerance.dart';
@@ -79,14 +79,14 @@ void main() {
       ('gone', 0, 7), // not answering on the bus
       ('branch', 1, 2), // a coupler with a drop off port C
     ]) {
-      testWidgets('slave pane: $name', (tester) async {
+      testWidgets('subdevice pane: $name', (tester) async {
         await loadRealFont();
         final b = ecSampleBuses()[bus];
         await tester.pumpWidget(frame(
           SingleChildScrollView(
-            child: EcSlavePaneBody(
+            child: EcSubDevicePaneBody(
               bus: b,
-              slave: b.at(pos)!,
+              subdevice: b.at(pos)!,
               onReset: (_) async {},
             ),
           ),
@@ -95,7 +95,7 @@ void main() {
         ));
         await tester.pumpAndSettle();
         await expectLater(find.byKey(_key),
-            matchesGoldenFile('goldens/ethercat_slave_pane_$name.png'));
+            matchesGoldenFile('goldens/ethercat_subdevice_pane_$name.png'));
       });
     }
   });
@@ -104,7 +104,7 @@ void main() {
     final buses = ecSampleBuses();
     expect(buses[0].at(5)!.health, EcHealth.warning);
     expect(buses[0].at(7)!.health, EcHealth.fault);
-    expect(buses[1].neighbour(buses[1].at(2)!, EcPort.c)!.slave!.label,
+    expect(buses[1].neighbour(buses[1].at(2)!, EcPort.c)!.subdevice!.label,
         'ST101.EM02');
   });
 }

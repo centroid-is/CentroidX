@@ -1,4 +1,4 @@
-/// The side pane for one EtherCAT slave, and the plumbing the table, the
+/// The side pane for one EtherCAT subdevice, and the plumbing the table, the
 /// binding editor and the cable share to read the bus arrays.
 ///
 /// The pane answers the question the table row cannot: *which* link. The row
@@ -17,7 +17,7 @@ import '../../theme.dart' show HmiStateColors;
 import '../../widgets/panes/pane_chrome.dart';
 import '../../widgets/panes/side_pane.dart';
 import 'ethercat_command.dart';
-import 'ethercat_slave.dart';
+import 'ethercat_subdevice.dart';
 
 /// The state colour for [health], from the page's scheme.
 Color ecHealthColor(HmiStateColors states, EcHealth health) =>
@@ -30,8 +30,8 @@ Color ecHealthColor(HmiStateColors states, EcHealth health) =>
     };
 
 /// The chip at the top of the pane.
-PaneStatus ecSlavePaneStatus(EcSlave? slave) {
-  final d = slave?.diag;
+PaneStatus ecSubDevicePaneStatus(EcSubDevice? subdevice) {
+  final d = subdevice?.diag;
   if (d == null) return const PaneStatus.stopped('No data');
   return switch (d.health) {
     EcHealth.ok => const PaneStatus.running('OP'),
@@ -42,14 +42,14 @@ PaneStatus ecSlavePaneStatus(EcSlave? slave) {
   };
 }
 
-String _faultWord(EcSlaveDiag d) {
+String _faultWord(EcSubDeviceDiag d) {
   if (!d.present) return 'Not present';
   if (d.error) return 'Error';
-  if (d.state != EcSlaveState.op) return d.state.label;
+  if (d.state != EcSubDeviceState.op) return d.state.label;
   return d.linkFault?.label ?? 'Fault';
 }
 
-String _flaggedPorts(EcSlaveDiag d) {
+String _flaggedPorts(EcSubDeviceDiag d) {
   if (d.linkState & 0xF0 == 0) return 'every port';
   final ports = [
     for (final p in EcPort.values)
@@ -74,13 +74,13 @@ String formatEcAge(int seconds) {
 }
 
 /// One sentence on what [d] means, for the pane and the binding preview.
-String ecSlaveSummary(EcSlaveDiag d) {
+String ecSubDeviceSummary(EcSubDeviceDiag d) {
   if (!d.present) {
     return 'Not answering on the bus. Everything after it on this master is '
         'unreachable too.';
   }
   if (d.error) return 'In ${d.state.label} with the error flag set.';
-  if (d.state != EcSlaveState.op) {
+  if (d.state != EcSubDeviceState.op) {
     return 'In ${d.state.label}, not OP: no process data is being exchanged.';
   }
   final fault = d.linkFault;
@@ -188,12 +188,12 @@ class _EcKeyValuesState extends ConsumerState<EcKeyValues> {
       widget.builder(context, _values, _errors);
 }
 
-/// The pane for slave [position] on [bus], live.
+/// The pane for subdevice [position] on [bus], live.
 ///
 /// Subscribes for itself rather than being handed a snapshot: a pane opened
 /// to watch a flapping link has to show it flapping.
-class EcSlaveLivePane extends ConsumerWidget {
-  const EcSlaveLivePane({super.key, required this.bus, required this.position});
+class EcSubDeviceLivePane extends ConsumerWidget {
+  const EcSubDeviceLivePane({super.key, required this.bus, required this.position});
 
   final EcBusConfig bus;
   final int position;
@@ -205,25 +205,25 @@ class EcSlaveLivePane extends ConsumerWidget {
       builder: (context, values, errors) {
         final b = EcBus.fromValues(bus.label,
             info: values[bus.infoKey], diag: values[bus.diagKey]);
-        final slave = b.at(position);
-        final model = slave?.info?.model ?? '';
+        final subdevice = b.at(position);
+        final model = subdevice?.info?.model ?? '';
         return SidePane(
-          title: slave?.label ?? '#$position',
+          title: subdevice?.label ?? '#$position',
           subtitle: [
             bus.label,
             '#$position',
             if (model.isNotEmpty) model,
           ].join(' · '),
           icon: Icons.settings_ethernet,
-          status: ecSlavePaneStatus(slave),
-          child: slave == null
+          status: ecSubDevicePaneStatus(subdevice),
+          child: subdevice == null
               ? const Padding(
                   padding: EdgeInsets.all(16),
-                  child: Text('This slave is not in the array any more.'),
+                  child: Text('This subdevice is not in the array any more.'),
                 )
-              : EcSlavePaneBody(
+              : EcSubDevicePaneBody(
                   bus: b,
-                  slave: slave,
+                  subdevice: subdevice,
                   onReset: bus.diagKey.isEmpty
                       ? null
                       : (member) => ref
@@ -240,16 +240,16 @@ class EcSlaveLivePane extends ConsumerWidget {
 }
 
 /// A plain widget fed values, so it can be goldened without a server.
-class EcSlavePaneBody extends StatelessWidget {
-  const EcSlavePaneBody({
+class EcSubDevicePaneBody extends StatelessWidget {
+  const EcSubDevicePaneBody({
     super.key,
     required this.bus,
-    required this.slave,
+    required this.subdevice,
     this.onReset,
   });
 
   final EcBus bus;
-  final EcSlave slave;
+  final EcSubDevice subdevice;
 
   /// Sets one of [EcDiagFields.resetCrc] / [EcDiagFields.resetLinkLost].
   final Future<void> Function(String member)? onReset;
@@ -259,14 +259,14 @@ class EcSlavePaneBody extends StatelessWidget {
     final theme = Theme.of(context);
     final states =
         theme.extension<HmiStateColors>() ?? HmiStateColors.solarizedLight;
-    final d = slave.diag;
-    final info = slave.info;
+    final d = subdevice.diag;
+    final info = subdevice.info;
 
     return PaneBody(sections: [
       PaneBodySection.status(
         child: d == null
             ? Text(
-                'No diagnostics for this slave yet. Either the array has not '
+                'No diagnostics for this subdevice yet. Either the array has not '
                 'been read, or the PLC is not filling it.',
                 style: theme.textTheme.bodySmall,
               )
@@ -283,7 +283,7 @@ class EcSlavePaneBody extends StatelessWidget {
                         label: 'State',
                         value: d.state.label,
                         icon: Icons.memory,
-                        valueColor: d.state == EcSlaveState.op && !d.error
+                        valueColor: d.state == EcSubDeviceState.op && !d.error
                             ? null
                             : states.red,
                       ),
@@ -306,8 +306,8 @@ class EcSlavePaneBody extends StatelessWidget {
                   const SizedBox(height: 8),
                   Text(
                     d.crcSum == 0
-                        ? ecSlaveSummary(d)
-                        : '${ecSlaveSummary(d)} Last CRC rise '
+                        ? ecSubDeviceSummary(d)
+                        : '${ecSubDeviceSummary(d)} Last CRC rise '
                             '${formatEcAge(d.crcStableSeconds)} ago.',
                     style: theme.textTheme.bodySmall,
                   ),
@@ -322,12 +322,12 @@ class EcSlavePaneBody extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             for (final p in EcPort.values)
-              _PortRow(bus: bus, slave: slave, port: p, states: states),
+              _PortRow(bus: bus, subdevice: subdevice, port: p, states: states),
           ],
         ),
       ),
       PaneBodySection.details(
-        title: 'Slave',
+        title: 'Subdevice',
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -340,7 +340,7 @@ class EcSlavePaneBody extends StatelessWidget {
                     ? '—'
                     : '${info.physAddr}'),
             PaneDetailRow(label: 'Master', value: bus.label),
-            PaneDetailRow(label: 'Position', value: '${slave.position}'),
+            PaneDetailRow(label: 'Position', value: '${subdevice.position}'),
           ],
         ),
       ),
@@ -362,7 +362,7 @@ class EcSlavePaneBody extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                'Clears the figures on this slave only. The bus is not '
+                'Clears the figures on this subdevice only. The bus is not '
                 'disturbed, and the time since the last CRC rise keeps '
                 'counting — clearing the count does not mend the cable.',
                 style: theme.textTheme.bodySmall,
@@ -378,26 +378,26 @@ class EcSlavePaneBody extends StatelessWidget {
 class _PortRow extends StatelessWidget {
   const _PortRow({
     required this.bus,
-    required this.slave,
+    required this.subdevice,
     required this.port,
     required this.states,
   });
 
   final EcBus bus;
-  final EcSlave slave;
+  final EcSubDevice subdevice;
   final EcPort port;
   final HmiStateColors states;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final d = slave.diag;
-    final neighbour = bus.neighbour(slave, port);
-    final health = bus.portHealth(slave, port);
+    final d = subdevice.diag;
+    final neighbour = bus.neighbour(subdevice, port);
+    final health = bus.portHealth(subdevice, port);
     final colour = ecHealthColor(states, health);
     final crc = d?.crcPort[port.index] ?? 0;
     final lost = d?.linkLostPort[port.index] ?? 0;
-    // Only where the colour says so: a slave that is gone flags every port,
+    // Only where the colour says so: a subdevice that is gone flags every port,
     // and "Not present" under an empty socket says nothing useful.
     final flagged = (d?.portFlagged(port) ?? false) &&
         (health == EcHealth.fault || health == EcHealth.warning);

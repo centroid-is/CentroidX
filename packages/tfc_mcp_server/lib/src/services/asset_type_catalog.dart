@@ -879,10 +879,10 @@ class AssetTypeCatalog {
       displayName: 'EtherCAT Devices',
       category: 'Beckhoff',
       description:
-          'A dense table of every EtherCAT slave on the station, one row '
+          'A dense table of every EtherCAT subdevice on the station, one row '
           'each in bus order: state (OP, SAFEOP, ...), the four ports A-D '
           'coloured by link health, CRC errors, link drops and the time '
-          'since CRC errors last rose. Tapping a row opens that slave\'s '
+          'since CRC errors last rose. Tapping a row opens that subdevice\'s '
           'pane with what each port connects to and buttons to clear its '
           'counters. Reads the ECT_Diag arrays FB_EcDeviceDiag publishes. '
           'Leave buses empty to use every master whose '
@@ -900,7 +900,7 @@ class AssetTypeCatalog {
         AssetPropertyInfo(
             name: 'problemsOnly',
             type: 'bool',
-            description: 'Open filtered to slaves with a warning, a fault or '
+            description: 'Open filtered to subdevices with a warning, a fault or '
                 'no data. Default false.'),
       ],
     ),

@@ -3,7 +3,7 @@
 library;
 
 import 'package:open62541/open62541.dart' show DynamicValue;
-import 'package:tfc/page_creator/assets/ethercat_slave.dart';
+import 'package:tfc/page_creator/assets/ethercat_subdevice.dart';
 
 DynamicValue array(List<DynamicValue> items) => DynamicValue(value: items);
 

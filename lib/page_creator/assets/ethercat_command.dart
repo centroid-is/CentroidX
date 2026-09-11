@@ -1,4 +1,4 @@
-/// Setting a slave's reset handshakes.
+/// Setting a subdevice's reset handshakes.
 ///
 /// `FB_EcDeviceDiag` owns both edges: the HMI writes TRUE, the FB does the
 /// reset and writes FALSE, so only TRUE is ever sent and nothing can get stuck
@@ -22,7 +22,7 @@ import '../../widgets/tag_access_guard.dart' show writeTag;
 abstract class EcCommandWriter {
   const EcCommandWriter();
 
-  /// Sets [member] TRUE on slave [position] of the array at [diagKey].
+  /// Sets [member] TRUE on subdevice [position] of the array at [diagKey].
   ///
   /// True when the write went out, false when the access guard refused it
   /// (the operator has already been told why). Comms failures throw.
@@ -38,11 +38,11 @@ abstract class EcCommandWriter {
 ///
 /// One BOOL on the wire. Nothing else in the struct is touched, so the
 /// counters the FB accumulates in place cannot be rolled back and two HMIs
-/// resetting two slaves at once cannot clobber each other.
+/// resetting two subdevices at once cannot clobber each other.
 class EcMemberCommandWriter extends EcCommandWriter {
   const EcMemberCommandWriter();
 
-  /// The derived key for [member] of slave [position].
+  /// The derived key for [member] of subdevice [position].
   static String keyFor(String diagKey, int position, String member) =>
       '$diagKey[$position].$member';
 
@@ -92,7 +92,7 @@ class EcArrayCommandWriter extends EcCommandWriter {
         position < 1 ||
         position > latest.asArray.length ||
         !latest[position - 1].contains(member)) {
-      throw StateError('Slave $position has no $member in $diagKey');
+      throw StateError('Subdevice $position has no $member in $diagKey');
     }
     final next = DynamicValue.from(latest);
     next[position - 1][member] = true;

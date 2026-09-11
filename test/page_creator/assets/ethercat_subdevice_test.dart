@@ -1,13 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open62541/open62541.dart' show DynamicValue;
-import 'package:tfc/page_creator/assets/ethercat_slave.dart';
+import 'package:tfc/page_creator/assets/ethercat_subdevice.dart';
 
 import '../../helpers/ethercat_fixtures.dart';
 
 void main() {
   group('decode', () {
     test('reads ST_EcSlaveInfo', () {
-      final i = EcSlaveInfo.tryParse(info('CVS01.CN01.FD01 (ATV320 EtherCAT)',
+      final i = EcSubDeviceInfo.tryParse(info('CVS01.CN01.FD01 (ATV320 EtherCAT)',
           model: 'ATV320 EtherCAT', addr: 1017, prev: 1016, prevPort: 'B'))!;
       expect(i.shortName, 'CVS01.CN01.FD01');
       expect(i.model, 'ATV320 EtherCAT');
@@ -17,38 +17,38 @@ void main() {
     });
 
     test('reads ST_EcSlaveDiag, per-port arrays included', () {
-      final d = EcSlaveDiag.tryParse(diag(
+      final d = EcSubDeviceDiag.tryParse(diag(
         crcPort: [0, 12, 0, 0],
         lost: [1, 0, 0, 0],
         crcSum: 12,
         crcStable: 30,
       ))!;
-      expect(d.state, EcSlaveState.op);
+      expect(d.state, EcSubDeviceState.op);
       expect(d.crcPort, [0, 12, 0, 0]);
       expect(d.linkLostPort, [1, 0, 0, 0]);
       expect(d.crcFresh, isTrue);
     });
 
     test('a value that is not the struct decodes to null', () {
-      expect(EcSlaveDiag.tryParse(DynamicValue(value: true)), isNull);
-      expect(EcSlaveInfo.tryParse(DynamicValue(value: 3)), isNull);
+      expect(EcSubDeviceDiag.tryParse(DynamicValue(value: true)), isNull);
+      expect(EcSubDeviceInfo.tryParse(DynamicValue(value: 3)), isNull);
     });
 
     test('a struct missing members degrades instead of throwing', () {
-      final d = EcSlaveDiag.tryParse(DynamicValue(value: {
+      final d = EcSubDeviceDiag.tryParse(DynamicValue(value: {
         EcDiagFields.deviceState: DynamicValue(value: 8),
       }))!;
-      expect(d.state, EcSlaveState.op);
+      expect(d.state, EcSubDeviceState.op);
       expect(d.crcPort, [0, 0, 0, 0]);
       expect(d.health, EcHealth.ok);
     });
 
     test('falls back to the decoded enum when the raw byte is absent', () {
-      final d = EcSlaveDiag.tryParse(DynamicValue(value: {
+      final d = EcSubDeviceDiag.tryParse(DynamicValue(value: {
         EcDiagFields.state: DynamicValue(value: 4),
         EcDiagFields.error: DynamicValue(value: true),
       }))!;
-      expect(d.state, EcSlaveState.safeOp);
+      expect(d.state, EcSubDeviceState.safeOp);
       expect(d.error, isTrue);
     });
 
@@ -61,7 +61,7 @@ void main() {
   });
 
   group('health', () {
-    EcSlaveDiag d({
+    EcSubDeviceDiag d({
       int state = 8,
       int link = 0,
       List<int> crc = const [0, 0, 0, 0],
@@ -69,7 +69,7 @@ void main() {
       int crcSum = 0,
       int crcStable = 999999,
     }) =>
-        EcSlaveDiag.tryParse(diag(
+        EcSubDeviceDiag.tryParse(diag(
           deviceState: state,
           linkState: link,
           crcPort: crc,
@@ -118,7 +118,7 @@ void main() {
       expect(x.portHealth(EcPort.b, inUse: true), EcHealth.fault);
     });
 
-    test('a slave that is gone has no working port at all', () {
+    test('a subdevice that is gone has no working port at all', () {
       final gone = d(state: 0, link: 0x01);
       expect(gone.present, isFalse);
       for (final p in EcPort.values) {
@@ -165,21 +165,21 @@ void main() {
     );
 
     test('stops at the last named slot, not at 128', () {
-      expect(bus.slaves, hasLength(3));
+      expect(bus.subdevices, hasLength(3));
       expect(bus.at(3)!.label, 'T1');
     });
 
-    test('port A goes upstream, to the master for the first slave', () {
+    test('port A goes upstream, to the master for the first subdevice', () {
       expect(bus.neighbour(bus.at(1)!, EcPort.a)!.isMaster, isTrue);
       final up = bus.neighbour(bus.at(3)!, EcPort.a)!;
-      expect(up.slave!.label, 'A1');
+      expect(up.subdevice!.label, 'A1');
       expect(up.port, EcPort.c);
     });
 
-    test('ports B to D are found by who names this slave upstream', () {
+    test('ports B to D are found by who names this subdevice upstream', () {
       final a1 = bus.at(1)!;
-      expect(bus.neighbour(a1, EcPort.b)!.slave!.label, 'A2');
-      expect(bus.neighbour(a1, EcPort.c)!.slave!.label, 'T1');
+      expect(bus.neighbour(a1, EcPort.b)!.subdevice!.label, 'A2');
+      expect(bus.neighbour(a1, EcPort.c)!.subdevice!.label, 'T1');
       expect(bus.neighbour(a1, EcPort.c)!.port, EcPort.a);
       expect(bus.neighbour(a1, EcPort.d), isNull);
     });
@@ -200,7 +200,7 @@ void main() {
         diag(deviceState: 4),
         diag(deviceState: 0),
       ]));
-      expect(noInfo.slaves, hasLength(2));
+      expect(noInfo.subdevices, hasLength(2));
       expect(noInfo.at(2)!.label, '#2');
       expect(noInfo.at(2)!.health, EcHealth.fault);
     });

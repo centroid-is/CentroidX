@@ -1,6 +1,6 @@
 // GENERATED CODE - DO NOT MODIFY BY HAND
 
-part of 'ethercat_slave.dart';
+part of 'ethercat_subdevice.dart';
 
 // **************************************************************************
 // JsonSerializableGenerator
