@@ -24,7 +24,6 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/access/drift_audit_sink.dart';
 import 'package:tfc_dart/core/access/local_auth_provider.dart';
-import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 import 'package:tfc_dart/core/preferences.dart';
 
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
@@ -1267,9 +1266,14 @@ class AccessSessionController extends _$AccessSessionController {
       return null;
     }
 
-    final AppUserData? row;
+    // `userSummary`, not `user`: the latter hands back the drift row so the
+    // credential path can reach `passwordHash`, and nothing under `lib/` may
+    // name a generated type (`no_drift_row_types_in_app_test`). Both fields
+    // this method reads are on the summary; the hash is not, and does not
+    // belong out here.
+    final UserSummary? row;
     try {
-      row = await repo.user(username);
+      row = await repo.userSummary(username);
     } on Object catch (e) {
       Logger().w(
         'Could not read the app_user row for this panel\'s account '

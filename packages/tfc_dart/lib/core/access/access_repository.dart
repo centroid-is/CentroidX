@@ -587,6 +587,24 @@ class AccessRepository {
       (db.select(db.appUser)..where((t) => t.username.equals(username)))
           .getSingleOrNull();
 
+  /// The same account as [user], as the hand-written type the app may name.
+  ///
+  /// [user] returns the drift row because its caller is the **credential**
+  /// path: verifying a password needs `passwordHash`, which deliberately has
+  /// no place on [UserSummary] and must not travel. Everything else that asks
+  /// about one account — "what role does it hold", "is it a station account" —
+  /// wants the domain type, and `no_drift_row_types_in_app_test` enforces that
+  /// nothing under `lib/` names a generated one.
+  ///
+  /// This exists because the merge of #482 brought in a panel-resume path that
+  /// read `AppUserData.stationAccount` and `.roleName` straight out of the
+  /// repository, in the app tree. Both fields are on [UserSummary]; only the
+  /// hash is not.
+  Future<UserSummary?> userSummary(String username) async {
+    final row = await user(username);
+    return row == null ? null : _toUserSummary(row);
+  }
+
   /// Record that [username] signed in at [at].
   Future<void> touchLastLogin(String username, DateTime at) async {
     await (db.update(db.appUser)..where((t) => t.username.equals(username)))
