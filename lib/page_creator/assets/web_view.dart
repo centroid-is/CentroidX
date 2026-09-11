@@ -270,7 +270,25 @@ abstract class WebViewSurface {
 /// opts in; [WebViewAssetView] asks only those that do.
 abstract class WebViewSurfaceAvailability {
   /// False when the engine is not installed on this machine.
+  ///
+  /// May instead complete with a [WebViewUnavailable] when the engine is
+  /// installed but the tile has something more specific to tell the operator
+  /// than "not available", e.g. CEF that never finished starting.
   Future<bool> get isAvailable;
+}
+
+/// Why a tile whose engine is installed still cannot show a page, in words
+/// that make sense on the tile itself.
+///
+/// Thrown from [WebViewSurfaceAvailability.isAvailable] rather than returned,
+/// so the WebView2 surface and every test fake keep their plain `bool`.
+class WebViewUnavailable implements Exception {
+  const WebViewUnavailable(this.reason);
+
+  final String reason;
+
+  @override
+  String toString() => 'WebViewUnavailable: $reason';
 }
 
 /// Builds the browser for [config], or null where this platform has none.
@@ -296,6 +314,10 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
   /// Distinguishes "no browser on this platform" from "not configured", which
   /// look different to an operator.
   bool _unavailable = false;
+
+  /// What the placeholder says when [_unavailable]. Null means this platform
+  /// has no browser at all, the common case.
+  String? _unavailableReason;
 
   /// The URL currently loaded, and the interval currently armed.
   ///
@@ -356,6 +378,7 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
     _teardown();
     _surface = null;
     _unavailable = false;
+    _unavailableReason = null;
     _loadedUrl = null;
     _armedInterval = null;
   }
@@ -399,26 +422,37 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
   /// Asks an absent-able engine whether it is really there, and flips the
   /// tile to the placeholder if it is not.
   ///
-  /// Only WebView2 answers this; see [WebViewSurfaceAvailability]. It runs
-  /// after the surface is already built and navigating, because the check is
-  /// a channel round trip — so a Windows box with no runtime shows the
-  /// browser tile for an instant and then the honest placeholder, rather than
-  /// a white rectangle for ever.
+  /// Only WebView2 and CEF answer this; see [WebViewSurfaceAvailability]. It
+  /// runs after the surface is already built and navigating, because the
+  /// check is a channel round trip — so a Windows box with no runtime shows
+  /// the browser tile for an instant and then the honest placeholder, rather
+  /// than a white rectangle for ever.
+  ///
+  /// A [WebViewUnavailable] puts its reason on the placeholder. Any other
+  /// error leaves the tile alone: a probe that could not answer is not proof
+  /// that the browser is missing.
   void _probeAvailability(WebViewSurface surface) {
     if (surface is! WebViewSurfaceAvailability) return;
     unawaited(
       (surface as WebViewSurfaceAvailability).isAvailable.then((ok) {
-        // `_surface != surface` means a restart overtook this probe and the
-        // answer is about a browser nobody is looking at any more.
-        if (ok || !mounted || _surface != surface) return;
-        setState(() {
-          _teardown();
-          _unavailable = true;
-          _loadedUrl = null;
-          _armedInterval = null;
-        });
-      }).catchError((Object _) {}),
+        if (!ok) _giveUp(surface, null);
+      }).catchError((Object e) {
+        if (e is WebViewUnavailable) _giveUp(surface, e.reason);
+      }),
     );
+  }
+
+  void _giveUp(WebViewSurface surface, String? reason) {
+    // `_surface != surface` means a restart overtook this probe and the
+    // answer is about a browser nobody is looking at any more.
+    if (!mounted || _surface != surface) return;
+    setState(() {
+      _teardown();
+      _unavailable = true;
+      _unavailableReason = reason;
+      _loadedUrl = null;
+      _armedInterval = null;
+    });
   }
 
   void _armTimer() {
@@ -486,9 +520,10 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
       );
     }
     if (_unavailable) {
-      return const _Glyph(
+      return _Glyph(
         icon: Icons.public_off,
-        caption: 'Web view is not available on this platform',
+        caption:
+            _unavailableReason ?? 'Web view is not available on this platform',
       );
     }
     final surface = _surface;
@@ -684,8 +719,37 @@ class _WebView2Surface implements WebViewSurface, WebViewSurfaceAvailability {
 /// children, so without that call the first browser never comes up. Neither
 /// is distinguishable from Dart and neither needs to be: both land on
 /// [isAvailable] returning false and the tile showing the placeholder.
+///
+/// And a third, which looks nothing like the other two: CEF present and
+/// initialised, but its browser never coming up. See [startTimeout].
 class _CefSurface implements WebViewSurface, WebViewSurfaceAvailability {
-  _CefSurface(WebViewAssetConfig config);
+  _CefSurface(WebViewAssetConfig config) {
+    // Nobody may be listening when a failed `create` lands (a tile that
+    // already gave up via [_browserFailed]); that must not surface as an
+    // unhandled error. Other listeners still receive it.
+    _created.future.ignore();
+  }
+
+  /// How long a browser gets to come up before the tile gives up and says so.
+  ///
+  /// `init` answering does not mean CEF is up. CEF initialises its platform
+  /// layer afterwards, on its own UI thread. When that failed on a
+  /// Wayland-only station on 2026-09-11 ("Missing X server or $DISPLAY"), the
+  /// thread exited and `create` was never answered. The tile sat blank for
+  /// ever, with nothing on it to say why. Creating a browser (not loading its
+  /// page) takes well under a second on a station, so this is generous.
+  static const Duration startTimeout = Duration(seconds: 20);
+
+  /// Set once any tile's browser failed to come up. CEF does not recover
+  /// within a process, so later tiles say so at once instead of each waiting
+  /// out [startTimeout].
+  static bool _browserFailed = false;
+
+  static const String _didNotStart =
+      'The web browser did not start. See the HMI log for the reason.';
+
+  /// Completes once this tile's browser exists, which is later than `init`.
+  final Completer<void> _created = Completer<void>();
 
   /// One process-wide CEF startup, shared by every tile on the page.
   ///
@@ -711,7 +775,19 @@ class _CefSurface implements WebViewSurface, WebViewSurfaceAvailability {
   bool _started = false;
 
   @override
-  Future<bool> get isAvailable => _startManager();
+  Future<bool> get isAvailable async {
+    if (!await _startManager()) return false;
+    if (_browserFailed) throw const WebViewUnavailable(_didNotStart);
+    try {
+      await _created.future.timeout(startTimeout);
+    } on Object {
+      // Timed out, or `create` itself failed. Either way CEF will not give
+      // this process a browser.
+      _browserFailed = true;
+      throw const WebViewUnavailable(_didNotStart);
+    }
+    return true;
+  }
 
   @override
   Future<void> navigate(Uri uri) async {
@@ -723,7 +799,13 @@ class _CefSurface implements WebViewSurface, WebViewSurfaceAvailability {
       return;
     }
     _started = true;
-    await _controller.initialize(uri.toString());
+    try {
+      await _controller.initialize(uri.toString());
+      if (!_created.isCompleted) _created.complete();
+    } catch (e) {
+      if (!_created.isCompleted) _created.completeError(e);
+      rethrow;
+    }
   }
 
   @override

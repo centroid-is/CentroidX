@@ -30,9 +30,13 @@ class _FakeSurface implements WebViewSurface {
 /// asks only the surfaces that opt in.
 class _FakeAbsentableSurface
     implements WebViewSurface, WebViewSurfaceAvailability {
-  _FakeAbsentableSurface({this.available = true});
+  _FakeAbsentableSurface({this.available = true, this.error});
 
   final bool available;
+
+  /// When set, the probe fails with this instead of answering, the way CEF
+  /// reports a browser that never came up.
+  final Object? error;
   final navigations = <Uri>[];
   bool disposed = false;
   int availabilityAsks = 0;
@@ -54,6 +58,7 @@ class _FakeAbsentableSurface
   @override
   Future<bool> get isAvailable {
     availabilityAsks++;
+    if (error != null) return Future<bool>.error(error!);
     return useGate ? gate.future : Future<bool>.value(available);
   }
 }
@@ -599,6 +604,67 @@ void main() {
           reason: "the live surface must survive the dead one's answer");
       expect(find.text('Web view is not available on this platform'),
           findsNothing);
+    });
+  });
+
+  group('an engine that is installed but does not start (CEF)', () {
+    // Seen on a station 2026-09-11: CEF was in the image and `init` answered,
+    // then its platform layer failed and the browser never came up. Before
+    // this, the tile was a blank box with nothing on it to say why.
+    const reason =
+        'The web browser did not start. See the HMI log for the reason.';
+
+    testWidgets('the placeholder carries the reason the engine gave',
+        (tester) async {
+      final surface =
+          _FakeAbsentableSurface(error: const WebViewUnavailable(reason));
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('fake-web')), findsNothing);
+      expect(find.text(reason), findsOneWidget);
+      expect(find.text('Web view is not available on this platform'),
+          findsNothing,
+          reason: 'the engine is installed; "not available" would be untrue');
+      expect(surface.disposed, isTrue,
+          reason: 'a browser that never came up should not be left running');
+    });
+
+    testWidgets('any other probe failure leaves the tile alone',
+        (tester) async {
+      // A probe that could not answer is not proof the browser is missing.
+      final surface = _FakeAbsentableSurface(error: Exception('channel hiccup'));
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
+      expect(surface.disposed, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('editing the URL afterwards clears the reason', (tester) async {
+      final dead =
+          _FakeAbsentableSurface(error: const WebViewUnavailable(reason));
+      final live = _FakeAbsentableSurface(available: true);
+      var built = 0;
+      WebViewAssetView.debugSurfaceFactory =
+          (_) => (built++ == 0) ? dead : live;
+
+      final config = _configured();
+      await tester.pumpWidget(_host(config));
+      await tester.pumpAndSettle();
+      expect(find.text(reason), findsOneWidget);
+
+      config.url = 'https://grafana.plant/d/abc/line-2';
+      await tester.pumpWidget(_host(config));
+      await tester.pumpAndSettle();
+
+      expect(find.text(reason), findsNothing);
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
     });
   });
 }
