@@ -249,10 +249,26 @@ class _AccessChangePasswordDialogState
         // twice, to punish a typo in a different field, is how a form makes
         // somebody give up.
         _current.clear();
-        _currentFocus.requestFocus();
         setState(() {
           _busy = false;
           _note = kAccessChangePasswordWrongCurrentNote;
+        });
+
+        // After the rebuild, not before it, and this ordering is load-bearing.
+        // Every field carries `enabled: !_busy`, and `_busy` is still true on
+        // the way into this arm — so at the moment the answer arrives the
+        // current-password field is disabled, and Flutter does not focus a
+        // disabled field.
+        //
+        // An inline `requestFocus()` above the `setState` does currently work,
+        // which is worse than if it did not: `FocusManager` applies focus
+        // changes asynchronously, so the request happens to land after the
+        // rebuild that re-enables the field. That is a coincidence of
+        // scheduling, not a guarantee, and it is invisible in a test that
+        // passes. Asking after the frame makes the dependency explicit and
+        // survives a change in that scheduling.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _currentFocus.requestFocus();
         });
 
       case AccessPasswordChangeResult.notSignedIn:
