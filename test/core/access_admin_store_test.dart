@@ -744,6 +744,43 @@ void main() {
           isTrue);
     });
 
+    test('setUserInactivityTimeout records user.inactivity_timeout with the '
+        'minutes', () async {
+      await repository.createUser(
+          username: 'bob', password: 'pw2', roleName: 'Shift Leader');
+      repository.calls.clear();
+      final store = buildStore();
+
+      await store.setUserInactivityTimeout('bob', 45);
+
+      final row = sink.rows.single;
+      expect(row.itemKey, 'user.inactivity_timeout');
+      expect(row.member, 'bob');
+      expect(row.oldValue, isNull,
+          reason: 'null is the meaningful "no value of its own", exactly as '
+              'it is on the user.pages rows');
+      expect(row.newValue, '45');
+      expect(
+          (await repository.listUsers()).single.inactivityTimeoutMinutes, 45);
+    });
+
+    test('clearing the timeout records the move back to the default',
+        () async {
+      await repository.createUser(
+          username: 'bob', password: 'pw2', roleName: 'Shift Leader');
+      await repository.setInactivityTimeout('bob', 45);
+      repository.calls.clear();
+      final store = buildStore();
+
+      await store.setUserInactivityTimeout('bob', null);
+
+      final row = sink.rows.single;
+      expect(row.oldValue, '45');
+      expect(row.newValue, isNull);
+      expect((await repository.listUsers()).single.inactivityTimeoutMinutes,
+          isNull);
+    });
+
     test('setUserPassword records user.password and nothing about the password',
         () async {
       const secret = 'zXq7-never-in-a-row';
@@ -872,6 +909,16 @@ void main() {
       await expectGated('user.station_account',
           (s) => s.setUserStationAccount('freezer', true));
       expect((await repository.listUsers()).single.stationAccount, isFalse);
+    });
+
+    test('setUserInactivityTimeout', () async {
+      await repository.createUser(
+          username: 'bob', password: 'pw', roleName: 'Shift Leader');
+      repository.calls.clear();
+      await expectGated('user.inactivity_timeout',
+          (s) => s.setUserInactivityTimeout('bob', 45));
+      expect((await repository.listUsers()).single.inactivityTimeoutMinutes,
+          isNull);
     });
 
     test('setUserPassword', () async {

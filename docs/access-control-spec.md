@@ -283,8 +283,14 @@ class AccessSession {
 }
 ```
 
-- Inactivity timeout drops back to anonymous. Default 15 minutes, stored in
-  device-local preferences.
+- Inactivity timeout drops back to anonymous. **Per account**, in
+  `app_user.inactivity_timeout_minutes`; NULL means the account has no value of
+  its own and gets the 15-minute default. It travels with the person rather
+  than with the panel, so an engineer keeps their window wherever they sign in
+  and an operator's is not widened by the screen they happened to use.
+  NULL never means "never": the only session that does not expire belongs to a
+  station account (`app_user.station_account`), which is an administrator
+  saying "this identity is a panel, not a person".
 - **The inactivity timer must be listener-gated** — started in `onListen`,
   stopped in `onCancel`. An always-on `Timer.periodic` in shared plumbing breaks
   unrelated widget tests; this has happened in this repo before.
@@ -645,9 +651,11 @@ Things that will cost days if rediscovered:
 - **Colours** come from `HmiStateColors` / `PaneStatus`, never raw `Colors.*`.
   Forced/override is orange by repo convention — reuse it for the elevated
   state, it is the same idea.
-- **Device-local vs shared**: sessions and the inactivity timeout are
-  device-local (`localPreferencesProvider`); users, roles and audit are shared.
-  Never sync a session.
+- **Device-local vs shared**: a session is device-local
+  (`localPreferencesProvider`) and must never be synced. Users, roles, audit —
+  and the inactivity timeout, which is a column on the account (§5) — are
+  shared. The panel's committed station account stays device-local: it is a
+  property of that screen, not of the plant.
 - **`pg_notify` has an 8000-byte cap** and the backend config watcher fires on
   preference writes — keep role config small and do not stuff audit data through
   it.

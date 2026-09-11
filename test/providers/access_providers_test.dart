@@ -1,5 +1,5 @@
 // The leaf access providers: what each of them does on a station with no
-// database, and how the device-local inactivity timeout is read.
+// database.
 //
 // The "no database" path is not an edge case here. `databaseProvider` yields
 // null both during the boot window before the connection opens and for a
@@ -18,7 +18,6 @@ import 'package:tfc_dart/core/database_drift.dart' show AppDatabase;
 
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/database.dart';
-import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/routes.dart';
 
 /// A container whose database is explicitly absent.
@@ -78,111 +77,12 @@ void main() {
       final container = _noDatabaseContainer();
       expect(await container.read(firstUserWindowOpenProvider.future), isFalse);
     });
-
-    test('inactivityTimeoutProvider still resolves', () async {
-      final container = _noDatabaseContainer();
-      expect(
-        await container.read(inactivityTimeoutProvider.future),
-        kDefaultInactivityTimeout,
-      );
-    });
   });
 
   group('stationNameProvider', () {
     test('is a non-empty hostname', () {
       final container = _noDatabaseContainer();
       expect(container.read(stationNameProvider), isNotEmpty);
-    });
-  });
-
-  group('inactivityTimeoutProvider', () {
-    test('defaults to 15 minutes with no stored preference', () async {
-      final container = _noDatabaseContainer();
-      expect(
-        await container.read(inactivityTimeoutProvider.future),
-        const Duration(minutes: 15),
-      );
-    });
-
-    test('honours a stored value', () async {
-      final container = _noDatabaseContainer();
-      await container
-          .read(localPreferencesProvider)
-          .setInt(kAccessInactivityMinutesPrefKey, 45);
-      expect(
-        await container.read(inactivityTimeoutProvider.future),
-        const Duration(minutes: 45),
-      );
-    });
-
-    test('clamps an absurdly large value to the eight-hour ceiling', () async {
-      final container = _noDatabaseContainer();
-      await container
-          .read(localPreferencesProvider)
-          .setInt(kAccessInactivityMinutesPrefKey, 100000);
-      expect(
-        await container.read(inactivityTimeoutProvider.future),
-        kMaxInactivityTimeout,
-      );
-    });
-
-    test('clamps zero up to the one-minute floor', () async {
-      final container = _noDatabaseContainer();
-      await container
-          .read(localPreferencesProvider)
-          .setInt(kAccessInactivityMinutesPrefKey, 0);
-      expect(
-        await container.read(inactivityTimeoutProvider.future),
-        kMinInactivityTimeout,
-      );
-    });
-
-    test('the disable flag answers null — no expiry at all', () async {
-      // The panel-PC case: a station that lives signed in as its area
-      // account. Explicitly flagged, never inferred from a zero — the
-      // zero-clamp pins below are what keep a hand-edited store from
-      // accidentally minting immortal sessions.
-      final container = _noDatabaseContainer();
-      await container
-          .read(localPreferencesProvider)
-          .setBool(kAccessInactivityDisabledPrefKey, true);
-      expect(await container.read(inactivityTimeoutProvider.future), isNull);
-    });
-
-    test('the disable flag off leaves the minutes in force', () async {
-      final container = _noDatabaseContainer();
-      final prefs = container.read(localPreferencesProvider);
-      await prefs.setBool(kAccessInactivityDisabledPrefKey, false);
-      await prefs.setInt(kAccessInactivityMinutesPrefKey, 45);
-      expect(
-        await container.read(inactivityTimeoutProvider.future),
-        const Duration(minutes: 45),
-      );
-    });
-
-    test('clamps a negative value up to the one-minute floor', () async {
-      final container = _noDatabaseContainer();
-      await container
-          .read(localPreferencesProvider)
-          .setInt(kAccessInactivityMinutesPrefKey, -5);
-      expect(
-        await container.read(inactivityTimeoutProvider.future),
-        kMinInactivityTimeout,
-      );
-    });
-
-    test('reads the device-local store, not the shared one', () async {
-      // The shared, database-backed `preferencesProvider` is deliberately not
-      // overridden here: if the timeout ever started reading from it this test
-      // would hang or throw rather than quietly returning the default.
-      final container = _noDatabaseContainer();
-      await container
-          .read(localPreferencesProvider)
-          .setInt(kAccessInactivityMinutesPrefKey, 3);
-      expect(
-        await container.read(inactivityTimeoutProvider.future),
-        const Duration(minutes: 3),
-      );
     });
   });
 

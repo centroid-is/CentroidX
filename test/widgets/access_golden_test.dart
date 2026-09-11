@@ -378,10 +378,6 @@ Widget _commitHost({required ThemeData theme, required _FixedSession session}) {
 }
 
 /// The Session card, with the panel committed to [panelAccount] or to nobody.
-///
-/// The audit sink is overridden to a no-op rather than left real: the card
-/// records a row on every change it makes, and a golden must not need a
-/// database to render a card it is not changing anything on.
 Widget _sessionCardHost({required ThemeData theme, String? panelAccount}) {
   final prefs = FakeEditorPreferences();
   if (panelAccount != null) {
@@ -390,9 +386,6 @@ Widget _sessionCardHost({required ThemeData theme, String? panelAccount}) {
   return ProviderScope(
     overrides: [
       localPreferencesProvider.overrideWithValue(prefs),
-      accessSessionAuditProvider.overrideWithValue(
-        (station: 'ST301', audit: _NullAudit()),
-      ),
     ],
     child: MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -414,11 +407,6 @@ Widget _sessionCardHost({required ThemeData theme, String? panelAccount}) {
       ),
     ),
   );
-}
-
-class _NullAudit implements AuditSink {
-  @override
-  Future<void> record(AuditRecord entry) async {}
 }
 
 /// Bounded settle.

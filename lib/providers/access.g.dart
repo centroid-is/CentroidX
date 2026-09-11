@@ -110,36 +110,6 @@ final stationNameProvider = Provider<String>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef StationNameRef = ProviderRef<String>;
-String _$inactivityTimeoutHash() => r'bb2aaa4f6d37bed5dd16e8ebf475494c0f181e7d';
-
-/// How long a quiet panel keeps an elevated session, from device-local
-/// preferences.
-///
-/// **Device-local on purpose.** The timeout is a property of the panel, not of
-/// the plant: stations on one database front different equipment, and the
-/// screen bolted to a packing line in constant use wants a different number
-/// from the one in a locked electrical room. Storing it in the shared
-/// `preferencesProvider` would let one station's setting decide another's.
-///
-/// Clamped to [kMinInactivityTimeout]..[kMaxInactivityTimeout] and logged when
-/// it clamps — a stray `0` or a fat-fingered `10000` in the preferences file
-/// must not turn into a session that ends instantly or never.
-///
-/// Copied from [inactivityTimeout].
-@ProviderFor(inactivityTimeout)
-final inactivityTimeoutProvider = FutureProvider<Duration?>.internal(
-  inactivityTimeout,
-  name: r'inactivityTimeoutProvider',
-  debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
-      ? null
-      : _$inactivityTimeoutHash,
-  dependencies: null,
-  allTransitiveDependencies: null,
-);
-
-@Deprecated('Will be removed in 3.0. Use Ref instead')
-// ignore: unused_element
-typedef InactivityTimeoutRef = FutureProviderRef<Duration?>;
 String _$firstUserWindowOpenHash() =>
     r'012d3f6639bb65e570675d77fcd0f22bbc122c22';
 

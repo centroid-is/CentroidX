@@ -85,7 +85,8 @@ typedef _RowBuilder = AuditRecord Function(
 ///
 /// Writes — [createRole], [updateRole], [deleteRole], [renameRole],
 /// [setRolePages], [createUser], [deleteUser], [setUserRole],
-/// [setUserStationAccount], [setUserPassword], [setUserPages] — all ask for
+/// [setUserStationAccount], [setUserInactivityTimeout], [setUserPassword],
+/// [setUserPages] — all ask for
 /// [kAccessAdminGroup] and all leave a row, denials included. Reads — [roles]
 /// and [listUsers] — are ungated and unaudited: looking at the roster is not an
 /// authorization change, and a row per render would bury the writes that
@@ -599,6 +600,45 @@ class AccessAdminStore {
     await _recordAllowed(actionId, row);
   }
 
+  /// Sets [username]'s inactivity timeout in minutes, or clears it with null
+  /// so the account uses the default. Requires [kAccessAdminGroup].
+  ///
+  /// Not a permission, so no lockout guard — but it is the width of the
+  /// elevation window for one person, which is why it is gated and recorded
+  /// like the station-account flag rather than left to the account's holder.
+  ///
+  /// Throws [UserNotFoundException] when there is no such account, and
+  /// [ArgumentError] from the repository when [minutes] is out of range.
+  Future<void> setUserInactivityTimeout(
+    String username,
+    int? minutes, {
+    String origin = _operatorOrigin,
+    String? reason,
+  }) async {
+    final existing = await _repository.user(username);
+
+    AuditRecord row(AccessSession session, String actionId, bool allowed) =>
+        AuditRecord.userInactivityTimeout(
+          who: _who(session),
+          station: _station,
+          roleName: session.roleName,
+          actionId: actionId,
+          subject: username,
+          oldMinutes: existing?.inactivityTimeoutMinutes,
+          newMinutes: minutes,
+          allowed: allowed,
+          reason: reason,
+          origin: origin,
+        );
+
+    final actionId =
+        await _requireUsers(itemKey: _userInactivityTimeout, row: row);
+
+    if (existing == null) throw UserNotFoundException(username);
+    await _repository.setInactivityTimeout(username, minutes);
+    await _recordAllowed(actionId, row);
+  }
+
   /// Replaces [username]'s personal page whitelist. Requires
   /// [kAccessAdminGroup].
   ///
@@ -770,6 +810,7 @@ class AccessAdminStore {
   static const String _userRole = 'user.role';
   static const String _userPassword = 'user.password';
   static const String _userStationAccount = 'user.station_account';
+  static const String _userInactivityTimeout = 'user.inactivity_timeout';
   static const String _rolePages = 'role.pages';
   static const String _userPages = 'user.pages';
 }
