@@ -1117,10 +1117,11 @@ class _WebViewAssetConfigEditorState extends State<_WebViewAssetConfigEditor> {
             decoration: const InputDecoration(
               labelText: 'Theme URL parameter',
               hintText: 'theme',
-              helperText: 'For sites like Grafana that take a theme '
-                  'parameter: follows the HMI\'s dark/light theme. '
-                  'Empty sends nothing.',
-              helperMaxLines: 2,
+              // Short enough for two lines in the side pane: a longer one
+              // was cut at "…" and lost the "empty = off" half.
+              helperText: 'For sites like Grafana: sent as dark/light to '
+                  'follow the HMI theme. Empty = off.',
+              helperMaxLines: 3,
             ),
             onChanged: (value) =>
                 setState(() => config.themeParam = _nullIfBlank(value)),

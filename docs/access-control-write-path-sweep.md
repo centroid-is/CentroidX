@@ -118,6 +118,7 @@ file and call rather than by line.**
 | `lib/pages/page_editor.dart:3706` | `counts.update(asset.displayName, ...)` | — | an in-memory tally of asset kinds, for a label | `not widget-reachable` — not a store; the same broad-grep false positive as the row above. The editor's real persistence is `PageManager`, rowed in §2.9 |
 | `packages/centroidx_upgrader/lib/src/manager_launcher.dart:170` | `staged.delete()` | filesystem | cleanup of a failed staging write; see 2.7 | `left open: the update path is ungated` — see §3.5 |
 | `packages/tfc_dart/lib/core/state_man.dart:2175` | `wrapper.client.delete()` | — | OPC UA client teardown | `not widget-reachable` — not a store; disposes a connection |
+| `lib/page_creator/assets/web_view.dart:311` | `uri.replace(query: ...)` | — | `withQueryParameter`, building the Web page asset's theme-following address | `not widget-reachable` — not a store; `Uri.replace` returns a copy of a value, matched by the `\breplace\(` alternation meant for drift's `replace`. Recorded rather than filtered away, like the rows above |
 
 **Nothing further found** in this section beyond `server_config_db.dart`, the
 three MCP index classes and the audit stores: every other hit is either the
