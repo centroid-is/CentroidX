@@ -724,6 +724,145 @@ TEST(an_explicit_policy_still_wins) {
         tfc::LossAction::kRestartEngine);
 }
 
+// --- The judgement hold -----------------------------------------------------
+//
+// The 2026-09-11 08:28 recurrence: a station woke from sleep, and each
+// recovery rebuild was judged 20 s later against an engine that had not yet
+// reached Dart main(). Every judgement read "no frames presented", every one
+// rebuilt, and every rebuild restarted the startup it had just interrupted.
+// The watchdog was measuring startup latency and calling it device loss.
+
+TEST(a_held_engine_is_probed_but_not_counted_against) {
+  GpuWatchdog watchdog(TestConfig());
+  watchdog.OnStarted(kT);
+  watchdog.SetJudgeable(false, kT);
+
+  for (int i = 1; i <= 10; i++) {
+    const GpuWatchdog::Action action = watchdog.OnTick(kT + i * 5000);
+    CHECK(action.start_probe);
+    CHECK(!action.restart_engine);
+    CHECK(!action.report_loss);
+    CHECK_EQ(watchdog.missed_probes(), 0);
+  }
+  CHECK_EQ(watchdog.recovery_attempts(), 0);
+}
+
+TEST(releasing_the_hold_resumes_judgement) {
+  GpuWatchdog watchdog(TestConfig());
+  watchdog.OnStarted(kT);
+  watchdog.SetJudgeable(false, kT);
+  watchdog.OnTick(kT + 5000);
+  CHECK_EQ(watchdog.missed_probes(), 0);
+
+  // Dart main() reached: the engine can be judged again.
+  watchdog.SetJudgeable(true, kT + 6000);
+  watchdog.OnTick(kT + 10000);
+  CHECK_EQ(watchdog.missed_probes(), 1);
+  const GpuWatchdog::Action dead = watchdog.OnTick(kT + 15000);
+  CHECK(dead.restart_engine);
+}
+
+TEST(re_holding_does_not_extend_the_cap) {
+  // A caller that asks once per tick must not be able to hold the watchdog
+  // off forever.
+  GpuWatchdog::Config config = TestConfig();
+  config.max_judgement_hold_ms = 20000;
+  GpuWatchdog watchdog(config);
+  watchdog.OnStarted(kT);
+
+  for (int i = 0; i <= 4; i++) {
+    watchdog.SetJudgeable(false, kT + i * 5000);
+  }
+  CHECK(!watchdog.judgement_held(kT + 20001));
+
+  // ...and once the cap is spent, misses count again.
+  watchdog.OnTick(kT + 25000);
+  CHECK_EQ(watchdog.missed_probes(), 1);
+}
+
+TEST(an_expired_hold_is_reported_once) {
+  GpuWatchdog::Config config = TestConfig();
+  config.max_judgement_hold_ms = 10000;
+  GpuWatchdog watchdog(config);
+  watchdog.OnStarted(kT);
+  watchdog.SetJudgeable(false, kT);
+
+  CHECK(!watchdog.ConsumeJudgementHoldExpired());
+  watchdog.OnTick(kT + 5000);
+  CHECK(!watchdog.ConsumeJudgementHoldExpired());
+
+  watchdog.OnTick(kT + 15000);
+  CHECK(watchdog.ConsumeJudgementHoldExpired());
+  CHECK(!watchdog.ConsumeJudgementHoldExpired());
+}
+
+TEST(a_hold_that_expired_can_be_opened_again) {
+  GpuWatchdog::Config config = TestConfig();
+  config.max_judgement_hold_ms = 10000;
+  GpuWatchdog watchdog(config);
+  watchdog.OnStarted(kT);
+  watchdog.SetJudgeable(false, kT);
+  watchdog.OnTick(kT + 15000);
+  CHECK(watchdog.ConsumeJudgementHoldExpired());
+
+  // A later rebuild starts a fresh engine, which deserves its own grace
+  // rather than inheriting the spent one.
+  watchdog.SetJudgeable(false, kT + 20000);
+  CHECK(watchdog.judgement_held(kT + 25000));
+}
+
+TEST(a_presented_frame_ends_a_hold_whatever_the_host_believed) {
+  GpuWatchdog watchdog(TestConfig());
+  watchdog.OnStarted(kT);
+  watchdog.SetJudgeable(false, kT);
+  watchdog.OnFramePresented(kT + 1000);
+
+  CHECK(!watchdog.judgement_held(kT + 2000));
+  // The frame also consumed the outstanding probe, so the tick that re-arms
+  // it counts nothing; the two after it are the ones that judge.
+  watchdog.OnTick(kT + 5000);
+  CHECK_EQ(watchdog.missed_probes(), 0);
+  watchdog.OnTick(kT + 10000);
+  CHECK_EQ(watchdog.missed_probes(), 1);
+  CHECK(watchdog.OnTick(kT + 15000).restart_engine);
+}
+
+TEST(a_hold_does_not_suppress_a_positively_reported_loss) {
+  // The hold exists because ABSENCE is unreadable during a startup. A device
+  // that reports itself removed is not absence.
+  GpuWatchdog watchdog(TestConfig());
+  watchdog.OnStarted(kT);
+  watchdog.SetJudgeable(false, kT);
+
+  const GpuWatchdog::Action action =
+      watchdog.OnRendererLost(tfc::LossCause::kContextLost, kT + 1000);
+  CHECK(action.restart_engine);
+  CHECK(action.report_loss);
+}
+
+TEST(the_wake_from_sleep_loop_does_not_happen_any_more) {
+  // The recurrence itself, at the cadence the log recorded: rebuild, two
+  // ticks at the backed-off 10 s interval, judged dead, rebuild again.
+  // Replayed with the host holding judgement because Dart main() was never
+  // seen -- which is exactly what the [engine] line said.
+  GpuWatchdog::Config config = TestConfig();
+  config.max_recovery_attempts = 5;
+  GpuWatchdog watchdog(config);
+  watchdog.OnStarted(kT);
+
+  unsigned long long now = kT;
+  for (int rebuild = 0; rebuild < 6; rebuild++) {
+    watchdog.SetJudgeable(false, now);
+    for (int tick = 0; tick < 2; tick++) {
+      now += 10000;
+      const GpuWatchdog::Action action = watchdog.OnTick(now);
+      CHECK(!action.restart_engine);
+      CHECK(!action.exit_process);
+    }
+  }
+  CHECK_EQ(watchdog.recovery_attempts(), 0);
+}
+
 int main() {
   std::printf("gpu_watchdog_test\n");
   return tfc_test::RunAll();

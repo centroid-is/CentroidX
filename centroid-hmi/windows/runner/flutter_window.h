@@ -13,7 +13,7 @@
 #include <string>
 
 #include "dart_liveness.h"
-#include "session_rebuild_gate.h"
+#include "engine_rebuild_gate.h"
 #include "gpu_device_probe.h"
 #include "stderr_interposer.h"
 #include "gpu_diagnosis.h"
@@ -174,11 +174,16 @@ class FlutterWindow : public Win32Window {
   // defaults to exit, and an RDP disconnect must not end the process. This
   // rebuild also does not count toward the escalation guard -- it is expected
   // maintenance, not a fault.
-  void RebuildForSessionChange(const char* why);
+  void RequestEngineRebuild(const char* why);
 
   // Carries out a rebuild the gate has released, either immediately or from
   // the queue. |reason| is the gate's, already coalesced.
-  void PerformSessionRebuild(const std::string& reason);
+  void PerformEngineRebuild(const std::string& reason);
+
+  // Tells the watchdog whether the absence of frames currently means
+  // anything. It does not while a fresh engine has yet to reach Dart main(),
+  // nor while a rebuild is already queued -- see GpuWatchdog::SetJudgeable.
+  void UpdateWatchdogJudgeable();
 
   // The project to run.
   flutter::DartProject project_;
@@ -207,8 +212,8 @@ class FlutterWindow : public Win32Window {
   // Decides when a session change may rebuild the engine. Replaces the bare
   // time-based debounce, which could not collapse a disconnect/reconnect pair
   // 35 s apart and so let a teardown land on an unfinished startup. See
-  // session_rebuild_gate.h.
-  tfc::SessionRebuildGate session_gate_;
+  // engine_rebuild_gate.h.
+  tfc::EngineRebuildGate rebuild_gate_;
 
   // Owned by the controller's messenger, so it is torn down with it.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
@@ -241,7 +246,7 @@ class FlutterWindow : public Win32Window {
   // no frames. It stays blind to a loss confined to ANGLE's own device -- see
   // the note in gpu_diagnosis.h on why that device cannot be reached -- and
   // for that class the frame probe is NOT a detector either -- see
-  // RebuildForSessionChange for the 2026-09-01 measurement that disproves it.
+  // RequestEngineRebuild for the 2026-09-01 measurement that disproves it.
   // Remote session changes are handled there instead.
   tfc::GpuDeviceProbe device_probe_;
   // Latches so the transition is logged once rather than every tick.
