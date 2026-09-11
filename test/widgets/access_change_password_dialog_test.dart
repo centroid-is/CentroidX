@@ -256,12 +256,44 @@ void main() {
       // where to tap. Safe with an on-screen keyboard: the field is autofocus,
       // so the keyboard is already up from the moment the dialog opened and
       // focus never left a text field — this moves a cursor, it raises nothing.
+      //
+      // **Gated, and the gate is the whole test.** Every field carries
+      // `enabled: !_busy`. Without the gate the fake answers in a microtask, so
+      // all of `_submit` runs inside the tap dispatch before any frame is
+      // pumped: the disabled rebuild never happens, `canRequestFocus` is still
+      // true from the enabled build, and a focus request lands wherever it is
+      // written. The test would then pass against an implementation that does
+      // nothing at all on a real panel, where the await spans two Argon2id
+      // derivations and the field has been rebuilt disabled long before the
+      // answer arrives.
+      //
+      // So: hold the answer, pump once so the disabled frame actually builds,
+      // then release. That is the production framing, and it is what makes this
+      // test fail if the focus request moves back above the re-enabling
+      // `setState`.
       final controller = _FakeSessionController(
           results: const [AccessPasswordChangeResult.wrongCurrentPassword]);
+      controller.gate = Completer<void>();
+
       await tester.pumpWidget(_host(controller: controller));
       await _open(tester);
       await _fill(tester);
-      await _submit(tester);
+
+      await tester.tap(find.byKey(kAccessChangePasswordSubmitKey));
+      await tester.pump();
+
+      // The frame that hides the bug if it is not built.
+      expect(
+        tester
+            .widget<TextField>(find.byKey(kAccessChangePasswordCurrentKey))
+            .enabled,
+        isFalse,
+        reason: 'the field must actually be disabled mid-flight, or this test '
+            'is back to proving nothing',
+      );
+
+      controller.gate!.complete();
+      await tester.pumpAndSettle();
 
       expect(
         tester

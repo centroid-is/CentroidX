@@ -254,19 +254,27 @@ class _AccessChangePasswordDialogState
           _note = kAccessChangePasswordWrongCurrentNote;
         });
 
-        // After the rebuild, not before it, and this ordering is load-bearing.
-        // Every field carries `enabled: !_busy`, and `_busy` is still true on
-        // the way into this arm — so at the moment the answer arrives the
-        // current-password field is disabled, and Flutter does not focus a
-        // disabled field.
+        // After the rebuild, not before it, and this ordering is the whole of
+        // whether the refocus happens at all.
         //
-        // An inline `requestFocus()` above the `setState` does currently work,
-        // which is worse than if it did not: `FocusManager` applies focus
-        // changes asynchronously, so the request happens to land after the
-        // rebuild that re-enables the field. That is a coincidence of
-        // scheduling, not a guarantee, and it is invisible in a test that
-        // passes. Asking after the frame makes the dependency explicit and
-        // survives a change in that scheduling.
+        // Every field carries `enabled: !_busy`. `_busy` went true at submit,
+        // so by the time an answer arrives the field has been rebuilt disabled
+        // — and a disabled `TextField` sets `canRequestFocus = false` on its
+        // node, which makes `FocusNode.requestFocus()` return immediately and
+        // silently. An inline request above the `setState` below is therefore
+        // not merely fragile: on a panel it does nothing, every time, because
+        // the two Argon2id derivations the await spans guarantee the disabled
+        // frame has been built.
+        //
+        // It nevertheless passes an ungated widget test, which is the trap. A
+        // fake controller answers in a microtask, so the whole submit runs
+        // inside the tap dispatch before any frame is pumped: the disabled
+        // rebuild never happens, `canRequestFocus` is still true, and the focus
+        // lands. The test and the golden then both show a cursor the rig will
+        // never have. `access_change_password_dialog_test.dart` gates its
+        // answer on a `Completer` and pumps the disabled frame for exactly this
+        // reason — that test fails if this request moves back above the
+        // `setState`.
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _currentFocus.requestFocus();
         });
