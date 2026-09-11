@@ -896,6 +896,48 @@ void main() {
           reason: 'the documented way out, and the only one');
     });
 
+    test('the read-out follows a commit and the sign-out that ends it',
+        () async {
+      // The Session card watches this provider. Nothing else tells it the
+      // commitment changed: the key is device-local, the writes happen inside
+      // the controller, and committing does not move the session — a human
+      // signed in over the panel sees their own name either way. Without the
+      // invalidations it would show the answer from whenever it was first
+      // built and stay wrong until a reload.
+      final h = await panel();
+      await h.settle();
+      final sub = h.container.listen<AsyncValue<String?>>(
+          panelAccountProvider, (_, __) {});
+      addTearDown(sub.close);
+
+      expect(await h.container.read(panelAccountProvider.future), isNull);
+
+      await h.notifier.signIn('freezer', 'panel pw');
+      expect(await h.notifier.commitPanelAccount(), isTrue);
+      expect(await h.container.read(panelAccountProvider.future), 'freezer');
+
+      await h.notifier.signOut();
+      expect(await h.container.read(panelAccountProvider.future), isNull,
+          reason: 'signing the panel account out is the documented way out, '
+              'so it is the one the card has to follow');
+    });
+
+    test('a resume refusal shows up in the read-out too', () async {
+      // The account was deleted under a committed panel: the resume un-commits
+      // it, and the card must not go on naming an account nobody can sign in
+      // as. `_clearPanelAccount` is the one funnel for all three refusals.
+      final h = await committed();
+      final sub = h.container.listen<AsyncValue<String?>>(
+          panelAccountProvider, (_, __) {});
+      addTearDown(sub.close);
+      expect(await h.container.read(panelAccountProvider.future), 'freezer');
+
+      await h.repository.setStationAccount('freezer', false);
+      await h.notifier.signOut();
+
+      expect(await h.container.read(panelAccountProvider.future), isNull);
+    });
+
     test('the commitment survives a restart', () async {
       final h = await committed();
       final restarted = await panel(reuseDb: h.db);

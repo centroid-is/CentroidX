@@ -1,13 +1,20 @@
 /// Goldens for the two access surfaces this phase puts in front of an
 /// operator: the app-bar affordance and the sign-in dialog.
 ///
-/// Five images, one per state that looks different:
+/// Seven images, one per state that looks different:
 ///
 /// * `access_appbar_anonymous.png`   — nobody signed in: the Sign in icon, no name.
 /// * `access_appbar_elevated.png`    — signed in: who, their role, and Sign out, in orange.
 /// * `access_sign_in_dialog.png`     — the form at rest, honesty subtitle showing.
 /// * `access_sign_in_dialog_error.png` — the same form after a rejected password.
 /// * `access_panel_commit_prompt.png` — the prompt a station account gets, over the form.
+/// * `access_session_card_committed.png`   — the Session card on a committed panel.
+/// * `access_session_card_uncommitted.png` — the same card on an uncommitted one.
+///
+/// The last pair is the read-out support reads. Both sentences are long, and
+/// the failure a `find.text` cannot catch is exactly the one that matters
+/// here: a line that ellipsises instead of wrapping tells the reader the
+/// panel's account is `freeze…`.
 ///
 /// **The muted (ISA-101) palette, not solarized.** `HmiStateColors.orange` is
 /// the token plan 01-08 added for an elevated session, and in the muted
@@ -41,15 +48,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FontLoader;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc/pages/access_session_section.dart';
 import 'package:tfc/providers/access.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/theme.dart' show muted;
 import 'package:tfc/widgets/access_sign_in_dialog.dart';
 import 'package:tfc/widgets/access_status_action.dart';
 import 'package:tfc_access/tfc_access.dart';
 
+import '../helpers/page_editor_harness.dart' show FakeEditorPreferences;
+
 const _appBarBoundary = Key('access_appbar_golden');
 const _dialogBoundary = Key('access_sign_in_dialog_golden');
 const _commitBoundary = Key('access_panel_commit_golden');
+const _sessionCardBoundary = Key('access_session_card_golden');
 
 /// A session that resolves immediately to whatever the image needs.
 ///
@@ -236,6 +248,50 @@ Widget _commitHost({required ThemeData theme, required _FixedSession session}) {
   );
 }
 
+/// The Session card, with the panel committed to [panelAccount] or to nobody.
+///
+/// The audit sink is overridden to a no-op rather than left real: the card
+/// records a row on every change it makes, and a golden must not need a
+/// database to render a card it is not changing anything on.
+Widget _sessionCardHost({required ThemeData theme, String? panelAccount}) {
+  final prefs = FakeEditorPreferences();
+  if (panelAccount != null) {
+    prefs.setString(kAccessPanelAccountPrefKey, panelAccount);
+  }
+  return ProviderScope(
+    overrides: [
+      localPreferencesProvider.overrideWithValue(prefs),
+      accessSessionAuditProvider.overrideWithValue(
+        (station: 'ST301', audit: _NullAudit()),
+      ),
+    ],
+    child: MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: theme,
+      home: Scaffold(
+        backgroundColor: theme.colorScheme.surface,
+        body: Center(
+          child: RepaintBoundary(
+            key: _sessionCardBoundary,
+            // Scrollable, as `access_admin.dart` mounts it: a bare `Center`
+            // hands the card the whole viewport height and it captures with a
+            // third of the image empty below the last line.
+            child: const SizedBox(
+              width: 620,
+              child: SingleChildScrollView(child: AccessSessionSection()),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _NullAudit implements AuditSink {
+  @override
+  Future<void> record(AuditRecord entry) async {}
+}
+
 /// Bounded settle.
 ///
 /// `pumpAndSettle` cannot be used once a `TextField` has focus: the caret
@@ -392,6 +448,37 @@ void main() {
       await expectLater(
         find.byKey(_commitBoundary),
         matchesGoldenFile('goldens/access_panel_commit_prompt.png'),
+      );
+    });
+
+    testWidgets('the Session card on a committed panel', (tester) async {
+      _sizeView(tester, const Size(700, 460));
+      await tester.pumpWidget(
+        _sessionCardHost(theme: light, panelAccount: 'freezer'),
+      );
+      await _settle(tester);
+
+      expect(find.text(kAccessSessionPanelCommittedNote('freezer')),
+          findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await expectLater(
+        find.byKey(_sessionCardBoundary),
+        matchesGoldenFile('goldens/access_session_card_committed.png'),
+      );
+    });
+
+    testWidgets('the Session card on an uncommitted panel', (tester) async {
+      _sizeView(tester, const Size(700, 460));
+      await tester.pumpWidget(_sessionCardHost(theme: light));
+      await _settle(tester);
+
+      expect(find.text(kAccessSessionPanelUncommittedNote), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await expectLater(
+        find.byKey(_sessionCardBoundary),
+        matchesGoldenFile('goldens/access_session_card_uncommitted.png'),
       );
     });
   });
