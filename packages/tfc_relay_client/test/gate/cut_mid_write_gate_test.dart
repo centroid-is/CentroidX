@@ -47,6 +47,8 @@
 @Tags(['gate', 'faults'])
 library;
 
+import 'dart:io' show Platform;
+
 import 'package:test/test.dart';
 import 'package:tfc_relay_client/src/connection_supervisor.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
@@ -56,6 +58,29 @@ import '../support/gate_bands.dart';
 
 void main() {
   group('F6 — a frame truncated on the wire under a write', () {
+    // **Skipped on Windows: the lever cannot promise this case's setup.**
+    //
+    // `cutMidFrame(n)` spends a byte budget on the next n bytes travelling
+    // server->client, whatever they belong to. This case needs those bytes to
+    // be the write's *answer* — it measured the response frame at 125 b and
+    // cuts at 62 b — but the gateway's tick engine puts a frame on the same
+    // line every 100 ms, and `ServerConfig` validates `tick` into a
+    // 50-100 ms band (`server_config.dart:420-423`), so it cannot be slowed
+    // out of the way. When a tick spends the budget first the link dies before
+    // the request is sent, the plant records **0** attempts, and the assertion
+    // at the heart of this row — "the request arrived whole, only the answer
+    // was truncated" — fails on a case that never got set up.
+    //
+    // `write_readback_freshness_test.dart` was skipped for this a commit
+    // earlier, and its comment claimed THIS file was safe because it "asserts
+    // only that the outcome is WriteUnknown". That was wrong: line 138 asserts
+    // `upstreamWriteAttempts == 1` exactly as S3 does. It had not failed yet,
+    // which on a race is not the same as being immune, and the Windows agent
+    // has since produced it.
+    //
+    // Not a deletion: the row is measured on macOS and Linux every run, and
+    // the property is not platform-specific. The durable fix is a lever that
+    // can cut a *named* frame rather than a byte count.
     test('F6: a write frame truncated on the wire resolves unknown, and the '
         'ram does not stroke twice', () async {
       final fixture = await faultFixture(
@@ -177,6 +202,13 @@ void main() {
               'command the operator issued once');
       print('F6: caller verdict $outcome, re-query answered $answered, '
           'plant attempts ${fixture.served.upstreamWriteAttempts(cmd)}');
-    });
+    },
+        skip: Platform.isWindows
+            ? 'cutMidFrame cannot target the write answer: the gateway ticks '
+                'onto the same line every 100 ms and cannot be slowed past '
+                'ServerConfig.maxTick, so on a loaded agent a tick spends the '
+                'byte budget and the request never reaches the plant. See the '
+                'comment on this case.'
+            : null);
   });
 }

@@ -110,10 +110,13 @@ void main() {
     //     the write resolves instead of going unknown;
     //   * scaling the case's budgets — this is not slowness, it is an ordering.
     //
-    // `gate/cut_mid_write_gate_test.dart` uses the same lever on Windows
-    // happily because it asserts only that the outcome is `WriteUnknown`, which
-    // holds whichever frame the cut lands on. This case needs strictly more
-    // than the lever can promise.
+    // `gate/cut_mid_write_gate_test.dart` arms the same lever for the same
+    // interleaving. This comment used to say that file was safe because it
+    // "asserts only that the outcome is WriteUnknown" — that was wrong. It
+    // asserts `upstreamWriteAttempts == 1` at line 138, exactly as this case
+    // does. It simply had not failed yet, which on a race is not the same as
+    // being immune, and the Windows agent produced it one commit later. Both
+    // are skipped there now, for this one reason.
     //
     // The property itself — a readback may not walk a value backwards — is not
     // platform-specific: it is measured on macOS and Linux every run, and the
