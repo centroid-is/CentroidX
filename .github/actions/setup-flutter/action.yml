@@ -32,7 +32,32 @@ runs:
         echo "Flutter $version (pinned in .flutter-version)"
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
+    # Retried once, same shape as .github/actions/docker-build-push. This step
+    # downloads and unpacks the SDK, and that download dies often enough to
+    # matter: `centroidx-upgrader-test (macos-latest)` lost a run on PR #463
+    # when it exited 56 (curl "recv failure") 152s in, taking the whole job
+    # with it before a single test had run. Nothing about the repository is
+    # involved in that failure and nothing about it is reproducible, so the
+    # only sane response is to fetch it again.
+    #
+    # No signature check here, unlike the pub-get action: flutter-action either
+    # produces a usable SDK or it does not, and a second attempt costs ~80s
+    # against a job that is otherwise wholly lost.
     - name: Install Flutter
+      id: first-attempt
+      uses: subosito/flutter-action@v2
+      continue-on-error: true
+      with:
+        flutter-version: ${{ steps.read-version.outputs.version }}
+
+    - name: Note the retry
+      if: steps.first-attempt.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::warning::Installing Flutter ${{ steps.read-version.outputs.version }} failed on the first attempt — retrying once. This is the SDK download, not anything in this repository."
+
+    - name: Install Flutter (retry)
+      if: steps.first-attempt.outcome == 'failure'
       uses: subosito/flutter-action@v2
       with:
         flutter-version: ${{ steps.read-version.outputs.version }}
