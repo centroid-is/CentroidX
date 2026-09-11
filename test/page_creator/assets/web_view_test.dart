@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc/core/feature_flags.dart';
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/registry.dart';
 import 'package:tfc/page_creator/assets/web_view.dart';
@@ -52,6 +53,10 @@ void main() {
   tearDown(() => WebViewAssetView.debugSurfaceFactory = null);
 
   group('JSON', () {
+    // Runs in both build modes on purpose. WebViewAssetConfig.fromJson is
+    // deliberately NOT behind kWebViewEnabled — a flag-off build has to round-
+    // trip a saved page carrying this asset rather than silently dropping it,
+    // the same contract kKnowledgeEnabled keeps for DrawingViewerConfig.
     test('fields survive a round trip', () {
       final config = WebViewAssetConfig(
         url: 'https://plant/dash',
@@ -79,9 +84,17 @@ void main() {
       expect(config.isConfigured, isFalse);
     });
 
-    test('the registry can build one by name — the MCP proposal path', () {
+    test('the palette entry follows the compile flag', () {
+      // kWebViewEnabled is a compile-time const, so this asserts whichever
+      // build mode the suite is running in rather than flipping it: present
+      // in the palette (and to the MCP proposal path) when the asset is
+      // compiled in, absent when it is not.
       final asset = AssetRegistry.createDefaultAssetByName('WebViewAssetConfig');
-      expect(asset, isA<WebViewAssetConfig>());
+      if (kWebViewEnabled) {
+        expect(asset, isA<WebViewAssetConfig>());
+      } else {
+        expect(asset, isNull);
+      }
     });
   });
 

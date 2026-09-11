@@ -50,6 +50,7 @@ import 'package:flutter/material.dart';
 import 'package:json_annotation/json_annotation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../core/feature_flags.dart';
 import 'common.dart';
 
 part 'web_view.g.dart';
@@ -117,12 +118,19 @@ class WebViewAssetConfig extends BaseAsset {
   @JsonKey(includeFromJson: false, includeToJson: false)
   bool get isConfigured => parseWebViewUrl(url) != null;
 
+  // Gated like DrawingViewerConfig: a flag-off build still deserializes a
+  // saved page carrying this asset, it just renders the unavailable
+  // placeholder instead of a browser. Keeping WebViewAssetView unreachable
+  // is what lets the webview_flutter Dart code tree-shake out.
   @override
-  Widget build(BuildContext context) => WebViewAssetView(config: this);
+  Widget build(BuildContext context) => kWebViewEnabled
+      ? WebViewAssetView(config: this)
+      : const _UnavailableTile();
 
   @override
-  Widget configure(BuildContext context) =>
-      _WebViewAssetConfigEditor(config: this);
+  Widget configure(BuildContext context) => kWebViewEnabled
+      ? _WebViewAssetConfigEditor(config: this)
+      : const _UnavailableTile();
 }
 
 /// Parses [raw] into a browsable http(s) URL, or null.
@@ -278,9 +286,15 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
     }
     _surface = surface;
     unawaited(surface.navigate(uri).catchError((Object _) {
-      // A failed navigation leaves whatever the browser is showing. The page
-      // itself reports the error — WKWebView draws its own "cannot connect"
-      // — and re-navigating on the next tick is the recovery.
+      // A failed navigation leaves whatever the browser is showing, and
+      // re-navigating on the next reload tick is the recovery.
+      //
+      // Observed on macOS 2026-09-11: an unreachable host leaves the tile
+      // *blank white*, not on a browser error page — WKWebView paints nothing
+      // for a provisional navigation that never commits. On a wall that reads
+      // as a broken tile rather than an unreachable one. Surfacing it
+      // properly means the NavigationDelegate (onWebResourceError), not this
+      // catch, which only ever sees the channel call failing.
     }));
     _armTimer();
   }
@@ -461,6 +475,31 @@ class _Glyph extends StatelessWidget {
         ),
       );
     });
+  }
+}
+
+/// What a flag-off build shows in place of the asset: the same framed
+/// placeholder an unsupported platform gets, so a page author sees a reason
+/// rather than an empty rectangle.
+class _UnavailableTile extends StatelessWidget {
+  const _UnavailableTile();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border:
+            Border.all(color: theme.colorScheme.onSurface.withValues(alpha: 0.25)),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: const _Glyph(
+        icon: Icons.public_off,
+        caption: 'Web view is not available on this platform',
+      ),
+    );
   }
 }
 

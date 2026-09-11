@@ -170,7 +170,7 @@ class AssetRegistry {
     ThirdPartyEquipmentConfig: ThirdPartyEquipmentConfig.preview,
     AlarmVisibilityConfig: AlarmVisibilityConfig.preview,
     RtspCameraConfig: RtspCameraConfig.preview,
-    WebViewAssetConfig: WebViewAssetConfig.preview,
+    if (kWebViewEnabled) WebViewAssetConfig: WebViewAssetConfig.preview,
   };
 
   static void registerFromJsonFactory<T extends Asset>(
