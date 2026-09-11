@@ -4,7 +4,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/beckhoff.dart';
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/ethercat_asset.dart';
-import 'package:tfc/page_creator/assets/ethercat_subdevice.dart';
 import 'package:tfc/page_creator/assets/registry.dart';
 import 'package:tfc/page_creator/assets/schneider.dart';
 
