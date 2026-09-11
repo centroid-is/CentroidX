@@ -161,13 +161,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     libnspr4 \
     libasound2t64 \
+    libatk1.0-0t64 \
+    libatk-bridge2.0-0t64 \
+    libatspi2.0-0t64 \
+    libcups2t64 \
+    libxcomposite1 \
+    libxdamage1 \
     && rm -rf /var/lib/apt/lists/*
 
-# The last three are CEF's runtime dependencies, for the Web page asset's
-# browser. CEF itself is not installed here — the plugin's CMake downloads it
-# at build time and it ships in the bundle — but it will not start without
-# them, and a browser that fails to launch is indistinguishable from a build
-# with no CEF at all.
+# libnss3 through libxdamage1 are CEF's runtime dependencies, for the Web page
+# asset's browser. CEF itself is not installed here — the plugin's CMake
+# downloads it at build time and it ships in the bundle — but libcef.so names
+# every one of them in its DT_NEEDED, so missing any one stops the whole app
+# from loading, not just the browser. The ldd check at the end of this stage
+# fails the build instead.
 
 # Hacks for amplify secure storage (arch-agnostic)
 RUN LIBDIR=$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
@@ -196,6 +203,18 @@ RUN ln -s bundle/lib lib
 
 RUN chown -R centroid:centroid $APP_DIR \
     && chmod +x ./homescreen
+
+# Fail the build, not the station: every library the binary or the bundle
+# names must resolve in this image. A bundled plugin that pulls in a new
+# system library otherwise ships an image that cannot start.
+RUN missing=$(for f in ./homescreen bundle/lib/*.so; do \
+        LD_LIBRARY_PATH=./bundle/lib ldd "$f" | grep 'not found' | sed "s|^[[:space:]]*|$f: |"; \
+    done); \
+    if [ -n "$missing" ]; then \
+        echo "Unresolved shared libraries; install the packages that provide them:"; \
+        echo "$missing"; \
+        exit 1; \
+    fi
 
 USER centroid
 
