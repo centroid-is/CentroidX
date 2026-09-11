@@ -1001,6 +1001,12 @@ void main() {
         // The escape hatch is still there: a loose permit can be added as an
         // extra diode reading its own complete key.
         expect(find.text('Extra status diodes'), findsOneWidget);
+        // The run key is a different field and is still offered — a kind with
+        // no handshake still has a run lamp like every other.
+        expect(find.widgetWithText(TextField, 'Run Status Key'), findsOneWidget);
+        // And the extra-diode help says what the section IS for this kind,
+        // rather than ordering it after diodes that do not exist.
+        expect(find.text(extraStatusBitsHelpText(kind)), findsOneWidget);
 
         await tester.pumpWidget(const SizedBox());
       }

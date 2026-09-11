@@ -1664,4 +1664,163 @@ void main() {
           reason: 'only the health key reveals it');
     });
   });
+
+  group('Empty pallet magazine', () {
+    const magazine = ThirdPartyEquipmentKind.palletMagazine;
+
+    test('brings no diode table of its own', () {
+      // The premise every other test in this group rests on. If the magazine
+      // ever gains a struct or a suffix table, the editor stops hiding the
+      // status key field and the help text changes back -- and those tests
+      // would start passing for the wrong reason rather than failing.
+      expect(kStructStatusBits[magazine], isNull);
+      expect(kEquipmentStatusBits[magazine], isNull);
+      expect(hasStatusTable(magazine), isFalse);
+      expect(isStructBacked(magazine), isFalse);
+    });
+
+    test('is table-less for a different reason than the palletising row', () {
+      // Both are table-less and the editor treats them identically, which is
+      // right. They are NOT the same case underneath: the palletising row has
+      // no handshake to read, and this machine has one the PLC publishes as
+      // loose globals. The help text is where that difference has to show --
+      // naming EPW01 at a kind with no keys would be inventing a handshake.
+      const palletiser = ThirdPartyEquipmentKind.optimarPalletiser;
+      expect(hasStatusTable(palletiser), isFalse);
+
+      expect(extraStatusBitsHelpText(magazine), contains('EPW01'));
+      expect(extraStatusBitsHelpText(palletiser), isNot(contains('EPW01')));
+      // The shared half is genuinely shared, not two copies that can drift.
+      expect(extraStatusBitsHelpText(palletiser),
+          contains('no diodes of its own'));
+    });
+
+    test('nothing is composed onto a status key it cannot use', () {
+      // Not a hypothetical: switching an existing asset's kind leaves whatever
+      // prefix it was carrying in the JSON, and the editor no longer shows a
+      // field to clear it with. That leftover must not turn into a
+      // subscription or into composed `.Suffix` keys.
+      final config =
+          ThirdPartyEquipmentConfig(kind: magazine, runKey: 'EPW01.Run')
+            ..statusKey = 'BER02';
+
+      expect(config.allKeys, contains('EPW01.Run'));
+      expect(config.allKeys.where((k) => k.startsWith('BER02.')), isEmpty,
+          reason: 'the magazine appends no suffix to a status prefix');
+
+      // The BARE prefix is still discovered, and that is `BaseAsset.allKeys`
+      // introspecting `toJson()` rather than anything this kind does -- the
+      // box erector's `BER01` is discovered the same way, and is just as much
+      // not a node. Asserted rather than left unsaid so that if key discovery
+      // is ever taught to skip dead prefixes, this is the test that says the
+      // magazine was one of the reasons.
+      expect(config.allKeys, contains('BER02'));
+    });
+
+    test('its extra bits are what reach keys, at the full key each', () {
+      final config = ThirdPartyEquipmentConfig(kind: magazine, runKey: '')
+        ..extraBits = [
+          const ExtraStatusBit(
+              key: 'EPW01.PalletReady', label: '{m} has a pallet ready'),
+          const ExtraStatusBit(
+              key: 'EPW01.WagonReady', label: 'Wagon is ready for a {m} pallet'),
+          // An unconfigured row must not put an empty key into discovery.
+          const ExtraStatusBit(key: '', label: 'not wired yet'),
+        ];
+
+      expect(config.allKeys, containsAll(['EPW01.PalletReady', 'EPW01.WagonReady']));
+      expect(config.allKeys, isNot(contains('')));
+    });
+
+    test('a label template fills in the machine name like every other bit', () {
+      const bit = ExtraStatusBit(
+          key: 'EPW01.PalletReady', label: '{m} has a pallet ready');
+      expect(bit.labelFor(equipmentShortName(magazine)),
+          'Pallet magazine has a pallet ready');
+    });
+
+    test('the editor help text tells it what its Status section IS', () {
+      final help = extraStatusBitsHelpText(magazine);
+      // The sentence that orders extra bits AFTER the kind's own diodes is the
+      // one that must not be shown here -- there are none to come after.
+      expect(help, isNot(contains('Shown after the normal diodes')));
+      expect(help, contains('no diodes of its own'));
+      // And it names where the four bools actually live, because the only
+      // other way to learn that is to open the GVL.
+      expect(help, contains('EPW01'));
+      // The label-template half is shared with every other kind.
+      expect(help, contains('{m}'));
+
+      final erector =
+          extraStatusBitsHelpText(ThirdPartyEquipmentKind.boxErector);
+      expect(erector, contains('Shown after the normal diodes'));
+      expect(erector, isNot(contains('no diodes of its own')));
+    });
+
+    test('metadata quotes the pallet, which is known, and not the frame, '
+        'which is not', () {
+      expect(magazine.label, 'Empty pallet magazine');
+      expect(magazine.footprint(), contains('1200 x 800'));
+      expect(magazine.footprint(), contains('per site CAD'),
+          reason: 'the drawing gives no frame dimension, so none is quoted');
+      expect(equipmentShortName(magazine), 'pallet magazine');
+    });
+
+    test('the enum still records that its product name is unresolved', () {
+      // Same marker the box erector carries, and for the same reason: balloon
+      // 031 has no text against it and no make has been identified. When one
+      // is, the value, the label and the painter get renamed together.
+      final source =
+          File('lib/page_creator/assets/third_party.dart').readAsStringSync();
+      final decl = source.indexOf('  palletMagazine,');
+      expect(decl, greaterThan(0));
+      final doc = source.substring(source.indexOf('fishAligner,'), decl);
+      expect(doc, contains('TODO(product-name)'));
+    });
+  });
+
+  group('PalletMagazinePainter geometry', () {
+    test('the pallet stands inside the well, clear of the corner guides', () {
+      expect(PalletMagazinePainter.well
+          .contains(PalletMagazinePainter.pallet.topLeft), isTrue);
+      expect(PalletMagazinePainter.well
+          .contains(PalletMagazinePainter.pallet.bottomRight), isTrue);
+    });
+
+    test('the lane and the well share an edge, so they read as one machine',
+        () {
+      // Drawn clear of the well the lane looked like a separate conveyor
+      // parked alongside. Exact equality is the point -- "close" is what
+      // produced two boxes with a hairline gap between them.
+      expect(PalletMagazinePainter.lane.left,
+          PalletMagazinePainter.well.right);
+    });
+
+    test('the lane discharges across the middle of the stack', () {
+      expect(PalletMagazinePainter.lane.center.dy,
+          closeTo(PalletMagazinePainter.pallet.center.dy, 0.02),
+          reason: 'a pallet leaves along its own centreline');
+    });
+
+    test('the offset stack stays inside the unit box', () {
+      // Two pallets show from under the top one, each stepped down and right.
+      // The lowest must not run off the machine area and get clipped.
+      final d = PalletMagazinePainter.stackOffset * 2;
+      expect(PalletMagazinePainter.pallet.right + d, lessThan(1.0));
+      expect(PalletMagazinePainter.pallet.bottom + d, lessThan(1.0));
+    });
+
+    test('painting is a no-op on a zero canvas and does not throw on a tiny '
+        'one', () {
+      for (final size in const [Size.zero, Size(24, 18), Size(400, 286)]) {
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder);
+        const painter =
+            PalletMagazinePainter(color: Colors.black, strokeWidth: 2);
+        expect(() => painter.paint(canvas, size), returnsNormally,
+            reason: 'the magazine must degrade at $size, not crash');
+        recorder.endRecording().dispose();
+      }
+    });
+  });
 }
