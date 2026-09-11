@@ -48,6 +48,23 @@ Future<Set<String>> _indexNames(GeneratedDatabase db) async {
 /// The three tables added by the v5→v6 migration.
 const _accessTables = ['app_role', 'app_user', 'audit_entry'];
 
+/// Undoes what schema **v7** added to `alarm_history`.
+///
+/// The v5 fixtures in this repository are built by creating the CURRENT schema
+/// and removing what came later, so every future version has to add its own
+/// rollback here or the fixture is not the shape it claims to be. Without
+/// these, `onUpgrade(5, 7)`'s SQLite arm aborts on
+/// `duplicate column name: rule_index` — the fixture, not the migration: a
+/// real v5 SQLite database has none of these.
+///
+/// The index goes first. SQLite refuses to drop a column an index refers to.
+const _v7Rollback = [
+  'DROP INDEX IF EXISTS idx_alarm_history_open',
+  'ALTER TABLE alarm_history DROP COLUMN rule_index',
+  'ALTER TABLE alarm_history DROP COLUMN ts_source',
+  'ALTER TABLE alarm_history DROP COLUMN deactivated_reason',
+];
+
 /// The three `audit_entry` indexes.
 const _auditIndexes = [
   'idx_audit_entry_at',
@@ -83,10 +100,14 @@ void main() {
     // `access_key_binding` (`access_template_table_test.dart`) and
     // `app_user.station_account` (`station_account_column_test.dart`) all
     // arrive in the same v6 arm this suite covers.
-    test('schema version is 6', () async {
+    test('schema version is 7', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 6);
+      // v7 is 14-01's alarm_history change (the alarm(uid) FK dropped,
+      // rule_index / ts_source / deactivated_reason added, partial unique
+      // index). This literal is the pin that makes a version bump a deliberate
+      // edit rather than a side effect.
+      expect(db.schemaVersion, 7);
     });
 
     test('seeds exactly four roles', () async {
@@ -195,6 +216,9 @@ void main() {
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
       await db.customStatement('DROP TABLE app_role');
+      for (final stmt in _v7Rollback) {
+        await db.customStatement(stmt);
+      }
       await db.customStatement('PRAGMA user_version = 5');
       await db.close();
     }
@@ -264,10 +288,13 @@ void main() {
 
       final row =
           await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 6,
+      expect(row.read<int>('user_version'), db.schemaVersion,
           reason: 'a v5 database opens straight to the current version — '
-              'onUpgrade(5, 6) runs the one access branch, which is the whole '
-              'milestone');
+              'onUpgrade(5, N) runs every branch above 5 in one pass. Read '
+              'off db.schemaVersion rather than written as a literal: the '
+              'literal pin lives in "schema version is 7" above, and this arm '
+              'is about the upgrade arriving THERE, not about which number '
+              'there is');
     });
   });
 

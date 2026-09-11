@@ -14,6 +14,7 @@ import 'package:tfc_access/tfc_access.dart';
 
 import '../access_routes.dart';
 import '../providers/access.dart';
+import '../providers/gateway_link.dart';
 import 'access_gate.dart';
 
 /// A lock glyph for the menu entry at [path], and nothing at all when that
@@ -24,7 +25,7 @@ import 'access_gate.dart';
 /// is what an anonymous session already holds, so the answer is known from the
 /// path alone. That is what makes the badge free for the hundreds of ordinary
 /// page entries: they neither subscribe to the session nor cause
-/// `accessRepositoryProvider` to be built, and a station that raises no routes
+/// `accessAuthorityProvider` to be built, and a station that raises no routes
 /// renders its whole menu without ever reading the database or the station
 /// keychain. It is also why adding this widget to a menu row cannot change how
 /// that row lays out — with nothing to show it is a `SizedBox.shrink()`,
@@ -36,7 +37,7 @@ import 'access_gate.dart';
 /// two copies is edited. The only things it decides are the path lookups, and
 /// both of those come from `lib/access_routes.dart`, which is where the route
 /// table gets them too. In particular the database-outage exemption is
-/// [routeAllowedWhenRepositoryUnavailable] and never a boolean literal, so
+/// [routeAllowedWhenNobodyCanSignIn] and never a boolean literal, so
 /// Server Config's badge and Server Config's gate agree in every repository
 /// state, including both causes of an unavailable one.
 ///
@@ -71,13 +72,19 @@ bool accessRouteLocked(WidgetRef ref, String? path, {bool watch = true}) {
   if (group == AccessGroup.operate) return false;
   final state = resolveAccessGate(
     group: group,
-    repository: watch
-        ? ref.watch(accessRepositoryProvider)
-        : ref.read(accessRepositoryProvider),
+    authority: watch
+        ? ref.watch(accessAuthorityProvider)
+        : ref.read(accessAuthorityProvider),
     session: watch
         ? ref.watch(accessSessionProvider)
         : ref.read(accessSessionProvider),
-    allowWhenRepositoryUnavailable: routeAllowedWhenRepositoryUnavailable(path),
+    allowWhenNobodyCanSignIn: routeAllowedWhenNobodyCanSignIn(path),
+    // The same provider `AccessGate` watches, for the same reason the path
+    // predicate is shared: a badge that decided the link's health for itself
+    // would put a lock on Server Config while the gate opened it.
+    relayCanAuthenticate: watch
+        ? ref.watch(relayCanAuthenticateProvider)
+        : ref.read(relayCanAuthenticateProvider),
   );
   return state == AccessGateState.denied;
 }

@@ -13,45 +13,91 @@ import '../widgets/base_scaffold.dart';
 import '../widgets/history_graph_pane.dart';
 import '../widgets/history_table_pane.dart';
 
+import 'package:tfc_dart/core/access/guarded_state_man.dart';
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
+    show HistoryViewApi, HistoryViewGraphRecord, HistoryViewKeyRecord;
+
 import '../providers/state_man.dart'; // stateManProvider
 import '../providers/database.dart'; // databaseProvider (Future<Database?>)
+import '../providers/gateway.dart'; // gatewayConfigProvider
 import '../providers/access.dart'; // stationNameProvider
 import '../providers/access_policy.dart'; // sessionInForce, RefAuditSink
+import '../core/gateway_state_man.dart'; // GatewayStateMan
 import '../core/guarded_history_views.dart'; // HistoryViewStore
+import '../core/relayed_history_views.dart'; // the two transports
 
 import '../models/history_models.dart';
 
 // -----------------------------------------------------------------------------
-// The page's write guard
+// The page's one route to its saved views
 // -----------------------------------------------------------------------------
 
-/// Every write this page makes, behind one checked and recorded object.
+/// Every read and every write this page makes, behind one object.
 ///
 /// Spec §6's fourth bypass was that the five history-view writes reached Drift
 /// through `adb` and `dbWrap.db` directly, so neither `GuardedStateMan` nor
-/// `GuardedPreferences` could see them. This provider is where they now go
-/// instead; `guarded_history_views.dart` says which two are gated and why.
+/// `GuardedPreferences` could see them. Plan 03-10 put the writes behind
+/// [HistoryViewStore]; this provider is what the page now holds, and the six
+/// **reads** are in it too — because leaving them on a raw `dbWrap.db` handle
+/// is what let this page go on being half database-shaped after the writes
+/// were fixed, and is what made the gateway-mode hole invisible.
 ///
 /// A provider rather than a field on the page state, for the reason plan 03-06
 /// gives: `sessionInForce`, [RefAuditSink] and `reportAccessDenial` all need a
-/// provider `Ref`, and a `WidgetRef` is not one. Building the store here means
-/// this page wires its guard exactly the way `stateManProvider` and
-/// `preferencesProvider` wire theirs, rather than growing a second idiom.
+/// provider `Ref`, and a `WidgetRef` is not one.
 ///
-/// Null when the database is not up. Every call site shows the same "Database
-/// not ready yet." toast it showed before.
-final historyViewStoreProvider = FutureProvider<HistoryViewStore?>((ref) async {
+/// **The transport branch**, written the way `auditTrailStoreProvider` and
+/// `alarmManProvider` write theirs. In gateway mode the backend owns the view
+/// tables and the check above them; this provider therefore never falls back
+/// to the database and never answers null — a station that reached gateway
+/// mode with no relay client behind its StateMan is refused by name, because a
+/// route that exists will be taken.
+///
+/// Null keeps its direct-mode meaning exactly: the database is not up. Every
+/// call site shows the same "Database not ready yet." toast it showed before.
+final historyViewsProvider = FutureProvider<HistoryViewApi?>((ref) async {
+  // `ref.watch`, never `ref.read`, on the config AND the StateMan: `alarm.dart`
+  // records what `ref.read` behind a keepAlive cost — a stale transport over a
+  // disposed client whose streams CLOSE rather than error, so nothing reported
+  // it.
+  final gateway = await ref.watch(gatewayConfigProvider.future);
+  if (gateway.isGateway) {
+    final stateMan = await ref.watch(stateManProvider.future);
+    final remote = stateMan is GuardedStateMan
+        ? stateMan.innerAs<GatewayStateMan>()?.remote
+        : null;
+    if (remote == null) {
+      throw UnsupportedError(
+          'historyViewsProvider is not available in gateway mode: this '
+          'station resolved a StateMan with no relay client behind it. Fix '
+          'the gateway branch of lib/providers/state_man.dart — do not fall '
+          'back to the database here.');
+    }
+    // No session, no audit sink and no station name: in gateway mode all three
+    // belong to the identity the *server* verified at `hello`, and the deny row
+    // is written by the gateway's policy decorator before it refuses (D-05).
+    // The one thing passed is `onDenied`, so the shared prompt appears on
+    // either transport.
+    return RelayedHistoryViews(
+      api: remote.historyViews,
+      onDenied: (denial) => reportAccessDenial(ref, denial),
+    );
+  }
+
   final dbWrap = await ref.watch(databaseProvider.future);
   if (dbWrap == null) return null;
-  return HistoryViewStore(
-    db: dbWrap.db,
-    // Read at write time, never captured: the store outlives any one session,
-    // and a captured one would keep granting whatever the operator held when
-    // the database last reconnected.
-    session: () => sessionInForce(ref),
-    audit: RefAuditSink(ref),
-    station: ref.watch(stationNameProvider),
-    onDenied: (denial) => reportAccessDenial(ref, denial),
+  return GuardedDatabaseHistoryViews(
+    database: dbWrap.db,
+    store: HistoryViewStore(
+      db: dbWrap.db,
+      // Read at write time, never captured: the store outlives any one session,
+      // and a captured one would keep granting whatever the operator held when
+      // the database last reconnected.
+      session: () => sessionInForce(ref),
+      audit: RefAuditSink(ref),
+      station: ref.watch(stationNameProvider),
+      onDenied: (denial) => reportAccessDenial(ref, denial),
+    ),
   );
 });
 
@@ -103,16 +149,27 @@ class SavedHistoryView {
   int get hashCode => id.hashCode;
 }
 
+/// Every saved view, for the picker.
+///
+/// **The empty list is only ever a real answer.** Until this change the body
+/// opened `if (dbWrap == null) return []`, and a gateway panel's
+/// `databaseProvider` is null by design — so every such station showed an
+/// empty picker while its backend held the views, with no error, no badge and
+/// no line on stderr. It is the same defect, in the same words, as the
+/// `getRecentAlarms` one `lib/core/relay_alarm_source.dart` documents.
+///
+/// The `[]` that remains is the **direct-mode** station with no database, and
+/// it is unchanged on purpose: that station showed an empty picker before this
+/// change and shows one now. A read that *failed* rethrows, and always did.
 final savedViewsProvider = FutureProvider<List<SavedHistoryView>>((ref) async {
-  final dbWrap = await ref.watch(databaseProvider.future);
-  if (dbWrap == null) return [];
+  final views = await ref.watch(historyViewsProvider.future);
+  if (views == null) return [];
   try {
-    final adb = dbWrap.db;
-    final rows = await adb.selectHistoryViews();
+    final rows = await views.selectHistoryViews();
     final out = <SavedHistoryView>[];
     for (final v in rows) {
       final keys =
-          await adb.getHistoryViewKeyNames(v.id); // Use the key names method
+          await views.getHistoryViewKeyNames(v.id); // Use the key names method
       out.add(SavedHistoryView(id: v.id, name: v.name, keys: keys));
     }
     out.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
@@ -152,9 +209,9 @@ class SavedPeriod {
 
 final savedPeriodsProvider =
     FutureProvider.family<List<SavedPeriod>, int>((ref, viewId) async {
-  final dbWrap = await ref.watch(databaseProvider.future);
-  if (dbWrap == null) return [];
-  final rows = await dbWrap.db.listHistoryViewPeriods(viewId);
+  final views = await ref.watch(historyViewsProvider.future);
+  if (views == null) return [];
+  final rows = await views.listHistoryViewPeriods(viewId);
   return [
     for (final r in rows)
       SavedPeriod(
@@ -170,10 +227,10 @@ final savedPeriodsProvider =
 // A best-effort "global" retention horizon (oldest timestamp we likely still have)
 // If null, retention is unknown (no icon/warning).
 final retentionHorizonProvider = FutureProvider<DateTime?>((ref) async {
-  final dbWrap = await ref.watch(databaseProvider.future);
-  if (dbWrap == null) return null;
+  final views = await ref.watch(historyViewsProvider.future);
+  if (views == null) return null;
   try {
-    return await dbWrap.db.getGlobalRetentionHorizon();
+    return await views.getGlobalRetentionHorizon();
   } catch (_) {
     return null;
   }
@@ -578,12 +635,14 @@ class _HistoryViewBodyState extends ConsumerState<HistoryViewBody> {
   // Left pane: search + filters + header + recursive tree
   Widget _buildKeyPicker(BuildContext context) {
     final collectedAsync = ref.watch(collectedKeysProvider);
-    final dbAsync = ref.watch(databaseProvider);
+    // The saved-view surface, not the database: a gateway panel has no
+    // database and this button used to be permanently disabled on one.
+    final dbAsync = ref.watch(historyViewsProvider);
     final keyTreeAsync = ref.watch(keyTreeProvider);
 
     final canSave = _selected.isNotEmpty &&
         dbAsync.when(
-          data: (db) => db != null,
+          data: (views) => views != null,
           loading: () => false,
           error: (_, __) => false,
         );
@@ -1346,8 +1405,8 @@ class _HistoryViewBodyState extends ConsumerState<HistoryViewBody> {
   /// it always did. It is deliberately the *only* accessor: `dbWrap.db` still
   /// appears in this file for reads, and a write must not be able to borrow
   /// one of those handles by accident.
-  Future<HistoryViewStore?> _writeStore() =>
-      ref.read(historyViewStoreProvider.future);
+  Future<HistoryViewApi?> _writeStore() =>
+      ref.read(historyViewsProvider.future);
 
   Future<void> _deleteView() async {
     final v = _activeView!;
@@ -1497,21 +1556,22 @@ class _HistoryViewBodyState extends ConsumerState<HistoryViewBody> {
 
   // Load graph configs for a saved view
   Future<void> _loadGraphConfigsFromView(int viewId) async {
-    final dbWrap = await ref.read(databaseProvider.future);
-    if (dbWrap == null) return;
+    final views = await ref.read(historyViewsProvider.future);
+    if (views == null) return;
 
-    final rawKeyConfigs = await dbWrap.db.getHistoryViewKeys(viewId);
-    final rawGraphConfigs = await dbWrap.db.getHistoryViewGraphs(viewId);
+    final rawKeyConfigs = await views.getHistoryViewKeys(viewId);
+    final rawGraphConfigs = await views.getHistoryViewGraphs(viewId);
+    if (!mounted) return;
 
     setState(() {
       _keyConfigs.clear();
       for (final entry in rawKeyConfigs.entries) {
         final raw = entry.value;
         _keyConfigs[entry.key] = GraphKeyConfig(
-          key: raw['key'] as String? ?? entry.key,
-          alias: (raw['alias'] as String?) ?? entry.key,
-          useSecondYAxis: (raw['useSecondYAxis'] as bool?) ?? false,
-          graphIndex: (raw['graphIndex'] as int?) ?? 0,
+          key: raw.key.isEmpty ? entry.key : raw.key,
+          alias: raw.alias,
+          useSecondYAxis: raw.useSecondYAxis,
+          graphIndex: raw.graphIndex,
         );
       }
 
@@ -1520,9 +1580,9 @@ class _HistoryViewBodyState extends ConsumerState<HistoryViewBody> {
         final raw = entry.value;
         _graphConfigs[entry.key] = GraphDisplayConfig(
           index: entry.key,
-          name: (raw['name'] as String?) ?? '',
-          yAxisUnit: (raw['yAxisUnit'] as String?) ?? '',
-          yAxis2Unit: (raw['yAxis2Unit'] as String?) ?? '',
+          name: raw.name,
+          yAxisUnit: raw.yAxisUnit,
+          yAxis2Unit: raw.yAxis2Unit,
         );
       }
       _updateGraphConfigs(); // ensure 0..4 exist
@@ -1541,27 +1601,28 @@ class _HistoryViewBodyState extends ConsumerState<HistoryViewBody> {
         await _askName(context, initial: '', title: 'Save as new view');
     if (name == null || name.trim().isEmpty) return;
 
-    // Convert GraphKeyConfig objects to primitive maps for database
-    final rawKeyConfigs = <String, Map<String, dynamic>>{};
-    for (final entry in _keyConfigs.entries) {
-      final config = entry.value;
-      rawKeyConfigs[entry.key] = {
-        'alias': config.alias,
-        'useSecondYAxis': config.useSecondYAxis,
-        'graphIndex': config.graphIndex,
-      };
-    }
-
-    // Convert GraphConfig objects to primitive maps for database
-    final rawGraphConfigs = <String, Map<String, dynamic>>{};
-    for (final entry in _graphConfigs.entries) {
-      final config = entry.value;
-      rawGraphConfigs[entry.key.toString()] = {
-        'name': config.name,
-        'yAxisUnit': config.yAxisUnit,
-        'yAxis2Unit': config.yAxis2Unit,
-      };
-    }
+    // The typed records both transports exchange. Graph configuration is keyed
+    // by `int` all the way down on purpose: `AppDatabase` parses a String key
+    // with `int.tryParse` and SILENTLY SKIPS an entry that will not parse, so a
+    // view that saved four graphs came back with three and nothing said so.
+    final rawKeyConfigs = <String, HistoryViewKeyRecord>{
+      for (final entry in _keyConfigs.entries)
+        entry.key: HistoryViewKeyRecord(
+          key: entry.key,
+          alias: entry.value.alias,
+          useSecondYAxis: entry.value.useSecondYAxis,
+          graphIndex: entry.value.graphIndex,
+        ),
+    };
+    final rawGraphConfigs = <int, HistoryViewGraphRecord>{
+      for (final entry in _graphConfigs.entries)
+        entry.key: HistoryViewGraphRecord(
+          graphIndex: entry.key,
+          name: entry.value.name,
+          yAxisUnit: entry.value.yAxisUnit,
+          yAxis2Unit: entry.value.yAxis2Unit,
+        ),
+    };
 
     final int id;
     try {
@@ -1594,27 +1655,28 @@ class _HistoryViewBodyState extends ConsumerState<HistoryViewBody> {
 
     final name = _activeView!.name;
 
-    // Convert GraphKeyConfig objects to primitive maps for database
-    final rawKeyConfigs = <String, Map<String, dynamic>>{};
-    for (final entry in _keyConfigs.entries) {
-      final config = entry.value;
-      rawKeyConfigs[entry.key] = {
-        'alias': config.alias,
-        'useSecondYAxis': config.useSecondYAxis,
-        'graphIndex': config.graphIndex,
-      };
-    }
-
-    // Convert GraphConfig objects to primitive maps for database
-    final rawGraphConfigs = <String, Map<String, dynamic>>{};
-    for (final entry in _graphConfigs.entries) {
-      final config = entry.value;
-      rawGraphConfigs[entry.key.toString()] = {
-        'name': config.name,
-        'yAxisUnit': config.yAxisUnit,
-        'yAxis2Unit': config.yAxis2Unit,
-      };
-    }
+    // The typed records both transports exchange. Graph configuration is keyed
+    // by `int` all the way down on purpose: `AppDatabase` parses a String key
+    // with `int.tryParse` and SILENTLY SKIPS an entry that will not parse, so a
+    // view that saved four graphs came back with three and nothing said so.
+    final rawKeyConfigs = <String, HistoryViewKeyRecord>{
+      for (final entry in _keyConfigs.entries)
+        entry.key: HistoryViewKeyRecord(
+          key: entry.key,
+          alias: entry.value.alias,
+          useSecondYAxis: entry.value.useSecondYAxis,
+          graphIndex: entry.value.graphIndex,
+        ),
+    };
+    final rawGraphConfigs = <int, HistoryViewGraphRecord>{
+      for (final entry in _graphConfigs.entries)
+        entry.key: HistoryViewGraphRecord(
+          graphIndex: entry.key,
+          name: entry.value.name,
+          yAxisUnit: entry.value.yAxisUnit,
+          yAxis2Unit: entry.value.yAxis2Unit,
+        ),
+    };
 
     try {
       await store.updateHistoryView(_activeView!.id, name, _selected.toList(),

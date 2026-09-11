@@ -63,6 +63,7 @@ class RecordingClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) {
     monitored.add(nodeId);
     late StreamController<DynamicValue> controller;
@@ -106,12 +107,12 @@ Future<void> _waitFor(bool Function() test,
 
 void main() {
   late RecordingClientApi fake;
-  late StateMan stateMan;
+  late OpcUaStateMan stateMan;
 
   setUp(() async {
     fake = RecordingClientApi();
     // No mapping for [_key] yet — it is still only a proposal on screen.
-    stateMan = await StateMan.create(
+    stateMan = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []),
       keyMappings: KeyMappings(nodes: {}),
       deviceClients: const [],

@@ -7,10 +7,18 @@ import 'package:postgres/postgres.dart';
 import 'package:tfc_dart/core/alarm.dart' show alarmHistoryOverlaps;
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import 'package:tfc_dart/core/database_notification.dart'
+    show kNotificationWatchdogInterval;
 import 'docker_compose.dart';
 import 'eventually.dart';
 
-// docker exec -it test-db /bin/ash -c "psql -d testdb --user testuser -c 'select * from test_timeseries;'"
+// To poke at the database of a running suite, find its container first -- the
+// name is per-run now (`tfcdart-it-<pid>-timescaledb-1`), not the fixed
+// `test-db` it used to be, so that two copies of this lane can run at once:
+//
+//   docker ps --filter name=tfcdart-it
+//   docker exec -it <name> /bin/ash -c \
+//     "psql -d testdb --user testuser -c 'select * from test_timeseries;'"
 
 /// One line per row, for the `reason:` of a row-count expectation.
 ///
@@ -628,8 +636,15 @@ void main() {
             testTableName, from, to,
             maxPoints: 30);
 
-        // Should get ~30 points (10 buckets * 3), not 100
-        expect(result.length, lessThanOrEqualTo(33)); // small tolerance
+        // Should get at most 30 points (10 buckets * 3), not 100.
+        //
+        // This used to allow 33 as a "small tolerance". The tolerance was the
+        // defect: buckets were aligned to time_bucket's own origin rather
+        // than to the window, so a window that did not begin on a boundary
+        // spanned one bucket more than it was sized for and every chart could
+        // be handed maxPoints + 3. 13-12 made the bound real; see
+        // test/integration/database_downsample_bound_test.dart.
+        expect(result.length, lessThanOrEqualTo(30));
         expect(result.length, greaterThan(3)); // at least one bucket
 
         // Results should be time-ordered
@@ -983,11 +998,14 @@ void main() {
             testTableName, from, to,
             maxPoints: 6);
 
-        // time_bucket aligns to epoch, so we might get 2-3 buckets,
-        // but each group's points are <1min apart so they stay together.
-        // Result count must be a multiple of 3.
+        // Buckets are aligned to the window start since 13-12, so this is
+        // exactly 2 buckets rather than the 2-3 the epoch alignment used to
+        // give. Each group's points are <1min apart, so they stay together
+        // either way. Result count must be a multiple of 3.
         expect(result.length % 3, 0, reason: 'Points come in triples');
         expect(result.length, greaterThanOrEqualTo(6));
+        expect(result.length, lessThanOrEqualTo(6),
+            reason: 'maxPoints was 6 and the bound is not a suggestion');
 
         final vals = result.map((r) => r.value as double).toList();
 

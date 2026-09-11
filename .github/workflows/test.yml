@@ -4,6 +4,24 @@ on:
   push:
     branches: [ main, develop ]
   pull_request:
+  # The chaos soak's full arm, summoned with a chosen seed. 11-CONTEXT
+  # ruling 4: the lane's seed is FIXED so bit-rot protection is
+  # deterministic, and a deliberate re-run names its own.
+  #
+  # **Keep every input a string.** A `workflow_dispatch`/`workflow_call`
+  # input typed `boolean` arrives as the STRINGS "true"/"false" in an `if:`,
+  # where `${{ inputs.x }}` is then truthy either way and the job runs when
+  # it was asked not to. Nothing here is a boolean and nothing here should
+  # become one; if a flag is ever needed, make it a string and compare it.
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: >-
+          The storm's seed. Leave as 11 for the lane's own schedule; paste
+          the seed from a failed run's repro.log to reproduce it exactly.
+        required: false
+        default: "11"
+        type: string
 
 # Superseding is right for a pull request and wrong for main. Merges land
 # faster than a ~13 minute macOS run, so without this a merge burst goes by
@@ -168,8 +186,8 @@ jobs:
       working-directory: centroid-hmi
       run: |
         [ -f test-report.json ] || { echo "::error::no test-report.json — the test step never produced a report"; exit 1; }
-        total=$(grep -o '"type":"testStart"' test-report.json | wc -l)
-        loading=$(grep -o '"name":"loading ' test-report.json | wc -l)
+        total=$( { grep -o '"type":"testStart"' test-report.json || true; } | wc -l)
+        loading=$( { grep -o '"name":"loading ' test-report.json || true; } | wc -l)
         ran=$((total - loading))
         echo "centroid-hmi tests reported: $ran"
         if [ "$ran" -lt 15 ]; then
@@ -268,8 +286,8 @@ jobs:
       working-directory: packages/jbtm
       run: |
         [ -f test-report.json ] || { echo "::error::no test-report.json — the test step never produced a report"; exit 1; }
-        total=$(grep -o '"type":"testStart"' test-report.json | wc -l)
-        loading=$(grep -o '"name":"loading ' test-report.json | wc -l)
+        total=$( { grep -o '"type":"testStart"' test-report.json || true; } | wc -l)
+        loading=$( { grep -o '"name":"loading ' test-report.json || true; } | wc -l)
         ran=$((total - loading))
         echo "jbtm tests reported: $ran"
         # 227 as of this commit. The floor is deliberately just under that, so
@@ -382,6 +400,521 @@ jobs:
       run: |
         flutter test
 
+  # The relay pipe's pure-Dart packages. tfc_relay_protocol had no CI job at
+  # all until now — its tests existed but never ran here.
+  relay-packages-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dart-lang/setup-dart@v1
+
+    - name: Test tfc_relay_protocol
+      working-directory: packages/tfc_relay_protocol
+      run: |
+        dart pub get
+        dart analyze
+        dart test
+
+    # **The web backend, because the VM cannot see this class of defect at all.**
+    #
+    # `newUlid()` built its 48-bit time prefix with `<<`, `>>` and `&`. That is
+    # correct on the VM and silently wrong under dart2js, where bitwise operators
+    # coerce to signed 32 bits: two mints 2^32 ms (49.7 days) apart produced an
+    # identical prefix, so every browser-minted write id would have sorted before
+    # every native one for ever. 308 VM tests were green throughout.
+    #
+    # **dart2js specifically, and dart2wasm would not do.** Wasm has true 64-bit
+    # integers and produced the *correct* id, so the Wasm smoke test this design
+    # originally scheduled would have passed while the defect shipped.
+    # `flutter build web` emits dart2js, so dart2js is the backend that both
+    # matters and reproduces it.
+    #
+    # Ubuntu only: one backend is one backend, and chrome is preinstalled on the
+    # hosted image. The floor is the same idiom as the soak lane's — `dart test`
+    # with a selector that matches nothing exits 0, and a browser-tagged file
+    # that stopped being compiled would otherwise read as covered.
+    # **Scoped to the two files that are web-verified today, and the scope is a
+    # finding rather than a convenience.** `ulid_web_test.dart` pins the
+    # decoder; `write_outcome_log_web_test.dart` (18-04) pins the composition
+    # that decoder feeds — `ulidMs` -> `witnessed` / `insideWindow`, which is
+    # the positive-evidence rule behind every `not_received`. A folded
+    # timestamp dates a fresh command to 1970, which is before any log's
+    # `startedAtMs`, so a browser client would never be told a re-send is safe.
+    # The floor below is raised in step with the file list: a floor that stays
+    # at 5 while 14 tests are expected would pass with either file silently
+    # dropped, which is the whole failure mode this floor exists to catch.
+    # Running the whole package under
+    # dart2js — which the first version of this step did by accident — fails
+    # three further cases, and two of them are a real and unsolved problem:
+    # every JavaScript number is a double, so `isDouble` answers true for an
+    # integer, and this package derives its **JSON type tag** from exactly that
+    # distinction. On the web a `DINT 1` and a `REAL 1.0` therefore encode
+    # identically, which for a plant protocol is two different writes to two
+    # different tag types collapsing into one. (`data_service_methods_test.dart`
+    # additionally fails to load there.) That is recorded in
+    # `.planning/WEB-COMPAT-SURVEY.md` and is a design question, not a bug to
+    # tune, so this step does not pretend the package is web-clean — it pins
+    # the part that is.
+    - name: Test tfc_relay_protocol on dart2js
+      if: runner.os == 'Linux'
+      shell: bash
+      working-directory: packages/tfc_relay_protocol
+      run: |
+        dart test -p chrome test/ulid_web_test.dart test/write_outcome_log_web_test.dart -r expanded --file-reporter "json:web-report.json"
+        [ -f web-report.json ] || { echo "::error::no web-report.json — the chrome lane never produced a report"; exit 1; }
+        total=$( { grep -o '"type":"testStart"' web-report.json || true; } | wc -l)
+        loading=$( { grep -o '"name":"loading ' web-report.json || true; } | wc -l)
+        ran=$((total - loading))
+        echo "browser-tagged tests reported: $ran"
+        if [ "$ran" -lt 14 ]; then
+          echo "::error::the chrome lane ran only $ran tests, expected at least 14 — the browser lane is not selecting what it used to"
+          exit 1
+        fi
+
+    - name: Test tfc_stateman_contract
+      working-directory: packages/tfc_stateman_contract
+      run: |
+        dart pub get
+        dart analyze
+        dart test --exclude-tags oslevel
+
+    # The kernel traffic-shaping leg (tc netem). Excluded from the step above
+    # because those tests need root and iproute2: left in, they would run and
+    # skip on all three OSes, and a skip that appears on every run of every
+    # platform is noise people learn to scroll past.
+    #
+    # Ubuntu is the only leg that can actually install a qdisc, so it is the
+    # only leg that runs them, and a failure here fails the job like any other
+    # step. What this step deliberately does NOT do is treat a skip as a
+    # failure. The capability probe is two-part — the binary exists *and* a
+    # privileged invocation succeeds — so if a hosted runner ever stops
+    # offering passwordless sudo, the tests report named skips and this job
+    # stays green. That is the assumption (RESEARCH A2) making itself
+    # self-correcting rather than turning into a red build about something
+    # other than the code.
+    - name: Test tfc_stateman_contract OS-level faults
+      if: runner.os == 'Linux'
+      working-directory: packages/tfc_stateman_contract
+      run: |
+        if ! command -v tc > /dev/null; then
+          sudo apt-get update
+          sudo apt-get install -y iproute2
+        fi
+        dart test --tags oslevel
+
+    # 02-14's lane-budget arm is opt-in (it costs a full fault-lane run);
+    # exactly one job watches the number, per its SUMMARY.
+    - name: Fault-lane wall-clock budget
+      if: runner.os == 'Linux'
+      working-directory: packages/tfc_stateman_contract
+      env:
+        FAULT_LANE_BUDGET: "1"
+      run: dart test test/faults/mode_integrity_test.dart
+
+    # The gateway, after the contract package it is judged against. A step in
+    # this job rather than a job of its own, on purpose: steps run
+    # sequentially, and STATE.md's operational rule is that analyze/test never
+    # run in two packages at once. This package binds ephemeral ports and
+    # measures milliseconds, so a neighbour doing the same is a different
+    # machine.
+    - name: Test tfc_relay_server
+      working-directory: packages/tfc_relay_server
+      run: |
+        dart pub get
+        dart analyze
+        dart test
+
+    # The panel side, after the gateway it is judged against — it holds
+    # tfc_relay_server as a dev dependency and runs its contract legs against
+    # the real thing on an ephemeral port. A step, not a job, for the same
+    # reason as above: steps run sequentially, and STATE.md's operational rule
+    # is that analyze/test never run in two packages at once. This package
+    # measures milliseconds against a transport whose round trip already has a
+    # 50-100 ms tick-quantised floor, so a neighbour burning the same event
+    # loop is a different machine.
+    - name: Test tfc_relay_client
+      working-directory: packages/tfc_relay_client
+      run: |
+        dart pub get
+        dart analyze
+        dart test
+
+    # 07-01's lane-budget arm is opt-in (measuring the gate lane means running
+    # it, which costs the lane's full runtime a second time on top of the step
+    # above); exactly one job watches the number, per its SUMMARY. The gate
+    # cases themselves run on all three platforms inside the client step —
+    # `dart test` discovers test/gate like any other directory. This step
+    # measures, it does not select.
+    #
+    # The arm has two anti-recursion guards and needs both: it clears
+    # GATE_LANE_BUDGET in the child it spawns, and the child excludes the
+    # `meta` tag this file carries. Renaming that tag turns this one job into
+    # an unbounded recursion of `dart test` processes rather than into a
+    # failing assertion (gate_manifest_test.dart:957-1016).
+    - name: Gate-lane wall-clock budget
+      if: runner.os == 'Linux'
+      working-directory: packages/tfc_relay_client
+      env:
+        GATE_LANE_BUDGET: "1"
+      run: dart test test/gate/gate_manifest_test.dart
+
+    # The plant side, last, because it holds every other relay package as a
+    # dependency and is judged against the same contract kit. A step, not a
+    # job, for the same reason as its two neighbours: steps run sequentially,
+    # and STATE.md's operational rule is that analyze/test never run in two
+    # packages at once. This one binds OPC UA listening ports and drives a
+    # blocking FFI call on a 10 ms timer, so a neighbour sharing the runner is
+    # a different machine in a way that shows up as a flake, not a slowdown.
+    #
+    # It is also the ONLY step in this job that builds a native asset: it pins
+    # open62541 by git SHA, and `dart pub get` triggers hook/build.dart, which
+    # downloads and CMake-builds the open62541 C tree. Two consequences worth
+    # knowing before anyone investigates a red run here. A failure with no `❌`
+    # line and no test output is the known download-flake class — rerun the
+    # job rather than reading the diff. And no apt packages are installed for
+    # it on purpose: the tfc-dart-test job already builds the same native asset
+    # on all three OSes with none, which is evidence rather than optimism.
+    #
+    # `--exclude-tags db` (8b-02): the db-tagged collection legs need a real
+    # TimescaleDB, and this job has no database and should not grow one — the
+    # tfc-dart-test job already provisions TimescaleDB three different ways
+    # across three platforms, and those legs run there as a step after its
+    # own suite. Duplicating that here would be eighty lines of YAML to
+    # install a database in front of tests that do not use one.
+    #
+    # `|| soak` (11-03): the soak lane is excluded here and runs in ITS OWN
+    # step immediately below — it has NOT stopped running. This package sets
+    # `concurrency: 1`, so a soak file discovered by the ordinary run
+    # serialises all 795 of the other cases behind a 90-second arm today and
+    # behind a 35-minute one once 11-07 lands its job (11-RESEARCH pitfall 4).
+    - name: Test tfc_relay_local
+      working-directory: packages/tfc_relay_local
+      run: |
+        dart pub get
+        dart analyze
+        dart test --exclude-tags "db || soak"
+
+    # The chaos soak's short arm, on all three platforms, on every push.
+    #
+    # 11-CONTEXT ruling 2, in one sentence: **a soak that only runs on demand
+    # is a soak that is broken on the morning you need it.** What this arm
+    # proves is not endurance — that is RES-03's, and 11-07 runs the
+    # thirty-five-minute form on its own job — but that the machinery cannot
+    # silently rot between full runs: the pipe composes, the storm plays, every
+    # one of the fourteen event levers pulls something on a live gateway, the
+    # never-faulted control stays healthy, the population floor holds and the
+    # journal is written and parsed. `soakDeviations` entry 1 carries the whole
+    # argument and `soak_manifest_test.dart` prints it on every run.
+    #
+    # The cost, measured rather than estimated: **~3 minutes per platform**
+    # (183 s locally for 91 cases), of which 90 s is the default arm in
+    # soak_test.dart and ~57 s is soak_driver_test.dart's four composed runs.
+    # The plan's "~90 s" was the arm alone. Three platforms, so roughly nine
+    # runner-minutes a push on a public repository's free tier.
+    #
+    # Deviation 4, by name rather than by silence: the *descriptor* half of
+    # invariant 4 cannot be judged on Windows — `openSocketCount()` needs
+    # /proc/self/fd or lsof and `canCountOpenSockets` is false there
+    # (fd_count.dart:46) — so the teardown case reports a named skip carrying
+    # `openSocketCountSkipReason`, and that platform's soak judges four
+    # invariants and part of the fifth.
+    #
+    # `timeout-minutes` here and `@Timeout(Duration(minutes: 45))` on
+    # soak_test.dart are the same decision written twice, and neither may move
+    # alone. Fifteen is roughly five times this arm's measured cost: enough
+    # that a slow runner is not a red build, small enough that a wedged soak
+    # fails in a coffee break rather than at GitHub's six-hour job default.
+    - name: Chaos soak (90 s arm)
+      shell: bash
+      working-directory: packages/tfc_relay_local
+      timeout-minutes: 15
+      run: |
+        dart test test/soak --tags soak -r expanded --file-reporter "json:soak-report.json"
+        # jbtm-test's floor, applied here. `dart test --tags soak` that selects
+        # nothing exits GREEN, and a renamed tag, a moved directory or a file
+        # that stops matching *_test.dart is exactly how that happens
+        # silently — which would leave this step reporting a green soak having
+        # run no soak at all. 11-01 measured that a MISSPELLED selector exits
+        # 79 and takes the step red on its own; this floor is the belt to that
+        # suspenders, and it covers the case the exit code cannot: the tag
+        # spelled correctly and selecting less than it used to.
+        # The JSON reporter emits one synthetic "loading <path>" test per
+        # suite; subtract those.
+        [ -f soak-report.json ] || { echo "::error::no soak-report.json — the soak step never produced a report"; exit 1; }
+        # `|| true` on both, and it is load-bearing here in a way it is not in
+        # the older steps this is copied from. GitHub runs `shell: bash` as
+        # `bash -eo pipefail`, and `grep -o` exits 1 when it matches nothing —
+        # so on the one input this floor exists for, a report with no testStart
+        # in it at all, the assignment would abort the step before the message
+        # below could be printed, and the run would read as a shell error
+        # rather than as a lane that selected nothing.
+        total=$( { grep -o '"type":"testStart"' soak-report.json || true; } | wc -l)
+        loading=$( { grep -o '"name":"loading ' soak-report.json || true; } | wc -l)
+        ran=$((total - loading))
+        echo "soak-tagged tests reported: $ran"
+        # MEASURED 225 at 11-09, by this exact arithmetic (231 testStart minus
+        # 6 "loading" suites). The previous floor of 75 was measured against 93
+        # at 11-03 and was left behind by four waves of cases: by 11-09 it sat
+        # 67% under, and losing soak_meta_test.dart ENTIRELY — all six positive
+        # controls, the only evidence any checker can fire at all — landed at
+        # ~95 and passed green.
+        #
+        # 180 is 20% under, the margin 8b-02 and 10-11 chose, and for their
+        # reason: adding a case only ever raises this number, so a floor never
+        # trips on an addition, while one pinned at the count would be edited
+        # by every plan that retires a single case.
+        #
+        # What it catches, stated honestly rather than inherited: the tag
+        # selecting nothing at all (0), and soak_meta_test.dart dropping out
+        # (130 of the 225, landing at ~95). What it does NOT catch is losing a
+        # mid-sized file — soak_schedule_test.dart is 34, and 191 clears 180.
+        # Catching that would need a 15% margin, which is tight enough to trip
+        # on a legitimate retirement. The old comment claimed the largest-file
+        # case and had stopped being true.
+        if [ "$ran" -lt 180 ]; then
+          echo "::error::the soak lane ran only $ran soak-tagged tests, expected ~225 — the soak tag is not selecting what it used to"
+          exit 1
+        fi
+
+    # 09-01's lane-budget arm for gate B, opt-in for the same reason gate A's
+    # is (measuring the lane means running it, a second full lane on top of
+    # the step above); exactly one job watches the number. Its own env var —
+    # GATE_B_LANE_BUDGET, never GATE_LANE_BUDGET — because the two gates are
+    # measured in different packages, and two lanes sharing one expectation
+    # is how a cost jump stops being attributable to a phase. The gate cases
+    # themselves run on all three platforms inside the ordinary step above;
+    # this step MEASURES, it does not select. It lands after that step so the
+    # package has had `dart pub get`.
+    #
+    # The arm has two anti-recursion guards and needs both: it clears
+    # GATE_B_LANE_BUDGET in the child it spawns, and the child excludes the
+    # `meta` tag this manifest carries. Renaming that tag turns this one job
+    # into an unbounded recursion of `dart test` processes rather than into a
+    # failing assertion (gate_b_manifest_test.dart, "the sweep itself"). The
+    # child also excludes `db` — the F22e historian arm belongs to the
+    # tfc-dart-test job's db leg, and this job has no database and must not
+    # grow one.
+    - name: Gate-B-lane wall-clock budget
+      if: runner.os == 'Linux'
+      working-directory: packages/tfc_relay_local
+      env:
+        GATE_B_LANE_BUDGET: "1"
+      run: dart test test/gate/gate_b_manifest_test.dart
+
+  # RES-03's evidence, and the job that keeps producing it.
+  #
+  # **This job is expected to be GREEN.** It was expected to be red until
+  # 2026-09-05, and the text that said so is rewritten rather than deleted
+  # because the reason it was wrong is worth carrying.
+  #
+  # The 35-minute arm at seed 11 recorded four `terminalStateWrites`
+  # violations — writes #103, #108, #110 and #400, "reached a socket and in
+  # neither the terminal map nor the client's unresolved set". This header
+  # called that a product finding and said so twice. **It was an instrument
+  # defect** (11-08). All four were on panel-2 and panel-4, the only two
+  # panels the run ever redialed, and all four were issued before their
+  # panel's redial; the upstream outage explains why each write came back
+  # `unknown`, not why the harness then lost sight of it. The commands were
+  # never lost — they were in the `_unresolved` set of the `RemoteStateMan`
+  # that `GateBFixture.redial` replaced, which `dispose()` does not clear,
+  # while the run-end arm read a union over the current clients only.
+  #
+  # A write a restart orphaned is now a fourth accounted state, earned per
+  # write and printed in the distribution line, never folded into "still
+  # outstanding" — a restarted panel really has forgotten the command, and
+  # saying otherwise would satisfy the invariant with the harness's own
+  # bookkeeping. **If this job goes red on `terminalStateWrites` again, read
+  # the orphan count in the verdict block first**: a violation beside a
+  # non-zero orphan count is a write the rule refused to excuse, which is the
+  # rule working.
+  #
+  # The job ships on every push per 11-CONTEXT ruling 1, because the
+  # alternative is a soak nobody runs. The `push`-vs-`workflow_dispatch`
+  # question below was live only while a standing red was pending; it is not
+  # a live decision now, and the `if:` is left as it is.
+  #
+  # **Cadence: on every push to main, plus on demand.** 11-CONTEXT ruling 1,
+  # resolved by the user on 2026-09-02 — the repository is public, so runner
+  # minutes are free and there is no reason to ration the arm to a nightly.
+  # The arithmetic is written down anyway, because "free" is a property of
+  # this repository and not of this file: ~35 billable minutes a run, so a
+  # weekly would be ~150 a month and a nightly ~1,050. If this workflow is
+  # ever copied somewhere private, the whole cost decision is the `if:` below
+  # and nothing else.
+  #
+  # NOT on pull requests. A 35-minute arm on every push to every branch would
+  # make the soak the slowest thing in review, and what a PR needs from the
+  # soak is the 90-second arm that already runs in `relay-packages-test` on
+  # all three platforms. This job is the endurance half.
+  #
+  # **The concurrency group is the whole coalescing decision** — the
+  # workflow-level group above deliberately gives every push to main its own
+  # `run_id` so nothing cancels a merge's run, which is right for a 13-minute
+  # matrix and wrong for a 35-minute soak: a merge burst would queue four of
+  # them to prove the same thing about four commits nobody has read yet. So
+  # this job overrides it with a group that OMITS `run_id`, and stacked pushes
+  # then coalesce to the newest. Note where `cancel-in-progress` is: it is the
+  # literal `true`, never a template. #249 measured what a templated one does
+  # (10 of 29 main runs cancelled), and the fix was to put the distinction in
+  # the group. That lesson is why this override exists at all.
+  relay-soak:
+    name: Chaos soak (35 min, RES-03)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    concurrency:
+      group: ${{ github.workflow }}-relay-soak-${{ github.ref }}
+      cancel-in-progress: true
+    # **Ubuntu only, and the reason is deviation 4 rather than cost.**
+    # `openSocketCount()` cannot answer on Windows — it needs /proc/self/fd or
+    # lsof, and `canCountOpenSockets` is false there (fd_count.dart:46) — so a
+    # Windows soak would judge four invariants and part of the fifth while
+    # reporting a green RES-03: the exact "judged on a column where it never
+    # ran" failure this milestone keeps finding. macOS runners also bill at
+    # 10x, which would matter the moment this file moved to a private repo.
+    # The 90-second arm still runs on all three platforms in
+    # `relay-packages-test`; this restriction is the full arm's alone.
+    runs-on: ubuntu-latest
+    # The arm is 35 minutes. This ceiling catches a wedge rather than a slow
+    # runner. It and `@Timeout(Duration(minutes: 45))` on soak_test.dart are
+    # ONE decision written in two files and NEITHER MAY MOVE ALONE: the
+    # library timeout has to fire first so the failure is a test report with a
+    # journal behind it, not a runner killed mid-write with nothing to upload.
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dart-lang/setup-dart@v1
+
+    # `RELAY_SOAK_SEED` is the dispatch input on a dispatch and the lane's
+    # fixed 11 on a push — `inputs.seed` is null outside `workflow_dispatch`,
+    # so the fallback is doing real work here and is not belt-and-braces.
+    #
+    # A note for whoever reads a red run: `dart test --tags soak` selects
+    # nothing and exits GREEN if the tag is ever renamed, which is why the
+    # count floor below exists. A MISSPELLED selector is different — 11-01
+    # measured `--tags soakk` exiting 79 with "No tests match the requested
+    # tag selectors", so that half takes the step red on its own.
+    - name: Chaos soak (35 min arm)
+      shell: bash
+      working-directory: packages/tfc_relay_local
+      env:
+        RELAY_SOAK: "1"
+        RELAY_SOAK_SEED: ${{ inputs.seed || '11' }}
+      run: |
+        dart pub get
+        dart test test/soak --tags soak -r expanded --file-reporter "json:soak-report.json"
+        [ -f soak-report.json ] || { echo "::error::no soak-report.json — the soak step never produced a report"; exit 1; }
+        # `|| true` on both. `shell: bash` is `bash -eo pipefail` and `grep -o`
+        # exits 1 on no match, so without it the one input this floor exists
+        # for — a report with no testStart in it — aborts the step before the
+        # message prints, and a lane that selected nothing reads as a shell
+        # error instead.
+        total=$( { grep -o '"type":"testStart"' soak-report.json || true; } | wc -l)
+        loading=$( { grep -o '"name":"loading ' soak-report.json || true; } | wc -l)
+        ran=$((total - loading))
+        echo "soak-tagged tests reported: $ran"
+        # Same floor and the same margin as the 90-second step's, against the
+        # same selection: this job runs the identical files with a longer
+        # window, so the COUNT is the lane's count and only the duration
+        # differs. That is the point of F2c's precedent — the long arm is
+        # literally the same function with a longer window. The two steps must
+        # move together; 11-09 raised both from 75 after measuring 225.
+        if [ "$ran" -lt 180 ]; then
+          echo "::error::the soak lane ran only $ran soak-tagged tests, expected ~225 — the soak tag is not selecting what it used to"
+          exit 1
+        fi
+
+    # F2c and F17b at their full durations, on the same env and the same
+    # runner. **Neither is subsumed by the soak and both are still their own
+    # arms** (11-CONTEXT: "the soak is composition + endurance and SUBSUMES
+    # nothing"). F2c holds one lever continuously for a minute, which a storm
+    # whose event band tops out at a 10 s `maxGap` structurally cannot do;
+    # F17b crosses `writeOutcomeTtl`, which the soak's seconds-long blackholes
+    # never reach. What the absorption buys is that on a night the soak passes
+    # this job still produced two pieces of evidence nothing else runs at
+    # length — for the price of one runner and no second checkout.
+    #
+    # `if: always()` so a red soak does not hide whether the gate arms also
+    # moved; the step still fails the job on its own.
+    - name: Gate arms at full duration (F2c, F17b)
+      if: always()
+      shell: bash
+      working-directory: packages/tfc_relay_client
+      env:
+        RELAY_SOAK: "1"
+      run: |
+        dart pub get
+        dart test test/gate --tags gate -r expanded --file-reporter "json:gate-report.json"
+        # The same count floor as the soak step 150 lines above, and for the
+        # identical reason: `dart test --tags gate` that selects NOTHING exits
+        # GREEN. `gate` is declared (tfc_relay_client/dart_test.yaml:39), so a
+        # renamed tag, a split test/gate/ whose new files miss the annotation,
+        # or a file that stops matching *_test.dart all select less silently.
+        # A MISSPELLED selector is the case the exit code already covers —
+        # 11-01 measured `--tags soakk` exiting 79 — and this covers the other
+        # one. It matters here more than anywhere: this is the ONLY `--tags
+        # gate` invocation in the workflow, and the job's own comment above
+        # claims it produces two pieces of evidence nothing else runs at
+        # length. Selecting nothing would go on reporting that evidence while
+        # running none of it.
+        [ -f gate-report.json ] || { echo "::error::no gate-report.json — the gate step never produced a report"; exit 1; }
+        # `|| true` on both greps: `shell: bash` is `bash -eo pipefail` and
+        # `grep -o` exits 1 on no match, so without it the one input this floor
+        # exists for — a report with no testStart in it — aborts the step
+        # before the message prints, and a lane that selected nothing reads as
+        # a shell error instead. 11-03 verified this both ways.
+        total=$( { grep -o '"type":"testStart"' gate-report.json || true; } | wc -l)
+        loading=$( { grep -o '"name":"loading ' gate-report.json || true; } | wc -l)
+        ran=$((total - loading))
+        echo "gate-tagged tests reported: $ran"
+        # MEASURED 95 at 11-09 (112 testStart minus 17 loading; 92 passed and
+        # 3 skipped on macOS, 4m27s). NOTE the count is the same with and
+        # without RELAY_SOAK: the env var swaps which arm of a paired
+        # short/long ternary is skipped, and package:test emits testStart for
+        # a skipped test too. So this floor is measurable without paying for
+        # the ten-minute long-outage arm.
+        #
+        # 76 is 19% under, the margin the soak steps and 8b-02 use. The
+        # carry-forward's "gate 65" is STALE — it predates several waves — and
+        # a floor set from it would have passed a lane that had lost a third
+        # of its rows.
+        if [ "$ran" -lt 76 ]; then
+          echo "::error::the gate lane ran only $ran gate-tagged tests, expected ~95 — the gate tag is not selecting what it used to"
+          exit 1
+        fi
+
+    # **The forensics, and `if: always()` is the whole point of the step.**
+    # An invariant trips at minute 23: what has to already be on disk for that
+    # to be diagnosable without re-running 23 minutes? The seed on line one of
+    # repro.log before anything composes, the merged timeline, both clocks at
+    # every checkpoint, the trip record with its last 20 checkpoints, the
+    # divergence ledger and the verdict block.
+    #
+    # A GREEN run's journal is uploaded for the same reason and it is not
+    # waste: it is the control. A later red run's slopes are read against it,
+    # and discarding the baseline is throwing away the only comparison anyone
+    # will have at 07:00.
+    #
+    # `verdict.txt` and `divergences.jsonl` are named in the acceptance
+    # criteria rather than left to the wildcard, because they are the two
+    # files the keyframe decision rests on (11-06). `soak_manifest_test.dart`
+    # asserts the directory's contents, so a file that stops being written
+    # fails a test rather than producing a quietly thinner artifact.
+    - name: Upload soak forensics
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: relay-soak-seed-${{ inputs.seed || '11' }}-${{ github.run_id }}
+        path: packages/tfc_relay_local/build/soak/
+        retention-days: 7
+        # A soak that died before writing anything is a finding about the
+        # harness, and a silent empty upload would hide it.
+        if-no-files-found: error
+
   tfc-dart-test:
     strategy:
       fail-fast: false
@@ -489,6 +1022,102 @@ jobs:
       env:
         TIMESCALEDB_EXTERNAL: ${{ matrix.timescaledb_external }}
       run: dart test
+
+    # The relay db-tagged legs need a real TimescaleDB, and this lane is no
+    # longer only 8b-02's collection ones (10-REVIEW IN-05): Phase 10 added
+    # the timeseries, history-view and preference read legs and the
+    # fifty-one-check contract leg over a real database, so the step is named
+    # for the tag rather than for the one plan that opened it.
+    #
+    # This job is the one that already has a server on all three platforms:
+    # the tests bring their own Compose stack up on ubuntu (own project name,
+    # env-drawn host port — never tfc_dart's fixture or its 15432), and use
+    # the natively provisioned server above on macOS/Windows via
+    # TIMESCALEDB_EXTERNAL. Steps run sequentially, so the operational rule
+    # that analyze/test never run in two packages at once survives; the
+    # alternative — a fourth provisioning of TimescaleDB in the relay lane —
+    # buys nothing. Do NOT touch the provisioning steps above for these legs:
+    # if they need a database setting those steps do not provide, fix the
+    # fixture, so tfc_dart's own suite keeps running against exactly what it
+    # runs against today.
+    #
+    # This step builds the open62541 native asset in a job that did not
+    # previously build it for this package: a run that dies with no ❌ line
+    # and no test output is the known download-flake class — rerun the job
+    # rather than reading the diff (project memory; 08-01 task 3 records the
+    # same for the relay lane).
+    - name: Test tfc_relay_local db lane (needs TimescaleDB)
+      working-directory: packages/tfc_relay_local
+      env:
+        TIMESCALEDB_EXTERNAL: ${{ matrix.timescaledb_external }}
+      run: |
+        dart pub get
+        dart test --tags db --file-reporter "json:test-report.json"
+
+    # jbtm-test's floor, applied to the step above: `dart test --tags db`
+    # that selects nothing still exits green, and a renamed tag or a moved
+    # directory is exactly how that happens silently. The JSON reporter emits
+    # one synthetic "loading <path>" test per suite; subtract those.
+    - name: Verify the db lane actually ran
+      if: always()
+      shell: bash
+      working-directory: packages/tfc_relay_local
+      run: |
+        [ -f test-report.json ] || { echo "::error::no test-report.json — the db lane never produced a report"; exit 1; }
+        total=$( { grep -o '"type":"testStart"' test-report.json || true; } | wc -l)
+        loading=$( { grep -o '"name":"loading ' test-report.json || true; } | wc -l)
+        ran=$((total - loading))
+        echo "relay db-tagged tests reported: $ran"
+        # MEASURED 148 at 10-11, by this exact arithmetic, on a local run of
+        # `dart test --tags db` over the whole package. It was 90 when 8b-02
+        # wrote this step (its comment said 10, which was the reporter's `+N`
+        # rather than this count — the two differ because testStart also
+        # fires for a group's setUpAll and tearDownAll). Phase 10 added the
+        # difference: the timeseries, history-view and preference read legs
+        # and, in 10-11, the fifty-check contract leg over a real database.
+        #
+        # The floor is 120 — 19% under the measured count, the same
+        # proportion 8b chose, and the reason for the gap is a legitimate
+        # RETIREMENT rather than growth: adding tests only ever raises this
+        # number, so a floor never trips on an addition, and one pinned at
+        # the count would have to be edited by every plan that removes a
+        # single case. 120 still catches the two failures worth catching:
+        # the tag selecting nothing at all (0), and the phase's largest leg
+        # silently dropping out (contract_db_test.dart is ~54 of the 148, so
+        # losing it lands at ~94).
+        if [ "$ran" -lt 120 ]; then
+          echo "::error::the relay db lane ran only $ran db-tagged tests, expected ~148 — the db tag is not selecting what it used to"
+          exit 1
+        fi
+
+    # Gate B's db leg (09-09): F22e, the F22 historian clause — one query
+    # over a window spanning a gateway freeze against the TimescaleDB this
+    # job already provisions three ways across three platforms. Beside 8b's
+    # step on purpose, with the same TIMESCALEDB_EXTERNAL threading: the
+    # only CI job with a database is the only place a db-tagged gate arm can
+    # run, and a gate whose rows are chosen by CI convenience stops being a
+    # gate. The count floor lives in the same step, in jbtm-test's shape,
+    # because `dart test --tags db` that selects nothing exits green — a
+    # renamed tag or a moved directory would otherwise pass silently, which
+    # is a step that proves nothing on the day it stops selecting.
+    - name: Test tfc_relay_local gate db leg (F22e, the historian arm)
+      shell: bash
+      working-directory: packages/tfc_relay_local
+      env:
+        TIMESCALEDB_EXTERNAL: ${{ matrix.timescaledb_external }}
+      run: |
+        dart test test/gate --tags db --file-reporter "json:gate-db-report.json"
+        [ -f gate-db-report.json ] || { echo "::error::no gate-db-report.json — the gate db leg never produced a report"; exit 1; }
+        total=$( { grep -o '"type":"testStart"' gate-db-report.json || true; } | wc -l)
+        loading=$( { grep -o '"name":"loading ' gate-db-report.json || true; } | wc -l)
+        ran=$((total - loading))
+        echo "gate db leg tests reported: $ran"
+        # 1 as of 09-09 (F22e). The floor is the whole point of the reporter:
+        # a leg that selected nothing must fail here, not exit green.
+        if [ "$ran" -lt 1 ]; then
+          echo "::error::the gate db leg ran $ran tests — the db tag selected nothing in test/gate and exited green"
+          exit 1
+        fi
 
     - name: Upload test results
       uses: actions/upload-artifact@v4

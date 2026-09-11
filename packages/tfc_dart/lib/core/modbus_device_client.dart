@@ -3,7 +3,7 @@ import 'dart:collection';
 
 import 'package:logger/logger.dart';
 import 'package:meta/meta.dart';
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:modbus_client/modbus_client.dart' show ModbusEndianness;
 import 'package:modbus_client_tcp/modbus_client_tcp.dart' show ModbusClientTcp;
 import 'package:rxdart/rxdart.dart' show BehaviorSubject;
@@ -17,6 +17,7 @@ import 'package:tfc_dart/core/state_man.dart'
         ModbusConfig,
         ModbusNodeConfig,
         ModbusPollGroupConfig,
+        OpcUaStateMan,
         StateMan;
 import 'package:tfc_dart/core/umas_client.dart';
 import 'package:tfc_dart/core/umas_types.dart'
@@ -25,6 +26,7 @@ import 'package:tfc_dart/core/umas_types.dart'
         UmasException,
         UmasNotScalarException,
         UmasSessionState,
+        UmasStringDecoder,
         UmasVariable,
         UmasDataTypeRef;
 
@@ -43,6 +45,17 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   /// The underlying Modbus transport wrapper.
   final ModbusClientWrapper wrapper;
 
+  /// Registers the device has refused by name — the wrapper's
+  /// [ModbusClientWrapper.refusals], re-exposed unchanged.
+  ///
+  /// The seam `ModbusUpstreamLink.wrapping` consumes: a refused address must
+  /// come out of the pipe as a *quality* an operator reads, and the link is
+  /// the layer that mints qualities. Spec keys and gateway keys are the same
+  /// strings on this adapter (`buildSpecsFromKeyMappings` keys the specs by
+  /// the mapping's own key), so no translation happens here on purpose — a
+  /// second vocabulary at this seam is how the two ends drift.
+  Stream<ModbusAddressRefusal> get registerRefusals => wrapper.refusals;
+
   /// Optional alias for display/logging purposes.
   final String? serverAlias;
 
@@ -54,6 +67,18 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   /// adapter construction. Mutated by [updateVariableNames] when the
   /// operator edits the key mappings (TD-003 v1.1.x cleanup path).
   Map<String, String?> _variableNames;
+
+  /// How this server's STRING bytes become text, handed to every [UmasClient]
+  /// this adapter builds.
+  ///
+  /// **Optional, and null reproduces exactly what this adapter did before it
+  /// existed.** The caller is what knows the server alias and therefore what
+  /// encoding was configured for it; see
+  /// `packages/tfc_relay_local/lib/src/string_encoding.dart`. Held on the
+  /// adapter rather than passed per call because the client is rebuilt on
+  /// every reconnect and the encoding is a property of the device, not of the
+  /// session.
+  final UmasStringDecoder? decodeString;
 
   /// True when this adapter's server has `umasEnabled == true` in its
   /// [ModbusConfig]. Determines whether variableName-bearing keys can
@@ -187,6 +212,7 @@ class ModbusDeviceClientAdapter implements DeviceClient {
     this.serverAlias,
     Map<String, String?> variableNames = const {},
     this.umasEnabled = false,
+    this.decodeString,
     Map<String, String>? umasPollGroupByKey,
     List<ModbusPollGroupConfig>? pollGroups,
   })  : _specs = Map.unmodifiable(specs),
@@ -576,7 +602,7 @@ class ModbusDeviceClientAdapter implements DeviceClient {
         : _umasKeyOrder.length;
     for (var i = 0; i < n; i++) {
       final key = _umasKeyOrder[i];
-      final dv = _typedVariableToDynamicValue(values[i]);
+      final dv = typedVariableToDynamicValue(values[i]);
       _umasLastValues[key] = dv;
       final subject = _umasSubjects[key];
       if (subject != null && !subject.isClosed) {
@@ -949,6 +975,11 @@ class ModbusDeviceClientAdapter implements DeviceClient {
       sendFn: tcp.send,
       unitId: wrapper.unitId,
       useMonitorPlc: _useMonitorPlc,
+      // Re-supplied on every rebuild: the client is recreated on each
+      // reconnect and the encoding is a property of the device, so a decoder
+      // wired only into the first session would produce mojibake after the
+      // first cable pull and nowhere else.
+      decodeString: decodeString,
     );
     _umasClientFor = tcp;
     // F-8 / TD-011: when the UMAS-side CRC watch detects a project
@@ -1029,7 +1060,12 @@ class ModbusDeviceClientAdapter implements DeviceClient {
     }
     final spec = _specs[key];
     if (spec == null) throw ArgumentError('Unknown Modbus key: $key');
-    return wrapper.subscribe(spec).map((v) => _toDynamicValue(v, spec));
+    // subscribeSamples, not subscribe: [ModbusSample] is the seam that keeps
+    // the read instant available to callers who want the fact, even though no
+    // instant enters the value — see [_toDynamicValue] for why it may not.
+    return wrapper
+        .subscribeSamples(spec)
+        .map((s) => _toDynamicValue(s.value, spec));
   }
 
   /// Get-or-create the long-lived [BehaviorSubject] for a UMAS-by-name
@@ -1060,9 +1096,9 @@ class ModbusDeviceClientAdapter implements DeviceClient {
     }
     final spec = _specs[key];
     if (spec == null) return null;
-    final raw = wrapper.read(key);
-    if (raw == null) return null;
-    return _toDynamicValue(raw, spec);
+    final sample = wrapper.readSample(key);
+    if (sample == null || sample.value == null) return null;
+    return _toDynamicValue(sample.value, spec);
   }
 
   /// Read a single UMAS-by-name key. Throws [StateError] if [key] is
@@ -1098,7 +1134,7 @@ class ModbusDeviceClientAdapter implements DeviceClient {
     DynamicValue dv;
     try {
       final typed = await umas.readVariableByName(variableName);
-      dv = _typedVariableToDynamicValue(typed);
+      dv = typedVariableToDynamicValue(typed);
     } on UmasNotScalarException {
       // FB-instance binding: the operator (or LLM-generated key
       // mapping) pointed a single key at an FB instance root rather
@@ -1112,7 +1148,7 @@ class ModbusDeviceClientAdapter implements DeviceClient {
       // See commit 8c03c68d for the exception's introduction and the
       // umas-fb-dynamic-value branch for this fall-back's rationale.
       final members = await umas.readFbInstanceMembers(variableName);
-      dv = _fbMembersToDynamicValue(members);
+      dv = fbMembersToDynamicValue(members);
     }
     _umasLastValues[key] = dv;
     // F-1: push the fresh value to any active subscribers so
@@ -1142,11 +1178,15 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   /// `StartStopButton`) use `fb[memberName]` lookups against the
   /// flat string-keyed map; keeping the keys dotted matches that
   /// contract without a second-level walk.
-  static DynamicValue _fbMembersToDynamicValue(
+  ///
+  /// No read instant is stamped on the parent or on any member — see
+  /// [_toDynamicValue] for the whole argument.
+  @visibleForTesting
+  static DynamicValue fbMembersToDynamicValue(
       Map<String, TypedVariableValue> members) {
     final map = LinkedHashMap<String, DynamicValue>();
     for (final entry in members.entries) {
-      map[entry.key] = _typedVariableToDynamicValue(entry.value);
+      map[entry.key] = typedVariableToDynamicValue(entry.value);
     }
     return DynamicValue(value: map);
   }
@@ -1190,7 +1230,12 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   /// fall back to `NodeId.byte` because [DynamicValue] requires a
   /// non-null typeId; the raw value stays untouched so the consumer
   /// can still inspect it.
-  static DynamicValue _typedVariableToDynamicValue(TypedVariableValue t) {
+  ///
+  /// No source timestamp is stamped: UMAS carries no device instant, and a
+  /// clock on this host in that field is read downstream as a plant instant.
+  /// See [_toDynamicValue].
+  @visibleForTesting
+  static DynamicValue typedVariableToDynamicValue(TypedVariableValue t) {
     final upper = t.typeName.toUpperCase();
     final typeId = switch (upper) {
       'BOOL' || 'EBOOL' => NodeId.boolean,
@@ -1306,12 +1351,34 @@ class ModbusDeviceClientAdapter implements DeviceClient {
   // ---------------------------------------------------------------------------
 
   /// Wraps a raw Modbus value in a [DynamicValue] with the correct [typeId]
-  /// derived from the register spec's declared data type, then applies
-  /// optional bit masking.
+  /// derived from the register spec's declared data type and applies optional
+  /// bit masking.
+  ///
+  /// **Modbus offers no `sourceTimestamp`, and that is the honest answer.**
+  /// Nothing in the protocol says when the PLC produced the number. The read
+  /// instant — when this driver's round trip completed — is a clock on *this
+  /// host*, and `package:open62541` documents the field it would go in as *"the
+  /// instant the SOURCE (the PLC, not this process) says the value was
+  /// produced"*, with null meaning *"a consumer that needs an instant must
+  /// substitute its own arrival time knowingly, and record that it did"*.
+  ///
+  /// It was briefly stamped here (2026-09-07, morning) and the measured result
+  /// was that `alarm_history.ts_source` then said `plant` over a backend clock
+  /// for the whole Modbus fleet — in direct mode as well as through the pipe,
+  /// because `AlarmMan.onChange` reads this field straight off the value. A
+  /// bare `DateTime` has no room to say which clock it came from, so the only
+  /// way to stop the claim being made is not to make it. No converter takes
+  /// the instant at all now; [ModbusSample] remains the seam that exposes the
+  /// read instant to callers who want the fact.
+  ///
+  /// `applyBitMask` carries `statusCode` and `sourceTimestamp` across the fresh
+  /// [DynamicValue] it builds. That stays load-bearing for masked **OPC UA**
+  /// keys, which do have a real server stamp to lose; here there is nothing for
+  /// it to carry.
   static DynamicValue _toDynamicValue(Object? value, ModbusRegisterSpec spec) {
     final dv =
         DynamicValue(value: value, typeId: _typeIdFromDataType(spec.dataType));
-    return StateMan.applyBitMask(dv, spec.bitMask, spec.bitShift);
+    return OpcUaStateMan.applyBitMask(dv, spec.bitMask, spec.bitShift);
   }
 
   /// Maps [ModbusDataType] to the corresponding OPC UA [NodeId] type identifier.
@@ -1434,10 +1501,17 @@ Map<String, String> buildUmasPollGroupsFromKeyMappings(
 ///
 /// Servers with `enabled == false` are skipped entirely — no wrapper, no
 /// poll timers, no per-cycle read failures in the log while the PLC is down.
+/// [decodeStringFor] supplies the per-server string decoder, by alias.
+///
+/// Null — the default — reproduces exactly what this factory did before it
+/// existed. It takes a function rather than a decoder because one call builds
+/// every configured server and each may speak a different encoding: one
+/// Latin-1 weigher does not make the TwinCAT PLC beside it Latin-1.
 List<DeviceClient> buildModbusDeviceClients(
   List<ModbusConfig> modbusConfigs,
-  KeyMappings keyMappings,
-) {
+  KeyMappings keyMappings, {
+  UmasStringDecoder? Function(String? serverAlias)? decodeStringFor,
+}) {
   return modbusConfigs.where((config) => config.enabled).map((config) {
     final specs = buildSpecsFromKeyMappings(
       keyMappings,
@@ -1464,6 +1538,7 @@ List<DeviceClient> buildModbusDeviceClients(
       serverAlias: config.serverAlias,
       variableNames: variableNames,
       umasEnabled: config.umasEnabled,
+      decodeString: decodeStringFor?.call(config.serverAlias),
       umasPollGroupByKey: umasPollGroups,
       pollGroups: config.pollGroups,
     );

@@ -129,7 +129,14 @@ Future<void> dragCard(WidgetTester tester,
   // teleport can outrun the list's hit testing.
   await gesture.moveBy(const Offset(0, 12));
   await tester.pump(const Duration(milliseconds: 20));
-  final travel = end.dy - start.dy - 12;
+  // A small overshoot past the destination handle's center, in the travel
+  // direction: dropping EXACTLY on the center is borderline between two
+  // slots, and which side wins moved with page layout once before (the
+  // phase-3 Advanced card changed the clamped scroll under the last
+  // section by a handful of pixels). 16px is well inside the destination
+  // slot, so it cannot overshoot into the one beyond.
+  final overshoot = end.dy >= start.dy ? 16.0 : -16.0;
+  final travel = end.dy - start.dy - 12 + overshoot;
   for (var i = 1; i <= 4; i++) {
     await gesture.moveBy(Offset(0, travel / 4));
     await tester.pump(const Duration(milliseconds: 20));
@@ -169,7 +176,7 @@ Future<StateManConfig> persistedConfig(WidgetTester tester) async {
   final container =
       ProviderScope.containerOf(tester.element(find.byType(ServerConfigBody)));
   final prefs = await container.read(preferencesProvider.future);
-  return StateManConfig.fromPrefs(prefs);
+  return StateManConfigStorage.fromPrefs(prefs);
 }
 
 void main() {
@@ -275,13 +282,17 @@ void main() {
     });
 
     testWidgets('a reorder counts as an unsaved change', (tester) async {
+      // The save button is the page's ONE unsaved indicator (phase 2 of
+      // quick/20260908-unify-config-ui): armed = "Save Configuration",
+      // clean = "All Changes Saved". The old orange pill is gone.
       await pumpSection(tester, _threeOpcuaServers());
 
-      expect(find.textContaining('Unsaved'), findsNothing);
+      expect(find.text('Save Configuration'), findsNothing);
 
       await dragCard(tester, from: 2, to: 0);
 
-      expect(find.textContaining('Unsaved'), findsAtLeastNWidgets(1));
+      await reveal(tester, find.text('Save Configuration'));
+      expect(find.text('Save Configuration'), findsOneWidget);
     });
 
     testWidgets('card state follows its server across a reorder',
@@ -340,7 +351,11 @@ void main() {
       await pumpAndLoad(tester,
           buildTestableServerConfig(stateManConfig: _threeOpcuaServers()));
 
-      // Remove the middle server.
+      // Remove the middle server. Scrolled to first: the transport card at
+      // the top of the page no longer collapses, so on the 800x600 default
+      // surface this button starts a few pixels below the fold.
+      await tester.ensureVisible(removeButtonFor('st201'));
+      await settle(tester);
       await tester.tap(removeButtonFor('st201'));
       await settle(tester);
       await tester.tap(find.text('Remove'));

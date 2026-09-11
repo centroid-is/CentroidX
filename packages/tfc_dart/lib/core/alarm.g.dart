@@ -63,14 +63,3 @@ Map<String, dynamic> _$AlarmManConfigToJson(AlarmManConfig instance) =>
     <String, dynamic>{
       'alarms': instance.alarms,
     };
-
-AlarmManLocalConfig _$AlarmManLocalConfigFromJson(Map<String, dynamic> json) =>
-    AlarmManLocalConfig(
-      historyToDb: json['historyToDb'] as bool,
-    );
-
-Map<String, dynamic> _$AlarmManLocalConfigToJson(
-        AlarmManLocalConfig instance) =>
-    <String, dynamic>{
-      'historyToDb': instance.historyToDb,
-    };

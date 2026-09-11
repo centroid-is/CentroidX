@@ -50,7 +50,15 @@ import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
+import '../helpers/path_separators.dart';
 import '../helpers/test_helpers.dart';
+
+/// Where `AccessTemplateStore` lives since plan 17-02 moved it into `tfc_dart`,
+/// so the backend serves the same class the panel calls. The two structural
+/// arms below sweep this directory as well as `lib`, because a claim about
+/// which files may name the binding table stops being a claim the moment the
+/// only file that may is outside the roots it looks in.
+const String _kAccessStoreDir = 'packages/tfc_dart/lib/core/access';
 
 // ---------------------------------------------------------------------------
 // Doubles
@@ -773,8 +781,20 @@ void main() {
     test('the structural half: the binding table is named in one file',
         () async {
       final offenders = <String>[];
-      for (final entity in Directory('lib').listSync(recursive: true)) {
+      var visited = 0;
+      // Two roots since 17-02: `AccessTemplateStore` moved into `tfc_dart`, so
+      // the backend serves the same class the panel calls. Sweeping `lib`
+      // alone would now find **nothing**, and the pin would have to expect an
+      // empty list — the decorative form of this test, satisfied by deleting
+      // the table as readily as by containing it. The store's new home is
+      // swept as well, so the claim is still "named in one file" and still has
+      // a file to name.
+      for (final entity in [
+        ...Directory('lib').listSync(recursive: true),
+        ...Directory(_kAccessStoreDir).listSync(recursive: true),
+      ]) {
         if (entity is! File || !entity.path.endsWith('.dart')) continue;
+        visited++;
         // Comment lines are stripped before the search. Prose *about* the
         // table is not a path *to* it — three files explain the ruling in
         // their doc comments — and a mechanical gate that a reader has to
@@ -786,11 +806,15 @@ void main() {
         // Separators normalised — the expectation below spells its path with
         // forward slashes, and listSync gives backslashes on Windows.
         if (code.contains('access_key_binding')) {
-          offenders.add(entity.path.replaceAll(r'\', '/'));
+          offenders.add(withForwardSlashes(entity.path));
         }
       }
 
-      expect(offenders, ['lib/core/access_template_store.dart'],
+      expect(visited, greaterThan(100),
+          reason: 'run this suite from the repository root. The expectation '
+              'below is a one-element list, and a sweep that visited nothing '
+              'would report an empty one and read as a passing gate.');
+      expect(offenders, ['$_kAccessStoreDir/access_template_store.dart'],
           reason: 'The 2026-08-30 ruling moved bindings out of the '
               '`configure`-classified key-mapping blob and into their own '
               'table so that no `configure`-grade path could reach them. '
@@ -815,10 +839,21 @@ void main() {
           r'bindAll|bindMany|bindEvery|bindByPattern|bindMatching|autoBind',
           caseSensitive: false);
       final offenders = <String>[];
-      for (final entity in Directory('lib').listSync(recursive: true)) {
+      var visited = 0;
+      // Both roots, for the reason the arm above gives: after 17-02 a
+      // `bindAll` added to the store would land outside `lib` and a sweep of
+      // `lib` alone would not see it.
+      for (final entity in [
+        ...Directory('lib').listSync(recursive: true),
+        ...Directory(_kAccessStoreDir).listSync(recursive: true),
+      ]) {
         if (entity is! File || !entity.path.endsWith('.dart')) continue;
+        visited++;
         if (bulk.hasMatch(entity.readAsStringSync())) offenders.add(entity.path);
       }
+      expect(visited, greaterThan(100),
+          reason: 'this arm expects an EMPTY list, so it is the one that a '
+              'broken glob passes silently; the count is what stops that');
       expect(offenders, isEmpty);
     });
   });

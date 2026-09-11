@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:modbus_client/modbus_client.dart' show ModbusElementType;
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:test/test.dart';
 
 import 'package:tfc_dart/core/modbus_client_wrapper.dart';

@@ -4,7 +4,7 @@ import 'dart:collection' show LinkedHashMap;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc/page_creator/assets/conveyor.dart';
 import 'package:tfc/page_creator/assets/led.dart';
 import 'package:tfc/page_creator/assets/number.dart';
@@ -19,6 +19,8 @@ import 'package:tfc/providers/state_man.dart' show stateManProvider;
 import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc_dart/core/database.dart' show Database;
 import 'package:tfc_dart/core/state_man.dart' show StateMan;
+import 'package:tfc/providers/preferences.dart';
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 
 void main() {
   // ProviderScope + MaterialApp so showDialog has a Navigator. No provider
@@ -39,6 +41,7 @@ void main() {
     return ProviderScope(
       overrides: [
         databaseProvider.overrideWith((ref) => Completer<Database?>().future),
+        localPreferencesProvider.overrideWithValue(InMemoryPreferences()),  // the transport row; empty == direct mode
       ],
       child: MaterialApp(home: Scaffold(body: Center(child: child))),
     );

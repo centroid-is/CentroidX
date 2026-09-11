@@ -25,15 +25,17 @@ class StopActivation {
 /// Turns alarm activations into the intervals the timeline draws.
 ///
 /// The reason this exists at all is that the two halves of the record live in
-/// different places. [AlarmMan] writes a row to `alarm_history` from
-/// `_removeActiveAlarm`, i.e. **when an alarm clears** — so the table holds
-/// closed intervals only, and an alarm that is standing right now is missing
-/// from it entirely. The live set from `activeAlarms()` holds exactly the
-/// ones the table lacks.
+/// different places. `alarm_history` is what the plant database knows; the
+/// live set from `activeAlarms()` is what this panel is watching right now.
+/// Neither is complete on its own — a panel that has only just started reads
+/// its standing alarms out of the table, and a station whose database is
+/// unreachable still has a live set — so both are read and unioned, the same
+/// way `alarmHistoryEntries` already does for the alarm history list.
 ///
-/// Read one and you get a chart that omits the single stop the operator came
-/// to look at. So both are read and unioned, the same way
-/// `alarmHistoryEntries` already does for the alarm history list.
+/// Before 14-06 the table held **closed** intervals only, because a row was
+/// written when an alarm cleared. It now holds a row for as long as the alarm
+/// stands, which is why an open history entry is an ordinary case here and not
+/// an anomaly.
 class StopIntervalSource {
   /// Closed activations, from `alarm_history`.
   final List<StopActivation> closed;
@@ -46,27 +48,80 @@ class StopIntervalSource {
 
   static final empty = StopIntervalSource(closed: const [], open: const []);
 
-  /// Builds the union from the two sources [AlarmMan] exposes.
+  /// Builds the union from the two sources an [AlarmSource] exposes.
   ///
   /// [history] is what `getRecentAlarms()` returned; [active] is the latest
-  /// `activeAlarms()` event. An alarm appearing in both — which happens for a
-  /// frame as `AlarmMan` moves an instance from the active set into the
-  /// history buffer — is counted once, as closed, because the closed record is
-  /// the more complete one.
+  /// `activeAlarms()` event. An alarm appearing in both is counted once, as
+  /// closed, because the history record is the more complete one.
   factory StopIntervalSource.fromAlarms({
     required Iterable<AlarmActive> history,
     required Iterable<AlarmActive> active,
   }) {
     final closed = <StopActivation>[];
-    // By value, not identity: the same activation reaches this from three
-    // places — the live set, AlarmMan's in-memory ring buffer, and a database
-    // row reconstructed as a fresh instance — and only (uid, start, rule
-    // level) names it in all three. History is read first, so the closed
-    // record wins over a live one.
-    final seen = <String>{};
-    String keyOf(AlarmActive e) => '${e.alarm.config.uid}'
-        '@${e.notification.timestamp.microsecondsSinceEpoch}'
-        '@${e.notification.rule.level.name}';
+    // NOTE (merge, #468): `main` grew its own value-key here —
+    // `(uid, timestamp.microsecondsSinceEpoch, rule.level.name)`. This
+    // one is kept because the paragraphs above are the reason a
+    // MICROSECOND key double-counts: the two halves reach this from
+    // producers of different resolution, which is exactly the defect
+    // CR-03 measured. The level-vs-ruleIndex difference is covered —
+    // two rules of one alarm standing at one instant are two
+    // activations either way.
+    // Keyed by VALUE, on (uid, ruleIndex, start).
+    //
+    // This used to be a `Set<AlarmActive>.identity()`, whose stated
+    // precondition was that it is the same instance `AlarmMan` moves between
+    // the two collections. That precondition is false as of 14-06: the history
+    // half is decoded out of `alarm_history` and the live half arrives off the
+    // pipe (or out of the local active set), so one standing alarm is two
+    // different objects and an identity set sees two activations. Every live
+    // alarm in the plant would be drawn twice, and every stop it belongs to
+    // double-counted (P-8, D-12).
+    //
+    // `AlarmActive` has no value equality — and giving it one would change
+    // what a dozen widgets mean by `==` — so the key is built here instead.
+    // `ruleIndex` is in it because two rules of one alarm can stand at the
+    // same instant and are two activations; it is nullable because a pre-v7
+    // row states none, and two such rows for one alarm at one instant are
+    // still one activation.
+    //
+    // **The instant is normalised to UTC milliseconds, and that is not
+    // cosmetic (CR-03).** A raw `DateTime` key put the double-count straight
+    // back, for two independent reasons:
+    //
+    //  * **Resolution.** The history half is drift-read out of the TEXT column
+    //    at MICROSECOND resolution, and the writer stored the full
+    //    `toIso8601String()`, so microseconds survive the `::timestamp` round
+    //    trip. The live half is
+    //    `DateTime.fromMillisecondsSinceEpoch(entry.activeAtMs)` — and
+    //    `activeAtMs` is `stamp.at.toUtc().millisecondsSinceEpoch`, so the
+    //    wire truncates by construction. An OPC UA `sourceTimestamp` is a
+    //    100 ns tick, so a plant instant of `12:00:00.123456Z` is the ordinary
+    //    case: it keys as `.123456` against `.123000` and one standing alarm
+    //    becomes two activations.
+    //  * **Mode.** `DateTime.==` compares the `isUtc` flag too, so a producer
+    //    that hands over a local-mode instant misses at ANY precision.
+    //
+    // Milliseconds because that is the coarsest representation on the wire;
+    // anything finer cannot match across the two halves, and anything coarser
+    // would start merging genuinely distinct stops — measured: rounding this
+    // key to whole seconds turns the "two activations one millisecond apart"
+    // arm red on its own.
+    //
+    // **The `.toUtc()` below is documentary, not load-bearing, and that was
+    // measured rather than assumed.** `millisecondsSinceEpoch` is already an
+    // absolute instant, so dropping the call changes no value on any machine
+    // in any zone — a sabotage run that removed it turned NOTHING red, which
+    // is reported here rather than left to look like coverage. The mode half
+    // of the defect is fixed by leaving `DateTime` behind at all. It is kept
+    // because a bare `millisecondsSinceEpoch` on a key that two different
+    // producers feed reads as if the mode had simply not been thought about.
+    final seen = <(String, int?, int)>{};
+
+    (String, int?, int) keyOf(AlarmActive entry) => (
+          entry.alarm.config.uid,
+          entry.notification.ruleIndex,
+          entry.notification.timestamp.toUtc().millisecondsSinceEpoch,
+        );
 
     for (final entry in history) {
       if (!seen.add(keyOf(entry))) continue;

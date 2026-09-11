@@ -343,7 +343,7 @@ void main() {
         final lb = createLocationBuilder([_page('Home', '/')]);
         final gate = await buildGate(tester, lb, '/advanced/knowledge-base');
         expect(gate.group.name, 'configure');
-        expect(gate.allowWhenRepositoryUnavailable, isFalse,
+        expect(gate.allowWhenNobodyCanSignIn, isFalse,
             reason: 'a document library is not the page that configures the database');
         expect(gate.child, isA<TechDocLibraryPage>());
       });
@@ -390,7 +390,7 @@ void main() {
         final lb = createLocationBuilder([_page('Home', '/')]);
         final gate = await buildGate(tester, lb, '/advanced/audit-trail');
         expect(gate.group.name, 'users');
-        expect(gate.allowWhenRepositoryUnavailable, isFalse,
+        expect(gate.allowWhenNobodyCanSignIn, isFalse,
             reason: 'the trail is the database; there is nothing to read while it is down');
         expect(gate.child, isA<AuditTrailPage>());
       });
@@ -405,7 +405,7 @@ void main() {
         final lb = createLocationBuilder([_page('Home', '/')]);
         final gate = await buildGate(tester, lb, '/advanced/access');
         expect(gate.group.name, 'users');
-        expect(gate.allowWhenRepositoryUnavailable, isFalse,
+        expect(gate.allowWhenNobodyCanSignIn, isFalse,
             reason: 'with no repository there is no role table, so an exempt '
                 'admin page would edit nothing while looking like it worked');
         expect(gate.child, isA<AccessAdminPage>());
@@ -418,7 +418,7 @@ void main() {
         final exempt = <String>[];
         for (final path in kRaisedRoutes.keys) {
           final gate = await buildGate(tester, lb, path);
-          if (gate.allowWhenRepositoryUnavailable) exempt.add(path);
+          if (gate.allowWhenNobodyCanSignIn) exempt.add(path);
         }
         expect(exempt, ['/advanced/server-config']);
       });

@@ -7,7 +7,10 @@ import 'package:flutter/rendering.dart'
     show RenderConstrainedBox, BoxHitTestResult, BoxHitTestEntry;
 import 'package:logger/logger.dart';
 import 'package:json_annotation/json_annotation.dart';
-import 'package:tfc_dart/core/preferences.dart' show PreferencesApi;
+// The interface, not the drift-backed store that implements it: this page
+// reads through whichever transport is in force. `core/preferences.dart`
+// reaches `dart:ffi` by way of the database.
+import 'package:tfc_dart/core/preferences_api.dart' show PreferencesApi;
 import 'package:tfc/page_creator/page.dart' show AssetPage;
 
 import '../chat/asset_context_menu.dart';

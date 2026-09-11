@@ -20,7 +20,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:rxdart/rxdart.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/page_creator/assets/button.dart';
@@ -30,6 +30,7 @@ import 'package:tfc/page_creator/assets/start_stop_button.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/access_policy.dart';
 import 'package:tfc/providers/access_templates.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/access_denied_prompt.dart';
@@ -40,8 +41,10 @@ import 'package:tfc/widgets/panes/side_pane.dart' show closeSidePane;
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 
+import '../helpers/path_separators.dart';
 import '../helpers/test_helpers.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
@@ -104,6 +107,12 @@ List<Override> _accessOverrides({AccessSession? session}) => [
       accessSessionProvider
           .overrideWith(() => _FixedSession(session ?? _anonymous())),
       accessRepositoryProvider.overrideWith((ref) async => _StubRepository()),
+      // 17-12: `auditSinkProvider` now consults the transport row
+      // (`gatewayConfigProvider` → `localPreferencesProvider`) before it
+      // decides which sink to hand back, so the deny-row path these tests
+      // exercise would otherwise reach an unmocked SharedPreferences. An
+      // in-memory device-local store reads as direct mode.
+      localPreferencesProvider.overrideWithValue(InMemoryPreferences()),
     ];
 
 /// What plan 04-10's converted call sites decide from: one key bound to a
@@ -1003,11 +1012,19 @@ void main() {
 /// The receivers that mean a `StateMan`. Every one of them is a variable
 /// holding the value of `ref.read(stateManProvider.future)` or the
 /// `stateMan` a pane builder hands down.
+///
+/// `_remote` is the odd one out and belongs here rather than in
+/// [_kOtherWriteReceivers]: it is a `StateManApi`, so it is a real plant
+/// write, but it is issued from *inside* an implementation rather than by a
+/// caller holding a guarded object. See `lib/core/gateway_state_man.dart`'s
+/// row in [_kHandledWriteSites] for why that means the refusal is already
+/// settled by the time it runs.
 const Set<String> _kStateManWriteReceivers = {
   'client',
   'stateMan',
   'sm',
   'widget.stateMan',
+  '_remote',
 };
 
 /// Every other `.write(` receiver in `lib/`: string buffers, the secure
@@ -1024,6 +1041,16 @@ const Set<String> _kStateManWriteReceivers = {
 /// receiver name from the source rather than trusting this comment.
 const Set<String> _kOtherWriteReceivers = {
   'b',
+  // quick/20260908-unify-config-ui: `GatewayConfigSource.write` forwarding
+  // onto `BackendConfigApi.write` — the backend's config document over the
+  // relay, the same non-plant write as `backendConfig` below. The
+  // `administer` check and the audit row live server-side (17-09/17-10).
+  '_api',
+  // 17-13: `BackendConfigApi.write` on the Server Config page — the backend's
+  // config document over the relay, not a plant tag. The `administer` check
+  // and the audit row live server-side (17-09/17-10), and the page surfaces
+  // the refusal itself; there is no StateMan in this call.
+  'backendConfig',
   'binding',
   'buffer',
   'builder',
@@ -1033,6 +1060,11 @@ const Set<String> _kOtherWriteReceivers = {
   'slot',
   '_storage',
   '_legacy',
+  // quick/20260908-unify-config-ui: `ConfigSource.write` in the unified
+  // editor — the ONE config document, written to this station's preferences
+  // (direct) or the backend's file over the relay (gateway). Not a plant
+  // tag; the editor surfaces the refusal in its own snackbar.
+  'widget.source',
 };
 
 /// The files whose `StateMan` `.write(` is **already** resolved and shown.
@@ -1053,8 +1085,10 @@ const Set<String> _kOtherWriteReceivers = {
 /// | File | Why its `.write(` is handled |
 /// |---|---|
 /// | `lib/widgets/tag_access_guard.dart` | `writeTag`'s own call, reached only after `guardTagWrite` has resolved the permission; a refusal there is prompted and recorded rather than thrown, so there is nothing at this site for a caller to let past |
+/// | `lib/core/gateway_state_man.dart` | `GatewayStateMan.write`'s call onto the relay client. It sits **below** `GuardedStateMan`, which is what `stateManProvider` returns in gateway mode exactly as it does in direct mode, so the permission is resolved and the audit row written before this line runs. There is no caller here to let a refusal past: the refusal never reaches this frame |
 const Set<String> _kHandledWriteSites = {
   'lib/widgets/tag_access_guard.dart',
+  'lib/core/gateway_state_man.dart',
 };
 
 final RegExp _writeCall = RegExp(r'([A-Za-z_][A-Za-z0-9_.]*)\.write\(');
@@ -1076,7 +1110,7 @@ class _WriteSite {
 List<String> _libDartFiles() => Directory('lib')
     .listSync(recursive: true)
     .whereType<File>()
-    .map((f) => f.path.replaceAll(r'\', '/'))
+    .map((f) => withForwardSlashes(f.path))
     .where((p) => p.endsWith('.dart'))
     .toList()
   ..sort();

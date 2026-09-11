@@ -51,11 +51,15 @@ centroidx-sideload.pfx
 packages/marionette_flutter/
 
 # JSON test reports (`dart/flutter test --file-reporter`), written by the
-# jbtm-test and centroid-hmi-test CI jobs so they can assert the suite
-# actually ran. Ephemeral on the runner; only shows up locally if you run the
-# same command by hand.
+# jbtm-test, centroid-hmi-test and relay-packages-test CI jobs so they can
+# assert the suite actually ran. Ephemeral on the runner; only shows up
+# locally if you run the same command by hand.
 test-report.json
+soak-report.json
 
 # Binary artifacts
 *.zip
 ATV320_Installation_manual_EN_NVE41289_09.pdf
+
+# Load-bench python venv (README says how to create it)
+tools/load-bench/.venv/

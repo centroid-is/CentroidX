@@ -31,6 +31,7 @@ class DrivableClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) {
     final name = nodeId.toString();
     final c = controllers.putIfAbsent(
@@ -51,6 +52,7 @@ class DrivableClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) =>
       const Stream<Map<NodeId, DynamicValue>>.empty();
 
@@ -61,9 +63,9 @@ class DrivableClientApi implements ClientApi {
   dynamic noSuchMethod(Invocation invocation) => null;
 }
 
-Future<StateMan> makeStateMan(
+Future<OpcUaStateMan> makeStateMan(
     DrivableClientApi fake, Map<String, KeyMappingEntry> nodes) async {
-  final sm = await StateMan.create(
+  final sm = await OpcUaStateMan.create(
     config: StateManConfig(opcua: []),
     keyMappings: KeyMappings(nodes: nodes),
   );

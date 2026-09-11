@@ -36,6 +36,16 @@ String? packageRoot(String package) {
 }
 
 /// Registers the text and icon fonts golden frames need.
+///
+/// **One TTF, two family names, and the second one is not redundant.** The
+/// station themes ask for the family `roboto-mono` by name
+/// (`lib/theme.dart:349`), and nothing was ever registered under that spelling
+/// — so a golden that builds the real theme and applies
+/// `textTheme.apply(fontFamily: 'roboto-mono')` rendered Ahem boxes, because
+/// the only registration was under `Roboto`.
+/// `test/page_creator/assets/festo_vtug_golden_test.dart:44-47` survives that
+/// by loading the same file twice under both names; this is that line, moved
+/// somewhere every themed golden gets it.
 Future<void> loadGoldenFonts() async {
   await _load('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
   // Under the app's own themes `fontFamily` is 'roboto-mono', not 'Roboto', so

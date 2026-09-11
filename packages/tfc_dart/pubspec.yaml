@@ -4,7 +4,10 @@ version: 1.0.0
 publish_to: none
 
 environment:
-  sdk: ^3.5.1
+  # Bumped from ^3.5.1 to match tfc_relay_protocol's floor (below): the protocol
+  # package requires ^3.6.0 (digit separators), and a dependency's floor is a
+  # floor on ours. The repo runs Dart 3.11.5.
+  sdk: ^3.6.0
 
 dependencies:
   # JSON serialization
@@ -47,6 +50,29 @@ dependencies:
   tfc_access:
     path: ../tfc_access
 
+  # The pure-Dart value vocabulary the acquisition pipe speaks. One-way edge:
+  # tfc_dart -> tfc_relay_protocol (the protocol package has ZERO runtime deps,
+  # so it cannot cycle). This is the pipe's boundary vocabulary: the C-coupled
+  # open62541 DynamicValue stops at the worker edge and everything crossing the
+  # port is a protocol type.
+  tfc_relay_protocol:
+    path: ../tfc_relay_protocol
+
+  # The gateway itself: RelayServer, ServerConfig, TokenValidator. One-way
+  # edge, tfc_dart -> tfc_relay_server, and it cannot cycle — tfc_relay_server
+  # depends on tfc_relay_protocol and nothing else in this repo (see its own
+  # pubspec description: no Flutter, no native assets, deliberately). This edge
+  # is what lets bin/main.dart construct a RelayServer over the backend's own
+  # values (MOUNT-02), so it is a production dependency and not a dev one.
+  #
+  # The edge that would be a CYCLE, and is therefore forbidden, is
+  # tfc_dart -> tfc_relay_local: tfc_relay_local depends on tfc_dart
+  # (tfc_relay_local/pubspec.yaml:36). That is exactly why Phase 13 writes its
+  # own StateManApi adapter instead of reusing LocalStateMan, and
+  # test/core/relay/package_edge_test.dart pins all of this.
+  tfc_relay_server:
+    path: ../tfc_relay_server
+
   # Utilities
   collection: ^1.18.0
   path: ^1.9.1
@@ -54,6 +80,15 @@ dependencies:
   basic_utils: ^5.7.0
 
 dependency_overrides:
+  open62541:
+    git:
+      url: https://github.com/centroid-is/open62541_dart.git
+      # `monitor-quality-sourcetime`: 1.5.7+3 (main) plus DynamicValue
+      # .statusCode / .sourceTimestamp and opt-in `deliverBadStatus` —
+      # PIPE-11's source timestamps. Keep in step with the root
+      # pubspec.yaml; every open62541 override in this repo carries this
+      # same SHA.
+      ref: 2ff18e4ee0af759cba4258a02648889bbbd526ae
   postgres:
     git:
       url: https://github.com/centroid-is/postgresql-dart.git
@@ -69,3 +104,27 @@ dev_dependencies:
   json_serializable: ^6.9.4
   drift_dev: ^2.28.0
   test: ^1.25.0
+  # The shared StateManApi contract suite, run against this package's adapter
+  # (MOUNT-03). **Dev-only, and not negotiable**: it carries package:test as a
+  # real dependency, and tfc_dart is imported by the Flutter app — a production
+  # edge would pull the test runner, and its analyzer pin, into the app's
+  # version solve. tfc_relay_server and tfc_relay_local both keep it here for
+  # the same reason, and each says so in its own pubspec.
+  tfc_stateman_contract:
+    path: ../tfc_stateman_contract
+  # The WebSocket leg of the contract suite (13-11) serves the backend adapter
+  # over a real socket: `shelf_io.serve` + `webSocketHandler` on the server end,
+  # `IOWebSocketChannel.connect` on the client end, and `StreamChannel<String>`
+  # as the type both `ServedStateMan` and `ChannelStateMan` already speak.
+  #
+  # **Dev-only, and already in the solve.** All four are production dependencies
+  # of `tfc_relay_server` (`tfc_relay_server/pubspec.yaml:20,24,32,37`), which
+  # tfc_dart already depends on, so these add no new registry resolution — they
+  # add the ability to *name* the four in a test file. The constraints are that
+  # package's, character for character: a looser one here could resolve a
+  # different version than the server was judged against, and the whole claim of
+  # this leg is that the transport is the one the plant will run.
+  shelf: ^1.4.2
+  shelf_web_socket: ^3.0.0
+  stream_channel: ^2.1.4
+  web_socket_channel: ^3.0.3

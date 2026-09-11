@@ -1,0 +1,86 @@
+name: tfc_relay_server
+description: >-
+  The gateway: the WebSocket + JSON-RPC session layer that serves StateMan to
+  every panel. Two constraints shape this layout. First, the shared contract
+  test kit binds real ports and pulls package:test in as a real dependency, so
+  it is a dev dependency only here — nothing that binds a port belongs in a
+  production solve. Second, the Flutter app must not depend on this package at
+  all: the app depends on tfc_relay_protocol, and dragging analyzer into the
+  app's version solve is the analyzer-cap blocker that has stopped this repo
+  twice in twelve months. Pure Dart, server-side, no Flutter.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  # The HTTP server this gateway is mounted in: shelf owns the request
+  # pipeline, and the upgrade handler hangs off one route.
+  shelf: ^1.4.2
+  # The WebSocket upgrade itself. Its `allowedOrigins` argument is the
+  # cross-site-WebSocket-hijacking defence (RESEARCH Finding 1), and its
+  # `pingInterval` is the NAT keepalive — not the liveness reaper.
+  shelf_web_socket: ^3.0.0
+  # The JSON-RPC 2.0 envelope both ends already speak. Peer is bidirectional
+  # and, deliberately, neither queues nor retries — which is the write-safety
+  # property, not an omission.
+  json_rpc_2: ^4.1.0
+  # The channel abstraction Peer is wired over; the WS adapter builds a
+  # StreamChannel<String> by hand rather than using `.cast()`
+  # (RESEARCH Finding 1: cast() locks the sink for the connection's life).
+  stream_channel: ^2.1.4
+  # The WebSocketChannel type itself. shelf_web_socket hands the upgrade
+  # handler one of these, so the server-side adapter (`ws_channel.dart`) names
+  # the type in its signature and the dependency is direct, not transitive.
+  # The same package is the client socket in the test harness.
+  web_socket_channel: ^3.0.3
+  # The wire shapes, the DTOs and the pure cores (ConflatingSendBuffer,
+  # HelloGate) this server is assembled from.
+  tfc_relay_protocol: {path: ../tfc_relay_protocol}
+  # The master access-control system. Phase 17's constitution: "one master
+  # access control system, the websocket can build on top of that" — so this
+  # package owns no policy, it asks. AccessGroup, AccessSession,
+  # AuthenticatedUser and AccessPolicy all live there.
+  #
+  # The description above forbids Flutter and forbids the *app* depending on
+  # this package; it says nothing against a pure-Dart vocabulary package, and
+  # tfc_access is exactly that — its own dependency list is collection, meta,
+  # clock and cryptography, all already in the workspace solve, and
+  # `package_purity_test.dart` keeps it that way. tfc_access's own description
+  # names the relay as its second intended consumer. The reverse edge
+  # (tfc_access -> here) stays forbidden and stays tested.
+  tfc_access: {path: ../tfc_access}
+  # RSA keygen, private-key PEM encoding and certificate PEM *parsing* for the
+  # provisioning helper — and deliberately NOT certificate construction.
+  # `X509Utils.generateSelfSignedCertificate` encodes every subject-alternative
+  # name as a dNSName (`X509Utils.dart:480-484`), so `10.104.29.71` becomes the
+  # literal DNS string "10.104.29.71" and a panel dialling that IP is answered
+  # with CERTIFICATE_VERIFY_FAILED (06-RESEARCH §B.2, measured). The panels dial
+  # IPs, so the certificate bytes are ours; only the key plumbing is this
+  # package's. Already a direct dependency of the repository root at ^5.7.0,
+  # resolved 5.8.2, and already imported by
+  # `packages/tfc_dart/bin/generate_certs.dart` — nothing new enters the solve.
+  basic_utils: ^5.8.2
+  # The ASN.1 DER writer and the SHA-256/RSA signer the certificate is actually
+  # built from. This is `basic_utils`' own and only dependency, so it is already
+  # resolved in the repository's lockfile at 4.0.0 and already loaded by shipping
+  # code: a transitive edge becoming direct, not a new package. It is also the
+  # only ASN.1 library that belongs here — see the import comment in
+  # `lib/src/tls/mint.dart` for the near-miss it warns about.
+  pointycastle: ^4.0.0
+  # The `relay_certs` CLI's option parsing, at the version `tfc_dart` and
+  # `tfc_mcp_server` already pin. An integrator provisioning a plant runs a
+  # command; a command with hand-rolled argv parsing is a command that reports a
+  # missing --ca-key as a stack trace.
+  args: ^2.4.2
+
+dev_dependencies:
+  # Same analyzer-recommended lint set as the other two relay packages.
+  lints: ^4.0.0
+  # The suite runner. It stays on this side of the line for the reason in the
+  # description above.
+  test: ^1.25.0
+  # The shared 44-check contract suite plus the socket fault kit, run over
+  # this transport. It binds ports; dev-only is not negotiable.
+  tfc_stateman_contract: {path: ../tfc_stateman_contract}

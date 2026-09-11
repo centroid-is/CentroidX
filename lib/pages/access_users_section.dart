@@ -88,7 +88,6 @@ import 'package:intl/intl.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
-import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 
 import '../core/access_admin_store.dart';
 import '../providers/access.dart';
@@ -110,9 +109,14 @@ const String kAccessUsersHeadline = 'Accounts';
 
 /// One line under the title. Says what an account is and what holding one
 /// means, before a list of names arrives.
+///
+/// It no longer says "and a password". An account may have none — it is marked
+/// in the list when it does not — and a sentence stating a rule the screen
+/// itself breaks three rows down is worse than no sentence.
 const String kAccessUsersSubtitle =
-    'An account is a username, a password and exactly one role. What it may do '
-    'is whatever that role grants, and changing the role changes it at once.';
+    'An account is a username and exactly one role, with or without a '
+    'password. What it may do is whatever that role grants, and changing the '
+    'role changes it at once.';
 
 /// The read failed, or the store could not be built.
 ///
@@ -160,15 +164,35 @@ const String kAccessUsersColumnLastLogin = 'Last login';
 /// rendering bug.
 const String kAccessUserNever = 'never';
 
+/// What an absent `createdAt` renders as, and **not** [kAccessUserNever].
+///
+/// The two nulls look alike and are different facts. A null `lastLoginAt` is
+/// about the account: it has never been signed into, and "never" is exactly
+/// right. A null `createdAt` is about the answer: every `app_user` row has one,
+/// so a missing value means this roster came over the wire from a server that
+/// predates the field. Saying "never" there would state something false about
+/// the account, so the column says it does not know.
+///
+/// Before the roster spoke [UserSummary] this case could not be expressed —
+/// the row type's `createdAt` was non-nullable and a gateway panel filled the
+/// hole with epoch zero, which every account then rendered as 1970-01-01.
+const String kAccessUserUnknown = 'unknown';
+
 /// A timestamp as this repo already renders one.
 ///
 /// `yyyy-MM-dd HH:mm` through `intl`, the pattern `plc_detail_panel.dart` and
 /// `tech_doc_library_section.dart` already use; no new dependency and no fourth
 /// spelling of a date. Local time, because the person reading it is standing in
 /// front of the panel.
-String kAccessUserWhen(DateTime? at) => at == null
-    ? kAccessUserNever
-    : DateFormat('yyyy-MM-dd HH:mm').format(at.toLocal());
+///
+/// [ifNull] is what an absent instant reads as. It defaults to
+/// [kAccessUserNever] because most callers are rendering `lastLoginAt`; the
+/// created column passes [kAccessUserUnknown] instead, for the reason recorded
+/// there.
+String kAccessUserWhen(DateTime? at, {String ifNull = kAccessUserNever}) =>
+    at == null
+        ? ifNull
+        : DateFormat('yyyy-MM-dd HH:mm').format(at.toLocal());
 
 /// The change-role dialog's title.
 String kAccessUserRoleDialogTitle(String username) =>
@@ -237,6 +261,36 @@ const String kAccessUserCreateConfirmLabel = 'Create account';
 const String kAccessUserCreateNote =
     'The account can be used the moment it is created, and it may do whatever '
     'the role picked below grants. There is no password policy and no expiry.';
+
+/// The no-password toggle, in both credential dialogs.
+///
+/// A tick rather than "leave the field blank". Blank is what a field looks like
+/// when somebody has not finished typing, and an account anybody can use is not
+/// something to create by not finishing. The tick is the choice; the sentence
+/// below it is what the choice means.
+const String kAccessUserNoPasswordLabel =
+    'No password — signs in on the username alone';
+
+/// What ticking it means, said plainly and without hedging.
+///
+/// It names the actual consequence — anyone at the panel, not "reduced
+/// security" — because the person reading it is deciding whether that is
+/// acceptable for this account on this line, and cannot decide it from an
+/// adjective.
+const String kAccessUserNoPasswordWarning =
+    'Anybody standing at this panel can sign in as this account and do '
+    'whatever its role allows. Intended for a shared line account on a '
+    'touchscreen nobody wants to type a password on.';
+
+/// The marker on a roster row for an account with no password.
+///
+/// The roster has to say which accounts are open. One that drew an open
+/// account exactly like a protected one would be the users screen quietly
+/// hiding the thing an administrator opened it to check.
+const String kAccessUserNoPasswordBadge = 'no password';
+String kAccessUserNoPasswordBadgeTooltip(String username) =>
+    '"$username" signs in on its username alone — anybody at this panel can '
+    'use it.';
 
 /// The set-password dialog's title and affirmative.
 String kAccessUserSetPasswordTitle(String username) =>
@@ -341,6 +395,18 @@ Key kAccessUserCreatedKey(String username) =>
     Key('access-user-created-$username');
 Key kAccessUserLastLoginKey(String username) =>
     Key('access-user-last-login-$username');
+
+/// The no-password marker on a roster row.
+Key kAccessUserNoPasswordBadgeKey(String username) =>
+    Key('access-user-no-password-$username');
+
+/// The no-password toggle in the create and set-password dialogs. One key, for
+/// the same reason the field keys are one set: only one dialog is ever up.
+const Key kAccessUserNoPasswordToggleKey = Key('access-user-no-password');
+
+/// The sentence the toggle reveals.
+const Key kAccessUserNoPasswordWarningKey =
+    Key('access-user-no-password-warning');
 
 /// One account's change-role control.
 Key kAccessUserChangeRoleKey(String username) =>
@@ -611,7 +677,7 @@ class _UserTile extends ConsumerStatefulWidget {
     required this.store,
   });
 
-  final AppUserData user;
+  final UserSummary user;
 
   /// Every role the picker may offer, from `accessAdminRolesProvider`, so it
   /// cannot offer one that does not exist.
@@ -638,7 +704,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
   /// during the round trip is simply ignored.
   bool _busy = false;
 
-  AppUserData get user => widget.user;
+  UserSummary get user => widget.user;
 
   @override
   Widget build(BuildContext context) {
@@ -654,7 +720,35 @@ class _UserTileState extends ConsumerState<_UserTile> {
             children: [
               Expanded(
                 flex: _kNameFlex,
-                child: Text(user.username, key: kAccessUserNameKey(user.username)),
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(user.username,
+                          key: kAccessUserNameKey(user.username),
+                          overflow: TextOverflow.ellipsis),
+                    ),
+                    // Beside the name, not in a column of its own: it is a
+                    // fact about *this account*, and a reader scanning the
+                    // roster for open accounts should find it without
+                    // crossing the row.
+                    if (!user.hasPassword) ...[
+                      const SizedBox(width: 8),
+                      Tooltip(
+                        message:
+                            kAccessUserNoPasswordBadgeTooltip(user.username),
+                        child: Text(
+                          kAccessUserNoPasswordBadge,
+                          key: kAccessUserNoPasswordBadgeKey(user.username),
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelSmall
+                              ?.copyWith(
+                                  color: Theme.of(context).colorScheme.error),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
               Expanded(
                 flex: _kRoleFlex,
@@ -662,7 +756,12 @@ class _UserTileState extends ConsumerState<_UserTile> {
               ),
               Expanded(
                 flex: _kWhenFlex,
-                child: Text(kAccessUserWhen(user.createdAt),
+                // [kAccessUserUnknown], not "never": a missing created
+                // instant is a gap in the answer, not a fact about the
+                // account.
+                child: Text(
+                    kAccessUserWhen(user.createdAt,
+                        ifNull: kAccessUserUnknown),
                     key: kAccessUserCreatedKey(user.username)),
               ),
               Expanded(
@@ -1095,6 +1194,47 @@ enum _CredentialProblem {
   failed,
 }
 
+/// The "no password" tick and, when it is on, the sentence saying what it
+/// means.
+///
+/// One widget, used by both credential dialogs, so the create form and the
+/// reset form cannot drift into wording the same choice two ways.
+///
+/// The warning appears **only when the box is ticked**. A standing warning
+/// beside an unticked box is one more paragraph on a form nobody reads; a
+/// sentence that arrives when the choice is made is read, because it was not
+/// there a moment ago.
+Widget _noPasswordToggle(
+  BuildContext context, {
+  required bool value,
+  required bool enabled,
+  required ValueChanged<bool> onChanged,
+}) {
+  final theme = Theme.of(context);
+  return Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      CheckboxListTile(
+        key: kAccessUserNoPasswordToggleKey,
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        controlAffinity: ListTileControlAffinity.leading,
+        value: value,
+        onChanged: enabled ? (on) => onChanged(on ?? false) : null,
+        title: Text(kAccessUserNoPasswordLabel),
+      ),
+      if (value)
+        Text(
+          kAccessUserNoPasswordWarning,
+          key: kAccessUserNoPasswordWarningKey,
+          style: theme.textTheme.bodySmall
+              ?.copyWith(color: theme.colorScheme.error),
+        ),
+    ],
+  );
+}
+
 /// The inline sentence for [problem], in the error colour, keyed by branch.
 ///
 /// [failureNote] is the dialog's own fixed failure sentence — fixed, because
@@ -1214,6 +1354,13 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
   /// True while a `createUser` call is outstanding. See the class doc.
   bool _submitting = false;
 
+  /// The operator ticked "no password". The account will sign in on its
+  /// username alone.
+  ///
+  /// A blank field with this unticked is still refused: see
+  /// [kAccessUserNoPasswordLabel] for why the choice has to be a tick.
+  bool _noPassword = false;
+
   @override
   void dispose() {
     _username.dispose();
@@ -1225,7 +1372,11 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
   Future<void> _submit() async {
     if (_submitting) return;
     final username = _username.text.trim();
-    final password = _password.text;
+    // The tick wins over whatever is in the fields. They are disabled and
+    // cleared when it goes on, so this is belt and braces rather than a second
+    // rule — but the alternative is a password reaching the store from a
+    // dialog whose visible state says there is none.
+    final password = _noPassword ? '' : _password.text;
 
     // `first_user.dart`'s order, and its wording: three checks means three
     // sentences the operator can act on.
@@ -1233,11 +1384,11 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
       setState(() => _problem = _CredentialProblem.blankUsername);
       return;
     }
-    if (password.isEmpty) {
+    if (!_noPassword && password.isEmpty) {
       setState(() => _problem = _CredentialProblem.blankPassword);
       return;
     }
-    if (password != _confirm.text) {
+    if (!_noPassword && password != _confirm.text) {
       setState(() => _problem = _CredentialProblem.mismatch);
       return;
     }
@@ -1332,7 +1483,7 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
             key: kAccessUserPasswordFieldKey,
             controller: _password,
             obscureText: true,
-            enabled: !_submitting,
+            enabled: !_submitting && !_noPassword,
             decoration: const InputDecoration(
               labelText: 'Password',
               border: OutlineInputBorder(),
@@ -1343,12 +1494,29 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
             key: kAccessUserConfirmFieldKey,
             controller: _confirm,
             obscureText: true,
-            enabled: !_submitting,
+            enabled: !_submitting && !_noPassword,
             onSubmitted: _submitting ? null : (_) => _submit(),
             decoration: const InputDecoration(
               labelText: 'Confirm password',
               border: OutlineInputBorder(),
             ),
+          ),
+          _noPasswordToggle(
+            context,
+            value: _noPassword,
+            enabled: !_submitting,
+            onChanged: (on) => setState(() {
+              _noPassword = on;
+              // Cleared, not just disabled. A password left in a disabled
+              // field is one an operator can untick their way back into
+              // without meaning to, and it would sit in memory for the life
+              // of the dialog for no reason.
+              if (on) {
+                _password.clear();
+                _confirm.clear();
+              }
+              _problem = null;
+            }),
           ),
           const SizedBox(height: 12),
           if (widget.roles.isEmpty)
@@ -1415,6 +1583,10 @@ class _SetPasswordDialogState extends State<_SetPasswordDialog> {
   _CredentialProblem? _problem;
   bool _submitting = false;
 
+  /// The operator ticked "no password": this removes the account's password
+  /// rather than replacing it. See [_CreateUserDialogState._noPassword].
+  bool _noPassword = false;
+
   @override
   void dispose() {
     _password.dispose();
@@ -1424,13 +1596,13 @@ class _SetPasswordDialogState extends State<_SetPasswordDialog> {
 
   Future<void> _submit() async {
     if (_submitting) return;
-    final password = _password.text;
+    final password = _noPassword ? '' : _password.text;
 
-    if (password.isEmpty) {
+    if (!_noPassword && password.isEmpty) {
       setState(() => _problem = _CredentialProblem.blankPassword);
       return;
     }
-    if (password != _confirm.text) {
+    if (!_noPassword && password != _confirm.text) {
       setState(() => _problem = _CredentialProblem.mismatch);
       return;
     }
@@ -1485,7 +1657,7 @@ class _SetPasswordDialogState extends State<_SetPasswordDialog> {
             controller: _password,
             obscureText: true,
             autofocus: true,
-            enabled: !_submitting,
+            enabled: !_submitting && !_noPassword,
             decoration: const InputDecoration(
               labelText: 'New password',
               border: OutlineInputBorder(),
@@ -1496,12 +1668,25 @@ class _SetPasswordDialogState extends State<_SetPasswordDialog> {
             key: kAccessUserConfirmFieldKey,
             controller: _confirm,
             obscureText: true,
-            enabled: !_submitting,
+            enabled: !_submitting && !_noPassword,
             onSubmitted: _submitting ? null : (_) => _submit(),
             decoration: const InputDecoration(
               labelText: 'Confirm new password',
               border: OutlineInputBorder(),
             ),
+          ),
+          _noPasswordToggle(
+            context,
+            value: _noPassword,
+            enabled: !_submitting,
+            onChanged: (on) => setState(() {
+              _noPassword = on;
+              if (on) {
+                _password.clear();
+                _confirm.clear();
+              }
+              _problem = null;
+            }),
           ),
           if (problem != null) ...[
             const SizedBox(height: 12),

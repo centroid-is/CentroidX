@@ -177,7 +177,7 @@ class _RecordingStore extends AccessAdminStore {
   }
 
   @override
-  Future<List<AppUserData>> listUsers() {
+  Future<List<UserSummary>> listUsers() {
     calls.add('listUsers');
     return super.listUsers();
   }
@@ -495,6 +495,9 @@ void main() {
             newValue: const Value('12.5'),
           ));
 
+  // Drift rows on purpose, and not the store's `AuditRecord`: this reads the
+  // table directly to assert what was *written*, so the generated row type is
+  // the honest one here. The store's read path is what speaks `AuditRecord`.
   Future<List<AuditEntryData>> auditRowsFor(String who) =>
       (db.select(db.auditEntry)..where((t) => t.who.equals(who))).get();
 
@@ -600,6 +603,39 @@ void main() {
       expect(cell(tester, kAccessUserLastLoginKey('nyr')), kAccessUserNever);
       expect(cell(tester, kAccessUserLastLoginKey('nyr')), isNotEmpty);
       expect(find.text(kAccessUserNever), findsOneWidget);
+    });
+
+    testWidgets('a null createdAt renders as unknown, never as never and '
+        'never as 1970', (tester) async {
+      // Unreachable from the tables — every `app_user` row has a `created_at`,
+      // which is why this one overrides the roster provider instead of seeding
+      // a database. The case exists over the wire: a gateway panel talking to
+      // a backend older than the field gets a `UserSummary` with no createdAt,
+      // and before the roster carried a nullable one that hole was filled with
+      // epoch zero and drawn as 1970-01-01 on every account.
+      //
+      // The two nulls are different facts and must not render alike: a null
+      // lastLoginAt is about the account (never signed in), a null createdAt is
+      // about the answer (this server did not say).
+      await pumpSection(tester, [
+        ...overrides(),
+        accessAdminUsersProvider.overrideWith((ref) async => const [
+              UserSummary(
+                  username: 'over-the-wire', roleName: 'Panel Operator'),
+            ]),
+      ]);
+
+      final created = cell(tester, kAccessUserCreatedKey('over-the-wire'));
+      expect(created, kAccessUserUnknown);
+      expect(created, isNot(kAccessUserNever),
+          reason: '"never" would state something false about the account: it '
+              'was certainly created, this answer just did not say when.');
+      expect(created, isNot(contains('1970')));
+
+      // The sibling column still says "never", so the two are visibly
+      // different words on one row rather than one word doing both jobs.
+      expect(cell(tester, kAccessUserLastLoginKey('over-the-wire')),
+          kAccessUserNever);
     });
 
     testWidgets('every account gets a row, in the roster order', (tester) async {
@@ -1052,6 +1088,66 @@ void main() {
       expect(store!.calls.where((c) => c.startsWith('createUser')), isEmpty);
     });
 
+    testWidgets('ticking "no password" creates an account that signs in on '
+        'its username alone', (tester) async {
+      await makeUser('admin', 'Engineering');
+      await pumpSection(tester, overrides());
+      await openCreate(tester);
+      await tester.enterText(
+          find.byKey(kAccessUserUsernameFieldKey), 'line');
+
+      // No warning until the choice is made — a sentence that arrives when the
+      // box is ticked is read, one that was always there is not.
+      expect(find.byKey(kAccessUserNoPasswordWarningKey), findsNothing);
+      await tester.tap(find.byKey(kAccessUserNoPasswordToggleKey));
+      await tester.pumpAndSettle();
+      expect(find.byKey(kAccessUserNoPasswordWarningKey), findsOneWidget);
+
+      await tester.tap(find.byKey(kAccessUserCreateConfirmKey));
+      await tester.pumpAndSettle();
+
+      final row = await userNamed('line');
+      expect(row, isNotNull);
+      expect(isPasswordless(row!.passwordHash), isTrue);
+      expect(row.salt, isEmpty);
+    });
+
+    testWidgets('ticking it clears what was typed rather than only disabling '
+        'the fields', (tester) async {
+      await makeUser('admin', 'Engineering');
+      await pumpSection(tester, overrides());
+      await openCreate(tester);
+      await fillCreate(tester, username: 'line', password: 'typed then ticked');
+
+      await tester.tap(find.byKey(kAccessUserNoPasswordToggleKey));
+      await tester.pumpAndSettle();
+      // Unticking must not hand the old password back: it was cleared, not
+      // hidden.
+      await tester.tap(find.byKey(kAccessUserNoPasswordToggleKey));
+      await tester.pumpAndSettle();
+
+      expect(
+          tester
+              .widget<TextField>(find.byKey(kAccessUserPasswordFieldKey))
+              .controller!
+              .text,
+          isEmpty);
+    });
+
+    testWidgets('a blank password with the box unticked is still refused — '
+        'an open account is a choice, not an unfinished form', (tester) async {
+      await makeUser('admin', 'Engineering');
+      await pumpSection(tester, overrides());
+      await openCreate(tester);
+      await fillCreate(tester, username: 'line', password: '');
+
+      await tester.tap(find.byKey(kAccessUserCreateConfirmKey));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessUserBlankPasswordKey), findsOneWidget);
+      expect(await userNamed('line'), isNull);
+    });
+
     testWidgets('passwords that do not match are refused with their own '
         'sentence', (tester) async {
       await makeUser('admin', 'Engineering');
@@ -1331,6 +1427,26 @@ void main() {
             'scope: an admin types the new password directly',
       );
       expect(find.text(kAccessUserSetPasswordTitle('bjorn')), findsOneWidget);
+    });
+
+    testWidgets('ticking "no password" removes the password rather than '
+        'setting one, and the roster then marks the account', (tester) async {
+      await makeUser('bjorn', 'Shift Leader');
+      await pumpSection(tester, overrides());
+
+      expect(find.byKey(kAccessUserNoPasswordBadgeKey('bjorn')), findsNothing,
+          reason: 'it has a password to start with');
+
+      await openSetPassword(tester, 'bjorn');
+      await tester.tap(find.byKey(kAccessUserNoPasswordToggleKey));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserPasswordConfirmKey));
+      await tester.pumpAndSettle();
+
+      expect(isPasswordless((await userNamed('bjorn'))!.passwordHash), isTrue);
+      expect(find.byKey(kAccessUserNoPasswordBadgeKey('bjorn')), findsOneWidget,
+          reason: 'a roster that drew an open account like a protected one '
+              'would hide the thing an administrator opened it to check');
     });
 
     testWidgets('a blank password is refused with its own sentence',

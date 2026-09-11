@@ -24,13 +24,74 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/access/drift_audit_sink.dart';
 import 'package:tfc_dart/core/access/local_auth_provider.dart';
-import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 import 'package:tfc_dart/core/preferences.dart';
 
+import 'package:tfc_dart/core/access/guarded_state_man.dart';
+import 'package:tfc_dart/core/state_man.dart' show StateMan;
+import 'package:tfc_relay_client/tfc_relay_client.dart'
+    show LinkDown, RemoteStateMan;
+import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
+    show SessionAuthMarkers, SessionLoginResult;
+import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
+
+import '../core/access_authority.dart';
+import '../core/gateway_config.dart';
+import '../core/gateway_link_status.dart';
+import '../core/gateway_state_man.dart';
+import '../core/relayed_access_stores.dart';
 import 'database.dart';
+import 'gateway.dart';
+import 'gateway_link.dart';
+import 'gateway_preferences_slot.dart';
 import 'preferences.dart';
+import 'state_man.dart';
 
 part 'access.g.dart';
+
+/// How a gateway panel signs a person in: verify over the socket, and answer
+/// with what the SERVER resolved. Null in direct mode, and null on a gateway
+/// whose relay client is not built yet.
+///
+/// **A seam, so a widget test can drive sign-in without a live gateway** —
+/// the `backendConfigApiProvider` pattern. Production reaches the ONE relay
+/// client the panel already holds (`GatewayStateMan.remote`) and calls
+/// `RemoteStateMan.sessionLogin`; the credential crosses the `wss://` frame
+/// once and is verified server-side (Argon2id behind the backend's
+/// `AuthProvider`). Nothing here decides whether the password was right — the
+/// gateway does, and answers with the resolved user, role and groups.
+typedef RelaySignIn = Future<SessionLoginResult> Function({
+  required String username,
+  required String password,
+  String? station,
+});
+
+/// The relay sign-in seam, or null when this station cannot sign in over a
+/// socket (direct mode, or a gateway whose client is not up).
+///
+/// A plain [FutureProvider] rather than a codegen one, matching
+/// `gatewayVerifiedAccountProvider` and `gatewayConfigProvider`: it reaches
+/// `stateManProvider` and needs no generated wiring, and a widget test
+/// overrides it with `overrideWith` to drive sign-in without a live gateway.
+final relaySignInProvider = FutureProvider<RelaySignIn?>((ref) async {
+  final gateway = await ref.watch(gatewayConfigProvider.future);
+  if (!gateway.isGateway) return null;
+  final StateMan stateMan;
+  try {
+    stateMan = await ref.watch(stateManProvider.future);
+  } on Object {
+    return null;
+  }
+  final RemoteStateMan? remote = stateMan is GuardedStateMan
+      ? stateMan.innerAs<GatewayStateMan>()?.remote
+      : null;
+  if (remote == null) return null;
+  return ({required username, required password, station}) =>
+      remote.sessionLogin(
+        username: username,
+        password: password,
+        station: station,
+      );
+});
 
 /// The device-local preference key holding the serialised session.
 ///
@@ -100,6 +161,50 @@ Future<AccessRepository?> accessRepository(Ref ref) async {
   return AccessRepository(db.db);
 }
 
+/// What verifies a credential on this station — the gate's first question.
+///
+/// [AccessGroup]-gated routes, the D-Bus controls and the menu lock all ask
+/// [resolveAccessGate], and what that function needs to know is not "is there
+/// a repository" but "can anybody be authenticated here, and by whom". On a
+/// gateway panel those two questions have different answers:
+/// `databaseProvider` returns null the moment the transport is gateway
+/// (`database.dart`), so [accessRepositoryProvider] is null by design, while
+/// sign-in works perfectly well over the socket ([relaySignInProvider]).
+/// Reading the null as "nobody can sign in" is what hid every `/advanced`
+/// entry from a signed-in engineer on the rig.
+///
+/// **`ref.read` on the config, `ref.watch` on the repository**, and the split
+/// is deliberate — it mirrors `database.dart` line for line and for the same
+/// two reasons. Transport is restart-to-apply (`gateway.dart`), and
+/// `server_config.dart` invalidates [gatewayConfigProvider] on every save; a
+/// watch here would flip a DIRECT station's authority to
+/// [AccessAuthority.relay] the instant somebody typed in the gateway URL
+/// field, i.e. before the restart that actually builds the relay client, and
+/// the gate would then be consulting a session nothing can mint. The
+/// repository, by contrast, must go on being watched: Postgres coming up or
+/// dropping mid-shift has to move the gate exactly as it does today.
+///
+/// A config that cannot be read leaves the station direct, the default in
+/// every direction (`readGatewayConfig`, `database.dart`).
+///
+/// A throwing repository surfaces here as an [AsyncError], which the gate maps
+/// to [AccessAuthority.none] — the same fact as a resolved null, gated
+/// identically, exactly as it was when the gate held the repository itself.
+@Riverpod(keepAlive: true)
+Future<AccessAuthority> accessAuthority(Ref ref) async {
+  GatewayConfig gateway;
+  try {
+    gateway = await ref.read(gatewayConfigProvider.future);
+  } catch (_) {
+    gateway = GatewayConfig.defaults;
+  }
+  if (gateway.isGateway) {
+    return accessAuthorityFor(isGateway: true, hasRepository: false);
+  }
+  final repo = await ref.watch(accessRepositoryProvider.future);
+  return accessAuthorityFor(isGateway: false, hasRepository: repo != null);
+}
+
 /// The authentication seam.
 ///
 /// Named for the interface it provides rather than for [LocalAuthProvider],
@@ -113,21 +218,36 @@ Future<AuthProvider?> authProvider(Ref ref) async {
   return LocalAuthProvider(repo);
 }
 
-/// Where audit rows go.
+/// Where audit rows go. Three cases, and each gets a different sink:
 ///
-/// [NullAuditSink] when there is no database. That covers two real cases: the
-/// boot window before the connection is open, and a station commissioned with
-/// no Postgres at all. Losing the trail there is preferable to failing to
-/// boot — an HMI that will not start because it cannot write an audit row is a
-/// stopped line.
+///  1. **Gateway mode** → [ServerAuditedSink]. The trail lives at the far
+///     end: every relayed operation is audited server-side by the backend's
+///     policy decorator, attributed to the identity the server verified at
+///     `hello` and stamped `origin: 'relay'` (D-05/D-11) — and the wire
+///     deliberately has no method a client could write a row through, because
+///     a client-supplied row is a forgery surface. This case must **not**
+///     fall into [NullAuditSink]: a null sink on a gateway panel is a trail
+///     that looks like a trail and records nothing, which is worse than no
+///     trail at all (criterion 3). The named type is how a test tells the
+///     cases apart.
+///  2. **Direct mode, no database** → [NullAuditSink]. The two real cases
+///     this always covered: the boot window before the connection is open,
+///     and a station commissioned with no Postgres at all. Losing the trail
+///     there is preferable to failing to boot — an HMI that will not start
+///     because it cannot write an audit row is a stopped line. It **is** a
+///     gap, and [NullAuditSink] is silent by design: a direct station running
+///     without a database is *knowingly* running without a trail.
+///  3. **Direct mode, database present** → [DriftAuditSink], which names
+///     every row it loses.
 ///
-/// But it **is** a gap, and it is the kind of gap nobody notices, because a
-/// missing row looks exactly like an action that never happened. What makes it
-/// visible is the sink's own error logging: [DriftAuditSink] names every row it
-/// loses. [NullAuditSink] is silent by design, so a station running without a
-/// database is knowingly running without a trail.
+/// `ref.watch` on the transport, never `ref.read`: this provider is
+/// `keepAlive`, and `alarm.dart:45` records what a `ref.read` behind a
+/// `keepAlive` cost — a stale transport whose stream closed rather than
+/// errored, so nothing reported it.
 @Riverpod(keepAlive: true)
 Future<AuditSink> auditSink(Ref ref) async {
+  final gateway = await ref.watch(gatewayConfigProvider.future);
+  if (gateway.isGateway) return const ServerAuditedSink();
   final db = await ref.watch(databaseProvider.future);
   if (db == null) return const NullAuditSink();
   return DriftAuditSink(db.db);
@@ -345,6 +465,20 @@ class AccessSessionController extends _$AccessSessionController {
   /// Where auth rows go. Resolved at build for the same reason as [_station].
   AuditSink _sink = const NullAuditSink();
 
+  /// Whether this station runs on the relay. Resolved at build.
+  ///
+  /// **Gateway sessions are per-run, and that is D-11, not a limitation.** A
+  /// gateway panel signs in over the socket; the server verifies and mints
+  /// the session, and a reconnect lands back at the awaiting-sign-in screen
+  /// because there is no retained credential (increment C is Jón's open
+  /// decision, deliberately unbuilt). So in gateway mode the session is
+  /// **never persisted and never restored**: persisting it would be the
+  /// panel asserting "I am jón" across a restart with no server session
+  /// behind the claim — exactly the client-supplied identity D-11 forbids
+  /// the server to believe. `_persist` and `_restoreOrAnonymous` both honour
+  /// this flag.
+  bool _isGateway = false;
+
   @override
   Future<AccessSession> build() async {
     // Registered synchronously, before the first await: Riverpod fires
@@ -361,8 +495,26 @@ class AccessSessionController extends _$AccessSessionController {
     ref.onRemoveListener(_onListenerRemoved);
     ref.onDispose(_disposeMonitor);
 
+    // The client's half of ACCESS-01 on a gateway panel, registered
+    // synchronously with the two above and for the same reason — a `listen`
+    // after an await is not a build-time dependency.
+    //
+    // **`listen`, never `watch`.** A watch would rebuild this controller on
+    // every link report, which is the session being torn down and restored
+    // each time the socket blinks.
+    //
+    // Cheap in direct mode: `gatewayLinkProvider` reads the device-local
+    // transport row, publishes exactly one `null` and never touches
+    // `stateManProvider` unless the station is in gateway mode — a property
+    // `test/providers/gateway_link_test.dart` pins with a throwing override.
+    ref.listen<AsyncValue<GatewayLinkReport?>>(
+      gatewayLinkProvider,
+      (previous, next) => _onGatewayLink(next.valueOrNull),
+    );
+
     _station = ref.watch(stationNameProvider);
     _local = ref.watch(localPreferencesProvider);
+    _isGateway = (await ref.watch(gatewayConfigProvider.future)).isGateway;
     _timeout = await ref.watch(inactivityTimeoutProvider.future);
     // Before `_restoreOrFloor`, which writes a row when the stored session
     // turns out to have expired while the app was not running.
@@ -385,6 +537,65 @@ class AccessSessionController extends _$AccessSessionController {
     // set until this future completes, so hand `_attach` the session directly.
     if (_listeners > 0 && session.isElevated) _attach(session);
     return session;
+  }
+
+  /// A gateway link report landed. Drop an elevated session the server is no
+  /// longer holding.
+  ///
+  /// **Why the link is the signal.** A gateway session lives on the server and
+  /// is per-run: `_signInOverRelay` deliberately does not persist it, and
+  /// `_restoreOrAnonymous` deliberately does not restore it, because a session
+  /// that outlived its socket would be the panel asserting "I am jón" with
+  /// nothing behind the claim. That rule was written down and then not
+  /// enforced — nothing in this file watched the link, so a relayed elevation
+  /// survived in memory after the socket it was minted on had gone. This is
+  /// the rule keeping its own promise.
+  ///
+  /// It is also how the demote-and-delete property arrives on a gateway panel.
+  /// The backend runs a credential + role revocation poll and closes a retired
+  /// account's session with **4001 on the next tick**
+  /// (`packages/tfc_relay_server/test/session_login_ws_test.dart` arm 5). The
+  /// client supervisor treats 4001 like any other close — the link went away,
+  /// redial — so the close reaches this file as a link report that is no
+  /// longer [GatewayLinkKind.connected], and the elevation goes with it. The
+  /// redial comes back on the *station* credential, and the person signs in
+  /// again; the server never restores their session, so neither may the panel.
+  ///
+  /// **A null report is direct mode** (or a gateway whose client is still
+  /// building) and means nothing here. That is what keeps every direct-mode
+  /// station untouched by this listener.
+  ///
+  /// **[GatewayLinkKind.connecting] drops too, and must.** It is the first
+  /// state a closed socket passes through on its way to redialling; excluding
+  /// it would mean a demotion is honoured only if the panel happens to still
+  /// be failing to reconnect when the next report lands. At boot the session
+  /// is anonymous, so the drop is a no-op there.
+  void _onGatewayLink(GatewayLinkReport? report) {
+    if (report == null || report.kind == GatewayLinkKind.connected) return;
+    // Fire-and-forget with a handler attached: an unhandled error out of a
+    // provider listener takes the zone down, and nothing here is awaited.
+    unawaited(_dropSessionForLostLink().catchError((Object e) {
+      Logger().w('Could not drop the session after the gateway link went '
+          'away: $e');
+    }));
+  }
+
+  Future<void> _dropSessionForLostLink() async {
+    if (_disposed) return;
+    final session = state.valueOrNull;
+    if (session == null || !session.isElevated) return;
+
+    Logger().w(
+      'Dropping the elevated session for "${session.user!.username}" to '
+      'anonymous: the gateway link went away, and a gateway session does not '
+      'survive it — sign in again once the panel is connected.',
+    );
+    _detach();
+    // No `_clearStoredSession()`: `_persist` returns early in gateway mode, so
+    // there has never been a payload to clear. Naming that here rather than
+    // calling it defensively keeps the "two permitted persistence writes" list
+    // in `refreshGroupsFromRoles` true.
+    await _toAnonymous();
   }
 
   // -----------------------------------------------------------------------
@@ -413,6 +624,14 @@ class AccessSessionController extends _$AccessSessionController {
     Future<AccessSession> floor() async =>
         await _resumePanelAccount(repo) ??
         AccessSession.anonymous(await _anonymousGroups(repo));
+
+    // A gateway panel never restores a session: its elevation is a server
+    // session that a reconnect does not carry, so a restored one would be an
+    // unbacked client claim (see [_isGateway]). Anonymous — the seeded
+    // Operator floor — is the honest boot state until somebody signs in.
+    if (_isGateway) {
+      return AccessSession.anonymous(await _anonymousGroups(repo));
+    }
 
     final raw = await _readStoredSession();
     if (raw == null) return floor();
@@ -505,6 +724,13 @@ class AccessSessionController extends _$AccessSessionController {
   /// not collapsed.** `LocalAuthProvider` distinguishes them precisely so a
   /// database blip is not recorded as somebody trying to get in.
   Future<AccessSignInResult> signIn(String username, String password) async {
+    // A gateway panel verifies over the socket — the server checks the
+    // credential and answers with the resolved user, role and groups. This
+    // is the fix for the PRIMARY defect: 17-12 relayed the access stores and
+    // left authentication on a Postgres connection the panel no longer has,
+    // so sign-in read "unavailable" forever. It goes through the relay now.
+    if (_isGateway) return _signInOverRelay(username, password);
+
     final AuthProvider? auth;
     final AccessRepository? repo;
     try {
@@ -583,6 +809,85 @@ class AccessSessionController extends _$AccessSessionController {
     return AccessSignInResult.ok;
   }
 
+  /// Sign in on a gateway panel: verify over the socket, server-side.
+  ///
+  /// The panel decides nothing about whether the password was right — it
+  /// hands username and password to the relay, the gateway verifies (Argon2id
+  /// behind its `AuthProvider`) and answers with the resolved user, role and
+  /// groups, and this builds the session from that answer. No audit row is
+  /// written here: the trail lives at the far end, where the server already
+  /// recorded the login `origin: 'relay'` (D-05); `_sink` is
+  /// [ServerAuditedSink] and would no-op anyway.
+  ///
+  /// **No persistence.** The session is held for this run only — see
+  /// [_isGateway]. A reconnect returns to the awaiting-sign-in screen.
+  ///
+  /// The two refusal answers are kept apart exactly as the direct path keeps
+  /// them: the gateway's `bad_credentials` marker is [badCredentials], and
+  /// every other refusal — an unreachable user source, a dead link, a
+  /// station-credential session, a gateway serving no sign-in — is
+  /// [unavailable], because none of them is somebody mistyping a password and
+  /// telling them it was would send them to reset one that was never wrong.
+  Future<AccessSignInResult> _signInOverRelay(
+      String username, String password) async {
+    final RelaySignIn? signInFn;
+    try {
+      signInFn = await ref.read(relaySignInProvider.future);
+    } on Object {
+      return AccessSignInResult.unavailable;
+    }
+    if (signInFn == null) return AccessSignInResult.unavailable;
+
+    final SessionLoginResult result;
+    try {
+      result =
+          await signInFn(username: username, password: password, station: _station);
+    } on rpc.RpcException catch (e) {
+      // The gateway answered and said no. Only its `bad_credentials` marker
+      // is a wrong password; everything else is infrastructure or policy and
+      // must not read as "your password is wrong". The message is the
+      // gateway's own and is never spliced with the credential.
+      if (e.message.contains(SessionAuthMarkers.badCredentials)) {
+        return AccessSignInResult.badCredentials;
+      }
+      Logger().w('Relay sign-in was refused: ${e.message}');
+      return AccessSignInResult.unavailable;
+    } on LinkDown {
+      // No link to the gateway — the honest "cannot reach the user database"
+      // of gateway mode, and never a credential verdict.
+      return AccessSignInResult.unavailable;
+    } on Object catch (e) {
+      Logger().w('Relay sign-in could not be attempted: $e');
+      return AccessSignInResult.unavailable;
+    }
+
+    final session = AccessSession(
+      user: result.user,
+      groups: result.groups,
+      // Same expiry rule as the direct path: a station account and the
+      // station-wide disable never expire; a person's session takes the
+      // inactivity window. The server sweep is the authority on revocation;
+      // this is the local idle timeout on top.
+      expiresAt: (_timeout == null || result.user.stationAccount)
+          ? null
+          : clock.now().add(_timeout!),
+    );
+    state = AsyncData(session);
+    // Deliberately no `_persist`: gateway sessions are per-run (see above).
+    _attach(session);
+    // This panel booted on the copy of `key_mappings` in its own cache,
+    // because the backend refuses the shared store to a session nobody has
+    // signed in on — the deadlock `RelayedPreferences` documents. This is the
+    // first moment it is allowed to read that key, so ask for the copy to be
+    // caught up; a difference lands on the reload path `stateManProvider`
+    // already has. A hint, not a step of signing in: it is fire-and-forget,
+    // it changes nothing if the panel is already current, and nothing here
+    // waits on it.
+    ref.read(gatewayPreferencesSlotProvider).requestReconcile();
+    return AccessSignInResult.ok;
+  }
+
+
   /// Commit this panel to the account that is signed in right now.
   ///
   /// The panel keeps this identity across restarts, and hands it back whenever
@@ -651,6 +956,28 @@ class AccessSessionController extends _$AccessSessionController {
   Future<void> signOut() async {
     final current = state.valueOrNull;
     _detach();
+
+    // A gateway panel signs out at the far end too, so the server returns the
+    // session to its awaiting-sign-in sentinel and the sweep stops carrying
+    // it. Best-effort: a dead link already means the session is unreachable,
+    // and the local drop to anonymous below is what the operator sees. No
+    // client audit row — the server writes the logout `origin: 'relay'`.
+    if (_isGateway && current != null && current.isElevated) {
+      try {
+        final signInFn = await ref.read(relaySignInProvider.future);
+        if (signInFn != null) {
+          final stateMan = await ref.read(stateManProvider.future);
+          final remote = stateMan is GuardedStateMan
+              ? stateMan.innerAs<GatewayStateMan>()?.remote
+              : null;
+          await remote?.sessionLogout();
+        }
+      } on Object catch (e) {
+        Logger().w('Relay sign-out could not be delivered: $e');
+      }
+      await _toAnonymous();
+      return;
+    }
 
     if (current != null && current.isElevated) {
       await _record(AuditRecord.logout(
@@ -845,6 +1172,28 @@ class AccessSessionController extends _$AccessSessionController {
     if (monitor != null) unawaited(monitor.dispose());
   }
 
+  /// Straight to anonymous, with no panel account resumed.
+  ///
+  /// **Not [_toFloor], and the difference is the security property.** #482 made
+  /// the ordinary way down resume this panel's committed station account, which
+  /// is right for a direct panel: the commitment is a local fact about a local
+  /// identity. On a **gateway** panel it is not, because there the session is a
+  /// server session and the whole rule of this branch is that authorisation is
+  /// enforced at the far end. Resuming a committed account out of local
+  /// preferences after the link dropped would be the panel granting itself a
+  /// role the gateway never confirmed — an unbacked client claim, which is the
+  /// thing [_isGateway] exists to prevent.
+  ///
+  /// So the two gateway routes down — the lost link and a relay sign-out — land
+  /// here, and every other route keeps going through [_toFloor].
+  Future<void> _toAnonymous() async {
+    if (_disposed) return;
+    final repo = await ref.read(accessRepositoryProvider.future);
+    if (_disposed) return;
+    _onPanelSession = false;
+    state = AsyncData(AccessSession.anonymous(await _anonymousGroups(repo)));
+  }
+
   /// The one way down: this panel's committed account, or anonymous.
   ///
   /// Every route that used to reach anonymous now reaches here — [signOut],
@@ -917,9 +1266,14 @@ class AccessSessionController extends _$AccessSessionController {
       return null;
     }
 
-    final AppUserData? row;
+    // `userSummary`, not `user`: the latter hands back the drift row so the
+    // credential path can reach `passwordHash`, and nothing under `lib/` may
+    // name a generated type (`no_drift_row_types_in_app_test`). Both fields
+    // this method reads are on the summary; the hash is not, and does not
+    // belong out here.
+    final UserSummary? row;
     try {
-      row = await repo.user(username);
+      row = await repo.userSummary(username);
     } on Object catch (e) {
       Logger().w(
         'Could not read the app_user row for this panel\'s account '
@@ -1109,15 +1463,53 @@ class AccessSessionController extends _$AccessSessionController {
       await _toFloor();
     }
 
-    if (repo == null) {
-      await drop('the database is unreachable, so the account behind the '
-          'session cannot be confirmed');
-      return;
+    // **Which authority is being asked to confirm this account?** Not "is
+    // there a repository" — that question read a gateway panel, which has no
+    // repository by design and permanently, as a database outage and demoted a
+    // correctly signed-in engineer to anonymous. The three answers are the
+    // enum's, derived once by [accessAuthorityFor] from the two facts this
+    // controller already holds.
+    switch (accessAuthorityFor(
+      isGateway: _isGateway,
+      hasRepository: repo != null,
+    )) {
+      case AccessAuthority.relay:
+        // The server is the authority, and it already enforces ACCESS-01: the
+        // backend's credential + role revocation poll retires a demoted or
+        // deleted account's session and closes the socket 4001 on the next
+        // tick (`session_login_ws_test.dart` arm 5, every 10 s on the rig).
+        // The panel holds no user table and could not confirm anything if it
+        // wanted to, so it must not manufacture a demotion out of an absence
+        // it was designed to have. Honouring the close is the client's half,
+        // and that is [_dropSessionForLostLink], not this method.
+        //
+        // The cost, stated rather than hidden: an admin demoting a role from
+        // *this* panel's access screen no longer sees their own session narrow
+        // in the same frame. It narrows when the server says so, within the
+        // poll interval. An immediate local answer would be the panel deciding
+        // its own privileges, which is the thing gateway mode exists not to do.
+        return;
+      case AccessAuthority.none:
+        // Kept deliberately. Direct mode with no reachable Postgres: nothing
+        // on this station can confirm the account, the session was minted
+        // against a database that is no longer answering, and an elevated
+        // session with nothing behind it is the privilege-retention hole this
+        // method exists to close. The operator loses elevation on a blip and
+        // signs in again, which is the fail-safe direction.
+        await drop('the database is unreachable, so the account behind the '
+            'session cannot be confirmed');
+        return;
+      case AccessAuthority.local:
+        break;
     }
+
+    // `local` is `hasRepository: true` by [accessAuthorityFor]'s definition,
+    // so this is the switch's own postcondition rather than an assumption.
+    final localRepo = repo!;
 
     final String roleNameNow;
     try {
-      final row = await repo.user(username);
+      final row = await localRepo.user(username);
       if (row == null) {
         await drop('the account no longer exists');
         return;
@@ -1128,7 +1520,7 @@ class AccessSessionController extends _$AccessSessionController {
       return;
     }
 
-    final role = await _roleOrNull(repo, roleNameNow);
+    final role = await _roleOrNull(localRepo, roleNameNow);
     if (role == null) {
       await drop('the role "$roleNameNow" the account now holds cannot be '
           'resolved — it was deleted or renamed');
@@ -1162,6 +1554,11 @@ class AccessSessionController extends _$AccessSessionController {
   // (spec §10).
 
   Future<void> _persist(AccessSession session) async {
+    // Never on a gateway panel: the retained secret that would survive a
+    // restart is increment C's open decision (Jón's), and a persisted
+    // session with no credential behind it is an unbacked claim across a
+    // reconnect (see [_isGateway]). Sign in, hold the session for this run.
+    if (_isGateway) return;
     final local = _local;
     if (local == null || !session.isElevated) return;
     // The panel's own session lives in `kAccessPanelAccountPrefKey` and

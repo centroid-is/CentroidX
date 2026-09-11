@@ -42,6 +42,19 @@ dependencies:
   petitparser: ^7.0.0
 
 dependency_overrides:
+  # This package depends on tfc_dart, and tfc_dart's `state_man.dart` and
+  # `alarm.dart` read `DynamicValue.statusCode` / `.sourceTimestamp` — members
+  # that exist only on the relay-quality fork. Without this override, a
+  # `dart pub get` HERE resolves open62541 from pub.dev, and tfc_dart then
+  # fails to compile inside this package's suite while compiling fine
+  # everywhere else. The root pubspec's note is the authority: every
+  # open62541 override in this repository carries THIS SHA, because two
+  # packages resolving two different open62541 builds is not a state this
+  # repository should ever be in. This is the sixth such entry.
+  open62541:
+    git:
+      url: https://github.com/centroid-is/open62541_dart.git
+      ref: 2ff18e4ee0af759cba4258a02648889bbbd526ae
   postgres:
     git:
       url: https://github.com/centroid-is/postgresql-dart.git

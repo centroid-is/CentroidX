@@ -3,13 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/access_routes.dart';
 import 'package:tfc/models/menu_item.dart';
+import 'package:tfc/core/access_authority.dart';
 import 'package:tfc/providers/access.dart';
+import 'package:tfc/providers/gateway_link.dart';
 import 'package:tfc/widgets/access_lock_badge.dart';
 import 'package:tfc/widgets/nav_dropdown.dart';
 import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc_access/tfc_access.dart';
-import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:beamer/beamer.dart';
 
 /// A minimal BeamLocation for testing.
@@ -109,9 +110,9 @@ BeamerDelegate buildTestNavDelegate(MenuItem menuItem) => BeamerDelegate(
 /// [overrides] is empty by default and that is safe for a menu of unraised
 /// paths: the badge short-circuits on `operate` before watching anything, so
 /// no access provider is ever built. A test that uses a raised path must
-/// override both `accessSessionProvider` and `accessRepositoryProvider` — an
-/// unoverridden repository reaches `databaseProvider` and the station
-/// keychain.
+/// override both `accessSessionProvider` and `accessAuthorityProvider` — an
+/// unoverridden authority reaches `gatewayConfigProvider`, `databaseProvider`
+/// and the station keychain.
 Widget buildTestNavDropdown(
   MenuItem menuItem, {
   List<Override> overrides = const [],
@@ -226,11 +227,14 @@ MenuItem _accessTestMenuItem() {
   );
 }
 
-/// A repository that answers nothing; the badge only asks whether one exists.
-class _StubRepository extends Fake implements AccessRepository {}
+/// What verifies a credential on the station under test. The badge only asks
+/// whether anything does.
+Future<AccessAuthority> _presentRepository() async => AccessAuthority.local;
+Future<AccessAuthority> _absentRepository() async => AccessAuthority.none;
 
-Future<AccessRepository?> _presentRepository() async => _StubRepository();
-Future<AccessRepository?> _absentRepository() async => null;
+/// A gateway panel: no database by design, the credential verified over the
+/// socket.
+Future<AccessAuthority> _relayAuthority() async => AccessAuthority.relay;
 
 /// Resolves immediately, so no frame in these tests is a race against the real
 /// controller chain.
@@ -255,12 +259,18 @@ class _FixedSession extends AccessSessionController {
 
 List<Override> _accessOverrides({
   AccessSession? session,
-  Future<AccessRepository?> Function() repository = _presentRepository,
+  Future<AccessAuthority> Function() repository = _presentRepository,
+  bool? relayCanAuthenticate,
 }) =>
     [
       accessSessionProvider.overrideWith(() => _FixedSession(
           session ?? AccessSession.anonymous(const {AccessGroup.operate}))),
-      accessRepositoryProvider.overrideWith((ref) => repository()),
+      accessAuthorityProvider.overrideWith((ref) => repository()),
+      // Unoverridden this resolves to true — a healthy gateway, which is what
+      // a relay case here means unless it says otherwise.
+      if (relayCanAuthenticate != null)
+        relayCanAuthenticateProvider
+            .overrideWith((ref) => relayCanAuthenticate),
     ];
 
 /// The badge tests' host: a [NavDropdown] in a bar-height slot, under a
@@ -553,12 +563,16 @@ void main() {
       Future<void> openMenu(
         WidgetTester tester, {
         AccessSession? session,
-        Future<AccessRepository?> Function() repository = _presentRepository,
+        Future<AccessAuthority> Function() repository = _presentRepository,
+        bool? relayCanAuthenticate,
         BeamerDelegate? delegate,
       }) async {
         await tester.pumpWidget(_buildTestNavBar(
-          overrides:
-              _accessOverrides(session: session, repository: repository),
+          overrides: _accessOverrides(
+            session: session,
+            repository: repository,
+            relayCanAuthenticate: relayCanAuthenticate,
+          ),
           delegate: delegate ?? _buildTestNavBarDelegate(_accessTestMenuItem()),
         ));
         await tester.pumpAndSettle();
@@ -596,6 +610,71 @@ void main() {
         expect(find.widgetWithText(PopupMenuItem<void>, 'Page Editor'),
             findsNothing,
             reason: 'the others stay hidden through an outage');
+      });
+
+      testWidgets(
+          'on a gateway panel the raised entries come back for a session that '
+          'holds the groups', (tester) async {
+        // The rig defect. A gateway panel has no repository by design, which
+        // the menu read as "this station can authenticate nobody" and hid
+        // every raised entry from an engineer who had just signed in.
+        await openMenu(tester, repository: _relayAuthority);
+        expect(find.widgetWithText(PopupMenuItem<void>, 'Page Editor'),
+            findsNothing,
+            reason: 'nobody is signed in yet');
+        expect(find.widgetWithText(PopupMenuItem<void>, 'Server Config'),
+            findsNothing,
+            reason: 'the second defect: the outage exemption was keyed on "no '
+                'repository", which a gateway panel satisfies permanently, so '
+                'Server Config sat in the menu of every gateway panel with '
+                'nobody signed in. A reachable gateway gates it like the rest');
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await openMenu(
+          tester,
+          repository: _relayAuthority,
+          session: AccessSession(
+            user: const AuthenticatedUser(
+              username: 'centroid',
+              roleName: 'Engineering',
+              displayName: 'Centroid',
+            ),
+            groups: const {
+              AccessGroup.operate,
+              AccessGroup.configure,
+              AccessGroup.administer,
+            },
+            expiresAt: DateTime.utc(2026, 9, 9, 23),
+          ),
+        );
+
+        expect(find.widgetWithText(PopupMenuItem<void>, 'Page Editor'),
+            findsOneWidget,
+            reason: 'the gateway verified this session; the pages it holds '
+                'the groups for must be in the menu');
+        expect(find.widgetWithText(PopupMenuItem<void>, 'Server Config'),
+            findsOneWidget);
+      });
+
+      testWidgets(
+          'a gateway panel whose link cannot carry a sign-in keeps Server '
+          'Config in the menu, and nothing else', (tester) async {
+        // The recovery case: a mistyped gateway URL leaves a panel nobody can
+        // sign in at, so the page that fixes the URL must still be reachable.
+        // The menu and the route gate read the same two predicates, so this is
+        // the same claim `access_gate_test.dart` pins on the function.
+        await openMenu(
+          tester,
+          repository: _relayAuthority,
+          relayCanAuthenticate: false,
+        );
+
+        expect(find.widgetWithText(PopupMenuItem<void>, 'Server Config'),
+            findsOneWidget,
+            reason: 'the one route out of an unreachable gateway');
+        expect(find.widgetWithText(PopupMenuItem<void>, 'Page Editor'),
+            findsNothing,
+            reason: 'the recovery opens one page, not the whole section');
       });
 
       testWidgets('a hidden entry is not in the menu to be tapped',

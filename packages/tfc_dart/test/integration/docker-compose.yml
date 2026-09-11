@@ -1,11 +1,34 @@
+# Test database for the tfc_dart integration lane.
+#
+# Nothing here may pin a host-side name or number. Two worktrees running this
+# lane at the same time are the normal case, and every fixed identifier below
+# used to be a collision:
+#
+#   container_name: test-db   Container names are global to the Docker daemon,
+#                             so this defeated per-project scoping entirely.
+#   ports: 5432:5432          A fixed host port cannot be published twice.
+#
+# The host port comes from the environment instead: the fixture reserves one
+# free port per run and passes it as CENTROID_TEST_DB_PORT (see docker_compose.dart),
+# so it differs between concurrent runs but stays put for the whole of one run.
+# Letting Docker allocate an ephemeral port was tried first and is race-free,
+# but it moves every time the container is recreated, and the suites here
+# recreate it constantly -- a moving address broke set-up in five of them.
+# The container name comes from the per-process Compose project name, which the
+# fixture passes as `-p`. The default below is only for running this file by
+# hand; the fixture always sets the variable.
+#
+# `restart: unless-stopped` was dropped with the same change. Under a shared
+# project name there was one container to keep alive; under per-process names an
+# aborted run would leave a self-restarting container behind for every run. No
+# test depends on the policy -- outage simulation goes through the TCP proxy,
+# never through the container.
 services:
   timescaledb:
     image: timescale/timescaledb:latest-pg17
-    container_name: test-db
-    restart: unless-stopped
     environment:
       - POSTGRES_DB=testdb
       - POSTGRES_USER=testuser
       - POSTGRES_PASSWORD=testpass
     ports:
-      - 5432:5432
+      - "${CENTROID_TEST_DB_PORT:-5432}:5432"

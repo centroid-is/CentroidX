@@ -50,7 +50,7 @@ import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
@@ -155,11 +155,28 @@ const Set<String> _kSection1Methods = {
 /// site is *wired*, not as a site — and counting those would make the reverse
 /// direction pass on prose. The first column is where the document commits to
 /// a verdict for a file.
+/// The files the document gives a **verdict**, read from §2's and §3's table
+/// rows only.
+///
+/// The section filter is the fix for a defect this test's own sabotage found
+/// (2026-09-07): §4.3a's run-record table lists full paths in its first
+/// column, so with every `|` row counted, deleting a file's real §2 row left
+/// the forward reconciliation green — the run record was discharging the
+/// obligation to give the file a verdict. A record of a measurement is not a
+/// verdict, and §5's key reconciliation is not one either; only the tables of
+/// §2 (the verdicts) and §3 (the standing verdicts) may satisfy this check.
+/// The document's §1 states the same rule from its side.
 Set<String> _claimedFiles(String doc) {
   final pathPattern = RegExp('(?:lib|centroid-hmi/lib|demo|packages/[^/]+/lib)'
       r'/[^\s`,:|]+\.dart');
   final claimed = <String>{};
+  var inVerdictSection = false;
   for (final line in doc.split('\n')) {
+    if (line.startsWith('## ')) {
+      inVerdictSection = line.startsWith('## 2.') || line.startsWith('## 3.');
+      continue;
+    }
+    if (!inVerdictSection) continue;
     if (!line.startsWith('|')) continue;
     final cells = line.split('|');
     if (cells.length < 3) continue;

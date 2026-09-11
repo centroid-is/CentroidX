@@ -1,0 +1,11 @@
+# The chaos soak's journal: metrics.jsonl, events.jsonl, repro.log,
+# config.json, the per-panel frame dumps and the trip records. Written by
+# every soak run, uploaded as a CI artifact, and never committed — a green
+# run's journal is a baseline for reading the next red run's slopes, not a
+# thing the repository carries.
+#
+# The repository root already ignores `build/`, so this rule is not what keeps
+# the directory out of a commit. It is here because it is the package that
+# creates the directory, and the rule that lands in the same commit as the
+# first writer is the rule somebody finds when they wonder what build/soak is.
+build/soak/

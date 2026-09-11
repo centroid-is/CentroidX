@@ -8,7 +8,7 @@ import 'common.dart';
 import '../../providers/state_man.dart';
 import '../../widgets/panes/color_picker_dialog.dart';
 import 'package:tfc/converter/color_converter.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 part 'led.g.dart';
 

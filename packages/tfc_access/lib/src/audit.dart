@@ -4,6 +4,7 @@ import 'package:clock/clock.dart';
 import 'package:meta/meta.dart';
 
 import 'access_group.dart';
+import 'access_policy.dart';
 import 'access_role.dart';
 
 /// One row of the audit trail.
@@ -68,11 +69,16 @@ import 'access_role.dart';
 /// [itemKey] with its [member] suffix, so `user.role` on member `jon` reads
 /// correctly with no change there.
 ///
-/// `'admin'` is a private literal on this class, **not** a fourth
-/// `AccessSurface` value. `AccessSurface` is the type the policy answers
-/// questions about, and nothing ever gates on an admin row; adding it there
-/// would make `AccessSurface.byWireName` claim a surface the policy never
-/// consults. `'auth'` set that precedent and this follows it exactly.
+/// `'admin'` **is** an `AccessSurface` value as of plan 17-01
+/// ([AccessSurface.accessAdmin]), and [_adminSurface] reads it from there
+/// rather than repeating the literal. It was private until then, on the
+/// reasoning that nothing ever gates on an admin row — which stopped being
+/// true when `AccessPolicy.groupForAdmin` arrived, and was arguably never
+/// true, since these rows have always recorded `groupRequired: users`.
+///
+/// `'auth'` is still a private literal and still not an `AccessSurface`: it
+/// records an event, not a write somebody could be authorized for, so no
+/// policy member answers for it.
 ///
 /// ## What must not be in here
 ///
@@ -118,6 +124,9 @@ class AuditRecord {
     required String actionId,
     DateTime? at,
     String? reason,
+    // 'relay' when the gateway verified the sign-in server-side
+    // (session.login); the default is every direct-mode caller unchanged.
+    String origin = 'operator',
   }) =>
       AuditRecord(
         at: at ?? clock.now(),
@@ -129,6 +138,7 @@ class AuditRecord {
         newValue: roleName,
         groupRequired: '',
         allowed: true,
+        origin: origin,
         actionId: actionId,
         reason: reason,
       );
@@ -149,6 +159,8 @@ class AuditRecord {
     required String actionId,
     DateTime? at,
     String? reason,
+    // As on [AuditRecord.login]: 'relay' for a gateway-verified attempt.
+    String origin = 'operator',
   }) =>
       AuditRecord(
         at: at ?? clock.now(),
@@ -161,6 +173,7 @@ class AuditRecord {
         itemKey: 'login.failed',
         groupRequired: '',
         allowed: false,
+        origin: origin,
         actionId: actionId,
         reason: reason,
       );
@@ -174,6 +187,8 @@ class AuditRecord {
     required String actionId,
     DateTime? at,
     String? reason,
+    // As on [AuditRecord.login]: 'relay' for a gateway-side sign-out.
+    String origin = 'operator',
   }) =>
       AuditRecord(
         at: at ?? clock.now(),
@@ -185,6 +200,7 @@ class AuditRecord {
         oldValue: roleName,
         groupRequired: '',
         allowed: true,
+        origin: origin,
         actionId: actionId,
         reason: reason,
       );
@@ -570,12 +586,23 @@ class AuditRecord {
 
   /// The `surface` value shared by every admin row.
   ///
-  /// A private literal, deliberately, exactly as [_authSurface] is. `admin` is
-  /// **not** an `AccessSurface` value: that enum is what the policy answers
-  /// questions about, and the policy never gates on an admin row. Putting it
-  /// there would make `AccessSurface.byWireName` claim a surface nothing
-  /// consults.
-  static const String _adminSurface = 'admin';
+  /// **Taken from [AccessSurface.accessAdmin], not restated.** This was a
+  /// private literal until plan 17-01, on the reasoning that the policy never
+  /// gates on an admin row so putting `admin` in `AccessSurface` would claim a
+  /// surface nothing consults. That reasoning has expired: `groupForAdmin`
+  /// gates on exactly these rows. In truth it had already expired — every one
+  /// of the nine constructors below records `groupRequired: users`, which is a
+  /// grading, and until 17-01 there was nowhere for it to be declared.
+  ///
+  /// Reading the value off the enum rather than repeating `'admin'` is the
+  /// point: the surface a row is recorded under and the surface the policy is
+  /// asked about are now one string, so they cannot drift apart.
+  ///
+  /// [_authSurface] stays a private literal, and the precedent it set stands
+  /// for itself: signing in is an *event*, not a write somebody could be
+  /// authorized for, so no policy member answers for it and
+  /// `AccessSurface.byWireName('auth')` is still null.
+  static final String _adminSurface = AccessSurface.accessAdmin.wireName;
 
   /// The cap applied to the attempted username on a failed login.
   static const int maxAttemptedUsernameLength = 64;

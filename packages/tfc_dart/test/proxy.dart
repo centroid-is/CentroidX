@@ -14,7 +14,15 @@ import 'dart:io';
 ///   on Windows instead of ECONNREFUSED).
 class TcpProxy {
   final int listenPort;
-  final int targetPort;
+
+  /// Where accepted connections are forwarded. Mutable because the database it
+  /// points at is republished on a fresh host port every `docker compose up`,
+  /// while this proxy's own listening socket must stay put: callers hold the
+  /// listen port in a [DatabaseConfig] across restarts. Retargeting keeps one
+  /// socket bound for the life of the process instead of rebinding it, which is
+  /// what makes the listen port race-free (see [start]).
+  int targetPort;
+
   ServerSocket? _server;
   final List<_Pair> _pairs = [];
   bool _rejecting = false;
@@ -29,6 +37,9 @@ class TcpProxy {
   /// The actual port after [start] (OS-assigned when [listenPort] is 0).
   int get port => _server!.port;
 
+  /// Whether a listening socket is currently bound.
+  bool get isBound => _server != null;
+
   /// Client/server socket pairs the proxy is still holding open.
   ///
   /// Every connection to Postgres in these tests is really the proxy's own
@@ -40,6 +51,19 @@ class TcpProxy {
 
   bool get isRunning => _server != null && !_rejecting;
 
+  /// Binds the listening socket, once.
+  ///
+  /// With [listenPort] 0 this is **race-free, not merely unlikely to collide**:
+  /// the kernel assigns a free port and hands back the socket already bound to
+  /// it, and that same socket goes on to serve. There is no interval in which
+  /// the port is known but unowned, which is the flaw in the usual
+  /// bind-zero-read-close-rebind idiom -- there, anything on the machine may
+  /// take the port between the close and the rebind.
+  ///
+  /// The early return on an existing socket is what preserves the property
+  /// across a restart: repeated [start] calls never rebind, so the port a
+  /// caller was given stays valid. Only [shutdown] releases it, and the fixture
+  /// does that once, at process exit.
   Future<void> start() async {
     _rejecting = false;
     if (_server != null) return;

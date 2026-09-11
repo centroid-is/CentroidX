@@ -21,6 +21,7 @@ import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../helpers/test_helpers.dart';
+import '../helpers/themed_golden_host.dart';
 
 /// Wide enough for the section header to stay on one row (the header collapses
 /// below 500px), tall enough for three cards and the save button.
@@ -82,8 +83,11 @@ Future<void> _loadFonts() async {
         .load();
   }
 
-  // Material's default family, so ordinary labels render.
+  // Material's default family, so ordinary labels render — and the same
+  // face under the name the station themes ask for, so the themed dark
+  // golden is text rather than Ahem boxes.
   await load('Roboto', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
+  await load('roboto-mono', 'lib/fonts/roboto-mono/RobotoMono-Regular.ttf');
 
   // The drag handle itself is a Material icon.
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
@@ -173,8 +177,10 @@ void main() {
     await tester.pumpAndSettle();
   });
 
-  testWidgets('after — st301 is now first, unsaved badge showing',
-      (tester) async {
+  // The unsaved state no longer shows inside this frame: the one save
+  // button for the whole document sits at the bottom of the page (phase 2
+  // of quick/20260908-unify-config-ui), below this section framing.
+  testWidgets('after — st301 is now first', (tester) async {
     await _pumpSection(tester, _servers(3));
 
     // Drop it where the previous golden was carrying it. Driving the handle
@@ -201,5 +207,29 @@ void main() {
       (tester) async {
     await _pumpSection(tester, _servers(1));
     await _expectGolden(tester, 'server_reorder_single.png');
+  });
+
+  testWidgets('dark scheme — the list under the real station dark theme',
+      (tester) async {
+    // The bare-MaterialApp goldens above render the fallback light scheme;
+    // this arm pins the extracted editor under the themed dark scheme so a
+    // colour regression visible only on dark stations cannot hide.
+    await tester.binding.setSurfaceSize(_viewport);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await pumpAndLoad(
+        tester,
+        buildTestableServerConfig(
+            stateManConfig: _servers(3),
+            theme: themedGoldenTheme(dark: true)));
+
+    final page = tester.state<ScrollableState>(find.byType(Scrollable).first);
+    final headerY = tester.getTopLeft(find.text('OPC-UA Servers')).dy;
+    page.position.jumpTo(page.position.pixels + headerY - 12);
+    await settle(tester);
+
+    await _expectGolden(tester, 'server_reorder_dark.png');
   });
 }

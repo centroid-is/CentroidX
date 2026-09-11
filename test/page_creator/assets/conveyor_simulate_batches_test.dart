@@ -5,7 +5,7 @@ import 'package:tfc/page_creator/assets/conveyor.dart';
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc_dart/core/state_man.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 // Regression test: "Simulate batches" toggle must start the simulation timer
 // even when no PLC keys are configured.

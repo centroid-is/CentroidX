@@ -8,6 +8,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/ratio_number.dart';
 import 'package:tfc/providers/database.dart' show databaseProvider;
 import 'package:tfc_dart/core/database.dart' show Database;
+import 'package:tfc/providers/preferences.dart';
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 
 /// The accept/reject window's control bar.
 ///
@@ -23,6 +25,7 @@ void main() {
         // The view fetches on mount; parking the database leaves it on the
         // seeded (empty) queues, which is all a layout test needs.
         databaseProvider.overrideWith((ref) => Completer<Database?>().future),
+        localPreferencesProvider.overrideWithValue(InMemoryPreferences()),  // the transport row; empty == direct mode
       ],
       child: MaterialApp(
         home: Scaffold(
@@ -160,6 +163,7 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         databaseProvider.overrideWith((ref) => Completer<Database?>().future),
+        localPreferencesProvider.overrideWithValue(InMemoryPreferences()),  // the transport row; empty == direct mode
       ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,

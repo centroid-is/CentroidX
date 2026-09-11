@@ -78,10 +78,24 @@
 /// a different length assertion and a different menu, for no gain. An inert
 /// declaration is cheaper than a conditional invariant.
 ///
-/// **[kServerConfigRoute] is the only route exempt while the access
-/// repository is unavailable**, and it is exempt in *both* causes of that: a
-/// station never configured, and a configured station whose Postgres will not
-/// answer. `lib/providers/database.dart:33-42` cannot tell those apart — a
+/// **[kServerConfigRoute] is the only route exempt while nobody can sign in
+/// at this station**, and it is exempt in *both* causes of that in direct
+/// mode: a station never configured, and a configured station whose Postgres
+/// will not answer.
+///
+/// **A gateway panel is not one of those causes, and for one revision it was
+/// treated as one.** The exemption was keyed on "the access repository is
+/// unavailable", and a gateway panel has no repository by design, permanently
+/// — `databaseProvider` returns before reading a row whenever the transport is
+/// gateway — so a condition written for a transient outage held forever, on
+/// the page that edits the transport, the gateway address, the database
+/// settings and every PLC endpoint. Server Config was reachable at a gateway
+/// panel with nobody signed in. A panel that can sign in over the socket is
+/// now gated like every other raised route; the recovery case that argued for
+/// the blanket exemption — a mistyped gateway URL nobody can sign in to fix —
+/// is preserved on the honest condition instead, through
+/// `relayCanAuthenticateProvider` and `gatewayLinkCanAuthenticate`. See
+/// [routeAllowedWhenNobodyCanSignIn] and `lib/widgets/access_gate.dart`. `lib/providers/database.dart:33-42` cannot tell those apart — a
 /// failed connection is caught, retried in 2s and returned as `null`, a
 /// resolved `AsyncData(null)` indistinguishable from "no Postgres
 /// configured". The argument is exactly "you must be able to reach the page
@@ -168,7 +182,7 @@ import 'models/menu_item.dart';
 import 'route_registry.dart';
 
 /// The Server Config route — the one exemption while the access repository is
-/// unavailable. See [routeAllowedWhenRepositoryUnavailable].
+/// unavailable. See [routeAllowedWhenNobodyCanSignIn].
 const String kServerConfigRoute = '/advanced/server-config';
 
 /// The audit trail route — the only `users` entry, and deliberately **not**
@@ -186,7 +200,7 @@ const String kAuditTrailRoute = '/advanced/audit-trail';
 /// This is the page where an exemption would be worst, not merely
 /// inconsistent: with no repository there is no role table and no account
 /// list, so an exempt admin page would edit nothing while looking like it
-/// worked. See [routeAllowedWhenRepositoryUnavailable].
+/// worked. See [routeAllowedWhenNobodyCanSignIn].
 ///
 /// Named as a constant because two tests spell it and one of them asserts it
 /// equals `kAccessAdminGroup` in `lib/core/access_admin_store.dart`.
@@ -210,7 +224,7 @@ const Map<String, AccessGroup> kRaisedRoutes = {
   kAccessAdminRoute: AccessGroup.users,
 };
 
-/// Whether [path] stays reachable while the access repository is unavailable.
+/// Whether [path] stays reachable on a station where nobody can sign in.
 ///
 /// True for [kServerConfigRoute] and nothing else — not for the other raised
 /// routes, not for an unraised path, and not for null. Both the route gate
@@ -218,11 +232,22 @@ const Map<String, AccessGroup> kRaisedRoutes = {
 /// Server Config"; two copies is a lock on a page that opens, or an open page
 /// wearing a lock, the first time one of them is edited.
 ///
-/// The name states the condition it actually enforces. It was
-/// `routeAllowedWhenUnconfigured` for one revision, back when the exemption
-/// was narrower than the outage it now covers; a name that claims a narrower
-/// condition than the code enforces is its own defect.
-bool routeAllowedWhenRepositoryUnavailable(String? path) {
+/// **This answers only the path half.** Whether the *station* is in that state
+/// is `resolveAccessGate`'s question, and on a gateway panel it needs
+/// `relayCanAuthenticateProvider` to answer it. This function has never known
+/// anything but the path, which is exactly why the name has to be honest about
+/// what the answer is used for.
+///
+/// The name states the condition it actually enforces, and it has now been
+/// wrong in both directions. It was `routeAllowedWhenUnconfigured` for one
+/// revision, claiming a condition narrower than the code enforced. Then it was
+/// `routeAllowedWhenRepositoryUnavailable`, claiming one broader — and that
+/// name is what let a gateway panel, which has no repository *by design and
+/// permanently*, wear a database outage's exemption for its whole life. A name
+/// that claims a broader condition than the code should enforce is the same
+/// defect as one that claims a narrower one, and this one shipped an open
+/// Server Config to every gateway panel.
+bool routeAllowedWhenNobodyCanSignIn(String? path) {
   return path == kServerConfigRoute;
 }
 

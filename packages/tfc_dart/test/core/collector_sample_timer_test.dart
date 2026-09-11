@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
@@ -8,7 +8,7 @@ import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 Future<Collector> makeCollector() async {
-  final stateMan = await StateMan.create(
+  final stateMan = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []), keyMappings: KeyMappings(nodes: {}));
   final database = Database(AppDatabase.inMemoryForTest());
   return Collector(

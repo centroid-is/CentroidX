@@ -1,20 +1,23 @@
 import 'dart:io';
 import 'dart:async';
-import 'dart:convert';
 import 'package:drift/drift.dart' show QueryRow, Variable;
 import 'package:postgres/postgres.dart' as pg;
-import 'package:postgres/postgres.dart' show Endpoint, SslMode;
-import 'package:json_annotation/json_annotation.dart' as json;
 export 'package:postgres/postgres.dart' show Sql;
 import 'package:logger/logger.dart';
 import 'package:meta/meta.dart' show visibleForTesting;
 
-import 'secure_storage/secure_storage.dart';
+import 'database_config.dart';
 import 'database_drift.dart';
 import 'database_connections.dart';
-import '../converter/duration_converter.dart';
+import 'retention_policy.dart';
 
-part 'database.g.dart';
+/// The settings half of this library, kept compilable without `dart:ffi`.
+/// Re-exported so every existing importer of `core/database.dart` is unaffected.
+export 'database_config.dart';
+
+// Retention is a value type that clients without a database still parse.
+export 'retention_policy.dart';
+
 
 /// File-level logger. These diagnostics used to go to stderr, which in a
 /// windowed MSIX build with no console is discarded outright.
@@ -37,205 +40,6 @@ extension IntervalToDuration on pg.Interval {
   }
 }
 
-class EndpointConverter
-    implements json.JsonConverter<pg.Endpoint, Map<String, dynamic>> {
-  const EndpointConverter();
-
-  @override
-  pg.Endpoint fromJson(Map<String, dynamic> json) {
-    return pg.Endpoint(
-      host: json['host'] as String,
-      port: json['port'] as int,
-      database: json['database'] as String,
-      username: json['username'] as String?,
-      password: json['password'] as String?,
-      isUnixSocket: json['isUnixSocket'] as bool? ?? false,
-    );
-  }
-
-  @override
-  Map<String, dynamic> toJson(pg.Endpoint endpoint) => {
-        'host': endpoint.host,
-        'port': endpoint.port,
-        'database': endpoint.database,
-        'username': endpoint.username,
-        'password': endpoint.password,
-        'isUnixSocket': endpoint.isUnixSocket,
-      };
-}
-
-class SslModeConverter implements json.JsonConverter<pg.SslMode, String> {
-  const SslModeConverter();
-
-  @override
-  pg.SslMode fromJson(String json) {
-    return pg.SslMode.values.firstWhere(
-      (mode) => mode.name == json,
-      orElse: () => pg.SslMode.disable,
-    );
-  }
-
-  @override
-  String toJson(pg.SslMode mode) => mode.name;
-}
-
-@json.JsonSerializable()
-class DatabaseConfig {
-  @EndpointConverter()
-  pg.Endpoint? postgres;
-  @SslModeConverter()
-  pg.SslMode? sslMode;
-  bool debug = false;
-
-  /// Connections this process may pool for queries, or null for one.
-  ///
-  /// One is what a UI client needs and what the postgres package itself
-  /// defaults to. Only a process that genuinely drains several sources in
-  /// parallel -- the collector, roughly one connection per OPC UA server --
-  /// should raise it, and [resolvePoolSize] caps whatever is set here.
-  ///
-  /// This is the budget for work, and now also the pool size. The pool used to
-  /// be opened one wider, for the health monitor's standing connection; the
-  /// monitor no longer holds one. See [poolConnectionCount].
-  ///
-  /// [fromEnv] reads it from `CENTROID_DB_MAX_POOL_CONNECTIONS`
-  /// ([kMaxPoolConnectionsEnv]), which is how the collector sets it.
-  int? maxPoolConnections;
-
-  /// Pool connect timeout (not serialized to JSON).
-  @json.JsonKey(includeFromJson: false, includeToJson: false)
-  Duration connectTimeout;
-
-  /// Pool query timeout (not serialized to JSON).
-  @json.JsonKey(includeFromJson: false, includeToJson: false)
-  Duration queryTimeout;
-
-  /// What this process calls itself to the server (not serialized to JSON).
-  ///
-  /// Lands in `pg_stat_activity.application_name`, so `SELECT application_name,
-  /// count(*) FROM pg_stat_activity GROUP BY 1` on a live plant server says
-  /// which of the HMI, the collector and whatever else is holding sessions.
-  /// Untagged, every one of them shows up as an empty string and the only way
-  /// to tell them apart is by client port.
-  ///
-  /// Tests override it to a value unique per database so they can count their
-  /// own backends without also counting connections another suite in the same
-  /// `dart test` invocation still has open.
-  @json.JsonKey(includeFromJson: false, includeToJson: false)
-  String applicationName;
-
-  DatabaseConfig({
-    this.postgres,
-    this.sslMode,
-    this.debug = false,
-    this.maxPoolConnections,
-    this.connectTimeout = const Duration(seconds: 5),
-    this.queryTimeout = const Duration(seconds: 30),
-    this.applicationName = 'tfc_dart',
-  });
-
-  factory DatabaseConfig.fromJson(Map<String, dynamic> json) =>
-      _$DatabaseConfigFromJson(json);
-
-  Map<String, dynamic> toJson() => _$DatabaseConfigToJson(this);
-
-  static const _configLocation = 'database_config';
-
-  static Future<DatabaseConfig> fromEnv() async {
-    if (Platform.environment['CENTROID_PGHOST'] == null) {
-      throw Exception("Please provide environment variable CENTROID_PGHOST");
-    }
-    final host = Platform.environment['CENTROID_PGHOST']!;
-    final port =
-        int.tryParse(Platform.environment['CENTROID_PGPORT'] ?? '') ?? 5432;
-    final database = Platform.environment['CENTROID_PGDATABASE'] ?? 'hmi';
-    final username = Platform.environment['CENTROID_PGUSER'];
-    final password = Platform.environment['CENTROID_PGPASSWORD'];
-    final sslModeStr = Platform.environment['CENTROID_PGSSLMODE'];
-    final debug = Platform.environment['CENTROID_DB_DEBUG'] == 'true';
-
-    final sslMode = sslModeStr != null
-        ? pg.SslMode.values.firstWhere(
-            (mode) => mode.name == sslModeStr,
-            orElse: () => pg.SslMode.disable,
-          )
-        : pg.SslMode.disable;
-
-    return DatabaseConfig(
-      postgres: pg.Endpoint(
-        host: host,
-        port: port,
-        database: database,
-        username: username,
-        password: password,
-      ),
-      sslMode: sslMode,
-      debug: debug,
-      // The only way anything sets this. The collector -- the one process the
-      // doc on [maxPoolConnections] says should raise it -- is configured
-      // entirely from the environment, so without this the escape hatch was
-      // documented but unreachable.
-      maxPoolConnections: maxPoolConnectionsFromEnv(Platform.environment),
-    );
-  }
-
-  /// Process-wide cache of the raw config JSON read from secure storage.
-  ///
-  /// [fromPrefs] sits on the `databaseProvider` rebuild path, which retries
-  /// every 2 s while the database is unreachable — without a cache each
-  /// retry is a keychain hit for the postgres password. Stores the read
-  /// *future* so overlapping reads deduplicate; a failed read is evicted so
-  /// the next call retries; [toPrefs] writes through. Tests that swap the
-  /// [SecureStorage] instance should call [clearPrefsCache].
-  static Future<String?>? _configJsonCache;
-
-  /// Clears the process-wide config cache. Intended for tests.
-  static void clearPrefsCache() => _configJsonCache = null;
-
-  static Future<String?> _readConfigJson() {
-    final cached = _configJsonCache;
-    if (cached != null) {
-      return cached;
-    }
-    final future = SecureStorage.getInstance().read(key: _configLocation);
-    _configJsonCache = future;
-    future.then((_) {}, onError: (Object _) {
-      if (identical(_configJsonCache, future)) {
-        _configJsonCache = null;
-      }
-    });
-    return future;
-  }
-
-  static Future<DatabaseConfig> fromPrefs() async {
-    var configJson = await _readConfigJson();
-    DatabaseConfig config;
-    if (configJson == null) {
-      // If not found, create default config
-      config = DatabaseConfig(
-          postgres: null); // Or provide a default Endpoint if needed
-      configJson = jsonEncode(config.toJson());
-      await SecureStorage.getInstance()
-          .write(key: _configLocation, value: configJson);
-      _configJsonCache = Future.value(configJson);
-    } else {
-      config = DatabaseConfig.fromJson(jsonDecode(configJson));
-    }
-    return config;
-  }
-
-  Future<void> toPrefs() async {
-    final prefs = SecureStorage.getInstance();
-    final configJson = jsonEncode(toJson());
-    await prefs.write(key: _configLocation, value: configJson);
-    _configJsonCache = Future.value(configJson);
-  }
-
-  @override
-  String toString() {
-    return "DatabaseConfig(${jsonEncode(toJson())})";
-  }
-}
 
 class DatabaseException implements Exception {
   DatabaseException(this.message);
@@ -280,128 +84,6 @@ const int kMaxQueuedRowsPerTable = 10000;
 /// like any other drop rather than being silent.
 const int kMaxQueuedRowsTotal = 200000;
 
-/// The longest retention anything may ask for: ten years.
-///
-/// Also the number the UI clamps to. It is not an arbitrary round figure — it
-/// has to stay well below [kLegacyMicrosecondCutoffMinutes] so that no value an
-/// operator can enter is ever mistaken for a legacy microsecond value. See the
-/// cutoff's own documentation for the two populations involved.
-const int kMaxRetentionDays = 3650;
-
-/// The shortest retention that will be installed.
-///
-/// This guard exists to catch a **unit-conversion artifact**, not to second-
-/// guess an operator who wants a short window. That distinction sets the
-/// threshold, and it is why this is a minute rather than an hour.
-///
-/// The defect was a cliff in [durationFromMinutesTolerant]: a `drop_after_min`
-/// above the cutoff is re-read as *microseconds*, so a retention typed in days
-/// came back as a fraction of a minute. The artifacts it produces are bounded
-/// and land firmly in the seconds range. With the cutoff at fifty years
-/// (26 280 000 minutes), a stored value is only misread when the typed day
-/// count exceeds 18 250, and the misread duration is `days × 1440`
-/// *microseconds*:
-///
-///   * 18 251 days (just over the cutoff) -> 26.3 s
-///   * 36 500 days (a hundred years, a plausible fat-finger) -> 52.6 s
-///   * the originally reported 3651 days, under the old cutoff -> 5.26 s
-///
-/// Every one is under a minute, so a one-minute floor rejects all of them, and
-/// zero and negative with them.
-///
-/// An hour was the first choice here and it was wrong: it rejected a ten-minute
-/// retention, which is a perfectly reasonable window for a high-rate diagnostic
-/// tag — a vibration or current trace sampled at 100 Hz — and which the
-/// integration suite legitimately uses. "Nothing legitimate asks for it" was an
-/// assumption, and the test suite was evidence against it.
-///
-/// Policy about what an operator may *choose* lives in the UI, which clamps the
-/// retention field to 1..[kMaxRetentionDays] days. This constant is the
-/// narrower backstop for values already on disk, and it should stay narrow:
-/// every minute of headroom it takes away is a configuration somebody might
-/// legitimately need.
-const Duration kMinRetentionDuration = Duration(minutes: 1);
-
-/// Tables the retention machinery must never be pointed at.
-///
-/// These are the access-control tables from schema v6. `audit_entry` is the
-/// audit trail — append-only, never pruned — and `app_user` / `app_role` are
-/// the identities the trail refers to; a swept role table turns every historic
-/// row into a name with nothing behind it.
-///
-/// [Database.registerRetentionPolicy] refuses any of these by name. See that
-/// method for why the refusal lives there rather than in a test.
-const Set<String> kRetentionExemptTables = {
-  'audit_entry',
-  'app_user',
-  'app_role',
-};
-
-// https://docs.tigerdata.com/api/latest/data-retention/add_retention_policy/
-@json.JsonSerializable(explicitToJson: true)
-class RetentionPolicy {
-  @DurationMinutesConverterNonNull()
-  @json.JsonKey(name: 'drop_after_min')
-  final Duration
-      dropAfter; // Chunks fully older than this interval when the policy is run are dropped
-  @DurationMinutesConverter()
-  @json.JsonKey(name: 'schedule_interval_min')
-  final Duration?
-      scheduleInterval; // The interval between the finish time of the last execution and the next start. Defaults to NULL.
-
-  const RetentionPolicy({required this.dropAfter, this.scheduleInterval});
-
-  /// Whether this policy is safe to install.
-  ///
-  /// A [dropAfter] under [kMinRetentionDuration] — including zero and negative,
-  /// which the retention field accepted without complaint — deletes the history
-  /// rather than bounding it.
-  bool get isUsable => dropAfter >= kMinRetentionDuration;
-
-  /// Reads a stored policy, capping a [dropAfter] that is longer than
-  /// [kMaxRetentionDays].
-  ///
-  /// The cap matters for configs that are already on disk. A station that was
-  /// given 3651 days wrote 5_257_440 into `drop_after_min`, one minute-count
-  /// past the old microsecond cutoff, and every start since has read it back as
-  /// 5.26 *seconds*. Moving the cutoff restores the operator's meaning — 3651
-  /// days — and this cap then brings it inside the supported range instead of
-  /// letting an out-of-range number back into the system.
-  ///
-  /// Values *below* the minimum are deliberately left alone rather than raised
-  /// to some default. A retention nobody chose is a retention nobody can be
-  /// held to; these are refused at the point of installation instead, which
-  /// leaves whatever policy the table already has untouched and deletes
-  /// nothing. See [isUsable] and [AppDatabase.updateRetentionPolicy].
-  factory RetentionPolicy.fromJson(Map<String, dynamic> json) {
-    final p = _$RetentionPolicyFromJson(json);
-    const max = Duration(days: kMaxRetentionDays);
-    if (p.dropAfter <= max) return p;
-    Database.logger.w(
-        'Retention of ${p.dropAfter.inDays} days is longer than the supported '
-        'maximum of $kMaxRetentionDays days; using $kMaxRetentionDays days.');
-    return RetentionPolicy(
-        dropAfter: max, scheduleInterval: p.scheduleInterval);
-  }
-
-  Map<String, dynamic> toJson() => _$RetentionPolicyToJson(this);
-
-  @override
-  bool operator ==(Object other) {
-    if (other is RetentionPolicy) {
-      return dropAfter == other.dropAfter &&
-          scheduleInterval == other.scheduleInterval;
-    }
-    return false;
-  }
-
-  @override
-  int get hashCode => dropAfter.hashCode ^ scheduleInterval.hashCode;
-
-  @override
-  String toString() =>
-      'RetentionPolicy(dropAfter: $dropAfter, scheduleInterval: $scheduleInterval)';
-}
 
 class _PendingWrite {
   final DateTime time;
@@ -434,12 +116,56 @@ class ValueColumnType {
   const ValueColumnType(this.dataType, this.udtName);
 }
 
+/// The bucket width, in milliseconds, that fits a [rangeMs] window into at
+/// most [numBuckets] buckets.
+///
+/// `floor + 1`, not `ceil`, and the difference is one whole bucket — three
+/// rows — in the one case the obvious spelling gets wrong. The upper bound of
+/// the query's window is **inclusive** (`time <= $3`), so a window whose span
+/// divides exactly by the width has a sample sitting on the far boundary, and
+/// that sample opens a bucket of its own: `ceil(500000 / 10) = 50000` puts the
+/// 500-second window's last sample in an eleventh bucket, 33 rows for a
+/// `maxPoints` of 30. Adding one millisecond makes the width strictly greater
+/// than `rangeMs / numBuckets`, so `rangeMs / bucketMs < numBuckets` and the
+/// inclusive endpoint lands in the last bucket rather than after it.
+///
+/// The guarantee is `floor(rangeMs / bucketMs) + 1 <= numBuckets`, i.e. the
+/// window touches at most [numBuckets] boundaries — given that the buckets are
+/// aligned to the window start, which is what the origin argument in
+/// [buildDownsampleSql] is for. The two are one property split across two
+/// languages; neither is sufficient alone.
+@visibleForTesting
+int downsampleBucketMs(int rangeMs, int numBuckets) =>
+    (rangeMs / numBuckets).floor() + 1;
+
 /// Builds the min/max/last downsampling SQL used by
 /// [Database.queryTimeseriesDataDownsampled].
 ///
 /// [quotedTable] must already have its embedded double quotes doubled; it is
 /// interpolated inside `"..."`. The statement takes three positional
 /// parameters: `$1` the bucket interval, `$2`/`$3` the inclusive time bounds.
+///
+/// `$2` is passed to `time_bucket` a second time, as its **origin**. Without
+/// it, `time_bucket(width, time)` aligns buckets to a fixed origin of its own
+/// — the epoch, for sub-day widths — and a window that is exactly N intervals
+/// wide but does not *begin* on one of those boundaries spans N+1 buckets.
+/// Since each bucket contributes three rows, the caller's `maxPoints` was
+/// exceeded by three whenever the window happened to be misaligned, which is
+/// almost always. Measured on TimescaleDB 2.x / pg17, one-second samples over
+/// `06:00:00Z .. 06:08:19Z` at a width of 31188 ms: 17 distinct buckets
+/// epoch-aligned, the first of them labelled `05:59:59.976` — before the
+/// window opens — against 16 buckets when the window start is the origin.
+///
+/// The `LEAST(..., $3)` on the two derived labels is the other half of
+/// staying inside the window. The three rows of a bucket are labelled at its
+/// start, its midpoint and its end so that they spread across the bucket
+/// rather than piling up on one instant, but the end of the bucket that
+/// straddles the window's upper bound lies *past* that bound: same numbers as
+/// above, the last bucket is labelled `06:08:19.008` for a window ending at
+/// `06:08:19`. Clamping only ever moves a label that would otherwise fall
+/// outside the range the caller asked for, and it is what makes the newest
+/// point land on the window end, where a chart's axis ends and where an
+/// operator reads the current value.
 ///
 /// The per-bucket "last" value is TimescaleDB's `last(value, time)`, **not**
 /// `(array_agg(value ORDER BY time DESC))[1]`. The two are equivalent — both
@@ -473,7 +199,7 @@ String buildDownsampleSql(
         ),
         agg AS (
           SELECT
-            time_bucket($1::interval, time) AS bucket,
+            time_bucket($1::interval, time, $2::timestamptz) AS bucket,
             idx,
             min(val)                                   AS min_val,
             max(val)                                   AS max_val,
@@ -483,16 +209,16 @@ String buildDownsampleSql(
         )
         SELECT bucket AS time, array_agg(min_val ORDER BY idx) AS value FROM agg GROUP BY bucket
         UNION ALL
-        SELECT bucket + $1::interval * 0.5, array_agg(max_val ORDER BY idx) FROM agg GROUP BY bucket
+        SELECT LEAST(bucket + $1::interval * 0.5, $3::timestamptz), array_agg(max_val ORDER BY idx) FROM agg GROUP BY bucket
         UNION ALL
-        SELECT bucket + $1::interval, array_agg(last_val ORDER BY idx) FROM agg GROUP BY bucket
+        SELECT LEAST(bucket + $1::interval, $3::timestamptz), array_agg(last_val ORDER BY idx) FROM agg GROUP BY bucket
         ORDER BY 1
       ''';
   }
   return r'''
         WITH agg AS (
           SELECT
-            time_bucket($1::interval, time) AS bucket,
+            time_bucket($1::interval, time, $2::timestamptz) AS bucket,
             min(value)                                   AS min_val,
             max(value)                                   AS max_val,
             last(value, time)                            AS last_val
@@ -504,9 +230,9 @@ String buildDownsampleSql(
         )
         SELECT bucket              AS time, min_val  AS value FROM agg
         UNION ALL
-        SELECT bucket + $1::interval * 0.5,  max_val  AS value FROM agg
+        SELECT LEAST(bucket + $1::interval * 0.5, $3::timestamptz),  max_val  AS value FROM agg
         UNION ALL
-        SELECT bucket + $1::interval,         last_val AS value FROM agg
+        SELECT LEAST(bucket + $1::interval, $3::timestamptz),         last_val AS value FROM agg
         ORDER BY 1
       ''';
 }
@@ -1504,8 +1230,12 @@ class Database {
   /// For each bucket, returns 3 points: min value, max value, and last value,
   /// preserving spikes and step changes while reducing density.
   ///
-  /// The bucket interval is auto-calculated from the time range and [maxPoints]:
-  ///   bucketInterval = (to - from) / (maxPoints / 3)
+  /// The bucket interval is auto-calculated from the time range and
+  /// [maxPoints] by [downsampleBucketMs], and the result is guaranteed to hold
+  /// at most [maxPoints] rows. That bound is the reason this method exists
+  /// apart from [queryTimeseriesData], and it is joint work between the width
+  /// computed here and the origin passed to `time_bucket` in
+  /// [buildDownsampleSql] — see both for the two ways it used to be exceeded.
   ///
   /// Supports scalar numeric columns (DOUBLE PRECISION, INTEGER) and
   /// numeric array columns (DOUBLE PRECISION[]). For unsupported column types
@@ -1528,7 +1258,7 @@ class Database {
       return queryTimeseriesData(tableName, endTime, from: startTime);
     }
 
-    final bucketMs = (rangeMs / numBuckets).ceil();
+    final bucketMs = downsampleBucketMs(rangeMs, numBuckets);
     final intervalStr = '$bucketMs milliseconds';
     final quotedTable = tableName.replaceAll('"', '""');
 

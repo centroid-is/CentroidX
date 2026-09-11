@@ -67,6 +67,27 @@ dependencies:
   # of the relay server and a later web client.
   tfc_access:
     path: packages/tfc_access
+  # The panel side of the relay pipe: `RemoteStateMan` over WebSocket +
+  # JSON-RPC. Pure Dart with no Flutter and no open62541, which is why it can
+  # be added here without touching the native-asset build. Its own dev
+  # dependencies — the gateway and the contract kit, both of which bind ports —
+  # are dev-only in that package and so do not reach this solve.
+  tfc_relay_client:
+    path: packages/tfc_relay_client
+  # Named directly as well as reached through the client, because the adapter
+  # in `lib/core/gateway_state_man.dart` switches on `WriteResult`'s variants
+  # and translates the protocol's `DynamicValue` into open62541's. An implicit
+  # transitive dependency is one `dart pub get` away from being an unresolved
+  # import.
+  tfc_relay_protocol:
+    path: packages/tfc_relay_protocol
+  # Named directly for the same reason tfc_relay_protocol is above: 17-12's
+  # `lib/core/relayed_access_stores.dart` catches `RpcException` to map a
+  # domain-coded protocol error back onto tfc_dart's exception types, and the
+  # type is json_rpc_2's own — nothing re-exports it. Already in this solve
+  # transitively through tfc_relay_client; declaring it keeps
+  # depend_on_referenced_packages honest.
+  json_rpc_2: ^4.1.0
   # Pinned: newer mcp_dart (2.4.0 observed, 2026-08) removes server-initiated
   # elicitation ("elicitation/create is a legacy server-initiated
   # interaction"), which ElicitationRiskGate depends on. Migrate to stateless
@@ -148,8 +169,26 @@ flutter:
 
 
 dependency_overrides:
-#   open62541:
-#     path: ../open62541_bindings
+  open62541:
+    git:
+      url: https://github.com/centroid-is/open62541_dart.git
+      # `web-types`: `monitor-quality-sourcetime` — 1.5.7+3 (main) plus the
+      # relay-quality work, i.e. DynamicValue.statusCode / .sourceTimestamp and
+      # the opt-in `deliverBadStatus` on monitor()/monitoredItems(), which
+      # PIPE-11 needs for real source timestamps — plus the NodeId split that
+      # gives the package an FFI-free `open62541_types.dart`. That barrel is
+      # what makes a web build possible at all: `DynamicValue` used to reach
+      # `dart:ffi` through node_id.dart, which is a hard compile error under
+      # dart2js. Import `open62541_types.dart` for values, `open62541.dart`
+      # only where a real OPC UA client is used.
+      #
+      # Pinned to a SHA, not the branch: pubspec.lock is gitignored here. Every
+      # open62541 override in this repo carries THIS SHA (root, centroid-hmi,
+      # packages/tfc_dart, packages/jbtm, packages/tfc_relay_local,
+      # packages/tfc_mcp_server) — two packages in one process resolving two
+      # different open62541 builds is not a state this repository should ever
+      # be in.
+      ref: 2ff18e4ee0af759cba4258a02648889bbbd526ae
   postgres:
     git:
       url: https://github.com/centroid-is/postgresql-dart.git

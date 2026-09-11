@@ -1,0 +1,65 @@
+name: tfc_relay_client
+description: >-
+  The panel side of the pipe: RemoteStateMan, the StateManApi implementation
+  that speaks WebSocket + JSON-RPC to the gateway. Same two constraints as the
+  server package. First, the shared contract test kit and the gateway itself
+  bind real ports and pull package:test in as real dependencies, so both are
+  dev dependencies only — nothing that binds a port belongs in a production
+  solve. Second, this package is pure Dart with no Flutter: mirrors and
+  `dart test` have to work, because the Flutter adapter is a later milestone
+  and dragging analyzer into the app's version solve is the analyzer-cap
+  blocker that has stopped this repo twice in twelve months.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  # The JSON-RPC 2.0 envelope both ends already speak. Peer is bidirectional
+  # and, deliberately, neither queues nor retries — which is the write-safety
+  # property this client is built on, not an omission. It also has no
+  # per-request deadline (04-RESEARCH Finding 1), which is why the client owns
+  # one at the call site.
+  json_rpc_2: ^4.1.0
+  # The channel abstraction Peer is wired over. The client's WS adapter builds
+  # a StreamChannel<String> by hand rather than using `.cast()` — cast() locks
+  # the sink for the connection's life, and this side reconnects.
+  stream_channel: ^2.1.4
+  # The client socket itself, behind a thin adapter that isolates its known
+  # bugs (null closeCode after self-initiated close, readyState lying after OS
+  # sleep). STACK names the adapter as the mitigation.
+  web_socket_channel: ^3.0.3
+  # The wire shapes, the DTOs and the pure cores this client decodes into.
+  tfc_relay_protocol: {path: ../tfc_relay_protocol}
+  # The master access-control vocabulary, needed here for exactly one type:
+  # `AccessDenied`, the exception a gateway refusal is re-raised as so a screen
+  # cannot tell which transport refused it (D-09). The edge was already in this
+  # package's solve transitively through tfc_relay_protocol (17-03's first
+  # runtime dependency); it is declared directly because lib/ names the type.
+  # Safe on 17-03's four grounds: pure Dart (that package's own
+  # package_purity_test.dart enforces it); four leaf deps already in this
+  # repository's solve; a path dependency, so nothing is fetched from a
+  # registry and no package-legitimacy question arises (T-17-SC); and the
+  # reverse edge stays forbidden — tfc_access must never depend on a relay
+  # package.
+  tfc_access: {path: ../tfc_access}
+
+dev_dependencies:
+  # Same analyzer-recommended lint set as the other three relay packages.
+  lints: ^4.0.0
+  # The suite runner. It stays on this side of the line for the reason in the
+  # description above.
+  test: ^1.25.0
+  # The shared 44-check contract suite plus the socket fault kit, run against
+  # RemoteStateMan. It binds ports; dev-only is not negotiable.
+  tfc_stateman_contract: {path: ../tfc_stateman_contract}
+  # The real peer for the WS leg: the contract legs run this client against the
+  # actual gateway on an ephemeral port, not a mock. Dev-only for the same
+  # reason — it binds ports and carries package:test through its own kit.
+  #
+  # This edge is the new package dependency this phase creates, and the
+  # direction is deliberate and permitted: the standing ban asserted by the
+  # gateway's own test/handler_table_test.dart:253-266 is contract -> server,
+  # and this is client -> server.
+  tfc_relay_server: {path: ../tfc_relay_server}

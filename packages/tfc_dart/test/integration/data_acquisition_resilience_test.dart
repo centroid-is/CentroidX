@@ -49,7 +49,7 @@ void main() {
           () async {
         // Arrange
         const tableName = 'resilience_test_1';
-        final stateMan = await StateMan.create(
+        final stateMan = await OpcUaStateMan.create(
           config: StateManConfig(opcua: []),
           keyMappings: KeyMappings(nodes: {}),
         );
@@ -113,7 +113,7 @@ void main() {
         // retry queue overflow.  With maxRetries: 1 on auto-flush, failed
         // flushes complete instantly (one attempt, no backoff delay).
         const tableName = 'resilience_test_2';
-        final stateMan = await StateMan.create(
+        final stateMan = await OpcUaStateMan.create(
           config: StateManConfig(opcua: []),
           keyMappings: KeyMappings(nodes: {}),
         );
@@ -296,7 +296,7 @@ void main() {
 
       test('WHEN dispose is called THEN pending data is flushed', () async {
         const tableName = 'dispose_flush_test';
-        final stateMan = await StateMan.create(
+        final stateMan = await OpcUaStateMan.create(
           config: StateManConfig(opcua: []),
           keyMappings: KeyMappings(nodes: {}),
         );

@@ -4,11 +4,15 @@ import 'package:tfc_dart/core/preferences.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../core/gateway_config.dart';
 import '../core/preferences.dart';
+import '../core/relayed_preferences.dart';
 import '../core/startup_url.dart';
 import 'access.dart';
 import 'access_policy.dart';
 import 'database.dart';
+import 'gateway.dart';
+import 'gateway_preferences_slot.dart';
 
 part 'preferences.g.dart';
 
@@ -34,10 +38,48 @@ PreferencesApi createDeviceLocalPreferences() =>
 /// the app without changing a single call site.
 @Riverpod(keepAlive: true)
 Future<Preferences> preferences(Ref ref) async {
-  final db = await ref.watch(databaseProvider.future);
+  // The transport branch, and it must sit HERE, not merely inside
+  // `databaseProvider`: this provider is `keepAlive` and watched by
+  // everything, so a watch on `databaseProvider` is what used to pull the
+  // station's Postgres pool up at boot in gateway mode with no screen asking.
+  // In gateway mode the dependency does not exist — not "exists but answers
+  // null" — which is what `database_transport_test.dart` pins by overriding
+  // `databaseProvider` to throw and building this provider anyway (17-12's
+  // technique). The shared store then runs on the device-local mirror the
+  // sync path already maintains.
+  //
+  // `ref.read` on the transport for the reason `database.dart` gives at its
+  // own branch: restart-to-apply, and a save on the server-config page
+  // invalidates `gatewayConfigProvider` without meaning to rebuild the world.
+  // The catch is `readGatewayConfig`'s own policy — direct in every direction.
+  GatewayConfig gateway;
+  try {
+    gateway = await ref.read(gatewayConfigProvider.future);
+  } catch (_) {
+    gateway = GatewayConfig.defaults;
+  }
+  final db =
+      gateway.isGateway ? null : await ref.watch(databaseProvider.future);
   final localCache = createDeviceLocalPreferences();
 
-  final inner = await Preferences.create(db: db, localCache: localCache);
+  final local = await Preferences.create(db: db, localCache: localCache);
+
+  // In gateway mode the shared store is the **backend's**, reached over the
+  // one pipe this panel holds. Before 18-xx it was this station's own mirror,
+  // so an alarm rule edited here never left the panel and two panels held two
+  // rule sets with nothing reporting it. [RelayedPreferences] documents which
+  // calls still go to `local` — secrets, this station's own settings, and the
+  // one bootstrap key — and why each of them must.
+  //
+  // The client does not exist yet: `stateManProvider` builds it and it awaits
+  // *this* provider to do so, so the route is a slot it fills afterwards
+  // rather than a watch, which would deadlock. See [GatewayPreferencesSlot].
+  final inner = gateway.isGateway
+      ? RelayedPreferences(
+          inner: local,
+          slot: ref.watch(gatewayPreferencesSlotProvider),
+        )
+      : local;
 
   final guarded = GuardedPreferences(
     inner: inner,
@@ -63,10 +105,30 @@ Future<Preferences> preferences(Ref ref) async {
   // working again — the exact bug #354 fixed. It still produces one audit row,
   // marked `origin: 'system'`, which is how the mcp.config migration is
   // recorded too.
-  await migrateStartupUrlToDeviceLocal(
-    shared: guarded.systemWrites,
-    local: localCache,
-  );
+  //
+  // **Direct mode only.** The migration exists because `syncToLocalCache`
+  // copies every shared row over the local store, so a stray shared
+  // `startup_url` permanently overwrites each station's own choice.
+  // `RelayedPreferences` performs no such sync, and it routes `startup_url` to
+  // this station by name, so on that transport the hazard is structurally
+  // absent and there is nothing to migrate.
+  //
+  // Being precise about what this guard is worth, because it is easy to
+  // overstate: **removing it changes no observable behaviour today.** Both
+  // sides of the migration resolve to the same device-local store on this
+  // transport, so it would read a value, delete it and write it straight back
+  // — churn on every reconnect, and nothing else. What the guard buys is that
+  // if `startup_url` ever stopped being device-local, this would not quietly
+  // become a panel reaching across and deleting the backend's row.
+  //
+  // Deleting a stray row from the shared database remains a direct-mode
+  // station's job, exactly as before.
+  if (!gateway.isGateway) {
+    await migrateStartupUrlToDeviceLocal(
+      shared: guarded.systemWrites,
+      local: localCache,
+    );
+  }
 
   return guarded;
 }

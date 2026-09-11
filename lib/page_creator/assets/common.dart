@@ -16,8 +16,12 @@ import 'package:tfc_dart/core/fuzzy_match.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 import 'package:tfc_dart/core/collector.dart';
-import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
+// RetentionPolicy only, from its own pure file. `core/database.dart` re-exports
+// it but also carries the drift-backed runtime, and every HMI asset imports
+// this file — so that one convenience import put `dart:ffi` in the closure of
+// the entire page editor.
+import 'package:tfc_dart/core/retention_policy.dart';
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
 import '../../providers/state_man.dart';
 import '../../providers/preferences.dart';
@@ -1329,7 +1333,7 @@ class _KeyMappingEntryDialogState extends ConsumerState<KeyMappingEntryDialog> {
   Future<void> _loadConfig() async {
     try {
       final prefs = await ref.read(preferencesProvider.future);
-      final config = await StateManConfig.fromPrefs(prefs);
+      final config = await StateManConfigStorage.fromPrefs(prefs);
       if (mounted) {
         setState(() {
           _config = config;

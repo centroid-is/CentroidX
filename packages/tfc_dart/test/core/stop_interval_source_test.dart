@@ -15,11 +15,21 @@ AlarmRule rule(AlarmLevel level) => AlarmRule(
 
 /// An activation of [uid], started at [from] and cleared at [to] (null = still
 /// standing), shaped the way AlarmMan hands it over.
+///
+/// Every call builds **fresh** objects. That matters from 14-06 onwards: the
+/// history half is decoded out of `alarm_history` and the live half arrives
+/// off the pipe, so the same activation is two different instances and an
+/// identity-keyed dedupe cannot see that they are one thing.
+/// [start] overrides [from] when the arm cares about the exact instant — the
+/// sub-millisecond and time-zone-mode arms below, where `at(minutes)` cannot
+/// express what the two halves really carry.
 AlarmActive activation(
   String uid, {
   required int from,
   int? to,
   AlarmLevel level = AlarmLevel.error,
+  int? ruleIndex = 0,
+  DateTime? start,
 }) {
   final config = AlarmConfig(
     uid: uid,
@@ -34,7 +44,8 @@ AlarmActive activation(
       active: to == null,
       expression: null,
       rule: rule(level),
-      timestamp: at(from),
+      timestamp: start ?? at(from),
+      ruleIndex: ruleIndex,
     ),
     deactivated: to == null ? null : at(to),
   );
@@ -165,6 +176,183 @@ void main() {
           StopIntervalSource.fromAlarms(history: const [], active: const []);
       expect(source.all, isEmpty);
       expect(source.hasOpen, isFalse);
+    });
+  });
+
+  group('the dedupe is keyed by value, not by identity (D-12)', () {
+    test('the same activation from both sources is counted once', () {
+      // 14-06 writes a row the moment an alarm goes off, so a standing alarm
+      // is now in `alarm_history` (open, no deactivation time) AND in the
+      // live active set — as two different objects, decoded from two
+      // different places. Under the old identity dedupe every live alarm in
+      // the plant would be drawn twice (P-8).
+      final fromDb = activation('CN04.MOT01', from: 0);
+      final fromPipe = activation('CN04.MOT01', from: 0);
+      expect(identical(fromDb, fromPipe), isFalse,
+          reason: 'the premise of the arm: two instances, one activation');
+
+      final source = StopIntervalSource.fromAlarms(
+        history: [fromDb],
+        active: [fromPipe],
+      );
+
+      expect(source.all, hasLength(1));
+      expect(source.closed, hasLength(1),
+          reason: 'the history record wins, as it always did');
+      expect(source.open, isEmpty);
+    });
+
+    test('two genuinely different activations of one alarm are both kept', () {
+      // The dedupe must not become a swallow: the same motor tripping twice
+      // in a shift is two stops, and a Pareto that counted it once would
+      // under-report the thing it exists to find.
+      final source = StopIntervalSource.fromAlarms(
+        history: [activation('CN04.MOT01', from: 0, to: 10)],
+        active: [activation('CN04.MOT01', from: 30)],
+      );
+      expect(source.all, hasLength(2));
+      expect(source.all.map((e) => e.start), [at(0), at(30)]);
+    });
+
+    test('two rules of one alarm active at once are both kept', () {
+      // Same uid, same instant, different rule. `ruleIndex` is the third
+      // element of the key for exactly this case — 14-01's partial unique
+      // index is on `(alarm_uid, rule_index)` for the same reason.
+      final source = StopIntervalSource.fromAlarms(
+        history: [activation('CN04.MOT01', from: 0, ruleIndex: 0)],
+        active: [activation('CN04.MOT01', from: 0, ruleIndex: 1)],
+      );
+      expect(source.all, hasLength(2));
+      expect(source.closed, hasLength(1));
+      expect(source.open, hasLength(1));
+    });
+
+    test('null ruleIndex on both sides still dedupes on (uid, start)', () {
+      // A pre-v7 row states no rule index, and neither does a fixture. Legacy
+      // rows must not multiply just because they are old.
+      final source = StopIntervalSource.fromAlarms(
+        history: [activation('CN04.MOT01', from: 0, ruleIndex: null)],
+        active: [activation('CN04.MOT01', from: 0, ruleIndex: null)],
+      );
+      expect(source.all, hasLength(1));
+    });
+
+    // ------------------------------------------------------- CR-03 (14-REVIEW)
+    //
+    // The key was `(uid, ruleIndex, DateTime)` compared with `DateTime.==`,
+    // and the two halves do not carry the same `DateTime`. They never did:
+    //
+    //  * history — `relay_alarm_source.dart:433` hands over `row.createdAt`,
+    //    which drift reads out of the TEXT column at MICROSECOND resolution,
+    //    and `AlarmHistoryWriter._sqlInstant` wrote the full
+    //    `toIso8601String()`, so microseconds survive the `::timestamp` round
+    //    trip.
+    //  * live — `relay_alarm_source.dart:252` builds
+    //    `DateTime.fromMillisecondsSinceEpoch(entry.activeAtMs)`, and
+    //    `activeAtMs` is `stamp.at.toUtc().millisecondsSinceEpoch`
+    //    (`backend_alarms.dart:254`). Microseconds truncated, on the wire, by
+    //    construction.
+    //
+    // An OPC UA `sourceTimestamp` is a 100 ns tick, so a plant instant with
+    // microseconds in it is the ordinary case and not the exotic one. These
+    // two arms are the P-8/D-12 double-count returning through a different
+    // hole, and the third is what stops the repair from becoming a swallow.
+    test(
+        'a plant instant with microseconds still dedupes across the two halves',
+        () {
+      // 12:00:00.123456Z as the history row holds it, and .123000Z as the
+      // wire could ever carry it. One standing alarm, two halves.
+      final fromDb = DateTime.utc(2026, 8, 29, 12, 0, 0, 123, 456);
+      final fromPipe = DateTime.fromMillisecondsSinceEpoch(
+          fromDb.millisecondsSinceEpoch,
+          isUtc: true);
+      expect(fromDb, isNot(fromPipe),
+          reason: 'the premise: the two halves carry different DateTimes for '
+              'one activation. If these ever compare equal the arm is '
+              'vacuous.');
+
+      final source = StopIntervalSource.fromAlarms(
+        history: [activation('CN04.MOT01', from: 0, start: fromDb)],
+        active: [activation('CN04.MOT01', from: 0, start: fromPipe)],
+      );
+
+      expect(source.all, hasLength(1),
+          reason: 'the same current stop drawn twice on the timeline and '
+              'counted twice in the totals — exactly the double-count the '
+              'identity set was replaced to fix (P-8, D-12), reached through '
+              'the microseconds the wire cannot carry. Got: ${source.all}');
+      expect(source.open, isEmpty,
+          reason: 'and the history record still wins, as it always did');
+    });
+
+    test('the same instant in local mode and UTC mode is one activation', () {
+      // `DateTime.==` compares the `isUtc` flag as well as the microseconds,
+      // so a producer that hands over a local-mode instant misses at ANY
+      // precision. Direct mode's live stamp is whatever `sourceTimestamp` the
+      // open62541 value carried, which is not guaranteed to be UTC-flagged.
+      final utc = DateTime.utc(2026, 8, 29, 12, 0, 0);
+      final local = utc.toLocal();
+      expect(local.isUtc, isFalse,
+          reason: 'the premise: two DateTime objects for one instant, '
+              'differing only in mode');
+
+      final source = StopIntervalSource.fromAlarms(
+        history: [activation('CN04.MOT01', from: 0, start: utc)],
+        active: [activation('CN04.MOT01', from: 0, start: local)],
+      );
+
+      expect(source.all, hasLength(1),
+          reason: 'one instant, one activation. Got: ${source.all}');
+    });
+
+    test('two activations one millisecond apart are still two', () {
+      // The anti-vacuity half. Normalising the key must not become rounding
+      // it: a dedupe that collapsed to whole seconds would pass both arms
+      // above while quietly merging genuinely distinct stops, which is the
+      // failure the "two genuinely different activations" arm exists for —
+      // taken here to the finest resolution the wire can express.
+      final first = DateTime.utc(2026, 8, 29, 12, 0, 0, 123);
+      final second = DateTime.utc(2026, 8, 29, 12, 0, 0, 124);
+
+      final source = StopIntervalSource.fromAlarms(
+        history: [activation('CN04.MOT01', from: 0, to: 1, start: first)],
+        active: [activation('CN04.MOT01', from: 0, start: second)],
+      );
+
+      expect(source.all, hasLength(2),
+          reason: 'a millisecond is the finest thing ALARM.active can say, so '
+              'two entries a millisecond apart are two activations and the '
+              'key must keep them apart. Got: ${source.all}');
+    });
+  });
+
+  group('filterAlarms is a shared function, not a method', () {
+    // 14-09's RelayAlarmSource answers "which alarms does the operator see"
+    // for a gateway-mode panel. Two implementations of that question are two
+    // lists that can disagree on the same screen, so the collapse, the sort
+    // and the fuzzy filter live in one top-level function with no instance
+    // in sight.
+    final film0 = activation('film', from: 0, level: AlarmLevel.warning);
+    final film1 =
+        activation('film', from: 5, level: AlarmLevel.error, ruleIndex: 1);
+    final seal = activation('seal', from: 10, level: AlarmLevel.info);
+
+    test('it collapses to the highest-priority rule per uid', () {
+      final out = filterAlarms([film0, film1, seal], '');
+      expect(out.map((e) => e.alarm.config.uid), ['film', 'seal']);
+      expect(out.first.notification.rule.level, AlarmLevel.error);
+    });
+
+    test('it sorts by level, then by most recent timestamp', () {
+      final later = activation('pump', from: 99, level: AlarmLevel.error);
+      final out = filterAlarms([film1, seal, later], '');
+      expect(out.map((e) => e.alarm.config.uid), ['pump', 'film', 'seal'],
+          reason: 'two errors, newest first, then the info');
+    });
+
+    test('it fuzzy-filters on title and description', () {
+      final out = filterAlarms([film0, film1, seal], 'seal');
+      expect(out.map((e) => e.alarm.config.uid), ['seal']);
     });
   });
 

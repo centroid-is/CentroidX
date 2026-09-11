@@ -791,8 +791,34 @@ int umasOnWireSize(UmasDataTypeRef type, int remaining) {
   return clamped;
 }
 
+/// What the STRING branch has always done, kept as a named function so the
+/// default below is one thing rather than a repeated expression.
+String _defaultUmasStringDecode(List<int> bytes) =>
+    utf8.decode(bytes, allowMalformed: true);
+
+/// Turns a PLC STRING's bytes into text.
+///
+/// See [parseVariableValue]'s `decodeString`.
+typedef UmasStringDecoder = String Function(List<int> bytes);
+
+/// Parse one typed variable value out of [bytes] at [offset].
+///
+/// [decodeString] decodes the STRING / BYTE_STRING / WSTRING branch.
+/// **Optional, and its default is exactly what this function always did** —
+/// `utf8.decode(bytes, allowMalformed: true)` — so nothing that does not pass
+/// it behaves differently in any way. The NUL-terminator trimming and the
+/// [_maxStringByteSize] cap are applied *before* the decoder is called and are
+/// unchanged.
+///
+/// It exists because `allowMalformed` is silently lossy against a Latin-1
+/// device: a Schneider or Saia PLC holding `Þorskflök í raspi` sends bytes that
+/// become U+FFFD here, under a good quality, with nothing in any log. This
+/// function cannot know which server it is decoding for — that is deliberate,
+/// and the caller which does know is
+/// `packages/tfc_relay_local/lib/src/string_encoding.dart`.
 TypedVariableValue parseVariableValue(
-    Uint8List bytes, int offset, UmasDataTypeRef dataType) {
+    Uint8List bytes, int offset, UmasDataTypeRef dataType,
+    {UmasStringDecoder? decodeString}) {
   final declared = dataType.byteSize;
   final available = bytes.length - offset;
 
@@ -876,8 +902,8 @@ TypedVariableValue parseVariableValue(
       // Find null terminator
       int nullPos = stringBytes.indexOf(0x00);
       if (nullPos < 0) nullPos = maxRead;
-      value = utf8.decode(stringBytes.sublist(0, nullPos),
-          allowMalformed: true);
+      value = (decodeString ?? _defaultUmasStringDecode)(
+          stringBytes.sublist(0, nullPos));
     default:
       // Unknown type: return raw bytes
       value = slice;
@@ -898,8 +924,11 @@ TypedVariableValue parseVariableValue(
 /// Throws [UmasException] if:
 /// - [types] list exceeds 255 entries (T-05-05 cap)
 /// - Total expected bytes exceed [rawBytes] length (T-05-05 validation)
+/// [decodeString] is threaded straight through to [parseVariableValue] and
+/// defaults the same way: absent means today's behaviour, exactly.
 List<TypedVariableValue> parseVariableValues(
-    Uint8List rawBytes, List<UmasDataTypeRef> types) {
+    Uint8List rawBytes, List<UmasDataTypeRef> types,
+    {UmasStringDecoder? decodeString}) {
   // T-05-05: Cap types list to max variableCount byte (255)
   if (types.length > 255) {
     throw UmasException(
@@ -937,7 +966,8 @@ List<TypedVariableValue> parseVariableValues(
   final results = <TypedVariableValue>[];
   int offset = 0;
   for (final type in types) {
-    results.add(parseVariableValue(rawBytes, offset, type));
+    results.add(
+        parseVariableValue(rawBytes, offset, type, decodeString: decodeString));
     // Advance by exactly what the reader consumed -- see [umasOnWireSize].
     offset += umasOnWireSize(type, rawBytes.length - offset);
   }
@@ -1087,9 +1117,14 @@ Uint8List encodeVariableValue(dynamic value, UmasDataTypeRef dataType) {
           message: 'Expected int for ${dataType.name}, got ${value.runtimeType}',
         );
       }
-      // Dart's int is 64-bit signed on the VM; full LINT range fits
-      // natively. checkRange still useful to make the contract explicit.
-      checkRange('LINT', value, -0x8000000000000000, 0x7FFFFFFFFFFFFFFF);
+      // No range check, and there is nothing to check: a Dart int on the VM
+      // IS the LINT range, so the bound could never be crossed. It used to be
+      // written out anyway, to state the contract — but `0x7FFFFFFFFFFFFFFF`
+      // is not representable in JavaScript, and dart2js rejects the literal at
+      // compile time, so the always-true assertion was the one thing in this
+      // file stopping the web build. The contract is stated here instead,
+      // where it costs nothing: LINT is [-2^63, 2^63-1], which is exactly
+      // what `setInt64` accepts below.
       final bytes = Uint8List(8);
       ByteData.sublistView(bytes).setInt64(0, value, Endian.little);
       return bytes;
@@ -1655,7 +1690,13 @@ class MonitorPlcRegistrationTable {
   /// using [parseVariableValue]. Throws [UmasException] on buffer underflow
   /// for fixed-size scalars; STRING-family values decode gracefully even
   /// from a zero-byte slice (JOB-A v1.1: see parseVariableValue comments).
-  List<TypedVariableValue> parseReadAllResponse(Uint8List rawBytes) {
+  /// [decodeString] is threaded to [parseVariableValue] for the same reason
+  /// the ReadVariable path threads it: this is the *other* road a STRING takes
+  /// out of a PLC (MonitorPlc, 0x50, which the M580 prefers), and a decoder
+  /// wired into only one of the two is a per-server encoding that works until
+  /// somebody's controller picks the other path.
+  List<TypedVariableValue> parseReadAllResponse(Uint8List rawBytes,
+      {UmasStringDecoder? decodeString}) {
     final indices = registeredIndices;
     if (indices.isEmpty) return [];
 
@@ -1664,7 +1705,8 @@ class MonitorPlcRegistrationTable {
 
     for (final idx in indices) {
       final type = _types[idx]!;
-      results.add(parseVariableValue(rawBytes, offset, type));
+      results.add(parseVariableValue(rawBytes, offset, type,
+          decodeString: decodeString));
       // Advance by exactly what the reader consumed. [umasOnWireSize] also
       // clamps STRING-family at the remaining bytes, so a PLC that returned
       // fewer-than-clamped bytes (e.g. 1 byte for an empty STRING via 0x22,

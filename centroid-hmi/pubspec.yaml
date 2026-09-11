@@ -126,6 +126,14 @@ dependency_overrides:
       # Head of `fix-orphaned-socket-on-failed-connect` as of 2026-08-23. This
       # branch moved on 2026-08-22, so it was the live one of the four.
       ref: 519312712bacca6c54f296ce190bdb85f37a2581
+  open62541:
+    git:
+      url: https://github.com/centroid-is/open62541_dart.git
+      # `monitor-quality-sourcetime`: 1.5.7+3 (main) plus DynamicValue
+      # .statusCode / .sourceTimestamp and opt-in `deliverBadStatus`. Keep in
+      # step with the root pubspec.yaml; every open62541 override in this
+      # repo carries this same SHA.
+      ref: 2ff18e4ee0af759cba4258a02648889bbbd526ae
   # drift:
   #   path: ../../drift/drift
   # drift_postgres:

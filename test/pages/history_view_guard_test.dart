@@ -21,11 +21,13 @@ import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/pages/history_view.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/access_denied_prompt.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/database.dart';
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
@@ -205,6 +207,7 @@ Widget _shell({
   return ProviderScope(
     overrides: [
       databaseProvider.overrideWith((ref) async => _FakeDatabase(db)),
+      localPreferencesProvider.overrideWithValue(InMemoryPreferences()),  // the transport row; empty == direct mode
       stateManProvider.overrideWith((ref) async => _FakeStateMan()),
       auditSinkProvider.overrideWith((ref) async => audit),
       accessSessionProvider.overrideWith(() => _FixedSession(session)),

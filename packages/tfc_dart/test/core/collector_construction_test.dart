@@ -23,7 +23,7 @@ import 'package:tfc_dart/core/state_man.dart';
 /// test named for "a key that cannot be subscribed" while using an unroutable
 /// one proves the first defect and says nothing about the second.
 Future<Collector> collectorFor(KeyMappings mappings) async {
-  final stateMan = await StateMan.create(
+  final stateMan = await OpcUaStateMan.create(
       config: StateManConfig(opcua: []), keyMappings: mappings);
   return Collector(
     config: CollectorConfig(collect: true),

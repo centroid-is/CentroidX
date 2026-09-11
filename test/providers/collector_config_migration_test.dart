@@ -332,7 +332,7 @@ ProviderContainer _container(_Stores s, {required bool withDatabase}) {
     localPreferencesProvider.overrideWithValue(s.device),
     databaseProvider.overrideWith((ref) async => db),
     stateManProvider.overrideWith((ref) async {
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {}),
       );

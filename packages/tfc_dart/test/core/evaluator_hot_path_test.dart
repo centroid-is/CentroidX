@@ -86,6 +86,7 @@ class _FakeClientApi implements ClientApi {
     Duration samplingInterval = const Duration(milliseconds: 100),
     bool discardOldest = true,
     int queueSize = 1,
+    bool deliverBadStatus = false,
   }) {
     monitored.add(nodeId);
     late StreamController<DynamicValue> controller;
@@ -189,11 +190,11 @@ void main() {
 
   group('Evaluator', () {
     late _FakeClientApi fake;
-    late StateMan stateMan;
+    late OpcUaStateMan stateMan;
 
     setUp(() async {
       fake = _FakeClientApi();
-      stateMan = await StateMan.create(
+      stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: _mappings(),
         deviceClients: const [],

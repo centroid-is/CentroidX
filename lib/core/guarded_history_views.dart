@@ -18,14 +18,28 @@
 /// belongs at the control. `guarded_history_views_test.dart` asserts the route
 /// is still not raised, so that claim is checked rather than remembered.
 ///
-/// ## Why the group is declared here rather than looked up
+/// ## Why the group is looked up rather than declared here
 ///
-/// This store consults no policy table. The group is [kHistoryViewDeleteGroup],
-/// a constant in this file — the route-style declaration spec §7 uses for a
-/// surface whose items are not preference keys. A `history_view.` entry in
-/// `kPrefAccessRules` would be a *second* source for one answer, and the two
-/// would drift. If you are here to change what is gated, change the two
-/// constants below; do not add a rule elsewhere.
+/// **This changed in plan 17-01, and the reason is worth having.** Until then
+/// the two groups were `const AccessGroup` declarations in this file, on the
+/// argument that a `history_view.` entry in `kPrefAccessRules` would be a
+/// second source for one answer. The argument was right about the danger and
+/// wrong about where the answer belonged: `packages/tfc_relay_server` cannot
+/// import the Flutter app, so when the relay had to grade the same five
+/// methods it could not read these constants and invented `role == operate`
+/// instead — and got a *different* answer in both directions
+/// (`docs/access-control-write-path-sweep.md` §3.12). Two guards, two answers,
+/// one table.
+///
+/// So the answer moved down to `tfc_access`, which both processes can reach,
+/// and this store asks [AccessPolicy.groupForHistoryView] for it. That is the
+/// phase's ruling — one master access-control system, the WebSocket builds on
+/// top of it — and the app's split is what won: the two deletes require
+/// `configure`, the other three stay open.
+///
+/// If you are here to change what is gated, change
+/// `AccessPolicy.groupForHistoryView`. There is exactly one place, and it is
+/// not this file.
 library;
 
 import 'package:logger/logger.dart';
@@ -34,6 +48,16 @@ import 'package:tfc_dart/core/database_drift.dart';
 
 /// The `who` recorded when nobody is signed in.
 const String _anonymousWho = 'anonymous';
+
+/// The policy every group answer in this file comes from.
+///
+/// `const`, and constructed rather than injected, because the two questions
+/// this store asks — [AccessPolicy.groupForHistoryView] for five member names
+/// — depend on neither tag bindings nor the route table, which are the only
+/// two things [AccessPolicy]'s constructor takes. A policy built with those
+/// arguments would answer these five identically, so there is nothing for a
+/// caller to configure and no seam worth the parameter.
+const AccessPolicy _policy = AccessPolicy();
 
 /// The permission the two **destructive** history-view writes require.
 ///
@@ -44,17 +68,26 @@ const String _anonymousWho = 'anonymous';
 /// views. `configure` is what the page editor and the key mappings ask for, and
 /// a saved view is the same kind of thing: station configuration somebody
 /// authored.
-const AccessGroup kHistoryViewDeleteGroup = AccessGroup.configure;
+///
+/// **Not a declaration — a question.** As of plan 17-01 this reads the answer
+/// out of [AccessPolicy.groupForHistoryView]; changing the value here is not
+/// possible, and changing it there changes it for the relay in the same
+/// commit. The name is kept because other files and this milestone's docs
+/// refer to it.
+AccessGroup? get kHistoryViewDeleteGroup =>
+    _policy.groupForHistoryView(AccessPolicy.historyViewDelete);
 
 /// The permission the three **non-destructive** history-view writes require —
 /// `null`, meaning open to any session, anonymous included.
 ///
-/// Changing this to `AccessGroup.configure` gates all five writes instead of
-/// two, and the "stays open" tests in `guarded_history_views_test.dart` are
-/// what will tell you exactly what moved. That is the whole point of the pair:
-/// the question `.planning/phases/02-route-gating/deferred-items.md` §4 raised
-/// and never got a ruling on is answered in one visible line rather than at
-/// five call sites.
+/// Changing [AccessPolicy.groupForHistoryView] so these three answer a group
+/// gates all five writes instead of two, and the "stays open" tests in
+/// `guarded_history_views_test.dart` are what will tell you exactly what
+/// moved. That is the whole point of the pair: the question
+/// `.planning/phases/02-route-gating/deferred-items.md` §4 raised and never
+/// got a ruling on is answered in one visible place rather than at five call
+/// sites — and, since 17-01, in one visible place for **both** processes
+/// rather than one each.
 ///
 /// **Why open, today.** An operator saving a view of the line they run, giving
 /// it a name, or bookmarking the eight hours they want to look at again is
@@ -64,7 +97,8 @@ const AccessGroup kHistoryViewDeleteGroup = AccessGroup.configure;
 /// ([_guard] audits regardless of the group), so the choice is reviewable from
 /// the trail rather than only from this comment: if saved views start
 /// appearing and disappearing, the rows say who.
-const AccessGroup? kHistoryViewWriteGroup = null;
+AccessGroup? get kHistoryViewWriteGroup =>
+    _policy.groupForHistoryView(AccessPolicy.historyViewCreate);
 
 /// Every write `lib/pages/history_view.dart` makes, behind one object.
 ///
@@ -105,15 +139,26 @@ class HistoryViewStore {
   /// swallows. Nothing else logs here.
   final Logger _logger;
 
-  /// The surface every row carries, by its wire name rather than a `'pref'`
-  /// literal.
+  /// The surface every row carries, by its wire name.
   ///
-  /// A saved history view is station configuration, so it belongs on the
-  /// existing `pref` surface; spec §2's `surface` vocabulary is three write
-  /// values and adding a fourth for one page would make a year of rows read
-  /// differently. The `history_view.` / `history_view_period.` [_itemKey]
-  /// prefixes are what let the Phase 5 viewer group them without that.
-  static final String _surface = AccessSurface.pref.wireName;
+  /// **This was `AccessSurface.pref` until plan 17-01.** The reasoning then was
+  /// that a saved history view is station configuration, so it belonged on the
+  /// existing `pref` surface, because spec §2's vocabulary had three write
+  /// values and inventing a fourth for one page would make a year of rows read
+  /// differently. 17-01 gave the policy a real `history_view` surface — the
+  /// relay needs to name it to grade it — so the borrowed name is no longer
+  /// the least-bad option.
+  ///
+  /// **The consequence, named because somebody will hit it.** Rows written
+  /// before this deploy carry `surface = 'pref'`; rows written after carry
+  /// `surface = 'history_view'`. A trail query filtering on `surface` sees a
+  /// discontinuity at the deploy and must ask for both to cover the whole
+  /// history. The old rows were not rewritten on purpose: rewriting a year of
+  /// audit rows to make a query tidier is a worse trade than a documented
+  /// discontinuity, and an audit trail that gets edited for tidiness is not
+  /// one. The `history_view.` / `history_view_period.` [_itemKey] prefixes are
+  /// unchanged and span the boundary, so they are the safer thing to filter on.
+  static final String _surface = AccessSurface.historyView.wireName;
 
   // ---------------------------------------------------------------------------
   // The five writes
@@ -127,10 +172,9 @@ class HistoryViewStore {
   Future<int> createHistoryView(String name, List<String> keys,
           [Map<String, Map<String, dynamic>>? keyConfigs,
           Map<String, Map<String, dynamic>>? graphConfigs]) =>
-      _guard(
+      _guardMember(
         itemKey: 'history_view.new',
-        group: kHistoryViewWriteGroup,
-        reason: 'createHistoryView',
+        member: AccessPolicy.historyViewCreate,
         newValue: name,
         write: () =>
             _db.createHistoryView(name, keys, keyConfigs, graphConfigs),
@@ -141,10 +185,9 @@ class HistoryViewStore {
   Future<void> updateHistoryView(int id, String name, List<String> keys,
           [Map<String, Map<String, dynamic>>? keyConfigs,
           Map<String, Map<String, dynamic>>? graphConfigs]) =>
-      _guard(
+      _guardMember(
         itemKey: _itemKey(id),
-        group: kHistoryViewWriteGroup,
-        reason: 'updateHistoryView',
+        member: AccessPolicy.historyViewUpdate,
         newValue: name,
         write: () =>
             _db.updateHistoryView(id, name, keys, keyConfigs, graphConfigs),
@@ -152,10 +195,9 @@ class HistoryViewStore {
 
   /// Destroys a saved view and everything hanging off it. Requires
   /// [kHistoryViewDeleteGroup].
-  Future<void> deleteHistoryView(int id) => _guard(
+  Future<void> deleteHistoryView(int id) => _guardMember(
         itemKey: _itemKey(id),
-        group: kHistoryViewDeleteGroup,
-        reason: 'deleteHistoryView',
+        member: AccessPolicy.historyViewDelete,
         write: () => _db.deleteHistoryView(id),
       );
 
@@ -163,25 +205,46 @@ class HistoryViewStore {
   /// [kHistoryViewWriteGroup].
   Future<int> addHistoryViewPeriod(
           int viewId, String name, DateTime start, DateTime end) =>
-      _guard(
+      _guardMember(
         itemKey: 'history_view_period.new',
-        group: kHistoryViewWriteGroup,
-        reason: 'addHistoryViewPeriod',
+        member: AccessPolicy.historyViewAddPeriod,
         newValue: name,
         write: () => _db.addHistoryViewPeriod(viewId, name, start, end),
       );
 
   /// Destroys a saved period. Requires [kHistoryViewDeleteGroup].
-  Future<void> deleteHistoryViewPeriod(int id) => _guard(
+  Future<void> deleteHistoryViewPeriod(int id) => _guardMember(
         itemKey: _periodItemKey(id),
-        group: kHistoryViewDeleteGroup,
-        reason: 'deleteHistoryViewPeriod',
+        member: AccessPolicy.historyViewDeletePeriod,
         write: () => _db.deleteHistoryViewPeriod(id),
       );
 
   // ---------------------------------------------------------------------------
   // The one implementation of the rule
   // ---------------------------------------------------------------------------
+
+  /// Ask the policy what [member] requires, then [_guard] with the answer.
+  ///
+  /// **The one place this store consults [AccessPolicy], and the reason the
+  /// group and the audit `reason` cannot disagree**: [member] is both the
+  /// name the policy is asked about and the string written into the row's
+  /// `reason` column, so a call site cannot grade one member while recording
+  /// another. Before plan 17-01 those were two separate arguments at five call
+  /// sites — a `group:` constant and a `reason:` string literal — and nothing
+  /// held them together.
+  Future<T> _guardMember<T>({
+    required String itemKey,
+    required String member,
+    required Future<T> Function() write,
+    String? newValue,
+  }) =>
+      _guard(
+        itemKey: itemKey,
+        group: _policy.groupForHistoryView(member),
+        reason: member,
+        newValue: newValue,
+        write: write,
+      );
 
   /// Check, record, then write — the ordering `GuardedStateMan` established and
   /// this reuses rather than restates.

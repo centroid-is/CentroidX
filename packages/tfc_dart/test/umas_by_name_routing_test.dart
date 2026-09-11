@@ -23,7 +23,7 @@ import 'dart:io';
 
 import 'package:modbus_client/modbus_client.dart';
 import 'package:modbus_client_tcp/modbus_client_tcp.dart';
-import 'package:open62541/open62541.dart' show DynamicValue, NodeId;
+import 'package:open62541/open62541_types.dart' show DynamicValue, NodeId;
 import 'package:test/test.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
@@ -31,10 +31,11 @@ import 'package:tfc_dart/core/state_man.dart'
     show
         ConnectionStatus,
         EffectiveDeviceStatus,
-        KeyMappings,
         KeyMappingEntry,
+        KeyMappings,
         ModbusNodeConfig,
         ModbusRegisterType,
+        OpcUaStateMan,
         StateMan,
         StateManConfig,
         StateManException;
@@ -304,7 +305,7 @@ void main() {
         umasEnabled: false,
         serverAlias: 'plc1',
       );
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {
           'pump.speed': KeyMappingEntry(
@@ -1280,7 +1281,7 @@ void main() {
         umasEnabled: umasEnabled,
         serverAlias: 'plc1',
       );
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {
           'pump.speed': KeyMappingEntry(
@@ -1395,7 +1396,7 @@ void main() {
         umasEnabled: true,
         serverAlias: 'plc1',
       );
-      final stateMan = await StateMan.create(
+      final stateMan = await OpcUaStateMan.create(
         config: StateManConfig(opcua: []),
         keyMappings: KeyMappings(nodes: {
           'bogus.key': KeyMappingEntry(

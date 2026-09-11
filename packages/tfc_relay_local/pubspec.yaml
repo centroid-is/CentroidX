@@ -1,0 +1,160 @@
+name: tfc_relay_local
+description: >-
+  The gateway's plant side: LocalStateMan, the StateManApi implementation that
+  speaks to real PLCs over OPC UA, Modbus/UMAS and the M2400 weighers, mints a
+  quality and a source time for every value, and produces the PIPE.* health
+  keys. It is deliberately a package of its own rather than part of
+  tfc_relay_server. The dependency edge runs local -> server and never the
+  other way: tfc_relay_server has zero native dependencies and a test that pins
+  its lib/src to exactly one Timer.periodic, and an edge in the other direction
+  would put an open62541 native-asset build in front of that package's 505
+  tests — the precise coupling this package exists to prevent. Pure Dart,
+  server-side, no Flutter.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  # The wire vocabulary this gateway is judged against: DynamicValue (the relay
+  # one, which HAS quality and sourceTime), Quality, ValueStore, StateManApi.
+  # Note there are two classes named DynamicValue in this solve — this one and
+  # open62541's — and every value crossing into the gateway is a translation
+  # between them.
+  tfc_relay_protocol: {path: ../tfc_relay_protocol}
+  # The gateway this composes with, and the home of certDaysToExpiryKey. The
+  # edge runs this way and only this way; see the description above.
+  tfc_relay_server: {path: ../tfc_relay_server}
+  # ClientWrapper, ModbusDeviceClientAdapter and M2400DeviceClientAdapter are
+  # WRAPPED, not copied: ClientWrapper alone encodes the two-phase resubscribe
+  # that fixed a measured monitored-item storm, a heartbeat-derived effective
+  # status with a 15 s stale / 30 s grace window, and the classification that
+  # tells a transient Inactivity from a fatal SubscriptionDeleted. The 2,796-line
+  # StateMan composer above them does NOT enter the gateway — its throwing
+  # read/write is the anti-pattern StateManApi replaces.
+  tfc_dart: {path: ../tfc_dart}
+  # The OPC UA client, and the in-process Server the test legs stand up. Version
+  # constraint kept identical to tfc_dart's; the override below is what actually
+  # decides which code is built.
+  open62541: ^1.5.7+3
+  # The M2400 weigher framing, and M2400StubServer — which lives in lib/, so the
+  # fixture needs no dev-only dance to be reachable from a test.
+  jbtm: {path: ../jbtm}
+  # Classic Modbus and UMAS-by-name, the local fork with the frame-parsing and
+  # keepalive fixes. Reached through tfc_dart's adapter, but named directly
+  # because this package's types appear in the adapter's signatures.
+  modbus_client_tcp: {path: ../modbus_client_tcp}
+  # Structural equality for the key/value fingerprints the routing layer
+  # compares, at the version already resolved across this repository.
+  collection: ^1.18.0
+  # The Postgres driver, for exactly two files: collect/timescale_sink.dart
+  # (translating CollectionEndpoint into pg.Endpoint at the seam) and
+  # collect/advisory_lock.dart (the dedicated out-of-pool lock connection).
+  # NOT a new external package: the same pinned fork already resolves through
+  # tfc_dart, and the override below decides which code is built — this entry
+  # only makes the dependency an honest, declared one. Kept identical to
+  # packages/tfc_dart/pubspec.yaml's entry.
+  postgres:
+    git:
+      url: https://github.com/centroid-is/postgresql-dart.git
+      # Pinned, not a branch: pubspec.lock is gitignored, so a branch ref
+      # lets a tagged build pick up untested code. Head of `fix-orphaned-socket-on-failed-connect`
+      # as of 2026-08-23. Keep in step with the root pubspec.yaml.
+      ref: 519312712bacca6c54f296ce190bdb85f37a2581
+  # The gateway logs; it does not print. Same version the rest of the workspace
+  # pins. Note the project's own finding that trace level with PrettyPrinter
+  # makes per-node logging seconds of lag — levels are chosen, not defaulted.
+  logger: ^2.4.0
+  # Promoted from dev_dependencies by 10-07, for exactly ONE file:
+  # data/timescale_reader.dart, which needs `Variable.withString` to
+  # parameterise two statements `Database` does not expose a method for — the
+  # `information_schema.columns` lookup behind the member projection, and the
+  # member-aware `time_bucket` downsample. Spelling those table names as SQL
+  # literals instead would be the un-quote-doubled interpolation this whole
+  # plan exists to keep client strings away from.
+  #
+  # NOT a new external package: it already resolved here as a dev dependency at
+  # the version tfc_dart pins, and the seam sweep's needles are the two
+  # `tfc_dart/core/database*.dart` URIs and the unrestricted tfc_dart barrel —
+  # drift is not one of them. The invariant the old dev-only comment claimed
+  # ("nothing under lib/ touches drift") is now false by exactly THREE files —
+  # timescale_reader.dart, preference_store.dart and preference_change_feed.dart
+  # — which 10-REVIEW counted and this sentence originally undercounted at one.
+  # That is still not the `core/database.dart` seam freeze_test.dart pins at
+  # two: drift is a query-builder type (`Variable`, `UpdateKind`), not a route
+  # to a second connection pool, which is what the seam exists to bound.
+  drift: ^2.28.0
+
+dependency_overrides:
+  # open62541 `monitor-quality-sourcetime`: 1.5.7+3 (main) plus the
+  # relay-quality work rebased onto it — DynamicValue.statusCode,
+  # DynamicValue.sourceTimestamp, and the opt-in `deliverBadStatus` on
+  # monitor()/monitoredItems(). Without it a monitored sample the PLC marked
+  # Bad is dropped and its code survives only as English inside a String, and
+  # sourceTimestamp is never read at all. Supersedes the old `relay-quality`
+  # SHA (7798cfab…), whose non-quality commits had all landed on main anyway.
+  #
+  # Pinned to a SHA and not to the branch name: pubspec.lock is gitignored in
+  # this repository, so a branch ref lets a tagged build pick up untested native
+  # code. Same reasoning as the postgres pin below and at
+  # packages/tfc_dart/pubspec.yaml:25-28.
+  #
+  # tfc_dart now needs these fields too (Phase 12, the pipe), so every
+  # open62541 override in this repo carries THIS SHA (root, centroid-hmi,
+  # tfc_dart, jbtm, and here) — two packages in one process resolving two
+  # different open62541 builds is not a state this repository should ever be in.
+  open62541:
+    git:
+      url: https://github.com/centroid-is/open62541_dart.git
+      ref: 2ff18e4ee0af759cba4258a02648889bbbd526ae
+  # Copied verbatim from packages/tfc_dart/pubspec.yaml, comment included: a
+  # dependency_overrides block only applies from the ROOT of a solve, so
+  # tfc_dart's own overrides do nothing when tfc_dart is a path dependency here.
+  # Without these two entries this package resolves a different postgres and a
+  # different archive than the package it depends on.
+  postgres:
+    git:
+      url: https://github.com/centroid-is/postgresql-dart.git
+      # Pinned, not a branch: pubspec.lock is gitignored, so a branch ref
+      # lets a tagged build pick up untested code. Head of `fix-orphaned-socket-on-failed-connect`
+      # as of 2026-08-23. Keep in step with the root pubspec.yaml.
+      ref: 519312712bacca6c54f296ce190bdb85f37a2581
+  archive: 4.0.2 # TODO remove, 4.0.7 made clashes with pointycastle and or basic_utils
+
+dev_dependencies:
+  # StreamQueue, for the slow-upstream rig's command/reply channel.
+  async: ^2.11.0
+  # ModbusResponseCode and the mock-socket base for the refusal arms
+  # (modbus_refusal_link_test.dart): the case that proves an
+  # IllegalDataAddress answer comes out of the production wrapper → adapter →
+  # `.wrapping` stack as errorConfig needs to speak the wire's own vocabulary.
+  # Already in the graph transitively through modbus_client_tcp — declared so
+  # the import is honest rather than a lint suppression. The same vendored
+  # path the rest of the repo uses (modbus_client_tcp pins it by path, so a
+  # hosted constraint here fails resolution).
+  modbus_client: {path: ../modbus_client}
+  # Same analyzer-recommended lint set as the other relay packages.
+  lints: ^4.0.0
+  # The suite runner. Never a production dependency here for the same reason it
+  # is not one in tfc_relay_server.
+  test: ^1.25.0
+  # The panel, for the end-to-end leg and for nothing else. **A dev dependency,
+  # deliberately**: the gateway does not depend on the panel — the edge runs
+  # local -> server, and a production edge to the client would make every
+  # gateway build carry the client's WebSocket stack and its TLS pinning. The
+  # end-to-end test needs a REAL RemoteStateMan over a REAL socket, because a
+  # hand-rolled client would be this package asserting against its own idea of
+  # what a panel does. Same shape as tfc_relay_client holding tfc_relay_server.
+  tfc_relay_client: {path: ../tfc_relay_client}
+  # The account vocabulary (`AuthenticatedUser`, `AccessGroup`) the soak's
+  # token file now needs. **Dev-only, deliberately**: 17-04b split the
+  # credential from the grant, so a token file names a user and the resolver
+  # answers what that user may do — the soak has to supply that resolver to
+  # stand a gateway up at all. The gateway itself does not depend on the
+  # access package; the embedder wires the resolver in.
+  tfc_access: {path: ../tfc_access}
+  # The shared StateManApi contract suite, run against LocalStateMan over real
+  # DeviceClients. It binds ports and pulls package:test into whatever solve
+  # names it, so dev-only is not negotiable.
+  tfc_stateman_contract: {path: ../tfc_stateman_contract}

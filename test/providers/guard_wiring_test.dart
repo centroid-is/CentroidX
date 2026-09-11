@@ -10,7 +10,7 @@ import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
@@ -35,6 +35,8 @@ import 'package:tfc/providers/collector.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
+
+import '../helpers/path_separators.dart';
 
 void main() {
   setUp(() {
@@ -409,6 +411,108 @@ void main() {
     });
   });
 
+  group('the gate asks the authority, never the repository', () {
+    String codeOf(String path) => File(path)
+        .readAsLinesSync()
+        .where((l) => !l.trimLeft().startsWith('///'))
+        .where((l) => !l.trimLeft().startsWith('//'))
+        .join('\n');
+
+    test('no deciding surface reads accessRepositoryProvider', () {
+      // The three surfaces that call `resolveAccessGate` — the route gate, the
+      // menu lock and the tap-time guard for the D-Bus controls — plus the
+      // locked page's own no-database line. A half-migrated call site is a
+      // station where the menu and the route disagree, and on a gateway panel
+      // it is the rig defect back again: no repository read as "nobody can
+      // sign in here".
+      for (final path in const [
+        'lib/widgets/access_gate.dart',
+        'lib/widgets/access_lock_badge.dart',
+        'lib/widgets/group_access_guard.dart',
+      ]) {
+        final code = codeOf(path);
+        expect(code, isNotEmpty);
+        expect(code.contains('accessRepositoryProvider'), isFalse,
+            reason: '$path must ask accessAuthorityProvider: whether a '
+                'repository exists is not the same question as whether '
+                'anybody can be authenticated');
+        expect(code.contains('accessAuthorityProvider'), isTrue,
+            reason: '$path decides on the authority');
+      }
+    });
+
+    test('the authority reads the transport and watches the repository', () {
+      // `ref.read` on the config for the reason `database.dart` gives: the
+      // transport is restart-to-apply, and Server Config invalidates that
+      // provider on every save, so a watch would flip a direct station's
+      // authority to `relay` before anything could mint a relay session.
+      // `ref.watch` on the repository because Postgres coming up or going away
+      // mid-shift must still move the gate.
+      final code = codeOf('lib/providers/access.dart');
+      expect(code, contains('Future<AccessAuthority> accessAuthority(Ref ref)'));
+      expect(code, contains('ref.read(gatewayConfigProvider.future)'));
+      expect(code, contains('ref.watch(accessRepositoryProvider.future)'));
+    });
+
+    test('nothing outside the access providers reads the repository at all',
+        () {
+      // **The containment rule, and why it is a test rather than a note.**
+      // Reading `accessRepositoryProvider` and finding null tells you nothing
+      // on its own: it is "no Postgres configured", "Postgres is down", and
+      // "this station is a gateway panel and was built without one" in the
+      // same value. Three defects in one day came from a caller resolving that
+      // null itself — the navigation menu hid `/advanced` from a signed-in
+      // engineer, the Server Config route gate stayed open to anonymous on
+      // every gateway panel, and `refreshGroupsFromRoles` demoted a signed-in
+      // operator because "the database is unreachable".
+      //
+      // `accessAuthorityFor` in `lib/core/access_authority.dart` is the one
+      // place the two facts become an answer. This keeps the list of files
+      // allowed to hold the raw provider short enough that a fourth site
+      // cannot appear quietly. Adding a row here is allowed — deciding what a
+      // null means without the transport is what is not.
+      const allowed = {
+        // Declares it, and derives the authority from it.
+        'lib/providers/access.dart',
+        // Reads rows through it; never asks it what the transport is.
+        'lib/providers/access_admin.dart',
+        // Renders the create-the-first-account screen, whose whole subject is
+        // a station that has a repository and no accounts in it.
+        'lib/pages/first_user.dart',
+      };
+
+      final offenders = <String>[];
+      for (final entity in Directory('lib').listSync(recursive: true)) {
+        if (entity is! File) continue;
+        // Normalised at the mint point, for the reason
+        // `_filesUsingTheSystemWritePath` states 220 lines below and this walk
+        // missed: `allowed` spells its paths with forward slashes and
+        // `listSync` hands back backslashes on Windows. Unnormalised, the
+        // three allowed files failed their own allow-list and reported
+        // themselves as the offenders — the census accusing exactly the rows
+        // it exists to permit.
+        final path = withForwardSlashes(entity.path);
+        if (!path.endsWith('.dart') || path.endsWith('.g.dart')) continue;
+        if (allowed.contains(path)) continue;
+        final body = entity.readAsStringSync();
+        // Doc comments may name it; code may not.
+        final code = body
+            .split('\n')
+            .where((line) => !line.trimLeft().startsWith('///'))
+            .join('\n');
+        if (code.contains('accessRepositoryProvider')) {
+          offenders.add(path);
+        }
+      }
+
+      expect(offenders, isEmpty,
+          reason: 'these files reach the raw repository provider. A null out '
+              'of it is a transport, not an outage — ask '
+              'accessAuthorityProvider, or accessAuthorityFor if you already '
+              'hold both facts');
+    });
+  });
+
   group('boot with nothing stored and nobody signed in', () {
     test('all four providers build, with no throw and zero denial events',
         () async {
@@ -619,7 +723,7 @@ Set<String> _filesUsingTheSystemWritePath() {
     // Separators normalised: the constant this is compared against spells its
     // paths with forward slashes, and listSync hands back backslashes on
     // Windows.
-    final path = entity.path.replaceAll(r'\', '/');
+    final path = withForwardSlashes(entity.path);
     if (!path.endsWith('.dart') || path.endsWith('.g.dart')) continue;
     final code = entity
         .readAsLinesSync()

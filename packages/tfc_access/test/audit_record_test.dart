@@ -846,13 +846,54 @@ void main() {
       }
     });
 
-    test('AccessSurface was not extended to carry admin', () {
-      // AccessSurface is what the policy answers questions about. Nothing ever
-      // gates on an admin row, so adding it there would make byWireName claim
-      // a surface the policy never consults. 'auth' set that precedent and
-      // 'admin' follows it: a private literal on AuditRecord.
-      expect(AccessSurface.values, hasLength(3));
-      expect(AccessSurface.byWireName('admin'), isNull);
+    test('the admin surface is read from AccessSurface, not restated here', () {
+      // This arm used to assert the opposite — that AccessSurface had three
+      // values and `byWireName('admin')` was null — on the reasoning that
+      // nothing ever gates on an admin row. Plan 17-01 gave the policy
+      // `groupForAdmin`, so something does now; and these rows have recorded
+      // `groupRequired: users` since Phase 6, which was always a grading with
+      // nowhere to be declared.
+      //
+      // What replaces it is the stronger claim: the surface the row is
+      // recorded under and the surface the policy is asked about are the same
+      // string, because one is read from the other.
+      expect(AccessSurface.byWireName('admin'), AccessSurface.accessAdmin);
+      expect(AccessSurface.accessAdmin.wireName, 'admin',
+          reason: "stored data — a year of Phase 6 rows carry it; renaming "
+              'this rewrites what they mean');
+
+      final record = AuditRecord.roleCreate(
+        who: 'jon',
+        station: 'st101',
+        roleName: 'Engineer',
+        subject: 'Shift Leader',
+        groups: '["operate"]',
+        allowed: true,
+        actionId: newActionId(),
+      );
+      expect(record.surface, AccessSurface.accessAdmin.wireName);
+      expect(const AccessPolicy().groupForWireSurface(record.surface, 'x'),
+          AccessGroup.users,
+          reason: 'the policy answers for the surface the row carries');
+    });
+
+    test("'auth' is still not a write surface", () {
+      // The precedent 'admin' used to follow, and the half of it that stands:
+      // signing in is an event, not a write somebody could be authorized for,
+      // so no policy member answers for it and it stays a private literal.
+      //
+      // This is the anti-vacuity half of the arm above: without it, "the enum
+      // grew" would read as "the enum grows for anything that appears in the
+      // surface column", which is not the rule.
+      expect(AccessSurface.byWireName('auth'), isNull);
+      final login = AuditRecord.login(
+        who: 'jon',
+        station: 'st101',
+        roleName: 'Engineer',
+        actionId: newActionId(),
+      );
+      expect(login.surface, 'auth');
+      expect(AccessSurface.values.map((s) => s.wireName), isNot(contains('auth')));
     });
   });
 

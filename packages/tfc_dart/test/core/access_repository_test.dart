@@ -108,12 +108,15 @@ Future<void> _rawInsertUser(
   AppDatabase db, {
   required String username,
   required String roleName,
+  String passwordHash = 'hash',
+  String createdAt = '2026-08-28T00:00:00Z',
+  String? lastLoginAt,
 }) =>
     db.customStatement(
       'INSERT INTO app_user '
-      '(username, role_name, password_hash, salt, created_at) '
-      "VALUES ('$username', '$roleName', 'hash', 'salt', "
-      "'2026-08-28T00:00:00Z')",
+      '(username, role_name, password_hash, salt, created_at, last_login_at) '
+      "VALUES ('$username', '$roleName', '$passwordHash', 'salt', "
+      "'$createdAt', ${lastLoginAt == null ? 'NULL' : "'$lastLoginAt'"})",
     );
 
 /// Inserts an `audit_entry` row naming [who], with raw SQL.
@@ -834,6 +837,83 @@ void main() {
       expect(users.map((u) => u.roleName),
           ['Maintenance', 'Engineering', 'Operator']);
     });
+
+    // -----------------------------------------------------------------------
+    // The roster row, and the one bit that replaces a credential column
+    //
+    // `listUsers` answers `UserSummary`, not `app_user`'s drift row. The
+    // difference that matters is `hasPassword`: the column holds either a
+    // stored hash or `kNoPasswordMarker`, and deciding which is a storage
+    // question that gets answered here, once, rather than by every screen that
+    // renders a roster.
+    // -----------------------------------------------------------------------
+
+    test('an account with a password reports hasPassword true', () async {
+      await _rawInsertUser(db,
+          username: 'ada',
+          roleName: 'Maintenance',
+          passwordHash: 'argon2id\$v=19\$m=65536,t=3,p=4\$abc');
+
+      expect((await repo.listUsers()).single.hasPassword, isTrue);
+    });
+
+    test('an account holding the no-password marker reports hasPassword false',
+        () async {
+      await _rawInsertUser(db,
+          username: 'panel',
+          roleName: 'Operator',
+          passwordHash: kNoPasswordMarker);
+
+      expect((await repo.listUsers()).single.hasPassword, isFalse,
+          reason: 'this account signs in on its username alone, and the roster '
+              'has to mark it. Drawing an open account exactly like a '
+              'protected one is the failure mode the feature exists to avoid.');
+    });
+
+    test('the hash and the salt do not cross, because there is nowhere to put '
+        'them', () async {
+      await _rawInsertUser(db,
+          username: 'ada',
+          roleName: 'Maintenance',
+          passwordHash: 'argon2id\$v=19\$m=65536,t=3,p=4\$secret-material');
+
+      final user = (await repo.listUsers()).single;
+
+      // Structural, not stylistic. `UserSummary` declares no credential field,
+      // so a hash cannot reach a caller by somebody forgetting to strip it —
+      // which is exactly what returning the drift row left open.
+      expect(user.toString(), isNot(contains('secret-material')));
+      expect(user.toString(), isNot(contains('salt')));
+    });
+
+    test('both timestamps cross as they were stored', () async {
+      await _rawInsertUser(db,
+          username: 'ada',
+          roleName: 'Maintenance',
+          createdAt: '2026-03-04T05:06:07Z',
+          lastLoginAt: '2026-07-08T09:10:11Z');
+      await _rawInsertUser(db,
+          username: 'zoe', roleName: 'Operator', createdAt: '2026-01-02T03:04:05Z');
+
+      final users = await repo.listUsers();
+
+      expect(users[0].createdAt, DateTime.utc(2026, 3, 4, 5, 6, 7));
+      expect(users[0].lastLoginAt, DateTime.utc(2026, 7, 8, 9, 10, 11));
+      expect(users[1].createdAt, DateTime.utc(2026, 1, 2, 3, 4, 5));
+      expect(users[1].lastLoginAt, isNull,
+          reason: 'null lastLoginAt is a fact about the account — it has never '
+              'signed in — and the screen renders it as "never". The direct '
+              'path always knows createdAt, so a null there would be a bug '
+              'rather than an older server.');
+    });
+
+    test('stationAccount crosses', () async {
+      await _rawInsertUser(db, username: 'ada', roleName: 'Maintenance');
+      await db.customStatement(
+          "UPDATE app_user SET station_account = 1 WHERE username = 'ada'");
+
+      expect((await repo.listUsers()).single.stationAccount, isTrue);
+    });
   });
 
   group('createUser', () {
@@ -922,19 +1002,19 @@ void main() {
       expect(await _rawUserCount(db), 0);
     });
 
-    test('an empty password is refused without quoting anything', () async {
-      try {
-        await repo.createUser(
-            username: 'ada', password: '', roleName: 'Engineering');
-        fail('expected an ArgumentError');
-      } on ArgumentError catch (e) {
-        expect(e.invalidValue, isNull,
-            reason: 'ArgumentError.value would put the credential in the '
-                'message, and from there into whatever logs it');
-        expect(e.toString(), isNot(contains('hunter2')));
-      }
+    test('an empty password creates an account that signs in on its username '
+        'alone, marked so nothing derives against it', () async {
+      await repo.createUser(
+          username: 'line', password: '', roleName: 'Engineering');
 
-      expect(await _rawUserCount(db), 0);
+      final row = (await repo.user('line'))!;
+      expect(row.passwordHash, kNoPasswordMarker);
+      expect(isPasswordless(row.passwordHash), isTrue);
+      expect(row.salt, isEmpty, reason: 'there is nothing to salt');
+      expect(decodeStoredHash(row.passwordHash, saltB64: row.salt), isNull,
+          reason: 'the marker is not an algorithm, so a caller that forgets to '
+              'ask isPasswordless first fails the login rather than letting '
+              'somebody in');
     });
 
     test('usernames are trimmed but not case-folded', () async {
@@ -1187,19 +1267,24 @@ void main() {
       );
     });
 
-    test('an empty password is refused without quoting anything', () async {
+    test('an empty password removes the password rather than being refused, '
+        'and a real one puts it back', () async {
       await repo.createFirstUser(username: 'jon', password: 'hunter2');
       final before = (await repo.user('jon'))!.passwordHash;
+      expect(isPasswordless(before), isFalse);
 
-      try {
-        await repo.setPassword('jon', '');
-        fail('expected an ArgumentError');
-      } on ArgumentError catch (e) {
-        expect(e.invalidValue, isNull);
-        expect(e.toString(), isNot(contains('hunter2')));
-      }
+      await repo.setPassword('jon', '');
+      final opened = (await repo.user('jon'))!;
+      expect(opened.passwordHash, kNoPasswordMarker);
+      expect(opened.salt, isEmpty);
 
-      expect((await repo.user('jon'))!.passwordHash, before);
+      await repo.setPassword('jon', 'hunter3');
+      final closed = (await repo.user('jon'))!;
+      expect(isPasswordless(closed.passwordHash), isFalse,
+          reason: 'it is a round trip, not a one-way door');
+      expect(closed.salt, isNotEmpty);
+      expect(closed.passwordHash, isNot(before),
+          reason: 'a new salt, so a new hash');
     });
 
     test('the hash is derived before the transaction opens', () async {

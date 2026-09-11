@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:rxdart/rxdart.dart';
-import 'package:open62541/open62541.dart' show DynamicValue;
+import 'package:open62541/open62541_types.dart' show DynamicValue;
 
 import 'common.dart';
 import '../../painter/beckhoff/cu2508.dart';

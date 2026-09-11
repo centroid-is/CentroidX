@@ -167,11 +167,11 @@ List<Override> _accessOverrides() => <Override>[
 /// have.
 class _GoldenStore extends Fake implements AuditTrailStore {
   _GoldenStore({
-    this.rows = const <AuditEntryData>[],
+    this.rows = const <AuditRecord>[],
     this.totals = const <String, int>{},
   });
 
-  final List<AuditEntryData> rows;
+  final List<AuditRecord> rows;
 
   /// What `memberCountsByAction` answers.
   ///
@@ -183,7 +183,7 @@ class _GoldenStore extends Fake implements AuditTrailStore {
   final Map<String, int> totals;
 
   @override
-  Future<List<AuditEntryData>> entries(AuditQuery query) async => rows;
+  Future<List<AuditRecord>> entries(AuditQuery query) async => rows;
 
   @override
   Future<Map<String, int>> memberCountsByAction(

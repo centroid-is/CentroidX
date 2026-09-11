@@ -21,7 +21,46 @@ enum AccessSurface {
   pref('pref'),
 
   /// A navigation destination.
-  route('route');
+  route('route'),
+
+  /// A saved history view, or one of its saved periods.
+  ///
+  /// Added by plan 17-01. Before it, `guarded_history_views.dart` wrote its
+  /// rows under [pref] because the vocabulary had only three write surfaces
+  /// and a saved view is not a preference key. **Rows written before that
+  /// change carry `surface = 'pref'`**; see the call site for the
+  /// discontinuity that leaves in the trail.
+  historyView('history_view'),
+
+  /// A role, a user, or an access template.
+  ///
+  /// One surface for both stores, deliberately. Roles, users and templates are
+  /// the same concern — they all answer to [AccessGroup.users] — written by
+  /// two objects, and the existing `role.{n}` / `access_template.{n}` itemKey
+  /// vocabulary already tells them apart inside one surface. A seventh value
+  /// splitting templates out would put the same group in two places, which is
+  /// what this phase exists to stop.
+  ///
+  /// **The wire name is `'admin'`, the string Phase 6's rows already carry.**
+  /// Plan 17-01 was written to add this as `'access_admin'`; that would have
+  /// been a *second* name for rows that already exist, and the disagreement
+  /// would have been live rather than cosmetic — a caller asking
+  /// [AccessPolicy.groupForWireSurface] with a real admin row's
+  /// `surface = 'admin'` would have fallen down the unmapped branch to
+  /// `administer` while the row beside it recorded `groupRequired: 'users'`.
+  /// That is exactly the "the group that was checked and the surface that was
+  /// recorded cannot disagree" property this enum exists to hold. The name in
+  /// the data wins.
+  ///
+  /// The comment this replaces — in `audit.dart`, that `'admin'` must stay a
+  /// private literal because "nothing ever gates on an admin row" — was true
+  /// when it was written and is not true now: `groupForAdmin` gates on exactly
+  /// these rows, and the rows have carried `groupRequired: 'users'` since
+  /// Phase 6, which was already a grading with nowhere to be declared.
+  accessAdmin('admin'),
+
+  /// The backend's own `StateManConfig`, edited over the wire.
+  backendConfig('config');
 
   const AccessSurface(this.wireName);
 
@@ -236,11 +275,91 @@ class AccessPolicy {
   const AccessPolicy({
     TagBindingLookup? tagBindings,
     Map<String, AccessGroup> routes = const <String, AccessGroup>{},
+    Map<String, AccessGroup> cameras = const <String, AccessGroup>{},
   })  : _tagBindings = tagBindings,
-        _routes = routes;
+        _routes = routes,
+        _cameras = cameras;
 
   final TagBindingLookup? _tagBindings;
   final Map<String, AccessGroup> _routes;
+  final Map<String, AccessGroup> _cameras;
+
+  // ---------------------------------------------------------------------------
+  // The member vocabulary
+  //
+  // The names the four surfaces below are asked about, declared once so the
+  // app's stores and the relay's handler table can *name* them rather than
+  // re-type them. That is what makes this one vocabulary rather than three
+  // that happen to agree today. They are also the strings the stores write
+  // into an audit row's `reason` column, so the member that was graded and the
+  // member that was recorded cannot disagree.
+  // ---------------------------------------------------------------------------
+
+  /// `HistoryViewStore.createHistoryView`.
+  static const String historyViewCreate = 'createHistoryView';
+
+  /// `HistoryViewStore.updateHistoryView`.
+  static const String historyViewUpdate = 'updateHistoryView';
+
+  /// `HistoryViewStore.addHistoryViewPeriod`.
+  static const String historyViewAddPeriod = 'addHistoryViewPeriod';
+
+  /// `HistoryViewStore.deleteHistoryView`.
+  static const String historyViewDelete = 'deleteHistoryView';
+
+  /// `HistoryViewStore.deleteHistoryViewPeriod`.
+  static const String historyViewDeletePeriod = 'deleteHistoryViewPeriod';
+
+  /// `AccessTemplateStore.create`.
+  static const String templateCreate = 'create';
+
+  /// `AccessTemplateStore.update`.
+  static const String templateUpdate = 'update';
+
+  /// `AccessTemplateStore.rename`.
+  static const String templateRename = 'rename';
+
+  /// `AccessTemplateStore.delete`.
+  static const String templateDelete = 'delete';
+
+  /// `AccessTemplateStore.bind`.
+  static const String templateBind = 'bind';
+
+  /// `AccessTemplateStore.unbind`.
+  static const String templateUnbind = 'unbind';
+
+  /// `AccessAdminStore.createRole`.
+  static const String adminCreateRole = 'createRole';
+
+  /// `AccessAdminStore.updateRole`.
+  static const String adminUpdateRole = 'updateRole';
+
+  /// `AccessAdminStore.deleteRole`.
+  static const String adminDeleteRole = 'deleteRole';
+
+  /// `AccessAdminStore.renameRole`.
+  static const String adminRenameRole = 'renameRole';
+
+  /// `AccessAdminStore.createUser`.
+  static const String adminCreateUser = 'createUser';
+
+  /// `AccessAdminStore.deleteUser`.
+  static const String adminDeleteUser = 'deleteUser';
+
+  /// `AccessAdminStore.setUserRole`.
+  static const String adminSetUserRole = 'setUserRole';
+
+  /// `AccessAdminStore.setUserStationAccount`.
+  static const String adminSetUserStationAccount = 'setUserStationAccount';
+
+  /// `AccessAdminStore.setUserPassword`.
+  static const String adminSetUserPassword = 'setUserPassword';
+
+  /// The preference key whose grading [groupForBackendConfig] reads.
+  ///
+  /// `StateManConfig.configKey`. Named here rather than typed into
+  /// [groupForBackendConfig] so the link between the two is greppable.
+  static const String stateManConfigPrefKey = 'state_man_config';
 
   /// The group required to write [member] of tag [key]. **Never null** — the
   /// floor is [AccessGroup.operate].
@@ -304,6 +423,110 @@ class AccessPolicy {
     return _routes[path] ?? AccessGroup.operate;
   }
 
+  /// The group required to view camera [cameraId] — to be handed a playable
+  /// URL for its stream, whichever transport serves the bytes. **Never null**
+  /// — the floor is [AccessGroup.operate].
+  ///
+  /// The same shape as [groupForRoute], for the same reasons: viewing is an
+  /// operator act, so a camera nobody graded is an operator camera; the
+  /// grading table is passed in by the composition rather than imported
+  /// (this package must not know the plant's camera list); and an entry can
+  /// only raise the requirement above the floor, never lower it past it.
+  /// There is no "unrestricted" answer for a caller to collapse into
+  /// no-check-at-all.
+  ///
+  /// The caller is the relay's camera-ticket handler (server-side, per the
+  /// 2026-09-06 ruling), which asks this **before** minting the credential a
+  /// media endpoint will later verify. The rule "who may view a camera" is
+  /// stated here, once; the ticket book that carries the answer to the media
+  /// port holds no policy — it is a credential mechanism, the carve-out the
+  /// one-master-system ruling grants the relay.
+  AccessGroup groupForCamera(String cameraId) =>
+      _cameras[cameraId] ?? AccessGroup.operate;
+
+  /// The group required to perform [member] on a saved history view, or
+  /// **null when the operation is open to any session, anonymous included**.
+  ///
+  /// This is the one surface in the policy with an open operation, which is
+  /// the whole reason [groupForWireSurfaceOrOpen] exists beside
+  /// [groupForWireSurface].
+  ///
+  /// **The split, and who decided it.** The two destructive members require
+  /// `configure` because deleting a saved view or a saved period destroys work
+  /// that was not yours, from a page anyone can open. The three creative
+  /// members stay open because an operator saving a view of the line they run,
+  /// naming it, or bookmarking eight hours they want to look at again is doing
+  /// their job, and a wrongly-closed operator action becomes a workaround.
+  /// Every one of the five is audited regardless, so the choice is reviewable
+  /// from the trail rather than only from this comment.
+  ///
+  /// The relay graded these four different ways (`update` and `addPeriod` at
+  /// `operate` where the app leaves them open; the two deletes at `operate`
+  /// where the app requires `configure`). The app's split wins in **both**
+  /// directions — the 2026-09-07 ruling — so deleting a saved chart over the
+  /// WebSocket is a tightening that now matches what a panel already does.
+  ///
+  /// **An unrecognised member answers `administer`, not null.** T-17-01a: a
+  /// history-view method added later and not classified here must fail closed.
+  /// Falling to "open" would make every future member ungated by omission,
+  /// which is precisely the hole [groupForWireSurface]'s unmapped branch
+  /// exists to close.
+  AccessGroup? groupForHistoryView(String member) => switch (member) {
+        historyViewDelete || historyViewDeletePeriod => AccessGroup.configure,
+        historyViewCreate ||
+        historyViewUpdate ||
+        historyViewAddPeriod =>
+          null,
+        _ => AccessGroup.administer,
+      };
+
+  /// The group required to perform [member] on an access template.
+  /// **Never null.**
+  ///
+  /// Every template operation requires [AccessGroup.users], including one this
+  /// method has never heard of. Written as a single answer rather than as a
+  /// switch with a default arm **on purpose**: a switch would imply the answer
+  /// varies by member, and the next reader adding a member would have to
+  /// remember to add an arm. There is no open template operation, so this
+  /// cannot fail open by omission — which is a stronger property than a
+  /// default arm somebody could delete.
+  ///
+  /// [member] is accepted, and unused, so that a caller names which operation
+  /// it is asking about at the call site and so that a future split by member
+  /// is a change of body rather than a change of signature.
+  AccessGroup groupForTemplate(String member) => AccessGroup.users;
+
+  /// The group required to perform [member] on a role or a user.
+  /// **Never null.**
+  ///
+  /// [AccessGroup.users] for all nine members and for an unrecognised name,
+  /// for the same reason and in the same shape as [groupForTemplate]. Editing
+  /// who may do what is the one operation whose own permission cannot be
+  /// graded more finely without becoming circular.
+  AccessGroup groupForAdmin(String member) => AccessGroup.users;
+
+  /// The group required to write [section] of the backend's `StateManConfig`.
+  /// **Never null.**
+  ///
+  /// **Derived from [kPrefAccessRules], not restated.** The backend's config
+  /// and the `state_man_config` preference row are the same concern reached
+  /// through two transports — the same server list, the same PLC addresses —
+  /// so the two must not be able to disagree. Deriving makes the disagreement
+  /// impossible by construction rather than something a test has to catch
+  /// after somebody loosens one of the two copies. Change the
+  /// `state_man_config` row in [kPrefAccessRules] and this moves with it.
+  ///
+  /// [section] does not change the answer today. It is a parameter because the
+  /// caller knows which section it is writing and the audit row should say so;
+  /// an unrecognised section gets the same `administer` a recognised one does,
+  /// so a section added to the config later cannot arrive ungraded.
+  ///
+  /// Which sections are *editable* over the wire is a different question and
+  /// is not this method's: the `relay` section is refused by name at the
+  /// handler, because you do not edit the socket over the socket.
+  AccessGroup groupForBackendConfig(String section) =>
+      groupForPref(stateManConfigPrefKey);
+
   /// The group required to write [key] on [surface], where [surface] is a wire
   /// name from spec §2's `surface` column.
   ///
@@ -316,14 +539,62 @@ class AccessPolicy {
   /// test that proves an unknown surface fails closed.
   ///
   /// Never null: every surface answers a group. The tag arm floors at
-  /// `operate`, `'pref'` and `'route'` always answered one, and the unmapped
-  /// branch fails closed on `administer`.
+  /// `operate`, `'pref'` and `'route'` always answered one, the unmapped
+  /// branch fails closed on `administer`, and the one surface that *can*
+  /// answer open is collapsed to its strict answer here — see
+  /// [groupForWireSurfaceOrOpen] for which of the two a caller wants.
+  ///
+  /// **This is the member an audit row's `groupRequired` column asks**: it
+  /// wants the requirement, not the question of whether there was one.
   AccessGroup groupForWireSurface(String surface, String key,
+      {String? member}) {
+    final open = groupForWireSurfaceOrOpen(surface, key, member: member);
+    if (open != null) return open;
+
+    // Only a surface with an open operation reaches here, and today that is
+    // exactly one. The collapse is decided per surface rather than by a bare
+    // `?? configure`, so a surface that grows an open operation later cannot
+    // silently inherit the history view's strict answer.
+    return switch (AccessSurface.byWireName(surface)) {
+      // The strict answer for an open history-view member is what its
+      // destructive siblings require: the requirement that exists on this
+      // surface, rather than a group borrowed from somewhere else.
+      AccessSurface.historyView => AccessGroup.configure,
+      _ => AccessGroup.administer,
+    };
+  }
+
+  /// The group required to write [key] on [surface], or **null when the
+  /// operation is open**.
+  ///
+  /// **This is the member a guard asks**: it wants to know whether to check at
+  /// all. [groupForWireSurface] is what a caller asks when it needs an answer
+  /// for an audit row's `groupRequired` column.
+  ///
+  /// The pair exists because exactly one surface has an open operation
+  /// ([groupForHistoryView]'s three creative members), and the shape is here
+  /// so that stays visible rather than being smuggled into a nullable return
+  /// on the member everything else calls. Widening [groupForWireSurface] to
+  /// nullable instead would make every caller handle a null that only one
+  /// surface can produce, and the first caller to write `?? AccessGroup.operate`
+  /// would open five surfaces at once.
+  ///
+  /// **This is the switch.** [groupForWireSurface] delegates to it rather than
+  /// carrying a second copy — two switches over the same six surfaces would be
+  /// two places to forget a seventh.
+  ///
+  /// Null here means **open**, and only open. An unrecognised surface answers
+  /// `administer`, not null: "nobody classified this" and "anybody may do
+  /// this" must not look the same to a caller.
+  AccessGroup? groupForWireSurfaceOrOpen(String surface, String key,
       {String? member}) {
     return switch (AccessSurface.byWireName(surface)) {
       AccessSurface.tag => groupForTag(key, member: member),
       AccessSurface.pref => groupForPref(key),
       AccessSurface.route => groupForRoute(key),
+      AccessSurface.historyView => groupForHistoryView(key),
+      AccessSurface.accessAdmin => groupForAdmin(key),
+      AccessSurface.backendConfig => groupForBackendConfig(key),
       // A surface string this file does not know is either a new write surface
       // nobody classified or a typo. Both should land on the strictest answer
       // rather than the most permissive, so an unclassified surface is a

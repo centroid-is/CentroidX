@@ -6,13 +6,14 @@
 /// `Size.zero`, never by `findsNothing` on the icon, because an invisible
 /// widget that still takes 8 px of gap would pass the second and fail the
 /// first. The second is that the badge and the gate cannot drift: the badge
-/// calls `resolveAccessGate` and `routeAllowedWhenRepositoryUnavailable`
+/// calls `resolveAccessGate` and `routeAllowedWhenNobodyCanSignIn`
 /// rather than keeping its own copy of "locked when…", so the repository
 /// cases here are the same truth table plan 02-02 pinned, re-asserted through
 /// a widget.
 ///
 /// **Both access providers are overridden in every test.** An unoverridden
-/// `accessRepositoryProvider` reaches `databaseProvider`, which reads
+/// `accessAuthorityProvider` reaches `gatewayConfigProvider` and
+/// `databaseProvider`, which read the device-local store,
 /// `DatabaseConfig.fromPrefs()` and the station keychain; the test would
 /// become a race against real I/O.
 library;
@@ -23,19 +24,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/access_routes.dart';
+import 'package:tfc/core/access_authority.dart';
 import 'package:tfc/providers/access.dart';
+import 'package:tfc/providers/gateway_link.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/access_lock_badge.dart';
 import 'package:tfc_access/tfc_access.dart';
-import 'package:tfc_dart/core/access/access_repository.dart';
-
-/// A repository that answers nothing. The badge only ever asks whether one
-/// exists.
-class _StubRepository extends Fake implements AccessRepository {}
 
 /// Counts how many times each provider was actually built. Riverpod builds
 /// lazily, so a zero here is proof the badge never watched it.
-int _repositoryBuilds = 0;
+int _authorityBuilds = 0;
 int _sessionBuilds = 0;
 
 /// A session that resolves immediately to whatever the test needs, without
@@ -110,27 +108,35 @@ class _HangingSession extends AccessSessionController {
   void poke() {}
 }
 
-/// The repository states a widget test can be in. Resolved-null and thrown are
-/// the two causes of "unavailable" that must produce identical badges.
-Future<AccessRepository?> _presentRepository() async {
-  _repositoryBuilds++;
-  return _StubRepository();
+/// The authority states a widget test can be in. A resolved
+/// [AccessAuthority.none] and a thrown one are the two causes of "this station
+/// can authenticate nobody" that must produce identical badges.
+Future<AccessAuthority> _presentRepository() async {
+  _authorityBuilds++;
+  return AccessAuthority.local;
 }
 
-Future<AccessRepository?> _absentRepository() async {
-  _repositoryBuilds++;
-  return null;
+Future<AccessAuthority> _absentRepository() async {
+  _authorityBuilds++;
+  return AccessAuthority.none;
 }
 
-Future<AccessRepository?> _throwingRepository() async {
-  _repositoryBuilds++;
+/// A gateway panel: no repository by design, the credential verified over the
+/// socket, so the session — not the missing database — decides the lock.
+Future<AccessAuthority> _relayAuthority() async {
+  _authorityBuilds++;
+  return AccessAuthority.relay;
+}
+
+Future<AccessAuthority> _throwingRepository() async {
+  _authorityBuilds++;
   throw StateError('postgres will not answer');
 }
 
-/// A repository that never resolves — the station still connecting.
-Future<AccessRepository?> _hangingRepository() {
-  _repositoryBuilds++;
-  return Completer<AccessRepository?>().future;
+/// An authority that never resolves — the station still connecting.
+Future<AccessAuthority> _hangingRepository() {
+  _authorityBuilds++;
+  return Completer<AccessAuthority>().future;
 }
 
 AccessSession _anonymous() =>
@@ -154,14 +160,18 @@ Widget _host({
   required String? path,
   AccessSession? session,
   bool hangingSession = false,
-  Future<AccessRepository?> Function() repository = _presentRepository,
+  Future<AccessAuthority> Function() repository = _presentRepository,
+  bool? relayCanAuthenticate,
 }) {
   return ProviderScope(
     overrides: [
       accessSessionProvider.overrideWith(() => hangingSession
           ? _HangingSession()
           : _FixedSession(session ?? _anonymous())),
-      accessRepositoryProvider.overrideWith((ref) => repository()),
+      accessAuthorityProvider.overrideWith((ref) => repository()),
+      if (relayCanAuthenticate != null)
+        relayCanAuthenticateProvider
+            .overrideWith((ref) => relayCanAuthenticate),
     ],
     child: MaterialApp(
       home: Scaffold(
@@ -197,7 +207,7 @@ const String _kUnraisedRoute = '/dashboard';
 
 void main() {
   setUp(() {
-    _repositoryBuilds = 0;
+    _authorityBuilds = 0;
     _sessionBuilds = 0;
     RouteRegistry().clearRouteGroups();
     installRaisedRoutes();
@@ -226,7 +236,7 @@ void main() {
       expect(_sessionBuilds, 0,
           reason: 'the hundreds of ordinary entries must not each subscribe '
               'to the session');
-      expect(_repositoryBuilds, 0,
+      expect(_authorityBuilds, 0,
           reason: 'a build that raises nothing must render its menu without '
               'ever touching the database or the keychain');
     });
@@ -237,7 +247,7 @@ void main() {
 
       expect(_badgeSize(tester), Size.zero);
       expect(_sessionBuilds, 0);
-      expect(_repositoryBuilds, 0);
+      expect(_authorityBuilds, 0);
     });
 
     testWidgets('a raised route the session holds renders zero width',
@@ -383,6 +393,88 @@ void main() {
       expect(_lockGlyph, findsOneWidget);
     });
 
+    testWidgets(
+        'a gateway panel locks a configure route while anonymous and unlocks '
+        'it for a session holding the group', (tester) async {
+      // The panel has no repository and never will. Before the authority
+      // existed both of these rendered a lock — and the menu, which hides what
+      // the badge locks, dropped the entry entirely.
+      await tester.pumpWidget(_host(
+        path: _kConfigureRoute,
+        repository: _relayAuthority,
+      ));
+      await tester.pumpAndSettle();
+      expect(_lockGlyph, findsOneWidget,
+          reason: 'nobody is signed in yet, on any transport');
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpWidget(_host(
+        path: _kConfigureRoute,
+        repository: _relayAuthority,
+        session: _holding(const {AccessGroup.operate, AccessGroup.configure}),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(_badgeSize(tester), Size.zero);
+      expect(_lockGlyph, findsNothing,
+          reason: 'the gateway verified this session; the missing database is '
+              'not a reason to lock the page');
+    });
+
+    testWidgets(
+        'Server Config wears a lock on a healthy gateway panel, and the gate '
+        'agrees', (tester) async {
+      // The badge and the route gate share both halves of the exemption: the
+      // path predicate and `relayCanAuthenticateProvider`. A badge that kept
+      // its own copy of either is how a lock ends up on a page that opens.
+      await tester.pumpWidget(_host(
+        path: kServerConfigRoute,
+        repository: _relayAuthority,
+        relayCanAuthenticate: true,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(_lockGlyph, findsOneWidget,
+          reason: 'a gateway panel has no repository by design; that must no '
+              'longer read as a database outage');
+    });
+
+    testWidgets(
+        'Server Config loses its lock when the gateway link cannot carry a '
+        'sign-in', (tester) async {
+      await tester.pumpWidget(_host(
+        path: kServerConfigRoute,
+        repository: _relayAuthority,
+        relayCanAuthenticate: false,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(_badgeSize(tester), Size.zero);
+      expect(_lockGlyph, findsNothing,
+          reason: 'the page that fixes a mistyped gateway URL must not wear a '
+              'lock the operator cannot pass');
+    });
+
+    testWidgets(
+        'an unreachable gateway link unlocks Server Config and nothing else',
+        (tester) async {
+      for (final path in kRaisedRoutes.keys) {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpWidget(_host(
+          path: path,
+          repository: _relayAuthority,
+          relayCanAuthenticate: false,
+        ));
+        await tester.pumpAndSettle();
+
+        expect(
+          _lockGlyph,
+          path == kServerConfigRoute ? findsNothing : findsOneWidget,
+          reason: path,
+        );
+      }
+    });
+
     testWidgets('the two causes of unavailable give the same badge, per route',
         (tester) async {
       // Compared as measurements rather than against an expected value, so a
@@ -453,7 +545,7 @@ void main() {
       await tester.pumpWidget(ProviderScope(
         overrides: [
           accessSessionProvider.overrideWith(() => session),
-          accessRepositoryProvider.overrideWith((ref) => _presentRepository()),
+          accessAuthorityProvider.overrideWith((ref) => _presentRepository()),
         ],
         child: const MaterialApp(
           home: Scaffold(

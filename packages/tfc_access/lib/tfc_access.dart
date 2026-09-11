@@ -19,3 +19,4 @@ export 'src/auth_provider.dart';
 export 'src/authenticated_user.dart';
 export 'src/inactivity_monitor.dart';
 export 'src/password_hasher.dart';
+export 'src/user_summary.dart';

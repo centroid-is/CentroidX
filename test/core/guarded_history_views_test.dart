@@ -264,7 +264,12 @@ void main() {
   });
 
   group('the rows', () {
-    test('every row carries the pref surface by its wire name', () async {
+    test('every row carries the history_view surface by its wire name',
+        () async {
+      // Plan 17-01. These rows carried `pref` until the policy grew a real
+      // history-view surface — a saved view is not a preference key, and the
+      // only reason it borrowed that name was that the vocabulary had three
+      // write surfaces and none of them fitted.
       session = _signedIn({AccessGroup.configure});
       final store = storeWith();
 
@@ -277,7 +282,15 @@ void main() {
 
       expect(audit.rows, hasLength(5));
       expect(audit.rows.map((r) => r.surface).toSet(),
-          {AccessSurface.pref.wireName});
+          {AccessSurface.historyView.wireName});
+      // The literal, not only the enum reference: this is stored data, and an
+      // arm written only against `AccessSurface.historyView.wireName` would
+      // follow a rename of the wire name and never notice that a year of rows
+      // now means something else.
+      expect(audit.rows.map((r) => r.surface).toSet(), {'history_view'});
+      expect(audit.rows.map((r) => r.surface), isNot(contains('pref')),
+          reason: 'the discontinuity is deliberate and documented at the call '
+              'site; rows written before the deploy still read pref');
     });
 
     test('item keys are prefixed so the trail viewer can group them', () async {
@@ -384,21 +397,23 @@ void main() {
     });
   });
 
-  group('the group choice is one documented line', () {
+  group('the group choice is one answer, and it lives in tfc_access', () {
     test('the delete group is configure and the write group is open', () {
+      // Unchanged in behaviour by plan 17-01, and that is the point: the
+      // constants moved, the grading did not.
       expect(kHistoryViewDeleteGroup, AccessGroup.configure);
       expect(kHistoryViewWriteGroup, isNull,
-          reason: 'null means open to any session; changing this to '
-              'AccessGroup.configure gates all five');
+          reason: 'null means open to any session; changing '
+              'AccessPolicy.groupForHistoryView gates all five');
     });
 
-    test('both constants carry a doc comment saying what changing them does',
-        () {
+    test('both names carry a doc comment saying what changing them does', () {
       final lines =
           File('lib/core/guarded_history_views.dart').readAsLinesSync();
       for (final name in ['kHistoryViewDeleteGroup', 'kHistoryViewWriteGroup']) {
-        final at = lines.indexWhere((l) => l.contains('$name ='));
-        expect(at, greaterThan(0), reason: '$name is declared');
+        final at = lines.indexWhere((l) => l.contains('get $name =>'));
+        expect(at, greaterThan(0),
+            reason: '$name is a getter over the policy, not a declaration');
 
         final doc = <String>[];
         for (var i = at - 1; i >= 0 && lines[i].trimLeft().startsWith('///');
@@ -411,15 +426,80 @@ void main() {
       }
     });
 
-    test('the store does not consult AccessPolicy — the group is declared here',
+    test('the store consults AccessPolicy and declares no group of its own',
         () {
+      // This arm asserted the exact opposite until plan 17-01, on the argument
+      // that a second source for one answer would drift. The argument was
+      // right and the conclusion was backwards: because the answer lived here,
+      // packages/tfc_relay_server could not read it, invented
+      // `role == operate`, and got a different answer in both directions
+      // (sweep §3.12). The fix is not to declare it more carefully; it is to
+      // declare it somewhere both processes can reach.
       final source =
           File('lib/core/guarded_history_views.dart').readAsStringSync();
-      expect(source, isNot(contains('required AccessPolicy')),
-          reason: 'the group is declared at the two constants, not looked up');
-      expect(source, isNot(contains('groupForWireSurface')),
-          reason: 'one answer, declared at the two constants; a '
-              'kPrefAccessRules entry would be a second source for it');
+      final code = source
+          .split('\n')
+          .where((l) => !l.trimLeft().startsWith('//'))
+          .join('\n');
+
+      expect(code, contains('groupForHistoryView'),
+          reason: 'the group is looked up from the policy');
+      expect(code, isNot(contains('const AccessGroup')),
+          reason: 'and is not declared a second time here');
+    });
+
+    test('the five members ask the policy by name, not by a literal', () {
+      // The live half: it is not enough that the file mentions the policy. If
+      // a call site passed a string literal instead of the named constant, the
+      // audit `reason` and the graded member could drift apart again — which
+      // is the failure the member-name vocabulary exists to prevent.
+      final code = File('lib/core/guarded_history_views.dart')
+          .readAsLinesSync()
+          .where((l) => !l.trimLeft().startsWith('//'))
+          .join('\n');
+      for (final member in [
+        'historyViewCreate',
+        'historyViewUpdate',
+        'historyViewAddPeriod',
+        'historyViewDelete',
+        'historyViewDeletePeriod',
+      ]) {
+        expect(code, contains('AccessPolicy.$member'),
+            reason: '$member is named, not re-typed as a string');
+      }
+      for (final literal in [
+        "'createHistoryView'",
+        "'deleteHistoryView'",
+        "'deleteHistoryViewPeriod'",
+      ]) {
+        expect(code, isNot(contains(literal)),
+            reason: 'the member name $literal is the policy vocabulary, not a '
+                'literal repeated at the call site');
+      }
+    });
+
+    test('the audit reason and the graded member are the same string',
+        () async {
+      // The behavioural half of the arm above, through the store rather than
+      // through its source. A row's `reason` is the member the policy graded,
+      // so a delete row cannot say `deleteHistoryView` while having been
+      // graded as something open.
+      session = _signedIn({AccessGroup.configure});
+      final store = storeWith();
+
+      await store.deleteHistoryView(4);
+      await store.createHistoryView('a', const []);
+
+      final deleteRow = audit.rows[0];
+      expect(deleteRow.reason, AccessPolicy.historyViewDelete);
+      expect(deleteRow.groupRequired,
+          const AccessPolicy().groupForHistoryView(deleteRow.reason!)!.name);
+
+      final createRow = audit.rows[1];
+      expect(createRow.reason, AccessPolicy.historyViewCreate);
+      expect(const AccessPolicy().groupForHistoryView(createRow.reason!), isNull,
+          reason: 'and an open member records an empty groupRequired');
+      expect(createRow.groupRequired, '');
     });
   });
 

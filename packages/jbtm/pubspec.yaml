@@ -11,6 +11,16 @@ dependencies:
   logger: ^2.4.0
   open62541: ^1.5.7+3
 
+dependency_overrides:
+  open62541:
+    git:
+      url: https://github.com/centroid-is/open62541_dart.git
+      # `monitor-quality-sourcetime`: 1.5.7+3 (main) plus DynamicValue
+      # .statusCode / .sourceTimestamp and opt-in `deliverBadStatus`. Keep in
+      # step with the root pubspec.yaml; every open62541 override in this
+      # repo carries this same SHA.
+      ref: 2ff18e4ee0af759cba4258a02648889bbbd526ae
+
 dev_dependencies:
   test: ^1.25.0
   lints: ^5.0.0

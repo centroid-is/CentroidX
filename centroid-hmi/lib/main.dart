@@ -533,15 +533,18 @@ RoutesLocationBuilder createLocationBuilder(
   //  - The `!`. A path missing from kRaisedRoutes throws when the route is
   //    built, rather than resolving to `operate` and quietly leaving the route
   //    open. A loud failure at boot beats a silent open door.
-  //  - routeAllowedWhenRepositoryUnavailable(path), not a boolean at each call
+  //  - routeAllowedWhenNobodyCanSignIn(path), not a boolean at each call
   //    site. The menu badge asks the same function, so the one route that stays
-  //    open while the access repository is unavailable cannot drift into a lock
-  //    icon on a page that opens, or the reverse. Exactly one place knows which
-  //    route that is, and it is lib/access_routes.dart.
+  //    open on a station nobody can sign in at cannot drift into a lock icon on
+  //    a page that opens, or the reverse. Exactly one place knows which route
+  //    that is, and it is lib/access_routes.dart. The other half of that
+  //    condition — whether a gateway panel's link can carry a sign-in — is not
+  //    passed from here at all: AccessGate watches relayCanAuthenticateProvider
+  //    itself, and the badge watches the same one.
   Widget gated(String path, String title, Widget child) => AccessGate(
         group: kRaisedRoutes[path]!,
         title: title,
-        allowWhenRepositoryUnavailable: routeAllowedWhenRepositoryUnavailable(path),
+        allowWhenNobodyCanSignIn: routeAllowedWhenNobodyCanSignIn(path),
         child: child,
       );
 

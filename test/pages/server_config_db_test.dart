@@ -472,7 +472,7 @@ void main() {
           find.textContaining('Config imported from database'), findsOneWidget);
 
       // The imported config is now the saved one.
-      final saved = await StateManConfig.fromPrefs(prefs);
+      final saved = await StateManConfigStorage.fromPrefs(prefs);
       expect(saved.opcua.single.serverAlias, 'imported_plc');
       expect(saved.opcua.single.endpoint, 'opc.tcp://10.9.9.9:4840');
 
@@ -551,7 +551,7 @@ void main() {
       expect(find.textContaining('generate new certificates for 1 server'),
           findsOneWidget);
 
-      final saved = await StateManConfig.fromPrefs(prefs);
+      final saved = await StateManConfigStorage.fromPrefs(prefs);
       final byAlias = {for (final s in saved.opcua) s.serverAlias: s};
       expect(utf8.decode(byAlias['plc1']!.sslCert!), 'real plc1 cert');
       expect(utf8.decode(byAlias['plc1']!.sslKey!), 'real plc1 key');

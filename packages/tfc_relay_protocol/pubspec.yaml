@@ -1,0 +1,44 @@
+name: tfc_relay_protocol
+description: >-
+  Wire protocol for the relay pipe: message shapes, quality codes, and value
+  sanitization shared by the backend gateway and the Flutter clients.
+  Pure Dart — no Flutter, no transport, no codegen. See relay-comm-design.md.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+# This package carried **zero** runtime dependencies from Phase 1 until Phase
+# 17, and that was on purpose: a wire protocol both ends import is the worst
+# place in the tree to put a version constraint. The one below is the price of
+# a rule Jón set, and it buys more than it costs.
+#
+# `tfc_access` is the master access-control vocabulary — seven AccessGroups,
+# AccessRole, AuthenticatedUser, AuditRecord, AccessTemplate. Without this edge
+# `src/access_api.dart` would have to restate those seven group names as its
+# own wire strings, and a second vocabulary for one plant is precisely the
+# duplication PROJECT.md's Constraints forbid and the whole reason Phase 17
+# exists ("one master access control system, the websocket can build on top of
+# that").
+#
+# It is safe on the four grounds that matter here:
+#   * pure Dart — no Flutter, no drift, no open62541 FFI, enforced by that
+#     package's own test/package_purity_test.dart;
+#   * four leaf dependencies (collection, meta, clock, cryptography), every one
+#     of them already in this repository's solve;
+#   * a path dependency inside this repository, so nothing is fetched from a
+#     registry and no package-legitimacy question arises;
+#   * the reverse edge stays forbidden. tfc_access must never depend on this
+#     package. Measured at 17-03: its own package_purity_test.dart forbids
+#     `tfc_dart`, `flutter`, `open62541` and `cryptography_flutter` in that
+#     pubspec and does NOT yet forbid `tfc_relay_protocol`, so the arm named
+#     "arm 11" in test/access_api_test.dart holds that half from this side
+#     until somebody who owns tfc_access adds the fourth string to that list.
+dependencies:
+  tfc_access:
+    path: ../tfc_access
+
+dev_dependencies:
+  lints: ^4.0.0
+  test: ^1.25.0
