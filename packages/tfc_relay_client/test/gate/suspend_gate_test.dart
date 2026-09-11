@@ -550,6 +550,22 @@ void main() {
               'frozen, so a panel still showing the old one has reconnected '
               'without resyncing — the silent-permanent-staleness case (rule '
               '2: resync on reconnect, never resume)');
+      // **Waited for, not sampled.** This arm is about a *leak* — its own
+      // reason says "more means the reaped one is still registered beside its
+      // replacement" — and zero is not that. Zero is the panel's new session
+      // not being registered yet, which is ordinary: the wait above returns as
+      // soon as a report carries the plant's new value, and on a fast resync
+      // (40 ms, one report, measured on the macOS runner) that lands before
+      // the gateway has finished registering the socket it came over.
+      //
+      // Sampling an instant here asked a question the row does not have — "is
+      // it registered *now*" — and got the answer that means "not yet" while
+      // reading as though it meant "never".
+      await until(
+        'the gateway to register the panel\'s new session',
+        () => plant.gateway.sessions.sessionCount >= 1,
+        budget: _recovery,
+      );
       expect(plant.gateway.sessions.sessionCount, 1,
           reason: 'the gateway holds '
               '${plant.gateway.sessions.sessionCount} sessions after the panel '
