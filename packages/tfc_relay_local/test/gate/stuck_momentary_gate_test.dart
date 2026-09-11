@@ -243,10 +243,7 @@ void main() {
     // has not fired yet) or drops to 0 (it has). A live panel would have
     // advanced it by several ticks here.
     final afterKill = await _sampleTag(fixture, 'ST101', _heldKey);
-    expect(afterKill.every((v) => v <= frozenAt), isTrue,
-        reason: 'the held counter rose above $frozenAt after the panel was '
-            'killed ($afterKill) — a dead panel sends no ticks, so a counter '
-            'that kept advancing means the kill did not take');
+    expectCounterStopped(afterKill, frozenAt, 'the panel was killed');
 
     // Reads 0 within one heartbeatDeadline, printed rather than assumed.
     final toZero = Stopwatch()..start();
@@ -335,9 +332,7 @@ void main() {
     // never rises above where it froze (it holds, then drops to 0 when the
     // gateway learns the panel is gone).
     final afterCut = await _sampleTag(fixture, 'ST101', _heldKey);
-    expect(afterCut.every((v) => v <= frozenAt), isTrue,
-        reason: 'the held counter rose above $frozenAt after the blackhole '
-            '($afterCut) — no tick can cross a blackholed link');
+    expectCounterStopped(afterCut, frozenAt, 'the blackhole');
 
     // The client-side property Phase 5 shipped: asking the controller to
     // release answers rather than throwing into onTapCancel, even over a link
@@ -431,27 +426,7 @@ void main() {
     // means a *running* timer shows about eight increments across this window,
     // not one.
     final afterPause = await _sampleTag(fixture, 'ST101', _heldKey);
-    expect(afterPause.last, lessThanOrEqualTo(frozenAt + 1),
-        reason: 'the held counter reached ${afterPause.last} after freezing at '
-            '$frozenAt ($afterPause). At most one pulse may be in flight when '
-            'the isolate reaches its safepoint; more than that is a pulse '
-            'timer still running inside a paused isolate');
-    final advanced = [
-      for (var i = 1; i < afterPause.length; i++)
-        if (afterPause[i] > afterPause[i - 1]) '${afterPause[i - 1]}->'
-            '${afterPause[i]}',
-    ];
-    expect(advanced.length, lessThanOrEqualTo(1),
-        reason: 'the held counter advanced $advanced across '
-            '${afterPause.length} samples taken after the pause '
-            '($afterPause). One step is the pulse that was already scheduled '
-            'when the isolate reached its safepoint, and it lands wherever the '
-            'sampling happens to catch it — between two samples just as often '
-            'as before the first, which is what [9, 10, 10, ...] is. More than '
-            'one step is a pulse timer still running inside a paused isolate, '
-            'and a hold the gateway believes in that nobody is holding. A fall '
-            'to 0 is the reaper and is allowed here — the arm below waits for '
-            'it');
+    expectCounterStopped(afterPause, frozenAt, 'the pause');
 
     // Reaches 0 when the reaper takes the paused session.
     await until(
@@ -484,4 +459,38 @@ void main() {
         reason: 'the paused session outlived one heartbeat deadline before '
             'its hold was zeroed');
   }, timeout: const Timeout(Duration(minutes: 2)));
+}
+
+/// Asserts the held counter **stopped** at [frozenAt], whatever stopped it.
+///
+/// **Why this is not `every((v) => v <= frozenAt)`.** `frozenAt` is sampled the
+/// instant the lever is pulled — a kill, a blackhole, a pause — and one pulse
+/// is usually already in flight at that moment: generated, handed to the pipe
+/// or put on the wire, not yet counted by the plant. It lands afterwards and
+/// the counter reads one higher, for ever. That is a stopped counter, and the
+/// ceiling read it as a running one.
+///
+/// Measured the same way on all three levers: `[9, 10, 10, 10, 10, 10, 10, 10]`
+/// on the Windows agent, against eight samples at 60 ms and a 50 ms pulse
+/// period — a counter that was still running would show about eight steps, not
+/// one. That ratio is the discriminator, and it is what makes "at most one"
+/// safe rather than slack.
+///
+/// A fall to 0 is the reaper and is allowed; the arms that care about it wait
+/// for it themselves.
+void expectCounterStopped(List<int> samples, int frozenAt, String what) {
+  expect(samples.last, lessThanOrEqualTo(frozenAt + 1),
+      reason: 'the held counter reached ${samples.last} after $what, having '
+          'frozen at $frozenAt ($samples). At most one pulse may be in flight '
+          'when the lever is pulled; more than that is a panel still sending');
+
+  final advanced = [
+    for (var i = 1; i < samples.length; i++)
+      if (samples[i] > samples[i - 1]) '${samples[i - 1]}->${samples[i]}',
+  ];
+  expect(advanced.length, lessThanOrEqualTo(1),
+      reason: 'the held counter advanced $advanced across ${samples.length} '
+          'samples taken after $what ($samples). One step is the pulse already '
+          'in flight; more is a hold the gateway believes in that nobody is '
+          'holding');
 }
