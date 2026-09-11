@@ -31,3 +31,25 @@ const bool kChatEnabled = bool.fromEnvironment('CENTROIDX_CHAT', defaultValue: t
 /// ships in flag-off builds — only the Dart code is tree-shaken.
 const bool kKnowledgeEnabled =
     bool.fromEnvironment('CENTROIDX_KNOWLEDGE', defaultValue: true);
+
+/// Whether the Web page asset is compiled into the app: [WebViewAssetView],
+/// its WKWebView surface, and its entry in the page-editor palette.
+///
+/// Off in deployment builds. The asset only works where `webview_flutter`
+/// has an implementation — macOS — so on the eLinux stations, Linux desktop
+/// and Windows it can never be more than a placeholder, and an asset nobody
+/// can use does not belong in the palette on those builds.
+///
+/// Deliberately NOT gated: the `WebViewAssetConfig` JSON deserializer. A
+/// flag-off build must round-trip a saved page without silently dropping the
+/// asset — the same contract `kKnowledgeEnabled` keeps for
+/// `DrawingViewerConfig`.
+///
+/// **This does not make the build faster.** `webview_flutter_wkwebview` is a
+/// native plugin registered from the pubspec, so its pod is still compiled
+/// and its framework still ships in flag-off builds — only the Dart code is
+/// tree-shaken. Exactly the caveat noted for `pdfrx` above. Cutting the
+/// native build cost would mean removing the dependency from the pubspec,
+/// not setting a define.
+const bool kWebViewEnabled =
+    bool.fromEnvironment('CENTROIDX_WEBVIEW', defaultValue: true);
