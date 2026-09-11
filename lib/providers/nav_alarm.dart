@@ -25,6 +25,12 @@ part 'nav_alarm.g.dart';
 
 /// Page path -> the highest active alarm level announcing itself there.
 ///
+/// Steady state, not edges: this is what a navigation entry should *be*
+/// pulsing at right now. The raise edge — "an alarm just came on, take me
+/// there" — is `lib/providers/alarm_auto_navigation.dart`, which reads the
+/// same beacons through the same switch so the two can never disagree about
+/// which page an alarm belongs to.
+///
 /// A page is announcing when it holds an Alarm asset with
 /// [AlarmVisibilityConfig.announceInNavigation] on — the default — bound to an
 /// active alarm. The switch lives on the beacon, not the alarm: an alarm is a
