@@ -19,6 +19,7 @@
 #include "gpu_diagnosis.h"
 #include "gpu_watchdog.h"
 #include "log_throttle.h"
+#include "shutdown_policy.h"
 #include "win32_window.h"
 
 // A window that does nothing but host a Flutter view.
@@ -27,6 +28,12 @@ class FlutterWindow : public Win32Window {
   // Creates a new FlutterWindow hosting a Flutter view running |project|.
   explicit FlutterWindow(const flutter::DartProject& project);
   virtual ~FlutterWindow();
+
+  // What this window knows about how the process is ending: whether the
+  // operator closed it. wWinMain asks it how to leave once the loop returns.
+  const tfc::ShutdownPolicy& shutdown_policy() const {
+    return shutdown_policy_;
+  }
 
  protected:
   // Win32Window:
@@ -214,6 +221,10 @@ class FlutterWindow : public Win32Window {
   // 35 s apart and so let a teardown land on an unfinished startup. See
   // engine_rebuild_gate.h.
   tfc::EngineRebuildGate rebuild_gate_;
+
+  // Withdraws crash-restart when the operator closes the window. See
+  // shutdown_policy.h for the 2026-09-11 close-crash loop it ends.
+  tfc::ShutdownPolicy shutdown_policy_;
 
   // Owned by the controller's messenger, so it is torn down with it.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>

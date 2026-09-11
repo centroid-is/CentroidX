@@ -20,6 +20,7 @@
 
 #include "flutter/generated_plugin_registrant.h"
 #include "runner_log.h"
+#include "utils.h"
 
 // The GPU device-loss problem this file guards against is described in
 // gpu_watchdog.h. Everything below is adapter: window messages, engine
@@ -111,6 +112,7 @@ constexpr const char* kTag = "[gpu-watchdog]";
 // hmi-runner.log now lists every restart of a run in order, with reasons.
 constexpr const char* kEngineTag = "[engine]";
 constexpr const char* kDartTag = "[dart]";
+constexpr const char* kShutdownTag = "[shutdown]";
 
 // The method channel the UI isolate reports on. Its Dart half lives in
 // lib/core/runner_liveness.dart.
@@ -851,7 +853,9 @@ void FlutterWindow::ExitAfterDeviceLoss() {
   LogWatchdog("ending the process so the report above is the last thing in "
               "this log; exit code " +
               std::to_string(kGpuLossExitCode) +
-              ". RegisterApplicationRestart should bring it back.");
+              ". This is a clean exit, which RegisterApplicationRestart does "
+              "NOT restart (it covers crashes and hangs) -- a supervisor has "
+              "to bring the app back.");
 
   StopWatchdogTimer();
 
@@ -1114,6 +1118,23 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // The top-level window is being destroyed, so the operator closed the app.
+  // Crash-restart is withdrawn HERE, before OnDestroy tears the engine and its
+  // plugins down: on 2026-09-11 that teardown crashed on every close and
+  // Windows relaunched the app each time. Not consumed -- the base class still
+  // runs the teardown and posts the quit. See shutdown_policy.h.
+  if (message == WM_DESTROY) {
+    if (shutdown_policy_.WindowDestroyed(true).withdraw_restart) {
+      tfc::RunnerLogLine(
+          kShutdownTag,
+          WithdrawCrashRestart()
+              ? "window closed; crash-restart withdrawn, so nothing that "
+                "fails from here on relaunches the app"
+              : "window closed, but UnregisterApplicationRestart FAILED -- a "
+                "crash during teardown may still relaunch the app");
+    }
+  }
+
   // Handled before Flutter sees it. Sent from the watchdog's timer thread; see
   // the note on the tick in flutter_window.h.
   if (message == kWatchdogTickMessage) {

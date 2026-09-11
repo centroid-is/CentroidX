@@ -23,6 +23,7 @@ add_executable(${BINARY_NAME} WIN32
   "path_utils.cpp"
   "runner_log.cpp"
   "engine_rebuild_gate.cpp"
+  "shutdown_policy.cpp"
   "utils.cpp"
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
