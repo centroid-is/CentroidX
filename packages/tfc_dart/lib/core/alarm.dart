@@ -189,7 +189,27 @@ class AlarmConfig {
 class AlarmManConfig {
   final List<AlarmConfig> alarms;
 
-  AlarmManConfig({required this.alarms});
+  /// Whether a raising alarm should pull the operator to the page that shows
+  /// it — the beacon's page, the same page whose navigation entry pulses.
+  ///
+  /// Plant-wide rather than per-station, and stored here rather than under a
+  /// preference key of its own: it belongs to the same `alarm_man_config`
+  /// blob the alarms themselves live in, which `kPrefAccessRules` already
+  /// classifies `configure`, so the switch is reachable by exactly the roles
+  /// that may edit an alarm and every flip lands in the audit trail without a
+  /// new rule.
+  ///
+  /// Off by default. A station that has been running for years must not start
+  /// yanking its operators between screens because it was upgraded; turning
+  /// this on is a decision somebody makes for a plant, once.
+  ///
+  /// Mutable, unlike [alarms] which is mutated in place: this is one bool and
+  /// [AlarmMan.setAutoNavigate] reassigns it, so the running [AlarmMan] and
+  /// the editor that flipped it agree without a reload.
+  @JsonKey(name: 'auto_navigate', defaultValue: false)
+  bool autoNavigate;
+
+  AlarmManConfig({required this.alarms, this.autoNavigate = false});
 
   factory AlarmManConfig.fromJson(Map<String, dynamic> json) =>
       _$AlarmManConfigFromJson(json);
@@ -483,6 +503,20 @@ class AlarmMan {
       (a) => a.alarm.config.title,
       (a) => a.alarm.config.description,
     ]);
+  }
+
+  /// Turns the auto-navigation flag on or off and persists it.
+  ///
+  /// Assigns before saving so a caller that reads [config] back in the same
+  /// turn — the alarm editor rebuilding its switch — sees the new value even
+  /// though the write is still in flight. A denied write (the guard, on a
+  /// session without `configure`) therefore leaves the in-memory flag ahead of
+  /// the stored one until the next load, which is the same shape every other
+  /// writer here has: [updateAlarm] mutates the list before `_saveConfig` too.
+  void setAutoNavigate(bool value) {
+    if (config.autoNavigate == value) return;
+    config.autoNavigate = value;
+    _saveConfig();
   }
 
   void _saveConfig() async {

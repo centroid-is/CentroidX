@@ -22,7 +22,10 @@ import '../providers/access.dart';
 import '../providers/theme.dart';
 import '../providers/alarm.dart';
 import '../providers/nav_alarm.dart';
-import 'package:tfc_access/tfc_access.dart' show AccessSession;
+import '../providers/alarm_auto_navigation.dart';
+import '../access_routes.dart';
+import 'access_lock_badge.dart';
+import 'package:tfc_access/tfc_access.dart' show AccessGroup, AccessSession;
 import 'package:tfc_dart/core/alarm.dart';
 import 'alarm.dart';
 import 'nav_alarm_badge.dart';
@@ -131,6 +134,56 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
           (alarmMan) => alarmMan
               .activeAlarms()
               .map((activeAlarms) => (alarmMan, activeAlarms.toList())));
+
+  @override
+  void initState() {
+    super.initState();
+    // A raise that lands in the gap between one page's scaffold going and the
+    // next one's arriving would have nobody listening. The queue survives it --
+    // it lives on the keep-alive navigator, not here -- so the newly mounted
+    // scaffold drains it instead. After the first frame, because this reads
+    // the route the scaffold is being built for.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _takeAlarmNavigation();
+    });
+  }
+
+  /// Beams to the page an alarm just raised on, if there is one and if this is
+  /// a moment to move.
+  ///
+  /// Everything about *which* page is the navigator's call; what is decided
+  /// here is the pair of facts only a mounted scaffold holds -- where the
+  /// operator is standing, and what their session may open.
+  void _takeAlarmNavigation() {
+    final navigator = ref.read(alarmAutoNavigationProvider.notifier).navigator;
+    if (!navigator.hasPending) return;
+
+    final currentPath = currentBeamPath(context);
+
+    // Never off a raised page. `/advanced/page-editor`, the alarm editor and
+    // server config are all pages somebody had to sign in to open, and they
+    // are where unsaved work lives; an alarm that yanks an engineer out of a
+    // half-drawn mimic costs more than the jump is worth. Read off the route
+    // declaration rather than a list of paths, so a page published for
+    // `configure` in the page editor is covered the day it is created.
+    final suppressed =
+        accessGroupForRoute(currentPath) != AccessGroup.operate;
+
+    final target = navigator.take(
+      currentPath: currentPath,
+      // The operator's own view of the menu. A page they cannot open would
+      // swap itself for the locked notice the moment they landed on it, which
+      // is a worse answer than staying put. `watch: false` -- this runs from a
+      // listener and a post-frame callback, never during build.
+      canOpen: (path) => !accessRouteLocked(ref, path, watch: false),
+      suppressed: suppressed,
+    );
+    if (target == null) return;
+
+    _logger.i('Alarm ${target.alarmUid} (${target.level.name}) '
+        'navigating to ${target.path}');
+    Beamer.of(context).beamToNamed(target.path);
+  }
 
   void _toggleFullscreen() {
     setState(() {
@@ -324,6 +377,15 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
       final wasElevated = previous?.valueOrNull?.isElevated ?? false;
       final isElevated = next.valueOrNull?.isElevated ?? false;
       if (wasElevated && !isElevated) unawaited(_returnToStartupPage());
+    });
+
+    // A raising alarm asking for the screen. The counter is the signal; the
+    // target is taken from the navigator inside, because only this widget can
+    // answer where the operator is and what they may open. Registered in
+    // build for the same reason the listener above is: riverpod re-registers
+    // per rebuild and drops it on unmount.
+    ref.listen<int>(alarmAutoNavigationProvider, (_, __) {
+      _takeAlarmNavigation();
     });
 
     // Retrieve the provider (if any)

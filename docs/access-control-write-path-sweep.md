@@ -280,7 +280,7 @@ in §5.
 | `packages/tfc_dart/lib/core/state_man.dart:450` | `prefs.setString(configKey, ...)` | secure store | `StateManConfig.toPrefs`, behind a control | `guarded by 03-06` |
 | `packages/tfc_dart/lib/core/state_man.dart:626` | `prefs.setString('key_mappings', ...)` | preferences | key-mapping save | `guarded by 03-06` |
 | `packages/tfc_dart/lib/core/alarm.dart:220` | `preferences.setString('alarm_man_config', ...)` | preferences | `AlarmMan.create` at boot when the key is absent | `guarded by 03-06` — routed through `systemWrites` |
-| `packages/tfc_dart/lib/core/alarm.dart:303` | `preferences.setString('alarm_man_config', ...)` | preferences | `addAlarm`/`removeAlarm`/`updateAlarm`, behind the `configure`-gated alarm editor. **Not** `ackAlarm` | `guarded by 03-06` |
+| `packages/tfc_dart/lib/core/alarm.dart:303` | `preferences.setString('alarm_man_config', ...)` | preferences | `addAlarm`/`removeAlarm`/`updateAlarm`/`setAutoNavigate`, behind the `configure`-gated alarm editor. **Not** `ackAlarm` | `guarded by 03-06` |
 | `packages/tfc_mcp_server/lib/src/tools/read_toggles.dart:38, 114` | `prefs.setString(McpConfig.kPrefKey, ...)`, `local.setString(...)` | preferences and device-local | an MCP tool call, in the HMI process | `left open: reached over MCP, not from a widget` — see §3.2 |
 | `packages/tfc_mcp_server/lib/src/services/config_service.dart:64` | `_prefCache.clear()` | — | `invalidateCache()` | `not widget-reachable` — `_prefCache` is a `TtlCache` (`config_service.dart:45`), not a preferences store. A false positive of section 9b's receiver-spelling filter, recorded rather than quietly dropped |
 
@@ -839,7 +839,7 @@ from one behind a Save button.
 | `tfc_dart/core/state_man.dart:450` | `configKey` | `state_man_config` | exact | `administer` | behind a control |
 | `tfc_dart/core/state_man.dart:626` | `'key_mappings'` | `key_mappings` | exact | `configure` | behind a control |
 | `tfc_dart/core/alarm.dart:220` | `'alarm_man_config'` | `alarm_man_config` | exact `alarm_man_config` | `configure` | **boot-time** — `AlarmMan.create` writes a default when absent |
-| `tfc_dart/core/alarm.dart:303` | `'alarm_man_config'` | `alarm_man_config` | exact | `configure` | behind a control — `addAlarm`/`removeAlarm`/`updateAlarm` only. **`ackAlarm` writes nothing**, so this rule does not stand between an operator and an alarm ack |
+| `tfc_dart/core/alarm.dart:303` | `'alarm_man_config'` | `alarm_man_config` | exact | `configure` | behind a control — `addAlarm`/`removeAlarm`/`updateAlarm`/`setAutoNavigate` only. **`ackAlarm` writes nothing**, so this rule does not stand between an operator and an alarm ack |
 | `read_toggles.dart:38, 114` | `McpConfig.kPrefKey` | `mcp.config` | prefix `mcp.` | `administer` | over MCP, not from a widget (§3.2) |
 | `lib/core/preferences.dart:54-84` | `key` (a parameter) | pass-through — `SharedPreferencesWrapper` delegates the caller's key | n/a | the caller's | n/a |
 | `tfc_dart/core/preferences.dart:344-585` | `key` / `entry.key` (parameters) | pass-through — the cache fan-out inside `Preferences` | n/a | the caller's | n/a |
