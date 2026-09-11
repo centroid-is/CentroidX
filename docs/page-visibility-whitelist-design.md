@@ -113,7 +113,7 @@ Read these before implementing; each is load-bearing below.
 | Unknown references | **Fail closed.** A stored path matching no page matches nothing; an unreadable column decodes to the empty set (deny all), never null. |
 | Repository unavailable / session loading | **Whitelist not enforced** during the window — the same keep-the-line-running ruling as `_anonymousGroups`' seeded fallback and the 2026-09-02 tag-binding boot window. |
 | The navigation source of truth | A provider pair: `menuTreeProvider` (the full tree, session-blind, derived live from the page manager) and `visibleMenuProvider` (the session's filtered view). The `RouteRegistry` menu list is demoted to a mirror the provider writes; nothing new may read it. |
-| The route table | Static entries stay for boot-known routes; a **dynamic fallback route** resolves later-added pages through the page manager, behind the same gate. After this work, no page change requires a restart; §5a names the residue that still does. |
+| The route table | Static entries stay. The dynamic fallback route was **not built** — Beamer 1.7 stacks a page per matching route, so a wildcard sits on top of every route rather than behind them (§5a). Instead the live menu is intersected with the route table, so it never offers what the router cannot serve; a page created on another station still needs a restart here. |
 | Route behaviour | A new `PageAccessGate` wraps every page-manager route: group gate first, then the whitelist. Also enforces `requiredGroup` on deep links for the first time. |
 | Enforcement of edits | Two new writes on `AccessAdminStore` — `role.pages` (ninth) and `user.pages` (tenth) — gated on `users`, audited allowed and denied. |
 | UI | One shared Pages editor widget, mounted in the roles section and the users section with level-appropriate labels. |
@@ -577,7 +577,7 @@ whitelist, renders identically (the gate resolves `allowed` from the
 adds nothing around the child). The child is not built while denied, per
 `AccessGate`'s rule: a page must not run its subscriptions behind a lock.
 
-**The dynamic fallback route.** Beamer's map is built once at boot, which
+**The dynamic fallback route — NOT BUILT; see the note below.** Beamer's map is built once at boot, which
 is half of hole 2: a page created on another station has no route here
 until a restart (`main.dart:307`'s two-restart admission — the first
 restart also only sees the stale device-local cache until the database copy
@@ -604,10 +604,30 @@ the wildcard can never shadow them. The `addRoute` overwrite edge that
 replaces the gated route) is unchanged by this design and stays documented
 there.
 
-**What still requires a restart, named rather than left quiet:** nothing
-about *pages* — add, rename, delete, publish, unpublish and whitelist
-changes all take effect live through the wildcard route, the live menu
-(§5b) and the gate. The residue: the **built-in** route set and menu
+> **Implementation note, 2026-09-11.** The wildcard route below was tried and
+> abandoned: on the pinned Beamer 1.7, `RoutesBeamLocation.chooseRoutes`
+> returns **every** sub-matching route and `buildPages` stacks a page for each
+> one, so a `'*'` entry adds a second page on top of every route in the app
+> rather than standing behind them. Rebuilding the delegate instead resets
+> navigation state. What shipped is the conservative half of the same goal:
+> `routablePathsProvider` intersects the live menu with the route table's key
+> set, so the menu can never offer an entry the router would answer
+> `PageNotFound` for. A page created on another station therefore still needs
+> a restart of this one — the pre-existing behaviour, unchanged by this work
+> and now stated on that provider rather than implied. The paragraph above is
+> kept as the record of what was intended and why it did not hold; the one
+> below is corrected to describe what the code actually does.
+
+**What still requires a restart, named rather than left quiet.** Whitelist
+changes take effect live: they ride the session, and the menu and the gate
+both read it. So does anything about a page that already has a route —
+publish, unpublish, a group raised or removed — through the live menu (§5b)
+and `replaceMenu`'s redeclaration. What does **not**: a page *created* on
+another station has no route on this one until it restarts, because the route
+table is still built once at boot. The menu is intersected with that table
+(`routablePathsProvider`) so the entry is simply not offered, rather than
+offered and then answered with `PageNotFound`. The rest of the residue: the
+**built-in** route set and menu
 entries (platform flags, `kKnowledgeEnabled`) are compile/boot facts and
 should be; and `clearBeamingHistoryOn` is a `BeamerDelegate` constructor
 argument, so a page *created after boot* does not clear the back-stack when
