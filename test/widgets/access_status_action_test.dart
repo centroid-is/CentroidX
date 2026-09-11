@@ -18,6 +18,7 @@ import 'package:tfc/providers/access.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/base_scaffold.dart';
 import 'package:tfc/theme.dart';
+import 'package:tfc/widgets/access_change_password_dialog.dart';
 import 'package:tfc/widgets/access_sign_in_dialog.dart';
 import 'package:tfc/widgets/access_status_action.dart';
 import 'package:tfc_access/tfc_access.dart';
@@ -87,12 +88,14 @@ AccessSession _elevated({
   String username = 'anna',
   String roleName = 'Supervisor',
   String? displayName,
+  bool stationAccount = false,
 }) =>
     AccessSession(
       user: AuthenticatedUser(
         username: username,
         roleName: roleName,
         displayName: displayName,
+        stationAccount: stationAccount,
       ),
       groups: const {AccessGroup.setpoints},
       expiresAt: DateTime.now().add(const Duration(minutes: 15)),
@@ -105,8 +108,26 @@ final AccessSession _anonymous = AccessSession.anonymous(const {});
 Widget _host({
   required _FakeSessionController controller,
   AccessSignInOpener? openSignIn,
+  AccessChangePasswordOpener? openChangePassword,
   ThemeData? theme,
 }) {
+  // Each opener is only passed when the test supplies one, so the
+  // "the default opener is the real dialog" assertions still see the
+  // constructor's own defaults rather than a stand-in this helper injected.
+  Widget action() {
+    if (openSignIn != null && openChangePassword != null) {
+      return AccessStatusAction(
+        openSignIn: openSignIn,
+        openChangePassword: openChangePassword,
+      );
+    }
+    if (openSignIn != null) return AccessStatusAction(openSignIn: openSignIn);
+    if (openChangePassword != null) {
+      return AccessStatusAction(openChangePassword: openChangePassword);
+    }
+    return const AccessStatusAction();
+  }
+
   return ProviderScope(
     overrides: [accessSessionProvider.overrideWith(() => controller)],
     child: MaterialApp(
@@ -116,11 +137,7 @@ Widget _host({
           alignment: Alignment.topRight,
           child: Row(
             mainAxisSize: MainAxisSize.min,
-            children: [
-              openSignIn == null
-                  ? const AccessStatusAction()
-                  : AccessStatusAction(openSignIn: openSignIn),
-            ],
+            children: [action()],
           ),
         ),
       ),
@@ -386,6 +403,101 @@ void main() {
     test('the default opener is the real sign-in dialog', () {
       expect(const AccessStatusAction().openSignIn,
           same(showAccessSignInDialog));
+    });
+  });
+
+  group('the account menu', () {
+    testWidgets('a personal session can open it and change its password',
+        (tester) async {
+      var opened = 0;
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(session: _elevated()),
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async => opened++,
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(kAccessAccountMenuKey));
+      await tester.pumpAndSettle();
+
+      expect(find.text(kAccessAccountMenuChangePasswordLabel), findsOneWidget);
+
+      await tester.tap(find.text(kAccessAccountMenuChangePasswordLabel));
+      await tester.pumpAndSettle();
+
+      expect(opened, 1);
+    });
+
+    testWidgets('a station account is not offered it', (tester) async {
+      // A committed panel resumes its account with nobody having presented a
+      // credential, and the account is shared — so there is no "your own
+      // password" to change. It belongs to an administrator on the users
+      // screen, where it records itself as an administrator doing it.
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(
+          session: _elevated(username: 'freezer', stationAccount: true),
+        ),
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async {},
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessAccountMenuKey), findsNothing);
+      expect(find.text('freezer'), findsOneWidget,
+          reason: 'the identity is still shown — only the menu is withheld');
+    });
+
+    testWidgets('sign-out stays one tap, menu or no menu', (tester) async {
+      // Spec §5 requires logging out to be explicit and one tap from the app
+      // bar. Folding sign-out into the menu would have made it two.
+      final controller = _FakeSessionController(session: _elevated());
+      await tester.pumpWidget(_host(
+        controller: controller,
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async {},
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Sign out'));
+      await tester.pumpAndSettle();
+
+      expect(controller.signOutCalls, 1);
+    });
+
+    testWidgets('costs nothing against the app-bar width budget',
+        (tester) async {
+      // The menu hangs off text that was already there, so the elevated row is
+      // no wider than it was — which is what keeps the clock and the alarm
+      // banner centred.
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(
+          session: _elevated(displayName: 'a' * 60),
+        ),
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async {},
+      ));
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.getSize(find.byType(AccessStatusAction)).width,
+        lessThanOrEqualTo(kAccessStatusActionMaxWidth),
+      );
+    });
+
+    testWidgets('is absent when nobody is signed in', (tester) async {
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(session: _anonymous),
+        openSignIn: (_, __) async {},
+        openChangePassword: (_, __) async {},
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessAccountMenuKey), findsNothing);
+    });
+
+    test('the default opener is the real change-password dialog', () {
+      expect(const AccessStatusAction().openChangePassword,
+          same(showAccessChangePasswordDialog));
     });
   });
 

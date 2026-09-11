@@ -19,6 +19,7 @@ import 'package:tfc_access/tfc_access.dart';
 
 import '../providers/access.dart';
 import '../theme.dart';
+import 'access_change_password_dialog.dart';
 import 'access_sign_in_dialog.dart';
 
 /// The width budget for the elevated row.
@@ -29,16 +30,36 @@ import 'access_sign_in_dialog.dart';
 /// name ellipsises inside this instead of growing.
 const double kAccessStatusActionMaxWidth = 220;
 
+/// The account menu on the elevated badge, and its one entry.
+///
+/// The menu hangs off the name-and-role cluster, which was previously inert
+/// text. It therefore costs **nothing** against
+/// [kAccessStatusActionMaxWidth] — worth knowing before a second entry is
+/// added here, because that budget is what keeps the clock and the alarm
+/// banner centred.
+const Key kAccessAccountMenuKey = Key('access-account-menu');
+const Key kAccessAccountMenuChangePasswordKey =
+    Key('access-account-menu-change-password');
+
+/// The menu's one entry, and the tooltip on the control that opens it.
+const String kAccessAccountMenuChangePasswordLabel = 'Change password…';
+const String kAccessAccountMenuTooltip = 'Account';
+
 /// Sign in from the app bar; when elevated, who and their role, and sign out.
 class AccessStatusAction extends ConsumerWidget {
   const AccessStatusAction({
     super.key,
     this.openSignIn = showAccessSignInDialog,
+    this.openChangePassword = showAccessChangePasswordDialog,
   });
 
   /// How the sign-in prompt is opened. Injectable so a widget test can count
   /// the taps without standing up a dialog route.
   final AccessSignInOpener openSignIn;
+
+  /// How the change-password prompt is opened. Injectable for the same reason
+  /// as [openSignIn], and defaulted the same way.
+  final AccessChangePasswordOpener openChangePassword;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -62,50 +83,103 @@ class AccessStatusAction extends ConsumerWidget {
       );
     }
 
-    return _ElevatedBadge(session: value);
+    return _ElevatedBadge(
+      session: value,
+      openChangePassword: openChangePassword,
+    );
   }
 }
 
 class _ElevatedBadge extends ConsumerWidget {
-  const _ElevatedBadge({required this.session});
+  const _ElevatedBadge({
+    required this.session,
+    required this.openChangePassword,
+  });
 
   final AccessSession session;
+  final AccessChangePasswordOpener openChangePassword;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final orange = HmiStateColors.of(context).orange;
+    final user = session.user!;
+
+    final identity = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.person_outline, size: 20, color: orange),
+        const SizedBox(width: 6),
+        Flexible(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                user.displayName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: orange,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Text(
+                session.roleName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(color: orange),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
 
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: kAccessStatusActionMaxWidth),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.person_outline, size: 20, color: orange),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  session.user!.displayName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: orange,
-                    fontWeight: FontWeight.w600,
+          // The name and role become the account menu, rather than a new
+          // control being added beside them: the cluster was inert text, so the
+          // menu costs nothing against the width budget, and the thing you
+          // press to act on your account is your own name.
+          //
+          // **Not offered to a station account.** A committed panel resumes its
+          // account with nobody having presented a credential
+          // (`_resumePanelAccount`), so there is no "your own password" to
+          // change — the account is shared, and changing it from one panel
+          // silently breaks every other panel committed to it. A station
+          // account's password is commissioning material and belongs to the
+          // users screen, where an administrator changes it and it records
+          // itself as an administrator doing so. `changeOwnPassword` refuses
+          // these sessions as well; this is the half that stops the affordance
+          // being visible in the first place.
+          if (user.stationAccount)
+            Flexible(child: identity)
+          else
+            Flexible(
+              child: PopupMenuButton<_AccountMenuItem>(
+                key: kAccessAccountMenuKey,
+                tooltip: kAccessAccountMenuTooltip,
+                position: PopupMenuPosition.under,
+                onSelected: (item) {
+                  switch (item) {
+                    case _AccountMenuItem.changePassword:
+                      openChangePassword(context, ref);
+                  }
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem<_AccountMenuItem>(
+                    key: kAccessAccountMenuChangePasswordKey,
+                    value: _AccountMenuItem.changePassword,
+                    child: Text(kAccessAccountMenuChangePasswordLabel),
                   ),
-                ),
-                Text(
-                  session.roleName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelSmall?.copyWith(color: orange),
-                ),
-              ],
+                ],
+                child: identity,
+              ),
             ),
-          ),
           IconButton(
             icon: Icon(Icons.logout, color: orange),
             tooltip: 'Sign out',
@@ -118,3 +192,10 @@ class _ElevatedBadge extends ConsumerWidget {
     );
   }
 }
+
+/// The account menu's entries.
+///
+/// An enum with one value rather than a bare callback on the item, so the
+/// `switch` in `onSelected` is exhaustive and a second entry added later cannot
+/// be forgotten there — the analyzer names the omission.
+enum _AccountMenuItem { changePassword }

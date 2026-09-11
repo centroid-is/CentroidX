@@ -245,13 +245,21 @@ const String kAccessUserSetPasswordConfirmLabel = 'Set password';
 
 /// One line above the set-password form.
 ///
-/// Says the two things the operator would otherwise have to guess: the old
-/// password stops working at once, and there is nothing to force the person
-/// into afterwards — there is no change-password flow to send them to, and
-/// password self-service is out of scope for this milestone.
+/// Says the three things the administrator would otherwise have to guess: the
+/// old password stops working at once, the account is not signed out, and
+/// nothing forces the person to change it again afterwards.
+///
+/// That last clause is a statement about **policy**, not about plumbing, and it
+/// stayed true when self-service arrived. The person can now change this
+/// password themselves from the app bar's account menu
+/// (`access_change_password_dialog.dart`), so the administrator has somewhere
+/// to point them — but there is deliberately no must-change-at-next-login flag
+/// to set, for the same reason there is no length floor and no expiry: this
+/// screen has no password policy, and a forced change is one.
 const String kAccessUserSetPasswordNote =
     'The new password works immediately and the old one stops working. The '
-    'account is not signed out and is not asked to change it again.';
+    'account is not signed out and is not asked to change it again — but the '
+    'person can change it themselves from the app bar once signed in.';
 
 /// The username field was blank. First of the three checks.
 const String kAccessUserBlankUsernameNote = 'Enter a username.';
@@ -1388,11 +1396,19 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
 
 /// Reset an account's password: the new one, typed twice.
 ///
-/// No username field and no current-password field. There is no verify-current
-/// flow to run and password self-service is out of scope for this milestone —
-/// 06-CONTEXT fixes this at "an admin types the new password directly", and
-/// there is no "force a change on next login" either, because there is nothing
-/// to force somebody into.
+/// No username field and no current-password field. The username is the row the
+/// control was pressed on, and there is no current password for an administrator
+/// to present — they are resetting somebody else's credential, not proving they
+/// hold it. 06-CONTEXT fixes this at "an admin types the new password directly",
+/// and there is no "force a change on next login" either, because a forced
+/// change is a policy and this screen has none.
+///
+/// A verify-current flow does now exist — `AccessChangePasswordDialog`, off the
+/// app bar's account menu — and it is deliberately **not** this dialog with a
+/// flag. That one is ungated and self-service, reached by anybody signed in and
+/// acting only on their own account; this one is behind the `users` group and
+/// acts on somebody else's. One boolean is the wrong distance between a gated
+/// path and an ungated one.
 ///
 /// Every rule in [_CreateUserDialog]'s doc applies here unchanged: the password
 /// goes to the store and nowhere else, no exception is ever rendered, and the

@@ -28,7 +28,7 @@ import 'package:tfc/providers/preferences.dart';
 
 /// A stand-in for `LocalAuthProvider` that honours the same null-versus-throw
 /// contract: null for an unrecognised credential, a throw for infrastructure.
-class _FakeAuthProvider implements AuthProvider {
+class _FakeAuthProvider implements AuthProvider, PasswordSelfService {
   _FakeAuthProvider(this.users, {this.stationAccounts = const {}});
 
   /// username -> (password, roleName)
@@ -57,6 +57,53 @@ class _FakeAuthProvider implements AuthProvider {
       stationAccount: stationAccounts.contains(username),
     );
   }
+
+  // ---- PasswordSelfService ------------------------------------------------
+
+  /// When set, `changePassword` throws — the same outage `unavailable` stands
+  /// for on the login path, kept separate so a test can break one without the
+  /// other.
+  bool changeUnavailable = false;
+
+  /// Usernames whose row has been deleted out from under a live session.
+  final Set<String> vanished = {};
+
+  /// Every password `changePassword` was handed, current and new alike, so a
+  /// test can assert neither reached an audit row.
+  final List<String> seenChangePasswords = [];
+
+  @override
+  Future<PasswordChangeResult> changePassword({
+    required String username,
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    seenChangePasswords.addAll([currentPassword, newPassword]);
+    if (changeUnavailable) throw StateError('the database is unreachable');
+    if (vanished.contains(username)) return PasswordChangeResult.accountMissing;
+
+    final cred = users[username];
+    if (cred == null) return PasswordChangeResult.accountMissing;
+    if (cred.password != currentPassword) {
+      return PasswordChangeResult.wrongCurrentPassword;
+    }
+
+    users[username] = (password: newPassword, roleName: cred.roleName);
+    return PasswordChangeResult.ok;
+  }
+}
+
+/// An `AuthProvider` with no password to change — the shape OIDC will have.
+///
+/// The controller asks `auth is PasswordSelfService` rather than assuming, and
+/// this is what makes that question have two answers in the suite. Without it
+/// the capability check is exercised only on its true branch, which is the
+/// branch that cannot regress.
+class _NoSelfServiceAuthProvider implements AuthProvider {
+  @override
+  Future<AuthenticatedUser?> authenticate(
+          String username, String password) async =>
+      const AuthenticatedUser(username: 'jon', roleName: 'Engineering');
 }
 
 /// A sink that keeps every row, so the audit assertions in
@@ -1076,6 +1123,241 @@ void main() {
       final session = await h.settle();
 
       expect(session.isElevated, isFalse);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Self-service password change
+  //
+  // Four results, and the two of them that write a row. The assertions that
+  // matter most here are the negative ones: that the session comes out of a
+  // successful change *identical*, and that neither password reaches the
+  // trail.
+  // -------------------------------------------------------------------------
+  group('changeOwnPassword', () {
+    /// A harness with somebody already signed in.
+    Future<_Harness> signedIn({
+      Set<String> stationAccounts = const {},
+    }) async {
+      final h = await _harness(stationAccounts: stationAccounts);
+      await h.settle();
+      _listen(h);
+      await h.notifier.signIn(
+        stationAccounts.contains('freezer') ? 'freezer' : 'jon',
+        stationAccounts.contains('freezer') ? 'cold' : 'correct horse',
+      );
+      return h;
+    }
+
+    test('the right current password changes it and writes one row', () async {
+      final h = await signedIn();
+      final before = h.session!;
+      h.sink.rows.clear();
+
+      final result = await h.notifier.changeOwnPassword(
+        currentPassword: 'correct horse',
+        newPassword: 'battery staple',
+      );
+
+      expect(result, AccessPasswordChangeResult.ok);
+      expect(h.authItemKeys, ['password.change']);
+
+      final row = h.sink.rows.single;
+      expect(row.surface, 'auth');
+      expect(row.who, 'jon');
+      expect(row.station, _kStation);
+      expect(row.roleName, 'Engineering');
+      expect(row.allowed, isTrue);
+      expect(row.groupRequired, isEmpty,
+          reason: 'self-service is gated on nothing, and the row must say so');
+
+      // The new password works and the old one does not — asserted through the
+      // fake's own store rather than through the controller.
+      expect(await h.auth.authenticate('jon', 'battery staple'), isNotNull);
+      expect(await h.auth.authenticate('jon', 'correct horse'), isNull);
+
+      // The session is untouched: same identity, same role, same expiry.
+      final after = h.session!;
+      expect(after.isElevated, isTrue);
+      expect(after.user!.username, before.user!.username);
+      expect(after.roleName, before.roleName);
+      expect(after.expiresAt, before.expiresAt,
+          reason: 'a password change is not activity — the countdown must not '
+              'be extended by it');
+    });
+
+    test('neither password reaches the audit row', () async {
+      final h = await signedIn();
+      h.sink.rows.clear();
+
+      await h.notifier.changeOwnPassword(
+        currentPassword: 'correct horse',
+        newPassword: 'battery staple',
+      );
+
+      final dumped = h.sink.rows.map((r) => r.toString()).join('\n');
+      expect(dumped, isNot(contains('correct horse')));
+      expect(dumped, isNot(contains('battery staple')));
+      for (final row in h.sink.rows) {
+        expect(row.oldValue, isNull);
+        expect(row.newValue, isNull);
+        expect(row.reason, isNull);
+      }
+    });
+
+    test('a wrong current password refuses and writes the failure', () async {
+      final h = await signedIn();
+      final before = h.session!;
+      h.sink.rows.clear();
+
+      final result = await h.notifier.changeOwnPassword(
+        currentPassword: 'not it',
+        newPassword: 'battery staple',
+      );
+
+      expect(result, AccessPasswordChangeResult.wrongCurrentPassword);
+      expect(h.authItemKeys, ['password.change.failed']);
+      expect(h.sink.rows.single.allowed, isFalse);
+      expect(h.sink.rows.single.who, 'jon');
+
+      // Nothing changed, and the session is intact.
+      expect(await h.auth.authenticate('jon', 'correct horse'), isNotNull);
+      expect(h.session!.expiresAt, before.expiresAt);
+      expect(h.session!.isElevated, isTrue);
+    });
+
+    test('nobody signed in is its own answer', () async {
+      final h = await _harness();
+      await h.settle();
+
+      final result = await h.notifier.changeOwnPassword(
+        currentPassword: 'correct horse',
+        newPassword: 'battery staple',
+      );
+
+      expect(result, AccessPasswordChangeResult.notSignedIn);
+      expect(h.authItemKeys, isEmpty,
+          reason: 'nothing was attempted, so nothing is worth recording');
+    });
+
+    test('an outage is unavailable and writes no row', () async {
+      // The rule `signIn` keeps, kept here too: a database blip must not land
+      // in the trail as somebody failing to change their password.
+      final h = await signedIn();
+      h.sink.rows.clear();
+      h.auth.changeUnavailable = true;
+
+      final result = await h.notifier.changeOwnPassword(
+        currentPassword: 'correct horse',
+        newPassword: 'battery staple',
+      );
+
+      expect(result, AccessPasswordChangeResult.unavailable);
+      expect(h.sink.rows, isEmpty);
+      expect(h.session!.isElevated, isTrue,
+          reason: 'an outage must not sign anybody out');
+    });
+
+    test('no database is unavailable', () async {
+      final h = await _harness(withDatabase: false);
+      await h.settle();
+
+      expect(
+        await h.notifier.changeOwnPassword(
+          currentPassword: 'correct horse',
+          newPassword: 'battery staple',
+        ),
+        AccessPasswordChangeResult.notSignedIn,
+        reason: 'with no database nobody is signed in, and that is the more '
+            'useful of the two true answers',
+      );
+    });
+
+    test('a provider without the capability is unavailable', () async {
+      // The OIDC shape. `access_status_action.dart` would not offer the menu in
+      // this state either, so reaching here means a second call site — and it
+      // must refuse rather than throw.
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      await db.customSelect('SELECT 1').getSingle();
+      final sink = _RecordingSink();
+
+      final container = ProviderContainer(
+        overrides: [
+          accessRepositoryProvider
+              .overrideWith((ref) async => AccessRepository(db)),
+          authProviderProvider
+              .overrideWith((ref) async => _NoSelfServiceAuthProvider()),
+          auditSinkProvider.overrideWith((ref) async => sink),
+          stationNameProvider.overrideWithValue(_kStation),
+          inactivityTimeoutProvider
+              .overrideWith((ref) async => const Duration(minutes: 15)),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final notifier = container.read(accessSessionProvider.notifier);
+      await container.read(accessSessionProvider.future);
+      await notifier.signIn('jon', 'anything');
+
+      expect(
+        await notifier.changeOwnPassword(
+          currentPassword: 'anything',
+          newPassword: 'battery staple',
+        ),
+        AccessPasswordChangeResult.unavailable,
+      );
+      expect(
+        sink.rows.where((r) => r.itemKey.startsWith('password.')),
+        isEmpty,
+      );
+    });
+
+    test('a station account is refused and records nothing', () async {
+      // Belt and braces behind `access_status_action.dart`, which does not
+      // offer the menu for these sessions at all. A station account's password
+      // is commissioning material: it is shared, so "your own password" is not
+      // a thing it has, and it belongs to an administrator on the users screen.
+      final h = await _harness(
+        users: {'freezer': (password: 'cold', roleName: 'Operator')},
+        stationAccounts: const {'freezer'},
+      );
+      await h.settle();
+      _listen(h);
+      await h.notifier.signIn('freezer', 'cold');
+      h.sink.rows.clear();
+
+      final result = await h.notifier.changeOwnPassword(
+        currentPassword: 'cold',
+        newPassword: 'warm',
+      );
+
+      expect(result, AccessPasswordChangeResult.unavailable);
+      expect(h.sink.rows, isEmpty);
+      expect(await h.auth.authenticate('freezer', 'cold'), isNotNull,
+          reason: 'the refusal must be before the write, not after it');
+    });
+
+    test('an account deleted mid-session drops the session', () async {
+      // Not a wrong password and not an outage. The person sees their session
+      // end, which is the true story — `refreshGroupsFromRoles` owns that drop
+      // and clears the stored session on the way.
+      final h = await signedIn();
+      h.sink.rows.clear();
+      h.auth.vanished.add('jon');
+
+      final result = await h.notifier.changeOwnPassword(
+        currentPassword: 'correct horse',
+        newPassword: 'battery staple',
+      );
+
+      expect(result, AccessPasswordChangeResult.unavailable);
+      expect(h.session!.isElevated, isFalse);
+      expect(
+        h.sink.rows.where((r) => r.itemKey.startsWith('password.')),
+        isEmpty,
+        reason: 'an account being gone is not a password event',
+      );
     });
   });
 }

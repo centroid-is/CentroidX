@@ -257,6 +257,41 @@ enum AccessSignInResult {
   unavailable,
 }
 
+/// What a self-service password change did.
+///
+/// Sibling of [AccessSignInResult], and shaped the same way for the same
+/// reason: the dialog has to say something different for each of these, and
+/// collapsing any two of them produces a sentence that sends somebody to fix
+/// the wrong thing.
+enum AccessPasswordChangeResult {
+  /// The stored password is now the new one. The session is untouched.
+  ok,
+
+  /// The current password did not verify.
+  wrongCurrentPassword,
+
+  /// It could not be attempted, or could not be finished: no database, the
+  /// provider threw, the signed-in account has been deleted, or the session
+  /// belongs to a station account.
+  ///
+  /// Four causes, one answer, deliberately. Each of them is a fact about the
+  /// station or the account rather than about what was typed, none of them is
+  /// anything the person at the panel can act on differently, and the message
+  /// for all four points at the log — which is where the four *are*
+  /// distinguished.
+  unavailable,
+
+  /// Nobody is signed in.
+  ///
+  /// Reachable in practice, not defensive padding: the inactivity countdown
+  /// keeps running while the dialog is open, and a session that expires between
+  /// opening the form and submitting it lands here. Its own value because it is
+  /// the one case with a useful next step — sign in again — and saying
+  /// "could not be changed, the log has the details" to somebody whose session
+  /// simply timed out would be a lie with a wild goose chase attached.
+  notSignedIn,
+}
+
 /// Who is standing at this panel, and what they may do.
 ///
 /// Holds the session, restores it across a restart while it is still valid,
@@ -583,6 +618,160 @@ class AccessSessionController extends _$AccessSessionController {
     return AccessSignInResult.ok;
   }
 
+  /// Change the signed-in account's own password.
+  ///
+  /// The username is never a parameter. It comes from the live session, which
+  /// is what makes this self-service rather than an ungated way to rewrite
+  /// anybody's credential — and it is why nothing here needs the `users` group
+  /// that [AccessAdminStore.setUserPassword] requires. The two paths write the
+  /// same column and must not be merged: one is an administrator acting on
+  /// somebody else and is gated, the other is an account's own holder proving
+  /// they hold it and must never be.
+  ///
+  /// ## The session is left exactly as it was
+  ///
+  /// Not signed out, not re-persisted, and its `expiresAt` not moved. The
+  /// authority came from the sign-in and is unchanged; a session stores no
+  /// password, so there is nothing in it to invalidate. Signing somebody out
+  /// here would punish the one flow that did everything right, and on a panel
+  /// it would be worse than that.
+  ///
+  /// Nor does it count as activity. [refreshGroupsFromRoles] set that
+  /// precedent: the countdown measures *inactivity at the panel*, and a dialog
+  /// submission is already a pointer event that poked it. Poking it again from
+  /// here would extend the window a second time for one interaction.
+  ///
+  /// **Sessions elsewhere keep working.** Somebody signed in as the same
+  /// account on another panel stays signed in, because nothing anywhere
+  /// re-checks a password mid-session — sessions end by timeout or by
+  /// sign-out, and that is as true after this call as before it. Worth stating
+  /// because "change the password, kick out the other sessions" is what the
+  /// reader expects from a web application, and this is not one.
+  ///
+  /// ## Station accounts are refused
+  ///
+  /// A station account's password is commissioning material. It is changed on
+  /// the users screen, by an administrator, and it records itself as
+  /// `user.password`. Two reasons it cannot be changed from here:
+  ///
+  /// A resumed panel session carries no proof of anybody's presence — nobody
+  /// presented a credential to get it; `_resumePanelAccount` handed it over
+  /// when the previous human's session ended. Recording a credential change
+  /// against an identity that never logged in is precisely the confusion
+  /// `session.resume` exists to prevent, and it would be recorded as
+  /// *self-service*, which is the one thing it certainly was not.
+  ///
+  /// And the account is shared, so "your own password" is not a thing it has.
+  /// One person changing it at one panel silently breaks every other panel
+  /// committed to it, and the trail would name that person as though they had
+  /// only changed their own.
+  ///
+  /// The dialog is not offered for these sessions at all
+  /// (`access_status_action.dart`), so reaching the refusal below means a
+  /// second call site got it wrong — the same belt-and-braces shape
+  /// [commitPanelAccount] uses, and for the same reason.
+  Future<AccessPasswordChangeResult> changeOwnPassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    final session = state.valueOrNull;
+    final user = session?.user;
+    if (session == null || user == null) {
+      return AccessPasswordChangeResult.notSignedIn;
+    }
+
+    if (user.stationAccount) {
+      Logger().w(
+        'Refusing a self-service password change for the station account '
+        '"${user.username}". A station account\'s password is changed by an '
+        'administrator on the users screen; the app bar does not offer this '
+        'for station accounts, so this call came from somewhere that should '
+        'not have made it.',
+      );
+      return AccessPasswordChangeResult.unavailable;
+    }
+
+    final AuthProvider? resolved;
+    try {
+      resolved = await ref.read(authProviderProvider.future);
+    } on Object {
+      return AccessPasswordChangeResult.unavailable;
+    }
+
+    // Asked for the capability rather than assumed: an implementation with no
+    // password to change — OIDC, one day — simply does not implement it, and
+    // this returns `unavailable` instead of throwing behind an affordance that
+    // should not have been offered. `access_status_action.dart` asks the same
+    // question before offering it, so in practice this is the second answer to
+    // a question already answered.
+    //
+    // This also absorbs the no-database case without a separate branch: the
+    // provider yields null when no Postgres is configured and during the boot
+    // window, and null is not a `PasswordSelfService`. Both are the same
+    // normal state `accessRepositoryProvider` documents, and both deserve the
+    // same answer.
+    //
+    // The cast is not redundant with the test above it, and cannot throw.
+    // `PasswordSelfService` is not a subtype of `AuthProvider` — the two are
+    // deliberately unrelated interfaces — and Dart only promotes a variable to
+    // a subtype of its declared type. So the `is!` test narrows nothing, and
+    // the cast is what gives the call a receiver. It is guarded by the line
+    // directly above it.
+    if (resolved is! PasswordSelfService) {
+      return AccessPasswordChangeResult.unavailable;
+    }
+    final auth = resolved as PasswordSelfService;
+
+    final PasswordChangeResult outcome;
+    try {
+      outcome = await auth.changePassword(
+        username: user.username,
+        currentPassword: currentPassword,
+        newPassword: newPassword,
+      );
+    } on Object catch (e) {
+      // Infrastructure, not a credential — and no audit row, the same rule
+      // `signIn` keeps. The message carries neither password: `e` here is a
+      // database error, never the ArgumentError, which the dialog's own
+      // validation makes unreachable.
+      Logger().w('A password change could not be attempted: $e');
+      return AccessPasswordChangeResult.unavailable;
+    }
+
+    switch (outcome) {
+      case PasswordChangeResult.ok:
+        await _record(AuditRecord.passwordChange(
+          who: user.username,
+          station: _station,
+          roleName: session.roleName,
+          actionId: newActionId(),
+          at: clock.now(),
+        ));
+        return AccessPasswordChangeResult.ok;
+
+      case PasswordChangeResult.wrongCurrentPassword:
+        await _record(AuditRecord.passwordChangeFailed(
+          who: user.username,
+          station: _station,
+          roleName: session.roleName,
+          actionId: newActionId(),
+          at: clock.now(),
+        ));
+        return AccessPasswordChangeResult.wrongCurrentPassword;
+
+      case PasswordChangeResult.accountMissing:
+        // The account was deleted while this session was open. No audit row:
+        // an account being gone is not a password event, and the drop routes
+        // deliberately write none either. `refreshGroupsFromRoles` already owns
+        // this exact situation — it re-resolves the session and drops it to the
+        // floor when the account has vanished, clearing the stored session on
+        // the way — so the person sees their session end, which is the true
+        // story and a far more useful one than a sentence about passwords.
+        await refreshGroupsFromRoles();
+        return AccessPasswordChangeResult.unavailable;
+    }
+  }
+
   /// Commit this panel to the account that is signed in right now.
   ///
   /// The panel keeps this identity across restarts, and hands it back whenever
@@ -722,10 +911,12 @@ class AccessSessionController extends _$AccessSessionController {
 
   /// Append one row.
   ///
-  /// There are exactly four call sites — login, login.failed, logout and the
-  /// two timeout paths — and each writes one row. There is deliberately a fifth
-  /// branch that writes none: `signIn`'s `unavailable` path, commented where it
-  /// happens.
+  /// Every call site writes exactly one row: login, login.failed, logout, the
+  /// two timeout paths, and the two outcomes of [changeOwnPassword] that were
+  /// judged rather than prevented. There are deliberately branches that write
+  /// none — `signIn`'s `unavailable` path and both of
+  /// [changeOwnPassword]'s — each commented where it happens, and all for the
+  /// same reason: an outage is not somebody doing something.
   ///
   /// **No `reason` is prompted for on any auth event.** The free-text reason
   /// prompt belongs to `configure` and `administer` *writes* and arrives in
