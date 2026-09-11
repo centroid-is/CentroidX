@@ -70,6 +70,31 @@ enum ThirdPartyEquipmentKind {
   /// about the station, so it is recorded on the painter rather than as a
   /// TODO here.
   optimarPalletiser,
+  /// The empty pallet magazine feeding the palletising stations — balloon 031
+  /// on the site layout, standing off the wagon line opposite the three
+  /// Optimar stations.
+  ///
+  /// TODO(product-name): like [boxErector], the make/model has not been
+  /// identified — the drawing carries a balloon and no text at 031. Rename
+  /// this value (and its label + painter) once it is.
+  ///
+  /// Table-less, and deliberately so — but NOT for the reason
+  /// [ThirdPartyEquipmentKind.optimarPalletiser] is. The palletising row has no
+  /// table because the PLC does not talk to it at all; this machine does
+  /// publish a handshake, as four loose globals in the `EPW01` GVL
+  /// (`i_xEmptyPalletReadyToSend`, `i_xEmptyPalletSending`,
+  /// `q_xEmptyPalletReadyToRecv`, `q_xEmptyPalletRecv`) rather than a struct or
+  /// a settled key prefix. There is one magazine on the site, so a kind-level
+  /// table would pin four member names against a `.TcGVL` to save typing them
+  /// once. They go in as per-instance [ThirdPartyEquipmentConfig.extraBits],
+  /// which already read complete keys and already carry a `{m}` label and a
+  /// colour. See [kEquipmentStatusBits] for the same argument made the other
+  /// way round, for a kind with three instances.
+  ///
+  /// The difference is why [extraStatusBitsHelpText] names EPW01 for this kind
+  /// and for no other: pointing an engineer at keys is only help where keys
+  /// exist.
+  palletMagazine,
 }
 
 /// Operator-facing metadata for each kind. Kept out of the enum so the
@@ -91,6 +116,8 @@ extension ThirdPartyEquipmentKindInfo on ThirdPartyEquipmentKind {
         return 'Batch aligner';
       case ThirdPartyEquipmentKind.optimarPalletiser:
         return 'Optimar palletising station';
+      case ThirdPartyEquipmentKind.palletMagazine:
+        return 'Empty pallet magazine';
     }
   }
 
@@ -135,6 +162,12 @@ extension ThirdPartyEquipmentKindInfo on ThirdPartyEquipmentKind {
         return '~${kPalletiserWidthMm(n)} x $kPalletiserDepthMm mm '
             '($n ${n == 1 ? 'station' : 'stations'} at '
             '$kPalletiserPitchMm mm pitch)';
+      case ThirdPartyEquipmentKind.palletMagazine:
+        // The pallet is the only dimensioned thing about this machine. The
+        // frame around it is not on the drawing, so it is not quoted as
+        // though it were — same honesty as the box erector's "per site CAD",
+        // but naming the figure that IS known.
+        return 'EUR 1200 x 800 pallet stack — frame per site CAD';
       case ThirdPartyEquipmentKind.strappingLine:
         // Only the 3-strapper line length is published. A shorter line is the
         // same line with strappers removed, so its length is estimated at one
@@ -179,6 +212,17 @@ extension ThirdPartyEquipmentKindInfo on ThirdPartyEquipmentKind {
         // grows with strappers.
         return kPalletiserWidthMm(robotStations.clamp(1, 3)) /
             kPalletiserDepthMm;
+      case ThirdPartyEquipmentKind.palletMagazine:
+        // Landscape, from the pallet out: the EUR pallet lies 1200 along the
+        // flow by 800 across and the four-post frame adds roughly a guide
+        // clearance either side, so about 1500 x 1100. Derived, not measured —
+        // the drawing gives no frame dimension, which is why [footprint] does
+        // not quote one either.
+        //
+        // Was 1.4 while a discharge lane was drawn beside the well and had to
+        // fit in the same box. The lane is gone — a belt is a real conveyor
+        // asset, not a painted rectangle — so this is the frame alone.
+        return 1500 / 1100;
     }
   }
 
@@ -1272,6 +1316,52 @@ bool isStructBacked(ThirdPartyEquipmentKind kind) =>
 bool hasStatusTable(ThirdPartyEquipmentKind kind) =>
     isStructBacked(kind) || kEquipmentStatusBits.containsKey(kind);
 
+/// Help text under the editor's "Extra status diodes" heading.
+///
+/// Two sentences, not one, because the section means two different things. For
+/// a kind with a table of its own, extra bits are the EXCEPTION — a permit that
+/// did not fit the struct — and the text says where they land relative to the
+/// diodes the kind already draws. For a kind with no table there are no such
+/// diodes to land after, so that sentence would order a list of one; it is told
+/// instead that this section IS its Status section.
+///
+/// The magazine, and ONLY the magazine, then gets its four bool names spelled
+/// out, because the alternative way to learn them is to open `EPW01.TcGVL`.
+/// The palletising row is table-less for the opposite reason — the PLC does not
+/// talk to it at all — so naming keys at it would be inventing a handshake it
+/// does not have.
+///
+/// A function rather than a ternary inline in the form: this is the only prose
+/// on the page that changes per kind, and a test can read it.
+String extraStatusBitsHelpText(ThirdPartyEquipmentKind kind) {
+  // Named, not inlined into the ternary: the apostrophes in "magazine's" and
+  // "PLC's" force double-quoted pieces, and nesting those inside an
+  // interpolation inside a ternary does not parse.
+  const magazineKeys = " The magazine's handshake with the wagon is four bools "
+      "in the PLC's EPW01 GVL: a pallet is staged, it is being pushed out, the "
+      'wagon is ready for it, and the wagon took it.';
+
+  final String lead;
+  if (hasStatusTable(kind)) {
+    lead = 'Loose permit diodes that read a complete key of their own — for a '
+        'permit that is not in the status struct, like the Multivac outfeed '
+        'permit, which lives on its own MVC0n key. Shown after the normal '
+        "diodes in the side pane's Status section.";
+  } else {
+    final keys = kind == ThirdPartyEquipmentKind.palletMagazine
+        ? magazineKeys
+        : '';
+    lead = "This machine has no diodes of its own — the side pane's whole "
+        'Status section is what you add here. Each row reads a complete '
+        'key.$keys';
+  }
+
+  return '$lead\n'
+      'Write the label as a template: {m} becomes the machine name, so reuse '
+      'the wording the same bit already has elsewhere — an outfeed permit is '
+      '"{m} may send boxes on".';
+}
+
 /// Every member this kind's Status section reads, in display order — for the
 /// editor's help text and for tests.
 ///
@@ -1294,6 +1384,7 @@ String equipmentShortName(ThirdPartyEquipmentKind kind) => switch (kind) {
       ThirdPartyEquipmentKind.strappingLine => 'strapping machine',
       ThirdPartyEquipmentKind.fishAligner => 'batch aligner',
       ThirdPartyEquipmentKind.optimarPalletiser => 'palletising station',
+      ThirdPartyEquipmentKind.palletMagazine => 'pallet magazine',
     };
 
 /// One diode in a non-SpeedBatcher machine's Status section.
@@ -1822,6 +1913,12 @@ ThirdPartyMachinePainter thirdPartyPainterFor(
         stations:
             robotStations.clamp(1, OptimarPalletiserPainter.maxStations),
       );
+    case ThirdPartyEquipmentKind.palletMagazine:
+      return PalletMagazinePainter(
+          color: color,
+          strokeWidth: strokeWidth,
+          mirrorX: mirrorX,
+          mirrorY: mirrorY);
   }
 }
 
@@ -3279,13 +3376,7 @@ class _ThirdPartyEquipmentConfigEditorState
                 style: Theme.of(context).textTheme.titleSmall),
             const SizedBox(height: 4),
             Text(
-              'Loose permit diodes that read a complete key of their own — for '
-              'a permit that is not in the status struct, like the Multivac '
-              'outfeed permit, which lives on its own MVC0n key. Shown after '
-              'the normal diodes in the side pane\'s Status section.\n'
-              'Write the label as a template: {m} becomes the machine name, so '
-              'reuse the wording the same bit already has elsewhere — an '
-              'outfeed permit is "{m} may send boxes on".',
+              extraStatusBitsHelpText(config.kind),
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 8),

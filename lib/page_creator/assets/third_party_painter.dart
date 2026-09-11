@@ -36,6 +36,12 @@ import 'package:flutter/material.dart';
 //                 2250 kg per robot and double-door cabinets. The drawing's
 //                 transfer rail and pallet magazine are not drawn — they are
 //                 hall-wide and sit outside the guarding this asset shows.
+//   Pallet mag.   balloon 031 on the SVN palletiser layout (the same drawing
+//                 the three Optimar stations are ballooned on) plus generic
+//                 four-post pallet-dispenser geometry — the drawing carries no
+//                 text at 031 and no make has been identified. The one hard
+//                 figure is the pallet: EUR 1200 x 800, whose deck the glyph
+//                 is drawn to. The frame around it is NOT dimensioned.
 //
 // Painters are PURE — primitives in, pixels out. ZERO subscriptions, ZERO
 // Riverpod, ZERO state. Same contract as `sensor_painter.dart`.
@@ -1419,4 +1425,145 @@ void _orientedBox(
 }) {
   _armSegment(canvas, paint, centre - dir * halfLength,
       centre + dir * halfLength, halfWidth);
+}
+
+/// Empty pallet magazine — balloon 031 on the SVN palletiser layout.
+///
+/// A pallet dispenser: a stack of empty EUR pallets stands in a four-post well,
+/// and the lowest pallet is released out of the bottom of it. Plan view, so
+/// what an operator looks down on is the TOP pallet of the stack inside the
+/// frame — the stack's depth is the one thing a plan view cannot show, which is
+/// why the two offset outlines behind it are drawn at all.
+///
+/// The machine is the WELL and nothing else. The discharge lane this used to
+/// draw beside it — a roller box with flow chevrons — is gone: the belt a
+/// released pallet leaves on is a conveyor, and a conveyor on this HMI is a
+/// real `ConveyorConfig` that animates from its own drive, not a painted
+/// rectangle that cannot. Dropping it also gave the magazine back the third of
+/// its width the lane was spending, so the pallet is now drawn at something
+/// near its true 3:2.
+///
+/// The pallet itself is drawn the way this HMI ALREADY draws one. The
+/// `pallet_top` glyph in the TfcIcons font (see `pallet_icons.png`) shows a
+/// deck as a rectangle with its gaps as slots, two columns by three rows, and
+/// that is the shape an operator here has been reading as "pallet" since before
+/// this asset existed. Drawing the real EUR deck instead — five boards across,
+/// gaps as wide as the boards — was tried first and renders as a picket fence
+/// at asset size: ten near-evenly-spaced verticals with no alternation visible,
+/// indistinguishable from a grille. Matching the icon beats matching the
+/// timber.
+///
+/// The retaining pawls are NOT drawn. They were, as tabs on the well's long
+/// sides, and at asset size they read as four more posts — noise that cost the
+/// corner guides their meaning. The mechanism that holds the stack up is not
+/// something the operator sees from above or acts on; the stack, the guides and
+/// the lane are.
+class PalletMagazinePainter extends ThirdPartyMachinePainter {
+  const PalletMagazinePainter({
+    required super.color,
+    required super.strokeWidth,
+    super.mirrorX,
+    super.mirrorY,
+  });
+
+  /// The well the stack stands in, between the four corner guides. Fills the
+  /// frame now that nothing is drawn beside it.
+  static const Rect well = Rect.fromLTRB(0.075, 0.05, 0.925, 0.95);
+
+  /// The top pallet of the stack, inset inside the well by the guide clearance.
+  ///
+  /// Sized so the pallet comes out at roughly a EUR pallet's 3:2 once unit
+  /// space is mapped onto the machine area, which is WIDER than the asset box
+  /// (the LED header eats height off the top). Picking 1200 x 800 as unit
+  /// fractions directly would draw a pallet half again too long -- see the
+  /// proportions test in `third_party_config_test.dart`.
+  static const Rect pallet = Rect.fromLTRB(0.16, 0.13, 0.84, 0.87);
+
+  /// Deck slots across the pallet, matching the `pallet_top` icon.
+  static const int deckSlotColumns = 2;
+  static const int deckSlotRows = 3;
+
+  /// How far each pallet below the top one is offset, so the stack reads as a
+  /// stack rather than as a doubled line. Cosmetic — the real magazine holds
+  /// many more than three.
+  static const double stackOffset = 0.018;
+
+  @override
+  void paintMachine(Canvas canvas, UnitSpace u, Paint stroke, Paint detail) {
+    // Machine frame.
+    canvas.drawRRect(u.rr(0.0, 0.0, 1.0, 1.0, 0.03), stroke);
+
+    // -- The stack: two pallets showing from under the top one, offset down
+    //    and right so the steps all run the same way.
+    //
+    //    Only the two edges that would actually be VISIBLE past the top pallet
+    //    are drawn, not a full rect each. Full rects put four more lines
+    //    THROUGH the top pallet's deck, and the slots stopped reading as slots
+    //    — the stack has to sit behind the pallet, not across it.
+    for (int i = 2; i >= 1; i--) {
+      final d = stackOffset * i;
+      canvas.drawPath(
+        Path()
+          ..moveTo(u.p(pallet.right + d, pallet.top + d).dx,
+              u.p(pallet.right + d, pallet.top + d).dy)
+          ..lineTo(u.p(pallet.right + d, pallet.bottom + d).dx,
+              u.p(pallet.right + d, pallet.bottom + d).dy)
+          ..lineTo(u.p(pallet.left + d, pallet.bottom + d).dx,
+              u.p(pallet.left + d, pallet.bottom + d).dy),
+        detail,
+      );
+    }
+
+    // -- The top pallet, at full stroke, with its deck slots.
+    canvas.drawRect(
+        u.r(pallet.left, pallet.top, pallet.right, pallet.bottom), stroke);
+    _deckSlots(canvas, u, detail);
+
+    // -- The four corner guides the stack stands between, as angle brackets
+    //    pointing in. Full stroke: they are the machine's silhouette, and at a
+    //    small asset size they are the last thing that should degrade. An
+    //    angle reads as a guide; the plain squares this used to draw read as
+    //    feet.
+    const armX = 0.09;
+    const armY = 0.12;
+    for (final (cx, sx) in [(well.left, 1.0), (well.right, -1.0)]) {
+      for (final (cy, sy) in [(well.top, 1.0), (well.bottom, -1.0)]) {
+        canvas.drawPath(
+          Path()
+            ..moveTo(u.p(cx + sx * armX, cy).dx, u.p(cx + sx * armX, cy).dy)
+            ..lineTo(u.p(cx, cy).dx, u.p(cx, cy).dy)
+            ..lineTo(u.p(cx, cy + sy * armY).dx, u.p(cx, cy + sy * armY).dy),
+          stroke,
+        );
+      }
+    }
+  }
+
+  /// The deck slots, two columns by three rows inside the pallet — the
+  /// `pallet_top` icon's arrangement.
+  void _deckSlots(Canvas canvas, UnitSpace u, Paint detail) {
+    const padX = 0.055;
+    const padY = 0.085;
+    const gapX = 0.05;
+    const gapY = 0.055;
+    final inner = Rect.fromLTRB(
+      pallet.left + (pallet.right - pallet.left) * padX,
+      pallet.top + (pallet.bottom - pallet.top) * padY,
+      pallet.right - (pallet.right - pallet.left) * padX,
+      pallet.bottom - (pallet.bottom - pallet.top) * padY,
+    );
+    final gx = (pallet.right - pallet.left) * gapX;
+    final gy = (pallet.bottom - pallet.top) * gapY;
+    final slotW =
+        (inner.width - gx * (deckSlotColumns - 1)) / deckSlotColumns;
+    final slotH = (inner.height - gy * (deckSlotRows - 1)) / deckSlotRows;
+    for (int c = 0; c < deckSlotColumns; c++) {
+      for (int r = 0; r < deckSlotRows; r++) {
+        final left = inner.left + c * (slotW + gx);
+        final top = inner.top + r * (slotH + gy);
+        canvas.drawRect(
+            u.r(left, top, left + slotW, top + slotH), detail);
+      }
+    }
+  }
 }
