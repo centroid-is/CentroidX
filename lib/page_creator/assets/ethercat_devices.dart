@@ -204,6 +204,11 @@ abstract final class _Col {
   /// Below these the columns that are least often read go first.
   static const hideModelBelow = 620.0;
   static const hideCleanBelow = 760.0;
+
+  /// The smallest box the toolbar, the header and a couple of rows lay out
+  /// in. Anything smaller renders at this size and is scaled down.
+  static const minWidth = 480.0;
+  static const minHeight = 160.0;
 }
 
 /// The table itself, fed values — so it can be goldened without a server.
@@ -285,35 +290,63 @@ class _EcDeviceTableViewState extends State<EcDeviceTableView> {
           fontFeatures: [FontFeature.tabularFigures()],
         ),
         child: LayoutBuilder(builder: (context, constraints) {
-          final layout = _Layout(
-            showModel: constraints.maxWidth >= _Col.hideModelBelow,
-            showClean: constraints.maxWidth >= _Col.hideCleanBelow,
-          );
-          return _LayoutScope(
-            layout: layout,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _Toolbar(
-                  buses: widget.buses,
-                  states: states,
-                  caption: widget.caption,
-                  problemsOnly: _problemsOnly,
-                  onProblemsOnly: (v) => setState(() => _problemsOnly = v),
-                  onQuery: (v) => setState(() => _query = v.trim()),
-                ),
-                const _HeaderRow(),
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: rows.length,
-                    itemExtent: _Col.rowHeight,
-                    itemBuilder: (context, i) => rows[i](i),
-                  ),
-                ),
-              ],
-            ),
-          );
+          // Below a size where the toolbar and one row still fit — a palette
+          // tile, a freshly dropped asset, a config pane's preview — lay out
+          // at that size and scale down. A legible miniature of the table
+          // says what it is; a box of overflow stripes does not.
+          final w = constraints.maxWidth, h = constraints.maxHeight;
+          if (!w.isFinite ||
+              !h.isFinite ||
+              w < _Col.minWidth ||
+              h < _Col.minHeight) {
+            return FittedBox(
+              fit: BoxFit.contain,
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: w.isFinite && w > _Col.minWidth ? w : _Col.minWidth,
+                height: h.isFinite && h > _Col.minHeight ? h : _Col.minHeight,
+                child: _table(context, states, rows, _Col.minWidth),
+              ),
+            );
+          }
+          return _table(context, states, rows, w);
         }),
+      ),
+    );
+  }
+
+  /// The toolbar, the header and the rows, laid out for [width].
+  Widget _table(
+    BuildContext context,
+    HmiStateColors states,
+    List<Widget Function(int index)> rows,
+    double width,
+  ) {
+    return _LayoutScope(
+      layout: _Layout(
+        showModel: width >= _Col.hideModelBelow,
+        showClean: width >= _Col.hideCleanBelow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _Toolbar(
+            buses: widget.buses,
+            states: states,
+            caption: widget.caption,
+            problemsOnly: _problemsOnly,
+            onProblemsOnly: (v) => setState(() => _problemsOnly = v),
+            onQuery: (v) => setState(() => _query = v.trim()),
+          ),
+          const _HeaderRow(),
+          Expanded(
+            child: ListView.builder(
+              itemCount: rows.length,
+              itemExtent: _Col.rowHeight,
+              itemBuilder: (context, i) => rows[i](i),
+            ),
+          ),
+        ],
       ),
     );
   }
