@@ -21,6 +21,9 @@ import 'package:open62541/open62541.dart' show DynamicValue;
 
 import '../../providers/state_man.dart';
 import '../../theme.dart' show HmiStateColors;
+import 'ethercat_asset.dart';
+import 'ethercat_subdevice.dart';
+import 'ethercat_subdevice_pane.dart';
 import '../../widgets/hit_boundary.dart' show AssetHitShape;
 import '../../widgets/panes/side_pane.dart';
 import 'common.dart';
@@ -313,6 +316,91 @@ class EtherCatLinkConfig extends BaseAsset {
       EtherCatLinkConfigEditor(config: this);
 }
 
+/// One end of a run, resolved to the subdevice port it lands on.
+class EcLinkEnd {
+  const EcLinkEnd({
+    required this.asset,
+    required this.binding,
+    required this.port,
+  });
+
+  final EtherCatAsset asset;
+  final EcSubDeviceBinding binding;
+  final EcPort port;
+
+  /// What the pane calls this end.
+  String get label => asset.ecName.isNotEmpty
+      ? asset.ecName.replaceAll(RegExp(r'\s+'), ' ')
+      : (asset.text?.isNotEmpty == true ? asset.text! : asset.displayName);
+}
+
+/// [end] as a subdevice port, or null when it plugs into nothing bound.
+///
+/// A legacy `X1`/`X2` resolves through the device's own aliases first, so a
+/// cable drawn before the device was bound still names the socket it was
+/// drawn to — on an EK1100 that makes `X2` port C, not B.
+EcLinkEnd? resolveEcLinkEnd(LinkEnd end, PageLinkAnchors anchors) {
+  final id = end.assetId;
+  if (id == null) return null;
+  final asset = anchors.assetFor(id);
+  if (asset is! EtherCatAsset) return null;
+  final binding = asset.ecSubDevice;
+  if (binding == null || !binding.isBound) return null;
+  final port =
+      EcPort.parse(findPort(asset.networkPorts, end.port)?.id ?? end.port);
+  if (port == null) return null;
+  return EcLinkEnd(asset: asset, binding: binding, port: port);
+}
+
+/// What a cable between two subdevice ports is doing.
+///
+/// The worse of the two ends, because a cable is one thing: a port reporting
+/// a missing link at one end is a missing link whatever the other end thinks.
+/// Ports the topology puts nothing on mean the PLC does not know about this
+/// run — drawn, not reported — which is [LinkHealth.idle] rather than a claim
+/// that it is healthy.
+LinkHealth ecLinkHealth(
+  EcBus? busA,
+  EcSubDevice? a,
+  EcPort? portA,
+  EcBus? busB,
+  EcSubDevice? b,
+  EcPort? portB,
+) {
+  final seen = <EcHealth>[
+    if (busA != null && a != null && portA != null) busA.portHealth(a, portA),
+    if (busB != null && b != null && portB != null) busB.portHealth(b, portB),
+  ];
+  if (seen.isEmpty) return LinkHealth.unknown;
+  final judged = seen.where((h) => h != EcHealth.unused).toList();
+  if (judged.isEmpty) return LinkHealth.idle;
+  return switch (worstHealth(judged)) {
+    EcHealth.fault => LinkHealth.down,
+    EcHealth.warning => LinkHealth.degraded,
+    EcHealth.ok => LinkHealth.healthy,
+    EcHealth.unused || EcHealth.unknown => LinkHealth.unknown,
+  };
+}
+
+/// One decode of both ends, kept for the pane.
+class _DerivedLink {
+  const _DerivedLink(
+    this.a,
+    this.subdeviceA,
+    this.busA,
+    this.b,
+    this.subdeviceB,
+    this.busB,
+  );
+
+  final EcLinkEnd? a;
+  final EcSubDevice? subdeviceA;
+  final EcBus? busA;
+  final EcLinkEnd? b;
+  final EcSubDevice? subdeviceB;
+  final EcBus? busB;
+}
+
 /// Runtime widget: subscribes to the cable's struct and paints the run.
 class EtherCatLink extends ConsumerStatefulWidget {
   const EtherCatLink({super.key, required this.config});
@@ -384,8 +472,13 @@ class _EtherCatLinkState extends ConsumerState<EtherCatLink> {
     }
   }
 
+  /// The last derived decode, for the pane — which is opened from a tap, not
+  /// rebuilt with the widget.
+  _DerivedLink? _derived;
+
   void _openPane() {
     final label = widget.config.text;
+    final derived = _derived;
     showSidePane(
       context: context,
       id: 'ethercat-link-${widget.config.ensureId()}',
@@ -393,12 +486,44 @@ class _EtherCatLinkState extends ConsumerState<EtherCatLink> {
         title: label?.isNotEmpty == true ? label! : 'EtherCAT link',
         subtitle: 'Cable',
         icon: Icons.cable,
-        status: etherCatLinkPaneStatus(_last?.health ??
-            (widget.config.key.isEmpty ? LinkHealth.idle : LinkHealth.unknown)),
-        child: EtherCatLinkPaneBody(
-          state: _last,
-          onResetCounters: widget.config.key.isEmpty ? null : _resetCounters,
+        status: etherCatLinkPaneStatus(derived != null
+            ? ecLinkHealth(derived.busA, derived.subdeviceA, derived.a?.port,
+                derived.busB, derived.subdeviceB, derived.b?.port)
+            : _last?.health ??
+                (widget.config.key.isEmpty
+                    ? LinkHealth.idle
+                    : LinkHealth.unknown)),
+        child: derived != null
+            ? EcLinkPaneBody(
+                a: derived.a,
+                subdeviceA: derived.subdeviceA,
+                busA: derived.busA,
+                b: derived.b,
+                subdeviceB: derived.subdeviceB,
+                busB: derived.busB,
+                onOpen: (end) => _openSubdevicePane(end),
+              )
+            : EtherCatLinkPaneBody(
+                state: _last,
+                onResetCounters:
+                    widget.config.key.isEmpty ? null : _resetCounters,
+              ),
+      ),
+    );
+  }
+
+  /// Opens the device pane for one end, where its counters can be cleared.
+  void _openSubdevicePane(EcLinkEnd end) {
+    showSidePane(
+      context: context,
+      id: 'ethercat-subdevice-${end.binding.diagKey}-${end.binding.position}',
+      builder: (_) => EcSubDeviceLivePane(
+        bus: EcBusConfig(
+          label: end.label,
+          diagKey: end.binding.diagKey,
+          infoKey: end.binding.infoKey,
         ),
+        position: end.binding.position,
       ),
     );
   }
@@ -431,8 +556,53 @@ class _EtherCatLinkState extends ConsumerState<EtherCatLink> {
         .asyncExpand((s) => s);
   }
 
+  /// The ends resolved against the page this cable is drawn on.
+  (EcLinkEnd?, EcLinkEnd?) _boundEnds(BuildContext context) {
+    final scope = PageAssetsScope.maybeOf(context);
+    if (scope == null) return (null, null);
+    final anchors = PageLinkAnchors(scope.assets, scope.canvas);
+    return (
+      resolveEcLinkEnd(widget.config.run.from, anchors),
+      resolveEcLinkEnd(widget.config.run.to, anchors),
+    );
+  }
+
+  /// Colour from the devices at the ends, reading their masters' arrays.
+  ///
+  /// Bound ends win over [EtherCatLinkConfig.key]: the struct that key names
+  /// was never implemented on this plant's PLC, so a cable carrying one comes
+  /// alive the moment its devices are bound rather than staying violet.
+  Widget _buildDerived(BuildContext context, EcLinkEnd? a, EcLinkEnd? b) {
+    final keys = <String>{
+      if (a != null) ...a.binding.keys,
+      if (b != null) ...b.binding.keys,
+    }.toList();
+    return EcKeyValues(
+      keys: keys,
+      builder: (context, values, errors) {
+        EcBus? busOf(EcLinkEnd? e) => e == null
+            ? null
+            : EcBus.fromValues(
+                '',
+                info: values[e.binding.infoKey],
+                diag: values[e.binding.diagKey],
+              );
+        final busA = busOf(a), busB = busOf(b);
+        final sa = busA == null ? null : a!.binding.resolve(busA);
+        final sb = busB == null ? null : b!.binding.resolve(busB);
+        _derived = _DerivedLink(a, sa, busA, b, sb, busB);
+        return _paint(
+          context,
+          ecLinkHealth(busA, sa, a?.port, busB, sb, b?.port),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final (a, b) = _boundEnds(context);
+    if (a != null || b != null) return _buildDerived(context, a, b);
     final stream = _stream;
     if (stream == null) return _paint(context, LinkHealth.idle);
     return StreamBuilder<DynamicValue>(
@@ -522,10 +692,18 @@ class _EtherCatLinkConfigEditorState extends State<EtherCatLinkConfigEditor> {
   @override
   Widget build(BuildContext context) {
     final scope = PageAssetsScope.maybeOf(context);
-    final candidates = [
-      for (final a in scope?.assets ?? const <Asset>[])
-        if (!identical(a, widget.config)) a,
-    ];
+    // Rack slices are candidates too: on this plant every terminal a cable
+    // reaches is a slice inside a CX or an EK1100, so a picker that only
+    // offered top-level assets could not name the device at either end.
+    final candidates = <Asset>[];
+    void collect(Iterable<Asset> assets) {
+      for (final a in assets) {
+        if (!identical(a, widget.config)) candidates.add(a);
+        collect(a.childAssets);
+      }
+    }
+
+    collect(scope?.assets ?? const <Asset>[]);
 
     return SingleChildScrollView(
       child: Column(
