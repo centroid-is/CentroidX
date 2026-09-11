@@ -123,7 +123,11 @@ class AlarmAutoNavigator {
   }
 
   /// Raises seen since the last [take], newest last.
-  final List<AlarmNavigationTarget> _queue = [];
+  ///
+  /// A raise carries every page that announces it, not one — which of them is
+  /// the destination cannot be decided until [take] knows where the operator
+  /// is standing.
+  final List<_Raise> _queue = [];
 
   /// The target whose jump currently owns the screen, or null when nothing
   /// does. A later raise must beat this on level to take over.
@@ -170,10 +174,10 @@ class AlarmAutoNavigator {
     var queued = false;
     for (final a in active) {
       if (previous.contains(_raiseKey(a))) continue;
-      final path = _announcingPageFor(a.alarm.config.uid, pages);
-      if (path == null) continue;
-      _queue.add(AlarmNavigationTarget(
-        path: path,
+      final paths = _announcingPagesFor(a.alarm.config.uid, pages);
+      if (paths.isEmpty) continue;
+      _queue.add(_Raise(
+        paths: paths,
         level: a.notification.rule.level,
         alarmUid: a.alarm.config.uid,
       ));
@@ -199,12 +203,18 @@ class AlarmAutoNavigator {
     required bool suppressed,
   }) {
     if (_queue.isEmpty) return null;
-    final queued = List<AlarmNavigationTarget>.of(_queue);
+    final queued = List<_Raise>.of(_queue);
     _queue.clear();
 
     AlarmNavigationTarget? best;
-    for (final target in queued) {
-      if (!canOpen(target.path)) continue;
+    for (final raise in queued) {
+      final path = raise.destinationFrom(currentPath, canOpen);
+      if (path == null) continue;
+      final target = AlarmNavigationTarget(
+        path: path,
+        level: raise.level,
+        alarmUid: raise.alarmUid,
+      );
       // Strictly greater: two raises in one snapshot keep the earlier of the
       // equals, which is the one the plant saw first.
       if (best == null || target.level.index > best.level.index) best = target;
@@ -223,26 +233,82 @@ class AlarmAutoNavigator {
   }
 }
 
-/// The page whose beacon announces [uid], or null when no page does.
+/// One raise, and every page that could answer it.
 ///
-/// A beacon naming the uid outright wins over a catch-all (empty `alarmUids`,
-/// which watches everything). An overview page carrying one "any alarm"
-/// beacon would otherwise swallow every alarm in the plant and the operator
-/// would be sent to the overview instead of to the machine that stopped.
+/// Plural because nothing stops an operator putting a beacon for the same
+/// alarm on two pages, and the navigation pulse lights **both** of their
+/// entries. Collapsing to one page at queue time is what made an alarm on
+/// `/freezer` and `/packing` drag an operator off `/packing` — a page already
+/// flashing the alarm in front of them — onto the other one.
+class _Raise {
+  _Raise({
+    required this.paths,
+    required this.level,
+    required this.alarmUid,
+  });
+
+  /// Pages announcing this alarm: those naming the uid first, in stored page
+  /// order, then the catch-all pages. See [_announcingPagesFor].
+  final List<String> paths;
+  final AlarmLevel level;
+  final String alarmUid;
+
+  /// Where this raise should send an operator standing at [currentPath].
+  ///
+  /// The page they are already on, if it is one of ours — the jump is then
+  /// refused later by [AlarmAutoNavigator.take], which is the point: what is
+  /// being chosen here is which page the raise is *about*, and answering with
+  /// a different page that shows the same alarm is the wrong answer.
+  ///
+  /// Otherwise the first candidate this session can open. A specific beacon on
+  /// a page the operator may not open therefore falls through to a catch-all
+  /// page they can, rather than refusing to move at all: being taken to an
+  /// overview that shows the alarm beats being taken nowhere.
+  String? destinationFrom(String? currentPath, bool Function(String) canOpen) {
+    if (currentPath != null && paths.contains(currentPath)) return currentPath;
+    for (final path in paths) {
+      if (canOpen(path)) return path;
+    }
+    return null;
+  }
+}
+
+/// Every page whose beacon announces [uid], most specific first.
 ///
-/// Ties inside a class are broken by [pages] iteration order, which is stored
-/// page order — arbitrary, but stable, so the same alarm always lands on the
-/// same page rather than wherever a rebuild happened to put it.
-String? _announcingPageFor(String uid, Map<String, AssetPage> pages) {
-  String? catchAll;
+/// A beacon naming the uid outright comes before a catch-all (empty
+/// `alarmUids`, which watches everything). An overview page carrying one "any
+/// alarm" beacon would otherwise swallow every alarm in the plant and the
+/// operator would be sent to the overview instead of to the machine that
+/// stopped.
+///
+/// Order inside each class is [pages] iteration order, which is stored page
+/// order — arbitrary, but stable, so the same alarm always lands on the same
+/// page rather than wherever a rebuild happened to put it. An operator who
+/// wants a different one of two pages to win moves it earlier in the page
+/// list, the same lever that orders the menu.
+///
+/// A page appears once however many beacons on it match.
+List<String> _announcingPagesFor(String uid, Map<String, AssetPage> pages) {
+  final named = <String>[];
+  final catchAll = <String>[];
   for (final entry in pages.entries) {
+    var isNamed = false;
+    var isCatchAll = false;
     for (final beacon in entry.value.assets.whereType<AlarmVisibilityConfig>()) {
       if (!beacon.announceInNavigation) continue;
-      if (beacon.alarmUids.contains(uid)) return entry.key;
-      if (beacon.alarmUids.isEmpty) catchAll ??= entry.key;
+      if (beacon.alarmUids.contains(uid)) {
+        isNamed = true;
+        break;
+      }
+      if (beacon.alarmUids.isEmpty) isCatchAll = true;
+    }
+    if (isNamed) {
+      named.add(entry.key);
+    } else if (isCatchAll) {
+      catchAll.add(entry.key);
     }
   }
-  return catchAll;
+  return [...named, ...catchAll];
 }
 
 /// The live navigator, and a signal to look at it.

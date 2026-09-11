@@ -391,6 +391,71 @@ void main() {
     });
   });
 
+  group('the same alarm on two pages', () {
+    // Nothing stops an operator putting a beacon for one alarm on two pages,
+    // and the navigation pulse lights both entries when they do. The jump has
+    // to pick one, and which one it picks matters most when the operator is
+    // already standing on the other.
+    final twoPages = <String, AssetPage>{
+      '/freezer': pageFx('/freezer', [beacon(['a1'])]),
+      '/packing': pageFx('/packing', [beacon(['a1'])]),
+    };
+
+    test('the earlier page in stored order wins from somewhere else', () {
+      final navigator = quietNavigator(pages: twoPages);
+      navigator.onActive([activeFx(uid: 'a1')],
+          pages: twoPages, enabled: true);
+      expect(
+          navigator
+              .take(currentPath: '/', canOpen: (_) => true, suppressed: false)
+              ?.path,
+          '/freezer',
+          reason: 'arbitrary but stable, and moveable: an operator who wants '
+              'the other one reorders the page list');
+    });
+
+    test('standing on the later one is standing on it — no jump', () {
+      final navigator = quietNavigator(pages: twoPages);
+      navigator.onActive([activeFx(uid: 'a1')],
+          pages: twoPages, enabled: true);
+      expect(
+          navigator.take(
+              currentPath: '/packing',
+              canOpen: (_) => true,
+              suppressed: false),
+          isNull,
+          reason: 'the beacon is flashing in front of them already; being '
+              'dragged to the other page that shows the same alarm is the '
+              'one move that can only make things worse');
+      expect(navigator.hold?.alarmUid, 'a1',
+          reason: 'and the hold is claimed, so an equal alarm elsewhere '
+              'cannot take the screen off it');
+    });
+
+    test('a page the session cannot open falls through to the other', () {
+      final navigator = quietNavigator(pages: twoPages);
+      navigator.onActive([activeFx(uid: 'a1')],
+          pages: twoPages, enabled: true);
+      expect(
+          navigator
+              .take(
+                  currentPath: '/',
+                  canOpen: (path) => path != '/freezer',
+                  suppressed: false)
+              ?.path,
+          '/packing');
+    });
+
+    test('two beacons on one page name it once', () {
+      final pages = {
+        '/freezer': pageFx('/freezer', [beacon(['a1']), beacon(['a1', 'a2'])]),
+      };
+      final navigator = quietNavigator(pages: pages);
+      navigator.onActive([activeFx(uid: 'a1')], pages: pages, enabled: true);
+      expect(takeFromHome(navigator)?.path, '/freezer');
+    });
+  });
+
   group('choosing among beacons', () {
     test('a beacon naming the alarm beats a catch-all', () {
       final pages = {
@@ -402,6 +467,25 @@ void main() {
       expect(takeFromHome(navigator)?.path, '/freezer',
           reason: 'an overview page watching everything must not swallow '
               'every alarm in the plant');
+    });
+
+    test('a locked specific page falls through to a catch-all that is open',
+        () {
+      final pages = {
+        '/overview': pageFx('/overview', [beacon(const [])]),
+        '/freezer': pageFx('/freezer', [beacon(['a1'])]),
+      };
+      final navigator = quietNavigator(pages: pages);
+      navigator.onActive([activeFx(uid: 'a1')], pages: pages, enabled: true);
+      expect(
+          navigator
+              .take(
+                  currentPath: '/',
+                  canOpen: (path) => path != '/freezer',
+                  suppressed: false)
+              ?.path,
+          '/overview',
+          reason: 'an overview that shows the alarm beats going nowhere');
     });
 
     test('a catch-all still answers for an alarm no beacon names', () {

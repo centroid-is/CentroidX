@@ -109,6 +109,11 @@ class AlarmVisibilityConfig extends BaseAsset {
   /// alarms raises, so switching this off silences the jump as well as the
   /// pulse. Which page an alarm goes to is never configured anywhere else;
   /// this is the only statement of it.
+  ///
+  /// Two pages may carry a beacon for the same alarm, and the pulse lights
+  /// both entries. The jump has to pick one: the page the operator is already
+  /// on if it is one of them, else the earlier of the two in the page list.
+  /// Reordering the pages is the lever for changing that answer.
   @JsonKey(name: 'announce_in_navigation', defaultValue: true)
   bool announceInNavigation;
 
