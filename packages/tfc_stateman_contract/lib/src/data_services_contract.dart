@@ -46,6 +46,41 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'check.dart';
 import 'harness.dart';
 
+/// The budget every check in this file waits on, and why it is not `within`'s
+/// default.
+///
+/// 200 ms is a sensible default for a contract check that crosses an in-process
+/// seam. **Every check in this file crosses a data store** — timeseries reads,
+/// downsamples, history views — and one of the legs it runs on is a real
+/// TimescaleDB. There a single downsample over 500 points is a query plan, a
+/// connection and a round trip, which is a different order of magnitude from a
+/// map lookup, and 200 ms was never a claim about it.
+///
+/// Measured: `tfc-dart-test (windows-latest)` failed
+/// `a downsampled series coming back did not happen within 800 ms
+/// (200 ms x 4.0 for this runner)` — that is, with the hosted-runner factor
+/// already applied. A case that still fails once scaled is not slow, and the
+/// honest reading is that the default was wrong for this transport rather than
+/// that the runner was too slow for the default.
+///
+/// Still a liveness bound, and still scaled by `budgetScale` inside [within]:
+/// this turns a hung query into a named failure, it does not measure latency.
+/// **Bounded above by `suite_integrity_test`'s `_checkBudget` (2 s), and that
+/// coupling is load-bearing.** That meta-test runs every check against a source
+/// that never answers and requires each to give up inside its budget — "no
+/// check can hang" is a property of this suite, and a check that takes longer
+/// to fail than the meta-test allows breaks it. Setting this to 2 s put the two
+/// numbers on top of each other and turned five integrity cases red. One second
+/// leaves a second of margin; anything larger has to raise `_checkBudget` in
+/// the same commit, and the file's own 90 s wall-clock budget with it.
+const Duration _storeBudget = Duration(seconds: 1);
+
+/// [within] with [_storeBudget], so the 38 call sites in this file read as they
+/// did and there is one number to change rather than thirty-eight.
+Future<T> _within<T>(Future<T> f, String what) =>
+    within(f, what, budget: _storeBudget);
+
+
 /// A recorded series on the pre-freezer line, named the way the database names
 /// tables rather than the way the key space names tags — the parameter is
 /// `tableName` and whether the wire speaks key space or table space is itself a
@@ -139,7 +174,7 @@ Future<void> checkTimeseriesQueryReturnsSeededPointsInOrder(
 
   final from = base.add(const Duration(minutes: 1));
   final to = base.add(const Duration(minutes: 5));
-  final got = await within(
+  final got = await _within(
       api.timeseries.queryTimeseriesData(_table, to, from: from),
       'a recorded series coming back');
 
@@ -172,7 +207,7 @@ Future<void> checkTimeseriesMultipleReturnsAnEntryPerTable(
   final base = DateTime.utc(2026, 8, 13, 6);
   seed(api, _table, _minutely(base, 5));
 
-  final got = await within(
+  final got = await _within(
       api.timeseries.queryTimeseriesDataMultiple(
           [_table, _unrecordedTable], base.add(const Duration(hours: 1)),
           from: base),
@@ -221,7 +256,7 @@ Future<void> checkDownsampledRespectsMaxPoints(
 
   final to = base.add(const Duration(seconds: 499));
   const maxPoints = 50;
-  final got = await within(
+  final got = await _within(
       api.timeseries
           .queryTimeseriesDataDownsampled(_table, base, to, maxPoints: maxPoints),
       'a downsampled series coming back');
@@ -258,7 +293,7 @@ Future<void> checkHistoryViewCreateSelectDeleteRoundTrips(
     StateManApi api) async {
   final views = api.historyViews;
 
-  final id = await within(
+  final id = await _within(
       views.createHistoryView(
         'Frystir — vakt 1',
         [_keyA, _keyB],
@@ -278,7 +313,7 @@ Future<void> checkHistoryViewCreateSelectDeleteRoundTrips(
           'addresses the view by, so a view without one cannot be opened, '
           'edited or deleted');
 
-  final saved = await within(views.selectHistoryViews(), 'the saved views');
+  final saved = await _within(views.selectHistoryViews(), 'the saved views');
   expect(saved.map((view) => view.id), contains(id),
       reason: 'a view was created and does not appear in the view picker, so '
           'the only way back to it is the id the caller happened to keep');
@@ -286,7 +321,7 @@ Future<void> checkHistoryViewCreateSelectDeleteRoundTrips(
       reason: 'the view came back under a different name than it was saved '
           'with');
 
-  final keys = await within(views.getHistoryViewKeys(id), 'the view\'s keys');
+  final keys = await _within(views.getHistoryViewKeys(id), 'the view\'s keys');
   expect(keys.keys, containsAll([_keyA, _keyB]),
       reason: 'the view was saved plotting [$_keyA, $_keyB] and came back '
           'plotting ${keys.keys.toList()}');
@@ -301,22 +336,22 @@ Future<void> checkHistoryViewCreateSelectDeleteRoundTrips(
       reason: 'a key saved with no alias came back with none either; the '
           'legend needs something to render, and the key\'s own name is it');
 
-  final graphs = await within(views.getHistoryViewGraphs(id), 'the view\'s graphs');
+  final graphs = await _within(views.getHistoryViewGraphs(id), 'the view\'s graphs');
   expect(graphs[1]?.yAxisUnit, '°C',
       reason: 'the axis unit did not survive the round trip, so the chart '
           'draws numbers with nothing saying what they are');
 
   final names =
-      await within(views.getHistoryViewKeyNames(id), 'the view\'s key names');
+      await _within(views.getHistoryViewKeyNames(id), 'the view\'s key names');
   expect(names, containsAll([_keyA, _keyB]),
       reason: 'the name-only accessor disagrees with the record accessor about '
           'what this view plots');
 
-  await within(views.deleteHistoryView(id), 'deleting the view');
-  final after = await within(views.selectHistoryViews(), 'the views after the delete');
+  await _within(views.deleteHistoryView(id), 'deleting the view');
+  final after = await _within(views.selectHistoryViews(), 'the views after the delete');
   expect(after.map((view) => view.id), isNot(contains(id)),
       reason: 'the deleted view is still in the picker');
-  expect(await within(views.getHistoryViewKeys(id), 'the deleted view\'s keys'),
+  expect(await _within(views.getHistoryViewKeys(id), 'the deleted view\'s keys'),
       isEmpty,
       reason: 'the view was deleted and its plotted keys outlived it; those '
           'rows are what make a deleted view come back as a partial one after '
@@ -331,12 +366,12 @@ Future<void> checkHistoryViewCreateSelectDeleteRoundTrips(
 /// which is the failure this being UTC end to end exists to prevent.
 Future<void> checkHistoryViewPeriodRoundTrips(StateManApi api) async {
   final views = api.historyViews;
-  final viewId = await within(
+  final viewId = await _within(
       views.createHistoryView('Vaktir', [_keyA]), 'creating a history view');
 
   final start = DateTime.utc(2026, 8, 12, 6);
   final end = DateTime.utc(2026, 8, 12, 14);
-  final periodId = await within(
+  final periodId = await _within(
       views.addHistoryViewPeriod(viewId, 'Vakt 1', start, end),
       'saving a time window');
 
@@ -345,7 +380,7 @@ Future<void> checkHistoryViewPeriodRoundTrips(StateManApi api) async {
           'deleted again');
 
   final periods =
-      await within(views.listHistoryViewPeriods(viewId), 'the saved windows');
+      await _within(views.listHistoryViewPeriods(viewId), 'the saved windows');
   expect(periods, hasLength(1),
       reason: 'one window was saved on this view and ${periods.length} came '
           'back');
@@ -366,9 +401,9 @@ Future<void> checkHistoryViewPeriodRoundTrips(StateManApi api) async {
       reason: 'the window ends at ${periods.single.endAt} where it was saved '
           'ending at $end');
 
-  await within(views.deleteHistoryViewPeriod(periodId), 'deleting the window');
+  await _within(views.deleteHistoryViewPeriod(periodId), 'deleting the window');
   expect(
-      await within(
+      await _within(
           views.listHistoryViewPeriods(viewId), 'the windows after the delete'),
       isEmpty,
       reason: 'the deleted window is still listed on the view');
@@ -388,68 +423,68 @@ Future<void> checkHistoryViewPeriodRoundTrips(StateManApi api) async {
 Future<void> checkPreferenceSetGetRoundTrips(StateManApi api) async {
   final prefs = api.preferences;
 
-  await within(prefs.setBool(_prefKey, true), 'saving a bool preference');
-  expect(await within(prefs.getBool(_prefKey), 'reading a bool preference'),
+  await _within(prefs.setBool(_prefKey, true), 'saving a bool preference');
+  expect(await _within(prefs.getBool(_prefKey), 'reading a bool preference'),
       isTrue,
       reason: 'a bool did not survive the round trip');
 
-  await within(
+  await _within(
       prefs.setInt('svn.chart.maxPoints', 800), 'saving an int preference');
   expect(
-      await within(
+      await _within(
           prefs.getInt('svn.chart.maxPoints'), 'reading an int preference'),
       800,
       reason: 'an int did not survive the round trip');
 
-  await within(prefs.setDouble('svn.weigher.tolerance', 0.25),
+  await _within(prefs.setDouble('svn.weigher.tolerance', 0.25),
       'saving a double preference');
   expect(
-      await within(prefs.getDouble('svn.weigher.tolerance'),
+      await _within(prefs.getDouble('svn.weigher.tolerance'),
           'reading a double preference'),
       0.25,
       reason: 'a double did not survive the round trip; a tolerance that comes '
           'back as an int is a weigher grading to the nearest whole gram');
 
-  await within(
+  await _within(
       prefs.setString('svn.site.name', 'Sæból'), 'saving a string preference');
   expect(
-      await within(
+      await _within(
           prefs.getString('svn.site.name'), 'reading a string preference'),
       'Sæból',
       reason: 'a string did not survive the round trip intact; the site names '
           'here carry Icelandic characters and a store that mangles them '
           'renders them mangled on every page header');
 
-  await within(prefs.setStringList('svn.page.recent', ['frystir', 'pökkun']),
+  await _within(prefs.setStringList('svn.page.recent', ['frystir', 'pökkun']),
       'saving a string list preference');
   expect(
-      await within(
+      await _within(
           prefs.getStringList('svn.page.recent'), 'reading a string list'),
       ['frystir', 'pökkun'],
       reason: 'a string list did not survive the round trip');
 
-  expect(await within(prefs.containsKey(_prefKey), 'containsKey on a set key'),
+  expect(await _within(prefs.containsKey(_prefKey), 'containsKey on a set key'),
       isTrue,
       reason: 'a key that was just set reads as absent');
   expect(
-      await within(
+      await _within(
           prefs.containsKey('svn.never.set'), 'containsKey on an unset key'),
       isFalse,
       reason: 'a key that was never set reads as present, so a settings page '
           'shows a blank where it should show the default');
 
-  final keys = await within(prefs.getKeys(), 'enumerating the stored keys');
+  final keys = await _within(prefs.getKeys(), 'enumerating the stored keys');
   expect(keys, containsAll([_prefKey, 'svn.site.name', 'svn.page.recent']),
       reason: 'keys that were set do not appear in the enumeration');
 
-  await within(prefs.remove('svn.site.name'), 'removing a preference');
+  await _within(prefs.remove('svn.site.name'), 'removing a preference');
   expect(
-      await within(
+      await _within(
           prefs.containsKey('svn.site.name'), 'containsKey after a remove'),
       isFalse,
       reason: 'a removed key still reads as present');
   expect(
-      await within(prefs.getString('svn.site.name'), 'reading a removed key'),
+      await _within(prefs.getString('svn.site.name'), 'reading a removed key'),
       isNull,
       reason: 'a removed key still has a value behind it');
 }
@@ -478,20 +513,20 @@ Future<void> checkPreferenceSetGetRoundTrips(StateManApi api) async {
 Future<void> checkPreferenceClearCarriesItsAllowList(StateManApi api) async {
   final prefs = api.preferences;
 
-  await within(prefs.setBool(_prefKey, true), 'saving the key that must stay');
-  await within(prefs.setInt(_clearedKey, 800), 'saving the key to be cleared');
+  await _within(prefs.setBool(_prefKey, true), 'saving the key that must stay');
+  await _within(prefs.setInt(_clearedKey, 800), 'saving the key to be cleared');
 
-  await within(prefs.clear(allowList: <String>{_clearedKey}),
+  await _within(prefs.clear(allowList: <String>{_clearedKey}),
       'clearing exactly one named key');
 
   expect(
-      await within(
+      await _within(
           prefs.containsKey(_clearedKey), 'containsKey on the cleared key'),
       isFalse,
       reason: 'the key named in the allow list is still stored, so `clear` '
           'either ignored its argument or did nothing at all');
   expect(
-      await within(prefs.getBool(_prefKey), 'reading the key that must stay'),
+      await _within(prefs.getBool(_prefKey), 'reading the key that must stay'),
       isTrue,
       reason: 'a key the allow list did NOT name was removed. This is the '
           'direction that matters: with no allow list `clear` removes every '
@@ -549,7 +584,7 @@ Future<void> checkPreferenceChangeNotifiesASecondListener(
   final first = nextChange('the first listener hearing the change');
   final second = nextChange('a second listener hearing the same change');
 
-  await within(prefs.setBool(_prefKey, true), 'the preference write completing');
+  await _within(prefs.setBool(_prefKey, true), 'the preference write completing');
 
   final heardSecond = await second;
   final heardFirst = await first;
