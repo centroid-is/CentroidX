@@ -526,38 +526,6 @@ class _DialogGeometry {
   const _DialogGeometry(this.position, this.size);
 }
 
-/// The window's arrival: a 150 ms fade with a 3 % grow.
-///
-/// Most of these windows hold a chart whose history is still on its way when
-/// the window appears. Popping in fully formed and then sitting still reads
-/// as "stuck"; arriving over a few frames reads as "responding", and those
-/// frames are the ones the chart spends drawing its seed. Entrance only --
-/// [FloatingDialogs.closeAll] relies on a window leaving synchronously.
-///
-/// Built once per real rebuild of the shell, like the surface it wraps, so a
-/// drag or a resize never replays it.
-class _Entrance extends StatelessWidget {
-  const _Entrance({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 150),
-      curve: Curves.easeOutCubic,
-      child: child,
-      // Opacity does not block hit-testing, so a tap landing in the first
-      // frames still reaches the window.
-      builder: (context, t, child) => Opacity(
-        opacity: t,
-        child: Transform.scale(scale: 0.97 + 0.03 * t, child: child),
-      ),
-    );
-  }
-}
-
 /// Geometry, dragging, resizing and Escape handling for a floating dialog.
 class _FloatingDialogShell extends StatefulWidget {
   final String id;
@@ -698,7 +666,7 @@ class _FloatingDialogShellState extends State<_FloatingDialogShell> {
       // see [_geometry]. Anything the content depends on (theme, media query,
       // the actions list) still reaches it, because a change to those rebuilds
       // the shell itself rather than only the notifier.
-      child: _Entrance(child: _dialogSurface(context)),
+      child: _dialogSurface(context),
       builder: (context, geometry, surface) {
         final size = _fit(geometry.size);
         final position = _resolvePosition(geometry.position, size);
