@@ -42,7 +42,14 @@ on:
 
 concurrency:
   group: station-image-${{ github.ref }}
-  cancel-in-progress: true
+  # Only supersede PR builds. A hand-run release must not be killed by someone
+  # merging a PR that touches os/ -- possibly between creating the release and
+  # uploading its assets. tag.yml uses cancel-in-progress: false for the same
+  # reason. (Review #16.)
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 defaults:
   run:
@@ -58,7 +65,8 @@ jobs:
 
       - name: shellcheck
         run: |
-          docker run --rm -v "$PWD:/w" -w /w koalaman/shellcheck:stable \
+          docker run --rm -v "$PWD:/w" -w /w \
+            koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d \
             scripts/*.sh \
             overlays/base/usr/local/bin/centroidx-firstboot \
             overlays/installer/usr/local/bin/centroidx-install \
@@ -83,19 +91,51 @@ jobs:
           echo "compose interpolates with nothing but .env.example filled in"
           rm -f .env
 
-      # Every ${VAR} the compose file reads must be documented, or a station
-      # gets provisioned without it and nobody finds out until something is
-      # silently slow or insecure.
-      - name: Every compose variable is in .env.example
+      # Every variable the compose file reads must be documented AND actually
+      # written by firstboot, or a station gets provisioned without it and
+      # nobody finds out until something is silently slow, insecure, or refuses
+      # to start. The old version of this gate matched only "${VAR", so a bare
+      # $VAR slipped past and a $${VAR} escape was miscounted.
+      - name: Compose variables are documented and provisioned
         working-directory: .
         run: |
-          set -euo pipefail
-          missing=0
-          for v in $(grep -oE '\$\{[A-Z_]+' docker-compose.yml | tr -d '${' | sort -u); do
-            grep -qE "^${v}=" .env.example || { echo "::error::\$${v} is used by docker-compose.yml but absent from .env.example"; missing=1; }
-          done
-          [ "$missing" = 0 ] && echo "all compose variables documented"
-          exit $missing
+          python3 - <<'EOF'
+          import re, sys, pathlib
+
+          compose = pathlib.Path('docker-compose.yml').read_text()
+          example = pathlib.Path('.env.example').read_text()
+          firstboot = pathlib.Path(
+              'os/overlays/base/usr/local/bin/centroidx-firstboot').read_text()
+
+          # $$ is an escape meaning a literal $ -- the container's own shell
+          # expands it, compose does not, so it is not a compose variable.
+          compose_novar = re.sub(r'\$\$', '', compose)
+          used, required = set(), set()
+          for m in re.finditer(r'\$\{(\w+)(:?[-?][^}]*)?\}|\$(\w+)', compose_novar):
+              name = m.group(1) or m.group(3)
+              if not name.isupper():
+                  continue
+              used.add(name)
+              if (m.group(2) or '').startswith((':?', '?')):
+                  required.add(name)
+
+          documented = set(re.findall(r'^([A-Z_]+)=', example, re.M))
+          written    = set(re.findall(r'^\s*(?:echo|printf)[^\n]*?\b([A-Z_]+)=', firstboot, re.M))
+          written   |= set(re.findall(r"printf '([A-Z_]+)=", firstboot))
+
+          rc = 0
+          for v in sorted(used - documented):
+              print(f'::error::${v} is read by docker-compose.yml but absent from .env.example')
+              rc = 1
+          # Only the mandatory ones: compose starts without the optional ones.
+          for v in sorted(required - written):
+              print(f'::error::${v} is mandatory (:?) but centroidx-firstboot never writes it '
+                    f'- every fresh install would fail to start')
+              rc = 1
+          print(f'{len(used)} variables read, {len(required)} mandatory, '
+                f'{len(documented)} documented, {len(written)} written by firstboot')
+          sys.exit(rc)
+          EOF
 
   build:
     needs: validate
@@ -103,6 +143,11 @@ jobs:
     # a station tag, or asked for by hand.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      # The default token is read-only, so `gh release create` would 403 after a
+      # 30-minute build. tag.yml and main-prerelease.yml grant this for the same
+      # reason. (Review #14.)
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -180,9 +225,11 @@ jobs:
           TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
+          # Assets passed to `create`, not a separate `upload`: a failed upload
+          # after a successful create would leave a tagged, empty release and a
+          # tag that cannot be reused. (Review #10.)
           gh release create "$TAG" \
             --target "$GITHUB_SHA" \
             --title "Station image $TAG" \
-            --notes-file overlays/generated/etc/centroid/image-info
-          gh release upload "$TAG" \
-            out/*.img.gz out/*.bmap out/SHA256SUMS --clobber
+            --notes-file overlays/generated/etc/centroid/image-info \
+            out/*.img.gz out/*.bmap out/SHA256SUMS

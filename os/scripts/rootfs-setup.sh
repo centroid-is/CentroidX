@@ -19,12 +19,31 @@ echo "Atlantic/Reykjavik" > /etc/timezone
 systemctl enable systemd-timesyncd.service
 
 # ------------------------------------------------------------------------ users
+# minbase debootstrap leaves no /etc/hosts, and d-i did create one on the
+# playbook-era machines. Without it `localhost` does not resolve and sudo warns
+# on every call about being unable to resolve the host. The installer overwrites
+# /etc/hostname per station; 127.0.1.1 is the Debian convention and resolves
+# whatever that ends up being via the alias written here at first boot.
+log "hosts file"
+cat > /etc/hosts <<'EOF'
+127.0.0.1	localhost
+::1		localhost ip6-localhost ip6-loopback
+fe00::0		ip6-localnet
+ff00::0		ip6-mcastprefix
+ff02::1		ip6-allnodes
+ff02::2		ip6-allrouters
+EOF
+
 log "centroid user"
 getent group docker >/dev/null || groupadd --system docker
 # Password is deliberately left locked: centroidx-firstboot sets it from the
 # answers the installer collected. A golden image must not ship a known login.
+# /bin/bash, as the playbook had it. fish is still installed and anyone who
+# wants it can `chsh`, but it must not be the LOGIN shell: POSIX command strings
+# sent over ssh as centroid (export, VAR=v cmd, $(...), for ... do -- see
+# tools/hmi_profiler.py) are not fish syntax and would start failing.
 id -u centroid >/dev/null 2>&1 || useradd \
-  --create-home --shell /usr/bin/fish --uid 1000 \
+  --create-home --shell /bin/bash --uid 1000 \
   --comment "CentroidX operator" centroid
 usermod -aG sudo,docker,video,render,input,dialout centroid
 passwd -l centroid

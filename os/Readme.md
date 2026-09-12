@@ -106,6 +106,12 @@ reports the security archive as
 2026-09-12. `overlays/base/etc/apt/apt.conf.d/50unattended-upgrades` uses the
 pattern Debian's own default ships.
 
+**Reimaging is also a Debian major-version upgrade.** The deployed stations are
+bookworm; this image is trixie. Everything that is not in a container moves with
+it — kernel, glibc, mesa, weston — and the compositor and GPU stack the HMI
+renders through are exactly the host-side parts. That is a bigger change than the
+`.env` contract and deserves one station as a pilot before the fleet.
+
 **Two deliberate changes from the playbook.** Automatic reboot is now off — an
 HMI on a production line should not disappear at 04:00. And `docker-ce` is
 deliberately excluded from unattended upgrades, because its postinst restarts
@@ -127,53 +133,91 @@ deliberately out of scope.
 **Existing stations need a `.env` now.** `docker-compose.yml` used to hardcode
 `FooBarHelloWorld`, `TODOSetThisStrongPassword` and `centroid:foo`; those are now
 `${DB_PASSWORD:?}`, `${FLUTTER_KEYRING_PASSWORD:?}` and `${VNC_PASSWORD:?}`, and
-`RENDER_GID` lost its wrong default too. A station without a `.env` will refuse
-to start — loudly, naming the variable — rather than run with a password that was
-published in a public repo. On a station installed from here, first boot writes
-the file. On an existing one:
+`RENDER_GID` lost its default too. A station without a `.env` refuses to start —
+loudly, naming the variable — rather than run with a password anyone can read in
+a public repo. On a station installed from here, first boot writes the file.
+
+On an existing station, `.env.example` is not there to copy: it ships at
+`/etc/centroid/env.example` on imaged machines and only in the repo otherwise.
+Write the file directly, and fill in the values you are keeping:
 
 ```bash
 cd /home/centroid
-cp .env.example .env            # then fill it in, and note:
-echo "RENDER_GID=$(stat -c %g /dev/dri/renderD128)" >> .env
-echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+{ echo "NOVNC_STATION_NAME=$(hostname)"
+  echo "DOCKER_UPDATE_CERT_CN=$(hostname)"
+  echo "RENDER_GID=$(stat -c %g /dev/dri/renderD128)"
+  echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)"
+  echo "DB_PASSWORD=<the database password this station is ALREADY using>"
+  echo "VNC_PASSWORD=<pick one>"
+  echo "FLUTTER_KEYRING_PASSWORD=TODOSetThisStrongPassword"
+  echo "DOCKER_UPDATE_BASIC_AUTH_USER=centroid"
+  echo "DOCKER_UPDATE_BASIC_AUTH_PASS=<pick one>"
+} > .env
+chmod 600 .env && chown centroid:centroid .env
 ```
 
-`DB_PASSWORD` is the one to be careful with: timescaledb only reads
-`POSTGRES_PASSWORD` when initialising an empty data directory, so an existing
-station keeps its old database password until you `ALTER ROLE`. Put the existing
-value in `.env` unless you are rotating it.
+Two of those need care, and in opposite directions.
 
-## Keys
-
-`overlays/base/etc/apt/keyrings/` holds the Docker and ZeroTier archive keys,
-committed rather than downloaded so a build cannot be changed by an upstream
-edit. `make verify-keys` checks them against the hashes recorded in
-`scripts/apt-sources.sh`. Refresh by re-downloading and updating both.
-
-ZeroTier is matched by `site=` in the unattended-upgrades config because their
-`Release` templates the codename into Origin and Label (`Origin: trixie trixie`)
-and its `n=trixie` collides with Debian's own main archive.
-
----
-
-## Superseded: the manual ansible procedure
-
-Kept verbatim for reference. `ansible-playbook.yml` is still in the repo as the
-record of what deployed stations were built from; nothing builds with it now.
+`DB_PASSWORD` must be the password the station is **already** using. timescaledb
+only reads `POSTGRES_PASSWORD` when it initialises an empty data directory, so
+setting a new one here does not change the database — it just stops the backend
+and the HMI being able to reach it. Rotate deliberately:
 
 ```bash
-# on the local machine
-scp ansible-playbook.yml centroid@10.11.11.191:~/
-
-# on the remote machine
-su -
-apt install ansible --no-install-recommends
-ansible-playbook -i localhost -e 'root_password=foo' -e 'centroid_password=bar' ansible-playbook.yml
-# might need to run twice to complete, some codename error
+docker compose exec timescaledb \
+  psql -U centroid -d hmi -c "ALTER ROLE centroid PASSWORD 'new'"
 ```
 
-That last comment is the whole argument for this repo's current shape: the
-playbook ran on the target, over the plant uplink, against whatever apt offered
-that morning — so it was sometimes wrong twice before it was right once. The
-image is built once, in CI, and tested before any station sees it.
+`FLUTTER_KEYRING_PASSWORD` must be the **old literal**,
+`TODOSetThisStrongPassword`, on any station that has already run. The HMI's
+keyring file is encrypted with it; a fresh value orphans the stored database
+config, the dbus login and every secure preference. Rotate it only together with
+deleting `local-share/keyrings/flutter.keyring` and re-entering what was in it.
+
+**Rotation is not optional, though.** All three literals are in this repo's git
+history, which is public and permanent, so "keep using the old value" is a
+migration step and not an end state — and the database it protects is published
+on `5432:5432`, which ufw does not cover (see below). Plan the `ALTER ROLE` and
+the keyring reset; this section only keeps a station running in the meantime.
+
+## Keys and pins
+
+`overlays/base/etc/apt/keyrings/docker.asc` is committed rather than downloaded,
+so an upstream edit cannot change what a build installs. `make verify-keys`
+checks it against the hash recorded in `scripts/apt-sources.sh`.
+
+`wg-obfuscator` is not packaged anywhere, so the recipe fetches upstream's
+statically linked release binary and pins it by sha256 the same way. The pinned
+v1.6 is a step up from the `ab65bea` dev build found on the deployed station —
+the nearest tagged release at or after it.
+
+debos itself and shellcheck are pinned by image digest in the Makefile. The
+recipes depend on newer debos fields (`parttype`, `partlabel`), so the version is
+load-bearing.
+
+Still unpinned, and worth knowing before claiming two builds of one commit are
+identical: the suite is a moving target, Docker's archive is its `stable`
+channel, there is no snapshot.debian.org date, and `image-info` carries a build
+timestamp. "Every station is byte-identical" holds across stations flashed from
+the same `out/` file, which is the property that matters for a fleet, but it is
+narrower than reproducible builds.
+
+## Remote access
+
+WireGuard, not ZeroTier — the latter was dropped over its licence and an image
+that reinstalled it would walk the fleet backwards. `wireguard` and
+`wireguard-tools` come from Debian; `wg-obfuscator` is vendored as above.
+
+Neither `wg-quick@wg0` nor `wg-obfuscator` is enabled in the image, because both
+need a per-station config and an enabled unit without one is a failed unit on
+every boot. Put the two files beside the payload on the USB and the installer
+places them at 0600:
+
+```
+os/out/payload/wg0.conf              -> /etc/wireguard/wg0.conf
+os/out/payload/wg-obfuscator.conf    -> /etc/wg-obfuscator.conf
+```
+
+First boot enables whichever it finds and says so on the console when there is no
+`wg0.conf`, because that is a station with no remote access. A sample obfuscator
+config is left at `/usr/share/doc/wg-obfuscator/wg-obfuscator.conf.example`.

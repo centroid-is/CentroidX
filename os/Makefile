@@ -28,7 +28,11 @@ PAYLOAD        := $(OUT)/payload
 STAMP          := $(shell git rev-parse --short HEAD 2>/dev/null || echo nogit)
 IMAGE          := centroidx-$(STAMP).img
 
-DEBOS_IMAGE    ?= godebos/debos:latest
+# Pinned by digest, not :latest. The recipes already depend on newer fields
+# (parttype, partlabel), so the version is load-bearing and a silent upstream
+# move would change what ships. (Review #19.)
+DEBOS_IMAGE    ?= godebos/debos@sha256:b8a08ad4be79d5e33d1c4fcb838282069aa691ae2c05a05f1c45ec4ca207c6d5
+SHELLCHECK_IMAGE ?= koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d
 # CI has no TTY; a local run wants one for debos's progress output.
 DOCKER_TTY     ?= $(shell [ -t 0 ] && echo -it)
 DEBOS          = docker run --rm $(DOCKER_TTY) \
@@ -61,6 +65,10 @@ help:
 # exactly what happened to the one that used to sit in this directory.
 .PHONY: generated
 generated:
+	@# Cleared, not merged: without this a single `make preload` left tarballs in
+	@# place for every later plain `make image`, which then baked them in while
+	@# stamping "preloaded: false". (Review #15.)
+	@rm -rf $(GEN)/var/lib/centroid/preload
 	@mkdir -p $(GEN)/home/centroid $(GEN)/etc/centroid $(GEN)/var/lib/centroid/preload
 	@test -r "$(COMPOSE_SRC)" || { echo "no compose file at $(COMPOSE_SRC)"; exit 1; }
 	@cp "$(COMPOSE_SRC)" $(GEN)/home/centroid/docker-compose.yml
@@ -100,8 +108,12 @@ require-kvm:
 	  echo "without a fakemachine). Build on Linux or in CI. 'make dry-run' and"; \
 	  echo "'make print-recipe' work here."; exit 1; }
 
+# PRELOAD=true has to actually pull the images, not just relabel image-info.
 .PHONY: image
 image: require-kvm generated
+ifeq ($(PRELOAD),true)
+	$(MAKE) preload
+endif
 	@mkdir -p $(OUT)
 	$(DEBOS) -v --fakemachine-backend=kvm --scratchsize=16GB \
 	  --artifactdir=/recipes/$(OUT) \
@@ -164,6 +176,15 @@ qemu:
 	@test -f $(OUT)/usb-installer.img || gunzip -k $(OUT)/usb-installer.img.gz
 	@test -f $(OUT)/test-disk.qcow2 || qemu-img create -f qcow2 $(OUT)/test-disk.qcow2 32G
 	@test -f $(OUT)/OVMF_VARS.fd || cp $(OVMF_VARS) $(OUT)/OVMF_VARS.fd
+	@# -vga virtio for two reasons: it gives the guest a /dev/dri/renderD128,
+	@# without which firstboot cannot set RENDER_GID and the stack will not
+	@# start; and a graphical window is the only way to see tty1, where the
+	@# installer asks its questions. -nographic showed the serial console only,
+	@# which stays blank.
+	@#
+	@# snapshot=on on the USB so the guest's writes -- a machine-id, a journal --
+	@# go to a throwaway overlay instead of into an artifact that later gets
+	@# written to a real key.
 	qemu-system-x86_64 \
 	  -enable-kvm -cpu host -smp 2 -m 2G -machine q35 \
 	  -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF) \
@@ -172,9 +193,9 @@ qemu:
 	  -drive file=$(OUT)/test-disk.qcow2,format=qcow2,if=none,id=nvm,cache=unsafe \
 	  -device usb-ehci,id=ehci \
 	  -device usb-storage,bus=ehci.0,drive=usbdisk \
-	  -drive file=$(OUT)/usb-installer.img,format=raw,if=none,id=usbdisk \
+	  -drive file=$(OUT)/usb-installer.img,format=raw,if=none,id=usbdisk,snapshot=on \
 	  -netdev user,id=net0,hostfwd=tcp::2222-:22 -device virtio-net-pci,netdev=net0 \
-	  -nographic
+	  -vga virtio
 
 .PHONY: qemu-reset
 qemu-reset:
