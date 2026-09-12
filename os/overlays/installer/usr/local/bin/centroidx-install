@@ -1,0 +1,198 @@
+#!/bin/bash
+# CentroidX station installer. Runs on tty1 of the USB key.
+#
+# It does not install Debian -- it writes an already-installed Debian onto the
+# SSD. Everything the old firstboot-install.sh did over the plant uplink
+# (debootstrap, 25 apt packages, an ansible run) happened in CI instead.
+set -uo pipefail
+
+PAYLOAD=/opt/centroidx
+SEED="$PAYLOAD/station.env"
+TARGET_MNT=/mnt/target
+
+# Declared up front: a station.env that omits one of these would otherwise trip
+# `set -u` much later, after the disk has already been written.
+TARGET=""
+STATION_NAME=""
+CENTROID_PASSWORD=""
+ROOT_PASSWORD=""
+VNC_PASSWORD=""
+DB_PASSWORD=""
+
+red()  { printf '\033[1;31m%s\033[0m\n' "$*"; }
+grn()  { printf '\033[1;32m%s\033[0m\n' "$*"; }
+bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+rule() { printf '%s\n' "------------------------------------------------------------"; }
+
+die() { red "FAILED: $*"; exit 1; }
+
+banner() {
+  clear 2>/dev/null || true
+  bold "  CentroidX station installer"
+  [ -r "$PAYLOAD/image-info" ] && sed 's/^/  /' "$PAYLOAD/image-info"
+  rule
+}
+
+# ---------------------------------------------------------------- target disk
+# The USB we booted from must never appear in this list.
+boot_disk() { lsblk -no PKNAME "$(findmnt -no SOURCE /)" 2>/dev/null | head -1; }
+
+candidates() {
+  local boot; boot="$(boot_disk)"
+  lsblk -dno NAME,SIZE,MODEL --sort NAME | while read -r name size model; do
+    [ "$name" = "$boot" ] && continue
+    case "$name" in loop*|sr*|fd*|ram*|zram*) continue ;; esac
+    printf '%s\t%s\t%s\n' "$name" "$size" "${model:-unknown}"
+  done
+}
+
+pick_disk() {
+  local list n
+  list="$(candidates)"
+  [ -n "$list" ] || die "no disk found to install onto (the USB itself is excluded)"
+  n="$(printf '%s\n' "$list" | wc -l | tr -d ' ')"
+
+  bold "Install target"
+  printf '%s\n' "$list" | nl -w2 -s') ' | sed 's/^/  /'
+  echo
+  if [ "$n" = "1" ]; then
+    TARGET="/dev/$(printf '%s\n' "$list" | cut -f1)"
+    echo "  Only one candidate: $TARGET"
+  else
+    local choice
+    while :; do
+      read -r -p "  Which disk? [1-$n] " choice
+      case "$choice" in
+        ''|*[!0-9]*) ;;
+        *) if [ "$choice" -ge 1 ] && [ "$choice" -le "$n" ]; then
+             TARGET="/dev/$(printf '%s\n' "$list" | sed -n "${choice}p" | cut -f1)"
+             break
+           fi ;;
+      esac
+      echo "  Pick a number between 1 and $n."
+    done
+  fi
+  echo
+}
+
+# ------------------------------------------------------------------- questions
+ask() {   # ask VAR "prompt"
+  local __var="$1" __prompt="$2"
+  while :; do
+    # Indirect assignment: read into the variable NAMED by $__var. Verified to
+    # work; shellcheck flags it because it is usually a typo.
+    # shellcheck disable=SC2229
+    read -r -p "  $__prompt: " "$__var"
+    [ -n "${!__var}" ] && break
+    echo "  This one cannot be empty."
+  done
+}
+
+ask_pass() {   # ask_pass VAR "prompt"
+  local __var="$1" __prompt="$2" a b
+  while :; do
+    read -r -s -p "  $__prompt: " a; echo
+    [ ${#a} -lt 8 ] && { echo "  At least 8 characters, please."; continue; }
+    read -r -s -p "  $__prompt (again): " b; echo
+    [ "$a" = "$b" ] && break
+    echo "  They did not match."
+  done
+  eval "$__var=\$a"
+}
+
+questions() {
+  if [ -r "$SEED" ]; then
+    grn "  Using answers from $SEED (unattended install)"
+    # shellcheck disable=SC1090
+    . "$SEED"
+    local missing=""
+    for v in STATION_NAME CENTROID_PASSWORD ROOT_PASSWORD VNC_PASSWORD DB_PASSWORD; do
+      [ -n "${!v}" ] || missing="$missing $v"
+    done
+    [ -z "$missing" ] || die "$SEED is missing:$missing"
+    return
+  fi
+  bold "Station settings"
+  echo "  These are the only things this installer cannot work out for itself."
+  echo
+  ask      STATION_NAME       "Station name (shown in the browser tab)"
+  ask_pass CENTROID_PASSWORD  "Password for the 'centroid' login"
+  ask_pass ROOT_PASSWORD      "Password for 'root'"
+  ask_pass VNC_PASSWORD       "Password for the VNC/remote screen"
+  ask_pass DB_PASSWORD        "Password for the database"
+  echo
+}
+
+# ----------------------------------------------------------------------- write
+confirm() {
+  local answer
+  red "  ****************************************************"
+  red "  *  EVERYTHING ON $TARGET WILL BE ERASED"
+  red "  ****************************************************"
+  echo
+  lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT "$TARGET" | sed 's/^/  /'
+  echo
+  read -r -p "  Type 'yes' to install, anything else to abort: " answer
+  [ "$answer" = "yes" ] || die "aborted at the confirmation prompt"
+}
+
+flash() {
+  local img bmap
+  # shellcheck disable=SC2012  # our own filenames, no surprises in them
+  img="$(ls "$PAYLOAD"/*.img.gz 2>/dev/null | head -1)" || true
+  [ -n "${img:-}" ] || die "no image found in $PAYLOAD"
+  bmap="${img%.img.gz}.img.bmap"
+  bold "Writing $(basename "$img") to $TARGET"
+  if [ -r "$bmap" ]; then
+    bmaptool copy --bmap "$bmap" "$img" "$TARGET" || die "bmaptool copy failed"
+  else
+    echo "  (no .bmap alongside the image; falling back to a full copy)"
+    bmaptool copy --nobmap "$img" "$TARGET" || die "bmaptool copy failed"
+  fi
+  sync
+  # Re-read the table so the new partitions appear as devices.
+  partprobe "$TARGET" || true
+  udevadm settle || true
+}
+
+seed_station_conf() {
+  local root
+  # The image has exactly two partitions; root is the second.
+  root="$(lsblk -pln -o NAME,TYPE "$TARGET" | awk '$2=="part"{print $1}' | sed -n 2p)"
+  [ -n "$root" ] || die "cannot find the root partition on $TARGET"
+  mkdir -p "$TARGET_MNT"
+  mount "$root" "$TARGET_MNT" || die "cannot mount $root"
+  mkdir -p "$TARGET_MNT/etc/centroid"
+  {
+    echo "# Written by the CentroidX installer on $(date -Is)."
+    echo "# centroidx-firstboot reads this once, applies the logins, then deletes"
+    echo "# them from this file. DB and VNC move to /home/centroid/.env."
+    echo "STATION_NAME=${STATION_NAME}"
+    echo "ROOT_PASSWORD=${ROOT_PASSWORD}"
+    echo "CENTROID_PASSWORD=${CENTROID_PASSWORD}"
+    echo "VNC_PASSWORD=${VNC_PASSWORD}"
+    echo "DB_PASSWORD=${DB_PASSWORD}"
+  } > "$TARGET_MNT/etc/centroid/station.conf"
+  chmod 0600 "$TARGET_MNT/etc/centroid/station.conf"
+  echo "${STATION_NAME}" > "$TARGET_MNT/etc/hostname"
+  sync
+  umount "$TARGET_MNT" || die "cannot unmount $root"
+}
+
+# ------------------------------------------------------------------------ main
+banner
+pick_disk
+questions
+confirm
+flash
+seed_station_conf
+
+rule
+grn "  Installed."
+echo
+bold "  Remove the USB key now."
+echo "  Rebooting in 30 seconds. First boot grows the filesystem to the disk,"
+echo "  generates this machine's keys, and starts the containers."
+rule
+sleep 30
+reboot

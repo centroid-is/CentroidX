@@ -1,0 +1,89 @@
+{{- $suite := or .suite "trixie" -}}
+{{- $mirror := or .mirror "https://deb.debian.org/debian" -}}
+{{- $usbimage := or .usbimage "usb-installer.img" -}}
+{{- $usbsize := or .usbsize "16GB" -}}
+# The USB key. Plug it into a station, it boots straight to the installer, asks
+# five questions, and writes the station image onto the SSD.
+#
+# The payload (image .gz + .bmap + image-info) is assembled into out/payload/ by
+# the Makefile, so that this recipe never has to know where the image came from.
+architecture: amd64
+
+actions:
+  - action: debootstrap
+    suite: {{ $suite }}
+    components: [ main, non-free-firmware ]
+    mirror: {{ $mirror }}
+    variant: minbase
+
+  - action: apt
+    recommends: false
+    description: Minimal bootable system plus the flasher
+    packages:
+      - linux-image-amd64
+      - systemd-sysv
+      - udev
+      - grub-efi-amd64
+      - efibootmgr
+      # bmaptool skips the holes in a sparse image, so a 8GB image with 2GB of
+      # data writes 2GB. `bmap-tools` is a transitional package on trixie.
+      - bmaptool
+      - zstd
+      - gzip
+      - util-linux
+      - parted
+      - gdisk
+      - e2fsprogs
+      - dosfstools
+      - kbd
+      - ncurses-bin
+      - ca-certificates
+      # all-hardware: the stick has to boot machines nobody profiled first
+      - firmware-misc-nonfree
+      - firmware-linux-free
+
+  - action: overlay
+    source: overlays/installer
+    description: Installer unit and script
+
+  - action: overlay
+    source: out/payload
+    destination: /opt/centroidx
+    description: Station image payload
+
+  - action: run
+    chroot: true
+    label: installer-setup
+    script: scripts/installer-setup.sh
+
+  - action: image-partition
+    imagename: {{ $usbimage }}
+    imagesize: {{ $usbsize }}
+    partitiontype: gpt
+    partitions:
+      - name: ESP
+        partlabel: esp
+        fs: vfat
+        start: 1MiB
+        end: 513MiB
+        flags: [ boot, esp ]
+        parttype: c12a7328-f81f-11d2-ba4b-00a0c93ec93b
+      - name: root
+        partlabel: installer
+        fs: ext4
+        start: 513MiB
+        end: 100%
+    mountpoints:
+      - mountpoint: /
+        partition: root
+      - mountpoint: /boot/efi
+        partition: ESP
+
+  - action: filesystem-deploy
+    setup-fstab: true
+    setup-kernel-cmdline: true
+
+  - action: run
+    chroot: true
+    label: bootloader
+    script: scripts/bootloader.sh

@@ -1,0 +1,30 @@
+name: Test Ansible Playbook
+
+on:
+  push:
+    paths:
+      - 'ansible-playbook.yml'
+      - '.github/workflows/test-ansible.yaml'
+  pull_request:
+    paths:
+      - 'ansible-playbook.yml'
+      - '.github/workflows/test-ansible.yaml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible
+
+      - name: Run Ansible playbook
+        run: |
+          ansible-playbook -i localhost, \
+            -e 'root_password=testroot' \
+            -e 'centroid_password=testcentroid' \
+            ansible-playbook.yml 

@@ -1,0 +1,12 @@
+# Managed by debos-conf. Replaces the four ansible lineinfile tasks that used to
+# edit this file in place on the target.
+GRUB_DEFAULT=0
+GRUB_TIMEOUT=0
+GRUB_TIMEOUT_STYLE=hidden
+GRUB_DISTRIBUTOR="CentroidX"
+# quiet splash keeps the UEFI vendor logo on screen via plymouth's bgrt theme
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
+GRUB_CMDLINE_LINUX=""
+# Hand the firmware's video mode straight to the kernel: without this the mode
+# switch blanks the panel and the vendor logo flickers.
+GRUB_GFXPAYLOAD_LINUX=keep

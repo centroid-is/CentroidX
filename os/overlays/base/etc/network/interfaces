@@ -1,0 +1,4 @@
+# NetworkManager owns every interface on this machine. This file exists only to
+# stop ifupdown from claiming one behind NetworkManager's back.
+auto lo
+iface lo inet loopback

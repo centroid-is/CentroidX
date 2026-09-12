@@ -1,0 +1,35 @@
+// VERIFIED against a stock trixie, 2026-09-12. `apt-cache policy` reports the
+// security archive as:
+//
+//   o=Debian,a=stable-security,n=trixie-security,l=Debian-Security
+//
+// The pattern the ansible playbook used — "o=Debian,n=trixie,l=Debian-Security"
+// — therefore matches NO index on trixie: n=trixie carries l=Debian, and
+// l=Debian-Security carries n=trixie-security. Security updates have not been
+// installing. This is the corrected pattern, the third of the three lines
+// Debian's own default config ships.
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+
+        // ZeroTier is network-facing and runs as root, so it is worth taking
+        // unattended. Matched by site: their Release file templates the
+        // codename into Origin and Label ("Origin: trixie trixie"), and its
+        // n=trixie collides with Debian's own main archive.
+        "site=download.zerotier.com";
+
+        // docker-ce is DELIBERATELY ABSENT. Its postinst restarts dockerd,
+        // which bounces every container including the HMI the operator is
+        // looking at. The daemon listens on a local socket only, so the
+        // exposure is small; update it in a maintenance window instead.
+        // Check for pending ones with:
+        //   apt list --upgradable | grep -E 'docker-ce|containerd'
+};
+
+// An HMI on a production line must not disappear on its own schedule. The
+// ansible playbook rebooted unattended at 04:00. Packages still apply; a
+// reboot they need is an operator's decision.
+//   needs-restarting check:  systemctl is-system-running; ls /var/run/reboot-required
+Unattended-Upgrade::Automatic-Reboot "false";
+
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";

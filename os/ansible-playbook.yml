@@ -1,0 +1,267 @@
+---
+- name: Configure freshly installed Debian
+  hosts: localhost
+  connection: local
+  become: yes
+  vars:
+    root_password: "{{ root_password }}"
+    centroid_password: "{{ centroid_password }}"
+  tasks:
+    - name: Ensure prereqs are installed
+      apt:
+        name:
+          - systemd-timesyncd
+          - python3-passlib
+          - lsb-release
+        state: present
+
+    - name: Enable NTP (systemd-timesyncd)
+      command: timedatectl set-ntp true
+      changed_when: false
+
+    - name: Wait for NTP sync
+      shell: timedatectl show -p NTPSynchronized --value
+      register: ntp_sync
+      retries: 15
+      delay: 2
+      until: ntp_sync.stdout == "yes"
+      changed_when: false
+
+    - name: Set timezone from -e tz=... or $TZ or default
+      timezone:
+        name: "{{ tz | default(lookup('env','TZ'), true) | default('Atlantic/Reykjavik', true) }}"
+
+    # --- Keep UEFI logo via Plymouth BGRT -----------
+    - name: Install plymouth (and themes for BGRT)
+      apt:
+        name:
+          - plymouth
+          - plymouth-themes
+        state: present
+
+    - name: Ensure quiet splash on kernel cmdline
+      lineinfile:
+        path: /etc/default/grub
+        regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
+        line: 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"'
+        create: yes
+      notify: update-grub
+
+    - name: Set timeout to 0 in grub
+      lineinfile:
+        path: /etc/default/grub
+        regexp: '^GRUB_TIMEOUT='
+        line: 'GRUB_TIMEOUT=0'
+        create: yes
+      notify: update-grub
+      
+    - name: Set GRUB_TIMEOUT_STYLE
+      lineinfile:
+        path: /etc/default/grub
+        regexp: '^GRUB_TIMEOUT_STYLE='
+        line: 'GRUB_TIMEOUT_STYLE=hidden'
+        create: yes
+      notify: update-grub
+
+    - name: Keep GRUB payload into kernel (no mode switch flicker)
+      lineinfile:
+        path: /etc/default/grub
+        regexp: '^#?GRUB_GFXPAYLOAD_LINUX='
+        line: 'GRUB_GFXPAYLOAD_LINUX=keep'
+        create: yes
+      notify: update-grub
+
+    - name: Set Plymouth theme to BGRT and rebuild initramfs
+      command: plymouth-set-default-theme -R bgrt
+    # ---------------------------------------------------------------
+
+    - name: Install prerequisites
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - sudo
+        state: present
+
+    - name: Set root password
+      user:
+        name: root
+        password: "{{ root_password | password_hash('sha512') }}"
+
+    - name: Create docker group
+      group:
+        name: docker
+        state: present
+
+    - name: Create centroid user with sudo & docker group
+      user:
+        name: centroid
+        password: "{{ centroid_password | password_hash('sha512') }}"
+        shell: /bin/bash
+        groups: sudo,docker
+        append: yes
+        create_home: yes
+
+    - name: Allow centroid user passwordless sudo
+      copy:
+        dest: /etc/sudoers.d/centroid
+        content: "centroid ALL=(ALL) NOPASSWD:ALL\n"
+        mode: '0440'
+
+    - name: Prepare Docker keyrings
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Docker GPG key
+      get_url:
+        url: https://download.docker.com/linux/debian/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+
+    - name: Set correct permissions on Docker GPG key
+      file:
+        path: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+
+    - name: Add Docker repository
+      copy:
+        dest: /etc/apt/sources.list.d/docker.list
+        content: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian {{ ansible_lsb.codename }} stable"
+        mode: '0644'
+
+    - name: Download and import ZeroTier GPG key
+      shell: |
+        curl -s 'https://raw.githubusercontent.com/zerotier/ZeroTierOne/main/doc/contact@zerotier.com.gpg' | gpg --import
+      args:
+        creates: /etc/apt/trusted.gpg.d/zerotier.gpg
+
+    - name: Run ZeroTier installation script
+      shell: |
+        curl -s 'https://install.zerotier.com/' | gpg | bash
+      args:
+        creates: /usr/sbin/zerotier-one
+
+    - name: Update APT cache
+      apt:
+        update_cache: yes
+
+    - name: Install base packages
+      apt:
+        name:
+          - vim
+          - openssh-server
+          - ufw
+          - unattended-upgrades
+          - apt-listchanges
+          - network-manager
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+          - procps
+          - fish
+          - firmware-misc-nonfree
+          - intel-media-va-driver
+          - libgl1-mesa-dri
+          - libgbm1
+          - mesa-vulkan-drivers
+        state: present
+
+    - name: Check if running in container
+      set_fact:
+        is_container: "{{ ansible_virtualization_type == 'docker' }}"
+
+    - name: Add PolicyKit rule to allow centroid user to manage NetworkManager
+      copy:
+        dest: /etc/polkit-1/rules.d/50-networkmanager-container.rules
+        content: |
+          // PolicyKit rule to allow uid 1000 to manage NetworkManager
+          // This file should be copied to the host system at:
+          // /etc/polkit-1/rules.d/50-networkmanager-container.rules
+
+          polkit.addRule(function(action, subject) {
+              if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0 && subject.user == "centroid") {
+                  return polkit.Result.YES;
+              }
+          });
+        mode: '0644'
+
+    - name: Add PolicyKit rule to allow centroid user to reboot/shutdown
+      copy:
+        dest: /etc/polkit-1/rules.d/51-reboot-shutdown.rules
+        content: |
+          // PolicyKit rule to allow centroid user to reboot/shutdown without password
+
+          polkit.addRule(function(action, subject) {
+              if ((action.id == "org.freedesktop.login1.reboot" ||
+                   action.id == "org.freedesktop.login1.reboot-multiple-sessions" ||
+                   action.id == "org.freedesktop.login1.power-off" ||
+                   action.id == "org.freedesktop.login1.power-off-multiple-sessions") &&
+                  subject.user == "centroid") {
+                  return polkit.Result.YES;
+              }
+          });
+        mode: '0644'
+
+    - name: Ensure NetworkManager is enabled
+      systemd:
+        name: NetworkManager
+        enabled: yes
+        state: started
+      when: not is_container
+
+    - name: Reinitialize /etc/network/interfaces with default config
+      copy:
+        dest: /etc/network/interfaces
+        content: |
+          # This file describes the network interfaces available on your system
+          # and how to activate them. For more information, see interfaces(5).
+
+          # The loopback network interface
+          auto lo
+          iface lo inet loopback
+        mode: '0644'
+      when: not is_container
+
+    - name: Disable systemd networking service
+      systemd:
+        name: networking.service
+        enabled: no
+      when: not is_container
+
+    - name: Allow SSH & VNC through UFW
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+      loop: [22, 5900]
+      when: not is_container
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+      when: not is_container
+
+    - name: Configure unattended-upgrades
+      copy:
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        content: |
+          Unattended-Upgrade::Origins-Pattern {
+            "o=Debian,n={{ ansible_lsb.codename }},l=Debian-Security";
+          };
+          Unattended-Upgrade::Automatic-Reboot "true";
+          Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+
+    - name: Schedule weekly unattended runs
+      copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "7";
+          APT::Periodic::Unattended-Upgrade "7";
+
+  handlers:
+    - name: update-grub
+      command: update-grub

@@ -1,0 +1,21 @@
+[Unit]
+Description=CentroidX first-boot provisioning
+Documentation=https://github.com/centroid-is/debos-conf
+# The image is a clone: the root filesystem is still the build-time size, the
+# host GIDs are unknown, and nothing has been told the station's passwords.
+After=local-fs.target systemd-machine-id-commit.service docker.service
+Wants=docker.service
+ConditionPathExists=!/var/lib/centroid/firstboot-done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/centroidx-firstboot
+# Visible on tty1: this runs while an operator is watching a blank screen, and
+# pulling the container images can take minutes on a plant uplink.
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target
