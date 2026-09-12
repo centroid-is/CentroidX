@@ -28,8 +28,30 @@ services:
       - ./seatd-socket:/run
       - /dev:/dev:rw
       - /run/udev:/run/udev:ro
+      # The host's locale and keyboard settings, which weston reads to pick
+      # the default layout below. The whole directory rather than the two
+      # files: a missing bind source is created on the host as an empty
+      # root-owned directory, and one in place of /etc/default/locale breaks
+      # logins on the host.
+      - /etc/default:/run/host/etc/default:ro
     environment:
       XDG_RUNTIME_DIR: /run/user/1000
+      # Keyboard layouts offered on the panel's keyboard, on every VNC client
+      # and on the on-screen keyboard: any of is, en, pl, comma separated.
+      # Alt+Shift cycles them on a physical keyboard; the globe key does on
+      # the on-screen one. Set per station in the .env beside this file.
+      #
+      # The layout a station starts in is KEYBOARD_DEFAULT when set, else the
+      # host's LANG (/etc/default/locale, mounted above), else the host's
+      # XKBLAYOUT (/etc/default/keyboard), else the first of the list.
+      # Stations are usually installed with an English system locale, so one
+      # that should start in Icelandic needs KEYBOARD_DEFAULT=is.
+      #
+      # KEYBOARD_OPTIONS is passed to xkb as-is and defaults to
+      # grp:alt_shift_toggle; grp:ctrl_shift_toggle is the usual alternative.
+      KEYBOARD_LAYOUTS: ${KEYBOARD_LAYOUTS:-is,en,pl}
+      KEYBOARD_DEFAULT: ${KEYBOARD_DEFAULT:-}
+      KEYBOARD_OPTIONS: ${KEYBOARD_OPTIONS:-grp:alt_shift_toggle}
     ports:
       - 5900:5900
     restart: unless-stopped

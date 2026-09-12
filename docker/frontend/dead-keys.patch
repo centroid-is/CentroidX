@@ -1,0 +1,184 @@
+diff --git a/src/flutter/shell/platform/linux_embedded/plugins/key_event_plugin.cc b/src/flutter/shell/platform/linux_embedded/plugins/key_event_plugin.cc
+index 876c14f..0aa26dd 100644
+--- a/src/flutter/shell/platform/linux_embedded/plugins/key_event_plugin.cc
++++ b/src/flutter/shell/platform/linux_embedded/plugins/key_event_plugin.cc
+@@ -7,12 +7,15 @@
+ #include <sys/mman.h>
+ #include <unistd.h>
+ 
++#include <cstdlib>
+ #include <fstream>
++#include <initializer_list>
+ #include <iostream>
+ #include <regex>
+ #include <unordered_map>
+ 
+ #include "flutter/shell/platform/common/json_message_codec.h"
++#include "flutter/shell/platform/linux_embedded/logger.h"
+ #include "flutter/shell/platform/linux_embedded/plugins/keyboard_glfw_util.h"
+ #include "flutter/shell/platform/linux_embedded/window_binding_handler_delegate.h"
+ 
+@@ -52,9 +55,12 @@ KeyeventPlugin::KeyeventPlugin(BinaryMessenger* messenger)
+   xkb_keymap_ = CreateKeymap(xkb_context_);
+   xkb_state_ = xkb_state_new(xkb_keymap_);
+ #endif
++  CreateComposeState();
+ }
+ 
+ KeyeventPlugin::~KeyeventPlugin() {
++  xkb_compose_state_unref(xkb_compose_state_);
++  xkb_compose_table_unref(xkb_compose_table_);
+   xkb_context_unref(xkb_context_);
+   xkb_keymap_unref(xkb_keymap_);
+   xkb_state_unref(xkb_state_);
+@@ -75,13 +81,88 @@ void KeyeventPlugin::OnKeymap(uint32_t format, uint32_t fd, uint32_t size) {
+   xkb_state_unref(xkb_state_);
+   xkb_keymap_ = xkb_keymap;
+   xkb_state_ = xkb_state;
++
++  // A half-typed dead key belongs to the old layout.
++  if (xkb_compose_state_) {
++    xkb_compose_state_reset(xkb_compose_state_);
++  }
++  has_held_key_ = false;
+ }
+ 
+ uint32_t KeyeventPlugin::GetCodePoint(uint32_t keycode) {
++  if (has_held_key_ && keycode == held_keycode_) {
++    return held_code_point_;
++  }
+   auto sym = xkb_state_key_get_one_sym(xkb_state_, keycode + 8);
+   return xkb_keysym_to_utf32(sym);
+ }
+ 
++// Resolves a key press through the compose state. Must be called once per
++// press and never for a release: every call advances the sequence.
++//
++//   dead_acute         -> 0, nothing typed yet
++//   dead_acute, a      -> U+00E1
++//   dead_acute, k      -> U+006B; the sequence is dropped but the letter
++//                         still types, which reads better on a panel than
++//                         GTK's losing both
++//
++// Keysyms that take no part in composing, modifiers among them, are ignored by
++// the compose state and come back as their plain code point.
++uint32_t KeyeventPlugin::ComposeCodePoint(uint32_t keycode) {
++  auto sym = xkb_state_key_get_one_sym(xkb_state_, keycode + 8);
++  if (!xkb_compose_state_ ||
++      xkb_compose_state_feed(xkb_compose_state_, sym) !=
++          XKB_COMPOSE_FEED_ACCEPTED) {
++    return xkb_keysym_to_utf32(sym);
++  }
++  switch (xkb_compose_state_get_status(xkb_compose_state_)) {
++    case XKB_COMPOSE_COMPOSING:
++      return 0;
++    case XKB_COMPOSE_COMPOSED: {
++      auto composed = xkb_compose_state_get_one_sym(xkb_compose_state_);
++      xkb_compose_state_reset(xkb_compose_state_);
++      return xkb_keysym_to_utf32(composed);
++    }
++    case XKB_COMPOSE_CANCELLED:
++      xkb_compose_state_reset(xkb_compose_state_);
++      return xkb_keysym_to_utf32(sym);
++    case XKB_COMPOSE_NOTHING:
++    default:
++      return xkb_keysym_to_utf32(sym);
++  }
++}
++
++// Loads the Compose table for the process locale. The flutter container sets
++// no locale, and libxkbcommon maps "C" to the en_US.UTF-8 table, which is the
++// one every Latin locale's table includes, so the fallback covers the dead
++// keys of every layout the stations offer. The table itself comes from
++// libx11-data; without it composing is off and keys behave as before.
++void KeyeventPlugin::CreateComposeState() {
++  const char* locale = nullptr;
++  for (const char* name : {"LC_ALL", "LC_CTYPE", "LANG"}) {
++    const char* value = getenv(name);
++    if (value && *value) {
++      locale = value;
++      break;
++    }
++  }
++  if (locale) {
++    xkb_compose_table_ = xkb_compose_table_new_from_locale(
++        xkb_context_, locale, XKB_COMPOSE_COMPILE_NO_FLAGS);
++  }
++  if (!xkb_compose_table_) {
++    xkb_compose_table_ = xkb_compose_table_new_from_locale(
++        xkb_context_, "C", XKB_COMPOSE_COMPILE_NO_FLAGS);
++  }
++  if (!xkb_compose_table_) {
++    ELINUX_LOG(WARNING)
++        << "No Compose table found; dead keys will not type accented letters";
++    return;
++  }
++  xkb_compose_state_ =
++      xkb_compose_state_new(xkb_compose_table_, XKB_COMPOSE_STATE_NO_FLAGS);
++}
++
+ bool KeyeventPlugin::IsTextInputSuppressed(uint32_t code_point) {
+   if (code_point) {
+     auto ctrl_key_index =
+@@ -101,10 +182,20 @@ void KeyeventPlugin::OnKey(uint32_t keycode, bool pressed) {
+   // backends. In this case, we need to handle it by using xkb_state_update_key.
+   OnModifiers(keycode, pressed);
+ #endif
++  // The one place compose is fed. Everything later in this press, including
++  // the view's text-input path, reads the result back through GetCodePoint.
++  if (pressed) {
++    held_code_point_ = ComposeCodePoint(keycode);
++    held_keycode_ = keycode;
++    has_held_key_ = true;
++  }
+   auto unicode = GetCodePoint(keycode);
+   auto mods = GetGlfwModifiers(xkb_keymap_, xkb_mods_mask_);
+   auto keyscancode = GetGlfwKeycode(keycode);
+   SendKeyEvent(keyscancode, unicode, mods, pressed);
++  if (!pressed && keycode == held_keycode_) {
++    has_held_key_ = false;
++  }
+ }
+ 
+ void KeyeventPlugin::OnModifiers(uint32_t mods_depressed,
+diff --git a/src/flutter/shell/platform/linux_embedded/plugins/key_event_plugin.h b/src/flutter/shell/platform/linux_embedded/plugins/key_event_plugin.h
+index d7e4fe4..a33ff7e 100644
+--- a/src/flutter/shell/platform/linux_embedded/plugins/key_event_plugin.h
++++ b/src/flutter/shell/platform/linux_embedded/plugins/key_event_plugin.h
+@@ -6,6 +6,7 @@
+ #define FLUTTER_SHELL_PLATFORM_LINUX_EMBEDDED_PLUGINS_KEY_EVENT_PLUGIN_H_
+ 
+ #include <rapidjson/document.h>
++#include <xkbcommon/xkbcommon-compose.h>
+ #include <xkbcommon/xkbcommon.h>
+ 
+ #include <memory>
+@@ -40,6 +41,8 @@ class KeyeventPlugin {
+                     uint32_t modifiers,
+                     bool pressed);
+   void OnModifiers(uint32_t keycode, bool pressed);
++  uint32_t ComposeCodePoint(uint32_t keycode);
++  void CreateComposeState();
+   xkb_keymap* CreateKeymap(xkb_context* context);
+   std::unordered_map<std::string, std::string> GetKeyboardConfig(
+       std::string filename);
+@@ -49,6 +52,19 @@ class KeyeventPlugin {
+   xkb_state* xkb_state_;
+   xkb_keymap* xkb_keymap_;
+   xkb_mod_mask_t xkb_mods_mask_;
++
++  // Dead keys. Null when no Compose table could be loaded, in which case
++  // every key resolves to its plain keysym as before.
++  xkb_compose_table* xkb_compose_table_ = nullptr;
++  xkb_compose_state* xkb_compose_state_ = nullptr;
++
++  // The code point of the key currently held, resolved through the compose
++  // state exactly once when it went down. OnKey, the text-input path and the
++  // key-up event all ask for it, and feeding compose on each ask would
++  // consume the sequence three times over.
++  uint32_t held_keycode_ = 0;
++  uint32_t held_code_point_ = 0;
++  bool has_held_key_ = false;
+ };
+ 
+ }  // namespace flutter
