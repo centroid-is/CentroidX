@@ -19,6 +19,7 @@
 #include "gpu_diagnosis.h"
 #include "gpu_watchdog.h"
 #include "log_throttle.h"
+#include "session_rebuild_policy.h"
 #include "shutdown_policy.h"
 #include "win32_window.h"
 
@@ -163,25 +164,41 @@ class FlutterWindow : public Win32Window {
   // Invoked on the platform thread when the engine presents a frame.
   void OnFramePresented();
 
-  // Rebuilds the renderer after an RDP session change, instead of probing it.
+  // Asks the gate for a rebuild, for |why|, and performs it if released.
   //
-  // Connecting or disconnecting a remote session swaps the session's display
-  // adapter and can lose ANGLE's EGL context outright. The frame probe CANNOT
-  // see that loss: SetNextFrameCallback is answered from the UI thread whether
-  // or not rasterisation succeeded, so a dead context keeps clearing
-  // probe_outstanding_ and the watchdog reports "missed 0/2" forever.
+  // Every rebuild request in this file -- a session-change verdict from
+  // SessionRebuildPolicy, a power resume, the watchdog's own loss recovery --
+  // comes through here, so every one of them is debounced and held off an
+  // unfinished startup the same way. See engine_rebuild_gate.h.
   //
-  // Measured 2026-09-01: an RDP disconnect at 18:09:57 lost the context at
-  // 18:18:08, after which the engine logged "Could not make the context
-  // current to acquire the frame" 283,525 times across 89 minutes at 53/s,
-  // while every tick still read "missed 0/2 ... sentinel watched" and the
-  // platform thread kept answering. Nothing declared a loss.
+  // The frame probe CANNOT see a lost EGL context: SetNextFrameCallback is
+  // answered from the UI thread whether or not rasterisation succeeded, so a
+  // dead context keeps clearing probe_outstanding_ and the watchdog reports
+  // "missed 0/2" forever. Measured 2026-09-01: an RDP disconnect at 18:09:57
+  // lost the context at 18:18:08, after which the engine logged "Could not
+  // make the context current to acquire the frame" 283,525 times across 89
+  // minutes at 53/s while every tick still read "missed 0/2". That class is
+  // now caught by the stderr storm detector, which is what let the
+  // unconditional session-change rebuilds that stood in for it be retired --
+  // see session_rebuild_policy.h for the measurement behind that.
   //
-  // Deliberately NOT routed through the loss machinery: CENTROID_GPU_ON_LOSS
-  // defaults to exit, and an RDP disconnect must not end the process. This
-  // rebuild also does not count toward the escalation guard -- it is expected
-  // maintenance, not a fault.
+  // Deliberately NOT routed through the loss machinery: a session-change
+  // rebuild is expected maintenance, not a fault, and must neither end the
+  // process under an exit-on-loss policy nor count toward the loop guard.
   void RequestEngineRebuild(const char* why);
+
+  // Records -- and optionally logs -- the adapter the live engine renders on.
+  // Returns whether the engine reported one. Measured on this machine: it
+  // does not, a third of the time, inside a session-change window.
+  bool NoteEngineAdapter(bool log);
+
+  // Whether the engine's adapter is still the session's display adapter, for
+  // SessionRebuildPolicy. One signal among several, never the whole answer:
+  // it can see an adapter swapped under ANGLE, not a device lost on it.
+  tfc::AdapterCheck CheckRenderAdapter();
+
+  // Logs a session-change decision and asks for the rebuild if it wants one.
+  void HandleSessionDecision(const tfc::SessionRebuildPolicy::Decision& decision);
 
   // Carries out a rebuild the gate has released, either immediately or from
   // the queue. |reason| is the gate's, already coalesced.
@@ -222,6 +239,16 @@ class FlutterWindow : public Win32Window {
   // engine_rebuild_gate.h.
   tfc::EngineRebuildGate rebuild_gate_;
 
+  // Decides WHETHER a remote session change should ask for a rebuild at all:
+  // a disconnect defers, a reconnect probes first. See
+  // session_rebuild_policy.h for the log evidence that retired the
+  // unconditional rebuilds.
+  tfc::SessionRebuildPolicy session_policy_;
+  // The adapter the engine reported rendering on, by LUID, for the
+  // session-change comparison. Unknown when the engine did not say.
+  bool engine_adapter_known_ = false;
+  unsigned long long engine_adapter_luid_ = 0;
+
   // Withdraws crash-restart when the operator closes the window. See
   // shutdown_policy.h for the 2026-09-11 close-crash loop it ends.
   tfc::ShutdownPolicy shutdown_policy_;
@@ -258,7 +285,8 @@ class FlutterWindow : public Win32Window {
   // the note in gpu_diagnosis.h on why that device cannot be reached -- and
   // for that class the frame probe is NOT a detector either -- see
   // RequestEngineRebuild for the 2026-09-01 measurement that disproves it.
-  // Remote session changes are handled there instead.
+  // The stderr storm detector is the detector for that class; remote session
+  // changes are decided by session_policy_.
   tfc::GpuDeviceProbe device_probe_;
   // Latches so the transition is logged once rather than every tick.
   bool sentinel_loss_logged_ = false;

@@ -13,6 +13,7 @@ import 'package:upgrader/upgrader.dart';
 import 'package:centroidx_upgrader/centroidx_upgrader.dart';
 
 import 'package:tfc/access_routes.dart';
+import 'package:tfc/core/last_route.dart';
 import 'package:tfc/core/runner_liveness.dart';
 import 'package:tfc/core/startup_url.dart';
 import 'package:tfc/core/update_channel.dart';
@@ -163,6 +164,11 @@ String appFramesOf(StackTrace? stack) {
 /// first-frame callback both need it and neither can be handed an argument.
 RunnerLiveness? _liveness;
 
+/// Which engine generation this isolate is. Read by [_startApp] to decide
+/// whether to resume the operator's last page (a rebuild) or open the
+/// configured startup page (a process start) -- see `lib/core/last_route.dart`.
+EngineEpoch _engineEpoch = EngineEpoch.unknown;
+
 /// [args] are the Dart entrypoint arguments the Windows runner passes on every
 /// engine start: `--engine-epoch=N` and `--engine-reason=...`. An RDP session
 /// change destroys the engine and builds a new one, which is a whole new
@@ -171,6 +177,7 @@ RunnerLiveness? _liveness;
 /// first thing the app does is say which generation it is and why.
 void main(List<String> args) {
   final engineEpoch = EngineEpoch.fromArguments(args);
+  _engineEpoch = engineEpoch;
 
   // Ignore SIGPIPE so broken-pipe writes become IOExceptions instead of
   // killing the process.  The MCP HTTP server, OPC UA client, and pdfium
@@ -375,6 +382,20 @@ Future<void> _startApp([bool debugMode = false]) async {
       : 'Startup page: $storedStartupUrl is stored but no longer routable '
           '— falling back to $startupPath');
 
+  // A rebuilt engine -- the Windows runner recovering a lost render context,
+  // which is a fresh isolate inside the same process -- returns the operator
+  // to the page they were on. A process start opens the startup page above.
+  final resumePath = resolveResumePath(
+    epoch: _engineEpoch,
+    lastRoute: await readLastRoute(prefs),
+    startupPath: startupPath,
+    isRoutable: locationBuilder.routes.containsKey,
+  );
+  if (resumePath != startupPath) {
+    logger.i('Resuming at $resumePath after an engine rebuild '
+        '(${_engineEpoch.describe()})');
+  }
+
   // Paths at which Beamer should clear its beaming history. Landing on a
   // top-level destination means there is nowhere to go "back" to, so we drop
   // the accumulated history there — otherwise `canBeamBack` stays true and the
@@ -477,7 +498,10 @@ Future<void> _startApp([bool debugMode = false]) async {
       child: MyApp(
         locationBuilder: locationBuilder,
         clearHistoryOn: topLevelPaths,
-        initialPath: startupPath,
+        initialPath: resumePath,
+        // Recorded for the next rebuild, device-locally, like the startup page.
+        onLocationChanged: (location) =>
+            unawaited(writeLastRoute(prefs, location)),
       ),
     ),
   ));
@@ -843,6 +867,7 @@ class MyApp extends ConsumerWidget {
     required RoutesLocationBuilder locationBuilder,
     Set<String> clearHistoryOn = const <String>{},
     String initialPath = '/',
+    this.onLocationChanged,
   }) : routerDelegate = BeamerDelegate(
           initialPath: initialPath,
           notFoundPage: const BeamPage(child: PageNotFound()),
@@ -888,12 +913,17 @@ class MyApp extends ConsumerWidget {
       _lastPanePath = path;
       closeSidePane(immediate: true);
       closeAllFloatingDialogs();
+      onLocationChanged?.call(path);
     });
   }
 
   /// Last location the pane watcher saw, so a delegate rebuild that does not
   /// change the route leaves an open pane alone.
   String? _lastPanePath;
+
+  /// Told the router's new location whenever it changes. The shell records it
+  /// so an engine rebuild can resume there; see `lib/core/last_route.dart`.
+  final void Function(String location)? onLocationChanged;
 
   final BeamerDelegate routerDelegate;
 
