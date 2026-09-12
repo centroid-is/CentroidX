@@ -466,6 +466,50 @@ void _expectNothingClipped(WidgetTester tester, Finder last, double height) {
   );
 }
 
+/// The slack a timestamp column must keep between its text and the column
+/// beside it, in logical pixels.
+///
+/// Not a taste number. At zero the two dates paint end to end and the row
+/// reads `2026-06-02 08:152026-08-31 07:05` — one long number rather than two
+/// dates. 8 is the smallest gap the eye still resolves as a column boundary
+/// and is comfortably clear of layout rounding.
+const double _kMinTimestampGap = 8;
+
+/// Every account row gives its two timestamps room to be two timestamps.
+///
+/// The pixels are already pinned by the baseline beside this, so why assert
+/// it? Because a baseline argues from itself: `--update-goldens` accepts
+/// whatever the code now renders, and a collision re-baselined is a collision
+/// blessed. This says the number out loud, and the actions column has widened
+/// twice at the four flex columns' expense — 192 -> 240 for Pages, 240 -> 288
+/// for the timeout — with the second one landing the collision.
+///
+/// Measured against the text's intrinsic width rather than the cell rects:
+/// adjacent `Expanded`s always abut, so the gap lives inside the cell, between
+/// the glyphs and its edge. Only meaningful with the real face loaded — under
+/// the test harness's default font this measures square Ahem boxes and answers
+/// a question nobody asked, which is why it lives in this file.
+void _expectTimestampColumnsHaveAGap(WidgetTester tester) {
+  for (final user in _users()) {
+    for (final key in [
+      kAccessUserCreatedKey(user.username),
+      kAccessUserLastLoginKey(user.username),
+    ]) {
+      final finder = find.byKey(key);
+      final slack = tester.getRect(finder).width -
+          tester
+              .renderObject<RenderParagraph>(finder)
+              .getMaxIntrinsicWidth(double.infinity);
+      expect(
+        slack,
+        greaterThanOrEqualTo(_kMinTimestampGap),
+        reason: 'the $key cell leaves its timestamp ${slack}px of slack; '
+            'below $_kMinTimestampGap it runs into the next column',
+      );
+    }
+  }
+}
+
 void main() {
   final (light, _) = muted();
 
@@ -517,6 +561,7 @@ void main() {
 
         _expectNothingClipped(
             tester, find.byKey(kAccessAdminHonestyKey), size.height);
+        _expectTimestampColumnsHaveAGap(tester);
 
         await expectLater(
           find.byKey(_boundary),

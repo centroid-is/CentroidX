@@ -689,9 +689,19 @@ class AccessUsersSection extends ConsumerWidget {
 
 /// The column widths, declared once so the headings and the cells cannot drift
 /// apart.
-const int _kNameFlex = 3;
-const int _kRoleFlex = 3;
-const int _kWhenFlex = 3;
+///
+/// **Not four equal shares.** `Created` and `Last login` hold a fixed-width
+/// `yyyy-MM-dd HH:mm` in the monospace face, so their width is not a
+/// preference — it is the content, and the only slack in the row is whatever
+/// is left over after it. Four equal shares left exactly none once the actions
+/// column widened for the timeout control, and the two timestamps met with no
+/// gap between them: `2026-06-02 08:152026-08-31 07:05`, which reads as one
+/// number. The extra sixth goes to the two `when` columns because the name and
+/// role columns are the ones with room to give.
+const int _kNameFlex = 5;
+const int _kRoleFlex = 5;
+const int _kWhenFlex = 6;
+
 /// Six 48 px icon buttons: station account, timeout, pages, role, password,
 /// delete. Widened from 192 when the Pages control joined them and from 240
 /// when the timeout did — a fixed width with one more button than it was sized
