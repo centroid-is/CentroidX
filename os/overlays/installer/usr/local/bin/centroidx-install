@@ -39,6 +39,10 @@ boot_disk() { lsblk -no PKNAME "$(findmnt -no SOURCE /)" 2>/dev/null | head -1; 
 
 candidates() {
   local boot; boot="$(boot_disk)"
+  # If detection failed, `boot` is empty, the comparison below never matches, and
+  # the USB this is running from becomes an offerable install target. Refuse
+  # instead: there is no safe way to guess which disk not to erase.
+  [ -n "$boot" ] || die "cannot identify the disk this installer booted from - refusing to offer any target"
   lsblk -dno NAME,SIZE,MODEL --sort NAME | while read -r name size model; do
     [ "$name" = "$boot" ] && continue
     case "$name" in loop*|sr*|fd*|ram*|zram*) continue ;; esac
