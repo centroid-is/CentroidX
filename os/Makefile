@@ -139,6 +139,12 @@ endif
 usb: require-kvm generated
 	@test -n "$$(ls $(OUT)/centroidx-*.img.gz 2>/dev/null)" || { echo "run 'make image' first"; exit 1; }
 	rm -rf $(PAYLOAD) && mkdir -p $(PAYLOAD)
+	@# debos's overlay action fails verification on a missing source, so these
+	@# always exist. Empty locally (CI fills them from the setup-app job and the
+	@# published images) which builds a text-only installer -- see
+	@# scripts/installer-setup.sh.
+	@mkdir -p $(OUT)/app-bundle $(OUT)/bin
+	@touch $(OUT)/app-bundle/.keep $(OUT)/bin/.keep
 	@# centroidx-* explicitly, never *.img.gz: out/ also holds usb-installer.img.gz
 	@# after a previous run, and globbing it in would nest one image inside the next.
 	cp $(OUT)/centroidx-*.img.gz $(OUT)/centroidx-*.img.bmap $(PAYLOAD)/
@@ -162,7 +168,8 @@ usb: require-kvm generated
 dry-run: generated
 	$(DEBOS_DRY) --dry-run -t image:$(IMAGE) -t suite:$(SUITE) -t gpu:$(GPU) rootfs.yaml
 	$(DEBOS_DRY) --dry-run -t image:$(IMAGE) -t suite:$(SUITE) -t gpu:$(GPU) image.yaml
-	mkdir -p $(PAYLOAD) && touch $(PAYLOAD)/.keep
+	mkdir -p $(PAYLOAD) $(OUT)/app-bundle $(OUT)/bin
+	touch $(PAYLOAD)/.keep $(OUT)/app-bundle/.keep $(OUT)/bin/.keep
 	$(DEBOS_DRY) --dry-run -t suite:$(SUITE) installer.yaml
 
 .PHONY: print-recipe
