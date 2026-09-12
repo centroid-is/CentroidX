@@ -151,9 +151,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: station-image
+          # centroidx-* explicitly, not *.img.gz: out/ also holds
+          # usb-installer.img.gz, and a bare glob packed the USB image in here
+          # too -- 1323MB of artifact for 549MB of station image.
           path: |
-            os/out/*.img.gz
-            os/out/*.bmap
+            os/out/centroidx-*.img.gz
+            os/out/centroidx-*.img.bmap
             os/out/SHA256SUMS
             os/overlays/generated/etc/centroid/image-info
           retention-days: 14
