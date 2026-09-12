@@ -59,3 +59,7 @@ test-report.json
 # Binary artifacts
 *.zip
 ATV320_Installation_manual_EN_NVE41289_09.pdf
+
+# Per-station compose configuration. Real values, never committed.
+# See .env.example.
+.env

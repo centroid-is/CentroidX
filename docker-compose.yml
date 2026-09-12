@@ -35,7 +35,7 @@ services:
     restart: unless-stopped
     entrypoint: >
       bash -lc "
-        echo 'centroid:foo' | chpasswd &&
+        echo "centroid:${VNC_PASSWORD:?set VNC_PASSWORD in .env - see .env.example}" | chpasswd &&
         mkdir -p /run/user/1000 &&
         chown 1000:1000 /run/user/1000 &&
         chmod 0700 /run/user/1000 &&
@@ -131,7 +131,7 @@ services:
     # software. Measured when fixed on 2026-09-01: 150% -> 25% CPU on one
     # station, 112% -> 36% on the other.
     group_add:
-      - "${RENDER_GID:-105}"
+      - "${RENDER_GID:?set RENDER_GID in .env - stat -c %g /dev/dri/renderD128}"
     volumes:
       - ./wayland-socket/user:/run/user
       - ./local-share:/home/centroid/.local/share/ # shared preferences
@@ -143,7 +143,7 @@ services:
       WAYLAND_DISPLAY: wayland-1
       SECRET_BACKEND: file
       SECRET_FILE_TEST_PATH: /home/centroid/.local/share/keyrings/flutter.keyring
-      SECRET_FILE_TEST_PASSWORD: TODOSetThisStrongPassword # openssl rand -base64 32
+      SECRET_FILE_TEST_PASSWORD: ${FLUTTER_KEYRING_PASSWORD:?set FLUTTER_KEYRING_PASSWORD in .env - see .env.example}
       # Engine switches. The flutter-elinux embedder reads these from the
       # environment rather than argv (GetSwitchesFromEnvironment). The lookup
       # is compiled out of a release build, so these are inert on
@@ -249,7 +249,7 @@ services:
       CENTROID_PGPORT: 5432
       CENTROID_PGDATABASE: hmi
       CENTROID_PGUSER: centroid
-      CENTROID_PGPASSWORD: FooBarHelloWorld
+      CENTROID_PGPASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env - see .env.example}
       CENTROID_PGSSLMODE: require
     # A 20 s window every 15 minutes. Collecting is not free — the CPU profiler
     # samples at 250 µs and the timeline records — so this is a duty cycle a
@@ -387,7 +387,7 @@ services:
       CENTROID_PGPORT: 5432
       CENTROID_PGDATABASE: hmi
       CENTROID_PGUSER: centroid
-      CENTROID_PGPASSWORD: FooBarHelloWorld
+      CENTROID_PGPASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env - see .env.example}
       CENTROID_PGSSLMODE: require
       CENTROID_STATEMAN_FILE_PATH: /config/stateman.json
     volumes:
@@ -404,7 +404,7 @@ services:
     environment:
       - POSTGRES_DB=hmi
       - POSTGRES_USER=centroid
-      - POSTGRES_PASSWORD=FooBarHelloWorld
+      - POSTGRES_PASSWORD=${DB_PASSWORD:?set DB_PASSWORD in .env - see .env.example}
       # (Optional) You can also set PGDATA or other environment variables.
     ports:
       - 5432:5432
