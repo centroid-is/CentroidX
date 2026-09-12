@@ -37,6 +37,9 @@ actions:
       - dosfstools
       - kbd
       - ncurses-bin
+      # `wg genkey`/`wg pubkey`: the station's private key is generated here, on
+      # the machine being installed, and never travels on the stick.
+      - wireguard-tools
       - ca-certificates
       # all-hardware: the stick has to boot machines nobody profiled first
       - firmware-misc-nonfree

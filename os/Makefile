@@ -143,8 +143,10 @@ usb: require-kvm generated
 	@# after a previous run, and globbing it in would nest one image inside the next.
 	cp $(OUT)/centroidx-*.img.gz $(OUT)/centroidx-*.img.bmap $(PAYLOAD)/
 	cp $(GEN)/etc/centroid/image-info $(PAYLOAD)/image-info
-	@# Drop a station.env here to make the USB install without asking anything.
-	@test -f station.env && cp station.env $(PAYLOAD)/ || true
+	@# NOTHING station-specific goes in here. One USB is written once and reused
+	@# for every customer; the installer asks for what differs and writes it to
+	@# the target. An optional station.env for unattended installs goes on the
+	@# USB's FAT partition afterwards, which needs no rebuild.
 	$(DEBOS) -v --fakemachine-backend=kvm --scratchsize=24GB \
 	  --artifactdir=/recipes/$(OUT) \
 	  -t usbimage:usb-installer.img -t usbsize:$(USBSIZE) -t suite:$(SUITE) \
