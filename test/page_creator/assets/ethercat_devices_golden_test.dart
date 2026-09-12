@@ -41,7 +41,15 @@ Widget frame(Widget child, {double width = 900, double height = 420}) {
 }
 
 void main() {
-  useTolerantGoldenComparator();
+  // These goldens are almost entirely small text — a dozen columns of names,
+  // models and counters. CoreText rasterises that text a hair differently on
+  // the CI runner (macOS 26) than on a developer Mac (macOS 15), which moved
+  // 43 px of the table and 32 px of the narrow variant: 0.013%, just over the
+  // 0.01% default, on images nobody had touched. 0.2% is the tolerance the
+  // other text-heavy goldens in this suite use, and it still leaves a real
+  // regression nowhere to hide — shifting a column or recolouring a port cell
+  // moves thousands of pixels.
+  useTolerantGoldenComparator(tolerance: 0.002);
 
   group('EtherCAT devices',
       skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
