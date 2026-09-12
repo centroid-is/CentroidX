@@ -292,6 +292,37 @@ jobs:
       - name: Build installer USB
         run: make usb DOCKER_TTY=
 
+      # The first green build shipped a text-only installer: the bundle was
+      # present but not executable, so installer-setup.sh took the fallback
+      # branch and nothing said so. Three passing jobs told us nothing about
+      # which installer the image actually enables, so assert it on the artifact
+      # itself rather than on the steps that produced it.
+      - name: Assert the built USB is the graphical installer
+        run: |
+          set -euo pipefail
+          img=$(mktemp /tmp/usb-XXXX.img)
+          gunzip -c out/usb-installer.img.gz > "$img"
+          loop=$(sudo losetup -f --show -P "$img")
+          sudo udevadm settle
+          mnt=$(mktemp -d)
+          sudo mount -o ro "${loop}p2" "$mnt"
+
+          fail=0
+          check() { # check DESCRIPTION TEST-RESULT
+            if [ "$2" = 0 ]; then echo "  ok       $1"; else echo "::error::$1"; fail=1; fi
+          }
+          [ -e "$mnt/etc/systemd/system/multi-user.target.wants/centroidx-gui.service" ]; check "graphical installer enabled" $?
+          [ ! -e "$mnt/etc/systemd/system/multi-user.target.wants/centroidx-installer.service" ]; check "text installer not also enabled (it is the OnFailure fallback)" $?
+          [ -x "$mnt/opt/centroidx-setup/centroidx_setup" ] || [ -x "$mnt/opt/centroidx-setup/flutter_elinux_wayland" ]; check "setup app binary is executable" $?
+          [ -s "$mnt/opt/centroidx-setup/lib/libflutter_elinux_wayland.so" ]; check "matched embedder present" $?
+          [ -x "$mnt/usr/local/bin/centroidx-keyboard" ]; check "on-screen keyboard present and executable" $?
+          [ -x "$mnt/usr/local/bin/centroidx-setup" ]; check "launcher present" $?
+          grep -q "^path=/usr/local/bin/centroidx-keyboard" "$mnt/etc/xdg/weston/weston.ini"; check "weston input-method points at the keyboard" $?
+          [ -e "$mnt/usr/bin/weston" ]; check "weston installed" $?
+
+          sudo umount "$mnt"; sudo losetup -d "$loop"; rm -f "$img"
+          exit $fail
+
       - name: Checksums and provenance
         run: |
           cd out && sha256sum *.img.gz *.bmap | tee SHA256SUMS
