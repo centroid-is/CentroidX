@@ -33,6 +33,7 @@ import 'package:tfc/theme.dart' show muted;
 import 'package:tfc/widgets/report_view.dart';
 import 'package:tfc_dart/tfc_dart.dart';
 
+import '../helpers/golden_platform.dart';
 import '../helpers/golden_tolerance.dart';
 
 final _start = DateTime(2026, 9, 1, 7);
@@ -561,7 +562,7 @@ void main() {
   }
 
   group('report view goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     // Heights are chosen to hold the whole report: the view is a ListView, so
     // anything past the viewport is silently cropped out of the golden, and a
     // handover note cut in half is exactly the kind of thing a golden is
