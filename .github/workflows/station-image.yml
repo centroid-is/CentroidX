@@ -137,8 +137,54 @@ jobs:
           sys.exit(rc)
           EOF
 
-  build:
+  # The setup app the installer USB shows on screen. Built in the same toolchain
+  # container as the HMI's elinux bundle (centroid-hmi.yml's elinux-build), so
+  # the engine and the flutter-elinux that produced it are the ones the embedder
+  # in that container was built against -- a mismatch there fails at link time,
+  # not at runtime.
+  setup-app:
     needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/centroid-is/tfc-toolchain:latest
+    defaults:
+      run:
+        working-directory: os/app
+    steps:
+      - name: Make safe directory
+        run: git config --system --add safe.directory '*'
+        working-directory: .
+      - uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+      - name: Checkout (retry)
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v4
+
+      # elinux/ is generated, not committed: it is a platform runner that
+      # flutter-elinux owns and regenerates, and committing it would pin us to
+      # whatever version first created it.
+      - name: Add the elinux platform
+        run: flutter-elinux create --platforms=elinux .
+
+      - name: Dependencies
+        run: flutter-elinux pub get
+
+      - name: Build the bundle
+        run: flutter-elinux build elinux --release
+
+      - name: Bundle contents
+        run: ls -la build/elinux/x64/release/bundle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup-app-bundle
+          path: os/app/build/elinux/x64/release/bundle
+          retention-days: 14
+
+  build:
+    needs: [ validate, setup-app ]
     # Building the image on every PR would be a 30-minute tax on a review. Main,
     # a station tag, or asked for by hand.
     if: github.event_name != 'pull_request'
@@ -169,6 +215,44 @@ jobs:
 
       - name: Install host tools
         run: sudo apt-get update && sudo apt-get install -y bmap-tools zstd
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: setup-app-bundle
+          path: os/out/app-bundle
+
+      # The on-screen keyboard is built in centroid-is/dockers, not here, and is
+      # a plain Wayland client (libwayland, cairo, xkbcommon -- it does not link
+      # libweston), so the binary from that image runs against trixie's weston
+      # 14. Taken from the published image rather than rebuilt: building it needs
+      # `apt-get build-dep weston`, which is ~7 minutes for one 52KB binary.
+      - name: Take centroidx-keyboard from the weston image
+        working-directory: .
+        run: |
+          set -euo pipefail
+          docker pull ghcr.io/centroid-is/weston:latest
+          docker create --name kb ghcr.io/centroid-is/weston:latest
+          mkdir -p os/out
+          mkdir -p os/out/bin
+          docker cp kb:/usr/local/bin/centroidx-keyboard os/out/bin/centroidx-keyboard
+          docker rm kb
+          chmod 755 os/out/bin/centroidx-keyboard
+          file os/out/bin/centroidx-keyboard
+
+          # docker/frontend/Dockerfile:4 records that the bundle ships a
+          # libflutter_elinux_wayland.so which is WRONG for the engine it was
+          # built with, and rebuilds a matched one. The published HMI image
+          # already contains that matched .so, built in the same toolchain
+          # container as our bundle, so take it rather than rebuild the embedder
+          # here. If the two ever diverge this fails loudly at app startup, not
+          # silently.
+          docker pull ghcr.io/centroid-is/centroid-hmi:latest
+          docker create --name hmi ghcr.io/centroid-is/centroid-hmi:latest
+          docker cp hmi:/home/centroid/app/lib/libflutter_elinux_wayland.so \
+            os/out/app-bundle/lib/libflutter_elinux_wayland.so || \
+            echo "::warning::could not take the matched embedder from the HMI image; the bundle's own .so will be used"
+          docker rm hmi
+          ls -la os/out/app-bundle/lib/libflutter_elinux_wayland.so || true
 
       - name: Free up disk
         run: |
