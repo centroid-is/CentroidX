@@ -24,20 +24,35 @@ actions:
     mirror: {{ $mirror }}
     variant: minbase
 
-  # Archive keys first: apt below installs from download.docker.com and
-  # download.zerotier.com, so the keyrings have to exist before it runs.
+  # Archive keys first: apt below installs from download.docker.com, so the
+  # keyring has to be in place before the source that references it.
   - action: overlay
     source: overlays/base
     description: CentroidX configuration files
 
   - action: run
     chroot: true
-    label: apt-sources
-    script: scripts/apt-sources.sh {{ $suite }}
+    label: apt-sources-debian
+    script: scripts/apt-sources-debian.sh {{ $suite }}
+
+  # ca-certificates FIRST, over http, before any https source exists. Without
+  # this the Docker archive cannot be verified and docker-ce silently has no
+  # installation candidate -- which is exactly how the first build after the
+  # mirror moved to http failed.
+  - action: apt
+    recommends: false
+    description: CA bundle, needed before the https Docker archive
+    packages:
+      - ca-certificates
+
+  - action: run
+    chroot: true
+    label: apt-sources-docker
+    script: scripts/apt-sources-docker.sh {{ $suite }}
 
   - action: apt
     recommends: false
-    description: Base system, docker, zerotier, graphics
+    description: Base system, docker, wireguard, graphics
     packages:
       # boot and init
       - linux-image-amd64

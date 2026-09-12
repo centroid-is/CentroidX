@@ -1,5 +1,10 @@
 #!/bin/bash
-# Writes the Debian security/updates suites and the Docker archive source. A script rather than a file in the
+# Writes the Debian security and updates suites.
+#
+# Split from the Docker source deliberately. These are http, so they work in a
+# freshly debootstrapped rootfs that has no CA bundle yet; the Docker archive is
+# https-only and must not be added until ca-certificates is installed. See
+# rootfs.yaml for the ordering. A script rather than a file in the
 # overlay because both lines name the suite, and the suite is a recipe variable.
 #   usage: apt-sources.sh <suite>
 set -euo pipefail
@@ -27,12 +32,3 @@ EOF
 cat > /etc/apt/sources.list.d/debian-updates.list <<EOF
 deb http://deb.debian.org/debian ${suite}-updates main non-free-firmware
 EOF
-
-# Keys are committed in overlays/base/etc/apt/keyrings/ and land before this
-# runs. Recorded sha256 (verified 2026-09-12, see `make verify-keys`):
-#   docker.asc    1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570
-cat > /etc/apt/sources.list.d/docker.list <<EOF
-deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${suite} stable
-EOF
-
-chmod 0644 /etc/apt/keyrings/docker.asc
