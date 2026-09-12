@@ -387,10 +387,11 @@ class AccessRepository {
   /// pages.
   ///
   /// **No lockout guard, and that is a decision rather than an omission.** A
-  /// whitelist cannot remove [AccessGroup.users] from anybody, and the
-  /// Advanced routes — the access screen among them — are governed by groups
-  /// alone and are not whitelistable, so no whitelist state can take the
-  /// roles screen away from the people who hold the group.
+  /// whitelist cannot remove [AccessGroup.users] from anybody, and the access
+  /// screen is exempt from the whitelist half of the route gate, so no
+  /// whitelist state can take the roles screen away from the people who hold
+  /// the group. The rest of the Advanced surface is whitelistable like any
+  /// other destination; `/advanced/access` alone is not.
   Future<void> setRoleAllowedPages(String name, Set<String>? pages) async {
     await db.transaction(() async {
       final existing = await (db.select(db.appRole)

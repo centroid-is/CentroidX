@@ -108,7 +108,7 @@ Read these before implementing; each is load-bearing below.
 | The three states, per level | `NULL` = no opinion (role: sees every page; user: **inherit the role's**), empty array = sees none, populated = exactly these. A v6 row carries over as NULL at both levels. |
 | Composition | `effective = user ?? role` — one pure function, then the group gate ANDs on top. The whitelist never grants what a group denies. |
 | Schema | Two nullable TEXT columns `allowed_pages`, on `app_role` and `app_user`, **schemaVersion 6 → 7**. |
-| Scope of the whitelist | **Page-manager pages only.** The nine `kRaisedRoutes` built-ins, Alarm View, History View, About Linux and the first-user page are governed by groups alone and are not whitelistable. |
+| Scope of the whitelist | **Every menu destination except `/advanced/access`** — amended 2026-09-12, see §13. It was page-manager pages only, which did not match what the menu filter actually did. |
 | Anonymous panels | Anonymous resolves to `Operator` and has no user row, so the Operator role's whitelist governs every logged-out panel. Warned at the point of edit. |
 | Unknown references | **Fail closed.** A stored path matching no page matches nothing; an unreadable column decodes to the empty set (deny all), never null. |
 | Repository unavailable / session loading | **Whitelist not enforced** during the window — the same keep-the-line-running ruling as `_anonymousGroups`' seeded fallback and the 2026-09-02 tag-binding boot window. |
@@ -433,7 +433,8 @@ down.
 
 | Route | Group gate says | Whitelist says | Result |
 |---|---|---|---|
-| Built-in (`kRaisedRoutes`, Alarm View, History View, About Linux, first-user) | allowed / denied | *never consulted* | group gate's answer, unchanged |
+| `/advanced/access` | allowed / denied | *never consulted* | group gate's answer, unchanged — see §4 layer 1 and §13 |
+| Any other built-in (the rest of `kRaisedRoutes`, Alarm View, History View, About Linux, first-user) | allowed / denied | same rules as a page-manager page | as the rows below (amended 2026-09-12, §13) |
 | Page-manager page | denied (its `requiredGroup`, own or inherited, is not held) | anything | **denied** — the lock names the group, exactly as today |
 | Page-manager page | allowed (or `operate`, undeclared) | session unrestricted (null) | **allowed** — today's behaviour |
 | Page-manager page | allowed | path in the set | **allowed** |
@@ -488,13 +489,21 @@ one signed-in account only.
 **Turning either mode on cannot brick a station.** Layered, in decreasing
 order of importance:
 
-1. **The Advanced surface is not whitelistable.** `kRaisedRoutes` — the
-   access screen included — answer to groups alone (§3 row one). No
-   whitelist state at either level, including the empty set, can hide or
-   gate `/advanced/access` beyond the `users` gate it already has. The
-   existing last-`users`-holder invariant already guarantees somebody holds
-   that group; together the two mean the person who can fix a bad whitelist
-   can always reach the screen that fixes it.
+1. **The access screen is not whitelistable.** No whitelist state at either
+   level, including the empty set, can hide or gate `/advanced/access`
+   beyond the `users` gate it already has. The existing last-`users`-holder
+   invariant already guarantees somebody holds that group; together the two
+   mean the person who can fix a bad whitelist can always reach the screen
+   that fixes it.
+
+   **This was prose and nothing enforced it** until 2026-09-12 (§13). The
+   sentence above originally covered the whole Advanced surface, on the
+   reading that `kRaisedRoutes` answer to groups alone — but
+   `visibleMenuProvider` asks `resolvePageAccess` about *every* entry in the
+   tree, so setting any whitelist dropped the entire Advanced section from
+   that session's menu, the access screen with it. The guarantee now lives in
+   `routeExemptFromPageWhitelist`, which the menu filter and the route gate
+   both go through.
 2. **Sign-in is not a page.** `AccessStatusAction` sits in every
    `BaseScaffold` app bar, and the whitelist-denied route body (§5a)
    carries its own Sign in button, the `AccessLockedBody` idiom. A panel
@@ -864,12 +873,13 @@ as the sections already do):
   option submits null; "only ticked" submits the set, empty included.
   Flipping to "only ticked" with nothing ticked is legal; the summary under
   the closed row then reads "sees no pages".
-* **The tree** is built from `menuTreeProvider`'s underlying page-manager
-  pages — page-manager pages only, no Advanced entries, no built-ins, which
-  is the scope rule of §3 made visible, and always the **full** tree (the
-  picker is a `users`-gated admin surface; it must show pages the *editing*
-  session's own whitelist hides). Sections render as tri-state header
-  checkboxes ticking their leaf descendants (§6); unpublished drafts render
+* **The tree** is `menuTreeProvider` — every page *and* every built-in,
+  `/advanced/access` excepted, which is the scope rule of §3 as amended by
+  §13 made visible — and always the **full** tree (the picker is a
+  `users`-gated admin surface; it must show pages the *editing* session's own
+  whitelist hides). Sections render as plain headings over their
+  leaves, not as tri-state checkboxes: the sugar §6 allows was never built,
+  and a heading is what the shipped widget draws; unpublished drafts render
   with the editor's existing "(draft)" annotation so a grant can precede a
   publish. Each row shows label and path — the path is the stored identity
   and the label is renameable, so showing both is what keeps a grant
@@ -1132,9 +1142,9 @@ lockout.
 * MCP tools (`set_role_pages` / `set_user_pages` / listers) for
   agent-driven bulk setup, following the access-template tools'
   proposal-and-approve pattern, gated on `users` like their siblings.
-* Whitelisting the open built-ins (Alarm View, History View). Alarm View
-  is the plant's safety surface and hiding it from an operator needs its
-  own argued decision, not a checkbox that appears by generalisation.
+* ~~Whitelisting the open built-ins (Alarm View, History View).~~ Resolved
+  2026-09-12 by §13, and not by generalisation: the menu filter was already
+  hiding them, so the deferral was describing a state the code did not have.
 * Rename-follow: prompting a page-path rename in the editor to update
   whitelists. Blocked on a real design problem — the editor runs under
   `configure` and must not write `app_role`/`app_user` (§1a); a correct
@@ -1146,3 +1156,59 @@ lockout.
 * Deleting `RouteRegistry.menuItems` outright once the page editor
   migrates to `menuTreeProvider` — the mirror is a bridge, and the
   single-writer test is what keeps it a bridge instead of a habit.
+
+---
+
+## 13. Amendment, 2026-09-12: the built-ins are whitelistable, the access screen is not
+
+**The report:** *"when I whitelist pages for users to get access to I cannot
+pick any advanced pages."*
+
+**What was actually wrong is worse than the report.** §3 row one and §4 layer
+one both said the built-ins answer to groups alone and that no whitelist could
+touch them. The Pages editor implemented that by listing page-manager pages
+only. Nothing else did. `visibleMenuProvider` filters the **whole** tree
+through `resolvePageAccess`, built-ins included, so the scope line was never
+true of the running app:
+
+> Setting any whitelist on a role — even one that grants pages — dropped
+> every built-in from that session's menu: Alarm View, Reports, History View,
+> and the entire Advanced section including Access. The picker then offered no
+> way to grant any of them back.
+
+That is not the reported inconvenience, it is a silent lockout of the repair
+screen, reachable in two clicks from the Access page. Reproduced as a unit
+test before anything was changed (`menu_test.dart`, "no whitelist can hide the
+access screen").
+
+**Two ways to make the code and the note agree, and why this one.** Excluding
+the built-ins from the filter would have restored the note verbatim — and left
+"block all" unable to block the Advanced menu, which is most of what an
+operator can reach. The station asking for the feature is asking to narrow
+what a panel shows; a whitelist that cannot hide Reports or the Page Editor
+entry is not the control that was requested. So the scope widens instead, to
+what the filter already did, minus the one route that must never be hidden.
+
+**What changes:**
+
+* `routeExemptFromPageWhitelist(path)` — true for `/advanced/access` and
+  nothing else. `resolvePageAccess` consults it after the group gate and
+  before the whitelist, so the menu filter and the route gate get the
+  guarantee from one function rather than two copies of a comment. §4 layer 1
+  is now enforced rather than asserted.
+* The Pages editor lists `menuTreeProvider` — every page and every built-in —
+  with sections as headings rather than tick boxes, and the group a raised
+  route still needs printed beside its path, because the whitelist narrows and
+  never grants.
+* Alarm View becomes explicitly hideable, which the deferred list above had
+  wanted argued rather than generalised. The argument is short: it was already
+  hideable, by accident, with no way to grant it back. An explicit reversible
+  checkbox is the safer of the two states, not the riskier one.
+
+**What deliberately does not change.** The built-in routes are still gated by
+`AccessGate`, which takes a literal group and knows nothing about paths — so
+for them the whitelist remains a menu-level control, exactly as it was before
+this amendment. Making `AccessGate` resolve a path would give it a lookup to
+fail open through, which its doc comment rules out. A built-in withheld by a
+whitelist is therefore hidden, not refused, and its group gate is what
+actually shuts it.

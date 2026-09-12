@@ -201,6 +201,68 @@ void main() {
       );
     });
 
+    test('the access screen is exempt — no whitelist can hide it', () {
+      // Layer 1 of the no-lockout argument, and the one that was prose rather
+      // than code: the menu filter asks this same function about every entry
+      // in the tree, so an empty whitelist used to drop `/advanced/access`
+      // from the menu of the very person who could repair it.
+      for (final pages in [const <String>{}, const {'/fillet'}]) {
+        expect(
+          resolvePageAccess(
+            group: AccessGroup.users,
+            path: kAccessAdminRoute,
+            repository: _presentRepo,
+            session: _session(groups: const {AccessGroup.users}, pages: pages),
+          ),
+          AccessGateState.allowed,
+          reason: 'whitelist $pages must not reach the access screen',
+        );
+      }
+    });
+
+    test('the exemption is the whitelist half only, never the group half', () {
+      // Exempt from the whitelist is not exempt from `users`. A session
+      // without the group still meets the lock, which is what stops the
+      // exemption becoming an open door on the one screen that edits roles.
+      expect(
+        resolvePageAccess(
+          group: AccessGroup.users,
+          path: kAccessAdminRoute,
+          repository: _presentRepo,
+          session: _session(groups: const {AccessGroup.operate}),
+        ),
+        AccessGateState.denied,
+      );
+    });
+
+    test('every other Advanced route is whitelistable', () {
+      // The other half of the fix. These are ordinary entries as far as the
+      // whitelist is concerned — hidden when unlisted, granted when ticked —
+      // which is what makes the picker's new rows mean something.
+      final session = _session(
+        groups: const {AccessGroup.configure},
+        pages: const {'/advanced/alarm-editor'},
+      );
+      expect(
+        resolvePageAccess(
+          group: AccessGroup.configure,
+          path: '/advanced/alarm-editor',
+          repository: _presentRepo,
+          session: session,
+        ),
+        AccessGateState.allowed,
+      );
+      expect(
+        resolvePageAccess(
+          group: AccessGroup.configure,
+          path: '/advanced/page-editor',
+          repository: _presentRepo,
+          session: session,
+        ),
+        AccessGateState.denied,
+      );
+    });
+
     test('the boot window is not filtered', () {
       // `kSessionWhileLoading` carries no whitelist, so a page whose group is
       // `operate` opens while the session resolves. A `denied` here would
