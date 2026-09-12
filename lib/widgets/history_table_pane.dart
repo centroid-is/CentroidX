@@ -6,6 +6,7 @@ import 'package:rxdart/rxdart.dart';
 import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
 
+import '../page_creator/assets/graph.dart' show describeTrendFetchError;
 import '../providers/collector.dart';
 import '../models/history_models.dart';
 
@@ -108,7 +109,11 @@ class _HistoryTablePaneState extends ConsumerState<HistoryTablePane> {
         final cutoff = DateTime.now().toUtc().subtract(since);
         final dbStream = Stream.fromFuture(
           collector.database
-              .queryTimeseriesData(k, DateTime.now().toUtc(), from: cutoff),
+              .queryTimeseriesData(k, DateTime.now().toUtc(), from: cutoff)
+              // See the same guard in history_graph_pane: `combineLatest2`
+              // emits nothing until every source has, so an erroring
+              // backfill takes the live stream beside it down with it.
+              .catchError((Object e) => <TimeseriesData<dynamic>>[]),
         );
         return Rx.combineLatest2<List<TimeseriesData<dynamic>>,
             List<TimeseriesData<dynamic>>, List<TimeseriesData<dynamic>>>(
@@ -158,6 +163,22 @@ class _HistoryTablePaneState extends ConsumerState<HistoryTablePane> {
           stream: _streamFor(collector),
           builder: (context, snap) {
             if (!snap.hasData) {
+              // An error used to land here as a spinner that never stopped:
+              // "still loading" and "there is no table for this key" looked
+              // identical. Say which, in the same words the trends use.
+              if (snap.hasError) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      describeTrendFetchError(
+                          widget.keys.join(', '), snap.error!),
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ),
+                );
+              }
               return const Center(child: CircularProgressIndicator());
             }
 

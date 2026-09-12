@@ -294,6 +294,7 @@ class Graph {
   void showError(String message) {
     _isLoading = false;
     _errored = true;
+    _notice = null;
     _chartWidget = Builder(
       builder: (context) {
         final theme = Theme.of(context);
@@ -320,6 +321,32 @@ class Graph {
     redraw();
   }
 
+  /// A line under the plot for something the operator should know but that
+  /// does not stop the chart working -- "there is no history behind this, but
+  /// it is live". Unlike [showError] it leaves the plot in place, so points
+  /// arriving from the table's change notifications still draw; and it takes
+  /// the footer's slot, so it costs nothing in the tree once there is data.
+  ///
+  /// A failed history query is not the same event as a dead chart. Charting
+  /// only what is arriving from now on is a usable chart; replacing it with a
+  /// message is not.
+  void showNotice(String message) {
+    _isLoading = false;
+    _errored = false;
+    _notice = message;
+    redraw();
+  }
+
+  /// Drop whatever [showError] or [showNotice] put up, because the fetch
+  /// behind it has since succeeded. A no-op when there is nothing showing,
+  /// so the clean path -- every init that works -- costs no extra rebuild.
+  void clearMessage() {
+    if (!_errored && _notice == null) return;
+    _errored = false;
+    _notice = null;
+    redraw();
+  }
+
   bool _showDate = false; // if viewport is not today, show date
   late cs.PanInfo _lastPanInfo;
   bool _isLoading = true;
@@ -327,6 +354,10 @@ class Graph {
   /// Set by [showError]; the "No data from ... to ..." footer stays off then,
   /// since the message in the chart area already says why there is none.
   bool _errored = false;
+
+  /// Set by [showNotice]; stands in for the "No data from ... to ..." footer
+  /// while the plot is still empty, and is not drawn at all once it is not.
+  String? _notice;
   final cs.PanController _panController = cs.PanController();
   bool _nowDisabled = false;
 
@@ -526,16 +557,29 @@ class Graph {
 
     Widget? noData;
     if (_data.isEmpty && !_isLoading && !_errored) {
-      var txt =
-          "No data from: ${_lastPanInfo.visibleMinX} to: ${_lastPanInfo.visibleMaxX}";
-      if (config.type == GraphType.timeseries ||
-          config.type == GraphType.barTimeseries) {
-        txt =
-            "No data from: ${DateTime.fromMillisecondsSinceEpoch(_lastPanInfo.visibleMinX!.toInt())} to: ${DateTime.fromMillisecondsSinceEpoch(_lastPanInfo.visibleMaxX!.toInt())}";
+      if (_notice != null) {
+        // Bounded, because this slot is as tall as the compact pane tile can
+        // spare -- the plot above it keeps the rest.
+        noData = Center(
+          child: Text(
+            _notice!,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        );
+      } else {
+        var txt =
+            "No data from: ${_lastPanInfo.visibleMinX} to: ${_lastPanInfo.visibleMaxX}";
+        if (config.type == GraphType.timeseries ||
+            config.type == GraphType.barTimeseries) {
+          txt =
+              "No data from: ${DateTime.fromMillisecondsSinceEpoch(_lastPanInfo.visibleMinX!.toInt())} to: ${DateTime.fromMillisecondsSinceEpoch(_lastPanInfo.visibleMaxX!.toInt())}";
+        }
+        noData = Center(
+          child: Text(txt),
+        );
       }
-      noData = Center(
-        child: Text(txt),
-      );
     }
 
     return Column(

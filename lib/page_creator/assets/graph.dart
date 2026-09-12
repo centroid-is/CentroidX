@@ -197,6 +197,42 @@ String describeTrendFetchError(String keys, Object e) {
   return 'Could not load history for $keys.\n$text';
 }
 
+/// One history fetch: the rows that came back, and the series whose tables
+/// would not answer.
+///
+/// A trend's lines are independent tables. Letting the first failure sink the
+/// whole fetch meant one key that is mapped but not collected took the other
+/// lines' history down with it -- and, before this type existed, their live
+/// feed too.
+class GraphHistory {
+  GraphHistory({
+    required this.rows,
+    required this.failures,
+    required this.seriesCount,
+  });
+
+  /// Chartable rows, from the series that answered.
+  final List<Map<String, dynamic>> rows;
+
+  /// Series legend -> the error its table answered with. Empty on a clean
+  /// fetch, which is the only case the caller treats as "nothing to say".
+  final Map<String, Object> failures;
+
+  /// How many series were asked, failures included.
+  final int seriesCount;
+
+  bool get anyFailed => failures.isNotEmpty;
+
+  /// Every line failed. Distinct from [anyFailed] because a chart with one
+  /// working line is still a chart, and must not be replaced by a message.
+  bool get everySeriesFailed =>
+      seriesCount > 0 && failures.length == seriesCount;
+
+  /// The error to quote at the operator when there is nothing else to show.
+  Object? get firstError =>
+      failures.isEmpty ? null : failures.values.first;
+}
+
 class GraphContentConfig extends StatefulWidget {
   final GraphAssetConfig config;
   const GraphContentConfig({required this.config});
@@ -644,7 +680,9 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
   int _dataMaxX;
   Database? _db;
   bool _realTimeActive = true;
-  final List<StreamSubscription<String>> _realtimeSubscriptions = [];
+  /// Live feeds by [_seriesId], so a series whose table only appeared later
+  /// can be subscribed without disturbing the ones already running.
+  final Map<String, StreamSubscription<String>> _realtimeSubscriptions = {};
   final _rtThrottleBuffer = List<Map<String, dynamic>>.empty(growable: true);
   Timer? _rtThrottleTimer;
   static const _rtThrottleInterval = Duration(seconds: 1);
@@ -759,29 +797,48 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
     _dataMaxX = end.millisecondsSinceEpoch.toInt();
     _lastFetchWindowMs =
         widget.config.timeWindowMinutes.inMilliseconds.toDouble();
-    final List<Map<String, dynamic>> initial;
-    try {
-      initial = await _queryData(DateTimeRange(start: start, end: end));
-    } catch (e, st) {
-      // Say so on the chart. Left to escape, this was an unhandled async
-      // error nobody saw and a spinner that never stopped: "Batcher 4
-      // weigher left" sat loading for good because its key is mapped but
-      // not collected, so its table was never created.
-      _log.w('Trend "${widget.config.headerText ?? ''}" has no data: $e',
-          error: e, stackTrace: st);
-      if (!mounted || generation != _initGeneration) return;
-      final keys = [
-        ...widget.config.primarySeries,
-        ...widget.config.secondarySeries
-      ].map((s) => s.key).join(', ');
-      _graph.showError(describeTrendFetchError(keys, e));
+    final initial = await _queryData(DateTimeRange(start: start, end: end));
+    if (!mounted || generation != _initGeneration) return;
+    _log.d('trend "$trendName": ${initial.rows.length} points');
+    _addData(initial.rows);
+
+    // Subscribed whatever the history did.
+    //
+    // Live points do not come out of the history query at all -- they arrive
+    // on the table's change notifications, which are only ever set up below.
+    // Bailing out on a failed history fetch therefore killed the live feed
+    // for the life of the widget: the chart showed a message and never moved
+    // again, and the only way back was a rebuild or a config edit. A trend
+    // whose history will not load is still worth drawing from now on.
+    _realTimeActive = true;
+    final live = await _initRealtimeUpdates();
+    if (!mounted || generation != _initGeneration) return;
+    _reportHistory(initial, live, generation);
+  }
+
+  /// Turns the outcome of a history fetch into what the operator sees.
+  ///
+  /// The error panel is reserved for a chart that is genuinely dead -- no
+  /// history and nothing arriving either, which is what a key that is mapped
+  /// but not collected looks like: with no table there is neither a row to
+  /// read nor a trigger to listen on. Anything still live gets a line under
+  /// the plot instead, and keeps its chart.
+  void _reportHistory(GraphHistory history, int live, int generation) {
+    if (!history.anyFailed) {
+      _graph.clearMessage();
       return;
     }
-    if (!mounted || generation != _initGeneration) return;
-    _log.d('trend "$trendName": ${initial.length} points');
-    _addData(initial);
-    _realTimeActive = true;
-    _initRealtimeUpdates();
+    final failed = history.failures.keys.join(', ');
+    _log.w('trend "${widget.config.headerText ?? ''}": no history for '
+        '$failed (${history.failures.values.first}); $live series live');
+    if (history.everySeriesFailed && live == 0) {
+      _graph.showError(
+          describeTrendFetchError(failed, history.firstError!));
+    } else {
+      _graph.showNotice('No stored history for $failed. '
+          'Charting values as they arrive.');
+    }
+    _scheduleHistoryRetry(generation);
   }
 
   @override
@@ -810,11 +867,28 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
     _graph.theme(_themeFor(ref.watch(chartThemeNotifierProvider)));
   }
 
-  void _initRealtimeUpdates() async {
+  /// Identity of one series' live feed, so a re-run subscribes only what is
+  /// still missing. Two series can share a key and differ by member or axis,
+  /// and each needs its own listener.
+  static String _seriesId(GraphSeriesConfig series, bool isPrimary) =>
+      '${isPrimary ? 'y' : 'y2'}|${series.key}|${series.member ?? ''}'
+      '|${series.legend}';
+
+  /// Subscribes every series that is not already live to its table's change
+  /// notifications, and returns how many series are live afterwards.
+  ///
+  /// Each series is set up on its own. `enableNotificationChannel` installs a
+  /// trigger ON the series' table, so a key that is mapped but not collected
+  /// throws here exactly as it does in the history query. Left to escape from
+  /// what used to be an `async void`, that was an unhandled error nobody saw,
+  /// no throttle timer, and no feed for the series that do have tables.
+  Future<int> _initRealtimeUpdates() async {
     _graph.setNowButtonDisabled(_realTimeActive);
-    if (!_realTimeActive) return;
-    if (_db == null) return; // this should never happen
+    if (!_realTimeActive) return 0;
+    if (_db == null) return 0; // this should never happen
     final db = _db!;
+    // Superseded inits must not hand their subscriptions to the winner.
+    final generation = _initGeneration;
 
     Future<StreamSubscription<String>> initSeries(
         GraphSeriesConfig series, bool isPrimary) async {
@@ -847,38 +921,73 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
       return subscription;
     }
 
-    // if we are already subscribing to realtime updates, don't do it again
-    if (_realtimeSubscriptions.isNotEmpty) {
-      return;
+    Future<void> subscribe(GraphSeriesConfig series, bool isPrimary) async {
+      final id = _seriesId(series, isPrimary);
+      // Already live: do not open a second listener on the same channel.
+      if (_realtimeSubscriptions.containsKey(id)) return;
+      final StreamSubscription<String> subscription;
+      try {
+        subscription = await initSeries(series, isPrimary);
+      } catch (e, st) {
+        _log.w(
+            'trend "${widget.config.headerText ?? ''}": no live feed for '
+            '${series.legend}: $e',
+            error: e,
+            stackTrace: st);
+        return;
+      }
+      if (!mounted ||
+          generation != _initGeneration ||
+          !_realTimeActive ||
+          _realtimeSubscriptions.containsKey(id)) {
+        // Never awaited: an awaited cancel in widget code stalls under
+        // FakeAsync, and everything after it silently never runs.
+        subscription.cancel();
+        return;
+      }
+      _realtimeSubscriptions[id] = subscription;
     }
 
     for (final series in widget.config.primarySeries) {
-      _realtimeSubscriptions.add(await initSeries(series, true));
+      await subscribe(series, true);
     }
     for (final series in widget.config.secondarySeries) {
-      _realtimeSubscriptions.add(await initSeries(series, false));
+      await subscribe(series, false);
     }
 
-    _rtThrottleTimer = Timer.periodic(_rtThrottleInterval, (timer) {
-      if (_rtThrottleBuffer.isNotEmpty && mounted) {
-        _addData(_rtThrottleBuffer);
-        _rtThrottleBuffer.clear();
-        // not strictly correct, but yeah
-        _graph.panForward(DateTime.now().millisecondsSinceEpoch.toDouble());
-      }
-    });
+    if (!mounted || generation != _initGeneration) return 0;
+
+    // One timer however many times this runs: a retry that picked up a table
+    // appearing late would otherwise start a second one on the same buffer.
+    if (_rtThrottleTimer == null && _realtimeSubscriptions.isNotEmpty) {
+      _rtThrottleTimer = Timer.periodic(_rtThrottleInterval, (timer) {
+        if (_rtThrottleBuffer.isNotEmpty && mounted) {
+          _addData(_rtThrottleBuffer);
+          _rtThrottleBuffer.clear();
+          // not strictly correct, but yeah
+          _graph.panForward(DateTime.now().millisecondsSinceEpoch.toDouble());
+        }
+      });
+    }
 
     if (!_realTimeActive) {
       _disableRealtimeUpdates();
+      return 0;
     }
+    return _realtimeSubscriptions.length;
   }
 
   void _disableRealtimeUpdates() {
     _realTimeActive = false;
     _rtThrottleTimer?.cancel();
+    _rtThrottleTimer = null;
     _rtThrottleBuffer.clear();
+    // The operator has picked a range of their own; a retry landing on top of
+    // it would drag the view back to the last few minutes.
+    _retryTimer?.cancel();
+    _retryTimer = null;
     _graph.setNowButtonDisabled(_realTimeActive);
-    for (final subscription in _realtimeSubscriptions) {
+    for (final subscription in _realtimeSubscriptions.values) {
       subscription.cancel();
     }
     _realtimeSubscriptions.clear();
@@ -887,6 +996,58 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
   void _onNowPressed() {
     _realTimeActive = true;
     _initRealtimeUpdates();
+  }
+
+  /// Collection can be switched on while the page is already open: the table
+  /// appears, and from then on there is both history to read and a channel to
+  /// listen on. A few spaced attempts pick that up.
+  ///
+  /// Bounded on purpose -- a key that is simply not collected must not leave
+  /// a chart polling the database for the rest of the shift. After the last
+  /// attempt the chart waits for a config change or a reopen, as it always
+  /// did.
+  static const _historyRetryDelays = [
+    Duration(seconds: 30),
+    Duration(minutes: 2),
+    Duration(minutes: 5),
+  ];
+
+  Timer? _retryTimer;
+  int _retryAttempt = 0;
+
+  void _scheduleHistoryRetry(int generation) {
+    if (_retryAttempt >= _historyRetryDelays.length) return;
+    if (!_realTimeActive) return;
+    final delay = _historyRetryDelays[_retryAttempt++];
+    _retryTimer?.cancel();
+    _retryTimer = Timer(delay, () => _retryHistory(generation));
+  }
+
+  Future<void> _retryHistory(int generation) async {
+    if (!mounted || generation != _initGeneration || !_realTimeActive) return;
+    final start = DateTime.now().subtract(widget.config.timeWindowMinutes * 3);
+    final end = DateTime.now();
+    final history = await _queryData(DateTimeRange(start: start, end: end));
+    if (!mounted || generation != _initGeneration || !_realTimeActive) return;
+
+    // Whatever the history did: a table that has appeared since has a channel
+    // now too, so pick up the feeds that were missing.
+    final live = await _initRealtimeUpdates();
+    if (!mounted || generation != _initGeneration || !_realTimeActive) return;
+
+    if (history.anyFailed) {
+      _reportHistory(history, live, generation);
+      return;
+    }
+    // The tables answered. Replace what is drawn rather than appending to it,
+    // or the live points already charted come back a second time out of the
+    // overlapping fetch.
+    _dataMinX = start.millisecondsSinceEpoch.toInt();
+    _dataMaxX = end.millisecondsSinceEpoch.toInt();
+    _rtThrottleBuffer.clear();
+    _graph.removeWhere((_) => true);
+    _addData(history.rows);
+    _graph.clearMessage();
   }
 
   List<Map<String, dynamic>> _unpackData(
@@ -902,8 +1063,10 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
     ];
   }
 
-  Future<List<Map<String, dynamic>>> _queryData(DateTimeRange range) async {
-    if (_db == null) return [];
+  Future<GraphHistory> _queryData(DateTimeRange range) async {
+    if (_db == null) {
+      return GraphHistory(rows: const [], failures: const {}, seriesCount: 0);
+    }
     final db = _db!;
     final keys = {
       'y': widget.config.primarySeries,
@@ -948,16 +1111,33 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
     }
 
     // Every series in flight at once. Awaited one after another, a trend of
-    // three lines -- the throughput chart comparing all three lines is one --
-    // waited out three round trips back to back before drawing anything. The
-    // tables are independent, so the chart now waits for the slowest one
-    // instead of the sum. `Future.wait` still surfaces the first failure,
-    // which is what `_init` turns into the message on the chart.
-    final perSeries = await Future.wait([
-      for (final entry in keys.entries)
-        for (final series in entry.value) querySeries(entry.key, series),
-    ]);
-    return [for (final rows in perSeries) ...rows];
+    // three lines waited out three round trips back to back before drawing
+    // anything. The tables are independent, so the chart waits for the
+    // slowest one instead of the sum.
+    //
+    // Independent in failure too: each series is caught on its own rather
+    // than letting `Future.wait` surface the first error and discard the
+    // rest. One missing table used to blank a whole multi-line trend.
+    final failures = <String, Object>{};
+    final pending = <Future<List<Map<String, dynamic>>>>[];
+    var seriesCount = 0;
+    for (final entry in keys.entries) {
+      for (final series in entry.value) {
+        seriesCount++;
+        pending.add(querySeries(entry.key, series).catchError(
+          (Object e) {
+            failures[series.legend] = e;
+            return <Map<String, dynamic>>[];
+          },
+        ));
+      }
+    }
+    final perSeries = await Future.wait(pending);
+    return GraphHistory(
+      rows: [for (final rows in perSeries) ...rows],
+      failures: failures,
+      seriesCount: seriesCount,
+    );
   }
 
   Widget _buildTooltip(cs.DataPointInfo point) {
@@ -1098,12 +1278,12 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
           .toInt());
       // Fetch new data at finer/coarser resolution in the background,
       // keeping old data visible until the new data arrives.
-      final data = await _queryData(DateTimeRange(start: start, end: end));
+      final history = await _queryData(DateTimeRange(start: start, end: end));
       if (!mounted) return;
       _dataMinX = start.millisecondsSinceEpoch;
       _dataMaxX = end.millisecondsSinceEpoch;
       _graph.removeWhere((_) => true);
-      _addData(data);
+      _addData(history.rows);
       return;
     }
 
@@ -1120,8 +1300,8 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
       final start = end.subtract(widget.config.timeWindowMinutes);
       _dataMinX = start.millisecondsSinceEpoch
           .toInt(); // we only want to query the data once, so if we get subsequent onpanupdate we don't query the same data again
-      final data = await _queryData(DateTimeRange(start: start, end: end));
-      _addData(data);
+      final history = await _queryData(DateTimeRange(start: start, end: end));
+      _addData(history.rows);
     }
 
     if (_dataMaxX < mustMax) {
@@ -1129,8 +1309,8 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
       final start = DateTime.fromMillisecondsSinceEpoch(_dataMaxX.toInt());
       final end = start.add(widget.config.timeWindowMinutes);
       _dataMaxX = end.millisecondsSinceEpoch.toInt();
-      final data = await _queryData(DateTimeRange(start: start, end: end));
-      _addData(data);
+      final history = await _queryData(DateTimeRange(start: start, end: end));
+      _addData(history.rows);
     }
 
     // if we are not yet within the must range, we might have jumped back in time or forward in time
@@ -1139,8 +1319,8 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
       final end = DateTime.fromMillisecondsSinceEpoch(capMax.toInt());
       _dataMinX = start.millisecondsSinceEpoch.toInt();
       _dataMaxX = end.millisecondsSinceEpoch.toInt();
-      final data = await _queryData(DateTimeRange(start: start, end: end));
-      _addData(data);
+      final history = await _queryData(DateTimeRange(start: start, end: end));
+      _addData(history.rows);
     }
 
     // --- Prune to stay within the 500% cap ---
@@ -1171,10 +1351,13 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
   }
 
   void _cleanup() {
-    for (final subscription in _realtimeSubscriptions) {
+    for (final subscription in _realtimeSubscriptions.values) {
       subscription.cancel();
     }
     _realtimeSubscriptions.clear();
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _retryAttempt = 0;
     // _initRealtimeUpdates starts a 1 Hz throttle timer and assigns it here
     // unconditionally. Leaving it running orphans one timer per teardown —
     // per dispose, and per didUpdateWidget re-init — each holding this State

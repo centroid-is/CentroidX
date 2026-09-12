@@ -148,7 +148,15 @@ class _HistoryGraphPaneState extends ConsumerState<HistoryGraphPane> {
         final cutoff = DateTime.now().toUtc().subtract(since);
         final dbStream = Stream.fromFuture(
           collector.database
-              .queryTimeseriesData(k, DateTime.now().toUtc(), from: cutoff),
+              .queryTimeseriesData(k, DateTime.now().toUtc(), from: cutoff)
+              // An empty backfill, not a failed one. `combineLatest2` emits
+              // nothing until every source has emitted at least once, so a
+              // backfill that errors before its first value silences the
+              // live stream next to it for good -- the pane showed the
+              // message and never drew another point, however healthy the
+              // subscription was. The live stream still reports its own
+              // failure, which is what names a key that is really dead.
+              .catchError((Object e) => <TimeseriesData<dynamic>>[]),
         );
         return Rx.combineLatest2<List<TimeseriesData<dynamic>>,
             List<TimeseriesData<dynamic>>, List<dynamic>>(
