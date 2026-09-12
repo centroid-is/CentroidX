@@ -52,6 +52,14 @@ import 'base_scaffold.dart';
 /// has already answered `allowed`. Ask it first and a page listed in somebody's
 /// whitelist would open regardless of the group it was published for.
 ///
+/// **The access screen is exempt from the whitelist half.** Every other
+/// built-in under Advanced is whitelistable and is offered in the Pages
+/// editor, but `/advanced/access` answers to its `users` group and nothing
+/// else: it is the screen that repairs a whitelist, so a whitelist that could
+/// hide it would be a station nobody can fix. `routeExemptFromPageWhitelist`
+/// is the single place that knows which route that is, for the same reason
+/// `routeAllowedWhenRepositoryUnavailable` is.
+///
 /// **The outage exemption is honoured, not hardcoded false.** No page-manager
 /// page is Server Config, so for a page this always resolves false — but the
 /// navigation filter asks this same function about built-in routes too, and
@@ -83,6 +91,12 @@ AccessGateState resolvePageAccess({
     allowWhenRepositoryUnavailable: routeAllowedWhenRepositoryUnavailable(path),
   );
   if (byGroup != AccessGateState.allowed) return byGroup;
+
+  // The one route the whitelist may not touch. Asked here rather than at the
+  // two call sites so the menu filter and the gate cannot come to different
+  // answers about it — see `routeExemptFromPageWhitelist`, which is where the
+  // reasoning lives.
+  if (routeExemptFromPageWhitelist(path)) return AccessGateState.allowed;
 
   final resolved = session.valueOrNull ?? kSessionWhileLoading;
   return resolved.pageVisible(path)
@@ -184,7 +198,7 @@ class PageNotAvailableBody extends ConsumerWidget {
                 Text(
                   kPageNotAvailableRoleNote(
                     session.user!.displayName,
-                    session.roleName,
+                    session.roleLabel,
                   ),
                   textAlign: TextAlign.center,
                   maxLines: null,

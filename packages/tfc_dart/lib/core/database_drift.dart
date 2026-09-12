@@ -122,18 +122,48 @@ class AppRole extends Table {
   TextColumn get allowedPages => text().nullable()();
 }
 
-/// A user: a name, a password hash, and exactly one role.
+/// A user: a name, a password hash, and one or more roles.
 ///
-/// One role per user, not many — multi-role adds union semantics and an
-/// "effective permissions" inspector, and is not worth it at this size.
+/// One role was the v6 ruling, on the grounds that multi-role adds union
+/// semantics and an "effective permissions" inspector. Schema v9 reverses it:
+/// the union turned out to be a set union over `AccessGroup` and nothing more
+/// (roles were always bundles, never rungs on a ladder), while the single role
+/// forced sites to mint a combinatorial role for every real person who was
+/// two things at once. See `role_set.dart` for the composition rules.
 class AppUser extends Table {
   @override
   Set<Column> get primaryKey => {username};
 
   TextColumn get username => text()();
 
-  /// Matched to [AppRole.name] by name, never by id — see [AppRole].
+  /// This account's **primary** role, matched to [AppRole.name] by name, never
+  /// by id — see [AppRole].
+  ///
+  /// The one with the foreign key on it, and the whole answer for any account
+  /// that holds exactly one role, which is every account carried over from v8.
+  /// It is identity rather than precedence: what the account may do is the
+  /// union of this and [additionalRoles].
   TextColumn get roleName => text().references(AppRole, #name)();
+
+  /// The roles this account holds **beyond** [roleName] (schema v9): a JSON
+  /// array of `app_role.name` values, or SQL NULL when it holds only its
+  /// primary role.
+  ///
+  /// Written by `encodeAdditionalRoles` and read by `decodeAdditionalRoles`.
+  /// NULL and an empty array mean the same thing here — unlike
+  /// [allowedPages], where the distinction is the feature — so the codec
+  /// writes NULL for both and every account carried over from v8 lands on NULL
+  /// and behaves exactly as it did.
+  ///
+  /// **No foreign key, and it could not have one:** a JSON array cannot
+  /// reference a column. That is handled where it matters instead —
+  /// `AccessRepository.deleteRole` refuses a role anybody holds *either* way
+  /// and `renameRole` rewrites both — and a name in here that matches no role
+  /// row simply grants nothing, which is the fail-closed direction.
+  ///
+  /// Keep it small, for the reason [AppRole.groups] gives: the backend config
+  /// watcher fires on preference writes and `pg_notify` has an 8000-byte cap.
+  TextColumn get additionalRoles => text().nullable()();
 
   /// Argon2id over the password with [salt], stored self-describing: the value
   /// carries its own algorithm tag and cost parameters.
@@ -545,7 +575,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   }
 
   @override
-  int get schemaVersion => 10;
+  int get schemaVersion => 11;
 
   /// The `audit_entry` indexes, created outside Drift because Drift's
   /// `@TableIndex` cannot express `DESC` and every one of these is a
@@ -999,7 +1029,38 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
             }
           }
 
-          // Schema v9: the relational configuration store — `config_item`
+          // The extra roles an account holds beyond its primary one. One
+          // nullable column; every existing account upgrades to NULL, which is
+          // "holds only its primary role" — exactly the single-role account it
+          // already was.
+          //
+          // Guarded by an existence check rather than by `from >= N`, for the
+          // reason the v8 arm above gives at length: the v6 arm's
+          // `createTable` in this same upgrade builds `app_user` from the table
+          // definition, which carries this column, and a second station opening
+          // the shared Postgres runs this branch too.
+          if (from < 9) {
+            if (native) {
+              final cols = await m.database
+                  .customSelect("PRAGMA table_info('app_user')")
+                  .get();
+              final present =
+                  cols.any((r) => r.read<String>('name') == 'additional_roles');
+              if (!present) {
+                await m.addColumn(appUser, appUser.additionalRoles);
+              }
+            } else {
+              // Not in the v6 CREATE TABLE literal on purpose, following v8: a
+              // v5 Postgres station creates the table there and gets the column
+              // here, in the same open. No test executes this arm — the parity
+              // check in `access_schema_test.dart` is what stands behind the
+              // string.
+              await m.database.customStatement(
+                  'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS additional_roles TEXT');
+            }
+          }
+
+          // Schema v10: the relational configuration store — `config_item`
           // holds every configuration entity as one row, `config_change` is
           // its append-only log.
           //
@@ -1048,7 +1109,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // nothing more — it does not connect to Postgres and cannot see a
           // wrong type or a statement that fails at runtime. The first thing
           // that will actually run them is a station.
-          if (from < 9) {
+          if (from < 10) {
             if (native) {
               await m.createTable(configItemTable);
               await m.createTable(configChangeTable);
@@ -1067,8 +1128,8 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
             await _createConfigIndexes(m);
           }
 
-          // Schema v10: the `config_change` NOTIFY trigger — the server half of
-          // "another station's edit arrives without a restart". v9 gave the log
+          // Schema v11: the `config_change` NOTIFY trigger — the server half of
+          // "another station's edit arrives without a restart". v10 gave the log
           // a place to live; this makes writing to it tell anyone listening.
           //
           // The arm is Postgres-only and the SQLite side is deliberately
@@ -1078,9 +1139,9 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // [_createConfigChangeNotifyTrigger], instead of being spread across
           // a branch here and a comment there.
           //
-          // No table changed, so no codegen: v10 is DDL that lives outside the
+          // No table changed, so no codegen: v11 is DDL that lives outside the
           // drift schema entirely, the way the indexes above do.
-          if (from < 10) {
+          if (from < 11) {
             await _createConfigChangeNotifyTrigger(m);
             // Idempotent, and run again here for the index that joined the
             // list after the v9 arm had already stamped a database.

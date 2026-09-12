@@ -6,6 +6,7 @@ import 'package:meta/meta.dart';
 import 'access_group.dart';
 import 'access_role.dart';
 import 'authenticated_user.dart';
+import 'role_set.dart';
 
 const _setEquality = SetEquality<AccessGroup>();
 const _pageEquality = SetEquality<String>();
@@ -65,8 +66,14 @@ class AccessSession {
   /// The signed-in user, or null when nobody is — see [AccessSession.anonymous].
   final AuthenticatedUser? user;
 
-  /// The groups resolved from [roleName]'s role at the time this session was
-  /// built. Never persisted; see [toJson].
+  /// The groups this session holds: the **union** of every role in
+  /// [roleNames], resolved at the time the session was built.
+  ///
+  /// Already composed, exactly as [allowedPages] is, so nothing downstream has
+  /// to know how many roles an account holds. See `role_set.dart` for why the
+  /// composition is a union and not an intersection.
+  ///
+  /// Never persisted; see [toJson].
   final Set<AccessGroup> groups;
 
   /// When inactivity ends this session. Null for anonymous, which never
@@ -124,9 +131,25 @@ class AccessSession {
   /// True when somebody is signed in. The app bar shows who, and offers logout.
   bool get isElevated => user != null;
 
-  /// The role this session answers as — the user's role, or [kOperatorRoleName]
-  /// when nobody is signed in.
+  /// The **primary** role this session answers as — the user's, or
+  /// [kOperatorRoleName] when nobody is signed in.
+  ///
+  /// Identity, not authority. An account can hold several roles and this is
+  /// only the first of them; [groups] is already the union and is what decides
+  /// anything. Ask [roleNames] when the question is which roles, and
+  /// [roleLabel] when the answer is going on a screen or into a trail row.
   String get roleName => user?.roleName ?? kOperatorRoleName;
+
+  /// Every role this session holds, primary first.
+  ///
+  /// `[kOperatorRoleName]` for anonymous, by construction rather than through a
+  /// configurable pointer — see [AccessSession.anonymous].
+  List<String> get roleNames =>
+      user?.roleNames ?? const <String>[kOperatorRoleName];
+
+  /// What a badge shows and what the audit row's `role` column records: one
+  /// name for one role, `A + B` for several. See [roleLabelFor].
+  String get roleLabel => roleLabelFor(roleNames);
 
   /// True when [expiresAt] is strictly before [now]. Equal is not yet expired,
   /// and a null [expiresAt] never is.
@@ -149,9 +172,13 @@ class AccessSession {
   ///
   /// No password, hash, salt or token appears here, and none may be added:
   /// this payload is a plain file on a station anybody can walk up to.
+  /// `additionalRoles` is omitted when there are none, so an account holding
+  /// one role writes exactly the payload this file has always written and a
+  /// station downgraded to an older build reads it back unchanged.
   Map<String, dynamic> toJson() => <String, dynamic>{
         'username': user?.username,
         'roleName': roleName,
+        if (roleNames.length > 1) 'additionalRoles': roleNames.skip(1).toList(),
         'displayName': user?.displayName,
         'expiresAt': expiresAt?.toIso8601String(),
       };
@@ -187,9 +214,21 @@ class AccessSession {
     if (at == null) return null;
 
     final displayName = decoded['displayName'];
+    // Absent on every payload written before schema v9, and on every
+    // single-role payload written since. Whatever is not a list of non-blank
+    // strings reads as "no extra roles", which narrows — the same ruling, for
+    // the same reason, as [decodeAdditionalRoles] makes about the column.
+    final extra = decoded['additionalRoles'];
     return PersistedSession(
       username: username,
       roleName: roleName,
+      additionalRoles: extra is List
+          ? extra
+              .whereType<String>()
+              .map((s) => s.trim())
+              .where((s) => s.isNotEmpty)
+              .toList(growable: false)
+          : const <String>[],
       displayName: displayName is String ? displayName : null,
       expiresAt: at,
     );
@@ -223,8 +262,8 @@ class AccessSession {
 
   @override
   String toString() => isElevated
-      ? 'AccessSession(${user!.username} as $roleName until $expiresAt)'
-      : 'AccessSession(anonymous as $roleName)';
+      ? 'AccessSession(${user!.username} as $roleLabel until $expiresAt)'
+      : 'AccessSession(anonymous as $roleLabel)';
 }
 
 /// What survives a restart: enough to re-resolve, not the resolved answer.
@@ -239,6 +278,7 @@ class PersistedSession {
   const PersistedSession({
     required this.username,
     required this.roleName,
+    this.additionalRoles = const <String>[],
     this.displayName,
     required this.expiresAt,
   });
@@ -246,9 +286,22 @@ class PersistedSession {
   /// The `AppUser` primary key that was signed in.
   final String username;
 
-  /// The name of the role that user held. Re-resolved to a group set on
-  /// restore; a name that no longer matches a row means anonymous.
+  /// The name of the **primary** role that user held. Re-resolved to a group
+  /// set on restore; a name that no longer matches a row means anonymous.
   final String roleName;
+
+  /// The extra roles the payload named, in order.
+  ///
+  /// Re-resolved on restore exactly like [roleName], and with one difference
+  /// that is the whole point of keeping them apart: a primary role that no
+  /// longer exists drops the session to anonymous, while an *extra* role that
+  /// no longer exists is simply dropped. Losing a role narrows; losing the
+  /// account's identity does not.
+  final List<String> additionalRoles;
+
+  /// Every role the payload named, primary first, deduplicated.
+  List<String> get roleNames =>
+      normaliseRoleNames(primary: roleName, additional: additionalRoles);
 
   final String? displayName;
 
@@ -264,14 +317,21 @@ class PersistedSession {
       identical(this, other) ||
       other is PersistedSession &&
           other.username == username &&
-          other.roleName == roleName &&
+          _roleEquality.equals(other.roleNames, roleNames) &&
           other.displayName == displayName &&
           other.expiresAt == expiresAt;
 
-  @override
-  int get hashCode => Object.hash(username, roleName, displayName, expiresAt);
+  static const ListEquality<String> _roleEquality = ListEquality<String>();
 
   @override
-  String toString() => 'PersistedSession($username as $roleName '
-      'until $expiresAt)';
+  int get hashCode => Object.hash(
+        username,
+        _roleEquality.hash(roleNames),
+        displayName,
+        expiresAt,
+      );
+
+  @override
+  String toString() => 'PersistedSession($username as '
+      '${roleLabelFor(roleNames)} until $expiresAt)';
 }

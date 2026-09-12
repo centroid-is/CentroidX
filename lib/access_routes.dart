@@ -267,6 +267,29 @@ bool routeAllowedWhenRepositoryUnavailable(String? path) {
   return path == kServerConfigRoute;
 }
 
+/// Whether [path] is outside the page-visibility whitelist's reach.
+///
+/// True for [kAccessAdminRoute] and nothing else. This is the first and most
+/// important of the four no-lockout layers in
+/// `docs/page-visibility-whitelist-design.md` §4, written down as code rather
+/// than left as prose: **no whitelist state, at either level and including the
+/// empty set, may hide or refuse the screen that edits whitelists.** Together
+/// with the last-`users`-holder invariant it guarantees that whoever can
+/// repair a bad whitelist can always reach the screen that repairs it.
+///
+/// It had been prose only, and the prose was not true. `visibleMenuProvider`
+/// asks `resolvePageAccess` about every entry in the tree, built-ins included,
+/// so setting any whitelist on a role dropped the whole Advanced section from
+/// that session's menu — Access with it — while the picker offered no way to
+/// grant it back. One function, asked by the menu filter and the route gate
+/// alike, is what keeps the guarantee from decaying into a comment again.
+///
+/// Everything else under Advanced *is* whitelistable, and is offered in the
+/// Pages editor. The group gate still runs first, so a ticked Page Editor is
+/// still shut to a session without `configure`; the whitelist only ever
+/// narrows.
+bool routeExemptFromPageWhitelist(String? path) => path == kAccessAdminRoute;
+
 /// Declares [kRaisedRoutes] into [registry], defaulting to the singleton the
 /// navigation menu reads. Idempotent — declaring a path replaces its group.
 void installRaisedRoutes([RouteRegistry? registry]) {

@@ -21,6 +21,7 @@ import '../../theme.dart' show HmiStateColors;
 import '../../widgets/panes/side_pane.dart';
 import 'common.dart';
 import 'ethercat_masters.dart';
+import 'ethercat_ports.dart';
 import 'ethercat_subdevice.dart';
 import 'ethercat_subdevice_pane.dart';
 import 'link_anchors.dart' show PageAssetsScope;
@@ -744,7 +745,12 @@ class _SubdeviceRow extends StatelessWidget {
               for (final p in EcPort.values)
                 SizedBox(
                   width: _Col.port,
-                  child: Center(child: _portCell(p)),
+                  // A port this part does not have is left empty. An outlined
+                  // cell would say "a socket, with nothing in it", which is a
+                  // different and wrong statement about an ATV320's C and D.
+                  child: ecShownPorts(bus, subdevice).contains(p)
+                      ? Center(child: _portCell(p))
+                      : null,
                 ),
               SizedBox(
                 width: _Col.crc,

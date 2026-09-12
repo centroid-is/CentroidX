@@ -2,8 +2,11 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart' show Widget;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc/page_creator/assets/beckhoff.dart';
 import 'package:tfc/page_creator/assets/common.dart';
+import 'package:tfc/page_creator/assets/ethercat_asset.dart';
 import 'package:tfc/page_creator/assets/link_anchors.dart';
+import 'package:tfc/page_creator/assets/registry.dart';
 import 'package:tfc/page_creator/assets/link_geometry.dart';
 
 /// A bare asset with a settable box, standing in for a terminal.
@@ -47,6 +50,44 @@ void main() {
       expect(portsOf(_TwoOnTheRight()).map((p) => p.id), ['X1', 'X2']);
       expect(portsOf(_TwoOnTheRight()).map((p) => p.side),
           [PortSide.right, PortSide.right]);
+    });
+  });
+
+  group('EtherCAT ports', () {
+    test('a legacy X2 on an EK1100 is its X2 OUT socket, C', () {
+      // B on a coupler is the E-bus into its terminals; X2 OUT is where a
+      // branch leaves, and that is C.
+      expect(findPort(kEk1100Ports, 'X2')!.id, 'C');
+      expect(findPort(kEk1100Ports, 'X1')!.id, 'A');
+    });
+
+    test('on a terminal X2 is B', () {
+      expect(findPort(kEcTerminalPorts, 'X2')!.id, 'B');
+    });
+
+    test('an id is found before an alias, and nothing is not a port', () {
+      expect(findPort(kEcSubDevicePorts, 'A')!.id, 'A');
+      expect(findPort(kEcSubDevicePorts, 'Q'), isNull);
+      expect(findPort(kEcSubDevicePorts, null), isNull);
+    });
+
+    test('an EtherCAT device offers its own ports', () {
+      final t = AssetRegistry.defaultFactories[BeckhoffEL1008Config]!()
+          as BeckhoffEL1008Config;
+      expect(portsOf(t).map((p) => p.id), ['A', 'B']);
+    });
+
+    test('a cable drawn to X1 before binding stays where it was drawn', () {
+      final t = (AssetRegistry.defaultFactories[BeckhoffEL1008Config]!()
+          as BeckhoffEL1008Config)
+        ..coordinates = Coordinates(x: 0.5, y: 0.5)
+        ..size = const RelativeSize(width: 0.1, height: 0.06)
+        ..ensureId();
+      final anchors = PageLinkAnchors([t], canvas);
+      expect(anchors.portPosition(t.id!, 'X1'),
+          within(distance: 1e-9, from: const Offset(0.45, 0.5)));
+      expect(anchors.portPosition(t.id!, 'X1'),
+          anchors.portPosition(t.id!, 'A'));
     });
   });
 

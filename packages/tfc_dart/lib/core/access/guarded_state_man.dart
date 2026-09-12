@@ -244,7 +244,7 @@ class GuardedStateMan implements StateMan {
         at: at,
         who: who,
         station: _station,
-        roleName: session.roleName,
+        roleName: session.roleLabel,
         surface: _surface,
         itemKey: resolvedKey,
         // One string for the whole row set, because that is
@@ -285,7 +285,7 @@ class GuardedStateMan implements StateMan {
       at: at,
       who: who,
       station: _station,
-      roleName: session.roleName,
+      roleName: session.roleLabel,
       surface: _surface,
       itemKey: resolvedKey,
       // An unbound key - and a write that moved only members no rule

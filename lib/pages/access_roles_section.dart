@@ -94,8 +94,9 @@ const String kAccessRolesHeadline = 'Roles';
 /// arrives, and names the two things a row carries: a set of groups, and the
 /// accounts holding it.
 const String kAccessRolesSubtitle =
-    'A role is a name and the permission groups it grants. Every account holds '
-    'exactly one, and a panel with nobody signed in holds "Operator".';
+    'A role is a name and the permission groups it grants. An account holds one '
+    'or more and may do what they together grant; a panel with nobody signed '
+    'in holds "Operator".';
 
 /// The read failed, or the store could not be built.
 ///
@@ -381,7 +382,13 @@ class AccessRolesSection extends ConsumerWidget {
         ? null
         : {
             for (final role in roles)
-              role.name: roster.where((u) => u.roleName == role.name).length,
+              // Held **either way**: an account whose primary role is
+              // Operator and whose second is this one holds it, and a count
+              // that missed it would tell somebody a role was unused a moment
+              // before the delete is refused for having holders.
+              role.name: roster
+                  .where((u) => AccessRepository.rolesOf(u).contains(role.name))
+                  .length,
           };
 
     return _frame(
@@ -1196,7 +1203,8 @@ class _DeleteRoleDialogState extends State<_DeleteRoleDialog> {
       final users = await widget.store.listUsers();
       if (!mounted) return;
       setState(() => _decide(roles, [
-            for (final user in users) (user.username, user.roleName),
+            for (final user in users)
+              (user.username, AccessRepository.rolesOf(user)),
           ]));
     } on Object {
       // "Cannot tell" must not read as "nobody holds it".
@@ -1212,16 +1220,21 @@ class _DeleteRoleDialogState extends State<_DeleteRoleDialog> {
   /// at all. Both reasons can be true at once; this order decides which
   /// sentence the operator reads, and it is the sentence the repository would
   /// have produced.
-  void _decide(List<AccessRole> roles, List<(String, String)> users) {
+  /// [users] is every account as `(username, every role it holds)` — the
+  /// whole set, matching what `AccessRepository._requireAUsersHolderRemains`
+  /// computes. A copy that looked only at the primary role would tell somebody
+  /// a delete was safe that the repository then refuses, which is the one thing
+  /// this pre-check exists to avoid.
+  void _decide(List<AccessRole> roles, List<(String, List<String>)> users) {
     final granting = {
       for (final role in roles)
         if (role.groups.contains(AccessGroup.users)) role.name,
     };
-    final roleOf = {for (final user in users) user.$1: user.$2};
+    final rolesHeld = {for (final user in users) user.$1: user.$2};
 
     final holdersOfUsers = [
-      for (final entry in roleOf.entries)
-        if (granting.contains(entry.value)) entry.key,
+      for (final entry in rolesHeld.entries)
+        if (entry.value.any(granting.contains)) entry.key,
     ]..sort();
 
     // The guard stands aside when there is no holder to begin with: a freshly
@@ -1229,9 +1242,9 @@ class _DeleteRoleDialogState extends State<_DeleteRoleDialog> {
     // would make a station unconfigurable out of the box.
     if (holdersOfUsers.isNotEmpty) {
       final after = {...granting}..remove(widget.name);
-      if (!roleOf.values.any(after.contains)) {
+      if (!rolesHeld.values.any((held) => held.any(after.contains))) {
         _lockout = LastUsersHolderException(
-          roleOf[holdersOfUsers.first]!,
+          rolesHeld[holdersOfUsers.first]!.firstWhere(granting.contains),
           holdersOfUsers,
         );
         _block = _RoleDeleteBlock.wouldLeaveNobodyManagingAccess;
@@ -1240,8 +1253,8 @@ class _DeleteRoleDialogState extends State<_DeleteRoleDialog> {
     }
 
     final holders = [
-      for (final entry in roleOf.entries)
-        if (entry.value == widget.name) entry.key,
+      for (final entry in rolesHeld.entries)
+        if (entry.value.contains(widget.name)) entry.key,
     ]..sort();
     if (holders.isNotEmpty) {
       _inUse = RoleInUseException(widget.name, holders);

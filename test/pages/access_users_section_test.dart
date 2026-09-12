@@ -138,10 +138,11 @@ class _RecordingStore extends AccessAdminStore {
     required String username,
     required String password,
     required String roleName,
+    List<String> additionalRoles = const <String>[],
     String origin = 'operator',
     String? reason,
   }) async {
-    calls.add('createUser:$username:$roleName');
+    calls.add('createUser:$username:${[roleName, ...additionalRoles].join('+')}');
     await _hold();
     final boom = createThrowsOnce;
     if (boom != null) {
@@ -152,6 +153,7 @@ class _RecordingStore extends AccessAdminStore {
         username: username,
         password: password,
         roleName: roleName,
+        additionalRoles: additionalRoles,
         origin: origin,
         reason: reason);
   }
@@ -211,15 +213,15 @@ class _RecordingStore extends AccessAdminStore {
   }
 
   @override
-  Future<void> setUserRole(String username, String roleName,
+  Future<void> setUserRoles(String username, List<String> roleNames,
       {String origin = 'operator', String? reason}) async {
-    calls.add('setUserRole:$username:$roleName');
+    calls.add('setUserRole:$username:${roleNames.join('+')}');
     final boom = setRoleThrowsOnce;
     if (boom != null) {
       setRoleThrowsOnce = null;
       throw boom;
     }
-    return super.setUserRole(username, roleName,
+    return super.setUserRoles(username, roleNames,
         origin: origin, reason: reason);
   }
 }
@@ -829,16 +831,82 @@ void main() {
       await makeUser('bjorn', 'Shift Leader');
       await pumpSection(tester, overrides());
 
+      // A move is now two taps, because the picker is a multi-select: untick
+      // what is held, tick what is wanted.
       await openRolePicker(tester, 'bjorn');
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Shift Leader')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
       await tester.pumpAndSettle();
 
       expect((await userNamed('bjorn'))!.roleName, 'Maintenance');
+      expect((await userNamed('bjorn'))!.additionalRoles, isNull,
+          reason: 'one role is stored as NULL, not as an empty array — a '
+              'single-role account is byte-identical to what v8 wrote');
       expect(cell(tester, kAccessUserRoleKey('bjorn')), 'Maintenance',
           reason: 'the roster is invalidated after every successful write');
       expect(store!.calls.where((c) => c.startsWith('setUserRole')).length, 1);
+    });
+
+    testWidgets('a second role is added beside the first, and both are shown',
+        (tester) async {
+      await makeUser('bjorn', 'Shift Leader');
+      await pumpSection(tester, overrides());
+
+      await openRolePicker(tester, 'bjorn');
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
+      await tester.pumpAndSettle();
+
+      final row = (await userNamed('bjorn'))!;
+      expect(row.roleName, 'Shift Leader',
+          reason: 'the role already held stays primary — ticking a second one '
+              'must not move role_name onto it');
+      expect(decodeAdditionalRoles(row.additionalRoles), ['Maintenance']);
+      expect(cell(tester, kAccessUserRoleKey('bjorn')),
+          'Shift Leader + Maintenance',
+          reason: 'the roster shows every role, so adding one does not read '
+              'as a demotion');
+    });
+
+    testWidgets('what the account may do is the union of its roles',
+        (tester) async {
+      // Shift Leader has no `device`; Maintenance does. Holding both must
+      // grant it — a second role widens and never narrows.
+      await makeUser('bjorn', 'Shift Leader');
+      await pumpSection(tester, overrides());
+
+      await openRolePicker(tester, 'bjorn');
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
+      await tester.pumpAndSettle();
+
+      final who = await realAuth().authenticate('bjorn', 'correct horse');
+      expect(who, isNotNull);
+      expect(who!.roleNames, ['Shift Leader', 'Maintenance']);
+    });
+
+    testWidgets('unticking everything offers no way to save', (tester) async {
+      await makeUser('bjorn', 'Shift Leader');
+      await pumpSection(tester, overrides());
+
+      await openRolePicker(tester, 'bjorn');
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Shift Leader')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessUserRoleNoneKey), findsOneWidget,
+          reason: 'the disabled confirm is never unexplained');
+      await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessUserRoleConfirmKey), findsOneWidget,
+          reason: 'the dialog stays open — an account with no role could not '
+              'sign in and the repository refuses it');
+      expect(store!.calls.where((c) => c.startsWith('setUserRole')), isEmpty);
     });
 
     testWidgets('choosing the role already held writes nothing',
@@ -994,6 +1062,8 @@ void main() {
       await pumpSection(tester, overrides());
 
       await openRolePicker(tester, 'admin');
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Engineering')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
@@ -1082,6 +1152,8 @@ void main() {
       expect(find.byKey(kAccessUsersSectionKey), findsOneWidget);
 
       await openRolePicker(tester, 'admin');
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Engineering')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
@@ -1300,6 +1372,11 @@ void main() {
       await pumpSection(tester, overrides());
       await openCreate(tester);
       await fillCreate(tester, username: 'newbie', password: 'correct horse');
+      // The dialog opens with the narrowest role ticked; untick it so that
+      // what this test asserts is the picked role and not a union with the
+      // default.
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Operator')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
       await tester.pumpAndSettle();
 
@@ -1315,6 +1392,29 @@ void main() {
       final who = await realAuth().authenticate('newbie', 'correct horse');
       expect(who?.roleName, 'Maintenance',
           reason: 'the credential reached the repository and nowhere else');
+    });
+
+    testWidgets('an account can be created holding two roles at once',
+        (tester) async {
+      await makeUser('admin', 'Engineering');
+      await pumpSection(tester, overrides());
+      await openCreate(tester);
+      await fillCreate(tester, username: 'newbie', password: 'correct horse');
+      // Operator is ticked by default; add Maintenance beside it.
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(kAccessUserCreateConfirmKey));
+      await tester.pumpAndSettle();
+
+      final row = (await userNamed('newbie'))!;
+      expect(row.roleName, 'Operator');
+      expect(decodeAdditionalRoles(row.additionalRoles), ['Maintenance']);
+      expect(cell(tester, kAccessUserRoleKey('newbie')),
+          'Operator + Maintenance');
+
+      final who = await realAuth().authenticate('newbie', 'correct horse');
+      expect(who?.roleNames, ['Operator', 'Maintenance']);
     });
 
     testWidgets('a failure never renders the exception', (tester) async {

@@ -29,6 +29,8 @@ import '../../providers/state_man.dart';
 import '../../theme.dart' show HmiStateColors;
 import '../../widgets/panes/side_pane.dart';
 import 'common.dart';
+import 'ethercat_asset.dart';
+import 'link_anchors.dart' show NetworkPort;
 import 'vtug.dart';
 
 part 'festo.g.dart';
@@ -91,9 +93,19 @@ List<VtugSliceConfig> defaultVtugSlices() => [
 /// asset is in, and it is a useful one — the drawing is what makes the
 /// terminal findable on the page while somebody works out what the key is.
 @JsonSerializable(explicitToJson: true)
-class FestoVTUGConfig extends BaseAsset {
+class FestoVTUGConfig extends EtherCatAsset with EcNamedByNameOrId {
   @override
   String get displayName => 'Festo VTUG-14 (8 valves)';
+
+  /// The CTEU-EC bus node's two sockets.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcInOutPorts;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['CTEU-EtherCAT Modular'];
 
   @override
   String get category => 'Festo Devices';
@@ -114,6 +126,7 @@ class FestoVTUGConfig extends BaseAsset {
   /// Worn on the right end plate — `ST303.A1`, the tag on the cabinet
   /// drawing. A page carrying three of these wants to say which is which.
   @JsonKey(defaultValue: '')
+  @override
   String nameOrId;
 
   /// The `ST_VTUG_16` struct.

@@ -75,7 +75,7 @@ Future<String> _sqliteDdl(GeneratedDatabase db, String table) async {
 String _notifyStatements() =>
     AppDatabase.configChangeNotifyStatementsForTest.join('\n');
 
-/// Undoes the v9 arm on an already-created database, leaving it shaped like a
+/// Undoes the v10 arm on an already-created database, leaving it shaped like a
 /// v7 one so the arm can then be run against it for real.
 ///
 /// Dropping is how a v7 database is reached from here: `inMemoryForTest`
@@ -120,7 +120,7 @@ void main() {
     test('schema version is 9', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 10);
+      expect(db.schemaVersion, 11);
     });
 
     test('fresh install creates the config tables and their indexes',
@@ -164,28 +164,28 @@ void main() {
       }
     });
 
-    test('a v8 database upgrades to v9, twice over', () async {
+    test('a v9 database upgrades to v10, twice over', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
       await db.customSelect('SELECT 1').getSingle();
 
       await _dropConfigSchema(db);
       expect(await _tableNames(db), isNot(contains('config_item')),
-          reason: 'the teardown must actually reach a v8 shape, or the arm '
+          reason: 'the teardown must actually reach a v9 shape, or the arm '
               'below would be asserted against a database that already has '
               'everything it creates');
 
-      await db.migration.onUpgrade(Migrator(db), 8, 9);
+      await db.migration.onUpgrade(Migrator(db), 9, 10);
 
       var tables = await _tableNames(db);
       var indexes = await _indexNames(db);
       for (final table in _configTables) {
         expect(tables, contains(table),
-            reason: 'the v9 arm must create $table');
+            reason: 'the v10 arm must create $table');
       }
       for (final index in _configIndexes) {
         expect(indexes, contains(index),
-            reason: 'the v9 arm must create $index');
+            reason: 'the v10 arm must create $index');
       }
 
       // Several SVN stations share one database and each of them runs the arm
@@ -195,7 +195,7 @@ void main() {
       // emits `CREATE TABLE IF NOT EXISTS` too. The Postgres arm's
       // idempotency rests on its own `IF NOT EXISTS` literals and is
       // unexercised here, exactly as that arm's comment says.
-      await db.migration.onUpgrade(Migrator(db), 8, 9);
+      await db.migration.onUpgrade(Migrator(db), 9, 10);
 
       tables = await _tableNames(db);
       indexes = await _indexNames(db);
@@ -207,8 +207,8 @@ void main() {
       }
     });
 
-    test('the v10 arm is a no-op on SQLite, run twice over', () async {
-      // The whole content of v10 is a Postgres trigger, so on SQLite there is
+    test('the v11 arm is a no-op on SQLite, run twice over', () async {
+      // The whole content of v11 is a Postgres trigger, so on SQLite there is
       // nothing to create and nothing to find afterwards. What this pins is
       // that the arm *runs* here without throwing: an `if (native)` written
       // the wrong way round, or a `customStatement` outside the dialect
@@ -220,14 +220,14 @@ void main() {
       await db.customSelect('SELECT 1').getSingle();
 
       final before = await _tableNames(db);
-      await db.migration.onUpgrade(Migrator(db), 9, 10);
-      await db.migration.onUpgrade(Migrator(db), 9, 10);
+      await db.migration.onUpgrade(Migrator(db), 10, 11);
+      await db.migration.onUpgrade(Migrator(db), 10, 11);
 
       expect(await _tableNames(db), before,
-          reason: 'the v10 arm must add nothing to a SQLite database');
+          reason: 'the v11 arm must add nothing to a SQLite database');
     });
 
-    test('the v10 NOTIFY trigger carries a constant empty payload', () async {
+    test('the v11 NOTIFY trigger carries a constant empty payload', () async {
       // The one property of this trigger that must never drift. `pg_notify`
       // does not truncate an oversized payload, it errors the statement that
       // fired it — so a trigger that carried the changed row, or the changed
@@ -246,7 +246,7 @@ void main() {
               'trigger exists to avoid');
     });
 
-    test('the v10 trigger is statement-level, insert-only and re-runnable',
+    test('the v11 trigger is statement-level, insert-only and re-runnable',
         () async {
       final source = _notifyStatements();
 

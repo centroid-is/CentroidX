@@ -244,7 +244,7 @@ class AccessAdminStore {
         AuditRecord.roleCreate(
           who: _who(session),
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: actionId,
           subject: role.name,
           groups: role.encodeGroups(),
@@ -296,7 +296,7 @@ class AccessAdminStore {
         AuditRecord.roleUpdate(
           who: _who(session),
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: actionId,
           subject: role.name,
           // Empty when the role is not there — the only path that reaches the
@@ -330,9 +330,11 @@ class AccessAdminStore {
   /// confusion the `AccessKeyBindingTable` ruling closed.
   ///
   /// No lockout guard, deliberately: a whitelist cannot remove
-  /// [AccessGroup.users] from anybody, and the Advanced routes — the access
-  /// screen among them — answer to groups alone and are not whitelistable, so
+  /// [AccessGroup.users] from anybody, and `/advanced/access` is exempt from
+  /// the whitelist half of the route gate (`routeExemptFromPageWhitelist`), so
   /// no whitelist state can take away the screen that repairs a bad whitelist.
+  /// The rest of the Advanced surface *is* whitelistable and is offered in the
+  /// Pages editor; the access screen is the one entry that is not.
   ///
   /// The current value is read **before** the gate so `oldValue` is available
   /// for the row, which is this file's convention: a read is not an
@@ -352,7 +354,7 @@ class AccessAdminStore {
         AuditRecord.rolePages(
           who: _who(session),
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: actionId,
           subject: name,
           oldPages: existing?.encodeAllowedPages(),
@@ -393,7 +395,7 @@ class AccessAdminStore {
         AuditRecord.roleDelete(
           who: _who(session),
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: actionId,
           subject: name,
           groups: existing?.encodeGroups() ?? '',
@@ -429,7 +431,7 @@ class AccessAdminStore {
         AuditRecord.roleRename(
           who: _who(session),
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: actionId,
           oldName: from,
           newName: to,
@@ -463,6 +465,7 @@ class AccessAdminStore {
     required String username,
     required String password,
     required String roleName,
+    List<String> additionalRoles = const <String>[],
     String origin = _operatorOrigin,
     String? reason,
   }) async {
@@ -470,10 +473,14 @@ class AccessAdminStore {
         AuditRecord.userCreate(
           who: _who(session),
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: actionId,
           subject: username,
-          grantedRole: roleName,
+          // The whole set the account is being created with, so the trail row
+          // says what it could do from its first minute rather than naming one
+          // of several roles.
+          grantedRole: roleLabelFor(
+              normaliseRoleNames(primary: roleName, additional: additionalRoles)),
           allowed: allowed,
           reason: reason,
           origin: origin,
@@ -485,6 +492,7 @@ class AccessAdminStore {
       username: username,
       password: password,
       roleName: roleName,
+      additionalRoles: additionalRoles,
     );
     await _recordAllowed(actionId, row);
   }
@@ -513,10 +521,11 @@ class AccessAdminStore {
         AuditRecord.userDelete(
           who: _who(session),
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: actionId,
           subject: username,
-          heldRole: existing?.roleName ?? '',
+          heldRole:
+              existing == null ? '' : roleLabelFor(AccessRepository.rolesOf(existing)),
           allowed: allowed,
           reason: reason,
           origin: origin,
@@ -529,17 +538,21 @@ class AccessAdminStore {
     await _recordAllowed(actionId, row);
   }
 
-  /// Moves [username] onto [roleName]. Requires [kAccessAdminGroup].
+  /// Replaces [username]'s roles with [roleNames]. Requires
+  /// [kAccessAdminGroup].
   ///
-  /// The role currently held is read **before** the gate, for the row's
-  /// `oldValue`.
+  /// The roles currently held are read **before** the gate, for the row's
+  /// `oldValue`, and both sides of the row are the whole set rendered by
+  /// [roleLabelFor] — a trail that recorded only the primary role would show
+  /// `Engineering → Engineering` for the edit that added `Maintenance` beside
+  /// it, which is the one edit somebody reads the trail to find.
   ///
-  /// Throws [UserNotFoundException], [MissingRoleError] for a target role that
-  /// does not exist, and [LastUsersHolderException] for trip route (b) — moving
-  /// the last `users` holder onto a role that does not grant it.
-  Future<void> setUserRole(
+  /// Throws [UserNotFoundException], [MissingRoleError] for any target role
+  /// that does not exist, and [LastUsersHolderException] for trip route (b) —
+  /// leaving the last `users` holder with no role that grants it.
+  Future<void> setUserRoles(
     String username,
-    String roleName, {
+    List<String> roleNames, {
     String origin = _operatorOrigin,
     String? reason,
   }) async {
@@ -549,11 +562,18 @@ class AccessAdminStore {
         AuditRecord.userRole(
           who: _who(session),
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: actionId,
           subject: username,
-          oldRole: existing?.roleName ?? '',
-          newRole: roleName,
+          oldRole: existing == null
+              ? ''
+              : roleLabelFor(AccessRepository.rolesOf(existing)),
+          newRole: roleNames.isEmpty
+              ? ''
+              : roleLabelFor(normaliseRoleNames(
+                  primary: roleNames.first,
+                  additional: roleNames.skip(1),
+                )),
           allowed: allowed,
           reason: reason,
           origin: origin,
@@ -562,9 +582,22 @@ class AccessAdminStore {
     final actionId = await _requireUsers(itemKey: _userRole, row: row);
 
     if (existing == null) throw UserNotFoundException(username);
-    await _repository.setRole(username, roleName);
+    await _repository.setRoles(username, roleNames);
     await _recordAllowed(actionId, row);
   }
+
+  /// Puts [username] on [roleName] and nothing else.
+  ///
+  /// The single-role move, kept for the callers that mean exactly that. It
+  /// **replaces** the set, so an account holding two roles comes out of it
+  /// holding one — [setUserRoles] is the one that keeps any.
+  Future<void> setUserRole(
+    String username,
+    String roleName, {
+    String origin = _operatorOrigin,
+    String? reason,
+  }) =>
+      setUserRoles(username, [roleName], origin: origin, reason: reason);
 
   /// Flips [username]'s station-account flag. Requires [kAccessAdminGroup].
   ///
@@ -583,7 +616,7 @@ class AccessAdminStore {
         AuditRecord.userStationAccount(
           who: _who(session),
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: actionId,
           subject: username,
           oldValue: existing?.stationAccount ?? false,
@@ -621,7 +654,7 @@ class AccessAdminStore {
         AuditRecord.userInactivityTimeout(
           who: _who(session),
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: actionId,
           subject: username,
           oldMinutes: existing?.inactivityTimeoutMinutes,
@@ -665,7 +698,7 @@ class AccessAdminStore {
         AuditRecord.userPages(
           who: _who(session),
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: actionId,
           subject: username,
           oldPages: existing?.allowedPages,
@@ -705,7 +738,7 @@ class AccessAdminStore {
         AuditRecord.userPassword(
           who: _who(session),
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: actionId,
           subject: username,
           allowed: allowed,
