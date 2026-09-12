@@ -29,7 +29,9 @@ STAMP          := $(shell git rev-parse --short HEAD 2>/dev/null || echo nogit)
 IMAGE          := centroidx-$(STAMP).img
 
 DEBOS_IMAGE    ?= godebos/debos:latest
-DEBOS          = docker run --rm -it \
+# CI has no TTY; a local run wants one for debos's progress output.
+DOCKER_TTY     ?= $(shell [ -t 0 ] && echo -it)
+DEBOS          = docker run --rm $(DOCKER_TTY) \
                    --device /dev/kvm \
                    --group-add "$$(stat -c '%g' /dev/kvm)" \
                    --user $$(id -u) \
@@ -98,8 +100,15 @@ preload: generated
 	du -sh $(GEN)/var/lib/centroid/preload
 
 # -------------------------------------------------------------------- builds
+.PHONY: require-kvm
+require-kvm:
+	@test -w /dev/kvm || { \
+	  echo "debos needs /dev/kvm to build an image (image-partition does not work"; \
+	  echo "without a fakemachine). Build on Linux or in CI. 'make dry-run' and"; \
+	  echo "'make print-recipe' work here."; exit 1; }
+
 .PHONY: image
-image: generated
+image: require-kvm generated
 	@mkdir -p $(OUT)
 	$(DEBOS) -v --fakemachine-backend=kvm --scratchsize=16GB \
 	  --artifactdir=/recipes/$(OUT) \
@@ -114,7 +123,7 @@ image: generated
 	@ls -lh $(OUT)/
 
 .PHONY: usb
-usb: generated
+usb: require-kvm generated
 	@test -n "$$(ls $(OUT)/*.img.gz 2>/dev/null)" || { echo "run 'make image' first"; exit 1; }
 	rm -rf $(PAYLOAD) && mkdir -p $(PAYLOAD)
 	cp $(OUT)/*.img.gz $(OUT)/*.bmap $(PAYLOAD)/
