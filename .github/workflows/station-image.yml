@@ -324,15 +324,21 @@ jobs:
           fail=0
           ck() { # ck DESCRIPTION  (body already run; $1 desc, $2 rc)
             if [ "$2" = 0 ]; then printf '  ok    %s\n' "$1"
-            else printf '::error::%s\n' "$1"; fail=1; fi
+            else printf '  FAIL  %s\n' "$1"; printf '::error::%s\n' "$1"; fail=1; fi
           }
           t() { # t DESCRIPTION TEST...
             local d="$1"; shift
             "$@" >/dev/null 2>&1; ck "$d" $?
           }
+          # -L, not -e. systemctl enable writes an ABSOLUTE symlink
+          # (-> /etc/systemd/system/centroidx-gui.service), and inside a mounted
+          # image that resolves against the RUNNER's root, where it does not
+          # exist -- so `test -e` was false for a link sitting right there, and
+          # the negated check on the text installer passed vacuously because it
+          # could never be true either way. -L tests the link itself.
           W="$mnt/etc/systemd/system/multi-user.target.wants"
-          t "graphical installer enabled"                       test -e "$W/centroidx-gui.service"
-          t "text installer not also enabled (OnFailure only)"  test ! -e "$W/centroidx-installer.service"
+          t "graphical installer enabled"                       test -L "$W/centroidx-gui.service"
+          t "text installer not also enabled (OnFailure only)"  test ! -L "$W/centroidx-installer.service"
           t "setup app binary present"                          sh -c "test -f '$mnt/opt/centroidx-setup/centroidx_setup' -o -f '$mnt/opt/centroidx-setup/flutter_elinux_wayland'"
           t "setup app binary executable"                       sh -c "test -x '$mnt/opt/centroidx-setup/centroidx_setup' -o -x '$mnt/opt/centroidx-setup/flutter_elinux_wayland'"
           t "matched embedder present"                          test -s "$mnt/opt/centroidx-setup/lib/libflutter_elinux_wayland.so"
