@@ -1,5 +1,5 @@
 {{- $suite := or .suite "trixie" -}}
-{{- $mirror := or .mirror "https://deb.debian.org/debian" -}}
+{{- $mirror := or .mirror "http://deb.debian.org/debian" -}}
 {{- $gpu := or .gpu "intel" -}}
 # CentroidX station rootfs.
 #

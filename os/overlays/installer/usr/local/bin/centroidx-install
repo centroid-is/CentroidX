@@ -13,6 +13,8 @@ TARGET_MNT=/mnt/target
 # Declared up front: a station.env that omits one of these would otherwise trip
 # `set -u` much later, after the disk has already been written.
 TARGET=""
+BOOT_DISK=""
+UNATTENDED=0
 STATION_NAME=""
 CENTROID_PASSWORD=""
 ROOT_PASSWORD=""
@@ -24,7 +26,10 @@ grn()  { printf '\033[1;32m%s\033[0m\n' "$*"; }
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 rule() { printf '%s\n' "------------------------------------------------------------"; }
 
-die() { red "FAILED: $*"; exit 1; }
+# Both on stderr: die is called from inside $(...) in places, and anything it
+# wrote to stdout there would be captured as data instead of shown. (Review #1:
+# the refusal text became the sole "install candidate".)
+die() { printf '\033[1;31m%s\033[0m\n' "  FAILED: $*" >&2; exit 1; }
 
 banner() {
   clear 2>/dev/null || true
@@ -37,14 +42,13 @@ banner() {
 # The USB we booted from must never appear in this list.
 boot_disk() { lsblk -no PKNAME "$(findmnt -no SOURCE /)" 2>/dev/null | head -1; }
 
+# $BOOT_DISK is resolved in main() before this is ever called. Do NOT try to
+# resolve it here: candidates() runs inside a command substitution, so a die()
+# from this depth would exit only the subshell and the caller would carry on
+# with the error message as its data.
 candidates() {
-  local boot; boot="$(boot_disk)"
-  # If detection failed, `boot` is empty, the comparison below never matches, and
-  # the USB this is running from becomes an offerable install target. Refuse
-  # instead: there is no safe way to guess which disk not to erase.
-  [ -n "$boot" ] || die "cannot identify the disk this installer booted from - refusing to offer any target"
   lsblk -dno NAME,SIZE,MODEL --sort NAME | while read -r name size model; do
-    [ "$name" = "$boot" ] && continue
+    [ "$name" = "$BOOT_DISK" ] && continue
     case "$name" in loop*|sr*|fd*|ram*|zram*) continue ;; esac
     printf '%s\t%s\t%s\n' "$name" "$size" "${model:-unknown}"
   done
@@ -96,7 +100,17 @@ ask_pass() {   # ask_pass VAR "prompt"
   local __var="$1" __prompt="$2" a b
   while :; do
     read -r -s -p "  $__prompt: " a; echo
-    [ ${#a} -lt 8 ] && { echo "  At least 8 characters, please."; continue; }
+    if [ ${#a} -lt 8 ]; then echo "  At least 8 characters, please."; continue; fi
+    # These values travel through station.conf, then .env, then compose
+    # interpolation, then a shell command inside a container. Rather than try to
+    # escape correctly at four layers, refuse the characters that are hazardous
+    # at any of them. (Review #2, #3.)
+    if ! printf '%s' "$a" | grep -qE '^[A-Za-z0-9._@%+:~/-]+$'; then
+      echo "  Use letters, digits and . _ @ % + : ~ / - only."
+      echo "  (spaces, quotes, \$ and backticks break one of the layers this"
+      echo "   password passes through)"
+      continue
+    fi
     read -r -s -p "  $__prompt (again): " b; echo
     [ "$a" = "$b" ] && break
     echo "  They did not match."
@@ -107,6 +121,7 @@ ask_pass() {   # ask_pass VAR "prompt"
 questions() {
   if [ -r "$SEED" ]; then
     grn "  Using answers from $SEED (unattended install)"
+    UNATTENDED=1
     # shellcheck disable=SC1090
     . "$SEED"
     local missing=""
@@ -114,6 +129,10 @@ questions() {
       [ -n "${!v}" ] || missing="$missing $v"
     done
     [ -z "$missing" ] || die "$SEED is missing:$missing"
+    for v in DB_PASSWORD VNC_PASSWORD ROOT_PASSWORD CENTROID_PASSWORD; do
+      printf '%s' "${!v}" | grep -qE '^[A-Za-z0-9._@%+:~/-]+$' \
+        || die "$SEED: $v contains a character that will not survive the shell/compose path"
+    done
     return
   fi
   bold "Station settings"
@@ -130,6 +149,11 @@ questions() {
 # ----------------------------------------------------------------------- write
 confirm() {
   local answer
+  if [ "$UNATTENDED" = 1 ]; then
+    red "  UNATTENDED: erasing $TARGET in 15 seconds. Ctrl-C to stop."
+    sleep 15
+    return
+  fi
   red "  ****************************************************"
   red "  *  EVERYTHING ON $TARGET WILL BE ERASED"
   red "  ****************************************************"
@@ -141,10 +165,13 @@ confirm() {
 }
 
 flash() {
-  local img bmap
-  # shellcheck disable=SC2012  # our own filenames, no surprises in them
-  img="$(ls "$PAYLOAD"/*.img.gz 2>/dev/null | head -1)" || true
-  [ -n "${img:-}" ] || die "no image found in $PAYLOAD"
+  local img bmap imgs
+  # centroidx-* not *.img.gz, and exactly one: two images on the key would mean
+  # flashing the alphabetically-first while image-info describes the other.
+  mapfile -t imgs < <(find "$PAYLOAD" -maxdepth 1 -name 'centroidx-*.img.gz' | sort)
+  [ "${#imgs[@]}" = 1 ] \
+    || die "expected exactly one centroidx-*.img.gz in $PAYLOAD, found ${#imgs[@]}"
+  img="${imgs[0]}"
   bmap="${img%.img.gz}.img.bmap"
   bold "Writing $(basename "$img") to $TARGET"
   if [ -r "$bmap" ]; then
@@ -154,28 +181,34 @@ flash() {
     bmaptool copy --nobmap "$img" "$TARGET" || die "bmaptool copy failed"
   fi
   sync
-  # Re-read the table so the new partitions appear as devices.
-  partprobe "$TARGET" || true
-  udevadm settle || true
+  # Re-read the table so the new partitions appear as devices. NOT swallowed: on
+  # EBUSY the kernel keeps the old table, and because bmaptool leaves unmapped
+  # blocks untouched a stale superblock can then mount -- which would put
+  # station.conf and a journal replay inside the wrong filesystem.
+  partprobe "$TARGET" || die "the kernel would not re-read the partition table on $TARGET (is something holding it open?)"
+  udevadm settle
 }
 
 seed_station_conf() {
   local root
-  # The image has exactly two partitions; root is the second.
-  root="$(lsblk -pln -o NAME,TYPE "$TARGET" | awk '$2=="part"{print $1}' | sed -n 2p)"
-  [ -n "$root" ] || die "cannot find the root partition on $TARGET"
+  # By PARTLABEL, not by index: image.yaml sets partlabel: root, and an index
+  # would silently pick whatever partition 2 happens to be if the table the
+  # kernel holds is not the one we just wrote.
+  root="$(lsblk -pno NAME,PARTLABEL "$TARGET" | awk '$2=="root"{print $1; exit}')"
+  [ -n "$root" ] || die "no partition labelled 'root' on $TARGET after flashing"
   mkdir -p "$TARGET_MNT"
   mount "$root" "$TARGET_MNT" || die "cannot mount $root"
   mkdir -p "$TARGET_MNT/etc/centroid"
   {
     echo "# Written by the CentroidX installer on $(date -Is)."
-    echo "# centroidx-firstboot reads this once, applies the logins, then deletes"
-    echo "# them from this file. DB and VNC move to /home/centroid/.env."
-    echo "STATION_NAME=${STATION_NAME}"
-    echo "ROOT_PASSWORD=${ROOT_PASSWORD}"
-    echo "CENTROID_PASSWORD=${CENTROID_PASSWORD}"
-    echo "VNC_PASSWORD=${VNC_PASSWORD}"
-    echo "DB_PASSWORD=${DB_PASSWORD}"
+    echo "# centroidx-firstboot PARSES this as key=value -- it does not source it."
+    echo "# Values are restricted to [A-Za-z0-9._@%+:~/-] at the prompt, so they"
+    echo "# survive this file, .env, compose interpolation and a container shell."
+    printf 'STATION_NAME=%s\n'      "$STATION_NAME"
+    printf 'ROOT_PASSWORD=%s\n'     "$ROOT_PASSWORD"
+    printf 'CENTROID_PASSWORD=%s\n' "$CENTROID_PASSWORD"
+    printf 'VNC_PASSWORD=%s\n'      "$VNC_PASSWORD"
+    printf 'DB_PASSWORD=%s\n'       "$DB_PASSWORD"
   } > "$TARGET_MNT/etc/centroid/station.conf"
   chmod 0600 "$TARGET_MNT/etc/centroid/station.conf"
   echo "${STATION_NAME}" > "$TARGET_MNT/etc/hostname"
@@ -185,6 +218,13 @@ seed_station_conf() {
 
 # ------------------------------------------------------------------------ main
 banner
+
+# Before anything else, and at top level so a failure here actually stops the
+# script. A slow-probing NVMe may not be in lsblk yet when the unit starts.
+udevadm settle
+BOOT_DISK="$(boot_disk)"
+[ -n "$BOOT_DISK" ] || die "cannot identify the disk this installer booted from - refusing to offer any target"
+
 pick_disk
 questions
 confirm

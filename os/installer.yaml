@@ -1,5 +1,5 @@
 {{- $suite := or .suite "trixie" -}}
-{{- $mirror := or .mirror "https://deb.debian.org/debian" -}}
+{{- $mirror := or .mirror "http://deb.debian.org/debian" -}}
 {{- $usbimage := or .usbimage "usb-installer.img" -}}
 {{- $usbsize := or .usbsize "16GB" -}}
 # The USB key. Plug it into a station, it boots straight to the installer, asks

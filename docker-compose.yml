@@ -30,20 +30,28 @@ services:
       - /run/udev:/run/udev:ro
     environment:
       XDG_RUNTIME_DIR: /run/user/1000
+      # Handed over as an environment variable and never spliced into the
+      # command string below. Spliced, it nested double quotes inside the outer
+      # bash -lc "..." -- closing and reopening it -- so a space in the password
+      # stopped weston from starting at all and a $, backtick, ; or | ran as
+      # root in a privileged container. The entrypoint is single-quoted now and
+      # $$ keeps compose's interpolation off it, so the container's own shell is
+      # the only thing that ever expands the value.
+      VNC_PASSWORD: ${VNC_PASSWORD:?set VNC_PASSWORD in .env - see .env.example}
     ports:
       - 5900:5900
     restart: unless-stopped
     entrypoint: >
-      bash -lc "
-        echo "centroid:${VNC_PASSWORD:?set VNC_PASSWORD in .env - see .env.example}" | chpasswd &&
+      bash -lc '
+        printf "centroid:%s\n" "$$VNC_PASSWORD" | chpasswd &&
         mkdir -p /run/user/1000 &&
         chown 1000:1000 /run/user/1000 &&
         chmod 0700 /run/user/1000 &&
-        exec su -s /bin/bash -c '
+        exec su -s /bin/bash -c "
          export XDG_RUNTIME_DIR=/run/user/1000
          exec weston -c /home/centroid/.config/weston.ini
-        ' centroid
-      "
+        " centroid
+      '
 
   # Browser access to the mirrored HMI. websockify bridges wss:// to weston's
   # screen-share VNC on 5900, which stays published above for native clients.
