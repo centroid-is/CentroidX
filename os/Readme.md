@@ -1,4 +1,7 @@
-# debos-conf — CentroidX station images
+# os/ — CentroidX station images
+
+The Debian that runs under the containers, and the USB key that installs it.
+Built with [debos](https://github.com/go-debos/debos).
 
 Builds two artifacts:
 
@@ -13,7 +16,7 @@ already configured — which is why `ansible-playbook.yml` is gone.
 ## Build
 
 ```bash
-make generated          # fetch docker-compose.yml from CentroidX at COMPOSE_REF
+make generated          # stage ../docker-compose.yml + the provenance stamp
 make image              # the station image          (needs Linux + KVM)
 make usb                # the installer USB          (needs Linux + KVM)
 make qemu               # boot the USB against a blank 32G disk, end to end
@@ -21,11 +24,15 @@ make dry-run            # validate all three recipes (works on macOS)
 ```
 
 ```bash
-make image GPU=amd                                   # AMD station
-make image COMPOSE_SRC=../tfc-hmi-svn/docker-compose.yml   # local compose
-make image COMPOSE_REF=b9efac9a                      # pin a CentroidX commit
-make preload                                         # bake the container images in
+make image GPU=amd      # AMD station instead of Intel
+make preload            # bake the container images in, for an offline install
 ```
+
+`docker-compose.yml` is baked in from one directory up, at whatever commit the
+image is built from — there is no ref to pin and no copy to go stale, which is
+why this lives in the CentroidX repo rather than beside it. `image-info` inside
+the image records that commit, so a station in the field traces back to the app,
+the Dockerfiles and the compose file together.
 
 `make image`/`make usb` need `/dev/kvm`: debos cannot do `image-partition`
 without a fakemachine (debos's own CI excludes the partitioning tests from its
@@ -84,7 +91,7 @@ overlays/base/     config files, verbatim, as they land on disk
 overlays/installer/ the installer unit and script
 overlays/generated/ fetched at build time, never committed
 scripts/           the chroot steps that are not just a file
-centroidx-compose.patch  changes CentroidX needs for the password prompts to work
+../.env.example    the per-station variable contract, beside the compose file
 ```
 
 ## Things worth knowing
@@ -114,6 +121,26 @@ install can corrupt it. Mounting it read-only needs tmpfs overlays for
 
 **No rollback.** A bad image means reflashing. A/B root partitions would fix it;
 deliberately out of scope.
+
+**Existing stations need a `.env` now.** `docker-compose.yml` used to hardcode
+`FooBarHelloWorld`, `TODOSetThisStrongPassword` and `centroid:foo`; those are now
+`${DB_PASSWORD:?}`, `${FLUTTER_KEYRING_PASSWORD:?}` and `${VNC_PASSWORD:?}`, and
+`RENDER_GID` lost its wrong default too. A station without a `.env` will refuse
+to start — loudly, naming the variable — rather than run with a password that was
+published in a public repo. On a station installed from here, first boot writes
+the file. On an existing one:
+
+```bash
+cd /home/centroid
+cp .env.example .env            # then fill it in, and note:
+echo "RENDER_GID=$(stat -c %g /dev/dri/renderD128)" >> .env
+echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+```
+
+`DB_PASSWORD` is the one to be careful with: timescaledb only reads
+`POSTGRES_PASSWORD` when initialising an empty data directory, so an existing
+station keeps its old database password until you `ALTER ROLE`. Put the existing
+value in `.env` unless you are rotating it.
 
 ## Keys
 

@@ -10,11 +10,11 @@
 SHELL          := /bin/bash
 .DEFAULT_GOAL  := help
 
-# Which CentroidX commit the baked docker-compose.yml comes from.
-COMPOSE_REF    ?= main
-COMPOSE_URL    ?= https://raw.githubusercontent.com/centroid-is/CentroidX/$(COMPOSE_REF)/docker-compose.yml
-# Or point at a local checkout:  make image COMPOSE_SRC=../tfc-hmi-svn/docker-compose.yml
-COMPOSE_SRC    ?=
+# The compose file lives one directory up, in this same repo, at this same
+# commit. That is the whole reason the installer moved in here: there is no ref
+# to pin, no copy to go stale, and the provenance stamp below covers the compose
+# file, the Dockerfiles and the app together.
+COMPOSE_SRC    ?= ../docker-compose.yml
 
 SUITE          ?= trixie
 GPU            ?= intel
@@ -51,7 +51,7 @@ DEBOS_DRY      = docker run --rm \
 help:
 	@sed -n '2,9p' Makefile | sed 's/^# \?//'
 	@echo
-	@echo "Variables: COMPOSE_REF=$(COMPOSE_REF) SUITE=$(SUITE) GPU=$(GPU)"
+	@echo "Variables: COMPOSE_SRC=$(COMPOSE_SRC) SUITE=$(SUITE) GPU=$(GPU)"
 	@echo "           IMAGESIZE=$(IMAGESIZE) USBSIZE=$(USBSIZE) PRELOAD=$(PRELOAD)"
 
 # ---------------------------------------------------------------- generated/
@@ -62,24 +62,17 @@ help:
 .PHONY: generated
 generated:
 	@mkdir -p $(GEN)/home/centroid $(GEN)/etc/centroid $(GEN)/var/lib/centroid/preload
-	@if [ -n "$(COMPOSE_SRC)" ]; then \
-	  echo "compose  <- $(COMPOSE_SRC)"; \
-	  cp "$(COMPOSE_SRC)" $(GEN)/home/centroid/docker-compose.yml; \
-	  src="local:$(COMPOSE_SRC)"; \
-	else \
-	  echo "compose  <- $(COMPOSE_URL)"; \
-	  curl -fsSL "$(COMPOSE_URL)" -o $(GEN)/home/centroid/docker-compose.yml; \
-	  src="$(COMPOSE_URL)"; \
-	fi; \
-	{ echo "CentroidX station image"; \
-	  echo "built:        $$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
-	  echo "debos-conf:   $$(git describe --always --dirty 2>/dev/null || echo unknown)"; \
-	  echo "suite:        $(SUITE)"; \
-	  echo "gpu:          $(GPU)"; \
-	  echo "compose:      $$src"; \
-	  echo "compose sha256: $$(shasum -a 256 $(GEN)/home/centroid/docker-compose.yml | cut -d' ' -f1)"; \
-	  echo "preloaded images: $(PRELOAD)"; \
-	} > $(GEN)/etc/centroid/image-info
+	@test -r "$(COMPOSE_SRC)" || { echo "no compose file at $(COMPOSE_SRC)"; exit 1; }
+	@cp "$(COMPOSE_SRC)" $(GEN)/home/centroid/docker-compose.yml
+	@test -r ../.env.example && cp ../.env.example $(GEN)/etc/centroid/env.example || true
+	@{ echo "CentroidX station image"; \
+	   echo "built:      $$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+	   echo "centroidx:  $$(git describe --always --dirty --tags 2>/dev/null || echo unknown)"; \
+	   echo "commit:     $$(git rev-parse HEAD 2>/dev/null || echo unknown)"; \
+	   echo "suite:      $(SUITE)"; \
+	   echo "gpu:        $(GPU)"; \
+	   echo "preloaded:  $(PRELOAD)"; \
+	 } > $(GEN)/etc/centroid/image-info
 	@cat $(GEN)/etc/centroid/image-info | sed 's/^/  /'
 
 # Pull every image the compose names and stage it as a tarball inside the rootfs.
