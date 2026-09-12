@@ -94,6 +94,10 @@ class _FakeDatabase extends Fake implements Database {
 
   Map<String, List<TimeseriesData<dynamic>>> rows;
 
+  /// Tables that exist -- their channel works -- but whose history query
+  /// fails anyway: a query that times out against a table being written to.
+  Set<String> failingHistory = const {};
+
   /// Queries that reached a table, in order -- so a test can prove a retry
   /// happened without reaching into the widget.
   final List<String> queried = [];
@@ -106,6 +110,9 @@ class _FakeDatabase extends Fake implements Database {
       String tableName, DateTime to,
       {String? orderBy = 'time ASC', DateTime? from}) async {
     queried.add(tableName);
+    if (failingHistory.contains(tableName)) {
+      throw TimeoutException('history query timed out');
+    }
     if (missingTables.contains(tableName)) {
       throw Exception(
           'Severity.error 42P01: relation "$tableName" does not exist');
@@ -306,6 +313,34 @@ void main() {
     await _settle(tester);
     expect(database.queried.length, settled,
         reason: 'the chart is polling the database forever');
+
+    await _unmount(tester);
+  });
+
+  testWidgets('a retry that finds the feed but not the history drops the panel',
+      (tester) async {
+    // Dead at first: no table, so the error panel. Then the table appears and
+    // its channel works, but the history query still fails -- the transient
+    // case. That is a live chart now, and the panel must make way for the
+    // plot: the panel and the "charting values as they arrive" line cannot
+    // both be true.
+    final database = _FakeDatabase(missingTables: {'line1/rate'});
+
+    await tester
+        .pumpWidget(_harness(database, GraphAsset(_config(['line1/rate']))));
+    await _settle(tester);
+    expect(find.byIcon(Icons.cloud_off), findsOneWidget);
+
+    database.missingTables = const {};
+    database.failingHistory = {'line1/rate'};
+
+    await tester.pump(const Duration(seconds: 31));
+    await _settle(tester);
+
+    expect(find.textContaining('No stored history'), findsOneWidget,
+        reason: 'the feed is up, so this is a notice, not an error');
+    expect(find.byIcon(Icons.cloud_off), findsNothing,
+        reason: 'the error panel stayed in the plot area next to the notice');
 
     await _unmount(tester);
   });

@@ -331,9 +331,11 @@ class Graph {
   /// only what is arriving from now on is a usable chart; replacing it with a
   /// message is not.
   void showNotice(String message) {
+    final wasErrored = _errored;
     _isLoading = false;
     _errored = false;
     _notice = message;
+    if (wasErrored) _restorePlot();
     redraw();
   }
 
@@ -342,9 +344,21 @@ class Graph {
   /// so the clean path -- every init that works -- costs no extra rebuild.
   void clearMessage() {
     if (!_errored && _notice == null) return;
+    final wasErrored = _errored;
     _errored = false;
     _notice = null;
+    if (wasErrored) _restorePlot();
     redraw();
+  }
+
+  /// [showError] puts its panel in the plot's slot, and nothing but a data
+  /// change builds the plot again. A chart that goes from the panel straight
+  /// to a notice -- its feed came up on a retry while the history still
+  /// failed -- has no data change to do that, so it showed the panel above
+  /// the line saying it was charting values as they arrive, until the first
+  /// point landed. Build the plot back explicitly instead.
+  void _restorePlot() {
+    _sliceAndRedraw(_lastPanInfo);
   }
 
   bool _showDate = false; // if viewport is not today, show date
