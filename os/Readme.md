@@ -202,6 +202,20 @@ timestamp. "Every station is byte-identical" holds across stations flashed from
 the same `out/` file, which is the property that matters for a fleet, but it is
 narrower than reproducible builds.
 
+## Where the stack lives
+
+`/home/centroid/docker-compose.yml`, which is what `docker-update` bind-mounts by
+absolute path (`docker-compose.yml:304`), and therefore where every relative
+volume in that file resolves: `./timescale_data`, `./local-share`,
+`./seatd-socket`, `./tfc_config` and the cert directories.
+
+Worth checking against your stations before reimaging one: `tools/hmi_profiler.py`
+documents `ssh centroid@<station> 'cd ~/sildarvinnsla && docker compose run ...'`,
+which would put the project directory -- and so the database volume -- one level
+down instead. If a station really runs from `~/sildarvinnsla`, its `docker-update`
+bind mount cannot be resolving, and a reimaged station will not find that
+station's existing `timescale_data`.
+
 ## Remote access
 
 WireGuard, not ZeroTier — the latter was dropped over its licence and an image
