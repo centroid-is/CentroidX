@@ -190,6 +190,23 @@
           });
         mode: '0644'
 
+    - name: Add PolicyKit rule to allow centroid user to reboot/shutdown
+      copy:
+        dest: /etc/polkit-1/rules.d/51-reboot-shutdown.rules
+        content: |
+          // PolicyKit rule to allow centroid user to reboot/shutdown without password
+
+          polkit.addRule(function(action, subject) {
+              if ((action.id == "org.freedesktop.login1.reboot" ||
+                   action.id == "org.freedesktop.login1.reboot-multiple-sessions" ||
+                   action.id == "org.freedesktop.login1.power-off" ||
+                   action.id == "org.freedesktop.login1.power-off-multiple-sessions") &&
+                  subject.user == "centroid") {
+                  return polkit.Result.YES;
+              }
+          });
+        mode: '0644'
+
     - name: Ensure NetworkManager is enabled
       systemd:
         name: NetworkManager
