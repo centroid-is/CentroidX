@@ -52,12 +52,7 @@ Future<void> loadRealFont() async {
 /// tint. A pusher strokes out and returns, so it gets a single press-and-hold
 /// button, shown both at rest and held down.
 void main() {
-  // This golden is a full 800×600 app surface with real text, so the
-  // cross-Flutter-version antialiasing drift the default 0.01% tolerance
-  // absorbs on small painter goldens is not enough here (CI measured 0.03%
-  // on the text-free version). A real regression — a missing segment or a
-  // moved highlight — shifts well over 1% of the frame.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('gate force pane golden',
       skip: goldenSkip, () {

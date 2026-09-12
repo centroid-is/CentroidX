@@ -1115,7 +1115,7 @@ void main() {
       // regression through where it matters most.
       final previousComparator = goldenFileComparator;
       addTearDown(() => goldenFileComparator = previousComparator);
-      useTolerantGoldenComparator(tolerance: 0.002);
+      useTolerantGoldenComparator();
 
       await loadRealFont();
       // Taller than the field it is named for needs: #385 added the "Extra

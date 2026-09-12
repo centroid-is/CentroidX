@@ -86,9 +86,7 @@ Future<void> _loadRealFonts() async {
 void main() {
   final (light, dark) = muted();
 
-  // A frame of prose, not a line drawing: the 0.01% default is tuned for
-  // painter goldens and antialiasing on text moves more than that.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('alarm auto-navigate setting golden',
       skip: goldenSkip, () {

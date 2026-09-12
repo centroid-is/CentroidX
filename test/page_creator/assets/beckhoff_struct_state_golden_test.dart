@@ -93,10 +93,7 @@ class _StubStateMan extends Fake implements StateMan {
 }
 
 void main() {
-  // Same dense line work as the other Beckhoff goldens — the terminal faces
-  // are hairline rules and small text, and antialiasing drift across
-  // toolchains eats more than the 0.01% default.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('Beckhoff struct-state golden',
       skip: goldenSkip, () {

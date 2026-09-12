@@ -44,9 +44,7 @@ Future<void> loadRealFont() async {
 class _FakeStateMan extends Fake implements StateMan {}
 
 void main() {
-  // Same dense line work as the CX variant goldens — text antialiasing drift
-  // eats more than the 0.01% default.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('Beckhoff name-or-ID golden',
       skip: goldenSkip, () {

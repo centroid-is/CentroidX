@@ -256,11 +256,7 @@ Future<void> _loadRealFonts() async {
 void main() {
   final (light, _) = muted();
 
-  // A full app surface with real text, like `conveyor_gate_force_pane_golden`:
-  // the 0.01% default absorbs antialiasing drift on small painter goldens but
-  // not on a frame this size. A real regression here — a field that lost its
-  // lock, a number that stopped rendering — moves far more than 0.2%.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('conveyor locked-pane golden',
       skip: goldenSkip, () {

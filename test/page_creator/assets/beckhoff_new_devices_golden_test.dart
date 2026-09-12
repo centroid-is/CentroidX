@@ -143,10 +143,7 @@ class _BeckhoffStateMan extends Fake implements StateMan {
 }
 
 void main() {
-  // Same reasoning as the EL9222 goldens: the default tolerance is too tight
-  // for text antialiasing drift, while a real regression moves far more than
-  // 0.2% of the frame.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('Beckhoff new devices golden',
       skip: goldenSkip, () {

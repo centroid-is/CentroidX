@@ -109,9 +109,7 @@ ConveyorConfig _conveyor({
       ..size = size;
 
 void main() {
-  // A full app surface with real text: the same cross-version antialiasing
-  // drift the gate pane golden allows for applies here.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('open-pane mark golden',
       skip: goldenSkip, () {

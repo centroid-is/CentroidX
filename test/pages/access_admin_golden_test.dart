@@ -514,9 +514,7 @@ void _expectTimestampColumnsHaveAGap(WidgetTester tester) {
 void main() {
   final (light, _) = muted();
 
-  // Frames of prose on a real theme. The 0.01% default absorbs antialiasing drift on
-  // small painter goldens, not on several hundred lines of text.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('access administration goldens',
       skip: goldenSkip, () {

@@ -281,9 +281,7 @@ Future<void> _loadRealFonts() async {
 void main() {
   final (light, _) = muted();
 
-  // A full page of real text: the 0.01% default absorbs antialiasing drift on
-  // small painter goldens, not on a frame this size.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('key repository unbound-surface golden',
       skip: goldenSkip, () {

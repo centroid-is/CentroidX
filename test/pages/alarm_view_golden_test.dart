@@ -178,9 +178,7 @@ Future<void> _pumpPage(WidgetTester tester, {required bool dark}) async {
 final _body = find.byKey(const ValueKey('alarm-view-body'));
 
 void main() {
-  // A near-full-window surface has more room to drift than the 0.01%
-  // default allows for even on the pinned SDK.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   setUp(() {
     // BaseScaffold's navigation bar asserts on at least two destinations.

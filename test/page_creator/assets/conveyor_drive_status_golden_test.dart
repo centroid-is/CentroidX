@@ -127,10 +127,7 @@ class _DriveStateMan extends Fake implements StateMan {
 }
 
 void main() {
-  // Full app surface with real text; same reasoning as the gate force pane
-  // golden — the default tolerance is too tight for text antialiasing drift,
-  // while a real regression moves far more than 0.2% of the frame.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('conveyor drive status golden',
       skip: goldenSkip, () {

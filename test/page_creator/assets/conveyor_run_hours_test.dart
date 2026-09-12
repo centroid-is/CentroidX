@@ -62,7 +62,7 @@ void main() {
           .resetPhysicalSize();
     });
 
-    useTolerantGoldenComparator(tolerance: 0.002);
+    useTolerantGoldenComparator();
 
     // The regression case: a counter past a hundred hours, on a healthy
     // running belt so the tile is the only thing worth looking at.
