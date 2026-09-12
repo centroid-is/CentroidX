@@ -73,6 +73,7 @@ import 'package:pdfrx/pdfrx.dart';
 import 'package:tfc/widgets/access_session_ended_notice.dart';
 import 'package:tfc/widgets/proposal_banner.dart';
 import 'package:tfc/widgets/onscreen_keyboard.dart';
+import 'package:tfc/widgets/icelandic_keys.dart';
 import 'package:tfc/marionette/route_logger.dart';
 import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
@@ -1045,6 +1046,13 @@ class MyApp extends ConsumerWidget {
                       );
                     },
                   ),
+                  // Last, so it is above every page, pane, dialog and overlay
+                  // that can hold a text field. It shows itself only while
+                  // one has focus. It shares the top edge with
+                  // ProposalBanner and will sit over it on the rare frame
+                  // where a proposal is pending and a field is being typed
+                  // into; the bar is the one being used, so it wins.
+                  const IcelandicKeyBar(),
                 ],
               );
             },
