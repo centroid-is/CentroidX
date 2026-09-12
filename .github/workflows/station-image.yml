@@ -297,28 +297,55 @@ jobs:
       # branch and nothing said so. Three passing jobs told us nothing about
       # which installer the image actually enables, so assert it on the artifact
       # itself rather than on the steps that produced it.
+      # The first green build shipped a text-only installer: the bundle was
+      # present but not executable, so installer-setup.sh took the fallback
+      # branch and nothing said so. Three passing jobs told us nothing about
+      # which installer the image actually enables, so assert it on the artifact
+      # itself rather than on the steps that produced it.
       - name: Assert the built USB is the graphical installer
         run: |
-          set -euo pipefail
+          # NOT -e. GitHub runs steps with `bash -e`, under which a failing
+          # `[ ... ]` aborts the script -- so the first failed check killed it
+          # before it could say which one, and reported nothing at all.
+          set +e
+          set -uo pipefail
           img=$(mktemp /tmp/usb-XXXX.img)
-          gunzip -c out/usb-installer.img.gz > "$img"
+          gunzip -c out/usb-installer.img.gz > "$img" || { echo "::error::could not decompress the USB image"; exit 1; }
           loop=$(sudo losetup -f --show -P "$img")
+          [ -n "$loop" ] || { echo "::error::losetup failed"; exit 1; }
           sudo udevadm settle
           mnt=$(mktemp -d)
-          sudo mount -o ro "${loop}p2" "$mnt"
+          if ! sudo mount -o ro "${loop}p2" "$mnt"; then
+            echo "::error::could not mount ${loop}p2"
+            lsblk "$loop" || true
+            sudo losetup -d "$loop"; exit 1
+          fi
 
           fail=0
-          check() { # check DESCRIPTION TEST-RESULT
-            if [ "$2" = 0 ]; then echo "  ok       $1"; else echo "::error::$1"; fail=1; fi
+          ck() { # ck DESCRIPTION  (body already run; $1 desc, $2 rc)
+            if [ "$2" = 0 ]; then printf '  ok    %s\n' "$1"
+            else printf '::error::%s\n' "$1"; fail=1; fi
           }
-          [ -e "$mnt/etc/systemd/system/multi-user.target.wants/centroidx-gui.service" ]; check "graphical installer enabled" $?
-          [ ! -e "$mnt/etc/systemd/system/multi-user.target.wants/centroidx-installer.service" ]; check "text installer not also enabled (it is the OnFailure fallback)" $?
-          [ -x "$mnt/opt/centroidx-setup/centroidx_setup" ] || [ -x "$mnt/opt/centroidx-setup/flutter_elinux_wayland" ]; check "setup app binary is executable" $?
-          [ -s "$mnt/opt/centroidx-setup/lib/libflutter_elinux_wayland.so" ]; check "matched embedder present" $?
-          [ -x "$mnt/usr/local/bin/centroidx-keyboard" ]; check "on-screen keyboard present and executable" $?
-          [ -x "$mnt/usr/local/bin/centroidx-setup" ]; check "launcher present" $?
-          grep -q "^path=/usr/local/bin/centroidx-keyboard" "$mnt/etc/xdg/weston/weston.ini"; check "weston input-method points at the keyboard" $?
-          [ -e "$mnt/usr/bin/weston" ]; check "weston installed" $?
+          t() { # t DESCRIPTION TEST...
+            local d="$1"; shift
+            "$@" >/dev/null 2>&1; ck "$d" $?
+          }
+          W="$mnt/etc/systemd/system/multi-user.target.wants"
+          t "graphical installer enabled"                       test -e "$W/centroidx-gui.service"
+          t "text installer not also enabled (OnFailure only)"  test ! -e "$W/centroidx-installer.service"
+          t "setup app binary present"                          sh -c "test -f '$mnt/opt/centroidx-setup/centroidx_setup' -o -f '$mnt/opt/centroidx-setup/flutter_elinux_wayland'"
+          t "setup app binary executable"                       sh -c "test -x '$mnt/opt/centroidx-setup/centroidx_setup' -o -x '$mnt/opt/centroidx-setup/flutter_elinux_wayland'"
+          t "matched embedder present"                          test -s "$mnt/opt/centroidx-setup/lib/libflutter_elinux_wayland.so"
+          t "on-screen keyboard executable"                     test -x "$mnt/usr/local/bin/centroidx-keyboard"
+          t "launcher executable"                               test -x "$mnt/usr/local/bin/centroidx-setup"
+          t "weston input-method points at the keyboard"        grep -q "^path=/usr/local/bin/centroidx-keyboard" "$mnt/etc/xdg/weston/weston.ini"
+          t "weston installed"                                  test -e "$mnt/usr/bin/weston"
+
+          if [ "$fail" != 0 ]; then
+            echo "--- enabled units ---";        ls -la "$W" 2>&1 | head -20
+            echo "--- /opt/centroidx-setup ---"; ls -la "$mnt/opt/centroidx-setup" 2>&1 | head -20
+            echo "--- /usr/local/bin ---";       ls -la "$mnt/usr/local/bin" 2>&1 | head -20
+          fi
 
           sudo umount "$mnt"; sudo losetup -d "$loop"; rm -f "$img"
           exit $fail
