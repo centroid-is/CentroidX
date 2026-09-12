@@ -874,6 +874,39 @@ void main() {
     });
   });
 
+  group('AuditRecord.panelRelease', () {
+    AuditRecord build({bool allowed = true}) => AuditRecord.panelRelease(
+          who: 'jon',
+          station: 'panel-a',
+          roleName: 'Engineering',
+          actionId: '4' * 32,
+          subject: 'panel_a',
+          allowed: allowed,
+        );
+
+    test('fixes the admin vocabulary', () {
+      final record = build();
+      expect(record.surface, 'admin');
+      expect(record.itemKey, 'panel.release');
+      expect(record.isAuthEvent, isFalse);
+    });
+
+    test('names the released account in member and as the old value', () {
+      final record = build();
+      expect(record.member, 'panel_a',
+          reason: 'the subject goes in member, never in the itemKey');
+      expect(record.oldValue, 'panel_a');
+      expect(record.newValue, isNull,
+          reason: 'released to nothing: the panel has no account of its own');
+    });
+
+    test('is gated on users, and can record a refusal', () {
+      expect(build().groupRequired, AccessGroup.users.name);
+      expect(build(allowed: false).allowed, isFalse);
+      expect(build().allowed, isTrue);
+    });
+  });
+
   group('the admin surface as a whole', () {
     test('the vocabulary is exactly these eight itemKeys', () {
       expect(

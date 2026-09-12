@@ -65,13 +65,21 @@ const String kAccessSignInUnavailableMessage =
 /// back on their way out is the surprising half, and leaving it out is how
 /// somebody discovers it by watching a panel they thought they had locked
 /// return to an account on its own.
+///
+/// And it names the way out, so the prompt is not a one-way door. That is no
+/// longer a sign-out: the panel's own account has none, because anybody at the
+/// panel could press it and the panel would lose itself. Releasing it is an
+/// administrator's act, on the access page.
 String kAccessSignInCommitTitle(String username) =>
     'Keep this panel signed in as $username?';
 
 String kAccessSignInCommitMessage(String username) =>
     'The panel stays signed in across restarts. People can sign in over it '
     'for their own work; when their session ends or times out, the panel '
-    'returns to $username. Signing out of $username ends this.';
+    'returns to $username. $username cannot be signed out from the app bar; '
+    // `>`, not an arrow: RobotoMono has no glyph for U+2192 and the golden
+    // showed a blank where it belongs.
+    'an administrator releases the panel under Advanced > Access.';
 
 /// The confirm labels, named so the tests tap the same words the operator
 /// reads — the convention `access_users_section.dart` set.

@@ -1006,18 +1006,39 @@ void main() {
           reason: 'a panel does not time out, so nothing may be armed for it');
     });
 
-    test('signing the panel account itself out un-commits and goes anonymous',
-        () async {
+    test('the panel account itself cannot be signed out', () async {
+      // Anybody walking past could press it, and the panel would sit anonymous
+      // with its raised pages hidden until somebody with the station account's
+      // password came back. Releasing it is an administrator's act.
       final h = await committed();
+      h.sink.rows.clear();
 
       await h.notifier.signOut();
 
-      expect(h.session!.isElevated, isFalse);
-      expect(await h.panelAccountPref(), isNull,
-          reason: 'the documented way out, and the only one');
+      expect(h.session!.user!.username, 'freezer');
+      expect(await h.panelAccountPref(), 'freezer');
+      expect(h.authItemKeys, isEmpty,
+          reason: 'a refused sign-out is not a logout');
     });
 
-    test('the read-out follows a commit and the sign-out that ends it',
+    test('a panel resumed at restart cannot be signed out either', () async {
+      // The restore path used to leave `_onPanelSession` false, so the panel's
+      // first pointer-down copied it into the human slot.
+      final h = await committed();
+      final restarted = await panel(reuseDb: h.db);
+      await restarted.settle();
+
+      await restarted.notifier.signOut();
+      restarted.notifier.poke();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(restarted.session!.user!.username, 'freezer');
+      expect(await restarted.panelAccountPref(), 'freezer');
+      expect(await restarted.storedPayload(), isNull,
+          reason: 'the panel lives in its own key, never in the human slot');
+    });
+
+    test('the read-out follows a commit and the release that ends it',
         () async {
       // The Session card watches this provider. Nothing else tells it the
       // commitment changed: the key is device-local, the writes happen inside
@@ -1037,26 +1058,105 @@ void main() {
       expect(await h.notifier.commitPanelAccount(), isTrue);
       expect(await h.container.read(panelAccountProvider.future), 'freezer');
 
-      await h.notifier.signOut();
+      await h.notifier.signIn('jon', 'correct horse');
+      expect(await h.notifier.releasePanelAccount(), isTrue);
       expect(await h.container.read(panelAccountProvider.future), isNull,
-          reason: 'signing the panel account out is the documented way out, '
-              'so it is the one the card has to follow');
+          reason: 'releasing is the documented way out, so it is the one the '
+              'card has to follow');
     });
 
     test('a resume refusal shows up in the read-out too', () async {
-      // The account was deleted under a committed panel: the resume un-commits
-      // it, and the card must not go on naming an account nobody can sign in
-      // as. `_clearPanelAccount` is the one funnel for all three refusals.
+      // The account was demoted under a committed panel: the resume un-commits
+      // it, and the card must not go on naming an account that can no longer
+      // be a panel. `_clearPanelAccount` is the one funnel for all three
+      // refusals.
       final h = await committed();
       final sub = h.container.listen<AsyncValue<String?>>(
           panelAccountProvider, (_, __) {});
       addTearDown(sub.close);
       expect(await h.container.read(panelAccountProvider.future), 'freezer');
 
+      await h.notifier.signIn('jon', 'correct horse');
       await h.repository.setStationAccount('freezer', false);
       await h.notifier.signOut();
 
       expect(await h.container.read(panelAccountProvider.future), isNull);
+    });
+
+    group('releasing the panel', () {
+      test('by a person holding users, over the panel', () async {
+        final h = await committed();
+        await h.notifier.signIn('jon', 'correct horse');
+        h.sink.rows.clear();
+
+        expect(await h.notifier.releasePanelAccount(), isTrue);
+
+        expect(await h.panelAccountPref(), isNull);
+        expect(h.session!.user!.username, 'jon',
+            reason: 'their session stands; the panel just has no floor now');
+        final row = h.sink.rows.single;
+        expect(row.itemKey, 'panel.release');
+        expect(row.who, 'jon');
+        expect(row.member, 'freezer');
+        expect(row.allowed, isTrue);
+
+        await h.notifier.signOut();
+        expect(h.session!.isElevated, isFalse,
+            reason: 'nothing to return to once the panel is released');
+      });
+
+      test('by the panel itself, when its own role holds users', () async {
+        final h = await committed();
+        await h.repository.setRole('freezer', 'Engineering');
+        await h.notifier.refreshGroupsFromRoles();
+        expect(h.session!.can(AccessGroup.users), isTrue);
+        h.sink.rows.clear();
+
+        expect(await h.notifier.releasePanelAccount(), isTrue);
+
+        expect(await h.panelAccountPref(), isNull);
+        expect(h.session!.isElevated, isFalse,
+            reason: 'the released identity was the live session');
+        expect(h.authItemKeys, isNot(contains('logout')),
+            reason: 'nobody signed out; the release row is the record');
+        expect(h.sink.rows.map((r) => r.itemKey), contains('panel.release'));
+      });
+
+      test('is refused for a session without users', () async {
+        final h = await committed();
+        h.sink.rows.clear();
+
+        expect(await h.notifier.releasePanelAccount(), isFalse);
+
+        expect(await h.panelAccountPref(), 'freezer');
+        expect(h.session!.user!.username, 'freezer');
+        final row = h.sink.rows.single;
+        expect(row.itemKey, 'panel.release');
+        expect(row.allowed, isFalse,
+            reason: 'a refused release is somebody trying to decommission a '
+                'panel, and that is worth a row');
+      });
+
+      test('writes nothing when the panel is not committed', () async {
+        final h = await panel();
+        await h.settle();
+        await h.notifier.signIn('jon', 'correct horse');
+        h.sink.rows.clear();
+
+        expect(await h.notifier.releasePanelAccount(), isFalse);
+        expect(h.sink.rows, isEmpty);
+      });
+
+      test('keeps the station-account flag through a role refresh', () async {
+        // `refreshGroupsFromRoles` rebuilt the user without it, so any admin
+        // write on the panel's own screen turned the panel into a person —
+        // with a sign-out and a change-password entry.
+        final h = await committed();
+
+        await h.notifier.refreshGroupsFromRoles();
+
+        expect(h.session!.user!.stationAccount, isTrue);
+      });
     });
 
     test('the commitment survives a restart', () async {
@@ -1147,7 +1247,7 @@ void main() {
       );
     });
 
-    test('signing out of a freshly signed-in panel account un-commits it too',
+    test('a fresh sign-in as the panel account is the panel\'s session',
         () async {
       final h = await committed();
       // Reachable: the commit prompt is suppressed when the panel already
@@ -1155,11 +1255,26 @@ void main() {
       // ever having been resumed into.
       await h.notifier.signIn('freezer', 'panel pw');
 
+      expect(await h.storedPayload(), isNull,
+          reason: 'no copy in the human slot, exactly as for a resume');
+
       await h.notifier.signOut();
 
-      expect(await h.panelAccountPref(), isNull,
-          reason: 'one sign-out, as the dialog promised — not two');
-      expect(h.session!.isElevated, isFalse);
+      expect(await h.panelAccountPref(), 'freezer');
+      expect(h.session!.user!.username, 'freezer',
+          reason: 'the same refusal the resumed panel gets');
+    });
+
+    test('a person signing in over the panel writes no logout for it',
+        () async {
+      // The panel is not ending — it is the floor this session returns to, and
+      // `session.resume` marks that when it happens.
+      final h = await committed();
+      h.sink.rows.clear();
+
+      await h.notifier.signIn('jon', 'correct horse');
+
+      expect(h.authItemKeys, ['login']);
     });
 
     test('the panel comes back when the database does', () async {
