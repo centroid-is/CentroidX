@@ -137,8 +137,54 @@ jobs:
           sys.exit(rc)
           EOF
 
-  build:
+  # The setup app the installer USB shows on screen. Built in the same toolchain
+  # container as the HMI's elinux bundle (centroid-hmi.yml's elinux-build), so
+  # the engine and the flutter-elinux that produced it are the ones the embedder
+  # in that container was built against -- a mismatch there fails at link time,
+  # not at runtime.
+  setup-app:
     needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/centroid-is/tfc-toolchain:latest
+    defaults:
+      run:
+        working-directory: os/app
+    steps:
+      - name: Make safe directory
+        run: git config --system --add safe.directory '*'
+        working-directory: .
+      - uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+      - name: Checkout (retry)
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v4
+
+      # elinux/ is generated, not committed: it is a platform runner that
+      # flutter-elinux owns and regenerates, and committing it would pin us to
+      # whatever version first created it.
+      - name: Add the elinux platform
+        run: flutter-elinux create --platforms=elinux .
+
+      - name: Dependencies
+        run: flutter-elinux pub get
+
+      - name: Build the bundle
+        run: flutter-elinux build elinux --release
+
+      - name: Bundle contents
+        run: ls -la build/elinux/x64/release/bundle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup-app-bundle
+          path: os/app/build/elinux/x64/release/bundle
+          retention-days: 14
+
+  build:
+    needs: [ validate, setup-app ]
     # Building the image on every PR would be a 30-minute tax on a review. Main,
     # a station tag, or asked for by hand.
     if: github.event_name != 'pull_request'
@@ -170,6 +216,64 @@ jobs:
       - name: Install host tools
         run: sudo apt-get update && sudo apt-get install -y bmap-tools zstd
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: setup-app-bundle
+          path: os/out/app-bundle
+
+      # upload/download-artifact does not preserve the executable bit, so the
+      # app arrives mode 0644 and every `-x` test on it is false. That silently
+      # selected the text installer on the first green build -- the graceful
+      # fallback working so well it hid the failure.
+      - name: Restore the executable bit the artifact dropped
+        working-directory: .
+        run: |
+          set -euo pipefail
+          found=0
+          for b in flutter_elinux_wayland centroidx_setup; do
+            if [ -f "os/out/app-bundle/$b" ]; then
+              chmod 755 "os/out/app-bundle/$b"; found=1
+              echo "setup app binary: $b"
+            fi
+          done
+          [ "$found" = 1 ] || { echo "::error::no setup app binary in the bundle"; exit 1; }
+
+      # The on-screen keyboard is built in centroid-is/dockers, not here, and is
+      # a plain Wayland client (libwayland, cairo, xkbcommon -- it does not link
+      # libweston), so the binary from that image runs against trixie's weston
+      # 14. Taken from the published image rather than rebuilt: building it needs
+      # `apt-get build-dep weston`, which is ~7 minutes for one 52KB binary.
+      - name: Take centroidx-keyboard from the weston image
+        working-directory: .
+        run: |
+          set -euo pipefail
+          docker pull ghcr.io/centroid-is/weston:latest
+          docker create --name kb ghcr.io/centroid-is/weston:latest
+          mkdir -p os/out
+          mkdir -p os/out/bin
+          docker cp kb:/usr/local/bin/centroidx-keyboard os/out/bin/centroidx-keyboard
+          docker rm kb
+          chmod 755 os/out/bin/centroidx-keyboard
+          file os/out/bin/centroidx-keyboard
+
+          # docker/frontend/Dockerfile:4 records that the bundle ships a
+          # libflutter_elinux_wayland.so which is WRONG for the engine it was
+          # built with, and rebuilds a matched one. The published HMI image
+          # already contains that matched .so, built in the same toolchain
+          # container as our bundle, so take it rather than rebuild the embedder
+          # here. If the two ever diverge this fails loudly at app startup, not
+          # silently.
+          docker pull ghcr.io/centroid-is/centroid-hmi:latest
+          docker create --name hmi ghcr.io/centroid-is/centroid-hmi:latest
+          # /flutter-app/lib, verified against the published image. NOT tolerated
+          # on failure: the bundle's own .so does not match its engine, so
+          # falling back to it ships a stick that shows a blank screen. A build
+          # that cannot find this should fail, not warn.
+          docker cp hmi:/flutter-app/lib/libflutter_elinux_wayland.so \
+            os/out/app-bundle/lib/libflutter_elinux_wayland.so
+          docker rm hmi
+          ls -la os/out/app-bundle/lib/libflutter_elinux_wayland.so
+
       - name: Free up disk
         run: |
           # An 8GB image plus a 16GB USB image plus debos scratch does not fit
@@ -187,6 +291,70 @@ jobs:
 
       - name: Build installer USB
         run: make usb DOCKER_TTY=
+
+      # The first green build shipped a text-only installer: the bundle was
+      # present but not executable, so installer-setup.sh took the fallback
+      # branch and nothing said so. Three passing jobs told us nothing about
+      # which installer the image actually enables, so assert it on the artifact
+      # itself rather than on the steps that produced it.
+      # The first green build shipped a text-only installer: the bundle was
+      # present but not executable, so installer-setup.sh took the fallback
+      # branch and nothing said so. Three passing jobs told us nothing about
+      # which installer the image actually enables, so assert it on the artifact
+      # itself rather than on the steps that produced it.
+      - name: Assert the built USB is the graphical installer
+        run: |
+          # NOT -e. GitHub runs steps with `bash -e`, under which a failing
+          # `[ ... ]` aborts the script -- so the first failed check killed it
+          # before it could say which one, and reported nothing at all.
+          set +e
+          set -uo pipefail
+          img=$(mktemp /tmp/usb-XXXX.img)
+          gunzip -c out/usb-installer.img.gz > "$img" || { echo "::error::could not decompress the USB image"; exit 1; }
+          loop=$(sudo losetup -f --show -P "$img")
+          [ -n "$loop" ] || { echo "::error::losetup failed"; exit 1; }
+          sudo udevadm settle
+          mnt=$(mktemp -d)
+          if ! sudo mount -o ro "${loop}p2" "$mnt"; then
+            echo "::error::could not mount ${loop}p2"
+            lsblk "$loop" || true
+            sudo losetup -d "$loop"; exit 1
+          fi
+
+          fail=0
+          ck() { # ck DESCRIPTION  (body already run; $1 desc, $2 rc)
+            if [ "$2" = 0 ]; then printf '  ok    %s\n' "$1"
+            else printf '  FAIL  %s\n' "$1"; printf '::error::%s\n' "$1"; fail=1; fi
+          }
+          t() { # t DESCRIPTION TEST...
+            local d="$1"; shift
+            "$@" >/dev/null 2>&1; ck "$d" $?
+          }
+          # -L, not -e. systemctl enable writes an ABSOLUTE symlink
+          # (-> /etc/systemd/system/centroidx-gui.service), and inside a mounted
+          # image that resolves against the RUNNER's root, where it does not
+          # exist -- so `test -e` was false for a link sitting right there, and
+          # the negated check on the text installer passed vacuously because it
+          # could never be true either way. -L tests the link itself.
+          W="$mnt/etc/systemd/system/multi-user.target.wants"
+          t "graphical installer enabled"                       test -L "$W/centroidx-gui.service"
+          t "text installer not also enabled (OnFailure only)"  test ! -L "$W/centroidx-installer.service"
+          t "setup app binary present"                          sh -c "test -f '$mnt/opt/centroidx-setup/centroidx_setup' -o -f '$mnt/opt/centroidx-setup/flutter_elinux_wayland'"
+          t "setup app binary executable"                       sh -c "test -x '$mnt/opt/centroidx-setup/centroidx_setup' -o -x '$mnt/opt/centroidx-setup/flutter_elinux_wayland'"
+          t "matched embedder present"                          test -s "$mnt/opt/centroidx-setup/lib/libflutter_elinux_wayland.so"
+          t "on-screen keyboard executable"                     test -x "$mnt/usr/local/bin/centroidx-keyboard"
+          t "launcher executable"                               test -x "$mnt/usr/local/bin/centroidx-setup"
+          t "weston input-method points at the keyboard"        grep -q "^path=/usr/local/bin/centroidx-keyboard" "$mnt/etc/xdg/weston/weston.ini"
+          t "weston installed"                                  test -e "$mnt/usr/bin/weston"
+
+          if [ "$fail" != 0 ]; then
+            echo "--- enabled units ---";        ls -la "$W" 2>&1 | head -20
+            echo "--- /opt/centroidx-setup ---"; ls -la "$mnt/opt/centroidx-setup" 2>&1 | head -20
+            echo "--- /usr/local/bin ---";       ls -la "$mnt/usr/local/bin" 2>&1 | head -20
+          fi
+
+          sudo umount "$mnt"; sudo losetup -d "$loop"; rm -f "$img"
+          exit $fail
 
       - name: Checksums and provenance
         run: |

@@ -1,0 +1,28 @@
+[Unit]
+Description=CentroidX station installer (graphical)
+After=local-fs.target seatd.service systemd-udev-settle.service
+Wants=seatd.service systemd-udev-settle.service
+Conflicts=getty@tty1.service
+# Hand over to the text installer if weston or the app cannot start -- a panel
+# with no GPU, a missing bundle, a compositor that will not take the DRM device.
+# A blank screen with no way forward is the one outcome worth engineering around.
+OnFailure=centroidx-installer.service
+
+[Service]
+Type=simple
+Environment=XDG_RUNTIME_DIR=/run/centroidx-gui
+RuntimeDirectory=centroidx-gui
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/weston --config=/etc/xdg/weston/weston.ini --log=/run/centroidx-gui/weston.log
+# weston exits when the app does (autolaunch watch=true). A successful install
+# reboots from inside the app, so reaching here at all means something stopped.
+Restart=no
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+
+[Install]
+WantedBy=multi-user.target

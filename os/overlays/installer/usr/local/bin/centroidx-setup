@@ -1,0 +1,19 @@
+#!/bin/sh
+# Launches the Flutter setup app inside weston.
+#
+# --onscreen-keyboard is what makes the embedder advertise text-input, so
+# focusing a field raises the keyboard. Without it the panel never appears and
+# the app is unusable on a machine with no physical keyboard.
+set -eu
+cd /opt/centroidx-setup
+
+# flutter-elinux names the binary after its runner, not the project; accept
+# either rather than hardcode and break on a tooling change.
+for b in flutter_elinux_wayland centroidx_setup; do
+  if [ -x "./$b" ]; then
+    exec env LD_LIBRARY_PATH=./lib "./$b" \
+      --bundle=. --fullscreen --onscreen-keyboard
+  fi
+done
+echo "no setup app binary in /opt/centroidx-setup" >&2
+exit 1

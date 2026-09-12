@@ -37,6 +37,18 @@ actions:
       - dosfstools
       - kbd
       - ncurses-bin
+      # The graphical front end: weston for a display, seatd for the DRM/input
+      # seat (on bare metal a systemd service, not the separate privileged
+      # container the station uses), mesa for the GL renderer.
+      - weston
+      - seatd
+      - libinput10
+      - libgl1-mesa-dri
+      - libgbm1
+      - fonts-dejavu-core
+      # `wg genkey`/`wg pubkey`: the station's private key is generated here, on
+      # the machine being installed, and never travels on the stick.
+      - wireguard-tools
       - ca-certificates
       # all-hardware: the stick has to boot machines nobody profiled first
       - firmware-misc-nonfree
@@ -50,6 +62,19 @@ actions:
     source: out/payload
     destination: /opt/centroidx
     description: Station image payload
+
+  # Built by the setup-app CI job (flutter-elinux) and downloaded into out/.
+  # Empty on a local `make usb`, which yields a text-only installer -- the
+  # graphical unit only enables itself when it finds a binary here.
+  - action: overlay
+    source: out/app-bundle
+    destination: /opt/centroidx-setup
+    description: Setup app bundle
+
+  - action: overlay
+    source: out/bin
+    destination: /usr/local/bin
+    description: centroidx-keyboard and the matched embedder
 
   - action: run
     chroot: true
