@@ -639,14 +639,58 @@ class KeyMappings {
   KeyMappings({required this.nodes});
 
   (NodeId, int?)? lookupNodeId(String key) {
-    return nodes[key]?.opcuaNode?.toNodeId();
+    final direct = nodes[key]?.opcuaNode?.toNodeId();
+    if (direct != null) return direct;
+    final derived = _derive(key);
+    if (derived == null) return null;
+    final (node, suffix) = derived;
+    return (NodeId.fromString(node.namespace, node.identifier + suffix), null);
   }
 
   String? lookupServerAlias(String key) {
     final entry = nodes[key];
-    return entry?.opcuaNode?.serverAlias ??
-        entry?.m2400Node?.serverAlias ??
-        entry?.modbusNode?.serverAlias;
+    if (entry != null) {
+      return entry.opcuaNode?.serverAlias ??
+          entry.m2400Node?.serverAlias ??
+          entry.modbusNode?.serverAlias;
+    }
+    return _derive(key)?.$1.serverAlias;
+  }
+
+  /// What may follow a mapped key to name one of its children: an element
+  /// index first, then any mix of further indices and `.member` steps.
+  static final RegExp _derivedSuffix =
+      RegExp(r'^\[\d+\](?:\[\d+\]|\.[A-Za-z_][A-Za-z0-9_]*)*$');
+
+  /// [key] read as a mapped array node plus a path into it, or null.
+  ///
+  /// `ECT.Diag[17].p_cmd_reset`, with `ECT.Diag` mapped to the string node
+  /// `ECT_Diag.Device_1_Diag`, names `ECT_Diag.Device_1_Diag[17].p_cmd_reset`
+  /// on the same server. That is how TwinCAT spells the child nodes it
+  /// publishes, so a single BOOL deep in a 128-element array can be written
+  /// without a key mapping of its own — and without writing the whole array
+  /// back to change one bit of it.
+  ///
+  /// Deliberately narrow. The suffix must start with an element index, so a
+  /// misspelt dotted key (`SPB01.CN01.FD01` when only `SPB01.CN01` exists)
+  /// still reads as unmapped rather than as a child nobody meant. Only string
+  /// identifiers qualify — a numeric node id has no path to append to — and
+  /// only a mapping without an `array_index`, which already names one element.
+  /// The longest mapped prefix wins. Nothing here is persisted: a derived key
+  /// is a way of naming a child, not a mapping.
+  (OpcUANodeConfig, String)? _derive(String key) {
+    for (var i = key.lastIndexOf('['); i > 0; i = key.lastIndexOf('[', i - 1)) {
+      final node = nodes[key.substring(0, i)]?.opcuaNode;
+      if (node == null) continue;
+      final suffix = key.substring(i);
+      if (node.arrayIndex != null ||
+          int.tryParse(node.identifier) != null ||
+          !_derivedSuffix.hasMatch(suffix)) {
+        return null;
+      }
+      return (node, suffix);
+    }
+    return null;
   }
 
   String? lookupKey(NodeId nodeId) {
