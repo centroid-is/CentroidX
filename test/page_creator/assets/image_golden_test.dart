@@ -27,6 +27,7 @@ import 'package:tfc/providers/page_images.dart';
 import '../../helpers/golden_tolerance.dart';
 import '../../helpers/image_fixtures.dart';
 import '../../helpers/page_editor_harness.dart';
+import '../../helpers/golden_platform.dart';
 
 const _boundaryKey = Key('image_asset_golden');
 
@@ -101,7 +102,7 @@ Future<void> _expectGolden(WidgetTester tester, String name,
 
 void main() {
   group('Image asset golden tests',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     // Same font wiring as page_editor_golden_test.dart: without a real text
     // font the fit labels render as Ahem blocks, and without MaterialIcons
     // the placeholder/broken glyphs are boxes.

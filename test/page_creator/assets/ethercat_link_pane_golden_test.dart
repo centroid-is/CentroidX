@@ -8,6 +8,7 @@ import 'package:tfc/page_creator/assets/ethercat_link_pane.dart';
 import 'package:tfc/theme.dart';
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 const _key = Key('ethercat_link_pane');
 
@@ -82,7 +83,7 @@ void main() {
   useTolerantGoldenComparator();
 
   group('EtherCAT link pane',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('a cable that has held since commissioning', (tester) async {
       // 412 days: past where a 32-bit millisecond TIME would have saturated,
       // which is the whole reason the PLC counts minutes.

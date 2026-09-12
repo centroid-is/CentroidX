@@ -11,6 +11,7 @@ import 'package:tfc/theme.dart' show solarized;
 import 'package:tfc/widgets/alarm.dart' show alarmLevelColors;
 import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
+import '../../helpers/golden_platform.dart';
 
 const _beaconKey = Key('alarm_beacon_golden');
 
@@ -179,7 +180,7 @@ void main() {
   setUpAll(_loadFonts);
 
   group('Alarm beacon golden tests',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('error pulse cycle', (tester) async {
       await tester.pumpWidget(
           buildFilmstrip(level: AlarmLevel.error, progresses: phases));

@@ -42,6 +42,11 @@ cp "$REPO/packages/tfc_dart/pubspec.lock" "$WT/packages/tfc_dart/"
 mkdir -p "$WT/.dart_tool/hooks_runner"
 cp -c -R "$REPO/.dart_tool/hooks_runner/shared" "$WT/.dart_tool/hooks_runner/"
 find "$WT/.dart_tool/hooks_runner/shared" -type d -name build -path "*src*" -prune -exec rm -rf {} +
+# The line above misses open62541's own downloaded sources, which are a level
+# deeper. Leave them and the first `flutter test` dies with "patch does not
+# apply" — the hook re-patches a tree it already patched.
+rm -rf "$WT/.dart_tool/hooks_runner/shared/open62541/build/dl/src" \
+       "$WT/.dart_tool/hooks_runner/shared/open62541/build/tls/src"
 cd "$WT" && flutter pub get
 ./scripts/check-flutter-version.sh
 ```
@@ -85,11 +90,27 @@ Conventions that reviews get bounced on:
 - **Widget tests** mock OPC UA with a local `_FakeStateMan implements
   StateMan` (see `test/page_creator/assets/start_stop_button_widget_test.dart`)
   and override `stateManProvider`.
-- **Goldens**: every visual change gets a golden test, and the PNG must be
-  inspected by eye before calling the work done. Generate with
-  `flutter test --update-goldens <file>` — but read `/finish` Phase 2 first,
-  because that flag rewrites every golden the file produces, not just the
-  failing ones. Tolerance is handled by `test/helpers/golden_tolerance.dart`.
+- **Goldens are rendered on Linux, in a container** — `scripts/goldens.sh`,
+  built from `docker/goldens/`. Every visual change gets a golden test, and the
+  PNG must be inspected by eye before calling the work done:
+
+  ```sh
+  scripts/goldens.sh test/widgets/my_thing_test.dart          # verify
+  scripts/goldens.sh --update test/widgets/my_thing_test.dart # re-baseline
+  ```
+
+  Do not run `flutter test --update-goldens` natively on the Mac: macOS
+  rasterises glyphs through CoreText, which belongs to the OS, so the PNGs will
+  not match what CI compares. Pass the specific file — `--update` rewrites
+  every golden the run produces, not just the failing ones (`/finish` Phase 2).
+  Platform gating comes from `test/helpers/golden_platform.dart`: `goldenSkip`
+  for `group`/`test`, `goldenSkipFlag` for `testWidgets`, which types `skip` as
+  `bool?` and cannot take a reason string. Tolerance lives in
+  `test/helpers/golden_tolerance.dart`.
+
+  First container run takes a few minutes to build the image, then it is
+  cached. It runs on your machine's native architecture — amd64 and arm64 were
+  measured producing byte-identical goldens, so no emulation is involved.
 - **Colors**: muted equipment-state colors via the theme
   (`HmiStateColors` / `PaneStatus`), never raw `Colors.*`; only fault red
   may be saturated. Forced/override state is **orange** by repo convention.

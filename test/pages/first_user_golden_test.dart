@@ -35,6 +35,7 @@ import 'package:tfc/pages/first_user.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/theme.dart' show muted;
 import 'package:tfc_dart/core/access/access_repository.dart';
+import '../helpers/golden_platform.dart';
 
 const _boundary = Key('access_first_user_golden');
 
@@ -156,7 +157,7 @@ void main() {
   tearDownAll(() => EditableText.debugDeterministicCursor = false);
 
   group('first-user goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('the commissioning window, open', (tester) async {
       _sizeView(tester, const Size(640, 800));
       await tester.pumpWidget(_host(theme: light, windowOpen: true));

@@ -625,11 +625,10 @@ Read each new or changed PNG and confirm:
 - Muted equipment-state colours throughout, only fault red saturated, orange
   reserved for forced/override and elevation.
 
-Generate with `flutter test --update-goldens --run-skipped <file>`, confirm it
-then passes *without* `--update-goldens`, and never generate on an SDK that
-fails `./scripts/check-flutter-version.sh` — a golden made on the wrong SDK can
-land just inside tolerance and leave the next person an image already most of
-the way to failing.
+Generate with `scripts/goldens.sh --update <file>`, then confirm it passes
+without `--update`. The script renders on Linux inside the pinned image from
+`docker/goldens/`, which is where goldens are compared — it reads
+`.flutter-version` itself, so there is no longer an SDK to get wrong.
 
 ---
 
@@ -645,9 +644,9 @@ Things that will cost days if rediscovered:
 - **Widget tests** mock OPC UA with a local `_FakeStateMan implements StateMan`
   and override `stateManProvider` — see
   `test/page_creator/assets/start_stop_button_widget_test.dart`.
-- **Goldens**: macOS only, generated with
-  `flutter test --update-goldens --run-skipped <file>`, and the pinned SDK must
-  pass `./scripts/check-flutter-version.sh` first. Look at the PNGs.
+- **Goldens**: Linux only, generated with `scripts/goldens.sh --update <file>`
+  — which renders in the pinned container, so a Mac and a Windows box produce
+  the same PNGs as CI. Look at the PNGs.
 - **Colours** come from `HmiStateColors` / `PaneStatus`, never raw `Colors.*`.
   Forced/override is orange by repo convention — reuse it for the elevated
   state, it is the same idea.

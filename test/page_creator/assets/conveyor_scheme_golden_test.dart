@@ -1,4 +1,3 @@
-import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +6,7 @@ import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/conveyor.dart';
 import 'package:tfc/page_creator/assets/led.dart';
 import 'package:tfc/theme.dart';
+import '../../helpers/golden_platform.dart';
 
 const _key = Key('conveyor_scheme_test');
 
@@ -86,7 +86,7 @@ Widget buildSchemeScenario(ThemeData theme) {
 
 void main() {
   group('Conveyor color scheme golden tests',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     final cases = <String, ThemeData>{
       'solarized_light': solarized().$1,
       'solarized_dark': solarized().$2,

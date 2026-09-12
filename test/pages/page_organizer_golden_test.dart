@@ -30,6 +30,7 @@ import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/route_registry.dart';
+import '../helpers/golden_platform.dart';
 
 /// Room for the dialog at its natural 590px plus the editor behind it.
 const Size _viewport = Size(1100, 900);
@@ -210,7 +211,7 @@ void main() {
   });
 
   group('the Pages organizer',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     _testGolden('renaming shows the address it is keeping', (tester) async {
       final localPrefs = _FakePreferences();
       await localPrefs.setString(startupUrlPrefsKey, '/packing/weigher');

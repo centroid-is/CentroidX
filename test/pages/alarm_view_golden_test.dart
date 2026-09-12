@@ -27,6 +27,7 @@ import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
 
 import '../helpers/golden_tolerance.dart';
+import '../helpers/golden_platform.dart';
 
 /// Fixed clock, so the live edge of the timeline is reproducible.
 final now = DateTime(2026, 8, 29, 14, 22);
@@ -177,9 +178,7 @@ Future<void> _pumpPage(WidgetTester tester, {required bool dark}) async {
 final _body = find.byKey(const ValueKey('alarm-view-body'));
 
 void main() {
-  // A near-full-window surface has more room to drift than the 0.01%
-  // default allows for even on the pinned SDK.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   setUp(() {
     // BaseScaffold's navigation bar asserts on at least two destinations.
@@ -193,7 +192,7 @@ void main() {
   tearDown(() => RouteRegistry().menuItems.clear());
 
   group('alarm page goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('the lists, with the Alarms/Downtime header row — light',
         (tester) async {
       await _pumpPage(tester, dark: false);

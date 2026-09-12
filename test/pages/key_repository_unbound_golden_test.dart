@@ -78,6 +78,7 @@ import 'package:tfc_dart/core/secure_storage/interface.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../helpers/golden_tolerance.dart';
+import '../helpers/golden_platform.dart';
 
 // ---------------------------------------------------------------------------
 // Fixtures — this file's own
@@ -280,12 +281,10 @@ Future<void> _loadRealFonts() async {
 void main() {
   final (light, _) = muted();
 
-  // A full page of real text: the 0.01% default absorbs antialiasing drift on
-  // small painter goldens, not on a frame this size.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('key repository unbound-surface golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(_loadRealFonts);
 
     late AppDatabase db;

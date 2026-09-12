@@ -9,6 +9,7 @@ import 'package:tfc/providers/alarm.dart';
 import 'package:tfc/theme.dart';
 import 'package:tfc/widgets/alarm.dart';
 import 'package:tfc_dart/core/alarm.dart';
+import '../helpers/golden_platform.dart';
 
 /// Text in a golden needs a real font, or every glyph is an Ahem box.
 ///
@@ -94,7 +95,7 @@ void main() {
           find.byType(AlarmForm),
           matchesGoldenFile('goldens/alarm_form_group_$name.png'),
         );
-      }, skip: !Platform.isMacOS);
+      }, skip: goldenSkipFlag);
 
       testWidgets('alarm bound to its group ($name)', (tester) async {
         await loadRealFont();
@@ -111,7 +112,7 @@ void main() {
           find.byType(AlarmForm),
           matchesGoldenFile('goldens/alarm_form_group_bound_$name.png'),
         );
-      }, skip: !Platform.isMacOS);
+      }, skip: goldenSkipFlag);
     }
 
     testWidgets('ungrouped alarm disables the bind switch', (tester) async {
@@ -128,6 +129,6 @@ void main() {
         find.byType(AlarmForm),
         matchesGoldenFile('goldens/alarm_form_group_ungrouped.png'),
       );
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
   });
 }

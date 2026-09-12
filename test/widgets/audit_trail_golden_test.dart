@@ -98,6 +98,7 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 
 import 'audit_trail_fixture.dart';
+import '../helpers/golden_platform.dart';
 
 /// The captured subtree. One key for every image in this file: each test pumps
 /// its own host, so there is never more than one of these on screen.
@@ -414,7 +415,7 @@ void main() {
   tearDownAll(() => EditableText.debugDeterministicCursor = false);
 
   group('audit trail goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('the default view, with something in it', (tester) async {
       _sizeView(tester, const Size(1100, 700));
       await tester.pumpWidget(_bodyHost(

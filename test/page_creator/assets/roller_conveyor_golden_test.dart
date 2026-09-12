@@ -5,6 +5,7 @@ import 'package:flutter/services.dart' show FontLoader;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/conveyor.dart';
 import 'package:tfc/theme.dart';
+import '../../helpers/golden_platform.dart';
 
 const _key = Key('roller_conveyor_golden');
 
@@ -190,7 +191,7 @@ Widget buildRollerScenario(ThemeData theme) {
 
 void main() {
   group('Roller conveyor and wagon golden tests',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(loadRealFont);
     final cases = <String, ThemeData>{
       'solarized_light': solarized().$1,

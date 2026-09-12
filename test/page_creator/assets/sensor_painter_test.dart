@@ -1,9 +1,9 @@
-import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/sensor.dart';
 import 'package:tfc/page_creator/assets/sensor_painter.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Tests for the three sensor `CustomPainter` subclasses defined in
 /// `lib/page_creator/assets/sensor_painter.dart` and the `Asset.text` routing
@@ -315,7 +315,7 @@ void main() {
   // golden file so the matrix file-name set is explicit and complete.
   //
   // Skipped on non-macOS to match the existing project convention in
-  // `conveyor_gate_golden_test.dart` (Platform.isMacOS guard) — Pitfall 6
+  // `conveyor_gate_golden_test.dart` (goldenSkip guard) — Pitfall 6
   // determinism: goldens are captured on macOS only.
   //
   // Each test inlines its own `SizedBox(width: 256, height: 128)` and a
@@ -326,7 +326,7 @@ void main() {
   const goldenKey = Key('sensor_golden');
 
   group('Golden matrix',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     // 1. Red light — clear (isActive=false, normal polarity)
     testWidgets('red_light_clear', (tester) async {
       await tester.pumpWidget(MaterialApp(
