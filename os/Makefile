@@ -150,7 +150,6 @@ print-recipe: generated
 .PHONY: verify-keys
 verify-keys:
 	@echo "1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570  overlays/base/etc/apt/keyrings/docker.asc" | shasum -a 256 -c -
-	@echo "bc3e1dc91a891aab76d730c3683b3b93515fe52cda4f83980c8694fa782fba3c  overlays/base/etc/apt/keyrings/zerotier.asc" | shasum -a 256 -c -
 
 # ----------------------------------------------------------------- test boot
 # The tfc-nix test loop: boot the installer against a blank NVMe under OVMF and

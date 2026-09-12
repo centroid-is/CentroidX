@@ -1,5 +1,8 @@
 {{- $image := or .image "centroidx.img" -}}
 {{- $imagesize := or .imagesize "8GB" -}}
+{{- $suite := or .suite "trixie" -}}
+{{- $gpu := or .gpu "intel" -}}
+{{- $mirror := or .mirror "http://deb.debian.org/debian" -}}
 # Bootable station image. Flash onto an SSD with bmaptool; it grows to the disk
 # on first boot.
 architecture: amd64
@@ -7,6 +10,16 @@ architecture: amd64
 actions:
   - action: recipe
     recipe: rootfs.yaml
+    # These MUST be listed. debos's recipe action starts the sub-recipe's
+    # template map empty and copies in only this block -- the parent's -t
+    # arguments are not inherited (actions/recipe_action.go). Without them
+    # `make image GPU=amd` silently built the Intel image while image-info said
+    # amd, and `make print-recipe` went through the same path so it could not
+    # show the difference either. (Review #4.)
+    variables:
+      suite: {{ $suite }}
+      gpu: {{ $gpu }}
+      mirror: {{ $mirror }}
 
   - action: image-partition
     imagename: {{ $image }}

@@ -45,6 +45,8 @@ actions:
       - systemd-timesyncd
       - udev
       - grub-efi-amd64
+      - grub-efi-amd64-signed
+      - shim-signed
       - efibootmgr
       - plymouth
       - plymouth-themes
@@ -82,7 +84,11 @@ actions:
       - containerd.io
       - docker-buildx-plugin
       - docker-compose-plugin
-      - zerotier-one
+      # Remote access. ZeroTier was dropped over its licence; the migrated
+      # station runs wg-quick@wg0, and an image that reinstalled ZeroTier would
+      # walk the fleet backwards. (Review #8.)
+      - wireguard
+      - wireguard-tools
       # GPU. The HMI renders through /dev/dri/renderD128 and falls back to
       # llvmpipe in software if the driver is missing -- silently, at ~12
       # threads of CPU. See docker-compose.yml:117.
@@ -98,6 +104,23 @@ actions:
       - firmware-amd-graphics
       - libdrm-amdgpu1
 {{ end }}
+
+  # wg-obfuscator is not in Debian: upstream ships a statically linked x86-64
+  # binary per release, pinned here by sha256 the same way the archive keys are.
+  # v1.6 is a step up from the ab65bea dev build on the deployed station -- the
+  # nearest tagged release at or after it.
+  - action: download
+    url: https://github.com/ClusterM/wg-obfuscator/releases/download/v1.6/wg-obfuscator-v1.6-linux-x64.tar.gz
+    name: wg-obfuscator
+    filename: wg-obfuscator.tar.gz
+    unpack: true
+    compression: gz
+    sha256sum: af30264278c70c2e53ad3234e8050686b3bef4f6564edc9fb068ea8c885b8354
+
+  - action: overlay
+    origin: wg-obfuscator
+    destination: /opt/wg-obfuscator
+    description: wg-obfuscator release tree
 
   # Fetched, not committed: the station's compose file at a pinned CentroidX ref,
   # the provenance stamp, and any container tarballs staged by `make preload`.

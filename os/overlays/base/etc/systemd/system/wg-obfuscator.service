@@ -1,0 +1,29 @@
+[Unit]
+Description=WireGuard obfuscator (DPI evasion in front of wg0)
+Documentation=https://github.com/ClusterM/wg-obfuscator
+# The tunnel is pointed at this process's local port, so it has to be listening
+# before wg-quick brings the interface up.
+Before=wg-quick@wg0.service
+After=network-pre.target
+Wants=network-pre.target
+# Per-station: it carries the endpoint and the shared obfuscation key, so it is
+# provisioned at install time, not baked into the image.
+ConditionPathExists=/etc/wg-obfuscator.conf
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/wg-obfuscator -c /etc/wg-obfuscator.conf
+Restart=always
+RestartSec=5
+# It only needs a UDP socket.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

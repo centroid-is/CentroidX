@@ -199,6 +199,21 @@ fi
 
 install -d -o centroid -g centroid -m 0755 "$HOME_DIR/docker-update"
 
+# Remote access. Enabled here rather than in the image because both units need a
+# per-station config that does not exist until the installer has written it, and
+# an enabled unit with no config is a failed unit on every boot. (Review #8.)
+if [ -r /etc/wg-obfuscator.conf ]; then
+  log "enabling wg-obfuscator"
+  systemctl enable --now wg-obfuscator.service || log "WARNING: wg-obfuscator did not start"
+fi
+if [ -r /etc/wireguard/wg0.conf ]; then
+  log "enabling wg-quick@wg0"
+  systemctl enable --now wg-quick@wg0.service || log "WARNING: wg-quick@wg0 did not come up"
+else
+  log "WARNING: no /etc/wireguard/wg0.conf - this station has NO remote access."
+  log "         Install one, then: systemctl enable --now wg-quick@wg0"
+fi
+
 # Container images staged into the image by `make preload`. Loading them makes
 # the first start work with no network at all; deleting them afterwards gives
 # back the disk they were costing twice.

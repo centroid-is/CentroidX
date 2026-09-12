@@ -11,11 +11,8 @@
 Unattended-Upgrade::Origins-Pattern {
         "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
 
-        // ZeroTier is network-facing and runs as root, so it is worth taking
-        // unattended. Matched by site: their Release file templates the
-        // codename into Origin and Label ("Origin: trixie trixie"), and its
-        // n=trixie collides with Debian's own main archive.
-        "site=download.zerotier.com";
+        // WireGuard comes from Debian proper, so it is already covered by the
+        // line above. There is no third-party VPN archive on this image.
 
         // docker-ce is DELIBERATELY ABSENT. Its postinst restarts dockerd,
         // which bounces every container including the HMI the operator is

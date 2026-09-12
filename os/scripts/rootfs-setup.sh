@@ -47,7 +47,10 @@ log "units"
 systemctl enable NetworkManager.service
 systemctl enable docker.service containerd.service
 systemctl enable ssh.service
-systemctl enable zerotier-one.service
+# wg-quick@wg0 and wg-obfuscator are NOT enabled here: both need a per-station
+# config that only exists after the installer has written it, and an enabled
+# unit with no config is a failed unit on every boot. centroidx-firstboot
+# enables them when it finds their files. (Review #8.)
 systemctl enable centroidx-firstboot.service
 systemctl enable unattended-upgrades.service
 # ifupdown would otherwise race NetworkManager for the interface. The playbook
@@ -60,7 +63,12 @@ log "firewall"
 # ports straight into the nat/DOCKER chain, which ufw's INPUT rules never see --
 # so every `ports:` entry in docker-compose.yml is reachable whether or not it is
 # listed here. Restricting those needs rules in the DOCKER-USER chain instead.
-# Deliberately not done yet; the stations sit on a ZeroTier/plant network.
+#
+# This used to be waved through with "the stations sit on a ZeroTier/plant
+# network". That premise is gone with ZeroTier, and it is what justified leaving
+# 5900 open -- the VNC whose password this repo is busy moving out of git. The
+# containers' published ports are still unprotected by ufw; DOCKER-USER rules
+# are the fix and are not written yet. (Review #8.)
 ufw --force reset >/dev/null 2>&1 || true
 ufw allow 22/tcp    comment 'ssh'
 ufw allow 5900/tcp  comment 'weston VNC (container; see note above)'
@@ -72,6 +80,18 @@ sed -i 's/^ENABLED=.*/ENABLED=yes/' /etc/ufw/ufw.conf
 systemctl enable ufw.service
 
 # -------------------------------------------------------------------- plymouth
+log "wg-obfuscator"
+# Downloaded and unpacked by the recipe, pinned by sha256. Statically linked, so
+# it carries no runtime dependency into the image.
+install -m 0755 -o root -g root /opt/wg-obfuscator/wg-obfuscator/wg-obfuscator /usr/bin/wg-obfuscator
+install -d -m 0755 /usr/share/doc/wg-obfuscator
+install -m 0644 /opt/wg-obfuscator/wg-obfuscator/wg-obfuscator.conf \
+                /usr/share/doc/wg-obfuscator/wg-obfuscator.conf.example
+install -m 0644 /opt/wg-obfuscator/wg-obfuscator/LICENSE /usr/share/doc/wg-obfuscator/LICENSE
+rm -rf /opt/wg-obfuscator
+chmod 0644 /etc/systemd/system/wg-obfuscator.service
+install -d -m 0700 /etc/wireguard
+
 log "boot splash"
 # bgrt reuses the logo the UEFI firmware already put on screen, so the panel
 # never flashes a Debian swirl at an operator.

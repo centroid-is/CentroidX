@@ -212,6 +212,23 @@ seed_station_conf() {
   } > "$TARGET_MNT/etc/centroid/station.conf"
   chmod 0600 "$TARGET_MNT/etc/centroid/station.conf"
   echo "${STATION_NAME}" > "$TARGET_MNT/etc/hostname"
+
+  # Remote access is per-station: wg0.conf carries this machine's private key
+  # and wg-obfuscator.conf the endpoint and shared obfuscation key, so neither
+  # can be baked into an image every station shares. Drop them next to the
+  # payload on the USB and they are installed here. (Review #8.)
+  install -d -m 0700 "$TARGET_MNT/etc/wireguard"
+  if [ -r "$PAYLOAD/wg0.conf" ]; then
+    install -m 0600 "$PAYLOAD/wg0.conf" "$TARGET_MNT/etc/wireguard/wg0.conf"
+    grn "  installed wg0.conf"
+  else
+    red "  NOTE: no wg0.conf on the USB - this station will have no VPN access."
+    red "        Put one at /etc/wireguard/wg0.conf and: systemctl enable --now wg-quick@wg0"
+  fi
+  if [ -r "$PAYLOAD/wg-obfuscator.conf" ]; then
+    install -m 0600 "$PAYLOAD/wg-obfuscator.conf" "$TARGET_MNT/etc/wg-obfuscator.conf"
+    grn "  installed wg-obfuscator.conf"
+  fi
   sync
   umount "$TARGET_MNT" || die "cannot unmount $root"
 }
