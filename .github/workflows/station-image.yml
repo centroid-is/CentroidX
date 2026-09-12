@@ -1,0 +1,235 @@
+name: Station image
+
+# The OS under the containers. Path-filtered on purpose: every other workflow in
+# this repo triggers on pull_request with no filter, and an 8GB image build next
+# to the 20-minute macOS flutter-test job on every Flutter PR would be pure
+# waste. This only runs when the image, the compose file it bakes, or this
+# workflow changes.
+on:
+  push:
+    branches: [ main ]
+    # Duplicated rather than shared with a YAML anchor: GitHub Actions does not
+    # officially support anchors in workflow files.
+    paths:
+      - 'os/**'
+      - 'docker-compose.yml'
+      - '.env.example'
+      - '.github/workflows/station-image.yml'
+  pull_request:
+    paths:
+      - 'os/**'
+      - 'docker-compose.yml'
+      - '.env.example'
+      - '.github/workflows/station-image.yml'
+  # No tag trigger. A `paths` filter applies to tag pushes too, and a release
+  # tag usually points at a commit that did not touch os/ -- so it would never
+  # fire. Releasing an image is rare and deliberate, so it is a hand-run with an
+  # explicit tag instead.
+  workflow_dispatch:
+    inputs:
+      preload:
+        description: Bake the container images into the image (offline install)
+        type: boolean
+        default: false
+      gpu:
+        description: GPU driver set
+        type: choice
+        options: [ intel, amd ]
+        default: intel
+      release_tag:
+        description: "Publish a release at this tag (e.g. station-v2026.09.12); blank = artifacts only"
+        default: ''
+
+concurrency:
+  group: station-image-${{ github.ref }}
+  # Only supersede PR builds. A hand-run release must not be killed by someone
+  # merging a PR that touches os/ -- possibly between creating the release and
+  # uploading its assets. tag.yml uses cancel-in-progress: false for the same
+  # reason. (Review #16.)
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: os
+
+jobs:
+  # Cheap, runs anywhere, and catches the mistakes that actually happen:
+  # template errors, a script that moved, a package that no longer exists.
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w \
+            koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d \
+            scripts/*.sh \
+            overlays/base/usr/local/bin/centroidx-firstboot \
+            overlays/installer/usr/local/bin/centroidx-install \
+            overlays/installer/usr/local/bin/centroidx-install-failsafe
+
+      - name: Archive keys unchanged
+        run: make verify-keys
+
+      - name: debos --dry-run on every recipe
+        run: make dry-run
+
+      # The image bakes docker-compose.yml, so a compose file that cannot be
+      # interpolated is a broken image. .env.example is the contract.
+      - name: Compose interpolates against .env.example
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # Fill every empty key in .env.example so the :? guards are satisfied;
+          # this checks the contract is complete, not that the values are real.
+          sed -e 's/^\([A-Z_]*\)=$/\1=ci-placeholder/' .env.example > .env
+          docker compose config --quiet
+          echo "compose interpolates with nothing but .env.example filled in"
+          rm -f .env
+
+      # Every variable the compose file reads must be documented AND actually
+      # written by firstboot, or a station gets provisioned without it and
+      # nobody finds out until something is silently slow, insecure, or refuses
+      # to start. The old version of this gate matched only "${VAR", so a bare
+      # $VAR slipped past and a $${VAR} escape was miscounted.
+      - name: Compose variables are documented and provisioned
+        working-directory: .
+        run: |
+          python3 - <<'EOF'
+          import re, sys, pathlib
+
+          compose = pathlib.Path('docker-compose.yml').read_text()
+          example = pathlib.Path('.env.example').read_text()
+          firstboot = pathlib.Path(
+              'os/overlays/base/usr/local/bin/centroidx-firstboot').read_text()
+
+          # $$ is an escape meaning a literal $ -- the container's own shell
+          # expands it, compose does not, so it is not a compose variable.
+          compose_novar = re.sub(r'\$\$', '', compose)
+          used, required = set(), set()
+          for m in re.finditer(r'\$\{(\w+)(:?[-?][^}]*)?\}|\$(\w+)', compose_novar):
+              name = m.group(1) or m.group(3)
+              if not name.isupper():
+                  continue
+              used.add(name)
+              if (m.group(2) or '').startswith((':?', '?')):
+                  required.add(name)
+
+          documented = set(re.findall(r'^([A-Z_]+)=', example, re.M))
+          written    = set(re.findall(r'^\s*(?:echo|printf)[^\n]*?\b([A-Z_]+)=', firstboot, re.M))
+          written   |= set(re.findall(r"printf '([A-Z_]+)=", firstboot))
+
+          rc = 0
+          for v in sorted(used - documented):
+              print(f'::error::${v} is read by docker-compose.yml but absent from .env.example')
+              rc = 1
+          # Only the mandatory ones: compose starts without the optional ones.
+          for v in sorted(required - written):
+              print(f'::error::${v} is mandatory (:?) but centroidx-firstboot never writes it '
+                    f'- every fresh install would fail to start')
+              rc = 1
+          print(f'{len(used)} variables read, {len(required)} mandatory, '
+                f'{len(documented)} documented, {len(written)} written by firstboot')
+          sys.exit(rc)
+          EOF
+
+  build:
+    needs: validate
+    # Building the image on every PR would be a 30-minute tax on a review. Main,
+    # a station tag, or asked for by hand.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      # The default token is read-only, so `gh release create` would 403 after a
+      # 30-minute build. tag.yml and main-prerelease.yml grant this for the same
+      # reason. (Review #14.)
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Hosted Ubuntu runners do expose /dev/kvm, but it is owned by the kvm
+      # group and not world-writable, so a container started as the runner user
+      # cannot open it. debos cannot do image-partition without a fakemachine,
+      # so there is no fallback worth taking -- fail loudly instead.
+      - name: Make /dev/kvm usable
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::/dev/kvm is absent on this runner - debos cannot build an image"
+            exit 1
+          fi
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Install host tools
+        run: sudo apt-get update && sudo apt-get install -y bmap-tools zstd
+
+      - name: Free up disk
+        run: |
+          # An 8GB image plus a 16GB USB image plus debos scratch does not fit
+          # beside the runner's preinstalled toolchains.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h /
+
+      - name: Build station image
+        run: |
+          make image \
+            GPU=${{ inputs.gpu || 'intel' }} \
+            PRELOAD=${{ inputs.preload || 'false' }} \
+            DOCKER_TTY=
+
+      - name: Build installer USB
+        run: make usb DOCKER_TTY=
+
+      - name: Checksums and provenance
+        run: |
+          cd out && sha256sum *.img.gz *.bmap | tee SHA256SUMS
+          cat ../overlays/generated/etc/centroid/image-info
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: station-image
+          # centroidx-* explicitly, not *.img.gz: out/ also holds
+          # usb-installer.img.gz, and a bare glob packed the USB image in here
+          # too -- 1323MB of artifact for 549MB of station image.
+          path: |
+            os/out/centroidx-*.img.gz
+            os/out/centroidx-*.img.bmap
+            os/out/SHA256SUMS
+            os/overlays/generated/etc/centroid/image-info
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: station-usb-installer
+          path: |
+            os/out/usb-installer.img.gz
+            os/out/usb-installer.img.bmap
+          retention-days: 14
+
+      # Its own tag namespace, not this repo's `release` event: the app releases
+      # far more often than the OS under it, and tag.yml / main-prerelease.yml
+      # already have enough interaction between them without an app release
+      # implying an image release.
+      - name: Publish a station release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          # Assets passed to `create`, not a separate `upload`: a failed upload
+          # after a successful create would leave a tagged, empty release and a
+          # tag that cannot be reused. (Review #10.)
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "Station image $TAG" \
+            --notes-file overlays/generated/etc/centroid/image-info \
+            out/*.img.gz out/*.bmap out/SHA256SUMS

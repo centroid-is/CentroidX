@@ -1,3 +1,11 @@
+# Standalone development stack: it builds the backend from this checkout and
+# brings up its own throwaway timescaledb in a named volume. It is NOT what runs
+# on a station -- that is the compose file at the repo root, whose credentials
+# come from a per-station .env (see .env.example).
+#
+# The database password here defaulted to the same literal the station compose
+# used, which invited the two being confused and rotated together. It is
+# overridable by DB_PASSWORD and its default now says what it is.
 services:
   centroidx-backend:
     build:
@@ -10,7 +18,7 @@ services:
       CENTROID_PGPORT: "5432"
       CENTROID_PGDATABASE: hmi
       CENTROID_PGUSER: centroid
-      CENTROID_PGPASSWORD: FooBarHelloWorld
+      CENTROID_PGPASSWORD: ${DB_PASSWORD:-dev-only-not-a-station-credential}
       CENTROID_PGSSLMODE: require
       CENTROID_STATEMAN_FILE_PATH: /config/stateman.json
     volumes:
@@ -31,7 +39,7 @@ services:
     environment:
       POSTGRES_DB: hmi
       POSTGRES_USER: centroid
-      POSTGRES_PASSWORD: FooBarHelloWorld
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-dev-only-not-a-station-credential}
     volumes:
       - timescale_data:/var/lib/postgresql/data
       - ./certs:/certs:ro

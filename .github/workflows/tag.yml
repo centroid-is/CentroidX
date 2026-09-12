@@ -7,6 +7,10 @@ on:
       - '*'
       # Rolling tag republished by main-prerelease.yml — not a version tag.
       - '!main-latest'
+      # Station OS images (station-image.yml). They version the Debian under the
+      # containers, not the app, so they must not rewrite pubspec.yaml or push
+      # to main.
+      - '!station-v*'
 
 permissions:
   contents: write

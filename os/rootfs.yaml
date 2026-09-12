@@ -1,0 +1,155 @@
+{{- $suite := or .suite "trixie" -}}
+{{- $mirror := or .mirror "http://deb.debian.org/debian" -}}
+{{- $gpu := or .gpu "intel" -}}
+# CentroidX station rootfs.
+#
+# Replaces ansible-playbook.yml. Every task in that playbook is one of three
+# things here: a package in the apt action below, a file in overlays/base/, or a
+# line in scripts/rootfs-setup.sh. Nothing is configured on the target machine
+# any more -- by the time a station boots this, it is already configured.
+#
+# NOTE on templating: the variable assignments above must stay at the very top
+# of the file. Go template actions written with a leading and trailing dash trim
+# whitespace on both sides, so a run of them placed after a comment block
+# collapses the following line onto the end of the last comment -- which silently
+# comments out whatever it was. (And note that the template engine parses YAML
+# comments too, so no comment here may contain a template action either.)
+
+architecture: amd64
+
+actions:
+  - action: debootstrap
+    suite: {{ $suite }}
+    components: [ main, non-free-firmware ]
+    mirror: {{ $mirror }}
+    variant: minbase
+
+  # Archive keys first: apt below installs from download.docker.com, so the
+  # keyring has to be in place before the source that references it.
+  - action: overlay
+    source: overlays/base
+    description: CentroidX configuration files
+
+  - action: run
+    chroot: true
+    label: apt-sources-debian
+    script: scripts/apt-sources-debian.sh {{ $suite }}
+
+  # ca-certificates FIRST, over http, before any https source exists. Without
+  # this the Docker archive cannot be verified and docker-ce silently has no
+  # installation candidate -- which is exactly how the first build after the
+  # mirror moved to http failed.
+  - action: apt
+    recommends: false
+    description: CA bundle, needed before the https Docker archive
+    packages:
+      - ca-certificates
+
+  - action: run
+    chroot: true
+    label: apt-sources-docker
+    script: scripts/apt-sources-docker.sh {{ $suite }}
+
+  - action: apt
+    recommends: false
+    description: Base system, docker, wireguard, graphics
+    packages:
+      # boot and init
+      - linux-image-amd64
+      - systemd-sysv
+      - systemd-timesyncd
+      - udev
+      - grub-efi-amd64
+      - grub-efi-amd64-signed
+      - shim-signed
+      - efibootmgr
+      - plymouth
+      - plymouth-themes
+      # the bus the HMI container talks to on the host
+      - dbus
+      - dbus-user-session
+      - polkitd
+      # operator and remote access
+      - locales
+      - sudo
+      - openssh-server
+      - network-manager
+      - fish
+      - vim
+      - less
+      - procps
+      - bash-completion
+      - ca-certificates
+      - curl
+      - gnupg
+      # security updates (see overlays/base/etc/apt/apt.conf.d/)
+      - ufw
+      - unattended-upgrades
+      - apt-listchanges
+      # first boot grows the cloned filesystem onto the real disk
+      - cloud-guest-utils
+      - e2fsprogs
+      - dosfstools
+      - parted
+      - util-linux
+      - zstd
+      # the application layer: everything real runs in these
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+      # Remote access. ZeroTier was dropped over its licence; the migrated
+      # station runs wg-quick@wg0, and an image that reinstalled ZeroTier would
+      # walk the fleet backwards. (Review #8.)
+      - wireguard
+      - wireguard-tools
+      # GPU. The HMI renders through /dev/dri/renderD128 and falls back to
+      # llvmpipe in software if the driver is missing -- silently, at ~12
+      # threads of CPU. See docker-compose.yml:117.
+      - libgl1-mesa-dri
+      - libgbm1
+      - mesa-va-drivers
+      - mesa-vulkan-drivers
+      - firmware-misc-nonfree
+      - firmware-linux-free
+{{ if eq $gpu "intel" }}
+      - intel-media-va-driver
+{{ else if eq $gpu "amd" }}
+      - firmware-amd-graphics
+      - libdrm-amdgpu1
+{{ end }}
+
+  # wg-obfuscator is not in Debian: upstream ships a statically linked x86-64
+  # binary per release, pinned here by sha256 the same way the archive keys are.
+  # v1.6 is a step up from the ab65bea dev build on the deployed station -- the
+  # nearest tagged release at or after it.
+  - action: download
+    url: https://github.com/ClusterM/wg-obfuscator/releases/download/v1.6/wg-obfuscator-v1.6-linux-x64.tar.gz
+    name: wg-obfuscator
+    filename: wg-obfuscator.tar.gz
+    unpack: true
+    compression: gz
+    sha256sum: af30264278c70c2e53ad3234e8050686b3bef4f6564edc9fb068ea8c885b8354
+
+  - action: overlay
+    origin: wg-obfuscator
+    destination: /opt/wg-obfuscator
+    description: wg-obfuscator release tree
+
+  # Fetched, not committed: the station's compose file at a pinned CentroidX ref,
+  # the provenance stamp, and any container tarballs staged by `make preload`.
+  # Built by `make generated`.
+  - action: overlay
+    source: overlays/generated
+    description: Station payload and provenance
+
+  - action: run
+    chroot: true
+    label: rootfs-setup
+    script: scripts/rootfs-setup.sh
+
+  - action: run
+    chroot: true
+    label: strip-identity
+    script: scripts/strip-identity.sh
