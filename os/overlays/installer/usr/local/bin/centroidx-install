@@ -7,8 +7,38 @@
 set -uo pipefail
 
 PAYLOAD=/opt/centroidx
-SEED="$PAYLOAD/station.env"
+# The USB is generic and reused for every customer, so answers are NOT baked in
+# at build time. An optional station.env for unattended installs goes here, on
+# the stick's FAT partition -- writable from any Windows/macOS/Linux laptop,
+# no rebuild. Absent, the installer asks.
+CFG_DIR=/boot/efi/centroidx
+SEED="$CFG_DIR/station.env"
 TARGET_MNT=/mnt/target
+RUNTIME_DIR=/run/centroidx
+NO_REBOOT=0
+
+# The graphical setup app (os/app) is a front end onto this script, not a second
+# implementation: it collects answers, writes them as station.env, and runs us
+# with --seed/--disk/--no-reboot so exactly one piece of code wipes a disk.
+usage() {
+  cat <<USAGE
+usage: centroidx-install [--seed FILE] [--disk DEVICE] [--no-reboot]
+  --seed FILE    read answers from FILE instead of prompting
+  --disk DEVICE  install onto DEVICE instead of asking
+  --no-reboot    finish without rebooting (the caller handles it)
+USAGE
+}
+
+PRESET_DISK=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --seed)      SEED="${2:?--seed needs a path}"; shift 2 ;;
+    --disk)      PRESET_DISK="${2:?--disk needs a device}"; shift 2 ;;
+    --no-reboot) NO_REBOOT=1; shift ;;
+    -h|--help)   usage; exit 0 ;;
+    *)           printf 'unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+done
 
 # Declared up front: a station.env that omits one of these would otherwise trip
 # `set -u` much later, after the disk has already been written.
@@ -20,6 +50,14 @@ CENTROID_PASSWORD=""
 ROOT_PASSWORD=""
 VNC_PASSWORD=""
 DB_PASSWORD=""
+VPN_ENDPOINT=""
+VPN_OBFUSCATOR_KEY=""
+VPN_SERVER_PUBKEY=""
+VPN_ADDRESS=""
+VPN_ALLOWED_IPS=""
+WG_PUBKEY=""
+# wg-obfuscator listens here and wg talks to it over loopback; upstream default.
+OBF_PORT=13255
 
 red()  { printf '\033[1;31m%s\033[0m\n' "$*"; }
 grn()  { printf '\033[1;32m%s\033[0m\n' "$*"; }
@@ -56,6 +94,16 @@ candidates() {
 
 pick_disk() {
   local list n
+  if [ -n "$PRESET_DISK" ]; then
+    # Still checked against the exclusion list: a caller that names the boot
+    # disk must not get to erase it just because it asked explicitly.
+    candidates | cut -f1 | sed 's|^|/dev/|' | grep -qxF "$PRESET_DISK" \
+      || die "$PRESET_DISK is not an installable target on this machine"
+    TARGET="$PRESET_DISK"
+    echo "  Target: $TARGET (given on the command line)"
+    echo
+    return
+  fi
   list="$(candidates)"
   [ -n "$list" ] || die "no disk found to install onto (the USB itself is excluded)"
   n="$(printf '%s\n' "$list" | wc -l | tr -d ' ')"
@@ -141,6 +189,11 @@ questions() {
     ROOT_PASSWORD="$(read_kv "$SEED" ROOT_PASSWORD)"
     VNC_PASSWORD="$(read_kv "$SEED" VNC_PASSWORD)"
     DB_PASSWORD="$(read_kv "$SEED" DB_PASSWORD)"
+    VPN_ENDPOINT="$(read_kv "$SEED" VPN_ENDPOINT)"
+    VPN_OBFUSCATOR_KEY="$(read_kv "$SEED" VPN_OBFUSCATOR_KEY)"
+    VPN_SERVER_PUBKEY="$(read_kv "$SEED" VPN_SERVER_PUBKEY)"
+    VPN_ADDRESS="$(read_kv "$SEED" VPN_ADDRESS)"
+    VPN_ALLOWED_IPS="$(read_kv "$SEED" VPN_ALLOWED_IPS)"
     local missing=""
     for v in STATION_NAME CENTROID_PASSWORD ROOT_PASSWORD VNC_PASSWORD DB_PASSWORD; do
       [ -n "${!v}" ] || missing="$missing $v"
@@ -160,6 +213,30 @@ questions() {
   ask_pass ROOT_PASSWORD      "Password for 'root'"
   ask_pass VNC_PASSWORD       "Password for the VNC/remote screen"
   ask_pass DB_PASSWORD        "Password for the database"
+  echo
+  vpn_questions
+}
+
+# Everything this station needs to reach the VPN. The private key is NOT among
+# them: it is generated on this machine in a moment and never leaves it, so the
+# only thing that has to travel is the public key, shown at the end for
+# registration on the server. That is why no key file rides on the USB.
+vpn_questions() {
+  local answer
+  bold "Remote access (WireGuard)"
+  echo "  Skip this and the station installs without VPN access; you can add it"
+  echo "  later with two files in /etc and a systemctl enable."
+  echo
+  read -r -p "  Configure VPN access now? [Y/n] " answer
+  case "$answer" in
+    [nN]*) echo "  Skipped."; echo; return ;;
+  esac
+  ask VPN_ENDPOINT        "VPN server address and port (e.g. vpn.example.is:13255)"
+  ask VPN_OBFUSCATOR_KEY  "Obfuscation key (shared with the server)"
+  ask VPN_SERVER_PUBKEY   "Server's WireGuard public key"
+  ask VPN_ADDRESS         "This station's VPN address (e.g. 10.13.1.42/24)"
+  read -r -p "  Routed through the tunnel [10.13.1.0/24]: " VPN_ALLOWED_IPS
+  [ -n "$VPN_ALLOWED_IPS" ] || VPN_ALLOWED_IPS="10.13.1.0/24"
   echo
 }
 
@@ -246,6 +323,51 @@ seed_station_conf() {
     install -m 0600 "$PAYLOAD/wg-obfuscator.conf" "$TARGET_MNT/etc/wg-obfuscator.conf"
     grn "  installed wg-obfuscator.conf"
   fi
+
+  # Built from the answers rather than copied, when they were given. The private
+  # key is generated HERE, on the machine being installed, so it never exists on
+  # the USB or anywhere it could be left behind; only the public half leaves, and
+  # only by being shown on screen for registration.
+  if [ -n "$VPN_ENDPOINT" ] && [ -n "$VPN_SERVER_PUBKEY" ] && [ -n "$VPN_ADDRESS" ]; then
+    local priv pub
+    umask 077
+    priv="$(wg genkey)"
+    pub="$(printf '%s' "$priv" | wg pubkey)"
+    {
+      echo "# Written by the CentroidX installer on $(date -Is)."
+      echo "[Interface]"
+      echo "PrivateKey = $priv"
+      echo "Address = $VPN_ADDRESS"
+      echo
+      echo "[Peer]"
+      echo "PublicKey = $VPN_SERVER_PUBKEY"
+      echo "AllowedIPs = ${VPN_ALLOWED_IPS:-10.13.1.0/24}"
+      # Through the obfuscator on loopback when there is one, otherwise direct.
+      if [ -n "$VPN_OBFUSCATOR_KEY" ]; then
+        echo "Endpoint = 127.0.0.1:$OBF_PORT"
+      else
+        echo "Endpoint = $VPN_ENDPOINT"
+      fi
+      echo "PersistentKeepalive = 25"
+    } > "$TARGET_MNT/etc/wireguard/wg0.conf"
+    chmod 0600 "$TARGET_MNT/etc/wireguard/wg0.conf"
+
+    if [ -n "$VPN_OBFUSCATOR_KEY" ]; then
+      {
+        echo "# Written by the CentroidX installer on $(date -Is)."
+        echo "[main]"
+        echo "source-lport = $OBF_PORT"
+        echo "target = $VPN_ENDPOINT"
+        echo "key = $VPN_OBFUSCATOR_KEY"
+      } > "$TARGET_MNT/etc/wg-obfuscator.conf"
+      chmod 0600 "$TARGET_MNT/etc/wg-obfuscator.conf"
+    fi
+
+    mkdir -p "$RUNTIME_DIR"
+    printf '%s\n' "$pub" > "$RUNTIME_DIR/wg-pubkey"
+    WG_PUBKEY="$pub"
+    grn "  generated this station's WireGuard key"
+  fi
   sync
   umount "$TARGET_MNT" || die "cannot unmount $root"
 }
@@ -268,6 +390,16 @@ seed_station_conf
 rule
 grn "  Installed."
 echo
+if [ -n "$WG_PUBKEY" ]; then
+  bold "  Register this station's public key on the VPN server:"
+  printf '\033[1;32m    %s\033[0m\n' "$WG_PUBKEY"
+  echo
+fi
+if [ "$NO_REBOOT" = 1 ]; then
+  echo "  Not rebooting (--no-reboot)."
+  rule
+  exit 0
+fi
 bold "  Remove the USB key now."
 echo "  Rebooting in 30 seconds. First boot grows the filesystem to the disk,"
 echo "  generates this machine's keys, and starts the containers."
