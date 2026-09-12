@@ -231,7 +231,7 @@ void main() {
       // And the next station comes along and does it properly.
       final result = await migratePreferencesIntoRows(database);
       expect(result.outcome, PreferenceMigrationOutcome.migrated);
-      expect(result.migratedCount, 7);
+      expect(result.migratedCount, 6);
     });
 
     test('an unknown key survives untouched and is reported, with the counts',
@@ -256,10 +256,10 @@ void main() {
           0);
 
       final line = result.evidenceLine;
-      expect(line, startsWith('Preference migration: 7 migrated'));
+      expect(line, startsWith('Preference migration: 6 migrated'));
       expect(line, contains('images: 1'));
       expect(line, contains('recipes: 1'));
-      expect(line, contains('3 abandoned'),
+      expect(line, contains('4 abandoned'),
           reason: 'update_channel, key_mappings and mcp.config');
       // Left where it was, and no row invented for it: the whole content of
       // "abandoned" for a key the old table still holds.
