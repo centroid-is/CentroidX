@@ -167,6 +167,51 @@ class GraphPanEvent {
         totalDelta = info.totalDelta;
 }
 
+/// What a chart shows before it has anything to plot: the plot area's
+/// gridlines, faintly.
+///
+/// It used to be a spinner in the middle of the window. A spinner says
+/// "nothing here yet" and nothing else, and when the data arrives the whole
+/// area changes at once. Gridlines say "a chart goes here", and the arrival
+/// fills in a frame the eye has already taken in. No axis text: a label here
+/// would be a guess at a domain the data has not given yet.
+class _GraphSkeleton extends StatelessWidget {
+  const _GraphSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      size: Size.infinite,
+      painter: _GridSkeletonPainter(
+        Theme.of(context).colorScheme.outlineVariant.withAlpha(110),
+      ),
+    );
+  }
+}
+
+class _GridSkeletonPainter extends CustomPainter {
+  _GridSkeletonPainter(this.color);
+
+  final Color color;
+
+  static const _lines = 4;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1;
+    for (var i = 1; i <= _lines; i++) {
+      final y = (size.height * i / (_lines + 1)).roundToDouble() + 0.5;
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_GridSkeletonPainter oldDelegate) =>
+      oldDelegate.color != color;
+}
+
 /// -------------------- Graph  --------------------
 
 class Graph {
@@ -203,7 +248,7 @@ class Graph {
       this.tooltipBuilder,
       this.categoryColors = const {}})
       : _data = data,
-        _chartWidget = Center(child: const CircularProgressIndicator()) {
+        _chartWidget = const _GraphSkeleton() {
     _chart = _createChart();
     if (chartTheme != null) {
       _chart.theme(chartTheme);
@@ -241,7 +286,7 @@ class Graph {
   late cs.CristalyseChart _chart;
   Widget _chartWidget;
 
-  /// Replace the spinner with a message. A fetch that throws -- a key whose
+  /// Replace the loading skeleton with a message. A fetch that throws -- a key whose
   /// table was never created because it is not collected, a database that
   /// is down -- used to leave the chart on its spinner for good, because
   /// nothing ever called [addData]. The operator reads "still loading" and
@@ -495,13 +540,46 @@ class Graph {
 
     return Column(
       children: [
-        Expanded(child: _chartWidget),
+        Expanded(
+          // The Stack exists only while the hairline does.
+          //
+          // Still fetching: a hairline across the top of the plot rather than
+          // a spinner in the middle of it, so the plot area, the legend and
+          // the button row are already where they will stay and the data
+          // fills the frame in instead of replacing it.
+          //
+          // A chart that HAS data is laid out exactly as it was before this
+          // file grew a bar -- no Stack, no extra box in the tree. Wrapping
+          // it unconditionally moved the conveyor trend popup's axis labels
+          // on macOS (they wrapped to two lines in the golden and to one in
+          // CI, shifting the whole plot: 15 506 px). The same render was
+          // byte-identical on Windows, so the trigger is a sub-pixel width
+          // difference at a wrap boundary that only macOS's text metrics
+          // reach. A widget that is not in the tree cannot cause it.
+          child: _isLoading && !_errored
+              ? Stack(
+                  fit: StackFit.passthrough,
+                  children: [
+                    _chartWidget,
+                    const Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: LinearProgressIndicator(minHeight: 2),
+                    ),
+                  ],
+                )
+              : _chartWidget,
+        ),
         if (noData != null) noData,
         if (noData != null)
           SizedBox(
             height: 10,
           ),
-        if (!_isLoading && showButtons)
+        // Drawn while loading too. Held back until the first data, the row
+        // popped in underneath the plot and shoved it up by its own height,
+        // the moment the operator had started reading it.
+        if (showButtons)
           ButtonGraph(
               dateRange: currentDateRange,
               nowDisabled: _nowDisabled,
