@@ -6,6 +6,7 @@ import 'package:flutter/services.dart' show FontLoader;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/rtsp_camera.dart';
 import 'package:tfc/theme.dart' show solarized;
+import '../../helpers/golden_platform.dart';
 
 const _stripKey = Key('rtsp_camera_golden');
 
@@ -112,7 +113,7 @@ void main() {
   tearDown(() => RtspCameraView.debugPlaybackFactory = null);
 
   group('RTSP camera golden tests',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     Future<void> capture(WidgetTester tester, String name,
         {bool dark = false}) async {
       // One backend per url so the strip shows every state at once.

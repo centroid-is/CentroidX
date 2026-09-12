@@ -81,6 +81,7 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 
 import '../helpers/golden_tolerance.dart';
+import '../helpers/golden_platform.dart';
 
 // ---------------------------------------------------------------------------
 // Fixtures — this file's own
@@ -518,7 +519,7 @@ void main() {
   useTolerantGoldenComparator(tolerance: 0.002);
 
   group('access administration goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(_loadRealFonts);
 
     tearDown(() => RouteRegistry().menuItems.clear());

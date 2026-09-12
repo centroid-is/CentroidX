@@ -18,6 +18,7 @@ import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Loads real fonts so the pane's labels render as letterforms and its icons
 /// as glyphs instead of the test font's solid boxes — same arrangement as
@@ -52,7 +53,7 @@ Future<void> loadRealFont() async {
 /// commands are unambiguous. Both are things only an eye can check.
 void main() {
   group('section button golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(loadRealFont);
 
     tearDown(() => closeSidePane(immediate: true));

@@ -12,6 +12,7 @@ import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Loads real fonts so the pane's labels render as letterforms and its icons
 /// as glyphs instead of the test font's solid boxes — same patterns as
@@ -59,7 +60,7 @@ void main() {
   useTolerantGoldenComparator(tolerance: 0.002);
 
   group('gate force pane golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(loadRealFont);
     tearDown(closeSidePane);
 

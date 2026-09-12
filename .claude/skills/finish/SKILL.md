@@ -22,8 +22,8 @@ known-good duration.** Know the baselines before calling anything hung:
 
 | Step | Known-good |
 |---|---|
-| CI `flutter-test (macos-latest)` — the only job that compares goldens | **18–20 min** |
-| CI `flutter-test (ubuntu-latest)` | ~9 min |
+| CI `flutter-test (ubuntu-latest)` — the only job that compares goldens | **~18 min** |
+| CI `flutter-test (macos-latest)` | ~20 min |
 | Any local suite | < 10 min |
 
 For every long-running step (local test run, `gh pr checks --watch`,
@@ -76,42 +76,40 @@ Every visual change needs a golden test, and every golden PNG must be
 **inspected by eye** (Read the PNG file) before shipping — checking that it
 merely "passes" is not review.
 
-- Follow the repo patterns: macOS skip guard
-  (`skip: !Platform.isMacOS ...`), goldens in the test dir's `goldens/`.
-  `dart_test.yaml` skips the `golden` tag only on Linux/Windows via `on_os:`,
-  so macOS runs them either way — `--run-skipped` is obsolete here, and its
-  absence is never why a suite ran nothing.
+- **Goldens are rendered on Linux, in a container.** Use `scripts/goldens.sh`,
+  never a native `flutter test --update-goldens` on the Mac: macOS rasterises
+  glyphs through CoreText, which belongs to the OS and changes with it, so a
+  natively-generated PNG will not match what CI compares.
+- Follow the repo patterns: gate with `goldenSkip` (for `group`/`test`) or
+  `goldenSkipFlag` (for `testWidgets`, whose `skip` is `bool?` and cannot take
+  a reason string), both from `test/helpers/golden_platform.dart`; goldens in
+  the test dir's `goldens/`.
 - **Text in the golden?** Load a real font or every glyph renders as a solid
   box — copy `loadRealFont()` from
   `test/page_creator/assets/third_party_golden_test.dart` (RobotoMono from
   `lib/fonts/`, registered as 'Roboto').
-- **Never generate a golden on a Flutter that is not the pinned one.** Run
-  `./scripts/check-flutter-version.sh` first; if it fails, stop and say so
-  rather than shipping an image CI will not reproduce. The pinned SDK lives at
-  `~/flutter-sdks/$(cat .flutter-version)` — put it first on `PATH`:
-  `export PATH="$HOME/flutter-sdks/$(cat .flutter-version)/bin:$PATH"`, then
-  re-run `flutter pub get`. It is per-shell and does not persist.
+- **The container pins the Flutter version for you** — it reads
+  `.flutter-version` when it builds, so there is no longer an SDK to get wrong
+  for goldens. `./scripts/check-flutter-version.sh` still matters for the rest
+  of the local suite.
 
-  The 0.01% tolerance in `test/helpers/golden_tolerance.dart` absorbs drift
-  nobody caused. It does **not** make an off-version golden safe: one can land
-  just inside it and pass, leaving the next person an image already most of the
-  way to failing. This has cost real time twice — a stale golden reddened
-  `main` and blocked six PRs, and a full local suite went green on an assertion
-  that does not exist in the older SDK.
-- **Full-app-surface golden?** A large surface has more room to drift than the
-  0.01% default allows for even on the right SDK. Call
-  `useTolerantGoldenComparator(tolerance: 0.002)` in that test file's `main()`
-  and say why in a comment.
-- **Derive the failing set before regenerating.**
-  `flutter test --update-goldens <file>` rewrites **every** golden that file
-  produces, including passing ones — on a shared-widget change that silently
-  re-baselines dozens of images on this machine's raster. Run the suite plain
-  first and collect the failures (`flutter test test/ --reporter=json`,
-  `testDone` events where `result != "success"`), then regenerate and check the
-  changed-PNG count equals the failing-test count. If it is higher,
-  `git checkout --` the surplus.
-- Generate: `flutter test --update-goldens <golden test file>`
-- Verify it passes WITHOUT `--update-goldens` afterwards.
+  The 0.01% tolerance in `test/helpers/golden_tolerance.dart` now only absorbs
+  Flutter *version* drift; the host OS no longer participates in rasterisation.
+- **Reaching for a raised tolerance? Don't, by default.** The 18 files that
+  carried `tolerance: 0.002` were all absorbing a macOS-version CoreText gap
+  that no longer exists, and 0.2% on a dense-text golden is loose enough to
+  hide a real regression. If a golden will not sit inside the 0.01% default on
+  Linux, find out why before widening anything.
+- **Derive the failing set before regenerating.** `--update` rewrites **every**
+  golden the run produces, including passing ones — on a shared-widget change
+  that silently re-baselines dozens of images. Run it plain first, collect the
+  failures, then regenerate and check the changed-PNG count equals the
+  failing-test count. If it is higher, `git checkout --` the surplus.
+- Generate: `scripts/goldens.sh --update <golden test file>`
+- Verify: `scripts/goldens.sh <golden test file>` (no `--update`) passes.
+- First container run builds the image (a few minutes), then it is cached. It
+  runs on the host's native architecture — amd64 and arm64 were measured
+  producing byte-identical goldens.
 - Read each new/changed PNG and confirm it shows what the change claims.
   While looking, also check repo conventions: muted state colors, forced =
   orange, panes show values not key names.
@@ -174,11 +172,19 @@ Run it in the background and apply the watchdog rule above. On any failure:
    still in progress
    `gh api repos/centroid-is/CentroidX/actions/jobs/<job-id>/logs`.
 2. Diagnose honestly — is it this change? Known repo failure modes:
-   - **Golden pixel drift on `flutter-test (macos-latest)`**: CI pins a
-     different Flutter than local; small drift on a big golden. Fix with
-     per-file tolerance (Phase 2), not by regenerating blindly.
-   - Goldens only compare on macOS — a green ubuntu/windows run says nothing
+   - **Golden pixel drift on `flutter-test (ubuntu-latest)`**: this should now
+     be rare, and it is a signal rather than noise. CI and `scripts/goldens.sh`
+     run the same pinned Flutter on the same OS, and the renderer does not vary
+     with CPU architecture — so a mismatch usually means the golden was
+     generated natively on the Mac by mistake, not that CI drifted. Regenerate
+     through the container before reaching for a tolerance.
+   - Goldens only compare on **Linux** — a green macOS/windows run says nothing
      about them.
+   - **A missing system library reads like a code fault.** The container names
+     the ones this repo needs (`docker/goldens/`), but GitHub's runners ship
+     far more preinstalled. `Cannot open libsecret-1` or `Failed to load
+     dynamic library 'libsqlite3.so'` from a container run is an image gap, not
+     a regression.
 3. Fix in the worktree, re-run the affected tests locally, push, and watch
    again.
 

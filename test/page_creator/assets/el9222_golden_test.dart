@@ -13,6 +13,7 @@ import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Goldens of the EL9222 overcurrent protection terminal.
 ///
@@ -106,7 +107,7 @@ void main() {
   useTolerantGoldenComparator(tolerance: 0.002);
 
   group('EL9222 golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(loadRealFont);
 
     setUp(() {

@@ -45,6 +45,7 @@ import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../helpers/golden_tolerance.dart';
+import '../helpers/golden_platform.dart';
 
 /// Real letterforms and glyphs; the test font draws every label as a box,
 /// which for an image about how loud a mark is would be misleading.
@@ -113,7 +114,7 @@ void main() {
   useTolerantGoldenComparator(tolerance: 0.002);
 
   group('open-pane mark golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(_loadFonts);
 
     setUp(() {

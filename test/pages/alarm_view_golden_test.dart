@@ -27,6 +27,7 @@ import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
 
 import '../helpers/golden_tolerance.dart';
+import '../helpers/golden_platform.dart';
 
 /// Fixed clock, so the live edge of the timeline is reproducible.
 final now = DateTime(2026, 8, 29, 14, 22);
@@ -193,7 +194,7 @@ void main() {
   tearDown(() => RouteRegistry().menuItems.clear());
 
   group('alarm page goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('the lists, with the Alarms/Downtime header row — light',
         (tester) async {
       await _pumpPage(tester, dark: false);

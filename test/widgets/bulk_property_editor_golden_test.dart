@@ -23,6 +23,7 @@ import 'package:tfc/page_creator/assets/schneider.dart';
 import 'package:tfc/theme.dart' show solarized;
 import 'package:tfc/widgets/bulk_property_editor.dart';
 import 'package:tfc/widgets/panes/side_pane.dart' show SidePane;
+import '../helpers/golden_platform.dart';
 
 const Key _paneKey = Key('bulk_property_pane_golden');
 
@@ -136,7 +137,7 @@ void main() {
   setUpAll(_loadFonts);
 
   group('Bulk property pane goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('four drives that agree on everything', (tester) async {
       await _pumpPane(tester,
         selection: [

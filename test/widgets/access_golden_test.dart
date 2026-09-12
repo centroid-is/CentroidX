@@ -69,6 +69,7 @@ import 'package:tfc/widgets/access_status_action.dart';
 import 'package:tfc_access/tfc_access.dart';
 
 import '../helpers/page_editor_harness.dart' show FakeEditorPreferences;
+import '../helpers/golden_platform.dart';
 
 const _appBarBoundary = Key('access_appbar_golden');
 const _dialogBoundary = Key('access_sign_in_dialog_golden');
@@ -466,7 +467,7 @@ void main() {
   tearDownAll(() => EditableText.debugDeterministicCursor = false);
 
   group('access goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('app bar, anonymous', (tester) async {
       _sizeView(tester, const Size(800, 200));
       await tester.pumpWidget(

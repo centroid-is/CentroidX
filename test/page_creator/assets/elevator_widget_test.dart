@@ -102,6 +102,7 @@ import 'package:tfc/page_creator/assets/elevator_layout.dart';
 import 'package:tfc/page_creator/assets/elevator_painter.dart';
 import 'package:tfc/page_creator/assets/sensor.dart';
 import 'package:tfc/widgets/panes/side_pane.dart';
+import '../../helpers/golden_platform.dart';
 
 void main() {
   Widget wrap(Widget child) => ProviderScope(
@@ -1610,7 +1611,7 @@ void main() {
   // platform-skip convention).
   // ---------------------------------------------------------------------------
   group('Goldens — elevator with children at progress {0, 0.5, 1.0} (QUAL-03)',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     const goldenKey = Key('elevator_with_children_golden');
 
     Future<void> pumpElevatorAtProgress(

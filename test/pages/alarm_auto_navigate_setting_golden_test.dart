@@ -39,6 +39,7 @@ import 'package:tfc/theme.dart' show muted;
 import 'package:tfc_dart/core/alarm.dart';
 
 import '../helpers/golden_tolerance.dart';
+import '../helpers/golden_platform.dart';
 
 /// Enough of an [AlarmMan] for a tile that reads one bool off it.
 class _FakeAlarmMan implements AlarmMan {
@@ -90,7 +91,7 @@ void main() {
   useTolerantGoldenComparator(tolerance: 0.002);
 
   group('alarm auto-navigate setting golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(_loadRealFonts);
 
     tearDown(() {

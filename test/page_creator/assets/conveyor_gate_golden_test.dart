@@ -1,10 +1,10 @@
-import 'dart:io' show Platform;
 import 'dart:math' show pi;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/conveyor_gate.dart';
 import 'package:tfc/page_creator/assets/conveyor_gate_painter.dart';
+import '../../helpers/golden_platform.dart';
 
 const _gateKey = Key('gate_test');
 
@@ -64,7 +64,7 @@ Widget buildGateWidget({
 
 void main() {
   group('ConveyorGate golden tests',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     // ── Pneumatic diverter (existing) ──
 
     testWidgets('gate closed', (tester) async {

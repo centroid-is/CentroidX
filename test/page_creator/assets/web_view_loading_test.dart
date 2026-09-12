@@ -15,6 +15,7 @@ import 'package:flutter/services.dart' show FontLoader;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/web_view.dart';
 import 'package:tfc/theme.dart' show solarized;
+import '../../helpers/golden_platform.dart';
 
 /// A browser that reports its loading, with the report in the test's hands.
 class _LoadingSurface implements WebViewSurface, WebViewSurfaceLoading {
@@ -250,7 +251,7 @@ void main() {
   });
 
   group('web view loading goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(() async {
       Future<void> load(String family, String path) async {
         final file = File(path);

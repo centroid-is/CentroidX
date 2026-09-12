@@ -16,6 +16,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/update_channel.dart';
 import 'package:tfc/widgets/preferences.dart';
+import '../helpers/golden_platform.dart';
 
 const Size _surface = Size(700, 620);
 
@@ -79,7 +80,7 @@ void main() {
   });
 
   group('update channel section golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('stable and latest selections', (tester) async {
       await tester.binding.setSurfaceSize(_surface);
       tester.view.devicePixelRatio = 1.0;

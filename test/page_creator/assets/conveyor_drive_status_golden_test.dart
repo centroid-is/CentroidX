@@ -16,6 +16,7 @@ import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Goldens of the conveyor pane's HMIS and LFT rows — the keypad mnemonic and
 /// the words behind it, and the explanation panel behind those.
@@ -132,7 +133,7 @@ void main() {
   useTolerantGoldenComparator(tolerance: 0.002);
 
   group('conveyor drive status golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(loadRealFont);
 
     setUp(() {

@@ -26,6 +26,7 @@ import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../helpers/test_helpers.dart';
+import '../helpers/golden_platform.dart';
 
 /// Tall enough that the whole page is laid out and painted at once — the
 /// sections live in a SingleChildScrollView, and anything below the fold
@@ -140,7 +141,7 @@ void main() {
   });
 
   group('server enable/disable golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('one enabled and one disabled server per protocol',
         (tester) async {
       await tester.binding.setSurfaceSize(_surface);

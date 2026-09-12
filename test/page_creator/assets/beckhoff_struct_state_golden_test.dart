@@ -15,6 +15,7 @@ import 'package:tfc/widgets/panes/side_pane.dart' show closeSidePane;
 import 'package:tfc_dart/core/state_man.dart' show StateMan;
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Goldens of what the struct decode and the asset-carried channel names put
 /// on screen.
@@ -98,7 +99,7 @@ void main() {
   useTolerantGoldenComparator(tolerance: 0.002);
 
   group('Beckhoff struct-state golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(loadRealFont);
 
     /// Frames the image around what it is meant to show. A terminal face is

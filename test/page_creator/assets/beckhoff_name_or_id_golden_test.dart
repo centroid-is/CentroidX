@@ -11,6 +11,7 @@ import 'package:tfc/theme.dart';
 import 'package:tfc_dart/core/state_man.dart' show StateMan;
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Goldens of the passive Beckhoff devices carrying operator-set names.
 ///
@@ -48,7 +49,7 @@ void main() {
   useTolerantGoldenComparator(tolerance: 0.002);
 
   group('Beckhoff name-or-ID golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(loadRealFont);
 
     setUp(() {
