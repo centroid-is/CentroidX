@@ -19,7 +19,15 @@ COMPOSE_SRC    ?= ../docker-compose.yml
 SUITE          ?= trixie
 GPU            ?= intel
 IMAGESIZE      ?= 8GB
-USBSIZE        ?= 8GB
+# 4GB, not a round "size of the stick you intend to use". debos reads 8GB as
+# 8,000,000,000 bytes and a nominal 8 GB stick is typically 7.7-8.0e9, so an
+# 8GB image can fail to fit one: dd truncates, the backup GPT and partition 2's
+# end land past the device, the kernel's GPT parser drops the partition, and the
+# initramfs finds no root -- after GRUB has already started, which makes it look
+# like a broken image rather than a truncated write. Contents are ~2.3GB (a
+# minbase system plus the ~550MB payload), so this fits any 8GB stick with room.
+# Raise it for PRELOAD=true. (Review #9.)
+USBSIZE        ?= 4GB
 PRELOAD        ?= false
 
 OUT            := out
