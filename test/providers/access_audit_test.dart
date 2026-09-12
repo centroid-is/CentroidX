@@ -75,6 +75,13 @@ class _Harness {
       .setString(kAccessSessionPrefKey, payload);
 }
 
+/// [timeout] is what an account with **no** stored minutes resolves to: the
+/// default. `jon` is authenticated by the fake above and has no `app_user`
+/// row, so this is the window the expiry tests below actually get — which is
+/// what lets them arm a countdown in milliseconds rather than waiting out a
+/// quarter of an hour. An account that does carry minutes gets ten
+/// milliseconds per stored minute, the same scale `access_session_test.dart`
+/// uses.
 Future<_Harness> _harness({
   Duration timeout = const Duration(minutes: 15),
 }) async {
@@ -92,7 +99,8 @@ Future<_Harness> _harness({
       authProviderProvider.overrideWith((ref) async => auth),
       auditSinkProvider.overrideWith((ref) async => sink),
       stationNameProvider.overrideWithValue(_kStation),
-      inactivityTimeoutProvider.overrideWith((ref) async => timeout),
+      inactivityTimeoutResolverProvider.overrideWithValue((minutes) =>
+          minutes == null ? timeout : Duration(milliseconds: minutes * 10)),
     ],
   );
   addTearDown(container.dispose);

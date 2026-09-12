@@ -290,8 +290,6 @@ AccessSession _anonymous() =>
           .overrideWith((ref) async => null as AccessRepository?),
       auditSinkProvider.overrideWith((ref) async => sink),
       stationNameProvider.overrideWithValue(_kStation),
-      inactivityTimeoutProvider
-          .overrideWith((ref) async => const Duration(minutes: 15)),
       stateManFactoryProvider.overrideWithValue(
         ({
           required StateManConfig config,

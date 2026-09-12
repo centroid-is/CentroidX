@@ -47,6 +47,18 @@ std::string DefaultLogPath();
 // policy, a VM, an older build), and none of it is worth failing startup over.
 void ConfigureUnattendedOperation();
 
+// Takes back the crash-restart registration ConfigureUnattendedOperation made.
+// Called when the operator closes the window: from then on the process is
+// ending on purpose, and a crash while it tears down must not relaunch it.
+// See shutdown_policy.h. Returns whether Windows accepted it.
+bool WithdrawCrashRestart();
+
+// Flushes stdout, stderr and every C stream, then ends the process with
+// |exit_code| WITHOUT running module teardown -- no DLL static destructors, no
+// atexit handlers. See shutdown_policy.h for the plugin whose statics crash if
+// they are released after the message loop.
+[[noreturn]] void EndProcessWithoutTeardown(int exit_code);
+
 // True when stdout is already a valid handle — a console, or a pipe from a
 // parent process such as the flutter tool. `flutter run` (and so the VS Code
 // debugger) gives the app pipes and no console, so this, not the presence of a

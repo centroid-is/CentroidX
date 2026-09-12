@@ -321,8 +321,6 @@ Future<_Wiring> _wiring({
       authProviderProvider.overrideWith((ref) async => _FakeAuthProvider()),
       auditSinkProvider.overrideWith((ref) async => sink),
       stationNameProvider.overrideWithValue(_kStation),
-      inactivityTimeoutProvider
-          .overrideWith((ref) async => const Duration(minutes: 15)),
     ],
   );
   addTearDown(container.dispose);

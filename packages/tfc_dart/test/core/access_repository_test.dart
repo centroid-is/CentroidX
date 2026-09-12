@@ -1377,6 +1377,67 @@ void main() {
     });
   });
 
+  group('the inactivity timeout on a user', () {
+    setUp(() async {
+      await repo.createFirstUser(username: 'jon', password: 'pw');
+    });
+
+    test('a fresh account has none, meaning it uses the default', () async {
+      // NULL is "no value of its own" — never "never expires". Only the
+      // station-account flag produces a session that does not end.
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes, isNull);
+    });
+
+    test('setInactivityTimeout round-trips, and null clears it', () async {
+      await repo.setInactivityTimeout('jon', 45);
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes, 45);
+
+      await repo.setInactivityTimeout('jon', null);
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes, isNull);
+    });
+
+    test('the ends of the range are accepted', () async {
+      await repo.setInactivityTimeout('jon', kMinInactivityTimeout.inMinutes);
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes,
+          kMinInactivityTimeout.inMinutes);
+
+      await repo.setInactivityTimeout('jon', kMaxInactivityTimeout.inMinutes);
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes,
+          kMaxInactivityTimeout.inMinutes);
+    });
+
+    test('a value outside the range throws rather than clamping', () async {
+      // Clamping would write a number the administrator did not choose and
+      // then record it in the trail as though they had.
+      for (final bad in [0, -5, kMaxInactivityTimeout.inMinutes + 1]) {
+        await expectLater(
+          () => repo.setInactivityTimeout('jon', bad),
+          throwsA(isA<ArgumentError>()),
+          reason: '$bad must be refused',
+        );
+      }
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes, isNull);
+    });
+
+    test('naming no account throws', () async {
+      expect(
+        () => repo.setInactivityTimeout('nobody', 45),
+        throwsA(isA<UserNotFoundException>()),
+      );
+    });
+
+    test('setRole preserves it', () async {
+      await repo.createUser(
+        username: 'ann',
+        password: 'pw',
+        roleName: 'Engineering',
+      );
+      await repo.setInactivityTimeout('jon', 45);
+      await repo.setRole('jon', kOperatorRoleName);
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes, 45);
+    });
+  });
+
   group('anonymousRole', () {
     test('carries the Operator row whole — groups and pages together',
         () async {

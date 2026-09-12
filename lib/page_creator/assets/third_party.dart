@@ -2834,7 +2834,7 @@ class _ThirdPartyEquipmentState extends ConsumerState<ThirdPartyEquipment> {
                             // tapping through to explain a figure changes the
                             // figure.
                             onPressed: () => showRatioAnalysisDialog(
-                                context, ref, ratio,
+                                context, ratio,
                                 interval: Duration(minutes: acceptWindow)),
                           ),
                         ],

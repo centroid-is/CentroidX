@@ -558,6 +558,124 @@ void main() {
     });
   });
 
+  // The per-account inactivity timeout. Unlike the v7 arm, this one is guarded
+  // by whether the column exists rather than by `from`, so these tests cover
+  // the three ways it can already be there: never (a v7 database), from the v6
+  // arm's createTable in the same open (a v5 database), and from a previous
+  // run (the version rewound over a table that already has it).
+  group('the per-account inactivity timeout arm', () {
+    late Directory tempDir;
+    late File dbFile;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('tfc_v8_schema_test');
+      dbFile = File('${tempDir.path}/app.sqlite');
+    });
+
+    tearDown(() {
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    Future<Set<String>> columnNames(GeneratedDatabase db, String table) async {
+      final rows = await db.customSelect('PRAGMA table_info($table)').get();
+      return rows.map((r) => r.read<String>('name')).toSet();
+    }
+
+    Future<AppDatabase> reopen() async {
+      final db = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      await db.customSelect('SELECT 1').getSingle();
+      return db;
+    }
+
+    /// Builds a database at [version] with an account in it, dropping the
+    /// column first unless [keepColumn].
+    Future<void> makeDatabase(int version, {bool keepColumn = false}) async {
+      final db = await reopen();
+      await db.customStatement(
+        "INSERT INTO app_user "
+        "(username, role_name, password_hash, salt, created_at, station_account) "
+        "VALUES ('jon', 'Engineering', 'hash', 'salt', '2026-09-01T00:00:00Z', 0)",
+      );
+      if (!keepColumn) {
+        await db.customStatement(
+            'ALTER TABLE app_user DROP COLUMN inactivity_timeout_minutes');
+      }
+      await db.customStatement('PRAGMA user_version = $version');
+      await db.close();
+    }
+
+    Future<int> userVersion(GeneratedDatabase db) async =>
+        (await db.customSelect('PRAGMA user_version').getSingle())
+            .read<int>('user_version');
+
+    test('adds inactivity_timeout_minutes to app_user', () async {
+      await makeDatabase(7);
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_user'),
+          contains('inactivity_timeout_minutes'));
+      expect(await userVersion(db), db.schemaVersion);
+    });
+
+    test('a carried-over account upgrades to NULL — the default, not "never"',
+        () async {
+      await makeDatabase(7);
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      final users = await db.customSelect('SELECT * FROM app_user').get();
+      expect(users, hasLength(1));
+      expect(users.first.read<int?>('inactivity_timeout_minutes'), isNull);
+    });
+
+    test('an arm re-run over a table that already has the column is harmless',
+        () async {
+      // The case a version guard gets wrong: a branch that renumbers this arm
+      // after the column already landed, or a rewound `user_version`. Without
+      // the existence check SQLite throws "duplicate column name" here.
+      await makeDatabase(7, keepColumn: true);
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_user'),
+          contains('inactivity_timeout_minutes'));
+      expect(await userVersion(db), db.schemaVersion);
+    });
+
+    test('a v5 database reaches the current version in one open', () async {
+      // The v6 arm creates app_user from the current definition, which already
+      // carries the column; the timeout arm must see it and add nothing.
+      final db = await reopen();
+      await db.customStatement('DROP TABLE audit_entry');
+      await db.customStatement('DROP TABLE app_user');
+      await db.customStatement('DROP TABLE app_role');
+      await db.customStatement('PRAGMA user_version = 5');
+      await db.close();
+
+      final upgraded = await reopen();
+      addTearDown(() => upgraded.close());
+
+      expect(await columnNames(upgraded, 'app_user'),
+          contains('inactivity_timeout_minutes'));
+      expect(await userVersion(upgraded), upgraded.schemaVersion);
+    });
+
+    test('the Postgres arm adds the column idempotently', () {
+      // Source-derived, like the parity group below: no test connects to a
+      // server, so the string is what stands behind that arm.
+      final source = File('lib/core/database_drift.dart').readAsStringSync();
+      expect(
+        source,
+        contains('ALTER TABLE app_user ADD COLUMN IF NOT EXISTS '
+            'inactivity_timeout_minutes INTEGER'),
+      );
+    });
+  });
+
   group('the Postgres DDL names the same columns as the tables', () {
     // Source-derived parity, the only thing standing behind the raw Postgres
     // statements — no test connects to a server. It reads the migration source

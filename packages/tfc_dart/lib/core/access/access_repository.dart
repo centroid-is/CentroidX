@@ -871,6 +871,28 @@ class AccessRepository {
     if (updated == 0) throw UserNotFoundException(username);
   }
 
+  /// Sets [username]'s inactivity timeout in minutes, or clears it with null
+  /// so the account uses the default.
+  ///
+  /// Throws [ArgumentError] outside `isValidInactivityTimeoutMinutes` rather
+  /// than clamping: the caller can still ask for a better number, and a
+  /// silently different value is a surprise in the audit trail. Throws
+  /// [UserNotFoundException] when there is no such account.
+  ///
+  /// No lockout guard, for the reason [setStationAccount] gives: a timeout is
+  /// not a permission.
+  Future<void> setInactivityTimeout(String username, int? minutes) async {
+    if (minutes != null && !isValidInactivityTimeoutMinutes(minutes)) {
+      throw ArgumentError.value(minutes, 'minutes',
+          'must be ${kMinInactivityTimeout.inMinutes}..'
+          '${kMaxInactivityTimeout.inMinutes}');
+    }
+    final updated = await (db.update(db.appUser)
+          ..where((t) => t.username.equals(username)))
+        .write(AppUserCompanion(inactivityTimeoutMinutes: Value(minutes)));
+    if (updated == 0) throw UserNotFoundException(username);
+  }
+
   Future<void> setRole(String username, String roleName) async {
     await db.transaction(() async {
       final existing = await (db.select(db.appUser)

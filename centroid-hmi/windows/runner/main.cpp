@@ -155,10 +155,24 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     ::DispatchMessage(&msg);
   }
 
-  ::CoUninitialize();
   // Whatever PostQuitMessage carried, so a distinct exit reason survives to
   // whatever supervises this process. A normal close posts 0; the GPU device
   // loss path posts its own code so "the screen went black" and "the operator
   // closed it" are not the same event in a service log.
-  return static_cast<int>(msg.wParam);
+  //
+  // And leave WITHOUT module teardown. The window and the engine are already
+  // gone; what returning from here would add is every DLL's static
+  // destructors, and flutter_inappwebview's among them release a Compositor
+  // into an apartment that no longer exists -- the dcomp.dll fail-fast that
+  // every close hit on 2026-09-11. Not CoUninitialize either: it is the thing that
+  // takes that apartment away, and the OS reclaims it regardless. See
+  // shutdown_policy.h.
+  const tfc::ShutdownPolicy::ExitPlan plan =
+      window.shutdown_policy().LoopEnded(static_cast<int>(msg.wParam));
+  tfc::RunnerLogLine("[shutdown]", plan.description);
+  if (plan.skip_module_teardown) {
+    EndProcessWithoutTeardown(plan.exit_code);
+  }
+  ::CoUninitialize();
+  return plan.exit_code;
 }

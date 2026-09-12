@@ -1,6 +1,6 @@
 /// Access control wiring: the repository, the auth provider, the audit sink,
-/// the station name, the device-local inactivity timeout, and the session
-/// itself.
+/// the station name, and the session itself — whose inactivity timeout is the
+/// signed-in account's own.
 ///
 /// Everything in `packages/tfc_access` and `tfc_dart/core/access` is testable
 /// in isolation and does nothing on its own. This is the file that puts it in
@@ -56,36 +56,20 @@ const String kAccessSessionPrefKey = 'access.session';
 /// signing the panel's own account out.
 const String kAccessPanelAccountPrefKey = 'access.panel_account';
 
-/// The device-local preference key holding the inactivity timeout, in minutes.
-const String kAccessInactivityMinutesPrefKey =
-    'access.inactivity_timeout_minutes';
-
-/// The device-local flag that disables the inactivity expiry entirely.
+/// The two device-local keys that used to hold a per-station inactivity
+/// timeout: the minutes, and a switch that disabled expiry for every session
+/// on the panel.
 ///
-/// The panel-PC case: a station commissioned to live signed in as its area
-/// account. A **separate boolean**, never an inferred zero — the timeout
-/// provider deliberately clamps a stray `0` up to the one-minute floor so a
-/// hand-edited store cannot accidentally mint immortal sessions; disabling
-/// expiry has to be said out loud.
-const String kAccessInactivityDisabledPrefKey =
-    'access.inactivity_timeout_disabled';
-
-/// Spec §5: fifteen minutes unless the station says otherwise.
-const Duration kDefaultInactivityTimeout = Duration(minutes: 15);
-
-/// The narrowest inactivity timeout a station may configure.
-///
-/// Below a minute the timeout stops being an inactivity guard and starts being
-/// a fault: an operator reading a trend for ninety seconds would be signed out
-/// mid-glance.
-const Duration kMinInactivityTimeout = Duration(minutes: 1);
-
-/// The widest inactivity timeout a station may configure.
-///
-/// Eight hours is a shift. Beyond that "times out on inactivity" is no longer
-/// true in any useful sense, and a station left elevated overnight is exactly
-/// the accident this phase exists to make less likely.
-const Duration kMaxInactivityTimeout = Duration(hours: 8);
+/// **Read by nothing any more** — the timeout is the account's
+/// (`app_user.inactivity_timeout_minutes`). They are named only so
+/// [AccessSessionController] can remove them at boot: support reads the
+/// preferences mirror, and a stale `true` disable flag sitting there would
+/// look like it still meant something.
+@visibleForTesting
+const List<String> kLegacyInactivityPrefKeys = [
+  'access.inactivity_timeout_minutes',
+  'access.inactivity_timeout_disabled',
+];
 
 /// Reads and writes for `app_role` and `app_user`, or null when this station
 /// has no database.
@@ -153,67 +137,13 @@ String stationName(Ref ref) {
   }
 }
 
-/// How long a quiet panel keeps an elevated session, from device-local
-/// preferences.
+/// How an account's stored minutes become its sessions' timeout.
 ///
-/// **Device-local on purpose.** The timeout is a property of the panel, not of
-/// the plant: stations on one database front different equipment, and the
-/// screen bolted to a packing line in constant use wants a different number
-/// from the one in a locked electrical room. Storing it in the shared
-/// `preferencesProvider` would let one station's setting decide another's.
-///
-/// Clamped to [kMinInactivityTimeout]..[kMaxInactivityTimeout] and logged when
-/// it clamps — a stray `0` or a fat-fingered `10000` in the preferences file
-/// must not turn into a session that ends instantly or never.
-@Riverpod(keepAlive: true)
-Future<Duration?> inactivityTimeout(Ref ref) async {
-  final local = ref.watch(localPreferencesProvider);
-
-  // The explicit off-switch, checked first: null means "no expiry at all",
-  // and only this flag may produce it. An unreadable flag falls through to
-  // the minutes — a mangled store must not widen the elevation window.
-  try {
-    if (await local.getBool(kAccessInactivityDisabledPrefKey) ?? false) {
-      return null;
-    }
-  } on Object catch (e) {
-    Logger().w(
-      'Could not read "$kAccessInactivityDisabledPrefKey" — treating the '
-      'expiry as enabled: $e',
-    );
-  }
-
-  int? minutes;
-  try {
-    minutes = await local.getInt(kAccessInactivityMinutesPrefKey);
-  } on Object catch (e) {
-    // A mangled value costs the station its custom timeout, never its boot.
-    Logger().w(
-      'Could not read "$kAccessInactivityMinutesPrefKey" — falling back to '
-      'the ${kDefaultInactivityTimeout.inMinutes}-minute default: $e',
-    );
-    return kDefaultInactivityTimeout;
-  }
-
-  if (minutes == null) return kDefaultInactivityTimeout;
-
-  final requested = Duration(minutes: minutes);
-  if (requested < kMinInactivityTimeout) {
-    Logger().w(
-      'Inactivity timeout of $minutes minute(s) is below the '
-      '${kMinInactivityTimeout.inMinutes}-minute floor — clamping.',
-    );
-    return kMinInactivityTimeout;
-  }
-  if (requested > kMaxInactivityTimeout) {
-    Logger().w(
-      'Inactivity timeout of $minutes minute(s) is above the '
-      '${kMaxInactivityTimeout.inHours}-hour ceiling — clamping.',
-    );
-    return kMaxInactivityTimeout;
-  }
-  return requested;
-}
+/// [resolveInactivityTimeout] in production. A provider only so tests can
+/// scale minutes down to real milliseconds — a countdown measured in minutes
+/// cannot be waited out in a widget test, and the monitor's timers are real.
+final inactivityTimeoutResolverProvider =
+    Provider<InactivityTimeoutResolver>((ref) => resolveInactivityTimeout);
 
 /// Whether the first account may still be created.
 ///
@@ -340,7 +270,8 @@ class AccessSessionController extends _$AccessSessionController {
   /// **attach on 0→1 while elevated, detach on 1→0.**
   int _listeners = 0;
 
-  /// The countdown, rebuilt whenever the configured timeout changes.
+  /// The countdown for the session in force. Built by [_ensureMonitor], and
+  /// replaced whenever a session's timeout differs from the one it counts.
   InactivityMonitor? _monitor;
 
   /// Non-null exactly while the countdown is attached.
@@ -355,8 +286,8 @@ class AccessSessionController extends _$AccessSessionController {
   /// from a timer callback without reaching back into `ref`.
   String _station = 'unknown';
 
-  /// Null since the disable flag: no expiry, no monitor, no countdown.
-  Duration? _timeout = kDefaultInactivityTimeout;
+  /// How an account's stored minutes become its timeout. Resolved at build.
+  InactivityTimeoutResolver _resolveTimeout = resolveInactivityTimeout;
 
   /// True while the live session **is** this panel's committed account.
   ///
@@ -401,21 +332,17 @@ class AccessSessionController extends _$AccessSessionController {
 
     _station = ref.watch(stationNameProvider);
     _local = ref.watch(localPreferencesProvider);
-    _timeout = await ref.watch(inactivityTimeoutProvider.future);
+    _resolveTimeout = ref.watch(inactivityTimeoutResolverProvider);
+    await _dropLegacyTimeoutPrefs();
     // Before `_restoreOrFloor`, which writes a row when the stored session
     // turns out to have expired while the app was not running.
     _sink = await ref.watch(auditSinkProvider.future);
     final repo = await ref.watch(accessRepositoryProvider.future);
 
-    // A fresh monitor per build, because `timeout` is final on it and the
-    // configured value may have changed. The previous one is already gone:
-    // Riverpod runs `onDispose` before a rebuild.
-    final timeout = _timeout;
-    // No monitor at all when expiry is off: _attach guards on `monitor ==
-    // null` the same way it guards on `expiresAt == null`, so nothing arms
-    // and nothing can fire.
-    _monitor = timeout == null ? null : InactivityMonitor(timeout: timeout);
-
+    // No monitor is built here. The timeout belongs to the session, so
+    // `_attach` builds one for whichever session it arms — see
+    // [_ensureMonitor]. The previous one is already gone: Riverpod runs
+    // `onDispose` before a rebuild.
     final session = await _restoreOrFloor(repo);
 
     // The boot case the listener count exists for: if something is already
@@ -498,6 +425,8 @@ class AccessSessionController extends _$AccessSessionController {
       return floor();
     }
 
+    final account = await _resolveAccount(repo, role, stored.username);
+    final timeout = _resolveTimeout(account.minutes);
     return AccessSession(
       user: AuthenticatedUser(
         username: stored.username,
@@ -505,49 +434,75 @@ class AccessSessionController extends _$AccessSessionController {
         displayName: stored.displayName,
       ),
       groups: role.groups,
-      // Re-resolved from the database like the groups are, and for the same
-      // reason: the payload cannot carry one, so a hand-edited preferences
-      // file cannot widen what this panel sees.
-      allowedPages: await _effectivePages(repo, role, stored.username),
-      expiresAt: stored.expiresAt,
+      // Both re-resolved from the database like the groups are, and for the
+      // same reason: the payload carries neither, so a hand-edited preferences
+      // file can widen neither what this panel sees nor how long it stays
+      // elevated.
+      allowedPages: account.pages,
+      inactivityTimeout: timeout,
+      // The payload's `expiresAt` is still the authority — a restart must not
+      // hand out a fresh window — but an administrator who shortened this
+      // account's timeout while the panel was off gets the shorter one.
+      expiresAt: _narrowed(stored.expiresAt, timeout),
     );
   }
 
-  /// The pages a session built on [role] for [username] may see.
+  /// [expiresAt], pulled in to `now + timeout` when that is sooner.
   ///
-  /// The composition point: the account's own whitelist replaces its role's
-  /// when it has one, and inherits the role's when it does not
-  /// (`effectiveAllowedPages`). Resolved here, once, so that nothing
+  /// Never later. A timeout changed under a live (or restored) session
+  /// applies only in the narrowing direction: widening it would be an
+  /// extension nobody earned at the panel, and the next pointer-down extends
+  /// by the new value anyway.
+  DateTime? _narrowed(DateTime? expiresAt, Duration? timeout) {
+    if (expiresAt == null || timeout == null) return expiresAt;
+    final cap = clock.now().add(timeout);
+    return cap.isBefore(expiresAt) ? cap : expiresAt;
+  }
+
+  /// What [username]'s own `app_user` row adds to a session built on [role]:
+  /// the pages it may see, and its stored inactivity minutes.
+  ///
+  /// One read for both, so the two halves cannot come from two reads of a row
+  /// somebody is editing.
+  ///
+  /// The pages are the composition point: the account's own whitelist
+  /// replaces its role's when it has one, and inherits the role's when it does
+  /// not (`effectiveAllowedPages`). Resolved here, once, so that nothing
   /// downstream of the session has to know two levels exist.
   ///
   /// [username] null is an anonymous session — no `app_user` row, so nothing
   /// to override with, and the role's whitelist *is* the session's.
   ///
-  /// **An unreadable user row composes as inherit, not as block.** The row
-  /// cannot be read exactly when the database is unreachable, and the ruling
-  /// for that window is the same one `anonymousRole` makes: a panel that
-  /// blanks its pages because Postgres blinked is worse than one showing pages
-  /// whose controls still refuse.
-  Future<Set<String>?> _effectivePages(
+  /// **An unreadable user row composes as inherit, not as block,** and its
+  /// minutes as null — the default window, never "never". The row cannot be
+  /// read exactly when the database is unreachable, and the ruling for that
+  /// window is the same one `anonymousRole` makes: a panel that blanks its
+  /// pages because Postgres blinked is worse than one showing pages whose
+  /// controls still refuse. A blink must not mint an immortal session either.
+  Future<({Set<String>? pages, int? minutes})> _resolveAccount(
     AccessRepository? repo,
     AccessRole role,
     String? username,
   ) async {
+    final inherited = effectiveAllowedPages(user: null, role: role.allowedPages);
     if (repo == null || username == null) {
-      return effectiveAllowedPages(user: null, role: role.allowedPages);
+      return (pages: inherited, minutes: null);
     }
     try {
       final row = await repo.user(username);
-      return effectiveAllowedPages(
-        user: decodeAllowedPagesColumn(row?.allowedPages),
-        role: role.allowedPages,
+      return (
+        pages: effectiveAllowedPages(
+          user: decodeAllowedPagesColumn(row?.allowedPages),
+          role: role.allowedPages,
+        ),
+        minutes: row?.inactivityTimeoutMinutes,
       );
     } on Object catch (e) {
       Logger().w(
-        'Could not read the page whitelist for "$username" — falling back to '
-        'the role\'s: $e',
+        'Could not read the app_user row for "$username" — falling back to '
+        'the role\'s pages and the default timeout: $e',
       );
-      return effectiveAllowedPages(user: null, role: role.allowedPages);
+      return (pages: inherited, minutes: null);
     }
   }
 
@@ -649,16 +604,18 @@ class AccessSessionController extends _$AccessSessionController {
       return AccessSignInResult.unavailable;
     }
 
+    final account = await _resolveAccount(repo, role, user.username);
+    // The account's own window. A station account has none — the freezer
+    // display's identity does not time out anywhere — and that flag is the
+    // only thing that can make a session immortal.
+    final timeout =
+        user.stationAccount ? null : _resolveTimeout(account.minutes);
     final session = AccessSession(
       user: user,
       groups: role.groups,
-      allowedPages: await _effectivePages(repo, role, user.username),
-      // Never-expiring two ways: the station-wide disable (null timeout) or
-      // the account's own v8 flag. The flag wins even under a normal
-      // timeout — the freezer display's identity does not time out anywhere.
-      expiresAt: (_timeout == null || user.stationAccount)
-          ? null
-          : clock.now().add(_timeout!),
+      allowedPages: account.pages,
+      inactivityTimeout: timeout,
+      expiresAt: timeout == null ? null : clock.now().add(timeout),
     );
 
     await _record(AuditRecord.login(
@@ -676,6 +633,11 @@ class AccessSessionController extends _$AccessSessionController {
     _onPanelSession = false;
     state = AsyncData(session);
     await _persist(session);
+    // A sign-in over a live session must not inherit its countdown: `_attach`
+    // returns early while a subscription exists, so the new account would
+    // otherwise count down the previous one's remainder, at the previous
+    // one's timeout, until its first pointer-down.
+    _detach();
     _attach(session);
     return AccessSignInResult.ok;
   }
@@ -960,6 +922,7 @@ class AccessSessionController extends _$AccessSessionController {
     if (session == null) return;
     if (!session.isElevated) return;
 
+    final timeout = session.inactivityTimeout;
     final extended = AccessSession(
       user: session.user,
       groups: session.groups,
@@ -967,12 +930,14 @@ class AccessSessionController extends _$AccessSessionController {
       // it must not silently widen or narrow what is visible, and it runs on
       // every pointer-down, where a database read would be indefensible.
       allowedPages: session.allowedPages,
-      // A session with no expiry — the station-wide disable or a station
-      // account — has nothing to extend, and an activity extension must not
+      inactivityTimeout: timeout,
+      // Extended by this session's own timeout — the account's, not the
+      // panel's. A session with no expiry (a station account, a resumed
+      // panel) has nothing to extend, and an activity extension must not
       // conjure one onto it.
-      expiresAt: (_timeout == null || session.expiresAt == null)
+      expiresAt: (timeout == null || session.expiresAt == null)
           ? null
-          : clock.now().add(_timeout!),
+          : clock.now().add(timeout),
     );
     state = AsyncData(extended);
     unawaited(_persist(extended));
@@ -1067,8 +1032,9 @@ class AccessSessionController extends _$AccessSessionController {
     if (_expiry != null) return;
 
     final expiresAt = session.expiresAt;
-    final monitor = _monitor;
-    if (expiresAt == null || monitor == null) return;
+    if (expiresAt == null) return;
+    final monitor = _ensureMonitor(session.inactivityTimeout);
+    if (monitor == null) return;
 
     final remaining = expiresAt.difference(clock.now());
     if (remaining > Duration.zero) {
@@ -1098,6 +1064,26 @@ class AccessSessionController extends _$AccessSessionController {
     if (sub != null) unawaited(sub.cancel());
   }
 
+  /// The countdown for [timeout], reusing the current monitor when it already
+  /// counts that.
+  ///
+  /// `InactivityMonitor.timeout` is final, so a session whose window differs
+  /// from the last one's needs a new monitor — two accounts with different
+  /// timeouts on one panel, or an administrator changing the one in force.
+  /// Called only from [_attach], after its gating, so a monitor is still only
+  /// ever built for an elevated session that something is listening to. And
+  /// building one arms nothing: the monitor starts counting in its stream's
+  /// `onListen`, which is `_attach`'s subscription.
+  InactivityMonitor? _ensureMonitor(Duration? timeout) {
+    final current = _monitor;
+    if (current != null && current.timeout == timeout) return current;
+    _detach();
+    _monitor = null;
+    if (current != null) unawaited(current.dispose());
+    if (timeout == null) return null;
+    return _monitor = InactivityMonitor(timeout: timeout);
+  }
+
   /// The session ran out: back to anonymous.
   Future<void> _expire() async {
     final current = state.valueOrNull;
@@ -1110,9 +1096,10 @@ class AccessSessionController extends _$AccessSessionController {
       roleName: current.roleName,
       actionId: newActionId(),
       at: clock.now(),
-      // Only reachable from the monitor's expiry, which exists only while a
-      // timeout does.
-      reason: 'No activity for ${_timeout!.inMinutes} minute(s).',
+      // Only reachable from a monitor, which exists only for a session with a
+      // timeout — the account's own.
+      reason: 'No activity for '
+          '${current.inactivityTimeout?.inMinutes} minute(s).',
     ));
     await _clearStoredSession();
     await _toFloor();
@@ -1254,7 +1241,7 @@ class AccessSessionController extends _$AccessSessionController {
         stationAccount: true,
       ),
       groups: role.groups,
-      allowedPages: await _effectivePages(repo, role, username),
+      allowedPages: (await _resolveAccount(repo, role, username)).pages,
       // A panel does not time out. Nothing arms for a null `expiresAt` —
       // `_attach` and `poke` both already decline — so this needs no new
       // guard anywhere.
@@ -1328,9 +1315,11 @@ class AccessSessionController extends _$AccessSessionController {
   /// It does not call [poke] — an admin saving a role in another tab is not the
   /// signed-in operator touching the panel, and quietly extending a session
   /// because somebody re-saved a role is an inactivity timeout that does not
-  /// time out. It does not change `expiresAt`. It **never attaches** the
-  /// inactivity monitor; the anonymous arm and the surviving-elevated arm
-  /// attach and detach nothing.
+  /// time out. It never moves `expiresAt` later. It attaches the inactivity
+  /// monitor in exactly one case — the account's timeout itself changed — and
+  /// then only for the time already remaining (pulled in to `now + timeout`
+  /// when that is sooner), through [_attach]'s usual gating. Otherwise the
+  /// anonymous arm and the surviving-elevated arm attach and detach nothing.
   ///
   /// It writes **no audit row**. `audit.dart`'s four auth itemKeys are `login`,
   /// `login_failed`, `logout` and `session_timeout`, and re-resolving groups is
@@ -1338,8 +1327,8 @@ class AccessSessionController extends _$AccessSessionController {
   /// `AccessAdminStore` as `role.update`, with the group sets as `old → new`. A
   /// second row here would be one action producing two unrelated rows.
   ///
-  /// It has exactly **two** permitted device-local persistence writes, and they
-  /// are named together so a later reader does not take either for an
+  /// It has exactly **three** permitted device-local persistence writes, and
+  /// they are named together so a later reader does not take any for an
   /// oversight:
   ///
   /// 1. `_clearStoredSession()` on the three drop routes above.
@@ -1353,6 +1342,11 @@ class AccessSessionController extends _$AccessSessionController {
   ///    the groups the demotion just removed. Carrying the existing `expiresAt`
   ///    through unchanged is what keeps "never rewrite a stored `expiresAt`"
   ///    intact: this rewrites the role, not the clock.
+  /// 3. [_persist] on the **narrowing** route — the account's timeout was
+  ///    shortened so far that `now + timeout` is sooner than the stored
+  ///    `expiresAt`. The one stored `expiresAt` this may rewrite, and only
+  ///    earlier: a restart must not restore the wider window the edit took
+  ///    away.
   ///
   /// A no-op after dispose, like [_toFloor].
   Future<void> refreshGroupsFromRoles() async {
@@ -1402,6 +1396,8 @@ class AccessSessionController extends _$AccessSessionController {
     // The account's own whitelist column, lifted out of the try beside the
     // role name so the session below composes from the same single read.
     final String? userPagesNow;
+    // And its timeout, from the same read.
+    final int? minutesNow;
     try {
       final row = await repo.user(username);
       if (row == null) {
@@ -1410,6 +1406,7 @@ class AccessSessionController extends _$AccessSessionController {
       }
       roleNameNow = row.roleName;
       userPagesNow = row.allowedPages;
+      minutesNow = row.inactivityTimeoutMinutes;
     } on Object catch (e) {
       await drop('the app_user row could not be read: $e');
       return;
@@ -1423,6 +1420,11 @@ class AccessSessionController extends _$AccessSessionController {
     }
 
     if (_disposed) return;
+    // A session that never expires stays that way — a station account is
+    // flagged at sign-in, and flipping the flag applies at the next one. A
+    // session that does expire takes the account's timeout as it stands now.
+    final timeoutNow =
+        session.inactivityTimeout == null ? null : _resolveTimeout(minutesNow);
     final next = AccessSession(
       user: AuthenticatedUser(
         username: username,
@@ -1437,12 +1439,26 @@ class AccessSessionController extends _$AccessSessionController {
         user: decodeAllowedPagesColumn(userPagesNow),
         role: role.allowedPages,
       ),
-      expiresAt: session.expiresAt,
+      inactivityTimeout: timeoutNow,
+      expiresAt: _narrowed(session.expiresAt, timeoutNow),
     );
     state = AsyncData(next);
 
-    // The demotion route, and the only re-persist. Same clock, new role.
-    if (role.name != session.user!.roleName) await _persist(next);
+    // A changed timeout needs a monitor that counts it. Re-attached for the
+    // time already remaining, never a fresh window — this is an
+    // administrator's edit, not activity at the panel — and through
+    // `_attach`'s gating, so a session nothing is listening to arms nothing.
+    if (timeoutNow != session.inactivityTimeout) {
+      _detach();
+      _attach(next);
+    }
+
+    // The demotion route and the narrowing route. Either way the stored copy
+    // would otherwise restore wider than what is now in force.
+    if (role.name != session.user!.roleName ||
+        next.expiresAt != session.expiresAt) {
+      await _persist(next);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -1472,6 +1488,30 @@ class AccessSessionController extends _$AccessSessionController {
       // A session that cannot be persisted is still a valid session; it just
       // will not survive a restart.
       Logger().w('Could not persist the session: $e');
+    }
+  }
+
+  /// Remove the retired per-station timeout keys, saying so once.
+  ///
+  /// A panel that had "Sessions never expire" on was keeping a signed-in
+  /// display alive with it; the log line names what does that now. Never
+  /// throws — a store that cannot be cleaned costs a stale key, not a boot.
+  Future<void> _dropLegacyTimeoutPrefs() async {
+    final local = _local;
+    if (local == null) return;
+    for (final key in kLegacyInactivityPrefKeys) {
+      try {
+        if (!await local.containsKey(key)) continue;
+        await local.remove(key);
+        Logger().w(
+          'Removed the retired per-station setting "$key". Inactivity '
+          'timeouts are per account now (the users list on the access page). '
+          'A panel that must stay signed in: flag its account as a station '
+          'account and commit the panel to it at sign-in.',
+        );
+      } on Object catch (e) {
+        Logger().w('Could not remove the retired setting "$key": $e');
+      }
     }
   }
 

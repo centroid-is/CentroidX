@@ -270,8 +270,6 @@ void main() {
         authProviderProvider.overrideWith((ref) async => auth),
         auditSinkProvider.overrideWith((ref) async => sink),
         stationNameProvider.overrideWithValue(_kStation),
-        inactivityTimeoutProvider
-            .overrideWith((ref) async => const Duration(minutes: 15)),
         accessAdminStoreProvider.overrideWith((ref) async {
           if (storeNeverResolves) {
             return Completer<AccessAdminStore?>().future;

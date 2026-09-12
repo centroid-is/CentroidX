@@ -20,7 +20,7 @@
 //   6. the offline classifier, against a connection that really dies.
 //
 // The schema is created through the real migration path, which means this file
-// is also the first thing that has ever executed 02-02's v8 arm — the
+// is also the first thing that has ever executed 02-02's v9 arm — the
 // `notify_config_change` function and its statement-level trigger — against a
 // server. Nothing here installs them by hand.
 //

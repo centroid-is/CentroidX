@@ -352,8 +352,6 @@ void main() {
 // core/server_config_db.dart:55   ServerConfigDb.prefsKey = 'server_config_envelope'   exact -> administer
 //     publish()/remove() write Drift directly, bypassing PreferencesApi entirely — bypass #1 in spec §6, rerouted later
 //     in this phase. The rule is declared now so the reroute lands on a classified key rather than on the default.
-// providers/access.dart:41        kAccessInactivityMinutesPrefKey = 'access.inactivity_timeout_minutes'  exact -> operate
-//     Read-only today (:145). Declared now so the write path a settings screen adds is covered.
 // ---------------------------------------------------------------------------
 
 /// Every preference literal the resolution above produced, and the group it
@@ -379,7 +377,6 @@ const Map<String, AccessGroup> kResolvedPrefInventory = <String, AccessGroup>{
   'asset_stack_config': AccessGroup.operate,
   'color_picker_recent_colors': AccessGroup.operate,
   'access.session': AccessGroup.operate,
-  'access.inactivity_timeout_minutes': AccessGroup.operate,
   'chat.history': AccessGroup.operate,
   'chat.conversations': AccessGroup.operate,
   'chat.active_conversation': AccessGroup.operate,

@@ -138,8 +138,6 @@ const List<PrefAccessRule> kPrefAccessRules = <PrefAccessRule>[
   // Written on every poke() — i.e. every pointer-down. A denial here would fire
   // continuously.
   (kind: PrefRuleKind.exact, match: 'access.session', group: AccessGroup.operate),
-  (kind: PrefRuleKind.exact, match: 'access.inactivity_timeout_minutes', group: AccessGroup.operate),
-  (kind: PrefRuleKind.exact, match: 'access.inactivity_timeout_disabled', group: AccessGroup.operate),
 
   // ---------------------------------------------------------------------
   // exact -> administer. Server, database and machine configuration.

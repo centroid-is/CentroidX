@@ -174,6 +174,20 @@ class AppUser extends Table {
   /// expressible. It can widen what this account *sees*; it can never widen
   /// what this account may *do*, because the group gate is ANDed on top.
   TextColumn get allowedPages => text().nullable()();
+
+  /// How many idle minutes end this account's sessions (schema v8), or NULL
+  /// for the default.
+  ///
+  /// Per account rather than per station: the account knows who walked away
+  /// with what power, the panel does not. **NULL means "no value of its own"**,
+  /// never "never expires" — sessions that must not expire are
+  /// [stationAccount]'s, and only that flag produces one. Every account
+  /// carried over from v7 lands on NULL and keeps the fifteen minutes it had.
+  ///
+  /// The range is enforced by `AccessRepository.setInactivityTimeout` and a
+  /// value outside it is clamped on read by `resolveInactivityTimeout`, so a
+  /// `psql` edit cannot end sessions instantly or never.
+  IntColumn get inactivityTimeoutMinutes => integer().nullable()();
 }
 
 /// The human-action audit trail: append-only, never pruned.
@@ -531,7 +545,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   }
 
   @override
-  int get schemaVersion => 9;
+  int get schemaVersion => 10;
 
   /// The `audit_entry` indexes, created outside Drift because Drift's
   /// `@TableIndex` cannot express `DESC` and every one of these is a
@@ -953,7 +967,39 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
             }
           }
 
-          // Schema v8: the relational configuration store — `config_item`
+          // The inactivity timeout, per account. One nullable column; every
+          // existing account upgrades to NULL, which is the fifteen-minute
+          // default it already had.
+          //
+          // Guarded by whether the column exists rather than by `from >= N`,
+          // unlike the v7 arm above. Three things can already have put it
+          // there: the v6 arm's `createTable` in this same upgrade (SQLite
+          // builds it from the table definition, which carries the column), a
+          // second station opening the shared Postgres, and a branch that
+          // lands its own arms around this one and renumbers it. An existence
+          // check is right in every merge order; a version comparison is only
+          // right in the one it was written for.
+          if (from < 8) {
+            if (native) {
+              final cols = await m.database
+                  .customSelect("PRAGMA table_info('app_user')")
+                  .get();
+              final present = cols.any(
+                  (r) => r.read<String>('name') == 'inactivity_timeout_minutes');
+              if (!present) {
+                await m.addColumn(appUser, appUser.inactivityTimeoutMinutes);
+              }
+            } else {
+              // Not in the v6 CREATE TABLE literal on purpose: a v5 Postgres
+              // station creates the table there and gets the column here, in
+              // the same open. No test executes this arm — the parity check in
+              // `access_schema_test.dart` is what stands behind the string.
+              await m.database.customStatement(
+                  'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS inactivity_timeout_minutes INTEGER');
+            }
+          }
+
+          // Schema v9: the relational configuration store — `config_item`
           // holds every configuration entity as one row, `config_change` is
           // its append-only log.
           //
@@ -1002,7 +1048,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // nothing more — it does not connect to Postgres and cannot see a
           // wrong type or a statement that fails at runtime. The first thing
           // that will actually run them is a station.
-          if (from < 8) {
+          if (from < 9) {
             if (native) {
               await m.createTable(configItemTable);
               await m.createTable(configChangeTable);
@@ -1021,8 +1067,8 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
             await _createConfigIndexes(m);
           }
 
-          // Schema v9: the `config_change` NOTIFY trigger — the server half of
-          // "another station's edit arrives without a restart". v8 gave the log
+          // Schema v10: the `config_change` NOTIFY trigger — the server half of
+          // "another station's edit arrives without a restart". v9 gave the log
           // a place to live; this makes writing to it tell anyone listening.
           //
           // The arm is Postgres-only and the SQLite side is deliberately
@@ -1032,12 +1078,12 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // [_createConfigChangeNotifyTrigger], instead of being spread across
           // a branch here and a comment there.
           //
-          // No table changed, so no codegen: v9 is DDL that lives outside the
+          // No table changed, so no codegen: v10 is DDL that lives outside the
           // drift schema entirely, the way the indexes above do.
-          if (from < 9) {
+          if (from < 10) {
             await _createConfigChangeNotifyTrigger(m);
             // Idempotent, and run again here for the index that joined the
-            // list after the v8 arm had already stamped a database.
+            // list after the v9 arm had already stamped a database.
             await _createConfigIndexes(m);
           }
         },

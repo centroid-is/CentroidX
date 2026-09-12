@@ -294,6 +294,33 @@ is a whitelist naming nothing, which hides every page. Writing `'[]'` here by
 reflex is the one way to make this worse rather than better. The same audit
 consequence as above applies: a change made in `psql` leaves no row.
 
+### Upgrading a panel that had "Sessions never expire" on
+
+The inactivity timeout used to be device-local: a minutes value and a switch
+that stopped **every** session on that panel from expiring, including an
+Engineering sign-in made to fix something. It is a column on the account now
+(`app_user.inactivity_timeout_minutes`, NULL meaning the 15-minute default),
+and both old preference keys are ignored and removed at the first start after
+the upgrade, with a line in the log saying so.
+
+Two consequences, and only the second needs anybody to do anything:
+
+* A panel that had a custom **minutes** value goes back to 15 minutes until an
+  administrator gives the accounts a value of their own, on Advanced → Access,
+  in the users list. Nothing is lost that cannot be set again in a dialog.
+* A panel that had the **switch** on and lived signed in as an ordinary account
+  now expires like any other. Before upgrading, make that account a station
+  account on the users list and commit the panel to it at the next sign-in.
+  That is strictly better than the switch was: a station account's session
+  survives a restart, which the switch never managed — it persisted a session
+  with no expiry, and a session with no expiry is exactly what the restore
+  path refuses.
+
+There is deliberately no per-account "never". A session that must not expire
+belongs to a station account, which is an administrator saying "this identity
+is a panel, not a person" — one place to look, and one row in the trail when
+it changes.
+
 ### The database-outage rule, and the cost it accepts
 
 Route gating raises nine routes above `operate` — Phase 2's six, plus
