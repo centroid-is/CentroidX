@@ -105,7 +105,7 @@ file and call rather than by line.**
 | `packages/tfc_mcp_server/lib/src/audit/audit_log_service.dart:47, 85` | `_db.into(_auditLog).insert(...)`, `_db.update(_auditLog)` | `audit_log` (MCP's own) | `TfcMcpServer`, which runs **in the HMI process** (`lib/mcp/mcp_bridge_notifier.dart:266`, `lib/mcp/mcp_sse_server.dart:56`) | `left open: reached over MCP, not from a widget` — see §3.2 |
 | `lib/core/access_template_store.dart:286, 324, 383, 439-441, 498, 531-533` | `_db.into(...).insert` / `.insertOnConflictUpdate`, `_db.update(...)`, `_db.delete(...)` on the two v7 tables | `access_template`, `access_key_binding` | `AccessTemplateStore`, driven by the key repository (04-07, 04-08) and by accepted MCP proposals (04-09) | `correct as-is` — this **is** the guard; `kAccessTemplateGroup` (`users`) is checked and the audit row written above every one of these, over **both** tables. The binding lives in its own table rather than in the `configure`-gated key-mapping blob precisely so the gate is true of the data (ruled 2026-08-30, reversing spec §7b) |
 | `lib/pages/access_templates_section.dart:635, 1130` | `store.update(...)`, `store.delete(...)` | `access_template` | `AccessTemplatesSection`, mounted in `KeyRepositoryContent` (04-07) | `correct as-is` — these are calls **on `AccessTemplateStore`**, one row above, not on a database: the `users` gate and the audit row are inside them. Caught by the deliberately broad `.update(`/`.delete(` grep and recorded rather than filtered away, which is the point of the grep being broad. The section writes no binding at all — `bind`/`unbind` are 04-08's, per key |
-| `packages/tfc_dart/lib/core/access/access_repository.dart:358, 373, 412, 545, 552-554, 590, 645, 722, 754-755, 781, 814` | `db.into/update/delete` on `app_role` / `app_user` | roles and users | `accessAdminStoreProvider` (06-04), which wraps `accessRepositoryProvider`; and `lib/pages/first_user.dart:141` for the first-user window alone | `guarded by 06-03` — `AccessAdminStore` asks `kAccessAdminGroup` (`users`) and writes a row, refusals included, above every one of the eight writes that reach these statements. The repository is not decorated: it owns the transaction and the last-`users`-holder invariant that must be evaluated inside it — see §3.3 |
+| `packages/tfc_dart/lib/core/access/access_repository.dart:358, 373, 412, 545, 552-554, 590, 645, 722, 754-755, 781, 814, 890` | `db.into/update/delete` on `app_role` / `app_user` | roles and users | `accessAdminStoreProvider` (06-04), which wraps `accessRepositoryProvider`; and `lib/pages/first_user.dart:141` for the first-user window alone | `guarded by 06-03` — `AccessAdminStore` asks `kAccessAdminGroup` (`users`) and writes a row, refusals included, above every one of the nine writes that reach these statements. The repository is not decorated: it owns the transaction and the last-`users`-holder invariant that must be evaluated inside it — see §3.3 |
 | `packages/tfc_dart/lib/core/preferences.dart:210, 254, 428` | `secureStorage.delete(key:)`, `db.customInsert(...)`, `database!.db.customUpdate(...)` | secure store, `flutter_preferences` | inside `Preferences` — the implementation `GuardedPreferences` wraps | `correct as-is` — these are the store the guard decorates; the check happens above them |
 | `lib/core/preferences.dart:54-84` | `_prefs.setBool/setInt/setDouble/setString/setStringList/remove/clear` | device-local | `SharedPreferencesWrapper implements PreferencesApi` | `correct as-is` — pure delegation with the caller's key |
 | `packages/tfc_dart/lib/core/database_drift.dart:374, 394, 444-527, 702-790, 847-856, 907, 990-1007, 1127-1317` | `into(...)`, `delete(...)`, `customStatement`, `customInsert` | every table | the database's own methods and migrations | `correct as-is` — this file *is* the store |
@@ -262,7 +262,6 @@ in §5.
 | `lib/pages/key_repository.dart:637, 1933` | `prefs.setString('key_mappings', ...)` | preferences | `/advanced/key-repository` | `guarded by 03-06` — and `route-gated (Phase 2)` besides |
 | `lib/pages/page_view.dart:270` | `prefs.setString('asset_stack_config', ...)` | device-local | every asset page, on the read path when the key is absent | construction `enforced by 03-11` — the store now comes from `localPreferencesProvider`; the write is unchanged and still once per mount |
 | `lib/pages/dbus_login.dart:127-131` | `prefs.setString/setBool(...)` | device-local, **legacy sync API** | the D-Bus login form | `left open: spec §2 excludes changing this file` — see §3.7 |
-| `lib/pages/access_session_section.dart` | `prefs.setInt(kAccessInactivityMinutesPrefKey, ...)`, `prefs.setBool(kAccessInactivityDisabledPrefKey, ...)` | device-local | the Session card on `/advanced/access` | `route-gated (Phase 2)` — `users`; and the card records its own audit row per change through `RefAuditSink`, because a device-local write bypasses `GuardedPreferences` and the width of the elevation window — or its removal entirely, the never-expire switch — must not change without a row. Minutes bounded 1..480 before the write; the provider's clamp stays as the backstop for hand-edited stores, and the disable is an explicit boolean so a stray zero still clamps up instead of meaning "never" |
 | `lib/page_creator/page.dart:247` | `prefs.setString(storageKey, jsonString)` | preferences | `PageManager.load()` at boot, **unawaited** | `guarded by 03-06` — routed through `systemWrites` |
 | `lib/page_creator/page.dart:252, 257` | `prefs.setString(storageKey \| orderStorageKey, ...)` | preferences | the page editor's save | `guarded by 03-06` |
 | `lib/page_creator/assets/image_store.dart:96, 129` | `prefs.setString/remove('$keyPrefix$id')` | preferences | page-editor image add and delete | `guarded by 03-06` |
@@ -776,6 +775,32 @@ to a counted `[generated]` line by design and therefore never emits as a
 **Beyond finding F, nothing further found.** No new write surface, no new
 accessor spelling that is not a guard this phase added, and no site whose
 verdict this document cannot state.
+
+### 4.3b What the per-account-timeout change moved (2026-09-12)
+
+The inactivity timeout stopped being a device-local preference and became a
+column on `app_user`, and the sweep's two directions caught the consequence
+before a human did — `test/core/phase_03_coverage_test.dart` went red on a row
+with no hit.
+
+- **One row deleted.** `lib/pages/access_session_section.dart` had two
+  device-local writes (`kAccessInactivityMinutesPrefKey`,
+  `kAccessInactivityDisabledPrefKey`) reached from the Session card. The card
+  is now a read-out: it writes nothing, both keys are retired, and the row was
+  stale rather than merely re-numbered. Deleted rather than annotated, because
+  a table of write paths that lists a file writing nothing is the rot this
+  check exists to catch.
+- **One row widened, not added.** The write did not disappear; it moved to
+  `AccessRepository.setInactivityTimeout`, which is the ninth write reaching
+  §2.1's `app_role`/`app_user` statements and is covered by that file's
+  existing row rather than a new one. Its gate is unchanged in kind:
+  `AccessAdminStore.setUserInactivityTimeout` asks `kAccessAdminGroup` and
+  records `user.inactivity_timeout`, refusals included — the same shape as
+  `user.station_account` beside it.
+
+Net: the surface did not grow. A device-local write that bypassed
+`GuardedPreferences` and paid for it with a hand-rolled audit row became a
+database write already sitting behind `guarded by 06-03`.
 
 ### 4.4 What §5 checked and did not find
 
