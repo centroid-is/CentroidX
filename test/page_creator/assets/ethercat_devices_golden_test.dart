@@ -1,4 +1,4 @@
-import 'dart:io' show File, Platform;
+import 'dart:io' show File;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FontLoader;
@@ -8,6 +8,7 @@ import 'package:tfc/page_creator/assets/ethercat_subdevice.dart';
 import 'package:tfc/page_creator/assets/ethercat_subdevice_pane.dart';
 import 'package:tfc/theme.dart';
 
+import '../../helpers/golden_platform.dart';
 import '../../helpers/golden_tolerance.dart';
 
 const _key = Key('ethercat_devices');
@@ -42,17 +43,14 @@ Widget frame(Widget child, {double width = 900, double height = 420}) {
 
 void main() {
   // These goldens are almost entirely small text — a dozen columns of names,
-  // models and counters. CoreText rasterises that text a hair differently on
-  // the CI runner (macOS 26) than on a developer Mac (macOS 15), which moved
-  // 43 px of the table and 32 px of the narrow variant: 0.013%, just over the
-  // 0.01% default, on images nobody had touched. 0.2% is the tolerance the
-  // other text-heavy goldens in this suite use, and it still leaves a real
-  // regression nowhere to hide — shifting a column or recolouring a port cell
-  // moves thousands of pixels.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  // models and counters — which is exactly the case that used to need a raised
+  // tolerance: CoreText rasterised it a hair differently on the CI runner
+  // (macOS 26) than on a developer Mac (macOS 15), moving 43 px of the table on
+  // images nobody had touched. Rendering on Linux removes that gap, so this is
+  // back to the 0.01% default along with the rest of the suite.
+  useTolerantGoldenComparator();
 
-  group('EtherCAT devices',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+  group('EtherCAT devices', skip: goldenSkip, () {
     testWidgets('two masters, one of everything the table shows',
         (tester) async {
       await loadRealFont();
