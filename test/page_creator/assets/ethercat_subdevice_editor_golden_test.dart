@@ -1,4 +1,4 @@
-import 'dart:io' show File, Platform;
+import 'dart:io' show File;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FontLoader;
@@ -13,6 +13,7 @@ import 'package:tfc/theme.dart';
 
 import '../../helpers/ethercat_fake_state_man.dart';
 import '../../helpers/ethercat_fixtures.dart';
+import '../../helpers/golden_platform.dart';
 import '../../helpers/golden_tolerance.dart';
 
 const _key = Key('ethercat_subdevice_binding_editor');
@@ -31,7 +32,7 @@ void main() {
   useTolerantGoldenComparator();
 
   group('EtherCAT subdevice binding',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('a slice bound to its subdevice by name', (tester) async {
       await loadRealFont();
       final sm = EcFakeStateMan(mappings: ecDevice1Mappings())

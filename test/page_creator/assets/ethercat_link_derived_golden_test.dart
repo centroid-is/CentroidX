@@ -1,4 +1,4 @@
-import 'dart:io' show File, Platform;
+import 'dart:io' show File;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FontLoader;
@@ -11,6 +11,7 @@ import 'package:tfc/page_creator/assets/schneider.dart';
 import 'package:tfc/theme.dart';
 
 import '../../helpers/ethercat_fixtures.dart';
+import '../../helpers/golden_platform.dart';
 import '../../helpers/golden_tolerance.dart';
 
 const _key = Key('ethercat_link_derived');
@@ -86,7 +87,7 @@ void main() {
   useTolerantGoldenComparator();
 
   group('EtherCAT cable, coloured from its ends',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('a healthy run the PLC confirms', (tester) async {
       await loadRealFont();
       await tester.pumpWidget(pane(_bus()));
