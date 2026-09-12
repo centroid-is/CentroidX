@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/web_view.dart';
 import 'package:tfc/theme.dart' show solarized;
+import '../../helpers/golden_platform.dart';
 
 const _stripKey = Key('web_view_golden');
 
@@ -132,7 +133,7 @@ void main() {
   tearDown(() => WebViewAssetView.debugSurfaceFactory = null);
 
   group('web view golden tests',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     Future<void> capture(WidgetTester tester, String name,
         {bool dark = false}) async {
       // One outcome per host, so the strip shows every state at once.

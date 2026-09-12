@@ -22,6 +22,14 @@ export 'converter/duration_converter.dart';
 export 'core/secure_storage/interface.dart'; // MySecureStorage abstract only
 export 'core/mcp_tables.dart';
 export 'core/mcp_database.dart';
+export 'core/shift.dart';
+export 'core/report.dart';
+export 'core/report_math.dart';
+export 'core/report_result.dart';
+export 'core/production_window.dart';
+export 'core/report_store.dart';
+export 'core/report_engine.dart';
+export 'core/sql_dialect.dart';
 
 // Configuration, as rows. The first `core/config/` exports, and the reason the
 // exclusion list above has teeth again: `config_service.dart` in

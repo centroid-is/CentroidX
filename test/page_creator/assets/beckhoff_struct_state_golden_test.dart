@@ -15,6 +15,7 @@ import 'package:tfc/widgets/panes/side_pane.dart' show closeSidePane;
 import 'package:tfc_dart/core/state_man.dart' show StateMan;
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Goldens of what the struct decode and the asset-carried channel names put
 /// on screen.
@@ -92,13 +93,10 @@ class _StubStateMan extends Fake implements StateMan {
 }
 
 void main() {
-  // Same dense line work as the other Beckhoff goldens — the terminal faces
-  // are hairline rules and small text, and antialiasing drift across
-  // toolchains eats more than the 0.01% default.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('Beckhoff struct-state golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(loadRealFont);
 
     /// Frames the image around what it is meant to show. A terminal face is

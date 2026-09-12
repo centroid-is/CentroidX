@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +9,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/conveyor.dart';
 import 'package:tfc/pages/page_view.dart';
+import '../../helpers/golden_platform.dart';
 import '../../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 const _key = Key('conveyor_mirror_test');
@@ -75,7 +75,7 @@ void _seedPrefs({bool xMirror = false, bool yMirror = false}) {
 
 void main() {
   group('Conveyor page-mirror golden tests',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('turned conveyor, mirroring off (control)', (tester) async {
       _seedPrefs();
       await tester.pumpWidget(_stackScenario());

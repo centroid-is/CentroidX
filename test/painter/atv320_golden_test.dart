@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show ByteData, FontLoader;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/painter/schneider/atv320.dart';
+import '../helpers/golden_platform.dart';
 
 /// The painter draws the inline label in 'Courier', which flutter_test will
 /// not resolve from the system — it would fall back to Ahem, whose glyphs are
@@ -41,7 +42,7 @@ void main() {
 
   setUpAll(_loadCourier);
 
-  group('ATV320 7-segment golden tests', skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+  group('ATV320 7-segment golden tests', skip: goldenSkip, () {
     Widget buildDisplay(
       String displayText, {
       String topLabel = '',

@@ -60,14 +60,16 @@ void main() {
       );
     }
 
-    test('1. All 33 expected tools are registered', () async {
+    test('1. All 42 expected tools are registered', () async {
       final server = createWiredServer();
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
         final tools = await client.listTools();
         final toolNames = tools.map((t) => t.name).toSet();
 
-        // All 33 expected tools (20 read + 13 write)
+        // All 42 expected tools: the pre-existing set, the four
+        // access-template writes, the nine report tools, and this
+        // milestone's `check_config_consistency`.
         expect(toolNames, containsAll([
           // Read tools
           'ping',
@@ -103,9 +105,19 @@ void main() {
           'update_access_template',
           'delete_access_template',
           'bind_key_access_template',
+          // Report tools
+          'list_reports',
+          'get_report_definition',
+          'generate_report',
+          'resolve_shift',
+          'get_shift_calendar',
+          'set_shift_calendar',
+          'create_report',
+          'update_report',
+          'delete_report',
         ]));
 
-        expect(toolNames, hasLength(33));
+        expect(toolNames, hasLength(42));
       } finally {
         await client.close();
       }
@@ -178,8 +190,8 @@ void main() {
         final tools = await client.listTools();
         final toolNames = tools.map((t) => t.name).toSet();
 
-        // All 33 tools are registered (drawing tools always present)
-        expect(toolNames, hasLength(33));
+        // All 42 tools are registered (drawing tools always present)
+        expect(toolNames, hasLength(42));
         expect(toolNames, contains('search_drawings'));
         expect(toolNames, contains('get_drawing_page'));
       } finally {

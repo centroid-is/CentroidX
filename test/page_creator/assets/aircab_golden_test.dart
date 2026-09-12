@@ -25,6 +25,7 @@ import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:tfc/page_creator/assets/aircab.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/theme.dart' show solarized;
+import '../../helpers/golden_platform.dart';
 
 const _boundaryKey = Key('aircab_golden');
 
@@ -127,7 +128,7 @@ void main() {
   });
 
   group('Air cabinet goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('dark scheme, both LEDs off', (tester) async {
       await _pumpCabinet(tester, dark);
       await expectLater(

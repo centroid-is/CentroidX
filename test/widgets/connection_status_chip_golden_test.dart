@@ -21,6 +21,7 @@ import 'package:tfc/theme.dart' show solarized;
 import 'package:tfc/widgets/connection_status_chip.dart';
 import 'package:tfc_dart/core/state_man.dart'
     show ConnectionStatus, EffectiveDeviceStatus;
+import '../helpers/golden_platform.dart';
 
 const _stripKey = Key('connection_status_chip_golden');
 
@@ -138,7 +139,7 @@ void main() {
   setUpAll(_loadFonts);
 
   group('connection status chip golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('all states, light', (tester) async {
       await tester.pumpWidget(buildStrip());
       await expectLater(

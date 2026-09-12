@@ -210,8 +210,8 @@ void main() {
       expect(toggles.getByKey('unknown'), isFalse);
     });
 
-    test('toolGroupMeta contains 9 entries with key, title, description', () {
-      expect(McpToolToggles.toolGroupMeta, hasLength(9));
+    test('toolGroupMeta contains 10 entries with key, title, description', () {
+      expect(McpToolToggles.toolGroupMeta, hasLength(10));
       for (final meta in McpToolToggles.toolGroupMeta) {
         expect(meta.key, isNotEmpty);
         expect(meta.title, isNotEmpty);
@@ -261,18 +261,19 @@ void main() {
       );
     }
 
-    test('allEnabled registers 33 tools (20 read + 13 write)', () async {
+    test('allEnabled registers 42 tools (20 read + 13 write + 9 report)',
+        () async {
       final server = createServer();
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
         final tools = await client.listTools();
-        expect(tools, hasLength(33));
+        expect(tools, hasLength(42));
       } finally {
         await client.close();
       }
     });
 
-    test('tagsEnabled=false registers 30 tools', () async {
+    test('tagsEnabled=false registers 39 tools', () async {
       final server = createServer(
         toggles: McpToolToggles.allEnabled.copyWithToggle('tags', false),
       );
@@ -280,7 +281,7 @@ void main() {
       try {
         final tools = await client.listTools();
         final names = tools.map((t) => t.name).toSet();
-        expect(tools, hasLength(30));
+        expect(tools, hasLength(39));
         expect(names, isNot(contains('list_tags')));
         expect(names, isNot(contains('get_tag_value')));
       } finally {
@@ -288,7 +289,7 @@ void main() {
       }
     });
 
-    test('alarmsEnabled=false registers 24 tools', () async {
+    test('alarmsEnabled=false registers 34 tools', () async {
       final server = createServer(
         toggles: McpToolToggles.allEnabled.copyWithToggle('alarms', false),
       );
@@ -301,8 +302,8 @@ void main() {
         // both tagsEnabled && alarmsEnabled), create_alarm, update_alarm,
         // delete_alarm (write tools gated by alarmsEnabled inside the
         // proposalsEnabled block).
-        // 32 total - 7 = 25.
-        expect(tools, hasLength(25));
+        // 42 total - 8 = 34.
+        expect(tools, hasLength(34));
         expect(names, isNot(contains('list_alarms')));
         expect(names, isNot(contains('get_alarm_detail')));
         expect(names, isNot(contains('query_alarm_history')));
@@ -315,7 +316,7 @@ void main() {
       }
     });
 
-    test('proposalsEnabled=false registers 20 tools', () async {
+    test('proposalsEnabled=false registers 25 tools', () async {
       final server = createServer(
         toggles: McpToolToggles.allEnabled.copyWithToggle('proposals', false),
       );
@@ -323,7 +324,13 @@ void main() {
       try {
         final tools = await client.listTools();
         final names = tools.map((t) => t.name).toSet();
-        expect(tools, hasLength(20));
+        // 42 - 13 - the four report writes, which ride this toggle
+        // because they are proposals like every other write here.
+        expect(tools, hasLength(25));
+        expect(names, isNot(contains('create_report')));
+        expect(names, isNot(contains('set_shift_calendar')));
+        // The read half stays: reportsEnabled put it there.
+        expect(names, contains('generate_report'));
         expect(names, isNot(contains('create_access_template')));
         expect(names, isNot(contains('update_access_template')));
         expect(names, isNot(contains('delete_access_template')));
@@ -360,8 +367,8 @@ void main() {
         // configEnabled for their lookups), create_key_mapping,
         // update_key_mapping, delete_key_mapping, and the four
         // access-template write tools, which validate against the read half.
-        // 33 total - 19 = 14.
-        expect(tools, hasLength(14));
+        // 41 total - 18 = 23.
+        expect(tools, hasLength(23));
         expect(names, isNot(contains('list_pages')));
         expect(names, isNot(contains('list_assets')));
         expect(names, isNot(contains('get_asset_detail')));
@@ -381,7 +388,17 @@ void main() {
 
     test('all toggles disabled registers only 1 tool (ping)', () async {
       final server = createServer(
-        toggles: McpToolToggles.allDisabled,
+        toggles: const McpToolToggles(
+          tagsEnabled: false,
+          alarmsEnabled: false,
+          configEnabled: false,
+          drawingsEnabled: false,
+          trendsEnabled: false,
+          plcCodeEnabled: false,
+          proposalsEnabled: false,
+          techDocsEnabled: false,
+          reportsEnabled: false,
+        ),
       );
       final client = await MockMcpClient.connect(server.mcpServer);
       try {

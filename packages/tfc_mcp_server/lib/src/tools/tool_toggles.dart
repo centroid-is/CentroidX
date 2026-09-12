@@ -124,6 +124,7 @@ class McpToolToggles {
   final bool proposalsEnabled;
   final bool techDocsEnabled;
   final bool screenshotsEnabled;
+  final bool reportsEnabled;
 
   const McpToolToggles({
     this.tagsEnabled = false,
@@ -135,6 +136,7 @@ class McpToolToggles {
     this.proposalsEnabled = false,
     this.techDocsEnabled = false,
     this.screenshotsEnabled = false,
+    this.reportsEnabled = false,
   });
 
   /// All groups enabled.
@@ -153,6 +155,7 @@ class McpToolToggles {
     proposalsEnabled: true,
     techDocsEnabled: true,
     screenshotsEnabled: true,
+    reportsEnabled: true,
   );
 
   /// All groups disabled: what everything resolves to until somebody says
@@ -189,7 +192,8 @@ class McpToolToggles {
       other.plcCodeEnabled == plcCodeEnabled &&
       other.proposalsEnabled == proposalsEnabled &&
       other.techDocsEnabled == techDocsEnabled &&
-      other.screenshotsEnabled == screenshotsEnabled;
+      other.screenshotsEnabled == screenshotsEnabled &&
+      other.reportsEnabled == reportsEnabled;
 
   @override
   int get hashCode => Object.hash(
@@ -202,6 +206,7 @@ class McpToolToggles {
         proposalsEnabled,
         techDocsEnabled,
         screenshotsEnabled,
+        reportsEnabled,
       );
 
   // ── JSON field names (used in the consolidated McpConfig blob) ──────
@@ -215,6 +220,7 @@ class McpToolToggles {
   static const _kProposals = 'proposals';
   static const _kTechDocs = 'techDocs';
   static const _kScreenshots = 'screenshots';
+  static const _kReports = 'reports';
 
   // ── Legacy preference key constants (pre-consolidation) ─────────────
 
@@ -252,6 +258,7 @@ class McpToolToggles {
     _kProposals,
     _kTechDocs,
     _kScreenshots,
+    _kReports,
   ];
 
   /// Create toggles from a JSON map (within the McpConfig blob).
@@ -269,6 +276,7 @@ class McpToolToggles {
       proposalsEnabled: json[_kProposals] as bool? ?? false,
       techDocsEnabled: json[_kTechDocs] as bool? ?? false,
       screenshotsEnabled: json[_kScreenshots] as bool? ?? false,
+      reportsEnabled: json[_kReports] as bool? ?? false,
     );
   }
 
@@ -283,6 +291,7 @@ class McpToolToggles {
         _kProposals: proposalsEnabled,
         _kTechDocs: techDocsEnabled,
         _kScreenshots: screenshotsEnabled,
+        _kReports: reportsEnabled,
       };
 
   /// Create toggles from a map of legacy preference keys to boolean values.
@@ -316,6 +325,7 @@ class McpToolToggles {
       techDocsEnabled: jsonKey == _kTechDocs ? value : techDocsEnabled,
       screenshotsEnabled:
           jsonKey == _kScreenshots ? value : screenshotsEnabled,
+      reportsEnabled: jsonKey == _kReports ? value : reportsEnabled,
     );
   }
 
@@ -340,6 +350,8 @@ class McpToolToggles {
         return techDocsEnabled;
       case _kScreenshots:
         return screenshotsEnabled;
+      case _kReports:
+        return reportsEnabled;
       default:
         // An unknown group is one nobody decided about, and undecided on a
         // capability surface is off.
@@ -396,6 +408,11 @@ class McpToolToggles {
       key: _kScreenshots,
       title: 'Screen Capture',
       description: 'Let the AI see the HMI screen, so it can judge a layout by eye',
+    ),
+    (
+      key: _kReports,
+      title: 'Reports',
+      description: 'Generate shift and production reports, and configure report definitions',
     ),
   ];
 }

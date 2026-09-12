@@ -22,6 +22,7 @@ import 'package:tfc/widgets/alarm.dart' show ListActiveAlarms;
 import 'package:tfc_dart/core/alarm.dart';
 
 import 'alarm_fixture.dart';
+import '../helpers/golden_platform.dart';
 
 AlarmFixture _plant() => AlarmFixture(
       active: {
@@ -70,7 +71,7 @@ void main() {
   setUpAll(_loadFonts);
 
   group('alarm list golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('history, standing alarms on top — light', (tester) async {
       await pumpAlarmList(tester, _plant());
       await showHistory(tester);

@@ -31,6 +31,7 @@ import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/state_man.dart';
+import '../../helpers/golden_platform.dart';
 
 // ---------------------------------------------------------------------------
 // Doubles
@@ -382,6 +383,6 @@ void main() {
         find.byKey(const Key('loading_chart')),
         matchesGoldenFile('goldens/chart_loading_${brightness.name}.png'),
       );
-    }, tags: ['golden'], skip: !Platform.isMacOS);
+    }, tags: ['golden'], skip: goldenSkipFlag);
   }
 }

@@ -1,8 +1,8 @@
-import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/auger_conveyor_painter.dart';
+import '../helpers/golden_platform.dart';
 
 const _augerKey = Key('auger_test_widget');
 
@@ -128,7 +128,7 @@ void main() {
     // ── Golden file tests ──
     // Golden images were generated on macOS; pixel output differs on other
     // platforms due to font rendering and Skia backend differences.
-    group('golden file tests', skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+    group('golden file tests', skip: goldenSkip, () {
       testWidgets('golden: default grey stopped auger', (tester) async {
         await tester.pumpWidget(buildAugerTestWidget());
         await expectLater(

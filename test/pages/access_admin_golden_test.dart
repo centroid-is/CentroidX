@@ -81,6 +81,7 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/database_drift.dart' show AppUserData;
 
 import '../helpers/golden_tolerance.dart';
+import '../helpers/golden_platform.dart';
 
 // ---------------------------------------------------------------------------
 // Fixtures — this file's own
@@ -513,12 +514,10 @@ void _expectTimestampColumnsHaveAGap(WidgetTester tester) {
 void main() {
   final (light, _) = muted();
 
-  // Frames of prose on a real theme. The 0.01% default absorbs antialiasing drift on
-  // small painter goldens, not on several hundred lines of text.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('access administration goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(_loadRealFonts);
 
     tearDown(() => RouteRegistry().menuItems.clear());

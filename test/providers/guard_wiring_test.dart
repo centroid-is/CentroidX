@@ -88,16 +88,20 @@ void main() {
 
       // Seven since plan 03-14 raised '/advanced/knowledge-base', eight since
       // 05-07 raised '/advanced/audit-trail', nine since 06-10 raised
-      // '/advanced/access', ten since v1.2's 04-06 raised
-      // '/advanced/config-history' at `configure` — its own entry, deliberately
-      // not a widened audit-trail one; the length is asserted so an empty or
-      // truncated map fails here rather than showing up as a route that
-      // quietly opens.
-      expect(kRaisedRoutes, hasLength(10));
+      // '/advanced/access', eleven since the report editor joined them and
+      // v1.2's 04-06 raised '/advanced/config-history' at `configure` — its
+      // own entry, deliberately not a widened audit-trail one. The length is
+      // asserted so an empty or truncated map fails here rather than showing
+      // up as a route that quietly opens.
+      expect(kRaisedRoutes, hasLength(11));
       expect(
           policy.groupForRoute('/advanced/page-editor'), AccessGroup.configure);
       expect(policy.groupForRoute('/advanced/knowledge-base'),
           AccessGroup.configure);
+      expect(policy.groupForRoute('/advanced/report-editor'),
+          AccessGroup.configure);
+      // The viewer is not raised, and that is the point of the pair.
+      expect(policy.groupForRoute('/reports'), AccessGroup.operate);
       expect(policy.groupForRoute(kServerConfigRoute), AccessGroup.administer);
       expect(policy.groupForRoute(kConfigHistoryRoute), AccessGroup.configure);
       expect(policy.groupForRoute(kAuditTrailRoute), AccessGroup.users);

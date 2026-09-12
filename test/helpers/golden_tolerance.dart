@@ -1,13 +1,16 @@
 /// Golden comparison that tolerates a hair of pixel drift.
 ///
-/// Goldens in this repo are generated on a developer's Mac and verified on a
-/// CI Mac (`skip: !Platform.isMacOS`), and the two do not always run the same
-/// Flutter — CI installs the version in `.flutter-version` while a developer
-/// runs whatever is on their PATH. Different Flutter versions rasterise the same
-/// drawing very slightly differently, so an exact byte comparison eventually
-/// fails on an image nobody touched: `third_party_speedBatcher_populated.png`
-/// went red at 10 differing pixels out of 356,700 — 0.0028% — with no change
-/// to the painter behind it.
+/// Goldens in this repo are rendered and verified on Linux, inside the pinned
+/// image from `docker/goldens/` (see [golden_platform.dart] for why Linux).
+/// That removes the two drift sources this tolerance was originally written
+/// for: the host OS no longer participates in glyph rasterisation, and the
+/// container cannot run a Flutter other than the one in `.flutter-version`.
+///
+/// What remains is a Flutter *version* bump, which does still rasterise the
+/// same drawing very slightly differently — an exact byte comparison
+/// eventually fails on an image nobody touched:
+/// `third_party_speedBatcher_populated.png` went red at 10 differing pixels
+/// out of 356,700 — 0.0028% — with no change to the painter behind it.
 ///
 /// The tolerance below is chosen against that number: loose enough to absorb
 /// antialiasing drift along a few edges, tight enough that a real regression
@@ -21,8 +24,14 @@
 /// The tolerance is a safety net for drift nobody caused, not a licence to
 /// author goldens on the wrong Flutter — one generated off-version can land
 /// just inside the threshold, pass, and leave the next person an image already
-/// most of the way to failing. Run `scripts/check-flutter-version.sh` before
-/// `--update-goldens`.
+/// most of the way to failing. Rendering through `scripts/goldens.sh` is what
+/// prevents that; it reads `.flutter-version` itself.
+///
+/// Per-file overrides that raise this above [kGoldenTolerance] should be
+/// treated as suspect now. Most were added to absorb macOS-version CoreText
+/// drift that no longer exists on Linux — a dense-text golden needed 0.002 to
+/// survive the gap between a macOS 15 dev machine and a macOS 26 runner. If
+/// you touch a file carrying such an override, try removing it.
 library;
 
 import 'package:flutter/foundation.dart';

@@ -11,6 +11,7 @@ import 'package:tfc/theme.dart';
 import 'package:tfc_dart/core/state_man.dart' show StateMan;
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Goldens of the passive Beckhoff devices carrying operator-set names.
 ///
@@ -43,12 +44,10 @@ Future<void> loadRealFont() async {
 class _FakeStateMan extends Fake implements StateMan {}
 
 void main() {
-  // Same dense line work as the CX variant goldens — text antialiasing drift
-  // eats more than the 0.01% default.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('Beckhoff name-or-ID golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(loadRealFont);
 
     setUp(() {

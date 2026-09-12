@@ -97,7 +97,18 @@ jobs:
       uses: ./.github/actions/pub-get
 
     - name: Run pages tests
-      run: flutter test test/
+      run: flutter test test/ --file-reporter "json:test-report.json"
+
+    # Goldens are compared on Linux only (see test/helpers/golden_platform.dart
+    # for why), which means one line decides whether 62 files' worth of images
+    # are checked at all. Invert it and every golden stops being compared on
+    # every runner, with every job still green — the same silent defect that
+    # left jbtm's 227 tests unrun for five months. This asserts both directions:
+    # nothing golden-skipped on Linux, plenty skipped everywhere else.
+    - name: Verify goldens ran where they should
+      if: always()
+      shell: bash
+      run: bash scripts/check-goldens-ran.sh
 
     # A failed golden prints only "Pixel test failed, 1.18%, 1457px diff" — the
     # images that would show *what* moved are written to a `failures/` directory

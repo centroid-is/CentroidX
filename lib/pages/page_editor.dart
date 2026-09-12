@@ -4390,7 +4390,10 @@ class _PageEditorState extends ConsumerState<PageEditor> {
   /// Built-in destinations whose menu placement the operator may change
   /// between the top level and the Advanced section. Placement is recorded
   /// as membership in the shared top-level order — no second key to drift.
-  static const Set<String> movableBuiltinPaths = {AppRoutes.historyView};
+  static const Set<String> movableBuiltinPaths = {
+    AppRoutes.historyView,
+    AppRoutes.reports,
+  };
 
   /// Whether the operator's (unsaved) arrangement has [path] at the top
   /// level rather than under Advanced.

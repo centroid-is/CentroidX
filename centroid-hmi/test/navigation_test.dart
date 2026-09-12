@@ -2,7 +2,8 @@
 ///  - the Advanced menu lists every entry unconditionally, and the route gate
 ///    plus `AccessLockBadge` decide who may open one: a raised entry stays
 ///    visible and locked, never hidden,
-///  - History View sits at the top level, not under Advanced,
+///  - History View and Reports sit under Advanced until the operator
+///    promotes them to the top level in the page editor,
 ///  - a deleted Home leaves `/` redirecting to the first available page,
 ///  - unpublished (draft) pages refuse direct navigation by redirecting.
 library;
@@ -119,6 +120,48 @@ void main() {
       expect(historyViewIsTopLevel(const ['/history-view']), isTrue);
     });
 
+    test('Reports defaults under Advanced, and the editor sits beside it', () {
+      final items = build();
+      expect(_byPath(items, '/reports'), isNull,
+          reason: 'not top-level until the operator moves it');
+      final advanced = _byPath(items, '/advanced')!;
+      final paths = advanced.children.map((c) => c.path);
+      // Both are listed; the route gate, not the menu, decides who may open
+      // the editor — kRaisedRoutes puts it at `configure` and leaves the
+      // viewer unraised, which access_routes_test asserts.
+      expect(paths, contains('/reports'));
+      expect(paths, contains('/advanced/report-editor'));
+    });
+
+    test('a promoted Reports moves to the top level and out of Advanced', () {
+      final items = buildTopLevelMenuItems(
+        isLinux: false,
+        pageMenuItems: [_page('Home', '/')],
+        reportsAtTopLevel: true,
+      );
+      expect(_byPath(items, '/reports'), isNotNull);
+      final advanced = _byPath(items, '/advanced')!;
+      expect(advanced.children.map((c) => c.path), isNot(contains('/reports')));
+    });
+
+    test('reportsIsTopLevel is membership in the stored order', () {
+      expect(reportsIsTopLevel(const []), isFalse);
+      expect(reportsIsTopLevel(const ['/', '/alarm-view']), isFalse);
+      expect(reportsIsTopLevel(const ['/reports']), isTrue);
+    });
+
+    test('the two movable built-ins are independent of each other', () {
+      final onlyReports = buildTopLevelMenuItems(
+        isLinux: false,
+        pageMenuItems: [_page('Home', '/')],
+        reportsAtTopLevel: true,
+      );
+      expect(_byPath(onlyReports, '/reports'), isNotNull);
+      expect(_byPath(onlyReports, '/history-view'), isNull);
+      expect(_byPath(onlyReports, '/advanced')!.children.map((c) => c.path),
+          contains('/history-view'));
+    });
+
     test('Alarm View is a top-level entry', () {
       expect(_byPath(build(), '/alarm-view'), isNotNull);
     });
@@ -140,8 +183,10 @@ void main() {
         isLinux: false,
         pageMenuItems: [_page('Home', '/'), _page('Chiller', '/chiller')],
         historyAtTopLevel: true,
+        reportsAtTopLevel: true,
       );
-      expect(items.map((m) => m.path).take(4), ['/', '/chiller', '/alarm-view', '/history-view']);
+      expect(items.map((m) => m.path).take(5),
+          ['/', '/chiller', '/alarm-view', '/reports', '/history-view']);
       expect(items.last.path, '/advanced', reason: 'Advanced stays pinned last, outside the ordering');
     });
   });

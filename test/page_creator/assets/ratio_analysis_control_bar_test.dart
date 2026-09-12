@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/ratio_number.dart';
 import 'package:tfc/providers/database.dart' show databaseProvider;
 import 'package:tfc_dart/core/database.dart' show Database;
+import '../../helpers/golden_platform.dart';
 
 /// The accept/reject window's control bar.
 ///
@@ -192,5 +193,5 @@ void main() {
       find.byKey(const Key('ratio_control_bar')),
       matchesGoldenFile('goldens/ratio_analysis_control_bar_narrow.png'),
     );
-  }, tags: ['golden'], skip: !Platform.isMacOS);
+  }, tags: ['golden'], skip: goldenSkipFlag);
 }
