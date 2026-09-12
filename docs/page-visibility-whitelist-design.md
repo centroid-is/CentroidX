@@ -197,8 +197,15 @@ reasons, the first of which is disqualifying on its own:
   would govern nobody who existed before v7. The feature would appear broken
   on exactly the accounts it was requested for.
 * **The mental model.** An account with nothing set follows its role; that
-  is what "one role per user" already trained everyone to expect. A personal
+  is what the role model already trained everyone to expect. A personal
   whitelist is an explicitly taken exception, never a default.
+
+  Schema v9 lets an account hold several roles, and this composition is
+  unchanged by it: the roles union into one role-level answer first (a role
+  with no whitelist admits every page and therefore wins the union), and the
+  personal whitelist then replaces *that*. Two steps, in that order — which is
+  what lets the override stay a straight replacement however many roles it is
+  replacing. See `tfc_access/lib/src/role_set.dart`.
 
 ### 1c. Composition: the user's whitelist replaces the role's
 

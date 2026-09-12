@@ -246,7 +246,7 @@ Future<bool> guardTagWrite(
       at: DateTime.now(),
       who: session.user?.username ?? _anonymousWho,
       station: sink.station,
-      roleName: session.roleName,
+      roleName: session.roleLabel,
       surface: AccessSurface.tag.wireName,
       itemKey: resolved,
       member: member,

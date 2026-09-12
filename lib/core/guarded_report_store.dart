@@ -177,7 +177,7 @@ class GuardedReportStore {
         at: DateTime.now(),
         who: session.user?.username ?? _anonymousWho,
         station: _station,
-        roleName: session.roleName,
+        roleName: session.roleLabel,
         surface: _surface,
         itemKey: itemKey,
         newValue: newValue,
