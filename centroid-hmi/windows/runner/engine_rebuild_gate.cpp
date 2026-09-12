@@ -141,9 +141,9 @@ std::string DescribeEngineRebuild(
     case EngineRebuildGate::Verdict::kRebuildNow:
       if (decision.waited_ms == 0 && decision.coalesced <= 1) {
         return "rebuild request (" + reason +
-               ") -- REBUILDING the renderer rather than probing it. The probe "
-               "cannot see this class of loss: the next-frame callback is "
-               "answered whether or not rasterisation succeeded.";
+               ") -- REBUILDING the renderer now. A rebuild is a new Dart "
+               "isolate; the operator's page and pending proposals are "
+               "restored from the device-local store by the next one.";
       }
       return "rebuild request (" + reason + ") -- REBUILDING now, answering " +
              std::to_string(decision.coalesced) +

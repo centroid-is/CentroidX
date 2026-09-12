@@ -13,6 +13,8 @@ import 'package:beamer/beamer.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:tfc/core/last_route.dart';
+import 'package:tfc/core/runner_liveness.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/route_registry.dart';
 
@@ -42,6 +44,10 @@ Future<BeamerDelegate> _boot(
   // embedders, '' on eLinux. The router must land on the stored page
   // either way.
   String platformRoute = '/',
+  // Which engine generation this is and where the previous one was, for
+  // the resume-after-rebuild seam main() adds on top of the startup URL.
+  EngineEpoch epoch = EngineEpoch.unknown,
+  String? lastRoute,
 }) async {
   tester.binding.platformDispatcher.defaultRouteNameTestValue = platformRoute;
   addTearDown(tester.binding.platformDispatcher.clearDefaultRouteNameTestValue);
@@ -61,6 +67,14 @@ Future<BeamerDelegate> _boot(
     pagePaths: const ['/', '/line', '/halls', '/halls/packing'],
   );
   final startupPath = resolveStartupPath(storedUrl, menuItems: topLevel);
+  // Mirror main(): a rebuilt engine resumes the recorded route when it still
+  // routes; everything else opens the startup page.
+  final initialPath = resolveResumePath(
+    epoch: epoch,
+    lastRoute: lastRoute,
+    startupPath: startupPath,
+    isRoutable: locationBuilder.routes.containsKey,
+  );
   // Mirror main(): the top-level destinations clear beaming history, the
   // Advanced section excluded — a nested startup page lives UNDER one of
   // these, so the set must not swallow it.
@@ -70,7 +84,7 @@ Future<BeamerDelegate> _boot(
       if (item.path != null && item.path != '/advanced') item.path!,
   };
   final delegate = BeamerDelegate(
-    initialPath: startupPath,
+    initialPath: initialPath,
     notFoundPage: const BeamPage(child: Text('not found')),
     clearBeamingHistoryOn: topLevelPaths,
     locationBuilder: (routeInformation, context) => locationBuilder(routeInformation, context),
@@ -139,5 +153,36 @@ void main() {
   testWidgets('eLinux: an empty platform route with nothing stored boots /', (tester) async {
     final delegate = await _boot(tester, '/', platformRoute: '');
     expect(delegate.configuration.uri.path, '/');
+  });
+
+  // The Windows runner rebuilds the engine to recover a lost render context;
+  // the new isolate is told its generation and puts the operator back where
+  // they were instead of on the startup page.
+  const rebuilt = EngineEpoch(epoch: 2, reason: 'session change: remote connect');
+
+  testWidgets('a rebuilt engine resumes the page the operator was on', (tester) async {
+    final delegate = await _boot(tester, '/line', epoch: rebuilt, lastRoute: '/halls/packing');
+    expect(delegate.configuration.uri.path, '/halls/packing');
+  });
+
+  testWidgets('a rebuilt engine resumes a built-in destination', (tester) async {
+    final delegate = await _boot(tester, '/', epoch: rebuilt, lastRoute: '/alarm-view');
+    expect(delegate.configuration.uri.path, '/alarm-view');
+  });
+
+  testWidgets('a process start ignores the recorded route', (tester) async {
+    const first = EngineEpoch(epoch: 1, reason: 'initial start');
+    final delegate = await _boot(tester, '/line', epoch: first, lastRoute: '/halls/packing');
+    expect(delegate.configuration.uri.path, '/line');
+  });
+
+  testWidgets('a rebuilt engine whose recorded page is gone opens the startup page', (tester) async {
+    final delegate = await _boot(tester, '/line', epoch: rebuilt, lastRoute: '/gone');
+    expect(delegate.configuration.uri.path, '/line');
+  });
+
+  testWidgets('eLinux-style empty platform route still resumes after a rebuild', (tester) async {
+    final delegate = await _boot(tester, '/', platformRoute: '', epoch: rebuilt, lastRoute: '/halls/packing');
+    expect(delegate.configuration.uri.path, '/halls/packing');
   });
 }

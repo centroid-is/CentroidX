@@ -1,7 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:logger/logger.dart';
 
+import '../core/pending_proposals_store.dart';
+import 'preferences.dart' show localPreferencesProvider;
 import 'proposal.dart';
 
 export 'proposal.dart'
@@ -60,19 +63,102 @@ class ProposalState {
 
 /// Holds the proposals the operator has not decided on yet.
 ///
-/// Nothing here is persisted. A proposal exists from the moment a write tool
-/// hands it to the UI until the operator accepts, rejects or dismisses it.
-/// Accepting is what makes it durable, and that write belongs to the editor.
+/// A proposal exists from the moment a write tool hands it to the UI until
+/// the operator accepts, rejects or dismisses it. Accepting is what makes the
+/// *change* durable, and that write belongs to the editor.
+///
+/// The queue itself is mirrored to the device-local store through [store]
+/// on every change, and read back when the next notifier is built. That is
+/// what lets it outlive the Windows runner's engine rebuilds: a rebuild is a
+/// new Dart isolate, and until this landed every undecided proposal went with
+/// the old one -- see `lib/core/pending_proposals_store.dart`. A notifier
+/// built without a store (tests, a platform with no preferences plugin)
+/// behaves exactly as before.
 class ProposalStateNotifier extends StateNotifier<ProposalState> {
-  ProposalStateNotifier({StreamController<ProposalFeedback>? feedback})
-      : _feedback = feedback,
-        super(const ProposalState());
+  ProposalStateNotifier({
+    StreamController<ProposalFeedback>? feedback,
+    PendingProposalStore? store,
+    Logger? logger,
+  })  : _feedback = feedback,
+        _store = store,
+        _logger = logger ?? Logger(),
+        super(const ProposalState()) {
+    if (store != null) {
+      unawaited(_restore(store));
+    }
+  }
 
   final StreamController<ProposalFeedback>? _feedback;
+  final PendingProposalStore? _store;
+  final Logger _logger;
+
+  /// Writes are chained so two rapid changes cannot land on disk out of
+  /// order: the later state must be the one that survives.
+  Future<void> _writes = Future<void>.value();
 
   /// Proposals already reported as viewed, so re-opening an editor does not
   /// spam the AI with repeat notes.
   final _viewedIds = <int>{};
+
+  /// Every change to [state] goes through here, so every change is mirrored.
+  /// Persisting from the setter rather than from each mutator is what makes
+  /// it impossible for a new decision path to forget to.
+  @override
+  set state(ProposalState value) {
+    super.state = value;
+    _persist();
+  }
+
+  void _persist() {
+    final store = _store;
+    if (store == null) return;
+    final snapshot = [
+      for (final p in state.proposals)
+        PersistedProposal(
+          proposalType: p.proposalType,
+          title: p.title,
+          proposalJson: p.proposalJson,
+          operatorId: p.operatorId,
+          createdAt: p.createdAt,
+          viewed: _viewedIds.contains(p.id),
+        ),
+    ];
+    _writes = _writes.then((_) => store.save(snapshot));
+  }
+
+  /// Brings back whatever the previous isolate left undecided.
+  ///
+  /// Runs after construction, so proposals can already have arrived by the
+  /// time the store answers: the restored ones are placed *before* them --
+  /// they are older -- and anything whose JSON is already present is dropped,
+  /// the same identity rule [addProposal] uses. Ids are minted afresh; a
+  /// restored proposal that had been viewed is marked so, and is not
+  /// reported as viewed a second time.
+  Future<void> _restore(PendingProposalStore store) async {
+    final restored = await store.load();
+    if (!mounted || restored.isEmpty) return;
+
+    final present = state.proposals.map((p) => p.proposalJson).toSet();
+    final revived = <PendingProposal>[];
+    for (final stored in restored) {
+      if (!present.add(stored.proposalJson)) continue;
+      final id = nextLocalProposalId();
+      if (stored.viewed) _viewedIds.add(id);
+      revived.add(PendingProposal(
+        id: id,
+        proposalType: stored.proposalType,
+        title: stored.title,
+        proposalJson: stored.proposalJson,
+        operatorId: stored.operatorId,
+        createdAt: stored.createdAt,
+      ));
+    }
+    if (revived.isEmpty) return;
+
+    _logger.i('Restored ${revived.length} pending proposal(s) left undecided '
+        'by the previous engine generation');
+    state = ProposalState(proposals: [...revived, ...state.proposals]);
+  }
 
   /// Proposal payloads an editor has already resolved -- applied or discarded.
   ///
@@ -96,9 +182,10 @@ class ProposalStateNotifier extends StateNotifier<ProposalState> {
   /// proposal's identity for the same reason.
   ///
   /// A set literal keeps insertion order, which makes the cap below a plain
-  /// FIFO trim. Nothing here is persisted -- an app restart clears pending
-  /// proposals too -- and the record only ever has to outlive an editor's
-  /// State.
+  /// FIFO trim. This record is deliberately NOT persisted with the queue: it
+  /// answers for route payloads, and Beamer's route data does not survive an
+  /// engine restart either, so a restored editor starts with nothing to
+  /// double-stage. The record only ever has to outlive an editor's State.
   final _resolvedRoutePayloads = <String>{};
 
   /// How many resolved payloads to remember. Far more than the handful of
@@ -177,6 +264,9 @@ class ProposalStateNotifier extends StateNotifier<ProposalState> {
     if (!state.proposals.any((p) => p.id == id)) return;
     if (!_viewedIds.add(id)) return;
     _emitFeedback('viewed', id);
+    // The look is part of what the next isolate has to know, or it would
+    // report the same view again.
+    _persist();
   }
 
   /// Accept all proposals of a given type.
@@ -231,16 +321,37 @@ class ProposalStateNotifier extends StateNotifier<ProposalState> {
   }
 }
 
+/// The device-local store the pending queue is mirrored to, or null when
+/// there is none to be had.
+///
+/// Null rather than an error on purpose: [localPreferencesProvider] builds a
+/// `SharedPreferencesAsync`, which throws when no platform implementation is
+/// registered -- every widget test that does not stub it. The queue must
+/// keep working without a store, exactly as it did before persistence, so
+/// that failure is absorbed here and never reaches [proposalStateProvider].
+final pendingProposalStoreProvider = Provider<PendingProposalStore?>((ref) {
+  try {
+    return PendingProposalStore(ref.watch(localPreferencesProvider));
+  } catch (_) {
+    return null;
+  }
+});
+
 /// Universal proposal state provider.
 ///
 /// Tracks all pending proposals across types (alarm, page, asset,
 /// key_mapping). Fed by `ChatNotifier`, which is where the MCP server's
-/// proposal callback lands. Deliberately depends on nothing else: it used to
-/// watch the database connection, so a reconnect rebuilt the notifier and
-/// dropped every proposal the operator had not yet acted on.
+/// proposal callback lands. Deliberately depends on nothing that can rebuild:
+/// it used to watch the database connection, so a reconnect rebuilt the
+/// notifier and dropped every proposal the operator had not yet acted on.
+/// The store provider above is a plain value that is built once and never
+/// invalidated.
 final proposalStateProvider =
     StateNotifierProvider<ProposalStateNotifier, ProposalState>((ref) {
-  return ProposalStateNotifier(feedback: ref.watch(proposalFeedbackProvider));
+  return ProposalStateNotifier(
+    feedback: ref.watch(proposalFeedbackProvider),
+    store: ref.watch(pendingProposalStoreProvider),
+  );
 });
 
 

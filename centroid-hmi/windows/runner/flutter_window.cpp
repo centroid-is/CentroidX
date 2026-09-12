@@ -298,27 +298,75 @@ bool FlutterWindow::CreateController(const char* reason) {
 
   sentinel_loss_logged_ = false;
 
+  // A new engine answers whatever suspicion a session change had raised.
+  session_policy_.EngineCreated(epoch_started_tick_);
+
   // Say which adapter the engine is actually rendering on, so the sentinel's
   // verdict can be read against the right GPU rather than assumed to be about
   // it. Cheap, and it is the one piece of the renderer's graphics state the
-  // embedder does expose.
+  // embedder does expose. Its LUID is kept for the session-change comparison.
+  // Forgotten first: whatever the previous engine rendered on says nothing
+  // about this one.
+  engine_adapter_known_ = false;
+  NoteEngineAdapter(true);
+
+  return true;
+}
+
+bool FlutterWindow::NoteEngineAdapter(bool log) {
+  // A query that comes back empty leaves the last successful answer in
+  // place: the engine's adapter does not change between queries, and the
+  // empty answer is the unreliable one (see the log-measured third below).
+  if (flutter_controller_ == nullptr || flutter_controller_->engine() == nullptr) {
+    return engine_adapter_known_;
+  }
   IDXGIAdapter* engine_adapter = nullptr;
   if (flutter_controller_->engine()->GetGraphicsAdapter(&engine_adapter) &&
       engine_adapter != nullptr) {
     DXGI_ADAPTER_DESC desc = {};
     if (SUCCEEDED(engine_adapter->GetDesc(&desc))) {
-      char described[160];
-      std::snprintf(described, sizeof(described),
-                    "engine renders on adapter [vendor 0x%04x device 0x%04x]",
-                    desc.VendorId, desc.DeviceId);
-      LogWatchdog(described);
+      engine_adapter_known_ = true;
+      engine_adapter_luid_ = tfc::LuidToU64(desc.AdapterLuid);
+      if (log) {
+        char described[160];
+        std::snprintf(described, sizeof(described),
+                      "engine renders on adapter [vendor 0x%04x device 0x%04x]",
+                      desc.VendorId, desc.DeviceId);
+        LogWatchdog(described);
+      }
     }
     engine_adapter->Release();
-  } else {
+  } else if (log) {
+    // Measured on this machine's own log: this is what a third of the
+    // engines built inside a session-change window say, and every one of
+    // them went on to present frames. Logged, never acted on.
     LogWatchdog("the engine did not report a graphics adapter");
   }
+  return engine_adapter_known_;
+}
 
-  return true;
+tfc::AdapterCheck FlutterWindow::CheckRenderAdapter() {
+  // Ask the live engine again rather than trusting the LUID recorded at
+  // creation: if the earlier query came back empty -- see NoteEngineAdapter
+  // -- this one may not. Silent on purpose; the policy line says the result.
+  const bool engine_known = NoteEngineAdapter(false);
+  unsigned long long session_luid = 0;
+  const bool session_known = tfc::QuerySessionDisplayAdapterLuid(&session_luid);
+  return tfc::ClassifyAdapterCheck(engine_known, engine_adapter_luid_,
+                                   session_known, session_luid);
+}
+
+void FlutterWindow::HandleSessionDecision(
+    const tfc::SessionRebuildPolicy::Decision& decision) {
+  const std::string line = DescribeSessionRebuild(decision);
+  if (!line.empty()) {
+    LogWatchdog(line);
+  }
+  if (decision.verdict == tfc::SessionRebuildPolicy::Verdict::kRebuildNow) {
+    // Through the gate like every other request: the debounce collapses the
+    // duplicate session messages, and a startup in flight is not interrupted.
+    RequestEngineRebuild(decision.reason.c_str());
+  }
 }
 
 void FlutterWindow::DestroyController(const char* reason) {
@@ -466,20 +514,26 @@ bool FlutterWindow::OnCreate() {
   // and the frame probe both miss (see egl_storm_detector.h). Read it.
   if (watchdog_enabled_) {
     const HWND storm_hwnd = watchdog_hwnd_.load();
-    if (stderr_interposer_.Install(
-            tfc::EglStormDetector::Config(),
-            [storm_hwnd](unsigned int matches) {
-              ::PostMessage(storm_hwnd, kEglStormMessage,
-                            static_cast<WPARAM>(matches), 0);
-            })) {
+    const bool storm_detector_installed = stderr_interposer_.Install(
+        tfc::EglStormDetector::Config(),
+        [storm_hwnd](unsigned int matches) {
+          ::PostMessage(storm_hwnd, kEglStormMessage,
+                        static_cast<WPARAM>(matches), 0);
+        });
+    // With the detector in place a reconnect can afford to probe first; without
+    // it the reconnect rebuild is the only thing that catches a lost context,
+    // and the policy falls back to rebuilding outright.
+    session_policy_.set_storm_detector_available(storm_detector_installed);
+    if (storm_detector_installed) {
       LogWatchdog(
           "stderr storm detector installed -- a burst of engine context-lost "
           "errors now declares the renderer lost even when every probe "
-          "answers");
+          "answers; a remote reconnect therefore probes before it rebuilds");
     } else {
       LogWatchdog(
           "stderr storm detector could NOT be installed -- an EGL context "
-          "loss is only caught by the session-change rebuild");
+          "loss is only caught by rebuilding on remote reconnect, which is "
+          "what will happen");
     }
   }
 
@@ -1093,6 +1147,12 @@ void FlutterWindow::OnFramePresented() {
 
   Dispatch(WatchdogEvent::kFramePresented);
 
+  // A frame inside a reconnect probation keeps the renderer. Note the limit
+  // stated in session_rebuild_policy.h: this callback is answered whether or
+  // not rasterisation succeeded, so a dead context passes here too and is
+  // left to the storm detector.
+  HandleSessionDecision(session_policy_.OnFramePresented(last_frame_tick_));
+
   if (was_reported) {
     // The counterpart to the loss report: the episode is over. Without this a
     // log shows losses and never recoveries, and nobody can tell a station
@@ -1180,6 +1240,16 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     if (released.verdict == tfc::EngineRebuildGate::Verdict::kRebuildNow) {
       LogWatchdog(DescribeEngineRebuild(released));
       PerformEngineRebuild(released.reason);
+      return 0;
+    }
+
+    // A reconnected renderer that has still not presented a frame by its
+    // deadline is rebuilt here. Ahead of the watchdog's own judgement so the
+    // rebuild carries the session-change reason and does not count as a loss
+    // episode against the loop guard: it is maintenance, not a fault.
+    const tfc::SessionRebuildPolicy::Decision session = session_policy_.OnTick(now);
+    if (session.verdict == tfc::SessionRebuildPolicy::Verdict::kRebuildNow) {
+      HandleSessionDecision(session);
       return 0;
     }
 
@@ -1318,13 +1388,21 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                          static_cast<unsigned long>(wparam));
             Dispatch(WatchdogEvent::kDeviceLossHint);
 
-            // Console lock/unlock keeps the same adapter, so a probe is the
-            // right response there. A REMOTE connect or disconnect swaps it,
-            // and that is the case the probe is blind to.
+            // Console lock/unlock keeps the same adapter: the probe above is
+            // the whole response. A REMOTE connect or disconnect used to
+            // rebuild the engine unconditionally -- two rebuilds per session
+            // cycle, each a new Dart isolate -- on the theory that the
+            // session swaps the adapter under ANGLE. Twelve such rebuilds in
+            // this machine's own log never saw the adapter move, so the
+            // decision now lives in SessionRebuildPolicy: a disconnect
+            // defers (nobody is looking), a reconnect probes first and
+            // rebuilds only on evidence or a missed deadline. See the header.
+            const unsigned long long now = ::GetTickCount64();
             if (wparam == WTS_REMOTE_CONNECT) {
-              RequestEngineRebuild("session change: remote connect");
+              HandleSessionDecision(
+                  session_policy_.OnRemoteConnect(now, CheckRenderAdapter()));
             } else if (wparam == WTS_REMOTE_DISCONNECT) {
-              RequestEngineRebuild("session change: remote disconnect");
+              HandleSessionDecision(session_policy_.OnRemoteDisconnect(now));
             }
           }
           break;

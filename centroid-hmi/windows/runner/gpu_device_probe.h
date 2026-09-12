@@ -66,6 +66,23 @@ class GpuDeviceProbe {
   unsigned int device_id_ = 0;
 };
 
+// A LUID as one number, so two adapters can be compared without dxgi.h in
+// the platform-free code that does the comparing (session_rebuild_policy.h).
+inline unsigned long long LuidToU64(const LUID& luid) {
+  return (static_cast<unsigned long long>(
+              static_cast<unsigned long>(luid.HighPart))
+          << 32) |
+         luid.LowPart;
+}
+
+// The LUID of the adapter this session currently displays on: the first
+// adapter a fresh DXGI factory enumerates, which is the one holding the
+// session's primary output. A fresh factory every call, because a factory
+// made before a session change describes the session before it. Returns
+// false when DXGI will not say -- which the caller must treat as unknown,
+// not as a change.
+bool QuerySessionDisplayAdapterLuid(unsigned long long* luid_out);
+
 }  // namespace tfc
 
 #endif  // RUNNER_GPU_DEVICE_PROBE_H_
