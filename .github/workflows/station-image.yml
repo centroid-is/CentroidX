@@ -145,7 +145,7 @@ jobs:
 
       - name: Checksums and provenance
         run: |
-          cd out && sha256sum *.img.gz *.bmap usb-installer.img | tee SHA256SUMS
+          cd out && sha256sum *.img.gz *.bmap | tee SHA256SUMS
           cat ../overlays/generated/etc/centroid/image-info
 
       - uses: actions/upload-artifact@v4
@@ -161,7 +161,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: station-usb-installer
-          path: os/out/usb-installer.img
+          path: |
+            os/out/usb-installer.img.gz
+            os/out/usb-installer.img.bmap
           retention-days: 14
 
       # Its own tag namespace, not this repo's `release` event: the app releases
@@ -180,4 +182,4 @@ jobs:
             --title "Station image $TAG" \
             --notes-file overlays/generated/etc/centroid/image-info
           gh release upload "$TAG" \
-            out/*.img.gz out/*.bmap out/SHA256SUMS out/usb-installer.img --clobber
+            out/*.img.gz out/*.bmap out/SHA256SUMS --clobber

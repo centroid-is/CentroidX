@@ -8,7 +8,7 @@ Builds two artifacts:
 | artifact | what it is |
 |---|---|
 | `out/centroidx-<sha>.img.gz` + `.bmap` | a fully configured Debian trixie station; flash onto an SSD |
-| `out/usb-installer.img` | a USB key that boots, asks five questions, and writes that image onto the station's SSD |
+| `out/usb-installer.img.gz` + `.bmap` | a USB key that boots, asks five questions, and writes that image onto the station's SSD |
 
 Nothing is configured on the target machine. By the time a station boots, it is
 already configured — which is why `ansible-playbook.yml` is gone.
@@ -39,7 +39,9 @@ without a fakemachine (debos's own CI excludes the partitioning tests from its
 `--disable-fakemachine` matrix). Build on Linux or in CI; `dry-run` and
 `print-recipe` work anywhere Docker does.
 
-Write the USB with `dd if=out/usb-installer.img of=/dev/sdX bs=4M status=progress`.
+Write the USB with `bmaptool copy --bmap out/usb-installer.img.bmap out/usb-installer.img.gz /dev/sdX`
+— most of the image is holes, so that copies what is actually there rather than
+8 GB of zeroes. Without bmaptool: `gunzip -c out/usb-installer.img.gz | sudo dd of=/dev/sdX bs=4M`.
 If the SSD is reachable on the bench, skip the USB entirely:
 `bmaptool copy --bmap out/*.img.bmap out/*.img.gz /dev/sdX`.
 

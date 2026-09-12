@@ -1,7 +1,7 @@
 # CentroidX station images.
 #
 #   make image     -> out/centroidx-<ref>.img.gz + .bmap   (flash onto an SSD)
-#   make usb       -> out/usb-installer.img                 (dd onto a USB key)
+#   make usb       -> out/usb-installer.img.gz + .bmap      (write onto a USB key)
 #   make qemu      -> boot the USB key against a blank disk, end to end
 #   make dry-run   -> validate all three recipes without building
 #
@@ -19,7 +19,7 @@ COMPOSE_SRC    ?= ../docker-compose.yml
 SUITE          ?= trixie
 GPU            ?= intel
 IMAGESIZE      ?= 8GB
-USBSIZE        ?= 16GB
+USBSIZE        ?= 8GB
 PRELOAD        ?= false
 
 OUT            := out
@@ -117,9 +117,11 @@ image: require-kvm generated
 
 .PHONY: usb
 usb: require-kvm generated
-	@test -n "$$(ls $(OUT)/*.img.gz 2>/dev/null)" || { echo "run 'make image' first"; exit 1; }
+	@test -n "$$(ls $(OUT)/centroidx-*.img.gz 2>/dev/null)" || { echo "run 'make image' first"; exit 1; }
 	rm -rf $(PAYLOAD) && mkdir -p $(PAYLOAD)
-	cp $(OUT)/*.img.gz $(OUT)/*.bmap $(PAYLOAD)/
+	@# centroidx-* explicitly, never *.img.gz: out/ also holds usb-installer.img.gz
+	@# after a previous run, and globbing it in would nest one image inside the next.
+	cp $(OUT)/centroidx-*.img.gz $(OUT)/centroidx-*.img.bmap $(PAYLOAD)/
 	cp $(GEN)/etc/centroid/image-info $(PAYLOAD)/image-info
 	@# Drop a station.env here to make the USB install without asking anything.
 	@test -f station.env && cp station.env $(PAYLOAD)/ || true
@@ -127,6 +129,10 @@ usb: require-kvm generated
 	  --artifactdir=/recipes/$(OUT) \
 	  -t usbimage:usb-installer.img -t usbsize:$(USBSIZE) -t suite:$(SUITE) \
 	  installer.yaml
+	@# Same treatment as the station image. Most of an 8GB USB image is holes --
+	@# bmaptool skips them, so writing the stick copies what is actually there.
+	bmaptool create -o $(OUT)/usb-installer.img.bmap $(OUT)/usb-installer.img
+	gzip -f -9 $(OUT)/usb-installer.img
 	@ls -lh $(OUT)/
 
 # ------------------------------------------------------------------ validate
@@ -154,7 +160,9 @@ OVMF ?= /usr/share/OVMF/OVMF_CODE.fd
 OVMF_VARS ?= /usr/share/OVMF/OVMF_VARS.fd
 .PHONY: qemu
 qemu:
-	@test -f $(OUT)/usb-installer.img || { echo "run 'make usb' first"; exit 1; }
+	@test -f $(OUT)/usb-installer.img.gz || { echo "run 'make usb' first"; exit 1; }
+	@# QEMU wants a raw disk, and `make usb` leaves a compressed one.
+	@test -f $(OUT)/usb-installer.img || gunzip -k $(OUT)/usb-installer.img.gz
 	@test -f $(OUT)/test-disk.qcow2 || qemu-img create -f qcow2 $(OUT)/test-disk.qcow2 32G
 	@test -f $(OUT)/OVMF_VARS.fd || cp $(OVMF_VARS) $(OUT)/OVMF_VARS.fd
 	qemu-system-x86_64 \
