@@ -248,11 +248,14 @@ jobs:
           # silently.
           docker pull ghcr.io/centroid-is/centroid-hmi:latest
           docker create --name hmi ghcr.io/centroid-is/centroid-hmi:latest
-          docker cp hmi:/home/centroid/app/lib/libflutter_elinux_wayland.so \
-            os/out/app-bundle/lib/libflutter_elinux_wayland.so || \
-            echo "::warning::could not take the matched embedder from the HMI image; the bundle's own .so will be used"
+          # /flutter-app/lib, verified against the published image. NOT tolerated
+          # on failure: the bundle's own .so does not match its engine, so
+          # falling back to it ships a stick that shows a blank screen. A build
+          # that cannot find this should fail, not warn.
+          docker cp hmi:/flutter-app/lib/libflutter_elinux_wayland.so \
+            os/out/app-bundle/lib/libflutter_elinux_wayland.so
           docker rm hmi
-          ls -la os/out/app-bundle/lib/libflutter_elinux_wayland.so || true
+          ls -la os/out/app-bundle/lib/libflutter_elinux_wayland.so
 
       - name: Free up disk
         run: |
