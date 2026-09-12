@@ -221,6 +221,23 @@ jobs:
           name: setup-app-bundle
           path: os/out/app-bundle
 
+      # upload/download-artifact does not preserve the executable bit, so the
+      # app arrives mode 0644 and every `-x` test on it is false. That silently
+      # selected the text installer on the first green build -- the graceful
+      # fallback working so well it hid the failure.
+      - name: Restore the executable bit the artifact dropped
+        working-directory: .
+        run: |
+          set -euo pipefail
+          found=0
+          for b in flutter_elinux_wayland centroidx_setup; do
+            if [ -f "os/out/app-bundle/$b" ]; then
+              chmod 755 "os/out/app-bundle/$b"; found=1
+              echo "setup app binary: $b"
+            fi
+          done
+          [ "$found" = 1 ] || { echo "::error::no setup app binary in the bundle"; exit 1; }
+
       # The on-screen keyboard is built in centroid-is/dockers, not here, and is
       # a plain Wayland client (libwayland, cairo, xkbcommon -- it does not link
       # libweston), so the binary from that image runs against trixie's weston
