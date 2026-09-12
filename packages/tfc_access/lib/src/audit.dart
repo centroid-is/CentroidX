@@ -46,12 +46,12 @@ import 'access_role.dart';
 /// Phase 6 adds a fifth surface, `'admin'`, for the writes the roles and users
 /// screens make. A role edit that grants somebody `force` and leaves no trace
 /// is the widest gap this product could ship with — re-scoping a role is the
-/// most consequential hand-made write in it. The itemKey vocabulary is eleven
+/// most consequential hand-made write in it. The itemKey vocabulary is twelve
 /// strings:
 ///
 ///     role.create | role.update | role.delete | role.rename | role.pages
 ///     user.create | user.delete | user.role   | user.password | user.pages
-///     user.station_account
+///     user.station_account | user.inactivity_timeout
 ///
 /// `role.pages` and `user.pages` are the page-visibility whitelist at its two
 /// levels (`docs/page-visibility-whitelist-design.md`). They join the admin
@@ -586,6 +586,45 @@ class AuditRecord {
         member: subject,
         oldValue: oldValue.toString(),
         newValue: newValue.toString(),
+        groupRequired: AccessGroup.users.name,
+        allowed: allowed,
+        origin: origin,
+        actionId: actionId,
+        reason: reason,
+      );
+
+  /// One account's inactivity timeout was changed:
+  /// `user.inactivity_timeout`, subject in `member`, minutes in the value
+  /// columns.
+  ///
+  /// Both value columns are **nullable**, and null is meaningful — "no value of
+  /// its own, uses the default" — the same convention as the `*.pages` rows, so
+  /// `null -> "60"` reads as the moment this account got a window of its own
+  /// and `"60" -> null` as the moment it went back to the default. This is the
+  /// width of the elevation window for one person, which is why it is a row.
+  factory AuditRecord.userInactivityTimeout({
+    required String who,
+    required String station,
+    required String roleName,
+    required String actionId,
+    required String subject,
+    required int? oldMinutes,
+    required int? newMinutes,
+    required bool allowed,
+    DateTime? at,
+    String? reason,
+    String origin = 'operator',
+  }) =>
+      AuditRecord(
+        at: at ?? clock.now(),
+        who: who,
+        station: station,
+        roleName: roleName,
+        surface: _adminSurface,
+        itemKey: 'user.inactivity_timeout',
+        member: subject,
+        oldValue: oldMinutes?.toString(),
+        newValue: newMinutes?.toString(),
         groupRequired: AccessGroup.users.name,
         allowed: allowed,
         origin: origin,

@@ -1,13 +1,15 @@
-/// The Session card on the access admin page: the inactivity timeout,
-/// finally somewhere an administrator can reach it.
+/// The Session card on the access admin page: a read-out, not a knob.
 ///
-/// The value always existed — `access.inactivity_timeout_minutes`, device-
-/// local, clamped 1 min..8 h — but changing it meant editing the panel's
-/// local store by hand. This section is the knob: current effective value
-/// shown, a bounded minutes field, applied live (the session controller
-/// re-arms its monitor), one audit row per change.
+/// It used to edit a device-local `access.inactivity_timeout_minutes` and
+/// carry a switch that stopped every session on the panel from expiring. The
+/// timeout is per account now — set on the users list, beside the account it
+/// governs — so what is left here is the sentence that says where it went, and
+/// the panel-account read-out that was always the other half of this card.
 ///
-/// Written RED first, against a page with no such section.
+/// The tests for the timeout itself moved with it:
+/// `test/pages/access_users_section_test.dart` covers the dialog and the
+/// write, and `test/providers/access_session_test.dart` covers what a session
+/// does with the value.
 library;
 
 import 'dart:async';
@@ -29,155 +31,48 @@ class _PendingStringPreferences extends FakeEditorPreferences {
   Future<String?> getString(String key) => Completer<String?>().future;
 }
 
-class _RecordingSink implements AuditSink {
-  final List<AuditRecord> rows = [];
-
-  @override
-  Future<void> record(AuditRecord entry) async => rows.add(entry);
-}
-
-({Widget app, FakeEditorPreferences prefs, _RecordingSink sink})
-    _shell({int? storedMinutes, bool neverExpires = false, String? panelAccount}) {
+({Widget app, FakeEditorPreferences prefs}) _shell({String? panelAccount}) {
   final prefs = FakeEditorPreferences();
-  if (storedMinutes != null) {
-    prefs.setInt(kAccessInactivityMinutesPrefKey, storedMinutes);
-  }
-  if (neverExpires) {
-    prefs.setBool(kAccessInactivityDisabledPrefKey, true);
-  }
   if (panelAccount != null) {
     prefs.setString(kAccessPanelAccountPrefKey, panelAccount);
   }
-  final sink = _RecordingSink();
   final app = ProviderScope(
     overrides: [
       localPreferencesProvider.overrideWithValue(prefs),
-      accessSessionAuditProvider.overrideWithValue(
-        (station: 'TEST-STATION', audit: sink),
-      ),
     ],
     child: const MaterialApp(
       home: Scaffold(body: SingleChildScrollView(child: AccessSessionSection())),
     ),
   );
-  return (app: app, prefs: prefs, sink: sink);
+  return (app: app, prefs: prefs);
 }
 
 void main() {
-  testWidgets('shows the effective timeout — the default when nothing stored',
+  testWidgets('says where the timeout is set and what it defaults to',
       (tester) async {
+    // The card is what an administrator who remembers the field will look at
+    // first, so it has to answer "where did it go?" rather than simply not
+    // mention it.
     final shell = _shell();
     await tester.pumpWidget(shell.app);
     await tester.pumpAndSettle();
 
-    final field = tester.widget<TextField>(
-        find.byKey(kAccessSessionTimeoutFieldKey));
-    expect(field.controller!.text,
-        kDefaultInactivityTimeout.inMinutes.toString());
+    expect(find.byKey(kAccessSessionSectionKey), findsOneWidget);
+    expect(find.text(kAccessSessionExplainer), findsOneWidget);
+    expect(kAccessSessionExplainer,
+        contains('${kDefaultInactivityTimeout.inMinutes} minutes'));
   });
 
-  testWidgets('shows the stored per-station value when there is one',
-      (tester) async {
-    final shell = _shell(storedMinutes: 30);
-    await tester.pumpWidget(shell.app);
-    await tester.pumpAndSettle();
-
-    final field = tester.widget<TextField>(
-        find.byKey(kAccessSessionTimeoutFieldKey));
-    expect(field.controller!.text, '30');
-  });
-
-  testWidgets('saving writes the local store, and one audit row',
-      (tester) async {
+  testWidgets('offers no timeout control of its own', (tester) async {
+    // The station-wide knob is gone, not hidden. A field here would be a
+    // second answer to a question the users list now owns, and the switch it
+    // sat beside made every human session on the panel immortal.
     final shell = _shell();
     await tester.pumpWidget(shell.app);
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byKey(kAccessSessionTimeoutFieldKey), '45');
-    await tester.tap(find.byKey(kAccessSessionSaveKey));
-    await tester.pumpAndSettle();
-
-    expect(
-        await shell.prefs.getInt(kAccessInactivityMinutesPrefKey), 45,
-        reason: 'device-local on purpose — stations sharing one database '
-            'keep their own timeout, like the startup URL');
-
-    expect(shell.sink.rows, hasLength(1),
-        reason: 'a device-local write bypasses GuardedPreferences, so the '
-            'row is recorded here — a quietly shortened or lengthened '
-            'elevation window is exactly what the trail exists to show');
-    final row = shell.sink.rows.single;
-    expect(row.itemKey, kAccessInactivityMinutesPrefKey);
-    expect(row.oldValue, kDefaultInactivityTimeout.inMinutes.toString());
-    expect(row.newValue, '45');
-    expect(row.station, 'TEST-STATION');
-    expect(row.allowed, isTrue);
-  });
-
-  testWidgets('out-of-range input refuses to save and says why',
-      (tester) async {
-    final shell = _shell();
-    await tester.pumpWidget(shell.app);
-    await tester.pumpAndSettle();
-
-    for (final bad in ['0', '481', '']) {
-      await tester.enterText(find.byKey(kAccessSessionTimeoutFieldKey), bad);
-      await tester.tap(find.byKey(kAccessSessionSaveKey));
-      await tester.pumpAndSettle();
-    }
-
-    expect(await shell.prefs.getInt(kAccessInactivityMinutesPrefKey), isNull,
-        reason: 'the provider clamps as a backstop, but the knob must not '
-            'write a value it knows is out of range');
-    expect(shell.sink.rows, isEmpty);
-    expect(find.text(kAccessSessionRangeError), findsOneWidget);
-  });
-
-  testWidgets('the never-expire switch writes the flag, disables the minutes '
-      'and records the change', (tester) async {
-    final shell = _shell();
-    await tester.pumpWidget(shell.app);
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.byKey(kAccessSessionNeverExpireSwitchKey));
-    await tester.pumpAndSettle();
-
-    expect(
-        await shell.prefs.getBool(kAccessInactivityDisabledPrefKey), isTrue);
-    final row = shell.sink.rows.single;
-    expect(row.itemKey, kAccessInactivityDisabledPrefKey);
-    expect(row.oldValue, 'false');
-    expect(row.newValue, 'true');
-
-    final field = tester.widget<TextField>(
-        find.byKey(kAccessSessionTimeoutFieldKey));
-    expect(field.enabled, isFalse,
-        reason: 'a minutes value under a disabled expiry is a number that '
-            'does nothing — greying it is what says so');
-  });
-
-  testWidgets('turning never-expire back off restores the minutes',
-      (tester) async {
-    final shell = _shell(storedMinutes: 30, neverExpires: true);
-    await tester.pumpWidget(shell.app);
-    await tester.pumpAndSettle();
-
-    final switchBefore = tester.widget<Switch>(find.descendant(
-        of: find.byKey(kAccessSessionNeverExpireSwitchKey),
-        matching: find.byType(Switch)));
-    expect(switchBefore.value, isTrue, reason: 'seeded from the stored flag');
-
-    await tester.tap(find.byKey(kAccessSessionNeverExpireSwitchKey));
-    await tester.pumpAndSettle();
-
-    expect(
-        await shell.prefs.getBool(kAccessInactivityDisabledPrefKey), isFalse);
-    expect(shell.sink.rows.single.newValue, 'false');
-    final field = tester.widget<TextField>(
-        find.byKey(kAccessSessionTimeoutFieldKey));
-    expect(field.enabled, isTrue);
-    expect(field.controller!.text, '30',
-        reason: 'the stored minutes survive the round trip untouched');
+    expect(find.byType(TextField), findsNothing);
+    expect(find.byType(Switch), findsNothing);
   });
 
   group('the panel account read-out', () {
@@ -223,9 +118,6 @@ void main() {
       await tester.pumpWidget(ProviderScope(
         overrides: [
           localPreferencesProvider.overrideWithValue(prefs),
-          accessSessionAuditProvider.overrideWithValue(
-            (station: 'TEST-STATION', audit: _RecordingSink()),
-          ),
         ],
         child: const MaterialApp(
           home: Scaffold(
@@ -240,18 +132,5 @@ void main() {
               'calls a committed panel uncommitted is worse than one that '
               'says nothing');
     });
-  });
-
-  testWidgets('an unchanged value writes nothing', (tester) async {
-    final shell = _shell(storedMinutes: 30);
-    await tester.pumpWidget(shell.app);
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.byKey(kAccessSessionSaveKey));
-    await tester.pumpAndSettle();
-
-    expect(shell.sink.rows, isEmpty,
-        reason: 'a save that changes nothing must not fake a change row — '
-            'the same no-op suppression the write guards apply');
   });
 }

@@ -83,6 +83,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show FilteringTextInputFormatter;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:logger/logger.dart';
@@ -387,6 +388,48 @@ String kAccessUserStationAccountMessage(bool making) => making
     : 'Its sessions will expire on inactivity again, like any person\'s. Any '
         'panel committed to it returns to anonymous. The change is recorded.';
 
+/// The inactivity-timeout control on an account's row.
+Key kAccessUserTimeoutKey(String username) =>
+    Key('access-user-timeout-$username');
+
+/// The marker beside the role of an account with a timeout of its own.
+Key kAccessUserTimeoutTagKey(String username) =>
+    Key('access-user-timeout-tag-$username');
+
+/// The marker's text. Beside the role, like [kAccessUserPagesOverrideTag], so
+/// an account that differs from the default says so where the roster is read.
+String kAccessUserTimeoutTag(int minutes) => '$minutes min';
+
+const String kAccessUserTimeoutTooltip = 'Inactivity timeout for this account';
+
+/// A station account has no timeout to set — its sessions never expire. The
+/// control is inapplicable there rather than refused, and says why.
+const String kAccessUserTimeoutStationTooltip =
+    'Station account — sessions never expire';
+
+/// The timeout dialog's field, and its two ways out besides Cancel.
+const Key kAccessUserTimeoutFieldKey = Key('access-user-timeout-field');
+const Key kAccessUserTimeoutSaveKey = Key('access-user-timeout-save');
+const Key kAccessUserTimeoutDefaultKey = Key('access-user-timeout-default');
+const Key kAccessUserTimeoutRangeKey = Key('access-user-timeout-range');
+
+String kAccessUserTimeoutTitle(String username) =>
+    'Inactivity timeout for "$username"';
+
+/// What the number does, where it applies, and what "default" means — the
+/// three things the old per-station field left the administrator to guess.
+final String kAccessUserTimeoutNote =
+    'A session signed in as this account ends after this many minutes without '
+    'a touch, on every panel. Without a value of its own the account uses '
+    '${kDefaultInactivityTimeout.inMinutes} minutes. The change is recorded.';
+
+/// The number could not be saved.
+final String kAccessUserTimeoutRangeNote =
+    'Enter ${kMinInactivityTimeout.inMinutes} to '
+    '${kMaxInactivityTimeout.inMinutes} minutes.';
+
+const String kAccessUserTimeoutDefaultLabel = 'Use default';
+
 /// The four cells, one key each, so a test asserts the *column* rather than
 /// some text that happens to be on screen.
 Key kAccessUserNameKey(String username) => Key('access-user-name-$username');
@@ -646,14 +689,25 @@ class AccessUsersSection extends ConsumerWidget {
 
 /// The column widths, declared once so the headings and the cells cannot drift
 /// apart.
-const int _kNameFlex = 3;
-const int _kRoleFlex = 3;
-const int _kWhenFlex = 3;
-/// Five 48 px icon buttons: pages, station account, role, password, delete.
-/// Widened from 192 when the Pages control joined them — a fixed width with
-/// one more button than it was sized for overflows the row rather than
-/// wrapping, which is how this number earns a comment.
-const double _kActionsWidth = 240;
+///
+/// **Not four equal shares.** `Created` and `Last login` hold a fixed-width
+/// `yyyy-MM-dd HH:mm` in the monospace face, so their width is not a
+/// preference — it is the content, and the only slack in the row is whatever
+/// is left over after it. Four equal shares left exactly none once the actions
+/// column widened for the timeout control, and the two timestamps met with no
+/// gap between them: `2026-06-02 08:152026-08-31 07:05`, which reads as one
+/// number. The extra sixth goes to the two `when` columns because the name and
+/// role columns are the ones with room to give.
+const int _kNameFlex = 5;
+const int _kRoleFlex = 5;
+const int _kWhenFlex = 6;
+
+/// Six 48 px icon buttons: station account, timeout, pages, role, password,
+/// delete. Widened from 192 when the Pages control joined them and from 240
+/// when the timeout did — a fixed width with one more button than it was sized
+/// for overflows the row rather than wrapping, which is how this number earns
+/// a comment.
+const double _kActionsWidth = 288;
 
 // ---------------------------------------------------------------------------
 // One row
@@ -711,6 +765,12 @@ class _UserTileState extends ConsumerState<_UserTile> {
   /// Whether this account overrides its role's pages right now.
   bool get _overridesPages => user.allowedPages != null;
 
+  /// This account's own timeout in minutes, or null when it uses the default.
+  /// Always null for a station account, whose stored value — if any — governs
+  /// nothing while the flag is set, and would only mislead beside the role.
+  int? get _ownTimeout =>
+      user.stationAccount ? null : user.inactivityTimeoutMinutes;
+
   @override
   Widget build(BuildContext context) {
     final refusal = _refusal;
@@ -752,6 +812,20 @@ class _UserTileState extends ConsumerState<_UserTile> {
                                     .onSurfaceVariant),
                       ),
                     ],
+                    if (_ownTimeout != null) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        kAccessUserTimeoutTag(_ownTimeout!),
+                        key: kAccessUserTimeoutTagKey(user.username),
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelSmall
+                            ?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -783,6 +857,22 @@ class _UserTileState extends ConsumerState<_UserTile> {
                           ? kAccessUserStationAccountOnTooltip
                           : kAccessUserStationAccountOffTooltip,
                       onPressed: _toggleStationAccount,
+                    ),
+                    IconButton(
+                      key: kAccessUserTimeoutKey(user.username),
+                      icon: Icon(
+                          _ownTimeout != null
+                              ? Icons.timer
+                              : Icons.timer_outlined,
+                          size: 18),
+                      tooltip: user.stationAccount
+                          ? kAccessUserTimeoutStationTooltip
+                          : kAccessUserTimeoutTooltip,
+                      // Disabled for a station account because the setting
+                      // does not apply to it, not for lack of a permission —
+                      // this file never greys a control for that. The tooltip
+                      // says which.
+                      onPressed: user.stationAccount ? null : _setTimeout,
                     ),
                     IconButton(
                       key: kAccessUserPagesKey(user.username),
@@ -974,6 +1064,44 @@ class _UserTileState extends ConsumerState<_UserTile> {
     _busy = false;
     if (!wrote) return;
     if (mounted) setState(() => _refusal = null);
+  }
+
+  /// Sets or clears the account's inactivity timeout, as one
+  /// `user.inactivity_timeout` row.
+  ///
+  /// The dialog only collects the answer; the write happens here, through the
+  /// same [_write] path as every other control, so a `users` refusal reaches
+  /// the shared prompt. Choosing the value already stored writes nothing.
+  ///
+  /// **`refreshGroupsFromRoles` afterwards**, unlike the station flag: a
+  /// shorter timeout applies to the session signed in as this account on this
+  /// panel right away (narrowed, never extended). Other panels pick it up at
+  /// their next sign-in or restart, the same as pages.
+  Future<void> _setTimeout() async {
+    if (_busy) return;
+    final result = await showDialog<_TimeoutChoice>(
+      context: context,
+      builder: (_) => _SetTimeoutDialog(
+        username: user.username,
+        current: user.inactivityTimeoutMinutes,
+      ),
+    );
+    if (result == null || !mounted) return;
+    if (result.minutes == user.inactivityTimeoutMinutes) return;
+
+    _busy = true;
+    final wrote = await _write(
+      context,
+      ref,
+      () => widget.store.setUserInactivityTimeout(user.username, result.minutes),
+      onRefused: _showRefusal,
+      vanished: user.username,
+    );
+    _busy = false;
+    if (!wrote) return;
+    if (mounted) setState(() => _refusal = null);
+    // Last, because it can unmount this subtree — see [_afterWrite].
+    await _afterWrite(ref);
   }
 
   /// Deletes the account, after a confirmation that says the trail survives.
@@ -1716,6 +1844,119 @@ class _SetPasswordDialogState extends State<_SetPasswordDialog> {
               problem,
               subject: widget.username,
               failureNote: kAccessUserSetPasswordFailedNote,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// What the timeout dialog decided. A wrapper rather than a bare `int?`,
+/// because "Use default" is a null *answer* and Cancel is no answer at all —
+/// `showDialog` returning null has to keep meaning only the second.
+class _TimeoutChoice {
+  const _TimeoutChoice(this.minutes);
+
+  /// The account's new timeout, or null to use the default.
+  final int? minutes;
+}
+
+/// Collects one account's inactivity timeout.
+///
+/// Holds no credential and writes nothing itself: it pops a [_TimeoutChoice]
+/// and the row performs the write through `_write`, like the role picker does.
+/// Out-of-range input is refused in place, with the range, rather than clamped
+/// — the repository would refuse it anyway, and the administrator can still
+/// ask for a better number.
+class _SetTimeoutDialog extends StatefulWidget {
+  const _SetTimeoutDialog({required this.username, required this.current});
+
+  final String username;
+
+  /// The stored minutes, or null when the account uses the default.
+  final int? current;
+
+  @override
+  State<_SetTimeoutDialog> createState() => _SetTimeoutDialogState();
+}
+
+class _SetTimeoutDialogState extends State<_SetTimeoutDialog> {
+  // Seeded with what is in force, so the field never opens blank: an account
+  // without a value of its own shows the default it is actually getting.
+  late final _minutes = TextEditingController(
+    text: '${widget.current ?? kDefaultInactivityTimeout.inMinutes}',
+  );
+
+  bool _outOfRange = false;
+
+  @override
+  void dispose() {
+    _minutes.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final parsed = int.tryParse(_minutes.text.trim());
+    if (parsed == null || !isValidInactivityTimeoutMinutes(parsed)) {
+      setState(() => _outOfRange = true);
+      return;
+    }
+    Navigator.of(context).pop(_TimeoutChoice(parsed));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return StandardDialogFrame(
+      title: kAccessUserTimeoutTitle(widget.username),
+      showClose: false,
+      actions: [
+        PaneAction(
+          label: 'Cancel',
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        // Only offered when there is something to go back from: on an account
+        // already using the default it would be a button that does nothing.
+        if (widget.current != null)
+          PaneAction(
+            label: kAccessUserTimeoutDefaultLabel,
+            buttonKey: kAccessUserTimeoutDefaultKey,
+            onPressed: () =>
+                Navigator.of(context).pop(const _TimeoutChoice(null)),
+          ),
+        PaneAction.primary(
+          label: 'Save',
+          buttonKey: kAccessUserTimeoutSaveKey,
+          onPressed: _save,
+        ),
+      ],
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _note(context, kAccessUserTimeoutNote),
+          const SizedBox(height: 12),
+          TextField(
+            key: kAccessUserTimeoutFieldKey,
+            controller: _minutes,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            onSubmitted: (_) => _save(),
+            decoration: const InputDecoration(
+              labelText: 'Inactivity timeout',
+              suffixText: 'minutes',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          if (_outOfRange) ...[
+            const SizedBox(height: 12),
+            Text(
+              kAccessUserTimeoutRangeNote,
+              key: kAccessUserTimeoutRangeKey,
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.error),
             ),
           ],
         ],

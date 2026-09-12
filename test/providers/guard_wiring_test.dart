@@ -762,8 +762,6 @@ Future<_Wiring> _wiring({bool withDatabase = false}) async {
           (ref) async => repository == null ? null : _FakeAuthProvider()),
       auditSinkProvider.overrideWith((ref) async => sink),
       stationNameProvider.overrideWithValue(_kStation),
-      inactivityTimeoutProvider
-          .overrideWith((ref) async => const Duration(minutes: 15)),
       // The seam, and the only reason it exists: proving a session transition
       // does not rebuild this provider must not open an OPC UA connection.
       stateManFactoryProvider.overrideWithValue(

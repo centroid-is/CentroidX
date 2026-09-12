@@ -26,6 +26,7 @@ class AccessSession {
     required this.groups,
     this.expiresAt,
     this.allowedPages,
+    this.inactivityTimeout,
   });
 
   /// A session with no user signed in.
@@ -89,6 +90,17 @@ class AccessSession {
   /// re-implemented per call site.
   final Set<String>? allowedPages;
 
+  /// How long this session may sit idle, or null when it never expires.
+  ///
+  /// The signed-in account's own value (`app_user.inactivity_timeout_minutes`,
+  /// through `resolveInactivityTimeout`), so two people on the same panel each
+  /// get their own window. Null for anonymous, for station accounts and for a
+  /// resumed panel — the sessions with no [expiresAt] to extend.
+  ///
+  /// Resolved from the database where the session is built, exactly like
+  /// [groups], and deliberately never persisted — see [toJson].
+  final Duration? inactivityTimeout;
+
   /// Whether this session holds [g]. Vocabulary only in Phase 1: nothing calls
   /// this to deny anything yet.
   bool can(AccessGroup g) => groups.contains(g);
@@ -126,8 +138,10 @@ class AccessSession {
   /// Device-local persistence: enough to re-resolve, not the resolved answer.
   ///
   /// [groups] are deliberately **not** serialized, and neither is
-  /// [allowedPages]. Only the role *name* survives a restart; both resolved
-  /// sets are re-read from the database on restore. Persisting them would let
+  /// [allowedPages] nor [inactivityTimeout]. Only the role *name* survives a
+  /// restart; all three are re-read from the database on restore — a
+  /// hand-edited timeout in this file would otherwise be a way to widen the
+  /// window an administrator set. Persisting them would let
   /// a role edited on another station stay stale on this one until the next
   /// login — and would let anyone with write access to the preferences file
   /// grant themselves a group the role does not have, or widen their own page
@@ -187,6 +201,7 @@ class AccessSession {
       other is AccessSession &&
           other.user == user &&
           other.expiresAt == expiresAt &&
+          other.inactivityTimeout == inactivityTimeout &&
           _setEquality.equals(other.groups, groups) &&
           _samePages(other.allowedPages, allowedPages);
 
@@ -201,6 +216,7 @@ class AccessSession {
   int get hashCode => Object.hash(
         user,
         expiresAt,
+        inactivityTimeout,
         _setEquality.hash(groups),
         allowedPages == null ? null : _pageEquality.hash(allowedPages!),
       );
