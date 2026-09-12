@@ -1,0 +1,25 @@
+[Unit]
+Description=CentroidX station installer
+Documentation=https://github.com/centroid-is/debos-conf
+# Disks must be enumerated before the installer can offer a target.
+After=local-fs.target
+Requires=local-fs.target
+# Nothing else may own tty1 while a human is answering prompts on it.
+Conflicts=getty@tty1.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/centroidx-install-failsafe
+# StandardInput=tty is what makes `read` work; without it every prompt returns
+# immediately with an empty answer.
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+Restart=no
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

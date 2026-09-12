@@ -1,0 +1,182 @@
+#!/bin/bash
+# CentroidX first-boot provisioning.
+#
+# The golden image is identical on every station. Three classes of thing cannot
+# be baked into it, and this script is where each is resolved:
+#
+#   1. SIZE      the image is built small; the SSD is whatever it is
+#   2. IDENTITY  machine-id and SSH host keys must not be shared between hosts
+#   3. HOST FACTS the render and docker group IDs only exist once Debian is
+#                installed on this particular machine
+#
+# plus the site's own answers, which the installer left in station.conf.
+set -euo pipefail
+
+STATE=/var/lib/centroid
+STAMP="$STATE/firstboot-done"
+CONF=/etc/centroid/station.conf
+HOME_DIR=/home/centroid
+ENVFILE="$HOME_DIR/.env"
+COMPOSE="$HOME_DIR/docker-compose.yml"
+
+log() { printf '[centroidx-firstboot] %s\n' "$*"; }
+die() { printf '[centroidx-firstboot] FATAL: %s\n' "$*" >&2; exit 1; }
+
+mkdir -p "$STATE"
+
+# ---------------------------------------------------------------- 1. grow root
+# bmaptool wrote a fixed-size image onto a disk of unknown size. Claim the rest.
+grow_root() {
+  local src base disk partnum
+  src="$(findmnt -no SOURCE /)" || { log "cannot determine root device, skipping grow"; return 0; }
+  base="$(basename "$src")"
+  [ -r "/sys/class/block/$base/partition" ] || { log "root $src is not a partition, skipping grow"; return 0; }
+  partnum="$(cat "/sys/class/block/$base/partition")"
+  disk="/dev/$(lsblk -no PKNAME "$src" | head -1)"
+  log "growing $disk partition $partnum, then the filesystem on $src"
+  # growpart exits non-zero and prints NOCHANGE when the partition already
+  # fills the disk, which is the normal case on every boot after the first.
+  local out
+  out="$(growpart "$disk" "$partnum" 2>&1)" || true
+  log "growpart: $out"
+  resize2fs "$src" || log "resize2fs reported nothing to do"
+}
+
+# ------------------------------------------------------------- 2. host identity
+# A cloned image carries the builder's identity. Sharing an SSH host key across
+# a fleet means any one station can impersonate the others; sharing a machine-id
+# collides journal IDs and DHCP leases.
+reset_identity() {
+  if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
+    log "generating SSH host keys"
+    ssh-keygen -A
+  fi
+  # systemd regenerates /etc/machine-id when the file is empty, which the
+  # installer arranges. dbus needs its own copy, and the flutter container
+  # bind-mounts it read-only, so it has to exist before compose starts.
+  if [ ! -s /var/lib/dbus/machine-id ]; then
+    log "seeding /var/lib/dbus/machine-id from /etc/machine-id"
+    install -d -m 0755 /var/lib/dbus
+    cp /etc/machine-id /var/lib/dbus/machine-id
+  fi
+}
+
+# ------------------------------------------------------- 3. host-specific GIDs
+# docker-compose.yml:128 records what happens when these are wrong: mesa cannot
+# open the render node, falls back to llvmpipe, and burns ~12 threads with
+# nothing logged. 150% -> 25% CPU when it was fixed on a real station. Nobody
+# should ever type these numbers again.
+host_gids() {
+  local render docker
+  # After=docker.service only guarantees the unit started, not that dockerd has
+  # created its socket. Without this, `stat` below fails and set -e kills the
+  # whole provisioning run on a slow machine.
+  for _ in $(seq 1 60); do
+    [ -S /var/run/docker.sock ] && break
+    sleep 1
+  done
+  [ -S /var/run/docker.sock ] || die "dockerd never created /var/run/docker.sock"
+  if [ -e /dev/dri/renderD128 ]; then
+    render="$(stat -c %g /dev/dri/renderD128)"
+  else
+    log "WARNING: /dev/dri/renderD128 absent - no GPU on this machine?"
+    render=""
+  fi
+  docker="$(stat -c %g /var/run/docker.sock)"
+  printf 'RENDER_GID=%s\nDOCKER_GID=%s\n' "$render" "$docker"
+}
+
+# ------------------------------------------------------------ 4. site settings
+# station.conf is written by the USB installer (or by hand, for a disk flashed
+# on the bench). Absent, everything falls back to a generated value so the
+# station still boots -- it just will not match the site's other machines.
+load_conf() {
+  STATION_NAME=""; DB_PASSWORD=""; VNC_PASSWORD=""
+  ROOT_PASSWORD=""; CENTROID_PASSWORD=""
+  DOCKER_UPDATE_PASSWORD=""
+  # shellcheck disable=SC1090
+  [ -r "$CONF" ] && . "$CONF"
+  : "${STATION_NAME:=$(hostname)}"
+}
+
+gen() { openssl rand -base64 24 | tr -d '\n/+=' | cut -c1-24; }
+
+# ------------------------------------------------------------------ 5. main
+log "starting"
+grow_root
+reset_identity
+load_conf
+
+# Host logins. Applied once, then scrubbed from station.conf -- the .env keeps
+# only what compose has to read on every start.
+for pair in "root:${ROOT_PASSWORD}" "centroid:${CENTROID_PASSWORD}"; do
+  user="${pair%%:*}"; pass="${pair#*:}"
+  if [ -n "$pass" ]; then
+    log "setting password for $user"
+    printf '%s:%s\n' "$user" "$pass" | chpasswd
+  fi
+done
+
+: "${DB_PASSWORD:=$(gen)}"
+: "${VNC_PASSWORD:=$(gen)}"
+: "${DOCKER_UPDATE_PASSWORD:=$(gen)}"
+# Never chosen by a human: it only unlocks a local keyring file.
+FLUTTER_KEYRING_PASSWORD="$(gen)"
+
+log "writing $ENVFILE"
+{
+  echo "# Generated by centroidx-firstboot on $(date -Is). Station-specific."
+  echo "# Re-run: rm /var/lib/centroid/firstboot-done && reboot"
+  echo
+  echo "NOVNC_STATION_NAME=${STATION_NAME}"
+  echo "DOCKER_UPDATE_CERT_CN=${STATION_NAME}"
+  echo
+  echo "# Read from this host, never typed. See docker-compose.yml:117 and :222."
+  host_gids
+  echo
+  echo "# Set at install time."
+  echo "DB_PASSWORD=${DB_PASSWORD}"
+  echo "VNC_PASSWORD=${VNC_PASSWORD}"
+  echo
+  echo "# Generated here; no human needs to know these."
+  echo "FLUTTER_KEYRING_PASSWORD=${FLUTTER_KEYRING_PASSWORD}"
+  echo "DOCKER_UPDATE_BASIC_AUTH_USER=centroid"
+  echo "DOCKER_UPDATE_BASIC_AUTH_PASS=${DOCKER_UPDATE_PASSWORD}"
+} > "$ENVFILE"
+chown centroid:centroid "$ENVFILE"
+chmod 0600 "$ENVFILE"
+
+# Drop the host logins from station.conf now that they are applied. The database
+# and VNC passwords have to stay readable -- compose reads them on every start --
+# but they live in .env at 0600, not here.
+if [ -r "$CONF" ]; then
+  sed -i -E '/^(ROOT_PASSWORD|CENTROID_PASSWORD)=/d' "$CONF"
+  chmod 0600 "$CONF"
+fi
+
+install -d -o centroid -g centroid -m 0755 "$HOME_DIR/docker-update"
+
+# Container images staged into the image by `make preload`. Loading them makes
+# the first start work with no network at all; deleting them afterwards gives
+# back the disk they were costing twice.
+PRELOAD_DIR="$STATE/preload"
+if compgen -G "$PRELOAD_DIR/*.tar.zst" > /dev/null; then
+  for t in "$PRELOAD_DIR"/*.tar.zst; do
+    log "loading $(basename "$t")"
+    zstd -dc "$t" | docker load || log "WARNING: failed to load $t"
+    rm -f "$t"
+  done
+  rmdir "$PRELOAD_DIR" 2>/dev/null || true
+fi
+
+if [ -r "$COMPOSE" ]; then
+  log "starting the stack (first time only; restart policies handle later boots)"
+  # Deliberately once, not on every boot: docker-update pins individual services
+  # and an `up -d` at every boot would reconcile them back to the compose tags.
+  ( cd "$HOME_DIR" && docker compose up -d ) || die "docker compose up failed"
+else
+  log "WARNING: $COMPOSE missing, nothing to start"
+fi
+
+touch "$STAMP"
+log "done"
