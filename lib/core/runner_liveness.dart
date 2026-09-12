@@ -35,6 +35,7 @@
 library;
 
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
@@ -52,6 +53,68 @@ const MethodChannel kRunnerChannel = MethodChannel('centroid/runner');
 /// page build — never reads as a freeze, while a real stall is named within
 /// half a minute.
 const Duration kLivenessInterval = Duration(seconds: 10);
+
+/// Asks the engine to rasterise something, and says whether it could.
+///
+/// Returns true when a pixel came back, false when the engine handed back an
+/// empty image, and null when the probe could not be run at all (no engine,
+/// or it threw) -- which is "unknown", never "failed".
+typedef RasterProbe = Future<bool?> Function();
+
+/// How long a raster probe is given before it counts as failed. Longer than
+/// any healthy 1 x 1 snapshot by orders of magnitude, shorter than the stamp
+/// interval so probes never overlap.
+const Duration kRasterProbeTimeout = Duration(seconds: 5);
+
+/// The default [RasterProbe]: a 1 x 1 picture through the engine's snapshot
+/// path, which is the same GPU context, render target and context-current
+/// call the screen goes through.
+///
+/// # Why this exists
+///
+/// On 2026-09-12 a station's renderer died silently: the screen froze on its
+/// last frame while every detector read healthy. The Dart isolate stamped
+/// every 10 s with 20-30 frames per stamp, the watchdog's next-frame probe
+/// was answered every 5 s, the sentinel adapter was fine, and the engine
+/// wrote no context-lost errors for the stderr storm detector to see. The
+/// only thing that said "dead" was the MCP screenshot tool: its
+/// `RepaintBoundary.toImage` came back as a 0 x 0 image.
+///
+/// That is the engine's one honest tell. When a snapshot cannot be made --
+/// the context will not go current, or no render target can be made --
+/// `SnapshotControllerSkia::DoMakeRasterSnapshot` ends at a null `SkImage`,
+/// which surfaces in Dart as an ordinary [ui.Image] reporting 0 x 0 from a
+/// future that completed normally (see `lib/mcp/app_capture.dart` for the
+/// engine-side trace). A healthy engine returns a real 1 x 1; an engine with
+/// no GPU surface at all rasterises on the CPU and also returns one, so a
+/// software-rendered station never reads as dead.
+///
+/// The image is disposed WITHOUT calling `toByteData`: encoding the empty
+/// image dereferences null on the IO thread and takes the process down.
+/// `toImageSync` is deliberately not used -- its deferred GPU image reports
+/// the requested size whether or not anything was drawn.
+Future<bool?> probeRasterisation() async {
+  ui.Picture? picture;
+  try {
+    final recorder = ui.PictureRecorder();
+    ui.Canvas(recorder).drawRect(
+      const ui.Rect.fromLTWH(0, 0, 1, 1),
+      ui.Paint()..color = const ui.Color(0xFF000000),
+    );
+    picture = recorder.endRecording();
+    final image = await picture.toImage(1, 1);
+    try {
+      return image.width > 0 && image.height > 0;
+    } finally {
+      image.dispose();
+    }
+  } catch (_) {
+    // Could not ask. Not evidence of anything; the stamp says "not probed".
+    return null;
+  } finally {
+    picture?.dispose();
+  }
+}
 
 /// Which engine generation this isolate is, and why it was started.
 @immutable
@@ -126,16 +189,27 @@ class RunnerLiveness {
     this.interval = kLivenessInterval,
     Future<void> Function(String method, Map<String, Object?> arguments)? invoke,
     int Function()? readFrames,
+    RasterProbe? probeRaster,
     Logger? logger,
   })  : _invoke = invoke ?? _invokeOverChannel,
         _readFrames = readFrames,
+        _probeRaster = probeRaster ?? probeRasterisation,
         _logger = logger ?? Logger();
 
   final EngineEpoch epoch;
   final Duration interval;
   final Future<void> Function(String, Map<String, Object?>) _invoke;
   final int Function()? _readFrames;
+  final RasterProbe _probeRaster;
   final Logger _logger;
+
+  /// Consecutive stamps whose raster probe failed. Reported on every stamp so
+  /// the runner's line can carry it; the runner keeps its own count and makes
+  /// the decision, because a probe that HANGS produces no stamp to count.
+  int _rasterFailures = 0;
+
+  /// Consecutive failed raster probes so far.
+  int get rasterFailures => _rasterFailures;
 
   Timer? _timer;
   DateTime? _startedAt;
@@ -209,7 +283,7 @@ class RunnerLiveness {
     _detachFrameCounter();
   }
 
-  void _stamp() {
+  Future<void> _stamp() async {
     _ticks++;
     final started = _startedAt;
     final now = clock.now();
@@ -224,6 +298,18 @@ class RunnerLiveness {
 
     final frames = _drainFrames();
 
+    // The one question none of the other signals can answer: did the engine
+    // actually draw a pixel? Awaited with a timeout so a raster thread that
+    // has stopped answering reads as a failed probe rather than as a Dart
+    // isolate that stopped stamping -- those are different faults with
+    // different recoveries, and the 2026-09-12 freeze was the first kind.
+    final raster = await _probeRasterisation();
+    if (raster == false) {
+      _rasterFailures++;
+    } else if (raster == true) {
+      _rasterFailures = 0;
+    }
+
     unawaited(_send('liveness', <String, Object?>{
       'epoch': epoch.epoch,
       'uptimeMs': uptime.inMilliseconds,
@@ -232,7 +318,23 @@ class RunnerLiveness {
       'lagMs': lag.isNegative ? 0 : lag.inMilliseconds,
       'startupComplete': _startupComplete,
       'unacked': _unacknowledged,
+      'rasterProbed': raster != null,
+      'rasterOk': raster ?? false,
+      'rasterFailures': _rasterFailures,
     }));
+  }
+
+  Future<bool?> _probeRasterisation() async {
+    try {
+      return await _probeRaster().timeout(
+        kRasterProbeTimeout,
+        // A snapshot that does not come back in five seconds is a renderer
+        // that is not drawing, whatever it would eventually say.
+        onTimeout: () => false,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Frames the engine has reported to Dart since the previous stamp.

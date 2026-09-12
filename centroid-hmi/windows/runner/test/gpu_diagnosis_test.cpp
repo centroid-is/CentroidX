@@ -395,7 +395,8 @@ TEST(every_line_of_the_report_still_carries_the_gpu_loss_prefix) {
 TEST(every_cause_and_escalation_has_something_to_say) {
   const tfc::LossCause causes[] = {tfc::LossCause::kNoFramesPresented,
                                    tfc::LossCause::kContextLost,
-                                   tfc::LossCause::kPlatformThreadWedged};
+                                   tfc::LossCause::kPlatformThreadWedged,
+                                   tfc::LossCause::kRasterFailed};
   for (tfc::LossCause cause : causes) {
     CHECK(std::string(tfc::DescribeLossCause(cause)).size() > 0);
   }
