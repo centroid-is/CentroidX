@@ -84,6 +84,20 @@ pick_disk() {
 }
 
 # ------------------------------------------------------------------- questions
+# station.env is PARSED, not sourced. `. "$SEED"` hands every value to bash, so
+# a password containing a space runs its second word as a command and a `$`
+# truncates silently -- and the charset check below would run too late to stop
+# either, since sourcing has already happened by then. Same defect the firstboot
+# side was fixed for (review #2).
+read_kv() {   # read_kv FILE KEY -> value on stdout, empty if absent
+  local file="$1" key="$2" line
+  [ -r "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$key="*) printf '%s' "${line#*=}"; return 0 ;;
+    esac
+  done < "$file"
+}
 ask() {   # ask VAR "prompt"
   local __var="$1" __prompt="$2"
   while :; do
@@ -122,8 +136,11 @@ questions() {
   if [ -r "$SEED" ]; then
     grn "  Using answers from $SEED (unattended install)"
     UNATTENDED=1
-    # shellcheck disable=SC1090
-    . "$SEED"
+    STATION_NAME="$(read_kv "$SEED" STATION_NAME)"
+    CENTROID_PASSWORD="$(read_kv "$SEED" CENTROID_PASSWORD)"
+    ROOT_PASSWORD="$(read_kv "$SEED" ROOT_PASSWORD)"
+    VNC_PASSWORD="$(read_kv "$SEED" VNC_PASSWORD)"
+    DB_PASSWORD="$(read_kv "$SEED" DB_PASSWORD)"
     local missing=""
     for v in STATION_NAME CENTROID_PASSWORD ROOT_PASSWORD VNC_PASSWORD DB_PASSWORD; do
       [ -n "${!v}" ] || missing="$missing $v"
