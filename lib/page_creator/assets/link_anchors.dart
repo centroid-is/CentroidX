@@ -9,7 +9,7 @@ library;
 
 import 'dart:math' as math;
 import 'package:flutter/widgets.dart'
-    show BuildContext, InheritedWidget, Offset, Size;
+    show BuildContext, InheritedWidget, Offset, Rect, Size;
 
 import 'common.dart';
 import 'link_geometry.dart';
@@ -32,7 +32,18 @@ class NetworkPort {
   /// this is nearly always "in" or "out" and worth saying.
   final String? description;
 
-  const NetworkPort(this.id, this.side, {this.at = 0.5, this.description});
+  /// Other names a stored cable end may carry for this port — the implicit
+  /// `X1`/`X2` of a device that has since declared its real sockets. Resolved
+  /// by [findPort]; a stored end is never rewritten to match.
+  final List<String> aliases;
+
+  const NetworkPort(
+    this.id,
+    this.side, {
+    this.at = 0.5,
+    this.description,
+    this.aliases = const [],
+  });
 }
 
 /// An asset that a cable can plug into.
@@ -57,6 +68,57 @@ const List<NetworkPort> kImplicitPorts = [
   NetworkPort('X2', PortSide.right, description: 'EtherCAT out'),
 ];
 
+/// The four ports every EtherCAT subdevice controller has, named as the PLC and
+/// TwinCAT name them: A in on the left, B out on the right, and the two
+/// junction ports below and above so a branch leaves the chain at a right
+/// angle. The fallback for an EtherCAT device that declares nothing better.
+const List<NetworkPort> kEcSubDevicePorts = [
+  NetworkPort('A', PortSide.left, description: 'In', aliases: ['X1']),
+  NetworkPort('B', PortSide.right, description: 'Out', aliases: ['X2']),
+  NetworkPort('C', PortSide.bottom, description: 'Branch'),
+  NetworkPort('D', PortSide.top, description: 'Branch'),
+];
+
+/// The port of [ports] that [id] names: by id first, then by alias.
+///
+/// Per device, not a global rename: `X2` is B on a terminal and C on an
+/// EK1100, and only the device knows which.
+NetworkPort? findPort(List<NetworkPort> ports, String? id) {
+  if (id == null) return null;
+  for (final p in ports) {
+    if (p.id == id) return p;
+  }
+  for (final p in ports) {
+    if (p.aliases.contains(id)) return p;
+  }
+  return null;
+}
+
+/// A composite asset that lays its [Asset.childAssets] out itself.
+///
+/// A rack's slices have no coordinates of their own — they are a row inside
+/// the rack's box, in the order they were added — so nothing outside the rack
+/// can say where one is. This is the rack answering that, which is what a
+/// cable needs before it can plug into a slice.
+abstract class ChildPlacer {
+  /// The page-relative, unrotated box [child] occupies, or null when it is
+  /// not one of this asset's children.
+  ///
+  /// [canvas] is needed because the row is fitted into the rack's box the way
+  /// `BoxFit.contain` does it — in pixels. Page space stretches x and y
+  /// independently, so a scale worked out in fractions would put the slices in
+  /// the wrong places on any canvas that is not square.
+  Rect? childBox(Asset child, Size canvas);
+}
+
+/// An asset drawn at a fixed aspect, whatever box it is given.
+///
+/// A rack row scales every slice to one height, so a slice's width is decided
+/// by its drawing, not by its configured size.
+abstract class NativelySized {
+  Size get nativeSize;
+}
+
 /// The ports [asset] offers, declared or assumed.
 List<NetworkPort> portsOf(Asset asset) {
   // Explicit cast: `Asset` and `NetworkPorted` are unrelated declarations, so
@@ -73,46 +135,102 @@ List<NetworkPort> portsOf(Asset asset) {
 /// a turned asset: page space is anisotropic on any canvas that is not square,
 /// so a rotation done in it would shear rather than turn.
 class PageLinkAnchors implements LinkAnchors {
-  PageLinkAnchors(Iterable<Asset> assets, this.canvas)
-      : _byId = {
-          for (final a in assets)
-            if (a.id != null) a.id!: a,
-        };
+  PageLinkAnchors(Iterable<Asset> assets, this.canvas) {
+    // Children are indexed too, and remember which asset places them: a rack's
+    // slices are the devices a cable actually plugs into, and they have no
+    // coordinates of their own to be found by.
+    void index(Iterable<Asset> list, Asset? placer) {
+      for (final a in list) {
+        if (a.id != null) _byId[a.id!] = a;
+        if (placer != null) _placedBy[a] = placer;
+        index(a.childAssets, a is ChildPlacer ? a : placer);
+      }
+    }
 
-  final Map<String, Asset> _byId;
+    index(assets, null);
+  }
+
+  final Map<String, Asset> _byId = {};
+  final Map<Asset, Asset> _placedBy = {};
   final Size canvas;
 
   /// The asset [id] names, or null if the page has no such asset.
   Asset? assetFor(String id) => _byId[id];
+
+  /// Where [asset] sits and what it turns about.
+  ///
+  /// Its own coordinates, unless something else places it — a slice's box
+  /// comes from its rack, and it turns about the rack's centre, because that
+  /// is what rotating the rack does to it.
+  ({Offset centre, double width, double height, double? angle, Offset pivot})
+      _placement(Asset asset) {
+    final placer = _placedBy[asset];
+    if (placer == null) {
+      final c = _centre(asset);
+      return (
+        centre: c,
+        width: asset.size.width,
+        height: asset.size.height,
+        angle: asset.coordinates.angle,
+        pivot: c,
+      );
+    }
+    final pivot = _centre(placer);
+    final box =
+        placer is ChildPlacer ? (placer as ChildPlacer).childBox(asset, canvas) : null;
+    if (box == null) {
+      return (
+        centre: pivot,
+        width: 0.0,
+        height: 0.0,
+        angle: placer.coordinates.angle,
+        pivot: pivot,
+      );
+    }
+    return (
+      centre: box.center,
+      width: box.width,
+      height: box.height,
+      angle: placer.coordinates.angle,
+      pivot: pivot,
+    );
+  }
+
+  /// [point] turned about [pivot], which is the asset's own centre unless a
+  /// rack is turning it.
+  Offset _about(Offset point, Offset pivot, double? angle) =>
+      pivot + _rotate(point - pivot, angle);
 
   @override
   Offset? portPosition(String assetId, String? port) {
     final asset = _byId[assetId];
     if (asset == null) return null;
 
+    final p = _placement(asset);
     final ports = portsOf(asset);
     // An unnamed port, or one this device does not have (its glyph changed
     // under a cable that was already drawn), lands on the box centre rather
     // than nowhere: a cable to the middle of the device reads as "plugged in
     // somewhere on this box", which is true and fixable, where a vanished end
     // reads as a bug.
-    NetworkPort? spec;
-    for (final p in ports) {
-      if (p.id == port) {
-        spec = p;
-        break;
-      }
-    }
-    if (spec == null) return _centre(asset);
+    final spec = findPort(ports, port);
+    if (spec == null) return _about(p.centre, p.pivot, p.angle);
 
-    final w = asset.size.width, h = asset.size.height;
+    final w = p.width, h = p.height;
     final local = switch (spec.side) {
       PortSide.left => Offset(-w / 2, -h / 2 + h * spec.at),
       PortSide.right => Offset(w / 2, -h / 2 + h * spec.at),
       PortSide.top => Offset(-w / 2 + w * spec.at, -h / 2),
       PortSide.bottom => Offset(-w / 2 + w * spec.at, h / 2),
     };
-    return _centre(asset) + _rotate(local, asset.coordinates.angle);
+    return _about(p.centre + local, p.pivot, p.angle);
+  }
+
+  /// The box [asset] occupies on the page, its rack's placement included.
+  Rect boxOf(Asset asset) {
+    final p = _placement(asset);
+    return Rect.fromCenter(
+        center: p.centre, width: p.width, height: p.height);
   }
 
   /// The asset's centre, which is what a pinned corner is an offset from.
@@ -127,7 +245,9 @@ class PageLinkAnchors implements LinkAnchors {
   @override
   Offset? assetAnchor(String assetId) {
     final asset = _byId[assetId];
-    return asset == null ? null : _centre(asset);
+    if (asset == null) return null;
+    final p = _placement(asset);
+    return _about(p.centre, p.pivot, p.angle);
   }
 
   static Offset _centre(Asset a) => Offset(a.coordinates.x, a.coordinates.y);
