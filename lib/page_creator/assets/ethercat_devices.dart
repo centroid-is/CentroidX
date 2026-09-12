@@ -23,6 +23,7 @@ import 'common.dart';
 import 'ethercat_masters.dart';
 import 'ethercat_subdevice.dart';
 import 'ethercat_subdevice_pane.dart';
+import 'link_anchors.dart' show PageAssetsScope;
 
 part 'ethercat_devices.g.dart';
 
@@ -109,32 +110,31 @@ class _EtherCatDeviceTableState extends ConsumerState<EtherCatDeviceTable> {
   /// cannot touch the tree or start the next one.
   bool _disposed = false;
 
-  @override
-  void initState() {
-    super.initState();
-    // Deferred to the first frame, and skipped entirely on the page editor's
-    // canvas: a palette tile is a picture of this asset, and asking a picture
-    // to go and find the plant's masters builds a StateMan behind it —
-    // whose teardown leaves a timer pending after the tree is gone, which is
-    // how `page_editor_golden_test`'s palette search found this.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_disposed || !_wantsLiveData) return;
-      _discover();
-      _rediscover = Timer.periodic(_rediscoverEvery, (_) => _discover());
-    });
-  }
-
-  /// Whether this table is being used to watch the plant, rather than drawn
-  /// as an example of itself.
-  bool get _wantsLiveData =>
-      widget.config.buses.isNotEmpty ||
-      !AssetEditModeScope.isEditing(context);
+  /// Whether a lookup has been asked for yet. One per mount.
+  bool _asked = false;
 
   @override
   void dispose() {
     _disposed = true;
     _rediscover?.cancel();
     super.dispose();
+  }
+
+  /// Looks for masters the first time this table is actually asked to show
+  /// the plant, and never before.
+  ///
+  /// Not from `initState`, and not on a timer of its own: the page editor
+  /// draws every asset in its palette as a thumbnail — a bare `build`, with
+  /// none of the canvas's scopes around it — so anything this widget does on
+  /// mount, a palette tile does too. Going to look for masters builds a
+  /// StateMan behind the picture, and closing that one leaves a five-second
+  /// timer that outlives the tree. `page_editor_golden_test` fails on it, and
+  /// only on macOS: Windows cannot build the client at all, so the leak hides.
+  void _discoverOnce() {
+    if (_asked || _disposed) return;
+    _asked = true;
+    _discover();
+    _rediscover = Timer.periodic(_rediscoverEvery, (_) => _discover());
   }
 
   Future<void> _discover() async {
@@ -156,6 +156,11 @@ class _EtherCatDeviceTableState extends ConsumerState<EtherCatDeviceTable> {
   @override
   Widget build(BuildContext context) {
     final config = widget.config;
+    // On a page — the runtime one or the editor's canvas — `PageAssetsScope`
+    // is there; in the palette's thumbnails it is not, and neither is any
+    // other scope. That is the line between a table and a picture of one, and
+    // the only side of it that may go looking for the station's masters.
+    if (PageAssetsScope.maybeOf(context) != null) _discoverOnce();
     final buses = config.buses.isNotEmpty ? config.buses : _discovered;
     if (buses.isEmpty) {
       // Nothing configured yet — on the palette and on a freshly dropped

@@ -5,6 +5,7 @@ import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:rxdart/rxdart.dart';
 import 'package:tfc/page_creator/assets/ethercat_command.dart';
 import 'package:tfc/page_creator/assets/ethercat_devices.dart';
+import 'package:tfc/page_creator/assets/link_anchors.dart';
 import 'package:tfc/page_creator/assets/ethercat_subdevice.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc_dart/core/state_man.dart';
@@ -29,11 +30,19 @@ DynamicValue _diag() => array([
     ]);
 
 void main() {
+  /// Mounted the way a page mounts it: inside a [PageAssetsScope], which is
+  /// what tells the table it is on a page rather than being drawn as a
+  /// palette thumbnail — and so the only place it may go looking for the
+  /// station's masters.
   Widget wrap(Widget child, _FakeStateMan sm) => ProviderScope(
         overrides: [stateManProvider.overrideWith((_) async => sm)],
         child: MaterialApp(
           home: Scaffold(
-            body: SizedBox(width: 900, height: 400, child: child),
+            body: PageAssetsScope(
+              assets: const [],
+              canvas: const Size(900, 400),
+              child: SizedBox(width: 900, height: 400, child: child),
+            ),
           ),
         ),
       );
