@@ -29,13 +29,20 @@ import 'package:tfc/providers/preferences.dart';
 /// A stand-in for `LocalAuthProvider` that honours the same null-versus-throw
 /// contract: null for an unrecognised credential, a throw for infrastructure.
 class _FakeAuthProvider implements AuthProvider, PasswordSelfService {
-  _FakeAuthProvider(this.users, {this.stationAccounts = const {}});
+  _FakeAuthProvider(
+    this.users, {
+    this.stationAccounts = const {},
+    this.extraRoles = const {},
+  });
 
   /// username -> (password, roleName)
   final Map<String, ({String password, String roleName})> users;
 
   /// Usernames flagged as station accounts (schema v8).
   final Set<String> stationAccounts;
+
+  /// username -> the roles it holds beyond its primary one (schema v9).
+  final Map<String, List<String>> extraRoles;
 
   /// When set, `authenticate` throws instead of answering — a database outage.
   bool unavailable = false;
@@ -54,6 +61,7 @@ class _FakeAuthProvider implements AuthProvider, PasswordSelfService {
     return AuthenticatedUser(
       username: username,
       roleName: cred.roleName,
+      additionalRoles: extraRoles[username] ?? const [],
       stationAccount: stationAccounts.contains(username),
     );
   }
@@ -176,6 +184,7 @@ Future<_Harness> _harness({
   Duration timeout = const Duration(minutes: 15),
   Map<String, ({String password, String roleName})>? users,
   Set<String> stationAccounts = const {},
+  Map<String, List<String>> extraRoles = const {},
   bool withDatabase = true,
   AppDatabase? reuseDb,
 }) async {
@@ -196,7 +205,8 @@ Future<_Harness> _harness({
             'jon': (password: 'correct horse', roleName: 'Engineering'),
             'sigga': (password: 'hunter2', roleName: 'Shift Leader'),
           },
-      stationAccounts: stationAccounts);
+      stationAccounts: stationAccounts,
+      extraRoles: extraRoles);
   final sink = _RecordingSink();
 
   final container = ProviderContainer(
@@ -1279,6 +1289,198 @@ void main() {
           isTrue,
           reason: 'a hand-edited payload naming a far-future expiry must not '
               'outlive the window the administrator set');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // More than one role (schema v9)
+  // -------------------------------------------------------------------------
+
+  group('several roles', () {
+    test('the session holds the union of what its roles grant', () async {
+      // Shift Leader has no `device` and no `force`; Maintenance has both and
+      // no `configure`. Holding both must grant everything either grants.
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+
+      await h.notifier.signIn('sigga', 'hunter2');
+
+      final session = h.session!;
+      expect(session.roleNames, ['Shift Leader', 'Maintenance']);
+      expect(session.can(AccessGroup.setpoints), isTrue,
+          reason: 'from Shift Leader');
+      expect(session.can(AccessGroup.device), isTrue, reason: 'from Maintenance');
+      expect(session.can(AccessGroup.force), isTrue, reason: 'from Maintenance');
+      expect(session.can(AccessGroup.configure), isFalse,
+          reason: 'neither role grants it, and a union invents nothing');
+    });
+
+    test('the primary role is identity, not precedence', () async {
+      // `Operator` primarily, `Engineering` additionally. What the account may
+      // do comes from both, so it administers — a resolution that looked only
+      // at `role_name` would deny it.
+      final h = await _harness(
+        users: {'jon': (password: 'correct horse', roleName: kOperatorRoleName)},
+        extraRoles: {
+          'jon': ['Engineering'],
+        },
+      );
+      await h.settle();
+
+      await h.notifier.signIn('jon', 'correct horse');
+
+      expect(h.session!.roleName, kOperatorRoleName);
+      expect(h.session!.can(AccessGroup.administer), isTrue);
+    });
+
+    test('the trail row names every role, not just the first', () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+
+      await h.notifier.signIn('sigga', 'hunter2');
+
+      final login = h.sink.rows.firstWhere((r) => r.itemKey == 'login');
+      expect(login.roleName, 'Shift Leader + Maintenance',
+          reason: 'a row saying only the primary role would misdescribe the '
+              'authority a write was made under');
+    });
+
+    test('page whitelists union across the roles', () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+      await h.repository.setRoleAllowedPages('Shift Leader', {'/line'});
+      await h.repository.setRoleAllowedPages('Maintenance', {'/drives'});
+
+      await h.notifier.signIn('sigga', 'hunter2');
+
+      expect(h.session!.allowedPages, {'/line', '/drives'});
+      expect(h.session!.pageVisible('/line'), isTrue);
+      expect(h.session!.pageVisible('/packing'), isFalse);
+    });
+
+    test('a role with no whitelist admits every page for the whole account',
+        () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+      await h.repository.setRoleAllowedPages('Shift Leader', {'/line'});
+
+      await h.notifier.signIn('sigga', 'hunter2');
+
+      expect(h.session!.allowedPages, isNull,
+          reason: 'Maintenance has no whitelist, so it sees every page — and '
+              'binding it to the other role would make adding a role *remove* '
+              'pages');
+    });
+
+    test('the personal override still replaces the whole role level',
+        () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+      await h.repository.setRoleAllowedPages('Shift Leader', {'/line'});
+      await h.repository.setRoleAllowedPages('Maintenance', {'/drives'});
+      await h.repository.createUser(
+        username: 'sigga',
+        password: 'hunter2',
+        roleName: 'Shift Leader',
+        additionalRoles: ['Maintenance'],
+      );
+      await h.repository.setUserAllowedPages('sigga', {'/only'});
+
+      await h.notifier.signIn('sigga', 'hunter2');
+
+      expect(h.session!.allowedPages, {'/only'});
+    });
+
+    test('an extra role that has been deleted is dropped, not a refusal',
+        () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Ghost'],
+      });
+      await h.settle();
+
+      final result = await h.notifier.signIn('sigga', 'hunter2');
+
+      expect(result, AccessSignInResult.ok);
+      expect(h.session!.roleNames, ['Shift Leader'],
+          reason: 'the session answers as the roles that actually resolved; '
+              'refusing the login would lock somebody out because a second '
+              'role they held was deleted on another station');
+    });
+
+    test('a role added on another station reaches a live session', () async {
+      final h = await _harness();
+      await h.settle();
+      await h.repository.createUser(
+        username: 'jon',
+        password: 'correct horse',
+        roleName: kOperatorRoleName,
+      );
+      h.auth.users['jon'] =
+          (password: 'correct horse', roleName: kOperatorRoleName);
+      _listen(h);
+      await h.notifier.signIn('jon', 'correct horse');
+      expect(h.session!.can(AccessGroup.administer), isFalse);
+
+      // Somebody on the access screen ticks a second role.
+      await h.repository.setRoles('jon', [kOperatorRoleName, 'Engineering']);
+      await h.notifier.refreshGroupsFromRoles();
+
+      expect(h.session!.roleNames, [kOperatorRoleName, 'Engineering']);
+      expect(h.session!.can(AccessGroup.administer), isTrue,
+          reason: 'a second role must take effect the way a role edit does — '
+              'without the person signing out and back in');
+    });
+
+    test('a restart re-resolves every role from the database', () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+      await h.notifier.signIn('sigga', 'hunter2');
+      expect(h.session!.roleNames, ['Shift Leader', 'Maintenance']);
+
+      // The same database and the same preference store: a relaunch.
+      final again = await _harness(reuseDb: h.db, extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      final restored = await again.settle();
+
+      expect(restored.isElevated, isTrue);
+      expect(restored.roleNames, ['Shift Leader', 'Maintenance']);
+      expect(restored.can(AccessGroup.device), isTrue);
+    });
+
+    test('an extra role deleted while the station was off does not restore',
+        () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+      await h.notifier.signIn('sigga', 'hunter2');
+
+      await h.repository.deleteRole('Maintenance');
+      final again = await _harness(reuseDb: h.db, extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      final restored = await again.settle();
+
+      expect(restored.isElevated, isTrue,
+          reason: 'the primary role still resolves, so the account keeps its '
+              'session');
+      expect(restored.roleNames, ['Shift Leader']);
+      expect(restored.can(AccessGroup.device), isFalse,
+          reason: 'the payload stores names, never groups — so a role that is '
+              'gone takes its groups with it');
     });
   });
 

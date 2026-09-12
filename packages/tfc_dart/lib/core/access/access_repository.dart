@@ -192,8 +192,9 @@ enum _PendingChangeKind {
   /// Trip route (a): the last account holding `users` is deleted.
   userDeleted,
 
-  /// Trip route (b): that account is moved to a role without `users`.
-  userRoleChanged,
+  /// Trip route (b): that account's roles are replaced by a set that grants
+  /// no `users`.
+  userRolesChanged,
 
   /// Trip route (c): `users` is unticked from the only role that grants it.
   roleGroupsReplaced,
@@ -211,21 +212,32 @@ enum _PendingChangeKind {
 /// this class deletes an account *and* replaces a role's groups, and a shape
 /// that can say it is a shape somebody eventually says it in.
 class _PendingChange {
-  const _PendingChange._(this.kind, {this.username, this.roleName, this.groups});
+  const _PendingChange._(
+    this.kind, {
+    this.username,
+    this.roleName,
+    this.roleNames,
+    this.groups,
+  });
 
   /// [username] is about to be deleted — trip route (a).
   factory _PendingChange.userDeleted(String username) =>
       _PendingChange._(_PendingChangeKind.userDeleted, username: username);
 
-  /// [username] is about to be moved onto [roleName] — trip route (b).
-  factory _PendingChange.userRoleChanged({
+  /// [username]'s roles are about to become [roleNames] — trip route (b).
+  ///
+  /// The whole set, not the one role it used to be: an account holding
+  /// `Operator` and `Engineering` keeps `users` through the second of them, so
+  /// a guard that looked only at the primary role would refuse a harmless edit
+  /// and allow a locking one.
+  factory _PendingChange.userRolesChanged({
     required String username,
-    required String roleName,
+    required List<String> roleNames,
   }) =>
       _PendingChange._(
-        _PendingChangeKind.userRoleChanged,
+        _PendingChangeKind.userRolesChanged,
         username: username,
-        roleName: roleName,
+        roleNames: roleNames,
       );
 
   /// [roleName]'s group set is about to become [groups] — trip route (c).
@@ -246,6 +258,7 @@ class _PendingChange {
   final _PendingChangeKind kind;
   final String? username;
   final String? roleName;
+  final List<String>? roleNames;
   final Set<AccessGroup>? groups;
 }
 
@@ -503,16 +516,35 @@ class AccessRepository {
     });
   }
 
-  /// The usernames holding [roleName], sorted.
+  /// Every role [row] holds, primary first.
+  ///
+  /// The one place `role_name` and `additional_roles` are read together, so
+  /// nothing can answer "which roles does this account hold" by looking at half
+  /// of it. Public because the session builder and the accounts screen ask the
+  /// same question of the same row.
+  static List<String> rolesOf(AppUserData row) => normaliseRoleNames(
+        primary: row.roleName,
+        additional: decodeAdditionalRoles(row.additionalRoles),
+      );
+
+  /// The usernames holding [roleName] — primarily **or** additionally — sorted.
   ///
   /// Read inside the transaction that is about to act on the role, so the list
-  /// a refusal names is the list the database held at the moment of the
-  /// attempt rather than a moment earlier.
+  /// a refusal names is the list the database held at the moment of the attempt
+  /// rather than a moment earlier.
+  ///
+  /// Filtered in Dart rather than in SQL, because `additional_roles` is a JSON
+  /// TEXT column and a `LIKE` over it would match `Shift Leader` from an
+  /// account holding `Assistant Shift Leader`. There are a handful of accounts
+  /// on a station and this is not a performance question — the same reasoning
+  /// [_requireAUsersHolderRemains] gives for computing its invariant in Dart.
   Future<List<String>> _holdersOf(String roleName) async {
-    final rows = await (db.select(db.appUser)
-          ..where((t) => t.roleName.equals(roleName)))
-        .get();
-    return rows.map((r) => r.username).toList()..sort();
+    final rows = await db.select(db.appUser).get();
+    return rows
+        .where((r) => rolesOf(r).contains(roleName))
+        .map((r) => r.username)
+        .toList()
+      ..sort();
   }
 
   /// Refuse [change] when applying it would leave no account holding a role
@@ -554,33 +586,41 @@ class AccessRepository {
         if (AccessRole.decodeGroups(r.groups).contains(AccessGroup.users))
           r.name,
     };
-    final roleOf = <String, String>{
-      for (final u in userRows) u.username: u.roleName,
+    // Every role each account holds, not just its primary one. An account that
+    // is `Operator` primarily and `Engineering` additionally holds `users`
+    // through the second, and a guard reading only `role_name` would both
+    // refuse edits that take nothing away and wave through the one that locks
+    // the plant out.
+    final rolesHeld = <String, List<String>>{
+      for (final u in userRows) u.username: rolesOf(u),
     };
-
-    final holdersNow = roleOf.entries
-        .where((e) => granting.contains(e.value))
+    List<String> holdersAgainst(Set<String> grants) => rolesHeld.entries
+        .where((e) => e.value.any(grants.contains))
         .map((e) => e.key)
         .toList()
       ..sort();
+
+    final holdersNow = holdersAgainst(granting);
     if (holdersNow.isEmpty) return;
 
     // Read before the pending change is applied below, because two of the four
-    // routes edit `roleOf` out from under it — a refusal must name the role the
-    // holders hold *now*, not the one they were about to be moved to.
+    // routes edit `rolesHeld` out from under it — a refusal must name a role
+    // the holders hold *now*, not one they were about to be moved to.
     //
-    // Every holder holds the same role whenever this method goes on to throw:
-    // the change is refused only when nobody holds `users` afterwards, and that
-    // cannot happen while a second `users`-granting role still has somebody on
-    // it.
-    final lastGrantingRole = roleOf[holdersNow.first]!;
+    // "A role that grants it", not "the only one". With several roles per
+    // account the holders need not all hold the same granting role, so this
+    // names the first granting role of the first holder by username. The
+    // message says what to do about it rather than leaning on that name being
+    // unique, and [LastUsersHolderException.holders] carries the whole list.
+    final lastGrantingRole =
+        rolesHeld[holdersNow.first]!.firstWhere(granting.contains);
 
     final grantingAfter = {...granting};
     switch (change.kind) {
       case _PendingChangeKind.userDeleted:
-        roleOf.remove(change.username);
-      case _PendingChangeKind.userRoleChanged:
-        roleOf[change.username!] = change.roleName!;
+        rolesHeld.remove(change.username);
+      case _PendingChangeKind.userRolesChanged:
+        rolesHeld[change.username!] = change.roleNames!;
       case _PendingChangeKind.roleGroupsReplaced:
         if (change.groups!.contains(AccessGroup.users)) {
           grantingAfter.add(change.roleName!);
@@ -591,7 +631,7 @@ class AccessRepository {
         grantingAfter.remove(change.roleName!);
     }
 
-    if (roleOf.values.any(grantingAfter.contains)) return;
+    if (holdersAgainst(grantingAfter).isNotEmpty) return;
 
     throw LastUsersHolderException(lastGrantingRole, holdersNow);
   }
@@ -647,6 +687,32 @@ class AccessRepository {
           );
       await (db.update(db.appUser)..where((t) => t.roleName.equals(from)))
           .write(AppUserCompanion(roleName: Value(target)));
+      // And the accounts that hold it as an *extra* role. `additional_roles`
+      // is a JSON TEXT column with no foreign key, so nothing carries those
+      // along on its own — and leaving them would silently strip the role from
+      // everybody who held it secondarily, which is a permission change
+      // disguised as a rename.
+      //
+      // Rewritten row by row in Dart rather than by a string replace over the
+      // column, for the reason [_holdersOf] gives: a textual substitution
+      // cannot tell `Shift Leader` from `Assistant Shift Leader`.
+      final holders = await db.select(db.appUser).get();
+      for (final row in holders) {
+        final extra = decodeAdditionalRoles(row.additionalRoles);
+        if (!extra.contains(from)) continue;
+        // `normaliseRoleNames` against the already-repointed primary, so an
+        // account that held the role both ways does not come out listing the
+        // new name twice.
+        final renamed = normaliseRoleNames(
+          primary: row.roleName == from ? target : row.roleName,
+          additional: [for (final name in extra) name == from ? target : name],
+        );
+        await (db.update(db.appUser)
+              ..where((t) => t.username.equals(row.username)))
+            .write(AppUserCompanion(
+          additionalRoles: Value(encodeAdditionalRoles(renamed.skip(1))),
+        ));
+      }
       await (db.delete(db.appRole)..where((t) => t.name.equals(from))).go();
     });
   }
@@ -793,6 +859,7 @@ class AccessRepository {
     required String username,
     required String password,
     required String roleName,
+    List<String> additionalRoles = const <String>[],
   }) async {
     final name = username.trim();
     if (name.isEmpty) {
@@ -812,15 +879,25 @@ class AccessRepository {
           .getSingleOrNull();
       if (clash != null) throw UserExistsException(name);
 
-      final role = await (db.select(db.appRole)
-            ..where((t) => t.name.equals(roleName)))
-          .getSingleOrNull();
-      if (role == null) throw MissingRoleError(roleName);
+      final roles =
+          normaliseRoleNames(primary: roleName, additional: additionalRoles);
+      // Every named role must exist, the extras included. A missing extra
+      // could have been dropped silently — it grants nothing either way — but
+      // the caller asked for something this station cannot give it, and
+      // finding that out at the dialog beats finding it out when somebody
+      // cannot open a page a month later.
+      for (final wanted in roles) {
+        final role = await (db.select(db.appRole)
+              ..where((t) => t.name.equals(wanted)))
+            .getSingleOrNull();
+        if (role == null) throw MissingRoleError(wanted);
+      }
 
       await db.into(db.appUser).insert(
             AppUserCompanion.insert(
               username: name,
-              roleName: roleName,
+              roleName: roles.first,
+              additionalRoles: Value(encodeAdditionalRoles(roles.skip(1))),
               passwordHash: encodeStoredHash(hash),
               salt: hash.saltB64,
               createdAt: DateTime.now().toUtc(),
@@ -893,27 +970,69 @@ class AccessRepository {
     if (updated == 0) throw UserNotFoundException(username);
   }
 
-  Future<void> setRole(String username, String roleName) async {
+  /// Replace [username]'s roles with [roleNames], the first becoming the
+  /// account's primary role.
+  ///
+  /// **A replacement, not an addition.** The accounts screen edits the whole
+  /// list in one dialog and saves it in one write, so there is no add/remove
+  /// pair to get out of step with each other, and no way to express "add this
+  /// role" against a list somebody else changed in the meantime.
+  ///
+  /// Every name must exist in `app_role`; the whole call is refused with
+  /// [MissingRoleError] otherwise, exactly as the single-role write was.
+  /// Duplicates and blanks are removed by [normaliseRoleNames] rather than
+  /// refused — they are the same request written untidily.
+  ///
+  /// Refuses trip route (b) — leaving the last `users` holder with no role that
+  /// grants it — via [_requireAUsersHolderRemains], after checking that the
+  /// target roles exist and inside the same transaction as the write. Throws
+  /// [UserNotFoundException], and [ArgumentError] for an empty list: an account
+  /// holding no role at all resolves to nothing and could not sign in.
+  Future<void> setRoles(String username, List<String> roleNames) async {
+    final roles = roleNames.isEmpty
+        ? const <String>[]
+        : normaliseRoleNames(
+            primary: roleNames.first,
+            additional: roleNames.skip(1),
+          );
+    if (roles.isEmpty) {
+      throw ArgumentError.value(
+          roleNames, 'roleNames', 'an account must hold at least one role');
+    }
     await db.transaction(() async {
       final existing = await (db.select(db.appUser)
             ..where((t) => t.username.equals(username)))
           .getSingleOrNull();
       if (existing == null) throw UserNotFoundException(username);
 
-      final role = await (db.select(db.appRole)
-            ..where((t) => t.name.equals(roleName)))
-          .getSingleOrNull();
-      if (role == null) throw MissingRoleError(roleName);
+      for (final wanted in roles) {
+        final role = await (db.select(db.appRole)
+              ..where((t) => t.name.equals(wanted)))
+            .getSingleOrNull();
+        if (role == null) throw MissingRoleError(wanted);
+      }
 
-      await _requireAUsersHolderRemains(_PendingChange.userRoleChanged(
+      await _requireAUsersHolderRemains(_PendingChange.userRolesChanged(
         username: username,
-        roleName: roleName,
+        roleNames: roles,
       ));
 
       await (db.update(db.appUser)..where((t) => t.username.equals(username)))
-          .write(AppUserCompanion(roleName: Value(roleName)));
+          .write(AppUserCompanion(
+        roleName: Value(roles.first),
+        additionalRoles: Value(encodeAdditionalRoles(roles.skip(1))),
+      ));
     });
   }
+
+  /// Put [username] on [roleName] and nothing else.
+  ///
+  /// The single-role write this class has always had, kept because that is
+  /// still what most calls mean — and it says so plainly: it **replaces**
+  /// whatever set the account held, so an account holding two roles comes out
+  /// of this holding one. Reach for [setRoles] to keep any.
+  Future<void> setRole(String username, String roleName) =>
+      setRoles(username, [roleName]);
 
   /// Replace [username]'s password.
   ///

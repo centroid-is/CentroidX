@@ -184,7 +184,7 @@ class PageNotAvailableBody extends ConsumerWidget {
                 Text(
                   kPageNotAvailableRoleNote(
                     session.user!.displayName,
-                    session.roleName,
+                    session.roleLabel,
                   ),
                   textAlign: TextAlign.center,
                   maxLines: null,

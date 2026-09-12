@@ -49,10 +49,10 @@ void main() {
             'otherwise — the default must not mint immortal sessions');
   });
 
-  test('schema version is 8', () async {
+  test('schema version is 9', () async {
     final db = AppDatabase.inMemoryForTest();
     addTearDown(() => db.close());
-    expect(db.schemaVersion, 8);
+    expect(db.schemaVersion, 9);
   });
 
   group('upgrading a v5 database — the only upgrade path there is', () {

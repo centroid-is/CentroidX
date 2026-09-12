@@ -82,6 +82,7 @@
 /// opposite, the delete confirmation says so out loud.
 library;
 
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FilteringTextInputFormatter;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -113,8 +114,9 @@ const String kAccessUsersHeadline = 'Accounts';
 /// One line under the title. Says what an account is and what holding one
 /// means, before a list of names arrives.
 const String kAccessUsersSubtitle =
-    'An account is a username, a password and exactly one role. What it may do '
-    'is whatever that role grants, and changing the role changes it at once.';
+    'An account is a username, a password and one or more roles. What it may do '
+    'is everything those roles together grant, and changing them changes it at '
+    'once.';
 
 /// The read failed, or the store could not be built.
 ///
@@ -150,7 +152,7 @@ const String kAccessUsersEmptyNote =
 /// The four column headings, as constants so a test asserts the heading the
 /// screen renders.
 const String kAccessUsersColumnUsername = 'Username';
-const String kAccessUsersColumnRole = 'Role';
+const String kAccessUsersColumnRole = 'Roles';
 const String kAccessUsersColumnCreated = 'Created';
 const String kAccessUsersColumnLastLogin = 'Last login';
 
@@ -172,18 +174,45 @@ String kAccessUserWhen(DateTime? at) => at == null
     ? kAccessUserNever
     : DateFormat('yyyy-MM-dd HH:mm').format(at.toLocal());
 
-/// The change-role dialog's title.
+/// The roles dialog's title.
 String kAccessUserRoleDialogTitle(String username) =>
-    'Move "$username" to another role';
+    'Choose the roles for "$username"';
 
-/// The change-role dialog's affirmative. Says what happens rather than "OK".
-const String kAccessUserRoleConfirmLabel = 'Move';
+/// The roles dialog's affirmative. Says what happens rather than "OK".
+const String kAccessUserRoleConfirmLabel = 'Save roles';
 
-/// One line in the change-role dialog. States the consequence, which is
-/// immediate and is the whole reason this screen is gated.
+/// One line in the roles dialog. States the consequence, which is immediate
+/// and is the whole reason this screen is gated.
+///
+/// It says **union** in as many words. A second role can only widen what
+/// somebody may do, and an administrator ticking one to "also let them do X"
+/// needs to know that it does not take away Y.
 const String kAccessUserRoleDialogNote =
-    'The account holds exactly one role. Moving it changes what that person may '
-    'do the moment it is saved, without them signing out and back in.';
+    'The account may do everything its roles together grant — a second role '
+    'only ever widens it, never narrows it. Saving applies at once, without '
+    'the person signing out and back in.';
+
+/// The tag beside the first role in the list.
+///
+/// The primary role is identity, not precedence: it is the one the account row
+/// stores in `role_name` and the one it keeps if every other is unticked. It
+/// grants nothing the others do not, and the tag's tooltip-free brevity is
+/// deliberate — [kAccessUserRolePrimaryNote] is where that is said.
+const String kAccessUserRolePrimaryTag = 'primary';
+
+/// What the primary tag means, under the list.
+const String kAccessUserRolePrimaryNote =
+    'The first role ticked is the primary one. It is what the account is '
+    'listed under and what it falls back to; it grants nothing the others do '
+    'not.';
+
+/// Nothing is ticked, so there is nothing to save.
+///
+/// An account with no role resolves to no groups and could not sign in, so
+/// this is refused rather than stored. Said on screen rather than left to a
+/// disabled button with no explanation.
+const String kAccessUserRoleNoneNote =
+    'An account must hold at least one role. Tick one to save.';
 
 /// The picker had nothing to offer. Should not be reachable — the migration
 /// seeds four roles — so it says that rather than pretending it is normal.
@@ -439,7 +468,7 @@ Key kAccessUserCreatedKey(String username) =>
 Key kAccessUserLastLoginKey(String username) =>
     Key('access-user-last-login-$username');
 
-/// One account's change-role control.
+/// One account's change-roles control.
 Key kAccessUserChangeRoleKey(String username) =>
     Key('access-user-change-role-$username');
 
@@ -483,8 +512,15 @@ const Key kAccessUserFailedKey = Key('access-user-failed');
 Key kAccessUserRoleChoiceKey(String roleName) =>
     Key('access-user-role-choice-$roleName');
 
-/// The change-role dialog's confirming action.
+/// The roles dialog's confirming action.
 const Key kAccessUserRoleConfirmKey = Key('access-user-role-confirm');
+
+/// The primary tag beside one role in the picker.
+Key kAccessUserRolePrimaryKey(String roleName) =>
+    Key('access-user-role-primary-$roleName');
+
+/// The "tick at least one" sentence.
+const Key kAccessUserRoleNoneKey = Key('access-user-role-none');
 
 // ---------------------------------------------------------------------------
 // The section
@@ -795,8 +831,13 @@ class _UserTileState extends ConsumerState<_UserTile> {
                 child: Row(
                   children: [
                     Flexible(
-                      child: Text(user.roleName,
-                          key: kAccessUserRoleKey(user.username)),
+                      // Every role the account holds, not `role_name` alone —
+                      // a roster that showed the primary role only would read
+                      // as a demotion to anybody who had just added a second.
+                      child: Text(
+                        roleLabelFor(AccessRepository.rolesOf(user)),
+                        key: kAccessUserRoleKey(user.username),
+                      ),
                     ),
                     if (_overridesPages) ...[
                       const SizedBox(width: 6),
@@ -999,28 +1040,34 @@ class _UserTileState extends ConsumerState<_UserTile> {
     await _afterWrite(ref);
   }
 
-  /// Moves the account onto another role.
+  /// Replaces the set of roles the account holds.
   ///
   /// The ordering below is the rule, not an accident — see [_afterWrite].
   Future<void> _changeRole() async {
     if (_busy) return;
-    final chosen = await showDialog<String>(
+    final held = AccessRepository.rolesOf(user);
+    final chosen = await showDialog<List<String>>(
       context: context,
       builder: (_) => _RolePickerDialog(
         username: user.username,
-        current: user.roleName,
+        current: held,
         roles: widget.roles,
       ),
     );
-    // Choosing the role already held writes nothing: a no-op move would still
-    // leave an audit row claiming a change that did not happen.
-    if (chosen == null || chosen == user.roleName || !mounted) return;
+    // Saving the set already held writes nothing: a no-op would still leave an
+    // audit row claiming a change that did not happen. Order counts, because
+    // the first entry is the primary role and reordering it is a real edit.
+    if (chosen == null ||
+        const ListEquality<String>().equals(chosen, held) ||
+        !mounted) {
+      return;
+    }
 
     _busy = true;
     final wrote = await _write(
       context,
       ref,
-      () => widget.store.setUserRole(user.username, chosen),
+      () => widget.store.setUserRoles(user.username, chosen),
       onRefused: _showRefusal,
       vanished: user.username,
     );
@@ -1297,16 +1344,25 @@ void _showMessage(BuildContext context, String text) {
 // Dialogs
 // ---------------------------------------------------------------------------
 
-/// Pick the role an account holds.
+/// Pick the roles an account holds.
 ///
 /// The choices are the roles the store returned and nothing else: a picker that
 /// could offer a role that does not exist would produce an account pointing at
 /// a missing row, which the repository refuses anyway — but refusing it after a
 /// dialog closed is worse than not offering it (T-06-76).
 ///
-/// It returns the chosen name and performs no write. The row does that, so the
-/// refusal it can come back with is rendered beside the row rather than in
-/// something that closes.
+/// It returns the chosen names, **primary first**, and performs no write. The
+/// row does that, so the refusal it can come back with is rendered beside the
+/// row rather than in something that closes.
+///
+/// ## Why the order it returns is not the order on screen
+///
+/// [_selected] is kept in the order the ticks happened, starting from the set
+/// the account already holds. A role that stays ticked therefore keeps its
+/// place, and in particular the account's existing primary role stays primary
+/// unless somebody unticks it — which is what stops opening this dialog,
+/// ticking one extra role and saving from silently moving `role_name` onto
+/// whichever role happens to sort first.
 class _RolePickerDialog extends StatefulWidget {
   const _RolePickerDialog({
     required this.username,
@@ -1315,7 +1371,10 @@ class _RolePickerDialog extends StatefulWidget {
   });
 
   final String username;
-  final String current;
+
+  /// The roles the account holds now, primary first.
+  final List<String> current;
+
   final List<AccessRole> roles;
 
   @override
@@ -1323,7 +1382,13 @@ class _RolePickerDialog extends StatefulWidget {
 }
 
 class _RolePickerDialogState extends State<_RolePickerDialog> {
-  late String _selected = widget.current;
+  /// Tick order, seeded with what the account already holds. See the class doc
+  /// for why this is a list and not a set.
+  late final List<String> _selected = [...widget.current];
+
+  void _toggle(String name) => setState(() {
+        if (!_selected.remove(name)) _selected.add(name);
+      });
 
   @override
   Widget build(BuildContext context) {
@@ -1338,7 +1403,14 @@ class _RolePickerDialogState extends State<_RolePickerDialog> {
         PaneAction.primary(
           label: kAccessUserRoleConfirmLabel,
           buttonKey: kAccessUserRoleConfirmKey,
-          onPressed: () => Navigator.of(context).pop(_selected),
+          // Disabled only for a selection the database would refuse, never
+          // because of what the session may do: the never-greyed rule is about
+          // *permission* refusals, which must be pressed and then explained.
+          // [kAccessUserRoleNoneNote] is on screen whenever this is null, so
+          // the disabled state is never unexplained.
+          onPressed: _selected.isEmpty
+              ? null
+              : () => Navigator.of(context).pop(List<String>.from(_selected)),
         ),
       ],
       child: Column(
@@ -1354,20 +1426,44 @@ class _RolePickerDialogState extends State<_RolePickerDialog> {
               key: kAccessUserRoleChoiceKey(role.name),
               dense: true,
               contentPadding: EdgeInsets.zero,
-              selected: role.name == _selected,
+              selected: _selected.contains(role.name),
               leading: Icon(
-                role.name == _selected
-                    ? Icons.radio_button_checked
-                    : Icons.radio_button_unchecked,
+                _selected.contains(role.name)
+                    ? Icons.check_box
+                    : Icons.check_box_outline_blank,
                 size: 18,
               ),
-              title: Text(role.name),
+              title: Row(
+                children: [
+                  Flexible(child: Text(role.name)),
+                  if (_selected.isNotEmpty && _selected.first == role.name) ...[
+                    const SizedBox(width: 6),
+                    Text(
+                      kAccessUserRolePrimaryTag,
+                      key: kAccessUserRolePrimaryKey(role.name),
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant),
+                    ),
+                  ],
+                ],
+              ),
               // What the role grants, by label rather than by the persisted
               // identifier: 06-01 exists because two of the seven group names
               // tell a commissioning engineer nothing on their own.
               subtitle: Text(kAccessUserRoleGrants(role.groups)),
-              onTap: () => setState(() => _selected = role.name),
+              onTap: () => _toggle(role.name),
             ),
+          if (widget.roles.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _note(
+              context,
+              _selected.isEmpty
+                  ? kAccessUserRoleNoneNote
+                  : kAccessUserRolePrimaryNote,
+              key: _selected.isEmpty ? kAccessUserRoleNoneKey : null,
+            ),
+          ],
         ],
       ),
     );
@@ -1508,14 +1604,17 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
   final _password = TextEditingController();
   final _confirm = TextEditingController();
 
-  /// The role the new account will hold.
+  /// The roles the new account will hold, in tick order — the first is the
+  /// primary one.
   ///
-  /// Defaults to the **first** role the store returned rather than to anything
-  /// this file names. On a seeded database that is `Operator`, the narrowest
-  /// one there is, which is the right default for a control that hands out
-  /// privilege: widening it is a deliberate act by the person creating the
-  /// account.
-  late String? _role = widget.roles.isEmpty ? null : widget.roles.first.name;
+  /// Defaults to the **first** role the store returned and nothing else,
+  /// rather than to anything this file names. On a seeded database that is
+  /// `Operator`, the narrowest one there is, which is the right default for a
+  /// control that hands out privilege: widening it — a second role included —
+  /// is a deliberate act by the person creating the account.
+  late final List<String> _roles = [
+    if (widget.roles.isNotEmpty) widget.roles.first.name,
+  ];
 
   /// What is wrong with what was typed, or null.
   _CredentialProblem? _problem;
@@ -1561,8 +1660,7 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
       });
       return;
     }
-    final role = _role;
-    if (role == null) {
+    if (_roles.isEmpty) {
       setState(() => _problem = _CredentialProblem.noRole);
       return;
     }
@@ -1576,7 +1674,8 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
       await widget.store.createUser(
         username: username,
         password: password,
-        roleName: role,
+        roleName: _roles.first,
+        additionalRoles: _roles.skip(1).toList(),
       );
       if (!mounted) return;
       Navigator.of(context).pop(true);
@@ -1673,16 +1772,36 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                 dense: true,
                 contentPadding: EdgeInsets.zero,
                 enabled: !_submitting,
-                selected: role.name == _role,
+                selected: _roles.contains(role.name),
                 leading: Icon(
-                  role.name == _role
-                      ? Icons.radio_button_checked
-                      : Icons.radio_button_unchecked,
+                  _roles.contains(role.name)
+                      ? Icons.check_box
+                      : Icons.check_box_outline_blank,
                   size: 18,
                 ),
-                title: Text(role.name),
+                title: Row(
+                  children: [
+                    Flexible(child: Text(role.name)),
+                    if (_roles.isNotEmpty && _roles.first == role.name) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        kAccessUserRolePrimaryTag,
+                        key: kAccessUserRolePrimaryKey(role.name),
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelSmall
+                            ?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant),
+                      ),
+                    ],
+                  ],
+                ),
                 subtitle: Text(kAccessUserRoleGrants(role.groups)),
-                onTap: () => setState(() => _role = role.name),
+                onTap: () => setState(() {
+                  if (!_roles.remove(role.name)) _roles.add(role.name);
+                }),
               ),
           if (problem != null) ...[
             const SizedBox(height: 12),
