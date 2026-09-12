@@ -10,9 +10,16 @@ printf '127.0.0.1\tlocalhost\n127.0.1.1\tcentroidx-installer\n' > /etc/hosts
 # centroidx-installer.service is deliberately NOT enabled when the GUI is: it is
 # reached through centroidx-gui.service's OnFailure, so a compositor that will
 # not start falls back instead of both fighting for tty1.
-if [ -x /opt/centroidx-setup/flutter_elinux_wayland ] \
-   || [ -x /opt/centroidx-setup/centroidx_setup ]; then
-  echo "setup app present: enabling the graphical installer"
+# -f, not -x: the bundle reaches the image through a GitHub artifact, which does
+# not carry the executable bit. Testing -x here is how the first build shipped a
+# text-only installer while reporting success.
+setup_bin=""
+for b in /opt/centroidx-setup/flutter_elinux_wayland /opt/centroidx-setup/centroidx_setup; do
+  [ -f "$b" ] && { setup_bin="$b"; break; }
+done
+if [ -n "$setup_bin" ]; then
+  chmod 0755 "$setup_bin"
+  echo "setup app present ($setup_bin): enabling the graphical installer"
   systemctl enable seatd.service
   systemctl enable centroidx-gui.service
   chmod 0644 /etc/systemd/system/centroidx-gui.service
