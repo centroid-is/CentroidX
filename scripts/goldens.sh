@@ -18,9 +18,17 @@
 # 2.96%. Every one of those files rotates something (`pi`, and `sin` in the
 # image tests), and sin/cos differ in the last ULP between arm64 and x86_64
 # libm, which moves geometry a fraction of a pixel and changes the
-# antialiasing. So on an arm64 host this runs under emulation. The native-asset
-# build is cached in a volume after the first run, which is what keeps that
-# tolerable; a single golden file re-renders in well under a minute.
+# antialiasing. So on an arm64 host this runs under emulation.
+#
+# Emulation is not what costs time here -- compiling is, and it is cached.
+# Timed on an M-series Mac, one golden file against a cold volume:
+#
+#   flutter pub get ....................... 21s
+#   first test run (builds native assets) . 175s   <- open62541 compiling mbedTLS
+#   second test run ....................... 5s
+#
+# The 175s is paid once per (Flutter version, architecture) and then never
+# again, which is why the volumes below are keyed by both.
 #
 # On an x86_64 Linux machine you can equally well run `flutter test` directly
 # and skip this script; it exists so a Mac or a Windows box can reach the same
@@ -81,8 +89,9 @@ fi
 # bump starts clean instead of reusing a stale cache.
 # Keyed by Flutter version AND architecture. The architecture is not
 # decoration: these volumes hold compiled native assets, and a volume populated
-# by an arm64 run makes the next amd64 run rebuild mbedTLS from scratch --
-# ~2.5 minutes that looks like the container simply being slow.
+# by an arm64 run makes the next amd64 run rebuild mbedTLS from scratch -- a
+# measured 175 seconds that looks like the container simply being slow, because
+# nothing in the output says a C library is being compiled.
 V="centroidx-goldens-${FLUTTER_VERSION//[^a-zA-Z0-9_.-]/_}-amd64"
 
 # Stale failure images from a previous run are worse than useless: the
