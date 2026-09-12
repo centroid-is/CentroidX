@@ -13,6 +13,12 @@ const proposalRoutes = <String, String>{
   // second type for bindings would mean a second banner, a second accept and
   // a second place for the gate to be got wrong.
   'access_template': '/advanced/key-repository',
+  // Both report types land in the report editor, which stages them into its
+  // buffer. The person's Save is the approval, and it goes through
+  // GuardedReportStore — so an agent proposing a report nobody may author
+  // gets a proposal nobody can approve, and a denial row saying so.
+  'report': '/advanced/report-editor',
+  'shift_calendar': '/advanced/report-editor',
   'page': '/advanced/page-editor',
   'asset': '/advanced/page-editor',
   'asset_update': '/advanced/page-editor',
@@ -109,6 +115,9 @@ class PendingProposal {
       case 'asset':
       case 'asset_update':
         return 'Page Editor';
+      case 'report':
+      case 'shift_calendar':
+        return 'Report Editor';
       default:
         return 'Editor';
     }

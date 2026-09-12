@@ -4,6 +4,7 @@ import 'package:tfc_dart/core/alarm.dart' show AlarmLevel;
 import 'package:tfc_dart/core/alarm_interval.dart';
 
 import '../theme.dart';
+import 'hatch.dart';
 import 'stop_timeline_geometry.dart';
 
 /// The severity colours, taken from [AlarmColors] so this asset never invents
@@ -150,7 +151,7 @@ class StopTimelineChromePainter extends CustomPainter {
       final x1 = w.xOf(range.start, size.width);
       final x2 = w.xOf(range.end, size.width);
       if (x2 <= 0 || x1 >= size.width) continue;
-      _hatch(canvas, Rect.fromLTRB(x1, 0, x2, size.height));
+      paintHatch(canvas, Rect.fromLTRB(x1, 0, x2, size.height), hatchColor);
     }
 
     for (final tick in timelineTicks(w, size.width)) {
@@ -170,19 +171,6 @@ class StopTimelineChromePainter extends CustomPainter {
             Rect.fromLTWH(x, 0, 1, size.height), Paint()..color = nowColor);
       }
     }
-  }
-
-  void _hatch(Canvas canvas, Rect rect) {
-    canvas.save();
-    canvas.clipRect(rect);
-    final paint = Paint()
-      ..color = hatchColor
-      ..strokeWidth = 1;
-    for (var x = rect.left - rect.height; x < rect.right; x += 6) {
-      canvas.drawLine(
-          Offset(x, rect.bottom), Offset(x + rect.height, rect.top), paint);
-    }
-    canvas.restore();
   }
 
   @override

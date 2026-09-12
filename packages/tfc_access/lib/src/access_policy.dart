@@ -118,6 +118,13 @@ const List<PrefAccessRule> kPrefAccessRules = <PrefAccessRule>[
   // writes nothing, so this rule does not stand between an operator and an
   // alarm ack.
   (kind: PrefRuleKind.exact, match: 'alarm_man_config', group: AccessGroup.configure),
+  // Route parity again: `/advanced/report-editor` is `configure`, so the two
+  // keys that editor saves are too. Without a rule they would fall to the
+  // `administer` default and ship a Shift Leader who can open the report
+  // editor and not save from it. Reading a report writes nothing, so this
+  // rule never stands between an operator and last night's shift.
+  (kind: PrefRuleKind.exact, match: 'report_config', group: AccessGroup.configure),
+  (kind: PrefRuleKind.exact, match: 'shift_config', group: AccessGroup.configure),
 
   // ---------------------------------------------------------------------
   // exact -> operate. These are what a panel writes about *itself*: its theme,
