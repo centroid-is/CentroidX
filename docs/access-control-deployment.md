@@ -271,10 +271,11 @@ including a list naming nothing. A whitelist set too tight is **not** a
 lockout and needs no break-glass: it cannot take away the screen that repairs
 it. Two independent reasons, and both are enforced rather than remembered:
 
-* The Advanced routes — the access screen among them — answer to groups alone
-  and are not whitelistable. No whitelist state can hide `/advanced/access`
-  beyond the `users` gate it already has, and the last-`users`-holder
-  invariant guarantees somebody still holds that group.
+* The access screen is exempt from the whitelist. Every other Advanced
+  destination can be granted or withheld like any page, but no whitelist state
+  can hide `/advanced/access` beyond the `users` gate it already has
+  (`routeExemptFromPageWhitelist`), and the last-`users`-holder invariant
+  guarantees somebody still holds that group.
 * Signing in is not a page. The app bar carries the sign-in control on every
   screen, and the refusal page a hidden page shows carries one of its own — so
   a panel whitelisted down to nothing is still a panel somebody can sign in at.

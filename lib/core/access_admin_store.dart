@@ -330,9 +330,11 @@ class AccessAdminStore {
   /// confusion the `AccessKeyBindingTable` ruling closed.
   ///
   /// No lockout guard, deliberately: a whitelist cannot remove
-  /// [AccessGroup.users] from anybody, and the Advanced routes — the access
-  /// screen among them — answer to groups alone and are not whitelistable, so
+  /// [AccessGroup.users] from anybody, and `/advanced/access` is exempt from
+  /// the whitelist half of the route gate (`routeExemptFromPageWhitelist`), so
   /// no whitelist state can take away the screen that repairs a bad whitelist.
+  /// The rest of the Advanced surface *is* whitelistable and is offered in the
+  /// Pages editor; the access screen is the one entry that is not.
   ///
   /// The current value is read **before** the gate so `oldValue` is available
   /// for the row, which is this file's convention: a read is not an
