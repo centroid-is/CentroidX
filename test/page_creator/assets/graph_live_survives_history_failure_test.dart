@@ -345,6 +345,32 @@ void main() {
     await _unmount(tester);
   });
 
+  testWidgets('two dead series sharing a legend are still every series',
+      (tester) async {
+    // Two members of one collected row, neither labelled, so both series
+    // carry the key as their legend. Both tables are missing and nothing is
+    // live: a dead chart, and it must say so. Counting failures by legend
+    // saw one failure out of two series and put up the notice instead.
+    final database = _FakeDatabase(missingTables: {'line1/motor'});
+    final config = GraphAssetConfig(
+      graphType: GraphType.timeseries,
+      primarySeries: [
+        GraphSeriesConfig(key: 'line1/motor', label: '', member: 'frequency'),
+        GraphSeriesConfig(key: 'line1/motor', label: '', member: 'current'),
+      ],
+      timeWindowMinutes: const Duration(minutes: 10),
+    );
+
+    await tester.pumpWidget(_harness(database, GraphAsset(config)));
+    await _settle(tester);
+
+    expect(find.byIcon(Icons.cloud_off), findsOneWidget,
+        reason: 'nothing stored and nothing arriving is a dead chart');
+    expect(find.textContaining('No stored history'), findsNothing);
+
+    await _unmount(tester);
+  });
+
   testWidgets('unmounting drops the live subscription', (tester) async {
     final database = _FakeDatabase();
 

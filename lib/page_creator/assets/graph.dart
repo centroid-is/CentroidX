@@ -208,6 +208,7 @@ class GraphHistory {
   GraphHistory({
     required this.rows,
     required this.failures,
+    required this.failedCount,
     required this.seriesCount,
   });
 
@@ -216,17 +217,23 @@ class GraphHistory {
 
   /// Series legend -> the error its table answered with. Empty on a clean
   /// fetch, which is the only case the caller treats as "nothing to say".
+  ///
+  /// For naming, not counting: two series can share a legend (two members of
+  /// one collected row, neither labelled) and then collapse to one entry
+  /// here. [failedCount] is the count.
   final Map<String, Object> failures;
+
+  /// How many series failed, counted per series rather than per legend.
+  final int failedCount;
 
   /// How many series were asked, failures included.
   final int seriesCount;
 
-  bool get anyFailed => failures.isNotEmpty;
+  bool get anyFailed => failedCount > 0;
 
   /// Every line failed. Distinct from [anyFailed] because a chart with one
   /// working line is still a chart, and must not be replaced by a message.
-  bool get everySeriesFailed =>
-      seriesCount > 0 && failures.length == seriesCount;
+  bool get everySeriesFailed => seriesCount > 0 && failedCount == seriesCount;
 
   /// The error to quote at the operator when there is nothing else to show.
   Object? get firstError =>
@@ -1065,7 +1072,8 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
 
   Future<GraphHistory> _queryData(DateTimeRange range) async {
     if (_db == null) {
-      return GraphHistory(rows: const [], failures: const {}, seriesCount: 0);
+      return GraphHistory(
+          rows: const [], failures: const {}, failedCount: 0, seriesCount: 0);
     }
     final db = _db!;
     final keys = {
@@ -1121,12 +1129,14 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
     final failures = <String, Object>{};
     final pending = <Future<List<Map<String, dynamic>>>>[];
     var seriesCount = 0;
+    var failedCount = 0;
     for (final entry in keys.entries) {
       for (final series in entry.value) {
         seriesCount++;
         pending.add(querySeries(entry.key, series).catchError(
           (Object e) {
             failures[series.legend] = e;
+            failedCount++;
             return <Map<String, dynamic>>[];
           },
         ));
@@ -1136,6 +1146,7 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
     return GraphHistory(
       rows: [for (final rows in perSeries) ...rows],
       failures: failures,
+      failedCount: failedCount,
       seriesCount: seriesCount,
     );
   }
