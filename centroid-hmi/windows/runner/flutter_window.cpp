@@ -50,6 +50,12 @@ constexpr UINT kEglStormMessage = WM_APP + 0x48;
 // rebuild destroys.
 constexpr UINT kEngineRebuildDueMessage = WM_APP + 0x49;
 
+// Posted to ourselves when the UI isolate's raster probe has failed for
+// enough consecutive stamps to call the renderer dead. Posted, never acted on
+// inline: the verdict is reached inside a method call from the engine the
+// loss path destroys. wparam carries the failed-probe count.
+constexpr UINT kRasterLossMessage = WM_APP + 0x4A;
+
 // The stale WM_TIMER id. Nothing arms it any more -- see the note on the tick
 // in flutter_window.h -- but a build that rolls back and forward could leave
 // one running, so teardown still kills it.
@@ -1090,6 +1096,10 @@ void FlutterWindow::OnRunnerChannelCall(
     stamp.frames = UnsignedArg(args, "frames");
     stamp.lag_ms = UnsignedArg(args, "lagMs");
     stamp.startup_complete = BoolArg(args, "startupComplete");
+    // Absent on a Dart build older than the probe: "not probed", never
+    // "failed". See probeRasterisation() in lib/core/runner_liveness.dart.
+    stamp.raster_probed = BoolArg(args, "rasterProbed");
+    stamp.raster_ok = BoolArg(args, "rasterOk");
 
     const tfc::DartLiveness::Decision decision =
         dart_liveness_.OnStamp(stamp, now);
@@ -1110,9 +1120,30 @@ void FlutterWindow::OnRunnerChannelCall(
                 SecondsSince(0, stamp.uptime_ms) + " s, " +
                 std::to_string(stamp.frames) +
                 " frame(s) since the last stamp, timer lag " +
-                std::to_string(stamp.lag_ms) + " ms" +
+                std::to_string(stamp.lag_ms) + " ms, raster " +
+                (!stamp.raster_probed
+                     ? std::string("not probed")
+                     : stamp.raster_ok
+                           ? std::string("ok")
+                           : "FAILED x" +
+                                 std::to_string(decision.raster_failures)) +
                 tfc::LogThrottle::DescribeSuppression(throttle));
       }
+    }
+
+    // The raster verdict is separate from the silence verdict above, and it
+    // is the only detector that saw the 2026-09-12 freeze. Acted on from a
+    // posted message, never here: this handler runs inside a call from the
+    // engine that the loss path destroys.
+    const std::string raster_line =
+        DescribeRaster(decision, dart_liveness_.config());
+    if (!raster_line.empty()) {
+      LogDart(raster_line);
+      liveness_log_.Reset();
+    }
+    if (decision.raster_lost) {
+      ::PostMessage(GetHandle(), kRasterLossMessage,
+                    static_cast<WPARAM>(decision.raster_failures), 0);
     }
     result->Success();
     return;
@@ -1275,6 +1306,19 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     if (released.verdict == tfc::EngineRebuildGate::Verdict::kRebuildNow) {
       LogWatchdog(DescribeEngineRebuild(released));
       PerformEngineRebuild(released.reason);
+    }
+    return 0;
+  }
+
+  if (message == kRasterLossMessage) {
+    if (watchdog_enabled_ && flutter_controller_ != nullptr) {
+      LogWatchdog(
+          "the UI isolate reports the engine CANNOT RASTERISE (" +
+          std::to_string(static_cast<unsigned int>(wparam)) +
+          " consecutive failed 1 x 1 snapshots) -- Dart is alive and building "
+          "frames nobody can see, and no native probe can tell. Declaring "
+          "the renderer lost.");
+      Dispatch(WatchdogEvent::kRendererLost, tfc::LossCause::kRasterFailed);
     }
     return 0;
   }

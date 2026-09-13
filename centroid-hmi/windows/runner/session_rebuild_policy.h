@@ -72,9 +72,13 @@
 // altogether (engines that never present -- the 2026-09-10 19:45 loop). It
 // is NOT the detector for a lost context: the next-frame callback is answered
 // whether or not rasterisation succeeded, so a dead context ends probation
-// "healthy" too. The storm detector is what catches that, within its own
-// window, and its rebuild goes through the same gate. That division is
-// deliberate and this header is where it is written down.
+// "healthy" too. Two detectors catch that, each through the same gate: the
+// stderr storm detector, for an engine that says so, and the UI isolate's
+// raster probe (DartLiveness, kRasterFailed), for one that does not -- on
+// 2026-09-12 an engine built inside a disconnect/connect pair drew nothing
+// for fifty minutes without writing a single error, and the raster probe is
+// the only signal that saw it. That division is deliberate and this header
+// is where it is written down.
 //
 // Duplicates: Windows emits several WM_WTSSESSION_CHANGE messages per event.
 // A disconnect on an already-suspect context and a connect during an open
