@@ -172,7 +172,7 @@ jobs:
 
       - name: Free up disk
         run: |
-          # An 8GB image plus a 16GB USB image plus debos scratch does not fit
+          # An 8GB image plus the USB image plus debos scratch does not fit
           # beside the runner's preinstalled toolchains.
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
                       /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"

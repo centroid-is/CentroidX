@@ -137,8 +137,9 @@ actions:
     destination: /opt/wg-obfuscator
     description: wg-obfuscator release tree
 
-  # Fetched, not committed: the station's compose file at a pinned CentroidX ref,
-  # the provenance stamp, and any container tarballs staged by `make preload`.
+  # Derived, not committed: the station's compose file from one directory up at
+  # the commit being built, the provenance stamp, and any container tarballs
+  # staged by `make preload`.
   # Built by `make generated`.
   - action: overlay
     source: overlays/generated

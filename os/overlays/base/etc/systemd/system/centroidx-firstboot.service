@@ -1,6 +1,6 @@
 [Unit]
 Description=CentroidX first-boot provisioning
-Documentation=https://github.com/centroid-is/debos-conf
+Documentation=https://github.com/centroid-is/CentroidX/tree/main/os
 # The image is a clone: the root filesystem is still the build-time size, the
 # host GIDs are unknown, and nothing has been told the station's passwords.
 After=local-fs.target systemd-machine-id-commit.service docker.service

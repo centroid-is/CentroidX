@@ -71,7 +71,7 @@ services:
     ports:
       - 443:6080
     environment:
-      # Names the station in the browser tab: "CentroidX - Frystar".
+      # Names the station in the browser tab: "CentroidX - line1".
       # Set it per HMI in a .env beside this file — one image serves them
       # all, so this is the only thing that distinguishes them. Leave it
       # unset and the tab just reads "CentroidX".

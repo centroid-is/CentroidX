@@ -1,4 +1,13 @@
 ---
+# DO NOT RUN. Historical record only.
+#
+# This is how the stations deployed before the debos image were configured. It
+# is kept so a machine in the field can be compared against what built it, and
+# for nothing else. rootfs.yaml replaces it.
+#
+# It is actively wrong in two places: the unattended-upgrades Origins-Pattern
+# below never matched any index on trixie, so those stations installed no
+# security updates at all, and ZeroTier is installed by piping curl into bash.
 - name: Configure freshly installed Debian
   hosts: localhost
   connection: local

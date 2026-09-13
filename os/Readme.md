@@ -11,7 +11,13 @@ Builds two artifacts:
 | `out/usb-installer.img.gz` + `.bmap` | a USB key that boots, asks five questions, and writes that image onto the station's SSD |
 
 Nothing is configured on the target machine. By the time a station boots, it is
-already configured — which is why `ansible-playbook.yml` is gone.
+already configured — which is why nothing here runs ansible.
+
+`os/ansible-playbook.yml` is kept only as the record of how the
+already-deployed stations were built, so a field machine can be compared
+against it. Nothing runs it, and nothing should: it carries the
+unattended-upgrades pattern that never matched (below) and a `curl | bash`
+ZeroTier install.
 
 ## Build
 
@@ -210,11 +216,11 @@ volume in that file resolves: `./timescale_data`, `./local-share`,
 `./seatd-socket`, `./tfc_config` and the cert directories.
 
 Worth checking against your stations before reimaging one: `tools/hmi_profiler.py`
-documents `ssh centroid@<station> 'cd ~/sildarvinnsla && docker compose run ...'`,
-which would put the project directory -- and so the database volume -- one level
-down instead. If a station really runs from `~/sildarvinnsla`, its `docker-update`
-bind mount cannot be resolving, and a reimaged station will not find that
-station's existing `timescale_data`.
+documents running the stack from a project directory one level below `$HOME`,
+which disagrees with the absolute path `docker-update` bind-mounts. If a station
+really runs from a subdirectory, its `docker-update` bind mount cannot be
+resolving, and a reimaged station will not find that station's existing
+`timescale_data`.
 
 ## Remote access
 

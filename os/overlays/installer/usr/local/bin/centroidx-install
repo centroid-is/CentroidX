@@ -150,17 +150,32 @@ questions() {
       printf '%s' "${!v}" | grep -qE '^[A-Za-z0-9._@%+:~/-]+$' \
         || die "$SEED: $v contains a character that will not survive the shell/compose path"
     done
+    valid_station_name "$STATION_NAME" \
+      || die "$SEED: STATION_NAME must be a DNS label -- letters, digits and hyphens, not starting or ending with one"
     return
   fi
   bold "Station settings"
   echo "  These are the only things this installer cannot work out for itself."
   echo
-  ask      STATION_NAME       "Station name (shown in the browser tab)"
+  while :; do
+    ask STATION_NAME "Station name (shown in the browser tab)"
+    valid_station_name "$STATION_NAME" && break
+    red "  Letters, digits and hyphens; must not start or end with a hyphen."
+    STATION_NAME=""
+  done
   ask_pass CENTROID_PASSWORD  "Password for the 'centroid' login"
   ask_pass ROOT_PASSWORD      "Password for 'root'"
   ask_pass VNC_PASSWORD       "Password for the VNC/remote screen"
   ask_pass DB_PASSWORD        "Password for the database"
   echo
+}
+
+valid_station_name() {
+  # Same rule as the setup app's validateStationName (os/app/lib/answers.dart).
+  # The value becomes /etc/hostname, a certificate CN and an unquoted line in
+  # .env that compose reads as dotenv -- where a space, or a " #", silently
+  # changes what it means.
+  printf '%s' "$1" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$'
 }
 
 # ----------------------------------------------------------------------- write
@@ -229,6 +244,11 @@ seed_station_conf() {
   } > "$TARGET_MNT/etc/centroid/station.conf"
   chmod 0600 "$TARGET_MNT/etc/centroid/station.conf"
   echo "${STATION_NAME}" > "$TARGET_MNT/etc/hostname"
+  # rootfs-setup.sh writes /etc/hosts without this line and its comment says the
+  # alias is added at first boot -- nothing did, so sudo warned "unable to
+  # resolve host" on every call. It is written here because this is the first
+  # point at which the name is known.
+  printf '127.0.1.1\t%s\n' "$STATION_NAME" >> "$TARGET_MNT/etc/hosts"
 
   # Remote access is per-station: wg0.conf carries this machine's private key
   # and wg-obfuscator.conf the endpoint and shared obfuscation key, so neither

@@ -22,8 +22,9 @@ systemctl enable systemd-timesyncd.service
 # minbase debootstrap leaves no /etc/hosts, and d-i did create one on the
 # playbook-era machines. Without it `localhost` does not resolve and sudo warns
 # on every call about being unable to resolve the host. The installer overwrites
-# /etc/hostname per station; 127.0.1.1 is the Debian convention and resolves
-# whatever that ends up being via the alias written here at first boot.
+# /etc/hostname per station and appends the matching `127.0.1.1 <name>` line to
+# this file, which is the Debian convention. It cannot be written here: the
+# name is not known until install time.
 log "hosts file"
 cat > /etc/hosts <<'EOF'
 127.0.0.1	localhost

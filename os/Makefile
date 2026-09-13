@@ -67,10 +67,10 @@ help:
 	@echo "           IMAGESIZE=$(IMAGESIZE) USBSIZE=$(USBSIZE) PRELOAD=$(PRELOAD)"
 
 # ---------------------------------------------------------------- generated/
-# Everything here is fetched or derived, never committed. The station's compose
-# file is pulled from CentroidX at a pinned ref rather than copied into this
-# repo, because a second copy of that file is a copy that goes stale -- which is
-# exactly what happened to the one that used to sit in this directory.
+# Everything here is derived, never committed. The station's compose file is
+# staged from one directory up at whatever commit the image is built from, not
+# copied into os/: a second copy of that file is a copy that goes stale, which
+# is exactly what happened while it lived in a separate repo.
 .PHONY: generated
 generated:
 	@# Cleared, not merged: without this a single `make preload` left tarballs in

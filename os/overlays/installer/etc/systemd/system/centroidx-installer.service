@@ -1,6 +1,6 @@
 [Unit]
 Description=CentroidX station installer
-Documentation=https://github.com/centroid-is/debos-conf
+Documentation=https://github.com/centroid-is/CentroidX/tree/main/os
 # Disks must be enumerated before the installer can offer a target.
 After=local-fs.target
 Requires=local-fs.target
