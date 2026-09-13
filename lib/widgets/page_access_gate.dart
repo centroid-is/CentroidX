@@ -70,14 +70,48 @@ import 'base_scaffold.dart';
 /// that knows which path it is, and asking it here is what keeps the menu,
 /// the badge and the gate agreeing in every repository state.
 ///
-/// **The boot and outage window resolves unfiltered**, via
+/// **An unresolved session waits; it does not guess.** Until
+/// `accessSessionProvider` answers, which page-manager pages this panel may
+/// show is simply not known — the whitelist lives in the database and the
+/// session is what reads it. This used to resolve unfiltered, on
+/// [kSessionWhileLoading], so that a slow database never blanked a panel. It
+/// did not blank one; it did something worse. On a station that restricts what
+/// anonymous may see, the home page rendered in full — running its `initState`,
+/// its queries and its OPC UA subscriptions — for the one to two seconds the
+/// Postgres connection takes, and was then replaced by a refusal. The operator
+/// saw their plant page appear and be taken away, which reads as a fault in the
+/// panel, and the page behind the refusal had already been built and had
+/// already subscribed. Waiting is the honest answer to a question nobody has
+/// answered yet, and [AccessCheckingBody] is what waiting looks like: a screen
+/// that says what is happening and offers the sign-in, rather than a page that
+/// will be withdrawn.
+///
+/// The cost is stated plainly because it is real and it is paid by every
+/// station, including the ones that restrict nothing: a panel with no
+/// whitelist configured now shows that screen for the length of its database
+/// connect before its home page, where it used to show the page at once. That
+/// is the trade this file takes deliberately — one honest screen that resolves
+/// into the right thing, rather than a page that appears and is taken back —
+/// and it is bounded by exactly the same connect the rest of the app already
+/// waits on. It is **not** unbounded: `databaseProvider` resolves to null when
+/// the connection gives up (measured at 10 012 ms on a routable host that never
+/// answers — see `bootstrapPageManagerProvider`), the session then resolves on
+/// the seeded floor, and the paragraph below is what opens the panel up again.
+///
+/// A station with **no Postgres configured at all** pays nothing: `database`
+/// returns null without connecting, so the repository, the session and this
+/// question all resolve inside the first frames. The cost is the connect, and
+/// only a station that has one pays it.
+///
+/// **An errored session still resolves unfiltered**, via
 /// [kSessionWhileLoading], whose `allowedPages` is null. The reasoning is the
-/// same one `AccessRepository.anonymousRole` makes for falling back to the
-/// seeded groups: a panel that blanks every page because the session has not
-/// resolved yet — which on a cut database link is tens of seconds — reads as
-/// broken, and the write guards still refuse whatever is on screen. Note this
-/// only ever applies to a page the group gate already let through, because a
-/// raised page resolves `waiting` above and never reaches this line.
+/// one `AccessRepository.anonymousRole` makes for falling back to the seeded
+/// groups: a session that has failed will not un-fail on its own, so waiting on
+/// it is waiting forever, and a panel permanently stuck on a sign-in screen is
+/// the failure this whole file is careful not to ship. The write guards still
+/// refuse whatever is on screen. Note both halves of this only ever apply to a
+/// page the group gate already let through, because a raised page resolves
+/// `waiting` above and never reaches this line.
 AccessGateState resolvePageAccess({
   required AccessGroup group,
   required String path,
@@ -97,6 +131,11 @@ AccessGateState resolvePageAccess({
   // answers about it — see `routeExemptFromPageWhitelist`, which is where the
   // reasoning lives.
   if (routeExemptFromPageWhitelist(path)) return AccessGateState.allowed;
+
+  // Neither a value nor an error: the session has not answered, so the
+  // whitelist question has no answer either. See the doc above for why this
+  // waits rather than resolving unfiltered.
+  if (!session.hasValue && !session.hasError) return AccessGateState.waiting;
 
   final resolved = session.valueOrNull ?? kSessionWhileLoading;
   return resolved.pageVisible(path)
@@ -302,11 +341,12 @@ class PageAccessGate extends ConsumerWidget {
               : PageNotAvailableBody(openSignIn: openSignIn),
         );
       case AccessGateState.waiting:
+        // The same body `AccessGate` shows, for the same reason: this is the
+        // screen a restricted panel now boots on, so it must be one an
+        // operator can act from rather than a spinner they can only stare at.
         return BaseScaffold(
           title: title,
-          body: const Center(
-            child: CircularProgressIndicator(key: kAccessGateWaitingKey),
-          ),
+          body: AccessCheckingBody(openSignIn: openSignIn),
         );
     }
   }

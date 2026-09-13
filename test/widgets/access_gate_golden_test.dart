@@ -1,12 +1,14 @@
 /// Goldens for everything Phase 2 puts in front of an operator: the locked
-/// page, the locked page inside the app shell, and the Advanced menu with and
-/// without locks.
+/// page, the page shown while the decision is still resolving, the locked page
+/// inside the app shell, and the Advanced menu with and without locks.
 ///
-/// Six images:
+/// Eight images:
 ///
 /// * `access_locked_page.png`          — nobody signed in: lock, headline, the named permission, Sign in.
 /// * `access_locked_page_elevated.png` — signed in as somebody whose role lacks the group, so the role note is in the picture.
 /// * `access_locked_no_database.png`   — the same page on a station with no reachable database.
+/// * `access_checking_page.png`        — the screen a panel boots on before the session has answered: no verdict, a progress bar, and the Sign in that may change the outcome.
+/// * `access_checking_page_dark.png`   — the same screen on the dark scheme, which is what the plant floor actually runs.
 /// * `access_locked_shell.png`         — the denied [AccessGate] inside the app shell: the app bar and the navigation bar are the way out.
 /// * `access_menu_locked.png`          — the real Advanced popup, anonymous, with locks on the two raised entries.
 /// * `access_menu_unlocked.png`        — the identical tree with a session holding `configure` and `administer`.
@@ -47,6 +49,7 @@
 @Tags(['golden'])
 library;
 
+import 'dart:async' show Completer;
 import 'dart:io' show File, Platform;
 import 'dart:typed_data' show ByteData;
 
@@ -168,6 +171,61 @@ Widget _lockedPageHost({
       ),
     ),
   );
+}
+
+const _checkingBoundary = Key('access_checking_page_golden');
+
+/// [AccessCheckingBody] at the same width as the locked page, so the two can be
+/// compared side by side — which is the point of having both: one names a
+/// cause, the other deliberately does not.
+///
+/// The session is left **unresolved**, which is the state the body exists for.
+/// `_FixedSession` cannot express that (it returns a value), so this host
+/// overrides the provider with one that never completes. The `RepaintBoundary`
+/// is placed off `Scaffold.body` for the reason [_lockedPageHost] records.
+Widget _checkingPageHost({required ThemeData theme}) {
+  return ProviderScope(
+    overrides: [
+      accessSessionProvider.overrideWith(() => _LoadingSession()),
+      accessRepositoryProvider.overrideWith((ref) => _presentRepository()),
+    ],
+    child: MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: theme,
+      home: Scaffold(
+        backgroundColor: theme.colorScheme.surface,
+        body: Center(
+          child: RepaintBoundary(
+            key: _checkingBoundary,
+            child: ColoredBox(
+              color: theme.colorScheme.surface,
+              child: const SizedBox(
+                width: 900,
+                height: 600,
+                child: AccessCheckingBody(),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+/// A session that never answers — the boot window, held open for the camera.
+class _LoadingSession extends AccessSessionController {
+  @override
+  Future<AccessSession> build() => Completer<AccessSession>().future;
+
+  @override
+  Future<AccessSignInResult> signIn(String username, String password) async =>
+      AccessSignInResult.ok;
+
+  @override
+  Future<void> signOut() async {}
+
+  @override
+  void poke() {}
 }
 
 /// The text the gated page renders. The shell image must not contain it.
@@ -360,7 +418,7 @@ Future<void> _settle(WidgetTester tester) async {
 }
 
 void main() {
-  final (light, _) = muted();
+  final (light, dark) = muted();
 
   setUpAll(() async {
     Future<void> loadFont(String family, String path) async {
@@ -422,6 +480,43 @@ void main() {
       await expectLater(
         find.byKey(_lockedBoundary),
         matchesGoldenFile('goldens/access_locked_page.png'),
+      );
+    });
+
+    testWidgets('the checking page, light — no verdict, and the Sign in',
+        (tester) async {
+      // The picture that says what this branch changed. Until this landed, the
+      // boot window rendered the plant page itself and then withdrew it; this
+      // is what is on screen instead, and it must not have acquired either
+      // verdict's wording in the meantime.
+      _sizeView(tester, const Size(900, 600));
+      await tester.pumpWidget(_checkingPageHost(theme: light));
+      await _settle(tester);
+
+      expect(find.byKey(kAccessCheckingBodyKey), findsOneWidget);
+      expect(find.text(kAccessLockedHeadline), findsNothing,
+          reason: 'nothing has been refused yet, so nothing may say so');
+
+      await expectLater(
+        find.byKey(_checkingBoundary),
+        matchesGoldenFile('goldens/access_checking_page.png'),
+      );
+    });
+
+    testWidgets('the checking page, dark — the scheme the plant runs',
+        (tester) async {
+      // Dark is goldened because neither scheme sets `colorScheme.outline` and
+      // a control that vanishes on one of them vanishes silently. A progress
+      // bar's track is exactly the kind of low-contrast furniture that does.
+      _sizeView(tester, const Size(900, 600));
+      await tester.pumpWidget(_checkingPageHost(theme: dark));
+      await _settle(tester);
+
+      expect(find.byKey(kAccessCheckingBodyKey), findsOneWidget);
+
+      await expectLater(
+        find.byKey(_checkingBoundary),
+        matchesGoldenFile('goldens/access_checking_page_dark.png'),
       );
     });
 

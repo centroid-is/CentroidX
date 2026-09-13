@@ -318,6 +318,22 @@ VisibleMenu visibleMenu(Ref ref) {
 
 /// Whether this session may open [path] — the same question the route gate
 /// and the lock badge ask, asked through the same function.
+///
+/// **Only `allowed` survives, not "anything but `denied`".** The difference is
+/// the boot window, and it used to be the second half of one glitch. While the
+/// session is resolving the gate answers `waiting`, and a bar built from
+/// `!= denied` offered every destination on the station for the second or two
+/// the database took — then collapsed to the handful this panel actually
+/// shows, or to no bar at all. An operator reaching for a destination that is
+/// being taken away as they reach is the same fault as the page that appeared
+/// and was withdrawn; `AccessCheckingBody` is on screen for that whole window
+/// anyway, and a bar promising pages nobody has verified sits under it
+/// claiming otherwise.
+///
+/// Hiding the bar for that window is safe because it is not the way out of
+/// anything: `BaseScaffold` drops it below two destinations already
+/// (`visibleMenu.showsBar`), so "no bar" is a state the app has always had,
+/// and the window ends the moment the session answers.
 bool _mayOpen(
   String path,
   AsyncValue<AccessRepository?> repository,
@@ -328,8 +344,8 @@ bool _mayOpen(
       path: path,
       repository: repository,
       session: session,
-    ) !=
-    AccessGateState.denied;
+    ) ==
+    AccessGateState.allowed;
 
 /// Convenience for the two synchronous readers that still need the whole tree
 /// without a container — see the library doc's note on the page editor.

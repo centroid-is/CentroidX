@@ -28,7 +28,7 @@ import 'package:tfc/route_registry.dart';
 import 'package:tfc/routes.dart';
 import 'package:tfc/widgets/access_gate.dart';
 import 'package:tfc/widgets/page_access_gate.dart';
-import 'package:tfc_access/tfc_access.dart' show AccessSession;
+import 'package:tfc_access/tfc_access.dart' show AccessGroup, AccessSession;
 import 'package:tfc_dart/core/access/access_repository.dart' show AccessRepository;
 import 'package:tfc/widgets/dbus_gate.dart';
 import 'package:tfc/widgets/route_redirect.dart';
@@ -566,17 +566,29 @@ void main() {
         // every path, so the gate returns its child with nothing added around
         // it. That — not the absence of a wrapper — is what "nothing on the
         // floor changes" actually meant.
+        //
+        // Asserted against a **resolved** session, which is the change from
+        // how this read before. It used to hand the gate two `AsyncLoading`s
+        // and expect `allowed`, on the reasoning that an ordinary page must
+        // open before anything has resolved. That reasoning turned out to
+        // describe the startup glitch rather than the boundary: on a station
+        // that restricts what anonymous may see, it rendered the plant page
+        // for the length of the Postgres connect and then took it away. The
+        // boot window waits now — see `resolvePageAccess` — and what this test
+        // is actually for is that an unrestricted station is unaffected once
+        // that window closes.
         expect(accessGroupForRoute('/chiller').name, 'operate');
         expect(
           resolvePageAccess(
             group: accessGroupForRoute('/chiller'),
             path: '/chiller',
             repository: const AsyncValue<AccessRepository?>.loading(),
-            session: const AsyncValue<AccessSession>.loading(),
+            session: AsyncValue<AccessSession>.data(
+                AccessSession.anonymous(const {AccessGroup.operate})),
           ),
           AccessGateState.allowed,
-          reason: 'an ordinary page opens before anything has resolved, which '
-              'is what keeps a booting panel from blanking its pages',
+          reason: 'an ordinary page on a station with no whitelist opens with '
+              'nothing added around it',
         );
       });
     });

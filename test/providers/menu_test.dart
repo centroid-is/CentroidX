@@ -86,6 +86,9 @@ ProviderContainer _container({
   AccessSession? session,
   PageManager? manager,
   MenuComposer? composer,
+  /// Leaves the session unresolved — the boot window, which no amount of
+  /// `_settle` can be made to represent.
+  bool sessionLoading = false,
 }) {
   RouteRegistry().menuItems
     ..clear()
@@ -94,8 +97,9 @@ ProviderContainer _container({
   installRaisedRoutes();
 
   final container = ProviderContainer(overrides: [
-    accessSessionProvider.overrideWith(
-        () => _FixedSession(AsyncValue.data(session ?? _sessionWith()))),
+    accessSessionProvider.overrideWith(() => _FixedSession(sessionLoading
+        ? const AsyncValue<AccessSession>.loading()
+        : AsyncValue.data(session ?? _sessionWith()))),
     accessRepositoryProvider.overrideWith((ref) async => _StubRepository()),
     bootstrapPageManagerProvider.overrideWithValue(manager),
     if (composer != null) menuComposerProvider.overrideWithValue(composer),
@@ -210,6 +214,24 @@ void main() {
       await _settle(container);
       expect(container.read(visibleMenuProvider).topLevel.map((i) => i.path),
           ['/', '/packing']);
+    });
+
+    test('the boot window offers nothing, rather than destinations it is '
+        'about to take away', () async {
+      // The second half of the startup glitch. While the session resolves the
+      // gate answers `waiting`, and a filter built on "anything but denied"
+      // put every destination on the station into the navigation bar for the
+      // second or two the database took — then collapsed it to the handful
+      // this panel actually shows, or to no bar at all. An operator reaching
+      // for a destination that is being withdrawn as they reach is the same
+      // fault as the page that appeared and was taken back.
+      //
+      // Empty is a state the bar already has: `showsBar` drops it below two
+      // destinations, and the window ends the moment the session answers.
+      final container =
+          _container(registry: [home, fillet, packing], sessionLoading: true);
+      expect(container.read(visibleMenuProvider).topLevel, isEmpty);
+      expect(container.read(visibleMenuProvider).showsBar, isFalse);
     });
 
     test('filtering never reorders what survives', () async {
