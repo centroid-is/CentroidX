@@ -139,12 +139,20 @@ endif
 usb: require-kvm generated
 	@test -n "$$(ls $(OUT)/centroidx-*.img.gz 2>/dev/null)" || { echo "run 'make image' first"; exit 1; }
 	rm -rf $(PAYLOAD) && mkdir -p $(PAYLOAD)
+	@# debos's overlay action fails verification on a missing source, so these
+	@# always exist. Empty locally (CI fills them from the setup-app job and the
+	@# published images) which builds a text-only installer -- see
+	@# scripts/installer-setup.sh.
+	@mkdir -p $(OUT)/app-bundle $(OUT)/bin
+	@touch $(OUT)/app-bundle/.keep $(OUT)/bin/.keep
 	@# centroidx-* explicitly, never *.img.gz: out/ also holds usb-installer.img.gz
 	@# after a previous run, and globbing it in would nest one image inside the next.
 	cp $(OUT)/centroidx-*.img.gz $(OUT)/centroidx-*.img.bmap $(PAYLOAD)/
 	cp $(GEN)/etc/centroid/image-info $(PAYLOAD)/image-info
-	@# Drop a station.env here to make the USB install without asking anything.
-	@test -f station.env && cp station.env $(PAYLOAD)/ || true
+	@# NOTHING station-specific goes in here. One USB is written once and reused
+	@# for every customer; the installer asks for what differs and writes it to
+	@# the target. An optional station.env for unattended installs goes on the
+	@# USB's FAT partition afterwards, which needs no rebuild.
 	$(DEBOS) -v --fakemachine-backend=kvm --scratchsize=24GB \
 	  --artifactdir=/recipes/$(OUT) \
 	  -t usbimage:usb-installer.img -t usbsize:$(USBSIZE) -t suite:$(SUITE) \
@@ -160,7 +168,8 @@ usb: require-kvm generated
 dry-run: generated
 	$(DEBOS_DRY) --dry-run -t image:$(IMAGE) -t suite:$(SUITE) -t gpu:$(GPU) rootfs.yaml
 	$(DEBOS_DRY) --dry-run -t image:$(IMAGE) -t suite:$(SUITE) -t gpu:$(GPU) image.yaml
-	mkdir -p $(PAYLOAD) && touch $(PAYLOAD)/.keep
+	mkdir -p $(PAYLOAD) $(OUT)/app-bundle $(OUT)/bin
+	touch $(PAYLOAD)/.keep $(OUT)/app-bundle/.keep $(OUT)/bin/.keep
 	$(DEBOS_DRY) --dry-run -t suite:$(SUITE) installer.yaml
 
 .PHONY: print-recipe
@@ -205,6 +214,19 @@ qemu:
 	  -netdev user,id=net0,hostfwd=tcp::2222-:22 -device virtio-net-pci,netdev=net0 \
 	  -vga virtio
 
+# Boot the built USB and screenshot it. Accelerated where /dev/kvm exists, plain
+# TCG where it does not -- about 15x slower, hence SLOW. On an arm64 Mac an
+# x86-64 guest is TCG only (no HVF for a foreign architecture), so expect to
+# wait; SLOW=15 is a reasonable starting point there.
+SLOW ?= 1
+.PHONY: boot-test
+boot-test:
+	@test -f $(OUT)/usb-installer.img.gz || { echo "run 'make usb' first"; exit 1; }
+	@test -f $(OUT)/usb-installer.img || gunzip -k $(OUT)/usb-installer.img.gz
+	python3 scripts/boot-test.py --usb $(OUT)/usb-installer.img \
+	  --out $(OUT)/boot-test --slow $(SLOW)
+	@ls -la $(OUT)/boot-test
+
 .PHONY: qemu-reset
 qemu-reset:
 	rm -f $(OUT)/test-disk.qcow2 $(OUT)/OVMF_VARS.fd
@@ -212,3 +234,8 @@ qemu-reset:
 .PHONY: clean
 clean:
 	rm -rf $(GEN) $(PAYLOAD) $(OUT)/*.img $(OUT)/*.img.gz $(OUT)/*.bmap
+
+# The installer functions against a directory, no disk. Any bash; wg optional.
+.PHONY: test
+test:
+	bash test/installer-test.sh
