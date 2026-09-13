@@ -549,10 +549,90 @@ class WebViewSurfacePool {
   /// Oldest first.
   final List<_ParkedSurface> _parked = [];
 
+  /// How many tiles are showing each address right now. Kept so [prewarm]
+  /// does not start a second browser for a page that is already on screen.
+  final Map<String, int> _active = {};
+
   int get size => _parked.length;
 
   /// The addresses parked, oldest first.
   Iterable<String> get urls => _parked.map((p) => p.url);
+
+  /// A tile started showing [url]; see [release].
+  void claim(String url) => _active[url] = (_active[url] ?? 0) + 1;
+
+  /// A tile stopped showing [url].
+  void release(String url) {
+    final n = (_active[url] ?? 0) - 1;
+    if (n <= 0) {
+      _active.remove(url);
+    } else {
+      _active[url] = n;
+    }
+  }
+
+  /// Whether a browser on [url] exists, parked or on screen.
+  bool isKnown(String url) =>
+      _active.containsKey(url) || _parked.any((p) => p.url == url);
+
+  /// Starts a browser for each of [configs] now and parks it, so the first
+  /// visit to its page is a take-back rather than an engine start and a page
+  /// load. Returns how many were started.
+  ///
+  /// The cold open on a station was measured at 3.8 s, a return at 0.45 s,
+  /// and nothing about the cold path itself can be made much faster: it is
+  /// the engine coming up and a dashboard's own scripts running. Starting
+  /// it before anyone asks is the only way to make the first visit quick.
+  ///
+  /// Addresses already parked or on screen are skipped, and so is anything
+  /// past [capacity], so a page config with more web tiles than the lot holds
+  /// warms the first few and leaves the rest cold rather than churning. A
+  /// browser that then reports its engine absent, or whose first navigation
+  /// throws, is forgotten again, so the tile that would have taken it over
+  /// starts fresh and reaches the "not available" placeholder as before.
+  ///
+  /// WebView2 needs its widget in the tree before the native view exists,
+  /// so on Windows this starts nothing; the first visit there stays cold.
+  int prewarm(
+    Iterable<WebViewAssetConfig> configs, {
+    required Brightness brightness,
+  }) {
+    if (WebViewAvailability.usesWebView2()) return 0;
+    final factory = WebViewAssetView.debugSurfaceFactory ?? _defaultFactory;
+    final seen = <String>{};
+    var started = 0;
+    for (final config in configs) {
+      if (_parked.length >= capacity) break;
+      final uri = config.effectiveUrl(brightness);
+      if (uri == null) continue;
+      final url = uri.toString();
+      if (!seen.add(url) || isKnown(url)) continue;
+      final surface = factory(config);
+      // No browser on this platform: none of the rest will fare better.
+      if (surface == null) break;
+      park(url, surface);
+      started++;
+      unawaited(surface.navigate(uri).then((_) {}, onError: (Object _) {
+        forget(surface);
+      }));
+      if (surface is WebViewSurfaceAvailability) {
+        unawaited((surface as WebViewSurfaceAvailability).isAvailable.then(
+          (ok) {
+            if (!ok) forget(surface);
+          },
+          onError: (Object _) => forget(surface),
+        ));
+      }
+    }
+    return started;
+  }
+
+  /// Drops [surface] from the lot, if it is there, and disposes it.
+  void forget(WebViewSurface surface) {
+    final before = _parked.length;
+    _parked.removeWhere((p) => identical(p.surface, surface));
+    if (_parked.length != before) _drop(surface);
+  }
 
   /// Keeps [surface], which is showing [url], for a later [take].
   ///
@@ -728,7 +808,10 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
     if (surface == null || uri == null) return;
     final wanted = uri.toString();
     if (wanted == _loadedUrl) return;
+    final pool = WebViewSurfacePool.instance;
+    if (_loadedUrl != null) pool.release(_loadedUrl!);
     _loadedUrl = wanted;
+    pool.claim(wanted);
     unawaited(surface.navigate(uri).catchError((Object _) {}));
   }
 
@@ -757,9 +840,11 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
     // it stands, and not navigated, so the page is up the same frame the tile
     // is. It proved its engine present when it first ran, so the availability
     // probe — a channel round trip — is not repeated either.
-    final parked = WebViewSurfacePool.instance.take(_loadedUrl!);
+    final pool = WebViewSurfacePool.instance;
+    final parked = pool.take(_loadedUrl!);
     if (parked != null) {
       _surface = parked;
+      pool.claim(_loadedUrl!);
       _watchLoad(parked);
       _armTimer();
       return;
@@ -771,6 +856,7 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
       return;
     }
     _surface = surface;
+    pool.claim(_loadedUrl!);
     _probeAvailability(surface);
     _watchLoad(surface);
     unawaited(surface.navigate(uri).catchError((Object _) {
@@ -908,11 +994,13 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
     final url = _loadedUrl;
     _surface = null;
     if (surface == null) return;
+    final pool = WebViewSurfacePool.instance;
+    if (url != null) pool.release(url);
     final failed = surface is WebViewSurfaceLoading &&
         (surface as WebViewSurfaceLoading).load.value.phase ==
             WebViewLoadPhase.failed;
     if (keep && url != null && !failed) {
-      WebViewSurfacePool.instance.park(url, surface);
+      pool.park(url, surface);
       return;
     }
     // No .timeout() here: this runs from dispose, where a pending timeout
