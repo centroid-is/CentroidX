@@ -18,9 +18,7 @@
 /// **No gate here.** The `users` gate is applied at the route, exactly as it is
 /// for the other eight raised routes (`lib/access_routes.dart`,
 /// `lib/widgets/access_gate.dart`). A second gate inside the page would be a
-/// second place to get it wrong, and it would also hide the honesty note from a
-/// `configure`-only engineer — who is precisely the person who might otherwise
-/// conclude that the HMI has logins.
+/// second place to get it wrong.
 library;
 
 import 'package:flutter/material.dart';
@@ -46,47 +44,6 @@ import 'access_users_section.dart';
 const String kAccessAdminTitle = 'Access';
 
 // ---------------------------------------------------------------------------
-// The honesty note
-//
-// PROJECT.md's `## What This Is Not` and `docs/access-control-spec.md` §8 both
-// require this text in *"the admin screen's own help text"*, and this is that
-// screen. It is not a disclaimer and it is not legal cover: a softened version
-// of it is the failure mode it exists to prevent, which is a site reading "the
-// HMI has access control" and moving network segmentation down the list.
-//
-// **It is one sentence, not five paragraphs.** It shipped as an expandable
-// note over four of them under a summary, and five paragraphs of warning on a
-// panel screen is a warning nobody reads: the length was working against the
-// spec's purpose rather than serving it. What the spec requires is the claim,
-// and the claim is a sentence. The long form is not lost —
-// `docs/access-control-spec.md` §8 and `docs/access-control-deployment.md` §1
-// carry it, at their own length, for the person doing the deployment rather
-// than the person standing at the panel.
-//
-// So: no reassuring hedge, no "for more information" pointer to a document
-// nobody at a panel can open, no dismiss control, no expand control, and no
-// gate.
-//
-// It also must not contradict `first_user.dart`'s `_kHonesty` — *"Signing in
-// records who changed what. It is a guardrail, not a security boundary."* —
-// which is the same claim in one line, and a test pins both halves of it.
-// ---------------------------------------------------------------------------
-
-/// The whole note.
-///
-/// Three claims, in the order a reader needs them: what the screen does, what
-/// it is not, and what the actual control is. The third clause is the one
-/// PROJECT.md's failure mode turns on — somebody concluding the HMI has logins
-/// and deprioritising segmentation — so it stays even at this length, and it
-/// names the two tools that walk straight past this screen rather than saying
-/// "can be bypassed".
-const String kAccessAdminHonestySummary =
-    'This screen records who changed what. It is a guardrail, not a security '
-    'boundary — the network segmentation is the control, and anyone with '
-    'UaExpert or psql reaches the plant and the database without passing '
-    'through here.';
-
-// ---------------------------------------------------------------------------
 // Keys
 // ---------------------------------------------------------------------------
 
@@ -96,13 +53,6 @@ const String kAccessAdminHonestySummary =
 /// sections may each show a spinner of their own inside a dialog, and a test
 /// meaning "the page has not decided yet" must not pass on one of those.
 const Key kAccessAdminLoadingKey = Key('access-admin-loading');
-
-/// The honesty note's card.
-const Key kAccessAdminHonestyKey = Key('access-admin-honesty');
-
-/// The note's one line of text. Kept a separate key from the card so a test
-/// meaning "the sentence is on screen" cannot pass on an empty frame.
-const Key kAccessAdminHonestySummaryKey = Key('access-admin-honesty-summary');
 
 // ---------------------------------------------------------------------------
 // Heights
@@ -114,8 +64,7 @@ const Key kAccessAdminHonestySummaryKey = Key('access-admin-honesty-summary');
 // ---------------------------------------------------------------------------
 
 /// Everything on this page that is not a role row or an account row: the page
-/// padding, both section cards' frames, the two 16 px gaps and the honesty
-/// note.
+/// padding, both section cards' frames and the gap between them.
 ///
 /// **Measured at 800 px wide**, which is the width the widget tests and the
 /// goldens run at and the narrower — therefore taller — of the two cases:
@@ -126,22 +75,16 @@ const Key kAccessAdminHonestySummaryKey = Key('access-admin-honesty-summary');
 /// | roles card frame — margins, header row, subtitle | 136 |
 /// | gap | 16 |
 /// | users card frame — margins, header row, subtitle | 136 |
-/// | gap | 16 |
-/// | the honesty note | 104 |
 ///
-/// 432 px, rounded up to 440. The two card frames were derived rather than
+/// 312 px, rounded up to 320. The two card frames were derived rather than
 /// eyeballed: the seeded roles card measures 421 px with four role rows summing
 /// to 285 px, and the seeded users card 268 px with a 28 px header and two
 /// 52 px rows — 136 px of frame each way, from two independent measurements
 /// that agree.
 ///
-/// The note's 104 px is its [Card] — 8 px of margin, 32 px of padding and the
-/// sentence wrapping to four lines at the test font's width — measured rather
-/// than assumed. It replaces the 66 px this constant carried while the note was
-/// a collapsed [ExpansionTile]: that height did not depend on the note's
-/// wording, and this one does. **Rewriting the sentence moves this number**, so
-/// re-measure rather than nudge it.
-const double kAccessAdminChromeHeight = 440;
+/// It carried 440 while a one-sentence note card (104 px, and its 16 px gap)
+/// sat at the foot of the page; the note was removed and the number with it.
+const double kAccessAdminChromeHeight = 320;
 
 /// The room the two lists are worth showing in at all: the four seeded roles,
 /// and a commissioned station's two accounts under their column header.
@@ -169,7 +112,7 @@ const double kAccessAdminMinListsHeight = 424;
 const double kAccessAdminMinContentHeight =
     kAccessAdminChromeHeight + kAccessAdminMinListsHeight;
 
-/// The gap between the two sections and between the users section and the note.
+/// The gap between sections.
 const double _kSectionGap = 16;
 
 /// The page's own padding.
@@ -245,8 +188,6 @@ class AccessAdminBody extends ConsumerWidget {
           AccessUsersSection(),
           SizedBox(height: _kSectionGap),
           AccessSessionSection(),
-          SizedBox(height: _kSectionGap),
-          _HonestyNote(),
         ],
       ),
     );
@@ -280,63 +221,6 @@ class AccessAdminBody extends ConsumerWidget {
           ),
         );
       },
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// The note
-// ---------------------------------------------------------------------------
-
-/// One short note at the foot of the page — the milestone's honesty
-/// requirement, discharged on the screen `docs/access-control-spec.md` §8
-/// names.
-///
-/// **Nothing to open, and therefore nothing to miss.** It was an
-/// [ExpansionTile] over four paragraphs; the sentence a reader took away was
-/// the collapsed title, which is the sentence that is left. A note with no
-/// expand control also has no state, so the page reaches its resting frame on
-/// the first pump and the goldens do not depend on a frame count.
-///
-/// **Not gated, not conditional, not dismissible.** It renders for every
-/// session that can see the page, in every state of the store, and there is no
-/// "do not show again" — that would be a preference key, which is a
-/// `configure`-classified write, hiding the one sentence the spec requires.
-/// There is also no link out: the station that most needs this sentence is the
-/// one standing in a plant room with no way to open a document.
-class _HonestyNote extends StatelessWidget {
-  const _HonestyNote();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Card(
-      key: kAccessAdminHonestyKey,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(Icons.info_outline,
-                size: 20, color: theme.colorScheme.onSurfaceVariant),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                kAccessAdminHonestySummary,
-                key: kAccessAdminHonestySummaryKey,
-                // Never ellipsised: `find.text` passing is not the same as the
-                // operator being able to read it, and a warning the eye skips
-                // because it was cut short has not been given. The same rule
-                // both sections' notes follow.
-                maxLines: null,
-                overflow: TextOverflow.visible,
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

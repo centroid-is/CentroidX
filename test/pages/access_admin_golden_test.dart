@@ -79,6 +79,7 @@ import 'package:tfc/pages/access_admin.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc_dart/core/preferences.dart' show PreferencesApi;
 import 'package:tfc/pages/access_roles_section.dart';
+import 'package:tfc/pages/access_session_section.dart';
 import 'package:tfc/pages/access_users_section.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/access_admin.dart';
@@ -557,8 +558,7 @@ void main() {
 
     tearDown(() => RouteRegistry().menuItems.clear());
 
-    testWidgets('the page, elevated, with the honesty note at its foot',
-        (tester) async {
+    testWidgets('the page, elevated', (tester) async {
       await withClock(Clock.fixed(_frozen), () async {
         const size = Size(900, 1200);
         _sizeView(tester, size);
@@ -572,12 +572,8 @@ void main() {
 
         // The state key, asserted before the pixels are compared, so the image is not a
         // frame that had not decided yet.
-        expect(find.byKey(kAccessAdminHonestySummaryKey), findsOneWidget);
+        expect(find.byKey(kAccessSessionSectionKey), findsOneWidget);
         expect(find.byKey(kAccessAdminLoadingKey), findsNothing);
-        // One sentence, with nothing to open. The note used to be an
-        // `ExpansionTile`, and one caught mid-expansion would have made this
-        // baseline a function of how many frames the harness pumped.
-        expect(find.byType(ExpansionTile), findsNothing);
 
         // Both lists rendered rather than either terminal state.
         expect(find.byKey(kAccessRolesSectionKey), findsOneWidget);
@@ -602,7 +598,7 @@ void main() {
         expect(tester.takeException(), isNull);
 
         _expectNothingClipped(
-            tester, find.byKey(kAccessAdminHonestyKey), size.height);
+            tester, find.byKey(kAccessSessionSectionKey), size.height);
         _expectTimestampColumnsHaveAGap(tester);
 
         await expectLater(
@@ -680,7 +676,7 @@ void main() {
         expect(tester.takeException(), isNull);
 
         _expectNothingClipped(
-            tester, find.byKey(kAccessAdminHonestyKey), size.height);
+            tester, find.byKey(kAccessSessionSectionKey), size.height);
 
         await expectLater(
           find.byKey(_boundary),

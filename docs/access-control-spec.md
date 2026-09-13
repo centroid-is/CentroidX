@@ -598,7 +598,8 @@ username/cert (`state_man.dart:133`), one Postgres credential
 is bypassed by anyone with UaExpert or `psql`.
 
 This is an operational guardrail against accident, **not** an access control.
-Say that in the PR description and in the admin screen's own help text. The
+Say that in the PR description and in the deployment doc. (The admin screen
+carried it as a help-text card until the operators asked for it off the page.) The
 failure mode is not the guardrail — it is someone concluding "the HMI has
 logins" and deprioritising network segmentation.
 
