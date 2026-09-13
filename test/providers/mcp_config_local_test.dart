@@ -163,6 +163,14 @@ void main() {
       final g = _guardedStores();
       await g.shared.setString(
           McpConfig.kPrefKey, jsonEncode(McpConfig.defaults.toJson()));
+      // Every legacy key present too, so each one has a removal to record.
+      for (final key in McpConfig.legacyKeys) {
+        if (key == 'mcp_server_port') {
+          await g.shared.setInt(key, McpConfig.defaultPort);
+        } else {
+          await g.shared.setBool(key, true);
+        }
+      }
       g.sink.rows.clear();
 
       final container = _guardedContainer(g);
@@ -180,6 +188,24 @@ void main() {
       // Skipping the denial is not skipping the trail.
       expect(g.sink.rows.every((r) => r.origin == 'system'), isTrue);
       expect(g.sink.rows.every((r) => r.allowed), isTrue);
+    });
+
+    test('a re-run with nothing left to migrate writes nothing to the trail',
+        () async {
+      // The migration re-runs on every database reconnect. Removing keys that
+      // are already gone used to put one `— → —` row per MCP key into the
+      // audit trail each time, for a state that never changed.
+      final g = _guardedStores();
+      await g.shared.setString(
+          McpConfig.kPrefKey, jsonEncode(McpConfig.defaults.toJson()));
+
+      await _guardedContainer(g).read(mcpConfigProvider.future);
+      g.sink.rows.clear();
+
+      await _guardedContainer(g).read(mcpConfigProvider.future);
+
+      expect(g.sink.rows.map((r) => r.itemKey), isEmpty,
+          reason: 'nothing was removed, so nothing may be recorded');
     });
 
     test('a refusal is logged as a policy defect, not as a database outage',
@@ -314,6 +340,11 @@ class _RefusingPreferences implements Preferences {
 
   @override
   Future<int?> getInt(String key, {bool secret = false}) async => null;
+
+  // Every key reads as present, so the migration reaches the write that
+  // refuses rather than skipping it.
+  @override
+  Future<bool> containsKey(String key, {bool secret = false}) async => true;
 
   @override
   Future<void> remove(String key, {bool secret = false}) =>
