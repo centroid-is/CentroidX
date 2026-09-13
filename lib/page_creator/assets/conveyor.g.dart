@@ -65,6 +65,8 @@ ConveyorConfig _$ConveyorConfigFromJson(Map<String, dynamic> json) =>
       runningKey: json['runningKey'] as String?,
       simulateBatches: json['simulateBatches'] as bool?,
       load: $enumDecodeNullable(_$ConveyorLoadEnumMap, json['load']),
+      palletOrientation: $enumDecodeNullable(
+          _$PalletOrientationEnumMap, json['palletOrientation']),
       bidirectional: json['bidirectional'] as bool?,
       reverseDirection: json['reverseDirection'] as bool?,
       showFrequency: json['showFrequency'] as bool?,
@@ -113,6 +115,8 @@ Map<String, dynamic> _$ConveyorConfigToJson(ConveyorConfig instance) =>
       'runningKey': instance.runningKey,
       'simulateBatches': instance.simulateBatches,
       'load': _$ConveyorLoadEnumMap[instance.load],
+      'palletOrientation':
+          _$PalletOrientationEnumMap[instance.palletOrientation],
       'bidirectional': instance.bidirectional,
       'reverseDirection': instance.reverseDirection,
       'showFrequency': instance.showFrequency,
@@ -137,6 +141,11 @@ const _$ConveyorLoadEnumMap = {
   ConveyorLoad.euroPallet: 'euroPallet',
 };
 
+const _$PalletOrientationEnumMap = {
+  PalletOrientation.alongBelt: 'alongBelt',
+  PalletOrientation.acrossBelt: 'acrossBelt',
+};
+
 const _$AugerOpenEndEnumMap = {
   AugerOpenEnd.left: 'left',
   AugerOpenEnd.right: 'right',
@@ -152,6 +161,8 @@ RollerConveyorConfig _$RollerConveyorConfigFromJson(
       runningKey: json['runningKey'] as String?,
       simulateBatches: json['simulateBatches'] as bool?,
       load: $enumDecodeNullable(_$ConveyorLoadEnumMap, json['load']),
+      palletOrientation: $enumDecodeNullable(
+          _$PalletOrientationEnumMap, json['palletOrientation']),
       bidirectional: json['bidirectional'] as bool?,
       reverseDirection: json['reverseDirection'] as bool?,
       showFrequency: json['showFrequency'] as bool?,
@@ -201,6 +212,8 @@ Map<String, dynamic> _$RollerConveyorConfigToJson(
       'runningKey': instance.runningKey,
       'simulateBatches': instance.simulateBatches,
       'load': _$ConveyorLoadEnumMap[instance.load],
+      'palletOrientation':
+          _$PalletOrientationEnumMap[instance.palletOrientation],
       'bidirectional': instance.bidirectional,
       'reverseDirection': instance.reverseDirection,
       'showFrequency': instance.showFrequency,

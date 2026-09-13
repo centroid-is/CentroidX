@@ -91,6 +91,19 @@ Widget buildLoadScenario(ThemeData theme) {
                         ),
                       ),
                       row(
+                        'euro pallet, across the belt',
+                        belt(
+                          beltSize,
+                          ConveyorPainter(
+                            color: states.green,
+                            batches: _batch(0.3, 0.62),
+                            angle: 0,
+                            load: ConveyorLoad.euroPallet,
+                            palletOrientation: PalletOrientation.acrossBelt,
+                          ),
+                        ),
+                      ),
+                      row(
                         'pallet sliding on and off',
                         belt(
                           beltSize,
@@ -130,6 +143,19 @@ Widget buildLoadScenario(ThemeData theme) {
                           ),
                         ),
                       ),
+                      row(
+                        'across the belt at twice the size',
+                        belt(
+                          bigBeltSize,
+                          ConveyorPainter(
+                            color: states.green,
+                            batches: _batch(0.3, 0.62),
+                            angle: 0,
+                            load: ConveyorLoad.euroPallet,
+                            palletOrientation: PalletOrientation.acrossBelt,
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                   const SizedBox(width: 20),
@@ -165,6 +191,27 @@ Widget buildLoadScenario(ThemeData theme) {
                             batches: _batch(0.2, 0.4),
                             angle: 0,
                             load: ConveyorLoad.euroPallet,
+                            geometry: ConveyorPathGeometry.build(
+                              [
+                                ConveyorTurnEntry(
+                                    position: 0.5, angle: 90, radius: 1.5)
+                              ],
+                              turnSize,
+                              thicknessFactor: 0.3,
+                            ),
+                          ),
+                        ),
+                      ),
+                      row(
+                        'turned, pallet across the belt',
+                        belt(
+                          turnSize,
+                          ConveyorPainter(
+                            color: states.green,
+                            batches: _batch(0.2, 0.4),
+                            angle: 0,
+                            load: ConveyorLoad.euroPallet,
+                            palletOrientation: PalletOrientation.acrossBelt,
                             geometry: ConveyorPathGeometry.build(
                               [
                                 ConveyorTurnEntry(
@@ -218,7 +265,7 @@ void main() {
     for (final entry in cases.entries) {
       testWidgets('box and euro pallet loads under ${entry.key}',
           (tester) async {
-        tester.view.physicalSize = const Size(1200, 900);
+        tester.view.physicalSize = const Size(1200, 1100);
         tester.view.devicePixelRatio = 1.0;
         addTearDown(tester.view.reset);
         await tester.pumpWidget(buildLoadScenario(entry.value));

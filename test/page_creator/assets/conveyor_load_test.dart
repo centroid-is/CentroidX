@@ -30,6 +30,24 @@ void main() {
       }
     });
 
+    test('a pallet lies along the belt unless the page says otherwise', () {
+      final saved = ConveyorConfig(key: 'CN01', load: ConveyorLoad.euroPallet)
+          .toJson()
+        ..remove('palletOrientation');
+      final config = ConveyorConfig.fromJson(saved);
+      expect(config.palletOrientation, isNull);
+      expect(config.effectivePalletOrientation, PalletOrientation.alongBelt);
+
+      for (final orientation in PalletOrientation.values) {
+        final restored = ConveyorConfig.fromJson(ConveyorConfig(
+          key: 'CN01',
+          load: ConveyorLoad.euroPallet,
+          palletOrientation: orientation,
+        ).toJson());
+        expect(restored.effectivePalletOrientation, orientation);
+      }
+    });
+
     test('a roller conveyor carries the same loads', () {
       final restored = RollerConveyorConfig.fromJson(
           RollerConveyorConfig(key: 'CN02', load: ConveyorLoad.euroPallet)
@@ -55,6 +73,21 @@ void main() {
           painter(ConveyorLoad.box).shouldRepaint(painter(ConveyorLoad.box)),
           isFalse);
     });
+
+    test('turning the pallet repaints', () {
+      ConveyorPainter painter(PalletOrientation orientation) =>
+          ConveyorPainter(
+            color: Colors.green,
+            batches: const {},
+            angle: 0,
+            load: ConveyorLoad.euroPallet,
+            palletOrientation: orientation,
+          );
+      expect(
+          painter(PalletOrientation.acrossBelt)
+              .shouldRepaint(painter(PalletOrientation.alongBelt)),
+          isTrue);
+    });
   });
 
   group('Euro pallet painting', () {
@@ -62,12 +95,14 @@ void main() {
       required ConveyorLoad load,
       required Map<String, Batch> batches,
       ConveyorPathGeometry? geometry,
+      PalletOrientation orientation = PalletOrientation.alongBelt,
     }) =>
         ConveyorPainter(
           color: Colors.green,
           batches: batches,
           angle: 0,
           load: load,
+          palletOrientation: orientation,
           geometry: geometry,
         );
 
@@ -118,23 +153,83 @@ void main() {
       }
     });
 
-    test('a pallet sliding onto the belt keeps its full length', () {
-      final canvas = _RecordingCanvas();
-      // A third on, two thirds still upstream.
-      painter(
-              load: ConveyorLoad.euroPallet,
-              batches: {'0': Batch(start: -0.2, end: 0.1)})
-          .paint(canvas, beltSize);
-      final deck = canvas.clipped().whereType<_Draw>().toList();
-      expect(deck, isNotEmpty, reason: 'the pallet must be drawn at all');
-      // Rigid: drawn at 0.3 of the belt long and trimmed by the clip, not
-      // squashed into the 0.1 that is on the belt.
-      final width = deck
-          .map((d) => d.rect.width)
-          .reduce((a, b) => a > b ? a : b);
-      expect(width, closeTo(beltSize.width * 0.3, 0.5));
-      expect(deck.first.rect.left, lessThan(0),
+    test('the pallet is the same pallet wherever it is on the belt', () {
+      Rect deckOf(double start, double end) {
+        final canvas = _RecordingCanvas();
+        painter(
+                load: ConveyorLoad.euroPallet,
+                batches: {'0': Batch(start: start, end: end)})
+            .paint(canvas, beltSize);
+        final drawn = canvas.clipped().whereType<_Draw>().toList();
+        expect(drawn, isNotEmpty, reason: 'the pallet must be drawn at all');
+        return drawn.first.rect;
+      }
+
+      // Mid-belt, and sliding on with most of it still upstream. The slot
+      // is a different length in each — a pallet is not.
+      final middle = deckOf(0.3, 0.6);
+      final entering = deckOf(-0.2, 0.1);
+      expect(entering.size.width, closeTo(middle.size.width, 0.01));
+      expect(entering.size.height, closeTo(middle.size.height, 0.01));
+      expect(entering.left, lessThan(0),
           reason: 'the part still upstream hangs off the belt and is clipped');
+    });
+
+    test('the pallet keeps its 1200 x 800 proportions either way round', () {
+      Rect deckOf(PalletOrientation orientation) {
+        final canvas = _RecordingCanvas();
+        painter(
+          load: ConveyorLoad.euroPallet,
+          batches: {'0': Batch(start: 0.3, end: 0.6)},
+          orientation: orientation,
+        ).paint(canvas, beltSize);
+        return canvas.clipped().whereType<_Draw>().first.rect;
+      }
+
+      // The load spans 0.8 of the belt's width whichever way it lies; what
+      // changes is which of the pallet's two sides that is.
+      const across = 40 * 0.8;
+      expect(deckOf(PalletOrientation.alongBelt).size,
+          within(distance: 0.5, from: const Size(across * 1200 / 800, across)));
+      expect(deckOf(PalletOrientation.acrossBelt).size,
+          within(distance: 0.5, from: const Size(across * 800 / 1200, across)));
+    });
+
+    test('the deck boards always run the pallet\'s long side', () {
+      List<_Draw> boardsOf(PalletOrientation orientation) {
+        final canvas = _RecordingCanvas();
+        painter(
+          load: ConveyorLoad.euroPallet,
+          batches: {'0': Batch(start: 0.3, end: 0.6)},
+          orientation: orientation,
+        ).paint(canvas, beltSize);
+        return canvas
+            .clipped()
+            .whereType<_Draw>()
+            .where((d) => d.shaded && d.rounded)
+            .toList();
+      }
+
+      final along = boardsOf(PalletOrientation.alongBelt);
+      final across = boardsOf(PalletOrientation.acrossBelt);
+
+      // Same pallet: five deck boards either way.
+      expect(along.length, 5);
+      expect(across.length, 5);
+
+      // Deck boards are 1200 mm long, so they run whichever way the
+      // pallet's long side points — down the belt when it lies along it,
+      // across the belt when it is turned. Each board is drawn in the
+      // pallet's own frame, so in both cases that is its rect's width.
+      const across08 = 40 * 0.8;
+      for (final board in along) {
+        expect(board.rect.width, closeTo(across08 * 1200 / 800, 0.5),
+            reason: 'lying along the belt, the long side travels');
+      }
+      for (final board in across) {
+        expect(board.rect.width, closeTo(across08, 0.5),
+            reason: 'turned, the long side lies across the belt');
+      }
     });
 
     test('a pallet in a bend stays rigid instead of bending with the belt',
