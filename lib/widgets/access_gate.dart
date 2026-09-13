@@ -294,6 +294,124 @@ class AccessLockedBody extends ConsumerWidget {
 /// page and from the lock.
 const Key kAccessGateWaitingKey = Key('access-gate-waiting');
 
+/// The headline on the screen a panel shows before it knows what this session
+/// may open.
+///
+/// **A call to action, not a verdict.** Deliberately not "This page is not
+/// available" and not [kAccessLockedHeadline]'s "Sign in to open this page":
+/// both name a cause, and during this window there is no cause to name — the
+/// session has not answered, so whether this page is shut, unlisted or
+/// perfectly open is exactly what is not known yet. Signing in is the one
+/// thing worth doing whatever the answer turns out to be, and it is all this
+/// line says.
+///
+/// It does not simply read "Sign in" because the button below it does. A
+/// heading and the control under it saying the same two words is a screen that
+/// looks like it rendered twice.
+const String kAccessCheckingHeadline = 'Sign in to this panel';
+
+/// What the panel is doing, in the words of the thing it is doing it about.
+///
+/// Says "has not finished" rather than "cannot": a station whose database is
+/// simply slow and one whose link is cut look identical from here, and the
+/// locked body's [kAccessLockedNoDatabaseNote] is what names the second once
+/// the repository has actually resolved.
+const String kAccessCheckingNote =
+    'This panel has not finished checking which pages it may show.';
+
+/// The whole body, so a test can tell "not decided yet" from the lock and from
+/// the not-available page.
+const Key kAccessCheckingBodyKey = Key('access-checking-body');
+
+/// The Sign in action on the checking body.
+const Key kAccessCheckingSignInKey = Key('access-checking-sign-in');
+
+/// The screen a route shows while the decision behind it is still resolving.
+///
+/// **Not a bare spinner.** `route_redirect.dart` documents at length why: a
+/// panel showing nothing but a spinner is indistinguishable from a hung one to
+/// the person standing in front of it, and an HMI that reads as hung gets
+/// power-cycled. This says what is happening and offers the one control that
+/// can change the outcome.
+///
+/// **The sign-in is offered, not withheld.** On a panel that restricts what
+/// anonymous may see, this window ends on a refusal far more often than it
+/// ends on a page, and making the operator wait for a screen they already know
+/// is coming — before they may press the button they already know they need —
+/// is the glitch this body exists to remove. The button is enabled whatever
+/// the repository is doing, for the reason [AccessLockedBody] gives: a greyed
+/// control tells nobody anything, and `kAccessSignInUnavailableMessage` is how
+/// an attempt that cannot succeed reports itself.
+class AccessCheckingBody extends ConsumerWidget {
+  const AccessCheckingBody({
+    super.key,
+    this.openSignIn = showAccessSignInDialog,
+  });
+
+  /// How the sign-in prompt is opened. Injectable so a widget test can count
+  /// the taps without standing up a dialog route — the `AccessStatusAction`
+  /// idiom.
+  final AccessSignInOpener openSignIn;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    return Center(
+      key: kAccessCheckingBodyKey,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: kAccessLockedMaxWidth),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Neither a lock nor a warning: nothing has been refused and
+              // nothing is wrong. Deliberately **not** the padlock
+              // [AccessLockedBody] wears — sharing that glyph would have this
+              // screen and the refusal say the same thing in pictures while
+              // their words say opposite things, and the padlock is a verdict.
+              // This is the sign-in glyph, which is what the headline asks
+              // for. `onSurfaceVariant` for the same reason the other two
+              // bodies use it — orange means forced/override and red is the
+              // plant's fault colour.
+              Icon(Icons.login, size: 40, color: scheme.onSurfaceVariant),
+              const SizedBox(height: 16),
+              Text(
+                kAccessCheckingHeadline,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                kAccessCheckingNote,
+                textAlign: TextAlign.center,
+                maxLines: null,
+                overflow: TextOverflow.visible,
+                style: theme.textTheme.bodyLarge,
+              ),
+              const SizedBox(height: 24),
+              // The progress indicator keeps [kAccessGateWaitingKey], which is
+              // how every existing test tells this state from the lock. It is
+              // a bar rather than a ring because it sits inside a column of
+              // text: a ring here reads as a second icon.
+              const LinearProgressIndicator(key: kAccessGateWaitingKey),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                key: kAccessCheckingSignInKey,
+                onPressed: () => openSignIn(context, ref),
+                child: const Text('Sign in'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Stands in front of a route and decides whether to show it.
 ///
 /// **At the route, not inside the page.** A page that has to remember to ask is
@@ -370,12 +488,12 @@ class AccessGate extends ConsumerWidget {
       case AccessGateState.waiting:
         // Not a blank page: this route was reached deliberately and an empty
         // one reads as broken. Not the child either — waiting must never be
-        // mistaken for allowed.
+        // mistaken for allowed. And not a bare spinner, which is the version
+        // of "not a blank page" that an operator still reports as a freeze:
+        // [AccessCheckingBody] says what is happening and offers the sign-in.
         return BaseScaffold(
           title: title,
-          body: const Center(
-            child: CircularProgressIndicator(key: kAccessGateWaitingKey),
-          ),
+          body: AccessCheckingBody(openSignIn: openSignIn),
         );
     }
   }
