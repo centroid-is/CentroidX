@@ -237,6 +237,26 @@ void main() {
     });
   });
 
+  group('a sign-in over a live session', () {
+    test('ends the replaced session in the trail before the new login',
+        () async {
+      // Without the logout row the trail shows jon signed in until whenever
+      // somebody reads past the next login.
+      final h = await _harness();
+      await h.settle();
+      await h.notifier.signIn('jon', _kPassword);
+      h.sink.rows.clear();
+
+      await h.notifier.signIn('jon', _kPassword);
+
+      expect(h.sink.rows.map((r) => r.itemKey), ['logout', 'login']);
+      final logout = h.sink.rows.first;
+      expect(logout.who, 'jon');
+      expect(logout.reason, contains('Replaced'));
+      expect(h.sink.rows.first.actionId, isNot(h.sink.rows.last.actionId));
+    });
+  });
+
   group('an inactivity timeout', () {
     test('writes exactly one row with a reason', () async {
       final h = await _harness(timeout: const Duration(milliseconds: 300));

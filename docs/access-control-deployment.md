@@ -322,6 +322,13 @@ belongs to a station account, which is an administrator saying "this identity
 is a panel, not a person" — one place to look, and one row in the trail when
 it changes.
 
+A committed panel's own account has **no sign-out** in the app bar. To move a
+panel to another account, or back to anonymous: tap the name in the app bar,
+choose **Switch account…** and sign in with an account holding `users`, then
+open Advanced → Access and press **Release panel** on the Session card. It
+leaves a `panel.release` row in the trail. Signing in as the station account
+again offers to keep the panel signed in as it.
+
 ### The database-outage rule, and the cost it accepts
 
 Route gating raises nine routes above `operate` — Phase 2's six, plus

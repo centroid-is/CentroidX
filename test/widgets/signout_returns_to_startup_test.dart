@@ -198,6 +198,91 @@ void main() {
             'back-stack the top-level clearing exists to keep empty');
   });
 
+  group('a committed panel taking itself back', () {
+    AccessSession panel() => AccessSession(
+          user: const AuthenticatedUser(
+            username: 'panel_a',
+            roleName: kOperatorRoleName,
+            stationAccount: true,
+          ),
+          groups: const {AccessGroup.operate},
+        );
+
+    testWidgets('a person falling to the panel account beams to startup',
+        (tester) async {
+      // Still elevated, so the elevated-to-anonymous rule alone misses it —
+      // and the page the person raised is one the panel's account may not be
+      // able to see.
+      final session = _DrivenSession(_engineer());
+      final shell = _shell(session: session, prefs: FakeEditorPreferences());
+
+      await tester.pumpWidget(shell.app);
+      await tester.pumpAndSettle();
+      expect(find.text('server-config-body'), findsOneWidget);
+
+      session.become(panel());
+      await tester.pumpAndSettle();
+
+      expect(find.text('home-body'), findsOneWidget);
+    });
+
+    testWidgets('the panel resuming from anonymous moves nothing',
+        (tester) async {
+      final session = _DrivenSession(_anonymous());
+      final shell = _shell(session: session, prefs: FakeEditorPreferences());
+
+      await tester.pumpWidget(shell.app);
+      await tester.pumpAndSettle();
+
+      session.become(panel());
+      await tester.pumpAndSettle();
+
+      expect(find.text('server-config-body'), findsOneWidget,
+          reason: 'nobody was signed in, so no session ended');
+    });
+
+    testWidgets('the panel re-resolving in place moves nothing',
+        (tester) async {
+      final session = _DrivenSession(panel());
+      final shell = _shell(session: session, prefs: FakeEditorPreferences());
+
+      await tester.pumpWidget(shell.app);
+      await tester.pumpAndSettle();
+
+      session.become(AccessSession(
+        user: const AuthenticatedUser(
+          username: 'panel_a',
+          roleName: 'Shift Leader',
+          stationAccount: true,
+        ),
+        groups: const {AccessGroup.operate, AccessGroup.setpoints},
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('server-config-body'), findsOneWidget,
+          reason: 'an administrator editing the panel\'s role is not the '
+              'panel ending');
+    });
+
+    testWidgets('a person switching to another person moves nothing',
+        (tester) async {
+      final session = _DrivenSession(_engineer());
+      final shell = _shell(session: session, prefs: FakeEditorPreferences());
+
+      await tester.pumpWidget(shell.app);
+      await tester.pumpAndSettle();
+
+      session.become(AccessSession(
+        user: const AuthenticatedUser(username: 'anna', roleName: 'Engineering'),
+        groups: const {AccessGroup.operate, AccessGroup.administer},
+        expiresAt: DateTime.utc(2030),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('server-config-body'), findsOneWidget);
+    });
+  });
+
   testWidgets('signing IN moves nothing', (tester) async {
     final session = _DrivenSession(_anonymous());
     final shell = _shell(session: session, prefs: FakeEditorPreferences());

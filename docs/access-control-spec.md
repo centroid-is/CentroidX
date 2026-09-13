@@ -330,7 +330,16 @@ class AccessSession {
 - **The inactivity timer must be listener-gated** — started in `onListen`,
   stopped in `onCancel`. An always-on `Timer.periodic` in shared plumbing breaks
   unrelated widget tests; this has happened in this repo before.
-- Logging out is explicit and always available in the app bar when elevated.
+- Logging out is explicit and always available in the app bar when a *person*
+  is elevated. The one exception is a panel's committed station account: nobody
+  at the panel raised it, so there is nothing to hand back, and ending it is
+  decommissioning — an administrator releases it on the access page (Session →
+  Release panel, gated on `users`). A person signed in over the panel keeps
+  one-tap sign-out, and it lands them back on the panel's account.
+- Signing in over an elevated session is always available from the app bar:
+  the name in the bar opens a menu with **Switch account…**. Without it, a
+  panel committed to a station account whose raised pages are hidden could
+  only be elevated by signing it out first.
 - Show *who* is logged in, always, when elevated. An operator must be able to
   see at a glance that the panel is still in a raised state.
 
