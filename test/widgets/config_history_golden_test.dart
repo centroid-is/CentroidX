@@ -86,6 +86,7 @@ import 'package:tfc_dart/core/config/config_undo.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 
 import 'config_history_fixture.dart';
+import '../helpers/golden_platform.dart';
 
 /// The captured subtree. One key for every image in this file: each test pumps
 /// its own host, so there is never more than one of these on screen.
@@ -263,7 +264,7 @@ void main() {
   tearDownAll(() => EditableText.debugDeterministicCursor = false);
 
   group('config history goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     Future<void> pumpPopulated(WidgetTester tester, ThemeData theme) async {
       _sizeView(tester, const Size(1100, 700));
       await tester.pumpWidget(_bodyHost(
@@ -589,7 +590,7 @@ void _undoGoldens() {
   const size = Size(700, 460);
 
   group('undo dialog goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     Future<void> pumpConfirm(WidgetTester tester, ThemeData theme) async {
       _sizeView(tester, size);
       await tester.pumpWidget(_dialogHost(

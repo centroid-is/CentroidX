@@ -164,15 +164,15 @@ class PageImageStore {
     // The full set with this one added, because `writeItems` replaces within
     // the kind: passing the one row would delete every other image in the
     // plant.
-    await store.save(
-      [
-        for (final entry in stored.entries)
-          if (entry.key != id) entry.value,
-        item,
-      ],
-      kind: ConfigKind.pageImage,
-      derivedFrom: stored.values.toList(),
-    );
+    final wanted = [
+      for (final entry in stored.entries)
+        if (entry.key != id) entry.value,
+      item,
+    ];
+    // `kind:` on the `.save(` line: the write-path sweep greps for the two
+    // together, and a row in its document stands or falls on that.
+    await store.save(wanted, kind: ConfigKind.pageImage,
+        derivedFrom: stored.values.toList());
     return id;
   }
 
@@ -233,8 +233,8 @@ class PageImageStore {
     // comes first, and a cleanup that reports failure on every save of a
     // station with no Postgres is worse than one that quietly finds nothing.
     if (removed == 0) return 0;
-    await store.save(keep,
-        kind: ConfigKind.pageImage, derivedFrom: stored.values.toList());
+    await store.save(keep, kind: ConfigKind.pageImage,
+        derivedFrom: stored.values.toList());
     return removed;
   }
 

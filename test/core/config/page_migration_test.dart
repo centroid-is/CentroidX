@@ -272,7 +272,7 @@ void main() {
       expect((await changes()).length, logBefore);
     });
 
-    test('page rows already present are not enough: the marker is the gate',
+    test('page rows already present, with no marker, stop the copy',
         () async {
       await seedBlob(blob);
       await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
@@ -284,9 +284,13 @@ void main() {
             updatedBy: 'another station',
           ));
 
-      expect(await runCopy(), MigrationOutcome.migrated);
-      expect(await changes(), isNotEmpty);
-      expect((await rows()).map((r) => r.id), contains(kPagesMigratedMarkerId));
+      // Not proof the migration ran, and not a licence to copy over it
+      // either: the copy refuses to guess which side is the plant, writes
+      // nothing, and the log says how to settle it.
+      expect(await runCopy(), MigrationOutcome.rowsWithoutMarker);
+      expect(await changes(), isEmpty);
+      expect((await rows()).map((r) => r.id),
+          ['a page somebody else left behind']);
     });
 
     test('a plant with no page_editor_data row is noBlob, and gets the marker',
