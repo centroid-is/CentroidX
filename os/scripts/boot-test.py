@@ -88,6 +88,21 @@ def changed(a, b):
     return (diff / n) if n else 0.0
 
 
+def wait_for_change(get_frame, prev, timeout, poll):
+    """Poll until the frame differs from `prev` by CHANGE_MIN, or time runs out.
+
+    Returns (fraction_changed, frame). Always returns the LAST frame read, so
+    the caller judges and photographs the same one it waited on.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        px = get_frame()
+        d = changed(prev, px)
+        if d >= CHANGE_MIN or time.monotonic() >= deadline:
+            return d, px
+        time.sleep(poll)
+
+
 def find_ovmf():
     """OVMF's filename is not stable across distributions."""
     code = [
@@ -259,21 +274,31 @@ def main():
         #
         #   45s  firmware, GRUB, kernel, seatd, weston, and the app's first frame
         #   then the app waits for a human on the disk step
-        # label, tap point, settle seconds, must the screen change
+        # label, tap point, seconds to allow, must the screen change
         script = [
             ('01-disk',     None,          45, False),  # booted and drew at all
-            ('02-station',  (0.90, 0.94),   4, True),   # Continue -> station step
-            ('03-keyboard', (0.30, 0.26),   5, True),   # first field -> keyboard
+            ('02-station',  (0.90, 0.94),  20, True),   # Continue -> station step
+            ('03-keyboard', (0.30, 0.26),  20, True),   # first field -> keyboard
         ]
         problems, prev = [], None
         for label, point, wait, must_change in script:
             if point:
                 q.tap(*point)
-            time.sleep(wait * a.slow)
+            if must_change:
+                # Wait FOR the repaint rather than a fixed guess at how long one
+                # takes. A fixed sleep is wrong in both directions: too short is
+                # a false failure on a loaded runner, too long is dead time on
+                # every green run. Returns as soon as the screen has moved, so
+                # the generous ceiling costs nothing when things work.
+                d, px = wait_for_change(lambda: q.frame()[2], prev,
+                                        wait * a.slow, 0.5 * a.slow)
+            else:
+                time.sleep(wait * a.slow)
+                _, _, px = q.frame()
+                d = changed(prev, px)
+            # Taken after the wait, so the PNG is the frame that was judged.
             shot = q.screenshot(os.path.join(a.out, f'{label}.png'))
-            _, _, px = q.frame()
             u = uniformity(px)
-            d = changed(prev, px)
             print(f'  {label}: {shot}  ({u:.1%} one colour, {d:.1%} changed)')
             if u > UNIFORM_MAX:
                 problems.append(f'{label} is {u:.1%} a single colour -- nothing drawn')
@@ -284,8 +309,8 @@ def main():
             # never left screen one.
             if must_change and d < CHANGE_MIN:
                 problems.append(
-                    f'{label}: only {d:.1%} of the screen changed after the tap '
-                    f'-- the step did not advance')
+                    f'{label}: only {d:.1%} of the screen changed in '
+                    f'{wait * a.slow:.0f}s after the tap -- the step did not advance')
             prev = px
         if problems:
             raise RuntimeError('; '.join(problems))
