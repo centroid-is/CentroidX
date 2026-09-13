@@ -5,7 +5,24 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-/// Nothing reachable from the web entrypoint may import `dart:ffi`.
+/// No workspace library in the web entrypoint's closure may name a known FFI
+/// barrel.
+///
+/// ## What this does and does not prove
+///
+/// Read the arm's name literally, because the stronger sentence is not true of
+/// it. It walks **this workspace's** libraries and checks each against a short,
+/// hand-written list of FFI-bearing URIs (see [_kFfiLibraries]). It does not
+/// descend into pub-cache packages and it does not discover FFI by itself, so a
+/// new dependency that reaches `dart:ffi` passes here and fails in
+/// `flutter build web`.
+///
+/// That is a deliberate scope and not a defect: the offenders this catches are
+/// ours to fix, in one line, and the ones it cannot catch are somebody else's
+/// package and a different decision. But the arm used to be called "no library
+/// reachable from main_web.dart reaches dart:ffi", which claimed the stronger
+/// thing, and a guard that overstates its reach is how the weaker one stops
+/// being run.
 ///
 /// ## Why a test and not just the build
 ///
@@ -33,9 +50,50 @@ import 'package:flutter_test/flutter_test.dart';
 /// This is the whole reason a naive grep over the tree says the opposite of the
 /// truth: `live_browse.dart` names an FFI file and is perfectly web-safe,
 /// because the arm naming it is never compiled there.
+/// The entrypoint this guard walks from. A constant so the arm that checks it
+/// exists and the arm that walks it cannot drift apart.
+const String _kWebEntry = 'centroid-hmi/lib/main_web.dart';
+
+/// A floor under the closure size.
+///
+/// Not a count of anything in particular — it is far below the real figure
+/// (several hundred) and exists only so that a walk which went nowhere cannot
+/// report an empty offender list. See the arm that uses it.
+const int _kMinClosureFiles = 100;
+
 void main() {
-  test('no library reachable from main_web.dart reaches dart:ffi', () {
-    final offenders = _ffiImportersInWebClosureOf('centroid-hmi/lib/main_web.dart');
+  // ---------------------------------------------------------------- vacuity
+  //
+  // Every arm below reports "no offenders". So does a walk that never started:
+  // `_ffiImportersInWebClosureOf` skips a path it cannot find, and if the
+  // entry is one of them the queue empties on the first iteration and the
+  // guard passes having read nothing. That is not hypothetical — the entry is
+  // a repo-relative literal, so running the suite from a package directory
+  // instead of the root does exactly that.
+  //
+  // `alarm_structure_test.dart` has the same arm, for the same reason, and it
+  // is the reason this one exists.
+  test('the walk actually happened — this file cannot pass vacuously', () {
+    expect(File(_kWebEntry).existsSync(), isTrue,
+        reason: 'the entry point is a repo-relative path and the working '
+            'directory is the repository root. If this fails, every arm below '
+            'it is meaningless rather than green.');
+
+    // Walks itself rather than reading what the arm below left behind:
+    // depending on declaration order would make the check that this file is
+    // not vacuous depend on something as fragile as test ordering.
+    _ffiImportersInWebClosureOf(_kWebEntry);
+
+    expect(_lastClosureSize, greaterThan(_kMinClosureFiles),
+        reason: 'the web entrypoint reaches several hundred libraries. A '
+            'closure this small means the walk stopped early — a `package:` '
+            'URI that resolved to nothing, or a workspace package this test '
+            'no longer maps — and everything it did not reach is unchecked '
+            'and silently reported as clean.');
+  });
+
+  test('no workspace library in the web closure names a known FFI barrel', () {
+    final offenders = _ffiImportersInWebClosureOf(_kWebEntry);
 
     expect(
       offenders,
@@ -54,6 +112,30 @@ void main() {
     );
   });
 }
+
+/// The FFI libraries an app file can name: `dart:ffi` itself, plus the barrels
+/// that reach it.
+///
+/// Spelled out rather than detected, so the arm says what it is checking — and
+/// so the library doc's account of what this guard does *not* cover stays
+/// honest. Adding a package here is how the guard grows.
+const List<bool Function(String)> _kFfiLibraries = [
+  _isDartFfi,
+  _isOpen62541Ffi,
+  _isDriftNative,
+];
+
+bool _isDartFfi(String uri) => uri == 'dart:ffi';
+bool _isOpen62541Ffi(String uri) =>
+    uri == 'package:open62541/open62541.dart' ||
+    uri.startsWith('package:open62541/src/');
+bool _isDriftNative(String uri) => uri.startsWith('package:drift/native');
+
+/// How many libraries the last walk read. Written by
+/// [_ffiImportersInWebClosureOf] and read by the vacuity arm, which is the
+/// only thing that may care: an offender list is not evidence that anything
+/// was looked at.
+int _lastClosureSize = 0;
 
 /// The FFI-naming files reachable from [entry], following the web arm of every
 /// conditional import.
@@ -82,14 +164,7 @@ List<String> _ffiImportersInWebClosureOf(String entry) {
       RegExp(r"""^[ \t]*(?:import|export)[ \t]+'([^']+)'([^;]*);""", multiLine: true, dotAll: true);
   final conditional = RegExp(r"""if\s*\(\s*([\w.]+)\s*\)\s*'([^']+)'""");
 
-  /// The FFI libraries an app file can name. `dart:ffi` itself, plus the two
-  /// barrels that reach it — spelled out rather than detected, so the arm says
-  /// what it is checking.
-  bool namesFfi(String uri) =>
-      uri == 'dart:ffi' ||
-      uri == 'package:open62541/open62541.dart' ||
-      uri.startsWith('package:open62541/src/') ||
-      uri.startsWith('package:drift/native');
+  bool namesFfi(String uri) => _kFfiLibraries.any((m) => m(uri));
 
   String? resolve(String uri, String from) {
     if (uri.startsWith('package:')) {
@@ -131,6 +206,7 @@ List<String> _ffiImportersInWebClosureOf(String entry) {
     }
   }
 
+  _lastClosureSize = seen.length;
   final sorted = offenders.toList()..sort();
   return sorted;
 }
