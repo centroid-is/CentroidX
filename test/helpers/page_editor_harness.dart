@@ -151,11 +151,12 @@ Future<PageManager> editorManagerWith(
         navigationPriority: 0,
       ),
     },
-    writeItems: (wanted, {reason}) => guarded.write(
+    writeItems: (wanted, {reason, derivedFrom}) => guarded.write(
       wanted,
       kinds: const {ConfigKind.page, ConfigKind.asset},
       checkKind: ConfigKind.page,
       reason: reason,
+      derivedFrom: derivedFrom,
     ),
   );
 }

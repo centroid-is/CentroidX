@@ -575,7 +575,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   }
 
   @override
-  int get schemaVersion => 11;
+  int get schemaVersion => 12;
 
   /// The `audit_entry` indexes, created outside Drift because Drift's
   /// `@TableIndex` cannot express `DESC` and every one of these is a
@@ -671,6 +671,16 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   /// Called from `onCreate` and from the `from < 8` upgrade branch, on both
   /// backends — the statements are identical on each, so they live in one
   /// place rather than being copied into both arms.
+  /// The two config tables, as Postgres gets them: the raw literals with the
+  /// `CHECK (scope = 'shared')`. Run by the v10 arm and by `onCreate`, so an
+  /// upgraded plant and a freshly provisioned one carry the same constraint.
+  Future<void> _createConfigTablesPostgres(Migrator m) async {
+    await m.database.customStatement(
+        'CREATE TABLE IF NOT EXISTS config_item (kind TEXT NOT NULL, id TEXT NOT NULL, scope TEXT NOT NULL, parent_id TEXT, sort_index INTEGER, payload TEXT NOT NULL, rev BIGINT NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL, PRIMARY KEY (kind, id, scope), CONSTRAINT config_item_shared_only CHECK (scope = \'shared\'))');
+    await m.database.customStatement(
+        'CREATE TABLE IF NOT EXISTS config_change (id SERIAL PRIMARY KEY, at TEXT NOT NULL, action_id TEXT NOT NULL, who TEXT NOT NULL, station TEXT NOT NULL, role_name TEXT NOT NULL, reason TEXT, kind TEXT NOT NULL, entity_id TEXT NOT NULL, scope TEXT NOT NULL, op TEXT NOT NULL, old_value TEXT, new_value TEXT, CONSTRAINT config_change_shared_only CHECK (scope = \'shared\'))');
+  }
+
   Future<void> _createConfigIndexes(Migrator m) async {
     for (final stmt in _configIndexStatements) {
       await m.database.customStatement(stmt);
@@ -801,6 +811,15 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   @override
   MigrationStrategy get migration => MigrationStrategy(
         onCreate: (m) async {
+          // On Postgres the two config tables go up from the raw literals
+          // first, so that `createAll`'s `IF NOT EXISTS` finds them and a
+          // freshly provisioned plant gets the `CHECK (scope = 'shared')` the
+          // upgrade path installs. Built from the drift classes alone they
+          // would lack it: the classes carry no CHECK on purpose, because the
+          // same declaration is SQLite's, where station rows must be allowed.
+          if (m.database.executor.dialect == SqlDialect.postgres) {
+            await _createConfigTablesPostgres(m);
+          }
           await m.createAll();
           await _createAuditIndexes(m);
           await _createAccessBindingIndexes(m);
@@ -974,14 +993,33 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // them. `addColumn` on SQLite would then fail, and the Postgres
           // `IF NOT EXISTS` would be a no-op — so the SQLite side is guarded
           // by `from >= 6` rather than by hoping the order works out.
-          if (from < 7) {
+          // **Guarded by whether the column exists, and open until v10, not
+          // `from < 7` with `from >= 6`.** A version comparison is only right
+          // in the merge order it was written for, and this arm has already
+          // been through the other one: a build of the relational-config
+          // branch stamped `user_version` 7 and 8 for its own arms before
+          // main took those numbers for this column and the next. A database
+          // from such a build opens with `from == 8`, both those arms
+          // skipped, and every `app_user` read failing on a column no later
+          // upgrade would ever add. The v8 and v9 arms below were written
+          // with the probe from the start, for exactly this reason; this one
+          // now matches them, and all three run for anything below the first
+          // version the merged line stamped (10).
+          if (from < 10) {
             if (native) {
-              // Only when the tables predate this upgrade. `from < 6` created
-              // them fresh from the table definitions, which already include
-              // the column.
-              if (from >= 6) {
-                await m.addColumn(appRole, appRole.allowedPages);
-                await m.addColumn(appUser, appUser.allowedPages);
+              for (final (table, column) in const [
+                ('app_role', 'allowed_pages'),
+                ('app_user', 'allowed_pages'),
+              ]) {
+                final cols = await m.database
+                    .customSelect("PRAGMA table_info('$table')")
+                    .get();
+                if (cols.any((r) => r.read<String>('name') == column)) continue;
+                if (table == 'app_role') {
+                  await m.addColumn(appRole, appRole.allowedPages);
+                } else {
+                  await m.addColumn(appUser, appUser.allowedPages);
+                }
               }
             } else {
               // Raw `IF NOT EXISTS` DDL, and the v6 arm's warning applies
@@ -1009,7 +1047,10 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // lands its own arms around this one and renumbers it. An existence
           // check is right in every merge order; a version comparison is only
           // right in the one it was written for.
-          if (from < 8) {
+          // `from < 10` rather than `< 8`, for the reason the arm above gives:
+          // a database stamped 8 or 9 by a pre-merge build of the branch has
+          // never run this arm, and the probe makes the wider window free.
+          if (from < 10) {
             if (native) {
               final cols = await m.database
                   .customSelect("PRAGMA table_info('app_user')")
@@ -1039,7 +1080,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // `createTable` in this same upgrade builds `app_user` from the table
           // definition, which carries this column, and a second station opening
           // the shared Postgres runs this branch too.
-          if (from < 9) {
+          if (from < 10) {
             if (native) {
               final cols = await m.database
                   .customSelect("PRAGMA table_info('app_user')")
@@ -1120,10 +1161,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
               // runs this branch when it opens, so it has to be safe to run
               // twice — otherwise the second station aborts the migration and
               // leaves the database half-upgraded.
-              await m.database.customStatement(
-                  'CREATE TABLE IF NOT EXISTS config_item (kind TEXT NOT NULL, id TEXT NOT NULL, scope TEXT NOT NULL, parent_id TEXT, sort_index INTEGER, payload TEXT NOT NULL, rev BIGINT NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL, PRIMARY KEY (kind, id, scope), CONSTRAINT config_item_shared_only CHECK (scope = \'shared\'))');
-              await m.database.customStatement(
-                  'CREATE TABLE IF NOT EXISTS config_change (id SERIAL PRIMARY KEY, at TEXT NOT NULL, action_id TEXT NOT NULL, who TEXT NOT NULL, station TEXT NOT NULL, role_name TEXT NOT NULL, reason TEXT, kind TEXT NOT NULL, entity_id TEXT NOT NULL, scope TEXT NOT NULL, op TEXT NOT NULL, old_value TEXT, new_value TEXT, CONSTRAINT config_change_shared_only CHECK (scope = \'shared\'))');
+              await _createConfigTablesPostgres(m);
             }
             await _createConfigIndexes(m);
           }
@@ -1143,12 +1181,27 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // drift schema entirely, the way the indexes above do.
           if (from < 11) {
             await _createConfigChangeNotifyTrigger(m);
-            // Idempotent, and run again here for the index that joined the
-            // list after the v9 arm had already stamped a database.
+          }
+
+          // Schema v12: `idx_config_change_at`, the history page's paging
+          // index, which joined `_configIndexStatements` after v11 had
+          // already stamped databases. Re-running the (idempotent) index
+          // creation inside an earlier arm reaches no database that has
+          // passed it; a version of its own does.
+          if (from < 12) {
             await _createConfigIndexes(m);
           }
         },
       );
+
+  /// Whether this database is Postgres.
+  ///
+  /// Read off the executor's dialect, as [native] is, and for the same
+  /// reason: `executor is PgDatabase` was false on every station, because the
+  /// app opens its database through a DriftIsolate and the executor it holds
+  /// is a remote proxy. See D-1 in `docs/relational-config-deferred-defects.md`
+  /// for the one site that read the old value and what it did there.
+  bool get postgres => executor.dialect == SqlDialect.postgres;
 
   /// Whether this database is SQLite — the local mirror, or a test.
   ///
@@ -1162,7 +1215,6 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   /// `CHECK (scope = 'shared')` that rejects every row a station owns. The
   /// same trap [postgres] documents against itself, one dialect over.
   bool get native => executor.dialect == SqlDialect.sqlite;
-  bool get postgres => executor is PgDatabase;
 
   /// Check if the database is reachable by running a real query.
   /// Returns false if the query fails or times out.

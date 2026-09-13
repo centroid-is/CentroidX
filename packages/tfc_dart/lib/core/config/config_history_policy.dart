@@ -132,9 +132,65 @@ String encodeReconcileNudge(Iterable<ConfigKind> kinds) =>
 /// stop the older one acting on the kinds it does.
 Set<ConfigKind>? decodeReconcileNudge(String payload) {
   if (!payload.startsWith(kReconcileNudgePrefix)) return null;
-  final names = payload.substring(kReconcileNudgePrefix.length).split(',');
+  final body = payload.substring(kReconcileNudgePrefix.length);
   return {
-    for (final name in names)
-      if (ConfigKind.byWireName(name) case final kind?) kind,
+    for (final part in body.split(_kNudgeKindSeparator))
+      for (final name in part.split(_kNudgeIdSeparator).first.split(','))
+        if (ConfigKind.byWireName(name) case final kind?) kind,
   };
+}
+
+/// Separates kinds in a nudge that names ids; `,` still separates kinds in
+/// the kind-only form, so an old station reading a new payload still finds
+/// the kinds.
+const String _kNudgeKindSeparator = ';';
+
+/// Separates a kind from its ids: `page_image=abc,def`.
+const String _kNudgeIdSeparator = '=';
+
+/// The largest payload the id form is allowed to be. `pg_notify` errors the
+/// statement that fired it above 8000 bytes; a write touching more rows than
+/// fit falls back to the kind-only form, which is what it always sent.
+const int kReconcileNudgeMaxBytes = 7000;
+
+/// A nudge naming the rows a commit touched, per kind — or the kind-only form
+/// when the ids would not fit.
+///
+/// `reconcile:page_image=abc,def;preference=chat.history`. Ids may contain
+/// anything but the three separators; a mapping key or a preference id
+/// carrying one of them would be split wrongly, so such a write sends the
+/// kind-only form instead.
+String encodeReconcileNudgeFor(Map<ConfigKind, Set<String>> ids) {
+  const separators = [_kNudgeKindSeparator, _kNudgeIdSeparator, ','];
+  final unsafe = ids.values
+      .expand((set) => set)
+      .any((id) => separators.any(id.contains));
+  if (unsafe) return encodeReconcileNudge(ids.keys);
+  final body = [
+    for (final entry in ids.entries)
+      '${entry.key.wireName}$_kNudgeIdSeparator${(entry.value.toList()..sort()).join(',')}',
+  ].join(_kNudgeKindSeparator);
+  final payload = '$kReconcileNudgePrefix$body';
+  if (payload.length > kReconcileNudgeMaxBytes) {
+    return encodeReconcileNudge(ids.keys);
+  }
+  return payload;
+}
+
+/// The rows a nudge names, per kind; null when [payload] is not a nudge, and
+/// empty for the kind-only form. Kinds this build does not know are dropped.
+Map<ConfigKind, Set<String>>? decodeReconcileNudgeIds(String payload) {
+  if (!payload.startsWith(kReconcileNudgePrefix)) return null;
+  final body = payload.substring(kReconcileNudgePrefix.length);
+  if (!body.contains(_kNudgeIdSeparator)) return const {};
+  final out = <ConfigKind, Set<String>>{};
+  for (final part in body.split(_kNudgeKindSeparator)) {
+    final at = part.indexOf(_kNudgeIdSeparator);
+    if (at < 0) continue;
+    final kind = ConfigKind.byWireName(part.substring(0, at));
+    if (kind == null) continue;
+    final ids = part.substring(at + 1).split(',').where((id) => id.isNotEmpty);
+    (out[kind] ??= <String>{}).addAll(ids);
+  }
+  return out;
 }

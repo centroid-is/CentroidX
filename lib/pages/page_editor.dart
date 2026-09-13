@@ -2125,12 +2125,10 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     // save. And the baseline moves to what the store holds now, so the next
     // save is measured against this one rather than against the open.
     adoptIdentitiesFrom(pageManager.pages, _temporaryPages);
-    try {
-      _baselineItems = pageManager.store
-          ?.itemsOf(const {ConfigKind.page, ConfigKind.asset});
-    } catch (e) {
-      debugPrint('baseline not refreshed after save: $e');
-    }
+    // The manager computed the baseline this canvas now stands on — the
+    // editor's view after the save, not every stored row. See
+    // `refreshedBaseline`.
+    _baselineItems = pageManager.baselineItems;
     await _garbageCollectImages(pageManager);
     if (container != null) {
       container.invalidate(pageManagerProvider);

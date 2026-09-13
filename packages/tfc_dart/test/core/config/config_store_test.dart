@@ -1093,6 +1093,10 @@ void main() {
           reason: 'exempt kinds only — the page beside it wrote a change row '
               'and reaches the other stations through the trigger, so naming '
               'it here would be a second notification for one save');
+      expect(decodeReconcileNudgeIds(notified.single.$2), {
+        ConfigKind.pageImage: {'sha256-aaaa'},
+      }, reason: 'and the row by id, so the receivers re-read one row rather '
+              'than sweeping every image in the plant');
     });
 
     test('a save of nothing but ordinary kinds nudges nobody', () async {
@@ -1176,6 +1180,40 @@ void main() {
           reason: 'an exempt write appends no change row, so there is nothing '
               'to watermark and advancing would skip a row somebody else '
               'committed');
+    });
+
+    test('an id-named payload re-reads those rows and no others', () async {
+      await store.open();
+      await seedItemRow(imageItem('sha256-aaaa'), db: remote, rev: 2);
+      await seedItemRow(imageItem('sha256-bbbb'), db: remote, rev: 2);
+      final before = store.watermark;
+
+      await store.handleNotificationForTest(encodeReconcileNudgeFor({
+        ConfigKind.pageImage: {'sha256-aaaa'},
+      }));
+
+      expect(store.itemsOf({ConfigKind.pageImage}).map((i) => i.id),
+          ['sha256-aaaa'],
+          reason: 'the nudge named one row; the other reaches this station '
+              'on the sweep. A kind-level sweep here would have brought both '
+              'and this would pass by accident — so the assertion is on the '
+              'row the nudge did not name');
+      expect(store.watermark, before);
+    });
+
+    test('an id-named payload for a row that is gone removes it here',
+        () async {
+      await seedItemRow(imageItem('sha256-aaaa'));
+      await store.open();
+      expect(store.itemsOf({ConfigKind.pageImage}), hasLength(1));
+
+      await store.handleNotificationForTest(encodeReconcileNudgeFor({
+        ConfigKind.pageImage: {'sha256-aaaa'},
+      }));
+
+      expect(store.itemsOf({ConfigKind.pageImage}), isEmpty,
+          reason: 'absent on the remote means removed, exactly as a change '
+              'row naming it would');
     });
 
     test('the trigger\'s empty payload still means "consume the log"',

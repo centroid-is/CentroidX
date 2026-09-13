@@ -317,6 +317,9 @@ void main() {
       final first = await store.changesPage(ConfigChangeQuery(limit: 2));
       expect(first.rows, hasLength(2));
       expect(first.rawCount, 2);
+      expect(first.hasMore, isTrue,
+          reason: 'one row of lookahead: a page that fills the cap exactly '
+              'with nothing behind it is not "more"');
       expect(first.oldestAt, at);
 
       final second = await store.changesPage(ConfigChangeQuery(
@@ -327,6 +330,20 @@ void main() {
       expect(second.rows.map((r) => r.change.entityId), ['a0'],
           reason: 'the third row shares the instant and is older by id');
       expect(second.rawCount, 1);
+      expect(second.hasMore, isFalse);
+    });
+
+    test('a page that fills the cap exactly, with nothing behind it, is the '
+        'last page', () async {
+      await _seed(db, actionId: 'A', at: DateTime.utc(2026, 8, 29));
+      await _seed(db, actionId: 'B', at: DateTime.utc(2026, 8, 30));
+
+      final page = await store.changesPage(ConfigChangeQuery(limit: 2));
+
+      expect(page.rows, hasLength(2));
+      expect(page.hasMore, isFalse,
+          reason: '`rawCount >= limit` called this "reached the cap" and '
+              'the page showed a load-more that loaded nothing');
     });
 
     test('before is a cursor that composes with the window', () async {

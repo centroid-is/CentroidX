@@ -719,4 +719,57 @@ void main() {
       expect(isAuthEntry(actions.single.lead), isFalse);
     });
   });
+
+  group('joinStraddlingActions', () {
+    HistoryAction action(String id, List<String> entities,
+            {int total = 0}) =>
+        HistoryAction(
+          actionId: id,
+          children: [
+            for (final entity in entities)
+              ConfigChangeChild(change(actionId: id, entityId: entity)),
+          ],
+          totalAuditRowCount: 0,
+          totalChangeCount: total,
+        );
+
+    test('two adjacent halves of one action are one action', () {
+      final joined = joinStraddlingActions([
+        action('save', ['a2', 'a1'], total: 3),
+        action('save', ['a0'], total: 3),
+      ]);
+
+      expect(joined, hasLength(1));
+      expect(joined.single.changes.map((c) => c.change.entityId),
+          ['a2', 'a1', 'a0'],
+          reason: 'the page order is kept: newest first across the seam');
+      expect(joined.single.totalChangeCount, 3,
+          reason: 'the totals were read from the whole table and are the '
+              'same on both halves');
+    });
+
+    test('distinct actions are left alone, in order', () {
+      final joined = joinStraddlingActions([
+        action('B', ['b']),
+        action('A', ['a']),
+      ]);
+      expect(joined.map((a) => a.actionId), ['B', 'A']);
+    });
+
+    test('a recurring id with another action between is not joined', () {
+      // The grouping keeps an interleaved action apart from its namesake
+      // only by adjacency here; the id itself is unique per write, so this
+      // is a guard on the join's reach, not a scenario the log produces.
+      final joined = joinStraddlingActions([
+        action('A', ['a1']),
+        action('B', ['b']),
+        action('A', ['a0']),
+      ]);
+      expect(joined.map((a) => a.actionId), ['A', 'B', 'A']);
+    });
+
+    test('an empty list is an empty list', () {
+      expect(joinStraddlingActions(const []), isEmpty);
+    });
+  });
 }

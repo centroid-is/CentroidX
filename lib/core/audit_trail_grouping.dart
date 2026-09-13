@@ -537,3 +537,31 @@ String strictestGroupName(Iterable<String> names) {
 /// empty `group_required` too (`guarded_state_man.dart` writes
 /// `strictestRequired?.name ?? ''`).
 bool isAuthEntry(AuditEntryData row) => row.surface == 'auth';
+
+/// Consecutive halves of one action, from two pages, as one action.
+///
+/// The page cursor is `(at, id)` and can stand inside one instant — inside
+/// one `writeItems`, whose rows all share an `at` — so the rows of one action
+/// can arrive across two pages, grouped once per page. Two tiles for one
+/// action would be two Undo buttons for one plan. The first half's counts
+/// stand: they are the action's totals, read from the whole table, and the
+/// same on both halves. Only *adjacent* halves are joined; an action id that
+/// recurs after another action in between is two actions to this function,
+/// which is what it was to the grouping.
+List<HistoryAction> joinStraddlingActions(List<HistoryAction> actions) {
+  final out = <HistoryAction>[];
+  for (final action in actions) {
+    if (out.isNotEmpty && out.last.actionId == action.actionId) {
+      final head = out.removeLast();
+      out.add(HistoryAction(
+        actionId: head.actionId,
+        children: [...head.children, ...action.children],
+        totalAuditRowCount: head.totalAuditRowCount,
+        totalChangeCount: head.totalChangeCount,
+      ));
+    } else {
+      out.add(action);
+    }
+  }
+  return out;
+}

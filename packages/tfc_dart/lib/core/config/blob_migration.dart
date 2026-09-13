@@ -277,11 +277,20 @@ Future<MigrationOutcome> copyBlobIntoRowsLocked(
 
   // Throws on anything unrecognisable, and the transaction unwinds with it.
   final parsed = parse(blob);
+  final identities = <String>{};
   for (final item in parsed) {
     if (!kinds.contains(item.kind)) {
       throw StateError('$label migration: the parser produced a '
           '${item.kind.wireName} item ("${item.id}"), which is not one of the '
           'kinds this migration may write ($kinds)');
+    }
+    // Two items with one identity would land as one row plus a change row
+    // for an edit nobody made — the primary key used to refuse this loudly
+    // and the upsert below would not. A blob whose assets carry duplicate
+    // stored ids is unreadable, and unreadable unwinds the copy.
+    if (!identities.add('${item.kind.wireName} ${item.id}')) {
+      throw FormatException('$label migration: the blob holds '
+          '${item.kind.wireName} "${item.id}" twice');
     }
   }
 
@@ -392,6 +401,17 @@ Future<void> _writeItem(
           rev: existing.rev,
         );
   if (before != null && before.sameContentAs(item)) return;
+  // A row that has been *edited* on the rows — revision two or beyond — is
+  // the plant's live configuration, whatever the blob says: a seed sits at
+  // revision one and nothing else does. Overwriting it from a blob nobody
+  // has written to since would revert weeks of relational edits in one
+  // action. Left as it is, loudly.
+  if (existing != null && existing.rev >= 2) {
+    _logger.w('${item.kind.wireName} "${item.id}" is at revision '
+        '${existing.rev} on the rows and is kept; the blob\'s copy of it is '
+        'not applied over live edits.');
+    return;
+  }
 
   final companion = ConfigItemTableCompanion.insert(
     kind: item.kind.wireName,

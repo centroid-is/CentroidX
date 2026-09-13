@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/preferences.dart';
 
 import '../page_creator/page.dart';
 import 'config_store.dart';
@@ -33,6 +34,14 @@ final bootstrapPageManagerProvider = Provider<PageManager?>((ref) => null);
 /// this provider's business.
 const Set<ConfigKind> _pageKinds = {ConfigKind.page, ConfigKind.asset};
 
+PreferencesApi? _localPreferencesOrNull(Ref ref) {
+  try {
+    return ref.read(localPreferencesProvider);
+  } on StateError {
+    return null;
+  }
+}
+
 @Riverpod(keepAlive: true)
 Future<PageManager> pageManager(Ref ref) async {
   final prefs = await ref.watch(preferencesProvider.future);
@@ -59,12 +68,23 @@ Future<PageManager> pageManager(Ref ref) async {
     // that a new surface or a per-entity item key falls closed to
     // `administer` and locks every operator and shift leader out of the page
     // editor, and the failure reads as a permissions bug rather than a typo.
-    writeItems: (wanted, {reason}) => guarded.write(
+    writeItems: (wanted, {reason, derivedFrom}) => guarded.write(
       wanted,
       kinds: _pageKinds,
       checkKind: ConfigKind.page,
       reason: reason,
+      derivedFrom: derivedFrom,
     ),
+    // The blob fallback reads the device-local store, where the one-shot
+    // import put `page_editor_data`; `prefs` is the shared row store, which
+    // never holds that key. A process with no device-local store open — a
+    // test container that did not set one — falls back to `prefs`, which is
+    // where such a test put its blob.
+    blobPrefs: _localPreferencesOrNull(ref),
+    // The access check, before the fallback gate in `save()`: an anonymous
+    // session on a station still waiting for the plant's pages is refused
+    // and recorded as a refusal, not told to wait.
+    preflight: () => guarded.refuseUnlessCan(ConfigKind.page),
   );
 
   await pageManager.load();

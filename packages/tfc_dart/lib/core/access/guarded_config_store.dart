@@ -246,8 +246,14 @@ class GuardedConfigStore {
   /// `ConfigConflict` — propagates **unwrapped**, because the editor's three
   /// catch arms are those three types.
   Future<ConfigWriteResult> save(List<ConfigItem> wanted,
-          {required ConfigKind kind, String? reason}) =>
-      write(wanted, kinds: {kind}, checkKind: kind, reason: reason);
+          {required ConfigKind kind,
+          String? reason,
+          List<ConfigItem>? derivedFrom}) =>
+      write(wanted,
+          kinds: {kind},
+          checkKind: kind,
+          reason: reason,
+          derivedFrom: derivedFrom);
 
   /// Replaces the stored rows of [kinds] with [wanted], checked and recorded
   /// as [checkKind] — the write path, of which [save] is the one-kind case.
@@ -285,11 +291,16 @@ class GuardedConfigStore {
   /// `ConfigStoreOfflineException`, `ConfigStoreUnsafePoolException`,
   /// `ConfigConflict` — propagates **unwrapped**, because the editor's three
   /// catch arms are those three types.
+  ///
+  /// [derivedFrom] is the read [wanted] was built from — see
+  /// `ConfigStore.writeItems`. Every caller that reads the snapshot and then
+  /// writes must pass it, or a row the sync pulled in between is deleted.
   Future<ConfigWriteResult> write(
     List<ConfigItem> wanted, {
     required Set<ConfigKind> kinds,
     required ConfigKind checkKind,
     String? reason,
+    List<ConfigItem>? derivedFrom,
   }) async {
     // Before the check, and before any row: a kind that may not be written
     // here at all is not a denial to record, it is a call that should not
@@ -325,20 +336,8 @@ class GuardedConfigStore {
     final session = _session();
     final actionId = newActionId();
 
-    if (!session.can(group)) {
-      await _record(_row(
-        session: session,
-        itemKey: itemKey,
-        group: group,
-        newValue: null,
-        allowed: false,
-        actionId: actionId,
-        reason: reason,
-      ));
-      final denial = AccessDenied(itemKey, group);
-      _onDenied?.call(denial);
-      throw denial;
-    }
+    await _refuseUnless(session, itemKey: itemKey, group: group,
+        actionId: actionId, reason: reason);
 
     return _writeAndRecord(
       wanted,
@@ -349,7 +348,48 @@ class GuardedConfigStore {
       actionId: actionId,
       origin: _operatorOrigin,
       reason: reason,
+      derivedFrom: derivedFrom,
     );
+  }
+
+  /// The check [write] makes for [checkKind], on its own: records the
+  /// refusal and throws [AccessDenied] when the session may not write it,
+  /// and returns — recording nothing — when it may.
+  ///
+  /// For a caller with work to do *before* its write that should not be
+  /// done, or reported, for a session that could not save anyway: the page
+  /// manager's save merges against the plant and refuses a station still
+  /// waiting for its pages, and an anonymous session must hear "refused",
+  /// not "wait". The write that follows checks again and records the
+  /// allowed row; a session refused here never reaches it, so a refusal is
+  /// recorded exactly once.
+  Future<void> refuseUnlessCan(ConfigKind checkKind, {String? reason}) {
+    final itemKey = _keyFor(checkKind);
+    return _refuseUnless(_session(),
+        itemKey: itemKey,
+        group: _policy.groupForWireSurface(_configSurface, itemKey),
+        actionId: newActionId(),
+        reason: reason);
+  }
+
+  Future<void> _refuseUnless(AccessSession session,
+      {required String itemKey,
+      required AccessGroup group,
+      required String actionId,
+      String? reason}) async {
+    if (session.can(group)) return;
+    await _record(_row(
+      session: session,
+      itemKey: itemKey,
+      group: group,
+      newValue: null,
+      allowed: false,
+      actionId: actionId,
+      reason: reason,
+    ));
+    final denial = AccessDenied(itemKey, group);
+    _onDenied?.call(denial);
+    throw denial;
   }
 
   /// Replaces the shared preference rows with [wanted], checked and recorded
@@ -383,6 +423,7 @@ class GuardedConfigStore {
     List<ConfigItem> wanted, {
     required String prefKey,
     String? reason,
+    List<ConfigItem>? derivedFrom,
   }) async {
     final group = _policy.groupForWireSurface(_configSurface, prefKey);
     final session = _session();
@@ -412,8 +453,37 @@ class GuardedConfigStore {
       actionId: actionId,
       origin: _operatorOrigin,
       reason: reason,
+      derivedFrom: derivedFrom,
     );
   }
+
+  /// [writePreference] for a caller that has **already** checked the session
+  /// and recorded the action — no check here, no row here, the write under
+  /// the caller's [actionId] so the `config_change` rows join the
+  /// `audit_entry` row it wrote.
+  ///
+  /// One caller: `GuardedReportStore`, whose own guard records a row that
+  /// names the report count and the reason, before the write, the way its
+  /// tests pin. Going through [writePreference] from there would put two
+  /// audit rows under two action ids on one save. This is the seam that
+  /// keeps it at one. It is not a bypass of the check: the caller's check is
+  /// the same `session.can` on the same group the policy answers for
+  /// [prefKey], and [prefKey] is carried only to name the write in a log.
+  Future<ConfigWriteResult> writePreferenceUnderAction(
+    List<ConfigItem> wanted, {
+    required String prefKey,
+    required String actionId,
+    String? reason,
+    List<ConfigItem>? derivedFrom,
+  }) =>
+      _write(
+        wanted,
+        kinds: const {ConfigKind.preference},
+        actionId: actionId,
+        session: _session(),
+        reason: reason ?? prefKey,
+        derivedFrom: derivedFrom,
+      );
 
   /// [writePreference] with no check, `origin: 'system'` and one audit row —
   /// the [ConfigStore] side of `GuardedPreferences.systemWrites`.
@@ -458,6 +528,7 @@ class GuardedConfigStore {
     List<ConfigItem> wanted, {
     required String prefKey,
     String? reason,
+    List<ConfigItem>? derivedFrom,
   }) async {
     if (!_inner.hasRemote) {
       _logger.i('the system default for $prefKey was not written: the shared '
@@ -475,6 +546,7 @@ class GuardedConfigStore {
         actionId: newActionId(),
         origin: _systemOrigin,
         reason: reason,
+        derivedFrom: derivedFrom,
       );
     } on ConfigStoreOfflineException catch (error) {
       _logger.w('the system default for $prefKey did not land; the shared '
@@ -586,15 +658,31 @@ class GuardedConfigStore {
   Future<ConfigWriteResult> saveKeyMappings(KeyMappings wanted,
       {String? reason, List<ConfigItem>? baseline}) {
     var items = codec.keyMappingItems(wanted);
+    // One read, used both to merge against and as what the write is derived
+    // from — so a key the sync pulls in between is neither merged over nor
+    // diffed away.
+    final stored = _inner.keyMappingItems;
     if (baseline != null) {
       items = mergeItemsForSave(
         wanted: items,
-        stored: _inner.keyMappingItems,
+        stored: stored,
         baseline: baseline,
       );
     }
-    return save(items, kind: ConfigKind.keyMapping, reason: reason);
+    return save(items,
+        kind: ConfigKind.keyMapping, reason: reason, derivedFrom: stored);
   }
+
+  /// The baseline a key repository should hold after [saveKeyMappings]
+  /// landed: `refreshedBaseline` over what is on its screen, its previous
+  /// baseline and what the store holds now.
+  List<ConfigItem> keyMappingBaselineAfterSave(KeyMappings onScreen,
+          List<ConfigItem>? previous) =>
+      refreshedBaseline(
+        oldBaseline: previous,
+        editorWanted: codec.keyMappingItems(onScreen),
+        storedNow: _inner.keyMappingItems,
+      );
 
   /// Writes the example mapping when the plant has none — the systemWrites
   /// analogue, with no check, `origin: 'system'` and one audit row.
@@ -633,6 +721,10 @@ class GuardedConfigStore {
         actionId: newActionId(),
         origin: _systemOrigin,
         reason: 'boot default: the shared store held no key mappings',
+        // The seed was derived from an empty read: it may insert its example
+        // and must remove nothing — rows that landed between the check and
+        // this write are the plant's, not the seed's to diff away.
+        derivedFrom: const [],
       );
     } on Object catch (error) {
       _logger.w('key_mappings boot seed did not land; another station has '
@@ -654,6 +746,7 @@ class GuardedConfigStore {
     required String actionId,
     required String origin,
     String? reason,
+    List<ConfigItem>? derivedFrom,
   }) async {
     final result = await _write(
       wanted,
@@ -661,6 +754,7 @@ class GuardedConfigStore {
       actionId: actionId,
       session: session,
       reason: reason,
+      derivedFrom: derivedFrom,
     );
 
     // Save pressed twice wrote no row, no change entry and no event; it does
@@ -699,14 +793,16 @@ class GuardedConfigStore {
     required String actionId,
     required AccessSession session,
     String? reason,
+    List<ConfigItem>? derivedFrom,
   }) =>
       _inner.writeItems(
         kinds: kinds,
         wanted: wanted,
         actionId: actionId,
         who: session.user?.username ?? _anonymousWho,
-        roleName: session.roleName,
+        roleName: session.roleLabel,
         reason: reason,
+        derivedFrom: derivedFrom,
       );
 
   /// The check and audit key for [kind].
@@ -738,7 +834,7 @@ class GuardedConfigStore {
         at: DateTime.now(),
         who: session.user?.username ?? _anonymousWho,
         station: _station,
-        roleName: session.roleName,
+        roleName: session.roleLabel,
         surface: _configSurface,
         itemKey: itemKey,
         oldValue: null,

@@ -189,7 +189,7 @@ Future<ConfigHistoryResult?> configHistoryActions(
     // Judged on the raw count, not the decoded list: a row this build cannot
     // read is still a row the cap counted, and hiding Load-more over it
     // would hide every row behind it too.
-    reachedLimit: page.rawCount >= query.limit,
+    reachedLimit: page.hasMore,
     // The store orders newest first, so the last row is the oldest one and the
     // cursor the next page starts from.
     oldestAt: page.oldestAt,
@@ -391,7 +391,7 @@ class ConfigUndoController {
         sessionGroups: session.groups,
         actionId: actionId,
         who: session.user?.username ?? _anonymousWho,
-        roleName: session.roleName,
+        roleName: session.roleLabel,
       );
       // **A ready plan that writes nothing is a contradiction, not a
       // success.** The guard skips the audit row on an empty diff because a
@@ -496,7 +496,7 @@ class ConfigUndoController {
       at: DateTime.now(),
       who: session.user?.username ?? _anonymousWho,
       station: _ref.read(stationNameProvider),
-      roleName: session.roleName,
+      roleName: session.roleLabel,
       surface: kConfigUndoSurface,
       itemKey: gate.itemKey,
       oldValue: null,

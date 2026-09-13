@@ -120,7 +120,7 @@ void main() {
     test('schema version is 9', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 11);
+      expect(db.schemaVersion, 12);
     });
 
     test('fresh install creates the config tables and their indexes',
@@ -205,6 +205,22 @@ void main() {
       for (final index in _configIndexes) {
         expect(indexes, contains(index));
       }
+    });
+
+    test('the v12 arm creates the paging index on a database stamped 11',
+        () async {
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      await db.customSelect('SELECT 1').getSingle();
+      await db.customStatement('DROP INDEX IF EXISTS idx_config_change_at');
+      expect(await _indexNames(db), isNot(contains('idx_config_change_at')));
+
+      await db.migration.onUpgrade(Migrator(db), 11, 12);
+      await db.migration.onUpgrade(Migrator(db), 11, 12);
+
+      expect(await _indexNames(db), contains('idx_config_change_at'),
+          reason: 'an index added to the list after v11 stamped a database '
+              'reaches it only through an arm of its own');
     });
 
     test('the v11 arm is a no-op on SQLite, run twice over', () async {

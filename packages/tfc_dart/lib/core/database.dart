@@ -818,6 +818,11 @@ class Database {
         // without it a save mid-outage surfaced as a raw driver string rather
         // than as "the shared database is unreachable".
         msg.contains('closed unexpectedly') ||
+        // A handle the provider has already disposed — `Bad state: Cannot
+        // use a database after it has been closed` and the isolate's
+        // equivalent — met by a write queued before the rebuild landed.
+        msg.contains('after it has been closed') ||
+        msg.contains('isolate is closed') ||
         // A statement that never came back at all — a hung rather than a
         // reset peer — is not a different kind of outage to the operator.
         e is TimeoutException;
@@ -1703,14 +1708,18 @@ class Database {
       return 'LEFT JOIN ${q(t)} $alias ON $alias.time = at.time';
     }).join('\n');
 
-    final isPg = db.postgres; // PgDatabase vs. Native (sqlite)
-    final createKeyword = isPg ? 'MATERIALIZED VIEW' : 'VIEW';
-    final dropStmt = isPg
-        ? 'DROP MATERIALIZED VIEW IF EXISTS $qView CASCADE;'
-        : 'DROP VIEW IF EXISTS $qView CASCADE;';
+    // A plain VIEW on both backends, on purpose. This used to branch on
+    // `db.postgres` for a MATERIALIZED VIEW, and that getter was false on
+    // every station (D-1), so production has created a plain VIEW here since
+    // the feature shipped — and there is no REFRESH path for a materialised
+    // one: switching to it now, with the getter corrected, would freeze every
+    // history view at the moment it was created. Making it materialised is a
+    // change with its own refresh design, not a side effect of fixing a
+    // getter.
+    final dropStmt = 'DROP VIEW IF EXISTS $qView CASCADE;';
 
     final createSql = '''
-CREATE $createKeyword $qView AS
+CREATE VIEW $qView AS
 WITH all_times AS (
   $allTimes
 )
@@ -1725,15 +1734,6 @@ ORDER BY at.time;
     await db.customStatement(dropStmt);
     await db.customStatement(createSql);
 
-    // Postgres-only: add a UNIQUE index on time to allow REFRESH CONCURRENTLY
-    if (isPg) {
-      final idxName = ('${viewName}_time_uidx'
-              .toLowerCase()
-              .replaceAll(RegExp(r'[^a-z0-9_]+'), '_'))
-          .replaceAll(RegExp(r'_+'), '_');
-      await db.customStatement(
-          'CREATE UNIQUE INDEX IF NOT EXISTS $idxName ON $qView ("time");');
-    }
   }
 
   /// Count time-series data points in regular time intervals

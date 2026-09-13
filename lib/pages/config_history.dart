@@ -423,9 +423,12 @@ class ConfigHistoryBodyState extends ConsumerState<ConfigHistoryBody> {
       for (final page in pages)
         if (page.hasValue) page.requireValue!,
     ];
-    final actions = <HistoryAction>[
+    // One action can straddle a page boundary now that the cursor can stand
+    // inside one instant; the two halves are one action, and two tiles for
+    // it would be two Undo buttons for one plan.
+    final actions = joinStraddlingActions([
       for (final result in resolved) ...result.actions,
-    ];
+    ]);
     // The number the `LIMIT` applied to, not `actions.length`: nine rows of one
     // page save are one action, and it is the nine that the cap counted.
     final rowCount =

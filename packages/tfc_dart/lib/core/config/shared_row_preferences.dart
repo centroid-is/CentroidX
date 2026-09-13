@@ -39,6 +39,7 @@ typedef _PreferenceWriter = Future<ConfigWriteResult> Function(
   List<ConfigItem> wanted, {
   required String prefKey,
   String? reason,
+  List<ConfigItem>? derivedFrom,
 });
 
 /// The same, for a write that lands in the keychain rather than in a row.
@@ -65,8 +66,10 @@ typedef _SecretWriter = Future<void> Function({
 /// `isKeyInDatabase`'s key cache. This class is those four paths re-expressed
 /// over rows, so the eight remaining shared key families — `alarm_man_config`,
 /// `page_editor_top_level_order`, `page_editor_image:<id>`,
-/// `<bucket>.recipes`, `server_config_envelope`, `state_man_config`,
-/// `collector_config` and `update_channel` — move without a caller changing.
+/// `<bucket>.recipes`, `server_config_envelope`, `collector_config`,
+/// `report_config`, `shift_config` and the chat assistant's rows — move
+/// without a caller changing. (`state_man_config` is the keychain's and
+/// `update_channel` the device's; neither is a shared row.)
 ///
 /// ## Why not "generalise SqlitePreferences to take a scope"
 ///
@@ -342,7 +345,27 @@ class SharedRowPreferences extends Preferences {
     // row or an event when nothing moved — and it does so *after* refusing an
     // offline write, so a caller whose write cannot reach Postgres is told
     // every time rather than only when it would have written something.
-    await _writer(_wantedWith(key, item), prefKey: key);
+    //
+    // One read of the rows, handed over twice: as what the replace set is
+    // built from and as what the write is derived from, so a preference the
+    // sync pulls between here and the write is not diffed away.
+    final rows = _rows();
+    await _writer(_wantedWith(key, item, rows),
+        prefKey: key, derivedFrom: rows.values.toList());
+  }
+
+  /// [setString] for a caller that has already checked and recorded the
+  /// action under [actionId] — see `GuardedConfigStore.writePreferenceUnderAction`.
+  Future<void> setStringUnderAction(String key, String value,
+      {required String actionId}) async {
+    final item = ConfigItem.of(
+      kind: ConfigKind.preference,
+      id: key,
+      value: preferencePayload(kPrefStringType, value),
+    );
+    final rows = _rows();
+    await _store.writePreferenceUnderAction(_wantedWith(key, item, rows),
+        prefKey: key, actionId: actionId, derivedFrom: rows.values.toList());
   }
 
   /// The secret write: checked and recorded by the guard, then delegated up
@@ -449,7 +472,7 @@ class SharedRowPreferences extends Preferences {
       for (final entry in rows.entries)
         if (entry.key != key) entry.value,
     ];
-    await _writer(wanted, prefKey: key);
+    await _writer(wanted, prefKey: key, derivedFrom: rows.values.toList());
   }
 
   /// Removes every shared preference, or only those named in [allowList].
@@ -474,7 +497,8 @@ class SharedRowPreferences extends Preferences {
           entry.value,
     ];
     if (wanted.length == rows.length) return;
-    await _writer(wanted, prefKey: kWholeStoreItemKey);
+    await _writer(wanted,
+        prefKey: kWholeStoreItemKey, derivedFrom: rows.values.toList());
   }
 
   /// Every shared preference that must exist after a write of [key], with
@@ -484,10 +508,11 @@ class SharedRowPreferences extends Preferences {
   /// one item that changed would delete every sibling — every other shared
   /// preference in the plant, in one save. `shared_preferences_rows_test.dart`
   /// seeds three keys, writes one and asserts three remain.
-  List<ConfigItem> _wantedWith(String key, ConfigItem item) {
+  List<ConfigItem> _wantedWith(
+      String key, ConfigItem item, Map<String, ConfigItem> rows) {
     final wanted = <ConfigItem>[];
     var replaced = false;
-    for (final entry in _rows().entries) {
+    for (final entry in rows.entries) {
       if (entry.key == key) {
         wanted.add(item);
         replaced = true;

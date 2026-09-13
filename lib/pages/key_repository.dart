@@ -889,10 +889,12 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       // one bounded audit row, and throws rather than reporting a success it
       // did not have. The three arms below are its three refusals.
       await store.saveKeyMappings(_keyMappings!, baseline: _baselineItems);
-      // The next save is measured against what the store holds now, not
-      // against the open. Keys the merge kept from another station are in
-      // the store and not on screen; a reload shows them.
-      _baselineItems = store.inner.keyMappingItems;
+      // The next save is measured against what this screen holds and what
+      // the store holds for it now — not against every stored row, which
+      // would have the next save read a key the merge kept from another
+      // station as a deletion. See `refreshedBaseline`.
+      _baselineItems =
+          store.keyMappingBaselineAfterSave(_keyMappings!, _baselineItems);
       // `json` rather than a fresh read of the store: the store serves its
       // keys in sorted order, and re-encoding from it would make a repository
       // whose on-screen order differs (a duplicated key sits beside its
@@ -2427,6 +2429,11 @@ class _KeyMappingsImportExportCard extends ConsumerWidget {
       // file does not carry becomes a removal row rather than disappearing
       // inside a rewritten blob. This is the first import that is legible in
       // the change log.
+      //
+      // No baseline, on purpose: the dialog above said "overwrite all
+      // existing key mappings", and a replace is what the operator confirmed.
+      // The merge is for a screen that loaded a layout and edited part of
+      // it; a file has no such history to merge against.
       await store.saveKeyMappings(imported);
       // Applied incrementally by the stateManProvider store listener; it
       // self-invalidates only if the import touches Modbus/M2400 keys.

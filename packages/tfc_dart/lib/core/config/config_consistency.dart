@@ -227,10 +227,21 @@ Future<List<ConfigInconsistency>> checkConfigConsistency(
   // The exemption interlock, driven from the change log because that is where
   // the evidence of a broken exemption is. Both an exempt row with history and
   // an exempt entity whose only trace is a logged delete are reported.
+  //
+  // By kind and by exact id, never by the `chat.` prefix: those rows were
+  // written *with* history by every build before the exemption existed, the
+  // log is never pruned, and a check that called them a broken exemption
+  // would refuse the drop forever on any database that has opened chat once.
+  // The prefix exemption is a storage decision about the future; it is not
+  // evidence about the past.
   final exemptWithHistory = <_EntityKey>{};
   for (final entry in newest.entries) {
     final kind = ConfigKind.byWireName(entry.key.kind);
-    if (kind == null || !historyExempt(kind, entry.key.id)) continue;
+    if (kind == null) continue;
+    final exact = kHistoryExemptKinds.contains(kind) ||
+        (kind == ConfigKind.preference &&
+            kHistoryExemptPreferenceIds.contains(entry.key.id));
+    if (!exact) continue;
     exemptWithHistory.add(entry.key);
     found.add(ConfigInconsistency(
       invariant: ConfigInvariant.exemptHasHistory,

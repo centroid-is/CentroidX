@@ -99,11 +99,12 @@ Future<
         id: pageId,
       ),
     },
-    writeItems: (wanted, {reason}) => store.write(
+    writeItems: (wanted, {reason, derivedFrom}) => store.write(
       wanted,
       kinds: const {ConfigKind.page, ConfigKind.asset},
       checkKind: ConfigKind.page,
       reason: reason,
+      derivedFrom: derivedFrom,
     ),
   );
   await tester.pumpWidget(buildEditorUnderTest(manager));

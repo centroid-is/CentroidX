@@ -12,7 +12,16 @@ change with its own test.
 
 ---
 
-## D-1 — `AppDatabase.postgres` is false on every station
+## D-1 — `AppDatabase.postgres` is false on every station (FIXED, second review pass)
+
+**Fixed 2026-09-13.** The getter reads the executor's dialect now, as `native`
+does. The one site that consumed it — `createHistoryView` — was *not* switched
+to a materialised view along with it: production has created a plain VIEW
+there since the feature shipped, and there is no REFRESH path for a
+materialised one, so correcting the getter under it would have frozen every
+history view at the moment of creation. It creates a plain VIEW on both
+backends, by name, and says why. Materialising it is a change with its own
+refresh design. The original finding stands below for the record.
 
 **Verified 2026-09-07.** `bool get postgres => executor is PgDatabase`
 (`packages/tfc_dart/lib/core/database_drift.dart:969`) returns **false in the
@@ -602,3 +611,62 @@ that would have shipped green.
 **Closed by this branch, and worth saying:** D-2 (the key-mapping listener
 is on a store with a stable identity), D-7 (04-11 landed). D-3, D-6, D-8 to
 D-10 stand as written.
+
+## Second review pass, 2026-09-13 — the fixes, re-reviewed
+
+Three readers went over the first pass's fixes adversarially (the store and
+sync engine, the cutover and drop path, the editors' merge). What they found,
+all fixed on the branch:
+
+**The editors' baseline after a save.** The first pass refreshed the editor's
+baseline from *every* stored row after a save. That was strictly worse than
+not refreshing: a row the merge had kept from another station went into the
+baseline, was not on screen, and the *second* save read its absence as a
+deletion. The baseline is now the editor's view — `refreshedBaseline`: for
+each item on screen, the stored row when the editor's content landed, the
+old entry when the merge adopted another station's version (so the next
+save adopts theirs again rather than writing stale content over it), and
+nothing for rows the editor does not hold. Page manager, page editor and key
+repository all use it; the key-mapping JSON import is a confirmed replace
+and merges against nothing, on purpose.
+
+**The pull did not refuse what the sweep refuses.** A change log naming a
+kind the remote holds no rows and no marker of (a Postgres restored from a
+pre-migration backup) was refused by the five-minute sweep and *applied* by
+the notification pull, which consumes the same log — the first notification
+after such a restore would have emptied every station's mirror of that
+kind. The pull computes the same refusal, drops the refused refs, and leaves
+the watermark where it was so the entries apply once the remote is put
+right.
+
+**The nudge names rows now.** An exempt write nudged the other stations with
+its *kinds*, and each nudge cost every station a revision sweep of every
+shared row of them; the chat assistant rewrites its rows on every message.
+The payload is `reconcile:<kind>=<id>,<id>;...` (falls back to the kind form
+above ~7000 bytes or when an id carries a separator; an older build still
+reads the kinds off it), and a receiver re-reads exactly those rows.
+
+**The blob copy could revert live edits.** `_writeItem` upserted over any
+existing row. With the marker gone — deleted by hand, or written by a build
+before the marker existed — a re-run would have written the cutover-day
+blob over weeks of relational edits. A row at revision two or beyond is the
+plant's and is kept, logged. A parser producing one identity twice now
+unwinds the copy instead of landing one row plus a change row for an edit
+nobody made.
+
+**Smaller.** The consistency check called a `chat.` row with history a
+broken exemption, which on any plant that had opened the assistant once
+would have refused the drop forever (the exemption is about the future, the
+history is from before it; judged by exact rule only). A preference document
+that happens to carry `type` and `value` keys read as absent through the
+envelope unwrap; it falls back to the document. `idx_config_change_at`
+joined the index list after v11 had stamped databases and re-running it
+inside the v11 arm reached none of them; it is the v12 arm. The history
+page's "reached the cap" was `rawCount >= limit`, which showed a Load-more
+that loaded nothing on a page that filled the cap exactly; the store fetches
+one row of lookahead. An action straddling a page boundary rendered as two
+tiles with two Undo buttons; adjacent halves are joined. The menu order is
+written after the page rows and a refusal there is logged rather than
+thrown, so a caller is not told a save failed that landed. The drop tool no
+longer counts a page image the editor's collector removed as a missing row.
+D-1 is fixed (see its entry).

@@ -286,6 +286,19 @@ class _ConfigSync {
       _logger.d('config nudge named no kind this build knows: "$payload"');
       return Future<void>.value();
     }
+    // A nudge that names the rows re-reads exactly those — one indexed read,
+    // absent meaning removed — where one that names only kinds costs a
+    // revision sweep of every shared row of them. The chat assistant's rows
+    // are exempt and rewritten on every message; a kind-level nudge for each
+    // was a plant-wide preference sweep on every station per message.
+    final ids = decodeReconcileNudgeIds(payload);
+    if (ids != null && ids.isNotEmpty) {
+      final refs = <_Ref>{
+        for (final entry in ids.entries)
+          for (final id in entry.value) (entry.key, id),
+      };
+      return serialise(() => _apply(refs));
+    }
     return serialise(() => _reconcileKinds(kinds, advanceWatermark: false));
   }
 
@@ -337,7 +350,21 @@ class _ConfigSync {
         refs.add((kind, row.read(t.entityId)!));
       }
 
+      // The same refusal the sweep applies, for the same reason: a change
+      // log that names a kind the remote holds no rows of and no marker for
+      // — a remote restored from a pre-migration backup, a table emptied by
+      // hand — must not be read as "every one of them was deleted", or the
+      // first notification empties this station's mirror of that kind.
+      final kindsInPlay = {for (final ref in refs) ref.$1};
+      final refused = await _refusedKinds(
+          await _remoteHoldsRowsOf(kindsInPlay), kindsInPlay);
+      refs.removeWhere((ref) => refused.contains(ref.$1));
+
       await _apply(refs);
+      // `_apply` lands nothing once the engine is stopped; the watermark must
+      // not claim rows that were never applied, or the next engine's pull
+      // skips them. Nor may it claim a refused kind's rows.
+      if (_stopped || refused.isNotEmpty) return;
       await _store._advanceWatermark(advanceTo);
     } catch (e) {
       _logger.w('config pull from watermark $watermark abandoned; the '
@@ -370,10 +397,16 @@ class _ConfigSync {
       // The **next** sweep catches it, which is why the net is periodic rather
       // than something that runs once at attach: five minutes is the stated
       // worst case, not an accident.
+      // A purely local write, so it goes first: behind the remote reads it
+      // was skipped for as long as Postgres was unreachable — the exact
+      // window an offline boot would serve the stale mirror in.
+      await _store._repairMirror();
+
       final advanceTo = advanceWatermark ? await _maxChangeId() : 0;
 
       final revs = await _remoteRevisions(swept);
-      final refused = await _refusedKinds(revs, swept);
+      final refused =
+          await _refusedKinds({for (final ref in revs.keys) ref.$1}, swept);
 
       final candidates = <_Ref>{};
       for (final entry in revs.entries) {
@@ -404,7 +437,6 @@ class _ConfigSync {
       if (advanceWatermark && refused.isEmpty) {
         await _store._advanceWatermark(advanceTo);
       }
-      await _store._repairMirror();
     } catch (e) {
       _logger.w('config reconcile abandoned; the next sweep retries it: $e');
     }
@@ -554,10 +586,10 @@ class _ConfigSync {
   /// first reconcile of a fresh station), and no marker (otherwise the empty
   /// remote is the truth and this station's rows are what is stale).
   Future<Set<ConfigKind>> _refusedKinds(
-      Map<_Ref, int> revs, Set<ConfigKind> kinds) async {
+      Set<ConfigKind> presentOnRemote, Set<ConfigKind> kinds) async {
     final refused = <ConfigKind>{};
     for (final kind in kinds) {
-      if (revs.keys.any((ref) => ref.$1 == kind)) continue;
+      if (presentOnRemote.contains(kind)) continue;
       final held = [
         for (final item in _store._snapshot.values)
           if (item.kind == kind) item,
@@ -571,6 +603,26 @@ class _ConfigSync {
           '${held.length} mirrored rows');
     }
     return refused;
+  }
+
+  /// Which of [kinds] the remote holds at least one shared row of.
+  ///
+  /// One `GROUP BY` over the primary key's leading column, for the pull: it
+  /// runs on every notification, and the sweep's full `(kind, id) → rev` read
+  /// would have made each one a plant-wide revision fetch.
+  Future<Set<ConfigKind>> _remoteHoldsRowsOf(Set<ConfigKind> kinds) async {
+    if (kinds.isEmpty) return const {};
+    final t = _remote.configItemTable;
+    final query = _remote.selectOnly(t)
+      ..addColumns([t.kind])
+      ..where(t.kind.isIn(_wireNamesOf(kinds)) &
+          t.scope.equals(ConfigScope.shared.wireName))
+      ..groupBy([t.kind]);
+    final rows = await query.get();
+    return {
+      for (final row in rows)
+        if (ConfigKind.byWireName(row.read(t.kind)!) case final kind?) kind,
+    };
   }
 
   /// Whether [kind]'s blob→rows migration has run against this remote.

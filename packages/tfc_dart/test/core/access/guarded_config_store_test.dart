@@ -576,7 +576,9 @@ class _SpyingGuard extends GuardedConfigStore {
 
   @override
   Future<ConfigWriteResult> save(List<ConfigItem> wanted,
-      {required ConfigKind kind, String? reason}) async {
+      {required ConfigKind kind,
+      String? reason,
+      List<ConfigItem>? derivedFrom}) async {
     calls.add(_SavedCall(wanted, kind, reason));
     return ConfigWriteResult(diff: ConfigDiff.none, actionId: 'spy');
   }

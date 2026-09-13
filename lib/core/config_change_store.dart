@@ -86,7 +86,11 @@ class ConfigChangePage {
     required this.rawCount,
     required this.oldestAt,
     required this.oldestId,
+    this.hasMore = false,
   });
+
+  /// Whether at least one matching row lies beyond this page.
+  final bool hasMore;
 
   /// The rows this build could decode, newest first.
   final List<ConfigChangeRecord> rows;
@@ -536,15 +540,20 @@ class ConfigChangeStore {
         (t) => OrderingTerm(expression: t.at, mode: OrderingMode.desc),
         (t) => OrderingTerm(expression: t.id, mode: OrderingMode.desc),
       ])
-      ..limit(query.limit);
+      // One past the cap, so "reached the cap" can tell a full last page
+      // from a page with more behind it. The extra row is not returned.
+      ..limit(query.limit + 1);
 
-    final raw = await statement.get();
+    final fetched = await statement.get();
+    final hasMore = fetched.length > query.limit;
+    final raw = hasMore ? fetched.sublist(0, query.limit) : fetched;
     return ConfigChangePage(
       rows: [
         for (final row in raw)
           if (_decode(row) case final record?) record,
       ],
       rawCount: raw.length,
+      hasMore: hasMore,
       oldestAt: raw.isEmpty ? null : raw.last.at,
       oldestId: raw.isEmpty ? null : raw.last.id,
     );

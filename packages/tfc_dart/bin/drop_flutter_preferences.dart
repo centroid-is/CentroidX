@@ -378,6 +378,10 @@ Future<({List<String> unknown, List<String> missingRows})> _surveyLegacyKeys(
         // A null value is nothing to migrate, and the migration says so by
         // reporting it; a table row with no value is not a copy of anything.
         if (row.value == null) continue;
+        // An image the migration wrote and the page editor's collector has
+        // since removed is absent by design — nothing references it — and
+        // the old table's copy is not a value anyone wants back.
+        if (classified.kind == ConfigKind.pageImage) continue;
         final present = await (db.select(db.configItemTable)
               ..where((t) =>
                   t.kind.equals(classified.kind!.wireName) &

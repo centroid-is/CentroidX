@@ -351,6 +351,24 @@ const Map<String, String> kAbandonedPreferenceKeys = <String, String>{
       'device-local by design (update_channel.dart builds device-local '
           'preferences) so a development box on a prerelease channel does not '
           'move every HMI in the plant onto it',
+  // The station's own account, session and timeouts (#482, #505, #518), the
+  // last route (#514) and the proposals a panel has staged (#514): every one
+  // is written through localPreferencesProvider and belongs to the machine,
+  // exactly as `access.session` and `startup_url` above. Named here so that a
+  // stray copy in the old table — an older build, a hand edit — reads as
+  // abandoned rather than unknown, which would block the drop forever over a
+  // key nobody wants moved.
+  'access.panel_account':
+      'device-local: which station account this panel commits to is the '
+          'panel\'s own',
+  'access.inactivity_timeout_minutes':
+      'device-local and retired: the timeout is per account since #505 and '
+          'the boot path deletes this key',
+  'access.inactivity_timeout_disabled':
+      'device-local and retired, with access.inactivity_timeout_minutes',
+  'last_route': 'device-local: where this panel was when it last closed',
+  'pending_proposals':
+      'device-local: the proposals staged on this panel, not the plant\'s',
   // Consumers, enumerated: `StateManConfig.fromPrefs` and `toPrefs`
   // (`state_man.dart`) read and write it with `secret: true`, which is the
   // OS keychain and never a row; the backend takes its copy from a file
@@ -441,6 +459,11 @@ PreferenceClassification classifyPreferenceKey(String key) {
 const Set<String> kMigratedPreferenceKeys = <String>{
   'alarm_man_config',
   'collector_config',
+  // The shift reports (#447): the report definitions and the shift calendar,
+  // both `configure` in the policy and both plant-wide. `ReportStore` reads
+  // them off the rows and writes them through the shared preference store.
+  'report_config',
+  'shift_config',
   'page_editor_top_level_order',
   'server_config_envelope',
 };

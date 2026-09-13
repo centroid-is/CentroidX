@@ -6,6 +6,8 @@ import 'package:tfc_dart/core/config/key_mapping_codec.dart' show keyMappingsOf;
 import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart'
     show kPreferencesMigratedMarkerId;
+import 'package:tfc_dart/core/config/key_mapping_migration.dart'
+    show kKeyMappingsMigratedMarkerId;
 import 'package:tfc_dart/core/config/key_mapping_rows.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/state_man.dart';
@@ -44,11 +46,24 @@ void main() async {
   // time it does.
   final mappingItems = await readSharedKeyMappingItems(db.db);
   if (mappingItems.isEmpty) {
-    throw StateError(
-        'No config_item key_mapping rows: this backend is pointed at a '
-        'database that holds no plant wiring at all. Either the blob → rows '
-        'migration has not run (start a station, which runs it at attach), or '
-        'this is the wrong database.');
+    // Empty and migrated is a plant with no key mappings — an operator can
+    // delete every one — and a backend that exited on it would loop under
+    // `restart: unless-stopped` forever, blaming a migration that has run.
+    // Empty and *not* migrated is the cutover window, where the loop is the
+    // intended wait for the first station.
+    final migrated =
+        await readSharedPreferenceValue(db.db, kKeyMappingsMigratedMarkerId) !=
+            null;
+    if (!migrated) {
+      throw StateError(
+          'No config_item key_mapping rows and no $kKeyMappingsMigratedMarkerId '
+          'marker: this backend is pointed at a database that holds no plant '
+          'wiring at all. Either the blob → rows migration has not run (start '
+          'a station, which runs it at attach), or this is the wrong database.');
+    }
+    logger.w('No key_mapping rows and the key mappings migration has run: '
+        'this plant has none configured. Running with no acquisition keys; a '
+        'save in the key repository restarts this process.');
   }
   final keyMappings = keyMappingsOf(mappingItems);
   logger.i('Loaded ${keyMappings.nodes.length} key mappings from '
@@ -244,15 +259,24 @@ void main() async {
   // exactly the same state, and a `page_image` write must not either — an
   // operator pasting a picture would otherwise bounce the plant's data
   // acquisition.
+  //
+  // And of the `preference` kind, only the one row this process reads:
+  // every shared preference is a row of that kind — the chat assistant's
+  // conversations on every message, the menu order on every page save — and
+  // a fingerprint over the whole kind restarted acquisition on each of them.
   const watchedKinds = {ConfigKind.keyMapping, ConfigKind.preference};
+  const watchedPreferences = {'alarm_man_config'};
 
   // Both paths answer a signal with the same cheap read and restart only if
   // the answer moved, so the notification is the fast path to one check and
   // the poll is the slow one.
-  var mappingFingerprint = await readSharedConfigFingerprint(db.db, watchedKinds);
+  var mappingFingerprint = await readSharedConfigFingerprint(
+      db.db, watchedKinds,
+      preferenceIds: watchedPreferences);
   Future<void> checkMappings(String why) async {
     try {
-      final now = await readSharedConfigFingerprint(db.db, watchedKinds);
+      final now = await readSharedConfigFingerprint(db.db, watchedKinds,
+          preferenceIds: watchedPreferences);
       if (now == mappingFingerprint) return;
       mappingFingerprint = now;
       restartSoon('$why (${now.count} shared key mapping and preference '

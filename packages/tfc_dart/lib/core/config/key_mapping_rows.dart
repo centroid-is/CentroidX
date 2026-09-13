@@ -112,23 +112,47 @@ Future<KeyMappingFingerprint> readSharedKeyMappingFingerprint(
 /// An empty [kinds] answers a zero fingerprint rather than the whole table:
 /// "watch nothing" has to mean nothing, or a caller that computed its kind set
 /// and got none would silently start watching everything.
+///
+/// [preferenceIds] narrows the `preference` kind to those ids. **Every**
+/// shared preference is a row of that kind — the chat assistant's
+/// conversations, rewritten on every message; the menu order, rewritten on
+/// every page save; the recipe buckets — and a backend keyed on the kind as
+/// a whole restarted the plant's acquisition on each of them. A consumer
+/// names the preferences it bakes in and nothing else.
 Future<KeyMappingFingerprint> readSharedConfigFingerprint(
-    GeneratedDatabase db, Set<ConfigKind> kinds) async {
+    GeneratedDatabase db, Set<ConfigKind> kinds,
+    {Set<String> preferenceIds = const {}}) async {
   if (kinds.isEmpty) return const KeyMappingFingerprint(count: 0, revSum: 0);
-  final wireNames = [for (final kind in kinds) kind.wireName];
+  final narrowed = preferenceIds.isNotEmpty && kinds.contains(ConfigKind.preference);
+  final wholeKinds = [
+    for (final kind in kinds)
+      if (!(narrowed && kind == ConfigKind.preference)) kind.wireName,
+  ];
+  Expression<bool> matches(Expression<String> kind, Expression<String> id) {
+    Expression<bool> expr = wholeKinds.isEmpty
+        ? const Constant(false)
+        : kind.isIn(wholeKinds);
+    if (narrowed) {
+      expr = expr |
+          (kind.equals(ConfigKind.preference.wireName) &
+              id.isIn(preferenceIds.toList()));
+    }
+    return expr;
+  }
+
   final table = _configItems(db);
   final count = table.id.count();
   final revSum = table.rev.sum();
   final row = await (db.selectOnly(table)
         ..addColumns([count, revSum])
-        ..where(table.kind.isIn(wireNames) &
+        ..where(matches(table.kind, table.id) &
             table.scope.equals(ConfigScope.shared.wireName)))
       .getSingle();
   final changes = $ConfigChangeTableTable(db);
   final latest = changes.id.max();
   final logRow = await (db.selectOnly(changes)
         ..addColumns([latest])
-        ..where(changes.kind.isIn(wireNames) &
+        ..where(matches(changes.kind, changes.entityId) &
             changes.scope.equals(ConfigScope.shared.wireName)))
       .getSingle();
   return KeyMappingFingerprint(

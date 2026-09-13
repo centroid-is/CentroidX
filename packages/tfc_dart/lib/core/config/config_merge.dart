@@ -104,6 +104,49 @@ List<ConfigItem> mergeItemsForSave({
   return result.values.toList();
 }
 
+/// The baseline an editor should hold **after** a save that went through
+/// [mergeItemsForSave] (or `mergeForSave`), given what it wrote and what the
+/// store holds now.
+///
+/// It is the editor's *view*, not the store's state. For every item the
+/// editor holds: when the stored row now matches the editor's content, the
+/// editor's version landed (or was already there) and the baseline takes the
+/// stored row, new revision included; when it does not, the merge adopted
+/// another station's version and the editor is still showing its own, so
+/// the baseline keeps the entry it had — at the old revision, so the next
+/// save sees "moved elsewhere, untouched here" and adopts theirs again
+/// rather than "unmoved, the editor decides" and writing the old content
+/// back over their edit. An item the editor holds that the store no longer
+/// does is left off, and so is every stored row the editor does not hold:
+/// those are the rows the merge kept from other stations, and a baseline
+/// that named them would have the next save read their absence from the
+/// editor as a deletion.
+///
+/// Refreshing the baseline from the store alone — every stored row at its
+/// new revision — was what the first version did, and it was strictly worse
+/// than not refreshing: the second save deleted what the first had kept.
+List<ConfigItem> refreshedBaseline({
+  required List<ConfigItem>? oldBaseline,
+  required List<ConfigItem> editorWanted,
+  required List<ConfigItem> storedNow,
+}) {
+  final old = {for (final item in oldBaseline ?? const <ConfigItem>[]) _key(item): item};
+  final now = {for (final item in storedNow) _key(item): item};
+  final result = <ConfigItem>[];
+  for (final item in editorWanted) {
+    final key = _key(item);
+    final current = now[key];
+    if (current == null) continue;
+    if (_sameContent(item, current)) {
+      result.add(current);
+      continue;
+    }
+    final previous = old[key];
+    if (previous != null) result.add(previous);
+  }
+  return result;
+}
+
 String _key(ConfigItem item) => '${item.kind.wireName} ${item.id}';
 
 bool _sameContent(ConfigItem a, ConfigItem b) =>

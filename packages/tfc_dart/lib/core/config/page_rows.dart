@@ -141,8 +141,10 @@ Future<Map<String, dynamic>?> readSharedPreferencePayload(
         decoded.containsKey('type') &&
         decoded.containsKey('value')) {
       // The envelope. Its `value` is the preference — for a config document,
-      // the document's JSON text.
-      decoded = decodePreferencePayload(row.payload);
+      // the document's JSON text. A map with those two keys that is *not*
+      // an envelope (a tag this build does not know) decodes to null and is
+      // then taken as the document it is, rather than read as absent.
+      decoded = decodePreferencePayload(row.payload) ?? decoded;
     }
     if (decoded is String) decoded = jsonDecode(decoded);
   } on FormatException {

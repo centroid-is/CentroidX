@@ -474,6 +474,30 @@ void main() {
       expect(found.map((v) => v.invariant), [ConfigInvariant.exemptHasHistory]);
     });
 
+    test('a chat row with a change row is not a broken exemption', () async {
+      // Every build before the `chat.` prefix exemption wrote these rows
+      // with history, and the log is never pruned: on any plant that has
+      // opened the assistant once, reporting them would refuse the drop
+      // forever. The prefix is a storage decision about the future.
+      final db = _schemaDb();
+      addTearDown(db.close);
+
+      final item = await _seedClean(db,
+          kind: ConfigKind.preference, id: 'chat.history');
+      await _insertMatchingChange(db, item);
+
+      expect(await checkConfigConsistency(db), isEmpty);
+    });
+
+    test('a chat row with no history is clean too', () async {
+      final db = _schemaDb();
+      addTearDown(db.close);
+
+      await _insertItem(db, kind: ConfigKind.preference, id: 'chat.history');
+
+      expect(await checkConfigConsistency(db), isEmpty);
+    });
+
     test('an exempt entity with only a delete row is still reported',
         () async {
       // Page-image garbage collection is a plain delete and writes nothing.

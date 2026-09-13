@@ -326,6 +326,22 @@ void main() {
       expect(value.containsKey('type'), isFalse);
     });
 
+    test('a document that happens to carry `type` and `value` keys is the '
+        'document, not an envelope', () async {
+      // Read through `decodePreferencePayload`, which knows no `type` of
+      // "gauge", this decoded to null and the row read as absent.
+      final db = _schemaDb();
+      addTearDown(db.close);
+
+      await _insert(db,
+          kind: ConfigKind.preference,
+          id: 'gauge_config',
+          payload: {'type': 'gauge', 'value': 42, 'unit': 'kg'});
+
+      final value = await readSharedPreferencePayload(db, 'gauge_config');
+      expect(value, {'type': 'gauge', 'value': 42, 'unit': 'kg'});
+    });
+
     test('decodes an object payload', () async {
       final db = _schemaDb();
       addTearDown(db.close);

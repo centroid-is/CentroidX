@@ -17,6 +17,36 @@ import 'access_policy.dart';
 import 'database.dart';
 import 'preferences.dart';
 
+/// The first attach's outcome, per store: completed once the first
+/// `databaseProvider` answer has been acted on — the remote attached,
+/// migrated and reconciled, or the station found to be offline. See
+/// [configStoreReadyProvider].
+final Expando<Completer<void>> _firstAttach = Expando<Completer<void>>();
+
+/// How long a reader will wait for the first attach before deciding that
+/// what the mirror holds is what there is.
+///
+/// A station whose Postgres connection is still being retried has no first
+/// answer to wait for; a reader that waited forever would never build, and
+/// the alarm page would never open. After this long, absent is absent.
+const Duration kConfigStoreReadyTimeout = Duration(seconds: 20);
+
+/// Completes once this station has either seen the plant — the first attach
+/// done: migrations, reconcile, seed — or found itself offline, or waited
+/// [kConfigStoreReadyTimeout] for a database that has not answered.
+///
+/// This is what "absent" needs before it can mean "the plant has none".
+/// `ConfigStore.syncSettled` alone cannot say it: it resolves at once while
+/// no remote is attached yet, which is exactly the boot window in which a
+/// reader would otherwise seed an empty default over a plant with hundreds
+/// of alarms — and it did, silently, on cutover day.
+final configStoreReadyProvider = FutureProvider<void>((ref) async {
+  final guarded = await ref.watch(configStoreProvider.future);
+  final first = _firstAttach[guarded.inner];
+  if (first == null) return;
+  await first.future.timeout(kConfigStoreReadyTimeout, onTimeout: () {});
+});
+
 /// Only ever used off the happy path: the migration's verdict and an attach
 /// that failed. Nothing here logs per read or per write.
 final Logger _logger = Logger();
@@ -28,12 +58,16 @@ final Logger _logger = Logger();
 ///
 /// This is the third instance of the house rule (`preferences.dart:186-191`
 /// for the session, `state_man.dart:136-141` for the same). `databaseProvider`
-/// builds a **whole new [Database]** and invalidates itself on every reconnect
-/// (`database.dart:48-58`), so a `ref.watch` here would throw this store away
-/// and build another one each time Postgres blinked — losing the snapshot the
-/// plant's mimics are drawn from, the change stream every listener holds, and
-/// the live subscriptions downstream of it. The store keeps its identity and
-/// the *remote* is attached and detached underneath it by the listener below.
+/// builds a **whole new [Database]** whenever it is rebuilt — its own retry
+/// after an initial failure, an explicit invalidate from the server
+/// configuration page — so a `ref.watch` here would throw this store away
+/// and build another one each time, losing the snapshot the plant's mimics
+/// are drawn from, the change stream every listener holds, and the live
+/// subscriptions downstream of it. The store keeps its identity and the
+/// *remote* is attached and detached underneath it by the listener below.
+/// (A Postgres restart alone does not rebuild the provider: the pool
+/// reconnects under the same handle, and the sync engine's channel
+/// re-listen and pull are what recover.)
 ///
 /// That is also why the re-attach is not optional. `Database.db` is never
 /// reassigned anywhere in this tree, so the handle taken at the last attach is
@@ -75,6 +109,8 @@ final configStoreProvider = FutureProvider<GuardedConfigStore>((ref) async {
   // The attachment, serialised: a reconnect that arrives while the previous
   // attach is still migrating must queue behind it rather than interleave two
   // migrations and two reconciles on one store.
+  final first = Completer<void>();
+  _firstAttach[store] = first;
   var pending = Future<void>.value();
   ref.listen<AsyncValue<Database?>>(
     databaseProvider,
@@ -82,10 +118,15 @@ final configStoreProvider = FutureProvider<GuardedConfigStore>((ref) async {
       // A provider that has not answered yet is not a station that has gone
       // offline. Detaching on `loading` would drop the remote on every
       // refresh, and the write path would report "the shared database is
-      // unreachable" to an operator whose database is fine.
-      if (next.isLoading && !next.hasValue) return;
+      // unreachable" to an operator whose database is fine. Nor is a
+      // refresh that still carries the previous value an answer: acting on
+      // it would re-run the migrations against a handle the provider is in
+      // the middle of replacing — and has already closed.
+      if (next.isLoading) return;
       final db = next.valueOrNull;
-      pending = pending.then((_) => _attach(store, guarded, db));
+      pending = pending.then((_) => _attach(store, guarded, db)).then((_) {
+        if (!first.isCompleted) first.complete();
+      });
     },
     fireImmediately: true,
   );
@@ -105,26 +146,40 @@ Future<void> _attach(
     store.detachRemote();
     return;
   }
-  try {
-    // Both migrations before the store is handed to the sync engine, and in
-    // this order: the key mappings first because Phase 2 shipped them first
-    // and a plant mid-rollout may have them on rows already, the pages second.
-    // They take different advisory locks and share nothing but the
-    // transaction discipline, so a station that loses one may still win the
-    // other — which is why the outcome of each is logged on its own line.
+  // Both blob migrations before the store is handed to the sync engine, and
+  // in this order: the key mappings first because Phase 2 shipped them first
+  // and a plant mid-rollout may have them on rows already, the pages second.
+  // They take different advisory locks and share nothing but the transaction
+  // discipline, so a station that loses one may still win the other — which
+  // is why the outcome of each is logged on its own line.
+  //
+  // **Each in its own try, and the attach after all of them regardless.** A
+  // migration throws on an unreadable blob, by design; caught around the
+  // whole sequence, that throw skipped the attach, and the station spent the
+  // rest of its session refusing every save as "offline" against a healthy
+  // Postgres with no pull and no sweep. The sync engine's own empty-remote
+  // guard is what protects the mirror from an unmigrated plant; a migration
+  // that could not run is a loud line, not a reason to stay unattached.
+  await _guarded('key_mappings', () async {
     _logMigration('key_mappings', await migrateKeyMappingsBlobToRows(db));
+  });
+  await _guarded('pages', () async {
     _logMigration('pages', await migratePageBlobToRows(db));
-    // Third, and after both, because it refuses to run until their markers
-    // are there: its families are what is *left* in `flutter_preferences`
-    // once the two blobs have gone, and a run before them would write rows
-    // those migrations are about to write differently.
-    //
-    // Wired here rather than behind a hand-run command, and that is the whole
-    // delivery mechanism: the cutover window's step 4 is "deploy the build and
-    // start one station", and this is what makes that sentence true. A
-    // migration only invocable by hand would leave the window with no command
-    // and 04-12's drop gates unreachable.
+  });
+  // Third, and after both, because it refuses to run until their markers
+  // are there: its families are what is *left* in `flutter_preferences`
+  // once the two blobs have gone, and a run before them would write rows
+  // those migrations are about to write differently.
+  //
+  // Wired here rather than behind a hand-run command, and that is the whole
+  // delivery mechanism: the cutover window's step 4 is "deploy the build and
+  // start one station", and this is what makes that sentence true. A
+  // migration only invocable by hand would leave the window with no command
+  // and 04-12's drop gates unreachable.
+  await _guarded('preferences', () async {
     _logPreferenceMigration(await migratePreferencesIntoRows(db));
+  });
+  try {
     store.attachRemote(db);
     await guarded.seedDefaultIfEmpty();
   } catch (error, stackTrace) {
@@ -132,6 +187,23 @@ Future<void> _attach(
       'The shared configuration store could not be attached. This station '
       'serves the key mappings its local mirror holds and will try again at '
       'the next database reconnect.',
+      error: error,
+      stackTrace: stackTrace,
+    );
+  }
+}
+
+/// Runs one migration, and turns its throw into a line rather than a skipped
+/// attach.
+Future<void> _guarded(String label, Future<void> Function() run) async {
+  try {
+    await run();
+  } catch (error, stackTrace) {
+    _logger.e(
+      'The $label migration failed on this station. The plant is NOT '
+      'migrated for it and the old blob is untouched; another station may '
+      'succeed, and this one attaches and serves what its mirror holds '
+      'meanwhile.',
       error: error,
       stackTrace: stackTrace,
     );

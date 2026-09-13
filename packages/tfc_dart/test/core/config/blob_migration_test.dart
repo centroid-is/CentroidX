@@ -148,6 +148,46 @@ void main() {
       expect(log.oldValue, contains('seeded'));
     });
 
+    test('a row edited on the rows — revision two or beyond — is kept, not '
+        'overwritten from the blob', () async {
+      // Weeks of relational edits on `p1` and a blob nobody has written to
+      // since the seed. The marker is missing — deleted by hand, or the
+      // copy that wrote the rows was on a build before the marker existed.
+      await seedBlob(_blob);
+      await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
+            kind: ConfigKind.page.wireName,
+            id: 'p1',
+            scope: ConfigScope.shared.wireName,
+            payload: '{"edited":"on the rows"}',
+            rev: const Value(7),
+            updatedAt: DateTime.utc(2026, 6, 1),
+            updatedBy: 'gudrun',
+          ));
+
+      expect(await runCopy(), MigrationOutcome.migrated);
+
+      final p1 = (await items()).singleWhere((r) => r.id == 'p1');
+      expect(p1.payload, '{"edited":"on the rows"}');
+      expect(p1.rev, 7);
+      expect((await changes()).where((c) => c.entityId == 'p1'), isEmpty,
+          reason: 'nothing was written for it, so nothing is logged for it');
+      expect((await items()).map((r) => r.id), contains('a0'),
+          reason: 'the rest of the blob still lands');
+    });
+
+    test('a blob holding one identity twice is unreadable, and unwinds',
+        () async {
+      await seedBlob(_blob);
+
+      await expectLater(
+        runCopy(parse: (_) => [_parse(_blob).first, _parse(_blob).first]),
+        throwsA(isA<FormatException>()),
+      );
+
+      expect(await items(), isEmpty);
+      expect(await changes(), isEmpty);
+    });
+
     test('a row of a kind outside kinds is not', () async {
       await seedBlob(_blob);
       await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(

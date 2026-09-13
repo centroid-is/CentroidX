@@ -9,6 +9,8 @@ import '../models/menu_item.dart';
 import 'package:tfc_dart/core/fuzzy_match.dart';
 import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_merge.dart'
+    show refreshedBaseline;
 import 'package:tfc_dart/core/config/page_rows.dart' show fallbackPagePathFor;
 import 'package:tfc_dart/core/config/config_store.dart';
 import 'package:tfc_dart/core/config/preference_payload.dart'
@@ -213,7 +215,19 @@ class PageManager {
   /// pre-`runApp` manager, and legacy tests — keeps today's blob write and
   /// therefore cannot reach a shared row at all.
   final Future<ConfigWriteResult> Function(List<ConfigItem> wanted,
-      {String? reason})? writeItems;
+      {String? reason, List<ConfigItem>? derivedFrom})? writeItems;
+
+  /// Where the `page_editor_data` blob is read from when [store] has no page
+  /// rows: the **device-local** store, where the one-shot import put it.
+  ///
+  /// Null falls back to [prefs], which is right for the pre-`runApp` manager
+  /// (built over the device-local store already) and wrong for the provider's
+  /// (built over the shared row store, which never holds that key — it is
+  /// abandoned by the migration). Without this the provider's manager read
+  /// null, fell through to the built-in one-page default, and replaced the
+  /// real pages `main()` had loaded the moment it answered — for the length
+  /// of another station's migration, with no line saying why.
+  final PreferencesApi? blobPrefs;
 
   /// The page and asset rows [pages] were loaded from, as they stood then —
   /// what a save is a save *over*.
@@ -244,7 +258,16 @@ class PageManager {
     required this.prefs,
     this.store,
     this.writeItems,
+    this.blobPrefs,
+    this.preflight,
   });
+
+  /// Run at the top of [save], before anything is read or decided: the
+  /// access check, so a session that may not save pages is refused — and
+  /// the refusal recorded — before the fallback gate has a chance to tell it
+  /// to wait for the plant's pages instead. Null runs no preflight; the
+  /// check inside [writeItems] still stands.
+  final Future<void> Function()? preflight;
 
   /// Fills [pages] and [topLevelOrder] from the best source this station has.
   ///
@@ -293,7 +316,7 @@ class PageManager {
     if (_loadFromRows()) return;
     baselineItems = null;
 
-    final jsonString = await prefs.getString(storageKey);
+    final jsonString = await (blobPrefs ?? prefs).getString(storageKey);
     if (jsonString != null) {
       try {
         fromJson(jsonString);
@@ -515,20 +538,68 @@ class PageManager {
       return null;
     }
 
+    await preflight?.call();
     _adoptStoredIdentities();
-    var items = pageItems(pages);
+    // What the editor holds, before the merge rewrites it against the plant;
+    // the baseline after the save is computed from this.
+    final editorWanted = pageItems(pages);
+    var items = editorWanted;
     final store = this.store;
+    List<ConfigItem>? stored;
     if (store != null) {
+      stored = store.itemsOf(const {ConfigKind.page, ConfigKind.asset});
+      // A layout this station is serving off the blob or the built-in default
+      // is not the plant's rows, and writing it while the plant's own pages
+      // have not arrived — no page rows, and no marker saying the plant has
+      // none — would put a second copy of every page beside the migrated one
+      // (the blob's, under freshly minted ids), or the built-in Home page
+      // over a plant that has fifty. The rows arrive with the next sweep;
+      // the save waits for them.
+      if (servingFallback && stored.isEmpty && !_plantPagesMigrated(store)) {
+        throw StateError('Not saved — this station has not received the '
+            "plant's pages yet (their migration has not run, or its result "
+            'has not reached here). Nothing was written; wait a moment and '
+            'reload, then make your change again.');
+      }
       items = mergeForSave(
         wanted: items,
-        stored: store.itemsOf(const {ConfigKind.page, ConfigKind.asset}),
+        stored: stored,
         baseline: baselineItems,
       );
     }
-    final result = await writeItems(items, reason: reason);
-    await _saveTopLevelOrder();
+    // One read, used both to merge against and as what the write is derived
+    // from — so a page the sync pulls in between is neither merged over nor
+    // diffed away.
+    final result = await writeItems(items, reason: reason, derivedFrom: stored);
+    if (store != null) {
+      // The editor's view after this save — see `refreshedBaseline` for why
+      // it is not simply the store's rows.
+      baselineItems = refreshedBaseline(
+        oldBaseline: baselineItems,
+        editorWanted: editorWanted,
+        storedNow: store.itemsOf(const {ConfigKind.page, ConfigKind.asset}),
+      );
+    }
+    // The order is a shared row of its own, written after the rows landed. A
+    // refusal here — the connection blinking between the two — is a menu in
+    // yesterday's order, and is logged as that rather than thrown as a save
+    // that failed: the rows are in, and a caller told otherwise would leave
+    // the editor holding a pre-save baseline against post-save rows.
+    try {
+      await _saveTopLevelOrder();
+    } catch (e) {
+      _logger.w('The menu order was not saved after the pages were; the '
+          'next save retries it: $e');
+    }
     return result;
   }
+
+  /// Whether the plant's pages have been migrated onto rows, by the marker
+  /// the migration writes last — the only thing that tells a plant with no
+  /// pages from one whose pages have not arrived here yet.
+  static bool _plantPagesMigrated(ConfigStore store) => store
+      .itemsOf(const {ConfigKind.preference})
+      .any((item) => item.id == kPagesMigratedMarkerId);
 
   /// An empty order is never worth writing: it only arises on a manager that
   /// was constructed without load(), and writing it would wipe an order some

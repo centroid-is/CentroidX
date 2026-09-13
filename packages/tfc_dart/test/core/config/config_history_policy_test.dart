@@ -182,6 +182,57 @@ void main() {
       expect(decodeReconcileNudge('reconcile:pipe_dream'), isEmpty);
     });
 
+    test('the id form names the rows per kind, and the kind form still '
+        'reads it', () {
+      final payload = encodeReconcileNudgeFor({
+        ConfigKind.pageImage: {'sha256-b', 'sha256-a'},
+        ConfigKind.preference: {'chat.history'},
+      });
+      expect(payload,
+          'reconcile:page_image=sha256-a,sha256-b;preference=chat.history');
+      expect(decodeReconcileNudgeIds(payload), {
+        ConfigKind.pageImage: {'sha256-a', 'sha256-b'},
+        ConfigKind.preference: {'chat.history'},
+      });
+      expect(decodeReconcileNudge(payload),
+          {ConfigKind.pageImage, ConfigKind.preference},
+          reason: 'a station on the previous build reads the kinds off the '
+              'new form and sweeps them, as it always did');
+    });
+
+    test('the kind-only form decodes to no ids, and a non-nudge to null', () {
+      expect(decodeReconcileNudgeIds(encodeReconcileNudge({ConfigKind.page})),
+          isEmpty);
+      expect(decodeReconcileNudgeIds(''), isNull);
+    });
+
+    test('an id carrying a separator sends the kind form instead', () {
+      // A mapping key with a comma or a `=` would be split wrongly; the
+      // kind form costs a sweep and is never wrong.
+      final payload = encodeReconcileNudgeFor({
+        ConfigKind.keyMapping: {'CN04.Belt.Speed', 'weird,key'},
+      });
+      expect(payload, encodeReconcileNudge({ConfigKind.keyMapping}));
+      expect(decodeReconcileNudgeIds(payload), isEmpty);
+    });
+
+    test('more ids than fit under pg_notify\'s cap fall back to the kind '
+        'form', () {
+      final many = {
+        ConfigKind.pageImage: {
+          for (var i = 0; i < 400; i++) 'sha256-${i.toString().padLeft(60, '0')}',
+        },
+      };
+      final payload = encodeReconcileNudgeFor(many);
+      expect(payload, encodeReconcileNudge({ConfigKind.pageImage}));
+      expect(payload.length, lessThan(kReconcileNudgeMaxBytes));
+    });
+
+    test('a kind this build does not know is dropped from the id form', () {
+      expect(decodeReconcileNudgeIds('reconcile:pipe_dream=x;page_image=a'),
+          {ConfigKind.pageImage: {'a'}});
+    });
+
     test('the widest possible payload is nowhere near pg_notify\'s cap', () {
       final widest = encodeReconcileNudge(ConfigKind.values);
       expect(widest.length, lessThan(200),

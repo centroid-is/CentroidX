@@ -46,7 +46,8 @@ void main() {
       );
       expect(byId(merged), {'a': 'A', 'b': 'B'});
       expect(merged.singleWhere((i) => i.id == 'b').rev, 1,
-          reason: 'kept as stored, revision included: the CAS needs it');
+          reason: 'kept as stored, revision included — it is the stored row '
+              'itself, not a copy the editor built');
     });
 
     test('with the same id and content on both sides is nothing to write', () {
@@ -151,5 +152,85 @@ void main() {
       baseline: stored,
     );
     expect(byId(merged), {'a': 'A', 'b': 'B2'});
+  });
+
+  group('refreshedBaseline: the editor\'s view after a save', () {
+    test('an item the editor\'s content landed on takes the stored row, '
+        'revision included', () {
+      final storedNow = [key('a', 'MINE', rev: 2)];
+      final baseline = refreshedBaseline(
+        oldBaseline: [key('a', 'A', rev: 1)],
+        editorWanted: [edited('a', 'MINE')],
+        storedNow: storedNow,
+      );
+      expect(baseline, hasLength(1));
+      expect(identical(baseline.single, storedNow.single), isTrue,
+          reason: 'the stored row itself: the next save\'s compare-and-swap '
+              'reads the revision off it');
+    });
+
+    test('an item the merge adopted from elsewhere keeps the old baseline '
+        'entry, so the next save adopts theirs again rather than writing '
+        'the editor\'s stale content over it', () {
+      // The editor still shows `A`; the plant holds `THEIRS` at rev 2 and
+      // the merge kept it. A baseline that took the stored row here would
+      // have the next save see "unmoved elsewhere, the editor decides" and
+      // write `A` over `THEIRS`.
+      final baseline = refreshedBaseline(
+        oldBaseline: [key('a', 'A', rev: 1)],
+        editorWanted: [edited('a', 'A')],
+        storedNow: [key('a', 'THEIRS', rev: 2)],
+      );
+      expect(byId(baseline), {'a': 'A'});
+      expect(baseline.single.rev, 1);
+
+      final next = mergeItemsForSave(
+        wanted: [edited('a', 'A'), edited('c', 'NEW')],
+        stored: [key('a', 'THEIRS', rev: 2)],
+        baseline: baseline,
+      );
+      expect(byId(next), {'a': 'THEIRS', 'c': 'NEW'});
+    });
+
+    test('a row the merge kept from another station is *not* in the '
+        'baseline: naming it would have the next save delete it', () {
+      // `b` was added elsewhere while the editor was open; the merge kept it
+      // and the editor does not show it. The first version of this refresh
+      // took every stored row, and the second save deleted `b` as "in the
+      // baseline, not on screen".
+      final baseline = refreshedBaseline(
+        oldBaseline: [key('a', 'A')],
+        editorWanted: [edited('a', 'A2')],
+        storedNow: [key('a', 'A2', rev: 2), key('b', 'B', rev: 1)],
+      );
+      expect(byId(baseline), {'a': 'A2'});
+
+      final next = mergeItemsForSave(
+        wanted: [edited('a', 'A3')],
+        stored: [key('a', 'A2', rev: 2), key('b', 'B', rev: 1)],
+        baseline: baseline,
+      );
+      expect(byId(next), {'a': 'A3', 'b': 'B'},
+          reason: 'the second save keeps what the first one kept');
+    });
+
+    test('an item the editor holds that the store no longer does is left '
+        'off', () {
+      final baseline = refreshedBaseline(
+        oldBaseline: [key('a', 'A'), key('b', 'B')],
+        editorWanted: [edited('a', 'A'), edited('b', 'B')],
+        storedNow: [key('a', 'A', rev: 1)],
+      );
+      expect(byId(baseline), {'a': 'A'});
+    });
+
+    test('with no old baseline, only what landed is in the new one', () {
+      final baseline = refreshedBaseline(
+        oldBaseline: null,
+        editorWanted: [edited('a', 'A'), edited('b', 'B')],
+        storedNow: [key('a', 'A'), key('b', 'THEIRS', rev: 2)],
+      );
+      expect(byId(baseline), {'a': 'A'});
+    });
   });
 }

@@ -51,13 +51,13 @@
 /// for both backends — which is also what makes an in-memory SQLite stand-in
 /// for the remote a real test of the SQL rather than a mock.
 ///
-/// If a branch ever becomes necessary, it must be
-/// `db.executor.dialect == SqlDialect.postgres`. **Never `AppDatabase.postgres`
-/// or `AppDatabase.native`**: both are `false` on every station, because the
-/// app builds its database with [AppDatabase.spawn] and the resulting executor
-/// is a DriftIsolate *remote*, not a `PgDatabase`. The remote executor reports
-/// the server's dialect from its handshake, which is why the `executor.dialect`
-/// form is right and the `is PgDatabase` form is not.
+/// If a branch ever becomes necessary, it must be on the dialect —
+/// `db.executor.dialect == SqlDialect.postgres`, which is what
+/// `AppDatabase.postgres` and `AppDatabase.native` now read too. They used
+/// to be `is PgDatabase` / `is NativeDatabase` and were `false` on every
+/// station, because the app builds its database with [AppDatabase.spawn] and
+/// the resulting executor is a DriftIsolate *remote*. The remote executor
+/// reports the server's dialect from its handshake.
 library;
 
 import 'dart:async';
@@ -458,11 +458,18 @@ class ConfigStore {
   /// with the ordinary [ConfigStoreOfflineException] rather than returning a
   /// success nobody made.
   Future<T> serialiseWrite<T>(Future<T> Function() task) async {
-    final sync = _sync;
-    if (sync == null || _ConfigSync.onChain) return task();
-    final done = <T>[];
-    await sync.serialise(() async => done.add(await task()));
-    return done.isEmpty ? await task() : done.single;
+    while (true) {
+      final sync = _sync;
+      if (sync == null || _ConfigSync.onChain) return task();
+      final done = <T>[];
+      await sync.serialise(() async => done.add(await task()));
+      if (done.isNotEmpty) return done.single;
+      // The engine stopped between the queue and the run: a detach, or a
+      // re-attach that replaced it. Not run directly — that would put the
+      // task off the chain against whatever remote is attached *now* — but
+      // round again on the current engine, or straight to the refusal when
+      // there is none.
+    }
   }
 
   /// Completes when every sync task queued so far has been applied.
@@ -611,6 +618,25 @@ class ConfigStore {
   /// connection dies mid-write, [ConfigStoreUnsafePoolException] when the
   /// pool is wider than one, and [ConfigConflict] when another station moved
   /// a row first. In every one of those cases nothing is committed anywhere.
+  ///
+  /// ## [derivedFrom]: the items [wanted] was built against
+  ///
+  /// Every caller assembles [wanted] as "the complete set of these kinds"
+  /// from a read of the snapshot — a preference write from the other
+  /// preferences, a page save from the pages it merged against — and does so
+  /// **before** the write is queued on the sync engine's chain. The diff,
+  /// which decides what is *removed*, runs on the chain. If a pull or a sweep
+  /// lands between the two, the snapshot holds rows the caller never saw,
+  /// [wanted] lacks them, and a diff against the live snapshot deletes them —
+  /// guarded by a revision that matches, because the snapshot was just
+  /// refreshed from the remote. The compare-and-swap cannot catch that.
+  ///
+  /// So the diff is computed against [derivedFrom] — the caller's own read —
+  /// and never against the snapshot as it stands at write time. A row that
+  /// arrived in between is in neither list and is left alone; a row that
+  /// moved in between fails its compare-and-swap, which is the right answer.
+  /// Omitted, the snapshot at write time is used, which is only correct for
+  /// a caller that built [wanted] on the chain itself (undo does).
   Future<ConfigWriteResult> writeItems({
     required Set<ConfigKind> kinds,
     required List<ConfigItem> wanted,
@@ -618,6 +644,7 @@ class ConfigStore {
     required String who,
     required String roleName,
     String? reason,
+    List<ConfigItem>? derivedFrom,
   }) =>
       serialiseWrite(() => _writeItems(
             kinds: kinds,
@@ -626,6 +653,7 @@ class ConfigStore {
             who: who,
             roleName: roleName,
             reason: reason,
+            derivedFrom: derivedFrom,
           ));
 
   Future<ConfigWriteResult> _writeItems({
@@ -635,6 +663,7 @@ class ConfigStore {
     required String who,
     required String roleName,
     String? reason,
+    List<ConfigItem>? derivedFrom,
   }) async {
     final attempted = _describeItems(kinds, wanted);
     final seen = <String>{};
@@ -690,7 +719,12 @@ class ConfigStore {
           attempted: attempted, poolSize: poolSize);
     }
 
-    final stored = itemsOf(kinds);
+    // The caller's read, or the snapshot for a caller on the chain — see
+    // [writeItems]. Restricted to [kinds] either way: an item of another kind
+    // in the caller's list would be diffed as a removal.
+    final stored = derivedFrom == null
+        ? itemsOf(kinds)
+        : [for (final item in derivedFrom) if (kinds.contains(item.kind)) item];
     // The revisions this save compares-and-swaps against, captured **once**,
     // here, with the diff. A pull or a sweep may swap `_snapshot` at any await
     // below — including between two statements of the transaction. Reading the
@@ -897,18 +931,23 @@ class ConfigStore {
   ///     an ordinary write has when a notification is lost with its
   ///     connection.
   Future<void> _nudgeExemptKinds(AppDatabase remote, ConfigDiff diff) async {
-    final kinds = <ConfigKind>{
-      for (final item in [...diff.added, ...diff.changed, ...diff.removed])
-        if (historyExempt(item.kind, item.id)) item.kind,
-    };
-    if (kinds.isEmpty) return;
+    final ids = <ConfigKind, Set<String>>{};
+    for (final item in [...diff.added, ...diff.changed, ...diff.removed]) {
+      if (historyExempt(item.kind, item.id)) {
+        (ids[item.kind] ??= <String>{}).add(item.id);
+      }
+    }
+    if (ids.isEmpty) return;
     final send = notifyChannelForTest ?? remote.notifyChannel;
     try {
-      await send(kConfigChangeChannel, encodeReconcileNudge(kinds));
+      // The rows by id, so the other stations re-read exactly these; the
+      // kind-only form when they would not fit the payload.
+      await send(kConfigChangeChannel, encodeReconcileNudgeFor(ids));
     } catch (e) {
       _logger.w('the reconcile nudge for '
-          '${kinds.map((k) => k.wireName).join(', ')} was not sent; the other '
-          'stations will pick this write up on their next sweep instead: $e');
+          '${ids.keys.map((k) => k.wireName).join(', ')} was not sent; the '
+          'other stations will pick this write up on their next sweep '
+          'instead: $e');
     }
   }
 

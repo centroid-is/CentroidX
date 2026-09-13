@@ -675,6 +675,7 @@ Future<ConfigWriteResult> executeUndo(
       who: who,
       roleName: roleName,
       reason: undoReason(plan.originalActionId),
+      derivedFrom: stored.values.toList(),
     );
   });
 }

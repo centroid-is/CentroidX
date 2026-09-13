@@ -171,6 +171,7 @@ class PageImageStore {
         item,
       ],
       kind: ConfigKind.pageImage,
+      derivedFrom: stored.values.toList(),
     );
     return id;
   }
@@ -232,7 +233,8 @@ class PageImageStore {
     // comes first, and a cleanup that reports failure on every save of a
     // station with no Postgres is worse than one that quietly finds nothing.
     if (removed == 0) return 0;
-    await store.save(keep, kind: ConfigKind.pageImage);
+    await store.save(keep,
+        kind: ConfigKind.pageImage, derivedFrom: stored.values.toList());
     return removed;
   }
 

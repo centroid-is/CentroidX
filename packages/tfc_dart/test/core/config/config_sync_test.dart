@@ -455,6 +455,45 @@ void main() {
       expect(emitted.single.removed.map((i) => i.id), ['CN07.Belt.Speed']);
     });
 
+    test('a log naming a kind the remote holds no rows and no marker of is '
+        'refused, and the watermark stays', () async {
+      // The remote restored from a pre-migration backup, or its config_item
+      // table emptied by hand, while its change log still says "deleted".
+      // The sweep refuses that as "every key deleted"; the pull, which
+      // consumes the same log, must refuse it the same way — or the first
+      // notification after the restore blanks every mimic on the floor.
+      await remoteDelete('CN04.Belt.Speed');
+      await remoteDelete('CN07.Belt.Speed');
+      store.attachRemoteDatabase(remote, startSync: false);
+      watch();
+
+      await store.pullChanges();
+      await pump();
+
+      expect(store.keyMappings.nodes, hasLength(2));
+      expect(await mirrorRows(), hasLength(2));
+      expect(emitted, isEmpty);
+      expect(store.watermark, 0,
+          reason: 'the rows were not applied, so the log entries are not '
+              'consumed: once the remote is put right, the next pull applies '
+              'them');
+    });
+
+    test('with the marker on the remote, the same log empties this station',
+        () async {
+      await seedMigrationMarker();
+      await remoteDelete('CN04.Belt.Speed');
+      await remoteDelete('CN07.Belt.Speed');
+      store.attachRemoteDatabase(remote, startSync: false);
+      watch();
+
+      await store.pullChanges();
+      await pump();
+
+      expect(store.keyMappings.nodes, isEmpty);
+      expect(store.watermark, 2);
+    });
+
     test('the sweep catches a row the change log never mentioned', () async {
       // The unit-level stand-in for the SERIAL gap: a row that moved with no
       // consumable log entry behind it. The integration suite proves the gap

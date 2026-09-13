@@ -1025,7 +1025,7 @@ void main() {
         pages: pages,
         prefs: prefs,
         store: store,
-        writeItems: (wanted, {reason}) {
+        writeItems: (wanted, {reason, derivedFrom}) {
           onWrite?.call();
           return store.writeItems(
             kinds: const {ConfigKind.page, ConfigKind.asset},
@@ -1034,6 +1034,7 @@ void main() {
             who: 'test',
             roleName: 'configure',
             reason: reason,
+            derivedFrom: derivedFrom,
           );
         },
       );
@@ -1185,13 +1186,14 @@ void main() {
         pages: {},
         prefs: prefs,
         store: store,
-        writeItems: (wanted, {reason}) => store.writeItems(
+        writeItems: (wanted, {reason, derivedFrom}) => store.writeItems(
           kinds: const {ConfigKind.page, ConfigKind.asset},
           wanted: wanted,
           actionId: 'operator-save',
           who: 'operator',
           roleName: 'configure',
           reason: reason,
+          derivedFrom: derivedFrom,
         ),
       );
       // The fallback load, exactly as it happened at boot: the rows are

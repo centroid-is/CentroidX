@@ -4,6 +4,7 @@ import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'package:tfc_dart/core/alarm.dart';
+import 'package:tfc_dart/core/config/config_item.dart' show ConfigKind;
 import 'config_store.dart';
 import 'preferences.dart';
 import 'state_man.dart';
@@ -22,7 +23,11 @@ Future<AlarmMan> alarmMan(Ref ref) async {
   // seed below must not write an empty configuration into a plant with two
   // hundred alarms — the store would refuse it as a conflict, and swallow
   // that, but the *read* that follows would still be null for this boot.
-  // Settles at once when no remote is attached.
+  // Settles at once when no remote is attached — which is why the readiness
+  // provider is awaited first: it completes once the first attach has been
+  // acted on (or the station is offline, or the database has not answered
+  // in twenty seconds), and only then does `syncSettled` mean anything.
+  await ref.read(configStoreReadyProvider.future);
   final store = (await ref.read(configStoreProvider.future)).inner;
   await store.syncSettled;
 
@@ -38,7 +43,28 @@ Future<AlarmMan> alarmMan(Ref ref) async {
         'alarm_man_config', jsonEncode(AlarmManConfig(alarms: [])));
   }
 
-  return await AlarmMan.create(prefs, stateMan);
+  final alarmMan = await AlarmMan.create(prefs, stateMan);
+
+  // The row can still arrive *after* this built: a station that booted while
+  // another was migrating, or one whose first attach timed out. Nothing else
+  // rebuilds this provider on a shared change — the editor's invalidate is
+  // for edits made here — so the store's own feed does it, when the row it
+  // announces differs from what this instance was built from. Our own saves
+  // announce a row equal to the config they wrote, so they rebuild nothing
+  // twice. The store's stream, not the preference store's: the latter is
+  // rebuilt on every database rebuild and a listener on it goes deaf (D-2).
+  final feed = store.keyMappingChanges.listen((diff) async {
+    final touched = [...diff.added, ...diff.changed, ...diff.removed].any(
+        (item) =>
+            item.kind == ConfigKind.preference && item.id == 'alarm_man_config');
+    if (!touched) return;
+    final now = await prefs.getString('alarm_man_config');
+    if (now == jsonEncode(alarmMan.config.toJson())) return;
+    ref.invalidateSelf();
+  });
+  ref.onDispose(feed.cancel);
+
+  return alarmMan;
 }
 
 /// The alarm list of whichever [AlarmMan] is current, or `null` when there is
