@@ -82,7 +82,10 @@ Future<void> _dispose(WidgetTester tester) async {
 }
 
 void main() {
-  tearDown(() => WebViewAssetView.debugSurfaceFactory = null);
+  tearDown(() async {
+    WebViewAssetView.debugSurfaceFactory = null;
+    await WebViewSurfacePool.instance.clear();
+  });
 
   testWidgets('covers the tile with the site until the page is up',
       (tester) async {
@@ -236,9 +239,13 @@ void main() {
     await tester.pumpWidget(_host(config));
     await tester.pump();
     expect(surfaces, hasLength(2));
-    expect(surfaces.first.disposed, isTrue);
+    expect(surfaces.first.disposed, isFalse,
+        reason: 'the replaced browser is parked for its own address');
+    expect(WebViewSurfacePool.instance.urls,
+        ['https://grafana.plant/d/abc/line-1']);
     expect(find.text('other.plant'), findsOneWidget);
 
+    surfaces.first.report.value = const WebViewLoad.loading();
     surfaces.first.report.value = const WebViewLoad.shown();
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
@@ -248,6 +255,70 @@ void main() {
     await _dispose(tester);
     // After the tile is gone, news is nobody's business and harms nothing.
     surfaces.last.report.value = const WebViewLoad.shown();
+  });
+
+  testWidgets('a taken-back browser with its page up is shown uncovered',
+      (tester) async {
+    // The whole point of keeping browsers warm: the page is there the frame
+    // the tile is, so nothing must cover it, not even for a fade.
+    final surface = _LoadingSurface();
+    var built = 0;
+    WebViewAssetView.debugSurfaceFactory = (_) {
+      built++;
+      return surface;
+    };
+
+    await tester.pumpWidget(_host(_config()));
+    await tester.pump();
+    surface.report.value = const WebViewLoad.shown();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await _dispose(tester);
+
+    await tester.pumpWidget(_host(_config()));
+    await tester.pump();
+
+    expect(built, 1);
+    expect(_cover, findsNothing);
+    expect(_bar, findsNothing);
+    expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
+    await _dispose(tester);
+  });
+
+  testWidgets('a taken-back browser still loading is covered until it is up',
+      (tester) async {
+    final surface = _LoadingSurface();
+    WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+    await tester.pumpWidget(_host(_config()));
+    await tester.pump();
+    await _dispose(tester);
+
+    await tester.pumpWidget(_host(_config()));
+    await tester.pump();
+    expect(_cover, findsOneWidget);
+
+    surface.report.value = const WebViewLoad.shown();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(_cover, findsNothing);
+    await _dispose(tester);
+  });
+
+  testWidgets("a browser that couldn't reach its page is not parked",
+      (tester) async {
+    // Parking it would hand the next tile "Can't reach" with nothing to retry
+    // it; a fresh browser at least tries again.
+    final surface = _LoadingSurface(const WebViewLoad.failed());
+    WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+    await tester.pumpWidget(_host(_config()));
+    await tester.pump();
+    expect(_cantReach, findsOneWidget);
+    await _dispose(tester);
+
+    expect(surface.disposed, isTrue);
+    expect(WebViewSurfacePool.instance.size, 0);
   });
 
   group('web view loading goldens',
