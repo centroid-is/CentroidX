@@ -6,6 +6,10 @@
 # is missing, and say so.
 #
 #   usage: os/test/installer-test.sh      (or `make test` in os/)
+#
+# The variables assigned below are read by the sourced installer's functions,
+# which shellcheck cannot see through the `.` -- hence SC2034 off for the file.
+# shellcheck disable=SC2034
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -16,7 +20,7 @@ trap 'rm -rf "$tmp"' EXIT
 # `source` hands the caller's positional parameters to the script, and the
 # script parses them as its own options.
 set --
-# shellcheck source=../overlays/installer/usr/local/bin/centroidx-install
+# shellcheck disable=SC1091
 . "$installer"
 PAYLOAD="$tmp/payload"
 RUNTIME_DIR="$tmp/run"
@@ -35,6 +39,7 @@ echo "read_kv"
 kv="$tmp/kv"
 printf 'A=b c\nB=has$dollar\nKEY=abc==\nEMPTY=\n# C=comment\nD=first=second\n' > "$kv"
 expect_eq "keeps a space"               "$(read_kv "$kv" A)"     'b c'
+# shellcheck disable=SC2016
 expect_eq "keeps a dollar literally"    "$(read_kv "$kv" B)"     'has$dollar'
 expect_eq "keeps base64 padding"        "$(read_kv "$kv" KEY)"   'abc=='
 expect_eq "empty value is empty"        "$(read_kv "$kv" EMPTY)" ''
