@@ -57,6 +57,14 @@ struct DartLivenessStamp {
   // channel). False stamps are still liveness -- they say the isolate is
   // running, just not ready.
   bool startup_complete = false;
+  // Whether this stamp carries a raster probe at all. A Dart build older
+  // than the probe sends none, and "not probed" must never read as "failed".
+  bool raster_probed = false;
+  // What the probe said: the engine rasterised a 1 x 1 picture (true) or
+  // handed back an empty image / did not answer in time (false). See
+  // probeRasterisation() in lib/core/runner_liveness.dart for why this is the
+  // one signal that saw the 2026-09-12 freeze.
+  bool raster_ok = false;
 };
 
 class DartLiveness {
@@ -80,6 +88,12 @@ class DartLiveness {
     // because a false "Dart never started" on a slow cold boot would teach
     // people to ignore the line.
     unsigned long long startup_grace_ms = 60000;
+    // Consecutive stamps whose raster probe failed before the renderer is
+    // declared dead. Three: one failed probe can be a context that is briefly
+    // unavailable mid session-transition -- which is exactly when a doomed
+    // engine gets built -- and thirty seconds is still a fraction of the
+    // fifty-minute freeze this catches. 0 disables the verdict.
+    int raster_failures_before_loss = 3;
   };
 
   enum class Verdict {
@@ -105,6 +119,16 @@ class DartLiveness {
     // The most recent stamp; default-constructed when none has arrived.
     DartLivenessStamp last;
     bool ever_stamped = false;
+    // --- The raster verdict, orthogonal to the silence machinery above ---
+    // Set exactly once per episode, on the stamp that brought the run of
+    // failed probes to the configured threshold: the renderer is dead while
+    // the isolate is fine, and the host should declare a loss.
+    bool raster_lost = false;
+    // Set on the first successful probe after a loss was declared, so the
+    // log can say the episode ended without a rebuild.
+    bool raster_recovered = false;
+    // Consecutive failed probes counted here, including this stamp's.
+    int raster_failures = 0;
   };
 
   DartLiveness() : DartLiveness(Config()) {}
@@ -122,6 +146,8 @@ class DartLiveness {
 
   bool ever_stamped() const { return ever_stamped_; }
   bool silent() const { return silent_; }
+  int raster_failures() const { return raster_failures_; }
+  bool raster_lost() const { return raster_lost_; }
   long long epoch() const { return epoch_; }
   const DartLivenessStamp& last_stamp() const { return last_; }
   const Config& config() const { return config_; }
@@ -139,6 +165,10 @@ class DartLiveness {
   bool ever_stamped_ = false;
   bool silent_ = false;
   DartLivenessStamp last_;
+  // Raster verdict state. Reset with the epoch: a new engine's context is a
+  // new question.
+  int raster_failures_ = 0;
+  bool raster_lost_ = false;
 };
 
 // The log line for a decision, or an empty string for kNothingToSay. Kept
@@ -146,6 +176,13 @@ class DartLiveness {
 // testable -- the wording IS the deliverable here.
 std::string DescribeLiveness(const DartLiveness::Decision& decision,
                              const DartLiveness::Config& config);
+
+// The line for a raster verdict, or an empty string when the stamp changed
+// nothing about it. Separate from DescribeLiveness because the two answer
+// different questions -- "is the isolate running" and "can the engine draw"
+// -- and on 2026-09-12 the answers were yes and no.
+std::string DescribeRaster(const DartLiveness::Decision& decision,
+                           const DartLiveness::Config& config);
 
 }  // namespace tfc
 
