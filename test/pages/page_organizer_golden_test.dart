@@ -31,6 +31,7 @@ import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/route_registry.dart';
 import '../helpers/golden_platform.dart';
+import 'package:tfc/providers/web_view_prewarm.dart';
 
 /// Room for the dialog at its natural 590px plus the editor behind it.
 const Size _viewport = Size(1100, 900);
@@ -116,6 +117,10 @@ Widget _buildEditor(PageManager manager, PreferencesApi localPrefs) {
   return ProviderScope(
     overrides: [
       pageManagerProvider.overrideWith((ref) async => manager),
+      // Browsers are not warmed under a test: the prewarm waits on the page
+      // manager and then on a two-second timer, which every page-editor test
+      // would otherwise leave pending at teardown (#520).
+      webViewPrewarmProvider.overrideWithValue(0),
       localPreferencesProvider.overrideWithValue(localPrefs),
       databaseProvider.overrideWith((ref) async => null),
       alarmManProvider

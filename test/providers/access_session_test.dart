@@ -25,6 +25,7 @@ import 'package:tfc_dart/core/database_drift.dart';
 
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/preferences.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// A stand-in for `LocalAuthProvider` that honours the same null-versus-throw
 /// contract: null for an unrecognised credential, a throw for infrastructure.
@@ -245,6 +246,7 @@ ProviderSubscription<AsyncValue<AccessSession>> _listen(_Harness h) {
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     // Real Argon2id/PBKDF2 cost makes `createUser` take seconds a piece, and
     // the panel-account tests need real `app_user` rows.
     Pbkdf2Kdf.iterationsForTest = 10;
@@ -268,11 +270,11 @@ void main() {
       expect(session.expiresAt, isNull);
     });
 
-    test('the anonymous groups come from the Operator row, not a constant',
-        () async {
+    test('the anonymous groups come from the role the account holds, not a '
+        'constant', () async {
       final h = await _harness();
-      // Ticking `setpoints` on Operator grants it to every logged-out panel —
-      // the documented footgun. This asserts the session honours it.
+      // Ticking `setpoints` on a role the anonymous account holds grants it to
+      // every logged-out panel. This asserts the session honours it.
       await h.repository.upsertRole(const AccessRole(
         name: kOperatorRoleName,
         groups: {AccessGroup.operate, AccessGroup.setpoints},
@@ -280,6 +282,46 @@ void main() {
 
       final session = await h.settle();
       expect(session.groups, {AccessGroup.operate, AccessGroup.setpoints});
+    });
+
+    test('the anonymous session is the anonymous account: every role it '
+        'holds, and its own pages', () async {
+      final h = await _harness();
+      await h.repository.setRoles(
+          kAnonymousUsername, [kOperatorRoleName, 'Maintenance']);
+      await h.repository.setUserAllowedPages(kAnonymousUsername, {'/'});
+
+      final session = await h.settle();
+      expect(session.isElevated, isFalse);
+      expect(session.roleNames, [kOperatorRoleName, 'Maintenance']);
+      expect(session.roleLabel, '$kOperatorRoleName + Maintenance');
+      expect(session.can(AccessGroup.force), isTrue);
+      expect(session.allowedPages, {'/'});
+    });
+
+    test('an anonymous account moved off Operator no longer follows it',
+        () async {
+      final h = await _harness();
+      await h.repository.setRole(kAnonymousUsername, 'Shift Leader');
+      await h.repository.upsertRole(const AccessRole(
+          name: kOperatorRoleName, groups: {AccessGroup.force}));
+
+      final session = await h.settle();
+      expect(session.roleName, 'Shift Leader');
+      expect(session.groups, {AccessGroup.operate, AccessGroup.setpoints});
+    });
+
+    test('an edit to the anonymous account applies to a logged-out panel on '
+        'refresh, with no sign-in', () async {
+      final h = await _harness();
+      expect((await h.settle()).can(AccessGroup.device), isFalse);
+
+      await h.repository.setRole(kAnonymousUsername, 'Maintenance');
+      await h.notifier.refreshGroupsFromRoles();
+
+      final session = await h.settle();
+      expect(session.isElevated, isFalse);
+      expect(session.can(AccessGroup.device), isTrue);
     });
 
     test('with no database at all yields anonymous with the seeded groups',
@@ -538,6 +580,35 @@ void main() {
       });
 
       expect(h.session!.expiresAt!.isAfter(before), isTrue);
+    });
+
+    test('in quick succession publishes no new session, but re-arms the '
+        'countdown', () async {
+      // Every pointer-down pokes. Publishing a session rebuilds the scaffold
+      // and rewrites the device preferences file, so a burst of touches must
+      // not do either until `expiresAt` has moved by a useful amount.
+      const timeout = Duration(minutes: 15);
+      final h = await _harness(timeout: timeout);
+      await h.settle();
+      _listen(h);
+      await h.notifier.signIn('jon', 'correct horse');
+      final signedIn = h.session!;
+      final signedInAt = signedIn.expiresAt!.subtract(timeout);
+
+      await withClock(Clock.fixed(signedInAt.add(const Duration(seconds: 2))),
+          () async {
+        h.notifier.poke();
+      });
+      expect(h.session, same(signedIn),
+          reason: 'two seconds of movement is under the ten-second granularity');
+      expect(h.notifier.timerIsRunning, isTrue);
+
+      await withClock(Clock.fixed(signedInAt.add(const Duration(seconds: 11))),
+          () async {
+        h.notifier.poke();
+      });
+      expect(h.session!.expiresAt,
+          signedInAt.add(const Duration(seconds: 11)).add(timeout));
     });
 
     test('while elevated re-arms the countdown', () async {
@@ -860,6 +931,23 @@ void main() {
       final session = await h.settle();
 
       expect(session.isElevated, isFalse);
+      expect(await h.storedPayload(), isNull);
+    });
+
+    test('a payload naming the anonymous account is not restored as a sign-in',
+        () async {
+      // Nobody signs in as the reserved account, so a payload naming it was
+      // written by hand; restoring it would show an elevated "anonymous".
+      final h = await _harness();
+      await store(h,
+          username: kAnonymousUsername,
+          roleName: kOperatorRoleName,
+          fromNow: const Duration(minutes: 5));
+
+      final session = await h.settle();
+
+      expect(session.isElevated, isFalse);
+      expect(session.user, isNull);
       expect(await h.storedPayload(), isNull);
     });
 

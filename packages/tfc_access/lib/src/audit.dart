@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:clock/clock.dart';
@@ -47,17 +48,23 @@ import 'access_role.dart';
 /// Phase 6 adds a fifth surface, `'admin'`, for the writes the roles and users
 /// screens make. A role edit that grants somebody `force` and leaves no trace
 /// is the widest gap this product could ship with — re-scoping a role is the
-/// most consequential hand-made write in it. The itemKey vocabulary is thirteen
+/// most consequential hand-made write in it. The itemKey vocabulary is fifteen
 /// strings:
 ///
 ///     role.create | role.update | role.delete | role.rename | role.pages
+///     role.order
 ///     user.create | user.delete | user.role   | user.password | user.pages
-///     user.station_account | user.inactivity_timeout
+///     user.station_account | user.inactivity_timeout | user.order
 ///     panel.release
 ///
 /// `panel.release` is the odd one out: its subject is this panel's committed
 /// station account, which is device-local state rather than a database row.
 /// See [AuditRecord.panelRelease].
+///
+/// `role.order` and `user.order` are the display order of the two lists on the
+/// Access screen. They are the only admin rows with a null [member]: a reorder
+/// moves every row at once and has no single subject, so both value columns
+/// carry the whole order instead. See [AuditRecord.roleOrder].
 ///
 /// `role.pages` and `user.pages` are the page-visibility whitelist at its two
 /// levels (`docs/page-visibility-whitelist-design.md`). They join the admin
@@ -72,7 +79,7 @@ import 'access_role.dart';
 ///    behind the trail viewer's existing `users` filter chip with no change to
 ///    the viewer — a row carrying an empty [groupRequired] would fall outside
 ///    every group filter instead.
-/// 2. [allowed] is a **parameter** on all eleven. Each auth constructor *is* an
+/// 2. [allowed] is a **parameter** on every one. Each auth constructor *is* an
 ///    outcome and can hardcode it; an admin action can be refused by the `users`
 ///    gate, and a refused role edit is a row worth having. Allow-only
 ///    constructors would leave the store hand-building denial rows, which is the
@@ -176,10 +183,16 @@ class AuditRecord {
   ///
   /// The role is [kOperatorRoleName] because nobody was signed in: anonymous
   /// resolves to Operator by construction.
+  ///
+  /// [roleName] is what the panel held while the attempt was made — the
+  /// anonymous account's label when nobody was signed in. It defaults to
+  /// [kOperatorRoleName], which is what that label is on every station whose
+  /// anonymous account was never moved off its seeded role.
   factory AuditRecord.loginFailed({
     required String who,
     required String station,
     required String actionId,
+    String roleName = kOperatorRoleName,
     DateTime? at,
     String? reason,
     // As on [AuditRecord.login]: 'relay' for a gateway-verified attempt.
@@ -191,7 +204,7 @@ class AuditRecord {
             ? who.substring(0, maxAttemptedUsernameLength)
             : who,
         station: station,
-        roleName: kOperatorRoleName,
+        roleName: roleName,
         surface: _authSurface,
         itemKey: 'login.failed',
         groupRequired: '',
@@ -835,6 +848,75 @@ class AuditRecord {
         itemKey: 'panel.release',
         member: subject,
         oldValue: subject,
+        groupRequired: AccessGroup.users.name,
+        allowed: allowed,
+        origin: origin,
+        actionId: actionId,
+        reason: reason,
+      );
+
+  /// The display order of the roles on the Access screen was changed.
+  ///
+  /// Fourteenth of the admin itemKeys. A reorder has no single subject — it
+  /// moves every role at once — so [member] is **null**, the one admin row
+  /// where it is, and [oldValue]/[newValue] carry the whole order as JSON
+  /// arrays of role names instead. Gated on `users` like every other admin
+  /// row: the order is shared authorization data in `app_role`, edited on the
+  /// same screen.
+  factory AuditRecord.roleOrder({
+    required String who,
+    required String station,
+    required String roleName,
+    required String actionId,
+    required List<String> oldOrder,
+    required List<String> newOrder,
+    required bool allowed,
+    DateTime? at,
+    String? reason,
+    String origin = 'operator',
+  }) =>
+      AuditRecord(
+        at: at ?? clock.now(),
+        who: who,
+        station: station,
+        roleName: roleName,
+        surface: _adminSurface,
+        itemKey: 'role.order',
+        oldValue: jsonEncode(oldOrder),
+        newValue: jsonEncode(newOrder),
+        groupRequired: AccessGroup.users.name,
+        allowed: allowed,
+        origin: origin,
+        actionId: actionId,
+        reason: reason,
+      );
+
+  /// The display order of the accounts on the Access screen was changed.
+  ///
+  /// Fifteenth of the admin itemKeys, shaped exactly as
+  /// [AuditRecord.roleOrder]: no single subject, so [member] is null, and the
+  /// whole order before and after as JSON arrays of usernames.
+  factory AuditRecord.userOrder({
+    required String who,
+    required String station,
+    required String roleName,
+    required String actionId,
+    required List<String> oldOrder,
+    required List<String> newOrder,
+    required bool allowed,
+    DateTime? at,
+    String? reason,
+    String origin = 'operator',
+  }) =>
+      AuditRecord(
+        at: at ?? clock.now(),
+        who: who,
+        station: station,
+        roleName: roleName,
+        surface: _adminSurface,
+        itemKey: 'user.order',
+        oldValue: jsonEncode(oldOrder),
+        newValue: jsonEncode(newOrder),
         groupRequired: AccessGroup.users.name,
         allowed: allowed,
         origin: origin,

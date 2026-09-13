@@ -51,7 +51,7 @@ const String _anonymousWho = 'anonymous';
 ///   is the exact confusion the split between `configure` and `users` exists to
 ///   prevent (`access_group.dart`), and it would make the whole access model
 ///   decorative in one line. `access_admin_store_test.dart` drives a
-///   `configure`-only session into all eight writes so that the line is checked
+///   `configure`-only session into every write so that the line is checked
 ///   rather than remembered.
 /// * Set it to [AccessGroup.administer] and you have reproduced the error in
 ///   `docs/access-control-deployment.md` §4, which speaks of "screens behind
@@ -66,7 +66,7 @@ const AccessGroup kAccessAdminGroup = AccessGroup.users;
 ///
 /// [session] is the session the gate read, so the deny row names whoever was
 /// refused rather than whoever the session became a moment later. The builder
-/// is what lets [AccessAdminStore._requireUsers] be shared across eight writes
+/// is what lets [AccessAdminStore._requireUsers] be shared across every write
 /// whose rows are built by as many *different* named constructors: there is no
 /// generic row builder in this file, and there must not be one.
 typedef _RowBuilder = AuditRecord Function(
@@ -78,9 +78,9 @@ typedef _RowBuilder = AuditRecord Function(
 /// The writes that decide who may do what, and the two reads that show it.
 ///
 /// Writes — [createRole], [updateRole], [deleteRole], [renameRole],
-/// [setRolePages], [createUser], [deleteUser], [setUserRole],
+/// [setRolePages], [setRoleOrder], [createUser], [deleteUser], [setUserRole],
 /// [setUserStationAccount], [setUserInactivityTimeout], [setUserPassword],
-/// [setUserPages] — all ask for
+/// [setUserPages], [setUserOrder] — all ask for
 /// [kAccessAdminGroup] and all leave a row, denials included. Reads — [roles]
 /// and [listUsers] — are ungated and unaudited: looking at the roster is not an
 /// authorization change, and a row per render would bury the writes that
@@ -165,7 +165,8 @@ typedef _RowBuilder = AuditRecord Function(
 /// gate → (denied: record the deny row, call `onDenied`, throw) → call the
 /// repository → (the repository threw [LastUsersHolderException],
 /// [RoleInUseException], [UserExistsException], [UserNotFoundException],
-/// [MissingRoleError] or [ProtectedRoleError]: record **nothing**, rethrow) →
+/// [MissingRoleError], [AnonymousAccountError] or [ReservedUsernameException]:
+/// record **nothing**, rethrow) →
 /// record the allowed row.
 ///
 /// If you move a `_recordAllowed` call above its repository call, five named
@@ -214,7 +215,8 @@ class AccessAdminStore {
   /// Every role, for the roles section.
   Future<List<AccessRole>> roles() => _repository.roles();
 
-  /// Every account, ordered by username, for the users section.
+  /// Every account, in display order, for the users section — the order
+  /// [setUserOrder] stored, then any unplaced account by username.
   ///
   /// [UserSummary], the same type [roles] answers `AccessRole` in: this
   /// file names no generated row type at all now, so the no-Drift-import
@@ -374,10 +376,9 @@ class AccessAdminStore {
   /// The groups it granted are read **before** the gate, so the row still says
   /// what was lost after the row it described is gone.
   ///
-  /// Three refusals reach the caller from the repository, unchanged and
-  /// unrecorded, and none of them is an [AccessDenied]: [ProtectedRoleError]
-  /// for `Operator` — an [Error], because reaching it means a screen offered a
-  /// Delete it should not have; [LastUsersHolderException] for trip route (d),
+  /// Two refusals reach the caller from the repository, unchanged and
+  /// unrecorded, and neither is an [AccessDenied]: [LastUsersHolderException]
+  /// for trip route (d),
   /// deleting the only role granting `users`; and [RoleInUseException] when
   /// accounts still hold it, with the holders named so the dialog can list
   /// them. That last one is blocked in application code rather than by the
@@ -416,9 +417,9 @@ class AccessAdminStore {
   /// point refers to.
   ///
   /// A rename cannot trip the lockout invariant: the role keeps its groups and
-  /// its holders. It can still throw [ProtectedRoleError] at either end,
-  /// [MissingRoleError] for an absent source and [ArgumentError] for a name
-  /// collision, all from the repository and all recorded as nothing.
+  /// its holders. It can still throw [MissingRoleError] for an absent source
+  /// and [ArgumentError] for a name collision, both from the repository and
+  /// both recorded as nothing.
   Future<void> renameRole(
     String from,
     String to, {
@@ -441,6 +442,44 @@ class AccessAdminStore {
     final actionId = await _requireUsers(itemKey: _roleRename, row: row);
 
     await _repository.renameRole(from, to);
+    await _recordAllowed(actionId, row);
+  }
+
+  /// Stores the display order of the roles, [names] first to last. Requires
+  /// [kAccessAdminGroup].
+  ///
+  /// No permission moves, but the order is shared data every panel shows, so
+  /// it is gated and recorded like every other write here. The current order
+  /// is read **before** the gate so the row carries both, this file's
+  /// convention: a read is not an authorization event.
+  ///
+  /// [MissingRoleError] for a name with no role, and [ArgumentError] for a
+  /// name listed twice, reach the caller from the repository and are recorded
+  /// as nothing; the reorder rolls back whole.
+  Future<void> setRoleOrder(
+    List<String> names, {
+    String origin = _operatorOrigin,
+    String? reason,
+  }) async {
+    final oldOrder = [for (final role in await _repository.roles()) role.name];
+    final newOrder = List<String>.of(names);
+
+    AuditRecord row(AccessSession session, String actionId, bool allowed) =>
+        AuditRecord.roleOrder(
+          who: _who(session),
+          station: _station,
+          roleName: session.roleLabel,
+          actionId: actionId,
+          oldOrder: oldOrder,
+          newOrder: newOrder,
+          allowed: allowed,
+          reason: reason,
+          origin: origin,
+        );
+
+    final actionId = await _requireUsers(itemKey: _roleOrder, row: row);
+
+    await _repository.setRoleOrder(newOrder);
     await _recordAllowed(actionId, row);
   }
 
@@ -750,6 +789,47 @@ class AccessAdminStore {
     await _recordAllowed(actionId, row);
   }
 
+  /// Stores the display order of the accounts, [usernames] first to last.
+  /// Requires [kAccessAdminGroup].
+  ///
+  /// The anonymous account ([kAnonymousUsername]) is left out of both orders
+  /// the row records, and out of what is stored: the screen pins it apart from
+  /// the list, so it has no position. Read-before-gate and record-after-write,
+  /// as [setRoleOrder]. [UserNotFoundException] and [ArgumentError] from the
+  /// repository are recorded as nothing.
+  Future<void> setUserOrder(
+    List<String> usernames, {
+    String origin = _operatorOrigin,
+    String? reason,
+  }) async {
+    final oldOrder = [
+      for (final user in await _repository.listUsers())
+        if (user.username != kAnonymousUsername) user.username,
+    ];
+    final newOrder = [
+      for (final username in usernames)
+        if (username != kAnonymousUsername) username,
+    ];
+
+    AuditRecord row(AccessSession session, String actionId, bool allowed) =>
+        AuditRecord.userOrder(
+          who: _who(session),
+          station: _station,
+          roleName: session.roleLabel,
+          actionId: actionId,
+          oldOrder: oldOrder,
+          newOrder: newOrder,
+          allowed: allowed,
+          reason: reason,
+          origin: origin,
+        );
+
+    final actionId = await _requireUsers(itemKey: _userOrder, row: row);
+
+    await _repository.setUserOrder(newOrder);
+    await _recordAllowed(actionId, row);
+  }
+
   // ---------------------------------------------------------------------------
   // The one implementation of the rule
   // ---------------------------------------------------------------------------
@@ -844,4 +924,6 @@ class AccessAdminStore {
   static const String _userInactivityTimeout = 'user.inactivity_timeout';
   static const String _rolePages = 'role.pages';
   static const String _userPages = 'user.pages';
+  static const String _roleOrder = 'role.order';
+  static const String _userOrder = 'user.order';
 }

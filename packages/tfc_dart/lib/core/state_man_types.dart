@@ -35,6 +35,7 @@ import 'package:modbus_client/modbus_client.dart'
 
 import 'modbus_client_wrapper.dart' show ModbusDataType;
 import 'collect_config.dart';
+import 'config/config_diff.dart';
 import 'preferences_api.dart';
 
 part 'state_man_types.g.dart';
@@ -699,23 +700,12 @@ class KeyMappings {
     return KeyMappings(nodes: filtered);
   }
 
-  static Future<KeyMappings> fromPrefs(PreferencesApi prefs,
-      {bool createDefault = true}) async {
-    var keyMappingsJson = await prefs.getString('key_mappings');
-    if (keyMappingsJson == null) {
-      if (!createDefault) {
-        throw Exception(
-            'key_mappings not found in preferences and createDefault is false');
-      }
-      final defaultKeyMappings = KeyMappings(nodes: {
-        "exampleKey": KeyMappingEntry(
-            opcuaNode: OpcUANodeConfig(namespace: 42, identifier: "identifier"))
-      });
-      keyMappingsJson = jsonEncode(defaultKeyMappings.toJson());
-      await prefs.setString('key_mappings', keyMappingsJson);
-    }
-    return KeyMappings.fromJson(jsonDecode(keyMappingsJson));
-  }
+  // `fromPrefs` was here, and it is deleted rather than deprecated (v1.2 phase
+  // 2, plan 06). Left alive after the cutover it was a loaded gun: the blob it
+  // read is no longer loaded into the preference cache, so it would have found
+  // null, taken its `createDefault` branch, and written the two-key example
+  // mapping back over a fully wired plant. The shared configuration store —
+  // `ConfigStore.keyMappings`, one row per key — is the only read path.
 
   factory KeyMappings.fromJson(Map<String, dynamic> json) =>
       _$KeyMappingsFromJson(json);
@@ -956,7 +946,12 @@ abstract interface class StateMan {
   Future<Stream<DynamicValue>> subscribe(String key);
 
   /// Apply an edited mapping in place, re-pointing what is already live.
-  KeyMappingsUpdateResult updateKeyMappings(KeyMappings newKeyMappings);
+  /// [diff] is what the caller already knows about the change, so the
+  /// implementation need not re-derive it by encoding every entry on both
+  /// sides. Optional: a caller holding two `KeyMappings` and nothing else
+  /// passes nothing and gets the same answer. See `StateMan.updateKeyMappings`.
+  KeyMappingsUpdateResult updateKeyMappings(KeyMappings newKeyMappings,
+      {ConfigDiff? diff});
 
   /// Connection metadata for [alias] — the aliases available are
   /// [connMetaAliases]. `isModbus` says which health vocabulary the alias

@@ -142,22 +142,32 @@ array, so every existing row upgrades to NULL and behaves exactly as it did.
 **Groups union; page whitelists union with null dominating.** A role with no
 whitelist sees every page, so an account holding one sees every page. That is
 the only internally consistent union — the alternative makes *adding* a role
-remove pages — and it is less alarming than it sounds, because anonymous is the
-`Operator` role and whatever Operator admits is already on screen at every
+remove pages — and it is less alarming than it sounds, because whatever the
+roles the anonymous account holds admit is already on screen at every
 unattended panel. The account's personal whitelist still **replaces** the
 composed role level wholesale (§1c of the page-visibility design note is
 unchanged): one account, one personal opinion, however many roles it holds.
 
-**Anonymous is the Operator role.** Not a configurable pointer — a session with
-no user resolves to the role named `Operator`, full stop. That removes a knob
-nobody needs and keeps "anonymous is operator" true by construction.
+**Anonymous is an account.** A session with no user answers as the reserved
+`app_user` row named `anonymous`, and holds whatever roles and page whitelist
+that row holds, composed exactly as a signed-in account's are. It started life
+as "anonymous is the `Operator` role", which put a property of the panel on a
+role: Operator could never be renamed or deleted, and every edit to it was
+silently an edit to every logged-out panel. As an account it is edited in the
+accounts screen beside the people, and every role is ordinary.
 
-Two consequences to build in. The `Operator` row **cannot be deleted or
-renamed**; enforce it, do not merely document it, or a logged-out panel loses
-its identity. And editing that row changes what an *unauthenticated* panel may
-do — ticking `setpoints` on Operator silently grants it to every panel on the
-floor with nobody signed in. The roles screen must say so plainly at the point
-of edit; it is the one footgun this simplification creates.
+The row is seeded onto `Operator` on every open of the database (idempotent, no
+schema version of its own), so an upgraded site's logged-out panels can do
+exactly what they could before. It **cannot be signed in to** — the login path
+refuses the name, and its hash is an undecodable sentinel that older builds
+refuse too — and it cannot be deleted, given a password, made a station
+account or given a timeout. It never counts as a `users` holder for the lockout
+invariant, and never counts toward the first-user window. A role it holds is
+refused deletion like any held role.
+
+Editing the roles it holds still changes what an *unauthenticated* panel may
+do. The accounts screen says so in the account's role picker and asks before a
+save widens it; the roles screen says so on every role the account holds.
 
 ---
 
@@ -209,6 +219,11 @@ class AuditEntry extends Table {
 OIDC lands, an incoming group claim of `"Shift Leader"` matches the role by name
 with no mapping table, exactly as Ignition and SIMATIC Logon do it. Do not
 replace it with an integer id.
+
+`app_role.sort_order` and `app_user.sort_order` are nullable integers that hold
+the display order of the two lists on the Access screen and nothing else — no
+permission reads them — and they are added on open (`_ensureSortOrderColumns`)
+rather than by a schema version, so they take no migration arm.
 
 ### Struct writes must be diffed to members
 
@@ -314,7 +329,7 @@ the person standing at *this* panel.
 ```dart
 class AccessSession {
   final AuthenticatedUser? user;   // null == anonymous
-  final Set<AccessGroup> groups;   // resolved from the role, anonymous role if null
+  final Set<AccessGroup> groups;   // resolved from the roles; the anonymous account's if null
   bool can(AccessGroup g) => groups.contains(g);
 }
 ```
@@ -588,7 +603,8 @@ username/cert (`state_man.dart:133`), one Postgres credential
 is bypassed by anyone with UaExpert or `psql`.
 
 This is an operational guardrail against accident, **not** an access control.
-Say that in the PR description and in the admin screen's own help text. The
+Say that in the PR description and in the deployment doc. (The admin screen
+carried it as a help-text card until the operators asked for it off the page.) The
 failure mode is not the guardrail — it is someone concluding "the HMI has
 logins" and deprioritising network segmentation.
 

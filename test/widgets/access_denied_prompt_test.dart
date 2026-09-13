@@ -1051,6 +1051,12 @@ const Set<String> _kOtherWriteReceivers = {
   // and the audit row live server-side (17-09/17-10), and the page surfaces
   // the refusal itself; there is no StateMan in this call.
   'backendConfig',
+  // `providers/page_manager.dart`'s binding of `PageManager.writeItems` to
+  // `GuardedConfigStore.write` — the page editor's save. It is a config-store
+  // write, not a plant write: it reaches no `StateMan`, it is checked as
+  // `page_editor_data`, and its refusals are the store's three
+  // (offline / conflict / AccessDenied), which `page_editor.dart` handles.
+  'guarded',
   'binding',
   'buffer',
   'builder',

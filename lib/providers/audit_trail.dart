@@ -7,7 +7,7 @@
 /// |---|---|---|
 /// | [auditTrailStoreProvider] | `keepAlive` | a store, or **null** when this station has no database |
 /// | [auditTrailEntriesProvider] | autoDispose family | one [AuditQuery] as one [AuditTrailResult], or **null** |
-/// | [auditWhoOptionsProvider] | autoDispose | the `who` dropdown's options |
+/// | [auditWhoOptionsProvider] | `keepAlive` | the `who` dropdown's options |
 ///
 /// **Refresh is `ref.invalidate`, and this file starts no timer.** That is
 /// CONTEXT's ruling and it has a reason: an always-on `Timer.periodic` in this
@@ -182,7 +182,12 @@ Future<AuditTrailResult?> auditTrailEntries(Ref ref, AuditQuery query) async {
 /// correct; an exception here would take the whole filter bar down with it, and
 /// the page already says "unavailable" once, from [auditTrailEntriesProvider].
 /// Saying it twice, in two shapes, is not more honest.
-@riverpod
+///
+/// `keepAlive`: `distinctWho` groups the whole table, and on an autoDispose
+/// provider it ran again, in series with the page's own queries, on every visit.
+/// The page's refresh action invalidates it, which is when a newly seen name
+/// can reasonably be expected to appear.
+@Riverpod(keepAlive: true)
 Future<List<String>> auditWhoOptions(Ref ref) async {
   final store = await ref.watch(auditTrailStoreProvider.future);
   if (store == null) return const [];

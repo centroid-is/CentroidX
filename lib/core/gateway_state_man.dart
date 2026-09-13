@@ -69,6 +69,7 @@ import 'dart:collection';
 
 import 'package:logger/logger.dart';
 import 'package:open62541/open62541_types.dart' as ua;
+import 'package:tfc_dart/core/config/config_diff.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as rp;
@@ -337,7 +338,8 @@ class GatewayStateMan implements StateMan {
   /// item this process does not own. The key set is also fixed for the life of
   /// the client, so a mapping edit genuinely needs a new one.
   @override
-  KeyMappingsUpdateResult updateKeyMappings(KeyMappings newKeyMappings) {
+  KeyMappingsUpdateResult updateKeyMappings(KeyMappings newKeyMappings,
+      {ConfigDiff? diff}) {
     _keyMappings = newKeyMappings;
     return KeyMappingsUpdateResult(
       added: const {},

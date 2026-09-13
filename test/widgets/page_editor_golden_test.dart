@@ -48,6 +48,8 @@ import 'package:tfc/page_creator/page.dart';
 import 'package:tfc/theme.dart';
 
 import '../helpers/page_editor_harness.dart';
+import 'package:tfc/providers/preferences.dart'
+    show createDeviceLocalPreferences;
 
 /// A 1080p operator panel.
 const Size _screen = Size(1920, 1080);
@@ -295,7 +297,10 @@ void main() {
     // rockets on every other page row, none on sections.
     testGoldenWidgets('Pages dialog — a nested page chosen as startup',
         (tester) async {
-      await SharedPreferencesAsync().setString(startupUrlPrefsKey, '/lines/one');
+      // Into the store the dialog reads, which since v1.2 plan 01-05 is the
+      // one `setUpEditorEnvironment` seeds, not the platform instance.
+      await createDeviceLocalPreferences()
+          .setString(startupUrlPrefsKey, '/lines/one');
       await _pumpEditor(tester, theme: dark, pages: _pagesWithADraft());
       await tester.tap(find.byIcon(Icons.arrow_drop_down));
       await tester.pumpAndSettle();

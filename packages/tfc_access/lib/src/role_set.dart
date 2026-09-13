@@ -133,12 +133,12 @@ Set<AccessGroup> unionRoleGroups(Iterable<AccessRole> roles) => <AccessGroup>{
 /// is `effectiveAllowedPages`'s rejected intersection wearing a different hat,
 /// and it makes adding a role *remove* pages.
 ///
-/// This is less alarming than it first looks, and the reason is
-/// [kOperatorRoleName]. Anonymous **is** the Operator role, so whatever the
-/// Operator row admits is already on screen at every unattended panel on the
-/// floor. Unioning it into somebody's set reveals nothing that walking up to a
-/// logged-out panel would not. A site that whitelists at all whitelists
-/// Operator first, and once it has, the union binds.
+/// This is less alarming than it first looks, and the reason is the anonymous
+/// account (`anonymous_account.dart`). Whatever the roles it holds admit is
+/// already on screen at every unattended panel on the floor, so unioning one
+/// of those roles into somebody's set reveals nothing that walking up to a
+/// logged-out panel would not. A site that whitelists at all whitelists the
+/// panel's roles first, and once it has, the union binds.
 ///
 /// Answers null for an empty [roles] too — an account resolving to no role at
 /// all is refused a session upstream, and a whitelist is not the layer that

@@ -204,7 +204,11 @@ const List<PrefAccessRule> kPrefAccessRules = <PrefAccessRule>[
 
   // ---------------------------------------------------------------------
   // prefix -> configure.
-  // One preference key per stored page-editor image (`image_store.dart:94`).
+  // One preference key per stored page-editor image. Nothing writes one any
+  // more — v1.2 plan 04-09 moved the blobs onto `kind='page_image'` rows,
+  // checked under `page_editor_data` and so at this same group — but the
+  // rule stays for the rows already on a plant's disk, which the store's
+  // preferences editor can still open and the 04-11 migration still reads.
   (kind: PrefRuleKind.prefix, match: 'page_editor_image:', group: AccessGroup.configure),
   // Forward-looking only. **No key in the tree matches `page.`, `alarm.` or
   // `keymap.` today** — the real names use underscores, which is the defect
@@ -378,9 +382,11 @@ class AccessPolicy {
   /// unbound key, an unmentioned member, a missing lookup and an unreadable
   /// binding source all answer `operate` rather than "unrestricted".
   /// Bindings raise the requirement; nothing lowers it past the floor. The
-  /// plant does not lock, because the anonymous session maps to the Operator
-  /// role, which holds `operate`; what closes is the free pass an account
-  /// deliberately stripped of `operate` used to get on every unbound key.
+  /// plant does not lock, because the anonymous account is seeded onto the
+  /// Operator role, which holds `operate`; what closes is the free pass an
+  /// account deliberately stripped of `operate` used to get on every unbound
+  /// key. A site that moves the anonymous account onto a role without
+  /// `operate` is choosing a panel that does nothing until somebody signs in.
   AccessGroup groupForTag(String key, {String? member}) {
     final lookup = _tagBindings;
     if (lookup == null) return AccessGroup.operate;
@@ -395,7 +401,7 @@ class AccessPolicy {
       // guard that threw here because Postgres was down would take the
       // plant's controls down with it. An unreadable binding source is
       // indistinguishable from an unbound key, and both answer the operate
-      // floor — which the anonymous Operator role holds.
+      // floor — which the anonymous account's seeded role holds.
       return AccessGroup.operate;
     }
   }

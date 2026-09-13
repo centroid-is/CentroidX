@@ -1,0 +1,13 @@
+# JSON is checked out with LF on every platform.
+#
+# Why this file exists: `page_blob_fixture.json` is compared **byte for byte**
+# against what the page codec emits, and the codec emits `\n`. With no
+# .gitattributes, a Windows checkout (core.autocrlf=true, the GitHub runner
+# default) rewrites the fixture to CRLF and the comparison fails at offset 2
+# with `'{\n'` vs `'{\r\n'` — on Windows only, invisibly to anyone developing
+# on macOS or Linux.
+#
+# The failure message helpfully suggests CENTROIDX_REGEN_FIXTURES=1. On Windows
+# that is a trap: regenerating there writes CRLF into the fixture and breaks
+# macOS and Linux instead. Pinning the checkout is the fix; regenerating is not.
+*.json eol=lf

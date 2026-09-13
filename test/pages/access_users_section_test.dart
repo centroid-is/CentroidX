@@ -57,6 +57,7 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/access/local_auth_provider.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import '../helpers/test_helpers.dart';
 
 // ---------------------------------------------------------------------------
 // Doubles
@@ -213,6 +214,13 @@ class _RecordingStore extends AccessAdminStore {
   }
 
   @override
+  Future<void> setUserOrder(List<String> usernames,
+      {String origin = 'operator', String? reason}) {
+    calls.add('setUserOrder:${usernames.join(',')}');
+    return super.setUserOrder(usernames, origin: origin, reason: reason);
+  }
+
+  @override
   Future<void> setUserRoles(String username, List<String> roleNames,
       {String origin = 'operator', String? reason}) async {
     calls.add('setUserRole:$username:${roleNames.join('+')}');
@@ -286,6 +294,10 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
+    // The session controller reads the device-local store on build; the
+    // anonymous-account tests read the real controller, and a process with
+    // no device-local store open throws there.
+    useInMemoryDeviceLocalPreferences();
     DatabaseConfig.clearPrefsCache();
     // A production-strength derivation is the better part of a second per
     // account, and nearly every test here creates real rows. The one test that
@@ -834,6 +846,238 @@ void main() {
   // -------------------------------------------------------------------------
   // Change role
   // -------------------------------------------------------------------------
+
+  group('reorder', () {
+    Future<void> dragAbove(
+        WidgetTester tester, String username, String target) async {
+      final from =
+          tester.getCenter(find.byKey(kAccessUserDragHandleKey(username)));
+      final to = tester.getCenter(find.byKey(kAccessUserRowKey(target)));
+      final gesture = await tester.startGesture(from);
+      await tester.pump();
+      for (var i = 0; i < 20; i++) {
+        await gesture.moveBy(Offset(0, (to.dy - from.dy - 30) / 20));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await gesture.up();
+      await tester.pumpAndSettle();
+    }
+
+    double top(WidgetTester tester, String username) =>
+        tester.getTopLeft(find.byKey(kAccessUserRowKey(username))).dy;
+
+    testWidgets('the anonymous row has no handle; every person has one',
+        (tester) async {
+      await makeUser('admin', 'Engineering');
+      await makeUser('bjorn', 'Shift Leader');
+      await pumpSection(tester, overrides());
+
+      expect(find.byKey(kAccessUserDragHandleKey(kAnonymousUsername)),
+          findsNothing);
+      expect(find.byKey(kAccessUserDragHandleKey('admin')), findsOneWidget);
+      expect(find.byKey(kAccessUserDragHandleKey('bjorn')), findsOneWidget);
+    });
+
+    testWidgets('dragging an account above another writes one user.order row, '
+        'and anonymous stays first', (tester) async {
+      await makeUser('admin', 'Engineering');
+      await makeUser('bjorn', 'Shift Leader');
+      await pumpSection(tester, overrides());
+      expect(top(tester, 'admin'), lessThan(top(tester, 'bjorn')));
+
+      await dragAbove(tester, 'bjorn', 'admin');
+
+      expect(store!.calls, contains('setUserOrder:bjorn,admin'));
+      expect(sink.rows.where((r) => r.itemKey == 'user.order'), hasLength(1));
+      expect(
+        [
+          for (final u in await repository.listUsers())
+            if (u.username != kAnonymousUsername) u.username
+        ],
+        ['bjorn', 'admin'],
+      );
+      expect(top(tester, 'bjorn'), lessThan(top(tester, 'admin')));
+      expect(top(tester, kAnonymousUsername), lessThan(top(tester, 'bjorn')));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a configure-only session drops, is refused, and the roster '
+        'snaps back', (tester) async {
+      await makeUser('admin', 'Engineering');
+      await makeUser('bjorn', 'Shift Leader');
+      session = _configureOnly();
+      await pumpSection(tester, overrides());
+
+      await dragAbove(tester, 'bjorn', 'admin');
+
+      expect(find.byKey(kAccessDeniedBodyKey), findsOneWidget);
+      expect(top(tester, 'admin'), lessThan(top(tester, 'bjorn')),
+          reason: 'the refused order must not stay on screen');
+      expect(
+        [
+          for (final u in await repository.listUsers())
+            if (u.username != kAnonymousUsername) u.username
+        ],
+        ['admin', 'bjorn'],
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the role picker lists roles in their display order',
+        (tester) async {
+      await makeUser('bjorn', 'Shift Leader');
+      final names = [for (final r in await repository.roles()) r.name];
+      await repository.setRoleOrder(names.reversed.toList());
+      await pumpSection(tester, overrides());
+      await openRolePicker(tester, 'bjorn');
+
+      final tops = [
+        for (final n in names.reversed)
+          tester.getTopLeft(find.byKey(kAccessUserRoleChoiceKey(n))).dy
+      ];
+      expect(tops, [...tops]..sort());
+    });
+  });
+
+  group('the anonymous account', () {
+    testWidgets('is pinned first, tagged, and offers roles and pages only',
+        (tester) async {
+      await makeUser('admin', 'Engineering');
+      await pumpSection(tester, overrides());
+
+      final anonymousTop = tester
+          .getTopLeft(find.byKey(kAccessUserRowKey(kAnonymousUsername)))
+          .dy;
+      expect(anonymousTop,
+          lessThan(tester.getTopLeft(find.byKey(kAccessUserRowKey('admin'))).dy));
+      expect(find.byKey(kAccessUserAnonymousTagKey), findsOneWidget);
+      expect(cell(tester, kAccessUserCreatedKey(kAnonymousUsername)),
+          kAccessUserNotApplicable);
+      expect(cell(tester, kAccessUserLastLoginKey(kAnonymousUsername)),
+          kAccessUserNotApplicable);
+
+      expect(find.byKey(kAccessUserChangeRoleKey(kAnonymousUsername)),
+          findsOneWidget);
+      expect(find.byKey(kAccessUserPagesKey(kAnonymousUsername)), findsOneWidget);
+      for (final absent in [
+        kAccessUserSetPasswordKey(kAnonymousUsername),
+        kAccessUserDeleteKey(kAnonymousUsername),
+        kAccessUserStationAccountKey(kAnonymousUsername),
+        kAccessUserTimeoutKey(kAnonymousUsername),
+      ]) {
+        expect(find.byKey(absent), findsNothing,
+            reason: 'absent, not greyed: none of these is a permission refusal');
+      }
+    });
+
+    testWidgets('with nobody else, the first-user window note is still shown',
+        (tester) async {
+      await pumpSection(tester, overrides());
+
+      expect(find.byKey(kAccessUserRowKey(kAnonymousUsername)), findsOneWidget);
+      expect(find.byKey(kAccessUsersEmptyKey), findsOneWidget);
+    });
+
+    testWidgets('its role picker carries the logged-out-panel banner',
+        (tester) async {
+      await pumpSection(tester, overrides());
+      await openRolePicker(tester, kAnonymousUsername);
+
+      expect(find.byKey(kAccessAnonymousWarningKey), findsOneWidget);
+      expect(find.text(kAccessAnonymousBannerNote), findsOneWidget);
+    });
+
+    testWidgets('a person\'s role picker does not', (tester) async {
+      await makeUser('bjorn', 'Shift Leader');
+      await pumpSection(tester, overrides());
+      await openRolePicker(tester, 'bjorn');
+
+      expect(find.byKey(kAccessAnonymousWarningKey), findsNothing);
+    });
+
+    testWidgets('widening it asks first, names the groups, and cancelling '
+        'writes nothing', (tester) async {
+      await pumpSection(tester, overrides());
+      await openRolePicker(tester, kAnonymousUsername);
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
+      await tester.pumpAndSettle();
+      store!.calls.clear();
+      await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
+      await tester.pumpAndSettle();
+
+      expect(find.text(kAccessAnonymousConfirmTitle), findsOneWidget);
+      expect(
+        find.text(kAccessAnonymousConfirmMessage(const [
+          AccessGroup.setpoints,
+          AccessGroup.device,
+          AccessGroup.force,
+        ])),
+        findsOneWidget,
+        reason: 'by label, and only what is added — operate is already held',
+      );
+
+      await tester.tap(find.text('Cancel').last);
+      await tester.pumpAndSettle();
+      expect(store!.calls.where((c) => c.startsWith('setUserRole')), isEmpty);
+      expect((await userNamed(kAnonymousUsername))!.additionalRoles, isNull);
+    });
+
+    testWidgets('confirming the widening applies it to a logged-out panel',
+        (tester) async {
+      await pumpSection(tester, overrides());
+      expect((await sessionInForce()).can(AccessGroup.device), isFalse);
+
+      await openRolePicker(tester, kAnonymousUsername);
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(kAccessAnonymousConfirmLabel));
+      await tester.pumpAndSettle();
+
+      expect(AccessRepository.rolesOf((await userNamed(kAnonymousUsername))!),
+          [kOperatorRoleName, 'Maintenance']);
+      final session = await sessionInForce();
+      expect(session.isElevated, isFalse);
+      expect(session.can(AccessGroup.device), isTrue);
+    });
+
+    testWidgets('narrowing it asks nothing', (tester) async {
+      await repository.setRoles(
+          kAnonymousUsername, [kOperatorRoleName, 'Maintenance']);
+      await pumpSection(tester, overrides());
+      await openRolePicker(tester, kAnonymousUsername);
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
+      await tester.pumpAndSettle();
+
+      expect(find.text(kAccessAnonymousConfirmTitle), findsNothing);
+      expect(AccessRepository.rolesOf((await userNamed(kAnonymousUsername))!),
+          [kOperatorRoleName]);
+    });
+
+    testWidgets('its pages block says what it governs', (tester) async {
+      await pumpSection(tester, overrides());
+      await tester.tap(find.byKey(kAccessUserPagesKey(kAnonymousUsername)));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessAnonymousPagesWarningKey), findsOneWidget);
+    });
+
+    testWidgets('no account can be created under its name', (tester) async {
+      await pumpSection(tester, overrides());
+      await openCreate(tester);
+      await fillCreate(tester, username: 'Anonymous', password: 'pw');
+
+      await tester.tap(find.byKey(kAccessUserCreateConfirmKey));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessUserReservedKey), findsOneWidget);
+      expect(find.text(kAccessUserReservedNameNote), findsOneWidget);
+      expect(store!.calls.where((c) => c.startsWith('createUser')), isEmpty);
+    });
+  });
 
   group('change role', () {
     testWidgets('the picker offers exactly the roles the store returned',

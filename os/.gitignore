@@ -1,0 +1,19 @@
+# build output and fetched inputs
+out/
+overlays/generated/
+station.env
+
+# local QEMU scratch from the old hand-rolled test loop
+*.qcow2
+*.iso
+vm.pid
+vm-*.log
+.DS_Store
+.direnv
+
+# Resolved, not pinned. The committed lock recorded `dart: ">=3.11.0"` from the
+# Mac's SDK, which the tfc-toolchain container (Dart 3.10.1) cannot satisfy --
+# so pub re-resolved on every CI build and the versions on the stick were never
+# the versions in the file. A lock that cannot be honoured is worse than none:
+# it reads as a pin. The root package gitignores its lock for the same reason.
+app/pubspec.lock

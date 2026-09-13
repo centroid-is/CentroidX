@@ -125,6 +125,18 @@ class _RecordingRepository extends AccessRepository {
     calls.add('setUserAllowedPages:$username');
     return super.setUserAllowedPages(username, pages);
   }
+
+  @override
+  Future<void> setRoleOrder(List<String> names) {
+    calls.add('setRoleOrder:${names.join(',')}');
+    return super.setRoleOrder(names);
+  }
+
+  @override
+  Future<void> setUserOrder(List<String> usernames) {
+    calls.add('setUserOrder:${usernames.join(',')}');
+    return super.setUserOrder(usernames);
+  }
 }
 
 /// A repository whose chosen write throws once, from inside the call.
@@ -167,8 +179,7 @@ AccessSession _anonymous() =>
 /// decide who may do what.
 ///
 /// This is the session the `users` gate exists for. `configure` is the highest
-/// group a page editor needs, and every one of the eight writes in this store
-/// must refuse it. It is also the session
+/// group a page editor needs, and every write in this store must refuse it. It is also the session
 /// `docs/access-control-deployment.md` §4 describes wrongly: it calls the
 /// screen that creates users an `administer` screen, and this fixture holds
 /// neither `administer` nor `users`, so the two spellings cannot be confused
@@ -197,6 +208,15 @@ AccessRole _shiftLead() => const AccessRole(
       name: 'Line Lead',
       groups: {AccessGroup.operate, AccessGroup.setpoints},
     );
+
+/// Every account a person made, read straight from the repository.
+///
+/// Leaves out the reserved anonymous row the seed writes into every database:
+/// the assertions using this are about the accounts these tests create.
+Future<List<UserSummary>> _people(AccessRepository repository) async =>
+    (await repository.listUsers())
+        .where((u) => u.username != kAnonymousUsername)
+        .toList();
 
 void main() {
   late AppDatabase db;
@@ -345,7 +365,7 @@ void main() {
 
       final users = await store.listUsers();
 
-      expect(users.map((u) => u.username), ['jon']);
+      expect(users.map((u) => u.username), [kAnonymousUsername, 'jon']);
       expect(sink.rows, isEmpty);
       expect(denials, isEmpty);
     });
@@ -691,9 +711,57 @@ void main() {
       expect(row.newValue, 'Line Leader');
       expect(await repository.role('Line Leader'), isNotNull);
     });
+
+    test('setRoleOrder records role.order with old and new order as JSON '
+        'arrays', () async {
+      final store = buildStore();
+
+      await store.setRoleOrder(
+          ['Engineering', 'Maintenance', 'Shift Leader', 'Operator']);
+
+      expect(repository.calls,
+          ['setRoleOrder:Engineering,Maintenance,Shift Leader,Operator']);
+      final row = sink.rows.single;
+      expect(row.itemKey, 'role.order');
+      expect(row.member, isNull,
+          reason: 'a reorder has no single subject');
+      expect(row.oldValue,
+          '["Operator","Shift Leader","Maintenance","Engineering"]',
+          reason: 'read before the gate, so the row says what the order was');
+      expect(row.newValue,
+          '["Engineering","Maintenance","Shift Leader","Operator"]');
+      expect(row.groupRequired, AccessGroup.users.name);
+      expect(row.allowed, isTrue);
+      expect([for (final r in await repository.roles()) r.name],
+          ['Engineering', 'Maintenance', 'Shift Leader', 'Operator']);
+    });
   });
 
   group('user writes', () {
+    test('setUserOrder records user.order without the anonymous account',
+        () async {
+      await repository.createUser(
+          username: 'bob', password: 'pw', roleName: 'Shift Leader');
+      await repository.createUser(
+          username: 'ann', password: 'pw', roleName: 'Shift Leader');
+      repository.calls.clear();
+      final store = buildStore();
+
+      await store.setUserOrder(['bob', kAnonymousUsername, 'ann']);
+
+      expect(repository.calls, ['setUserOrder:bob,ann']);
+      final row = sink.rows.single;
+      expect(row.itemKey, 'user.order');
+      expect(row.member, isNull);
+      expect(row.oldValue, '["ann","bob"]',
+          reason: 'the anonymous account is pinned apart from the list and '
+              'has no position, so neither order names it');
+      expect(row.newValue, '["bob","ann"]');
+      expect(row.allowed, isTrue);
+      expect((await _people(repository)).map((u) => u.username),
+          ['bob', 'ann']);
+    });
+
     test('createUser records user.create naming the role granted', () async {
       final store = buildStore();
 
@@ -708,7 +776,7 @@ void main() {
       expect(row.member, 'bob');
       expect(row.oldValue, isNull);
       expect(row.newValue, 'Shift Leader');
-      expect((await repository.listUsers()).single.username, 'bob');
+      expect((await _people(repository)).single.username, 'bob');
     });
 
     test('deleteUser records user.delete naming the role held', () async {
@@ -726,7 +794,7 @@ void main() {
       expect(row.member, 'bob');
       expect(row.oldValue, 'Shift Leader');
       expect(row.newValue, isNull);
-      expect((await repository.listUsers()).map((u) => u.username), ['admin1']);
+      expect((await _people(repository)).map((u) => u.username), ['admin1']);
     });
 
     test('setUserRole records user.role with the old and the new role',
@@ -760,7 +828,7 @@ void main() {
       expect(row.oldValue, 'false');
       expect(row.newValue, 'true');
       expect(
-          (await repository.listUsers())
+          (await _people(repository))
               .singleWhere((u) => u.username == 'freezer')
               .stationAccount,
           isTrue);
@@ -783,7 +851,7 @@ void main() {
               'it is on the user.pages rows');
       expect(row.newValue, '45');
       expect(
-          (await repository.listUsers()).single.inactivityTimeoutMinutes, 45);
+          (await _people(repository)).single.inactivityTimeoutMinutes, 45);
     });
 
     test('clearing the timeout records the move back to the default',
@@ -799,7 +867,7 @@ void main() {
       final row = sink.rows.single;
       expect(row.oldValue, '45');
       expect(row.newValue, isNull);
-      expect((await repository.listUsers()).single.inactivityTimeoutMinutes,
+      expect((await _people(repository)).single.inactivityTimeoutMinutes,
           isNull);
     });
 
@@ -841,7 +909,7 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
-  // T-06-20: a configure-only session, driven into every one of the eight
+  // T-06-20: a configure-only session, driven into every write
   // -------------------------------------------------------------------------
 
   group('a configure-only session is refused by every write', () {
@@ -904,7 +972,7 @@ void main() {
         (s) => s.createUser(
             username: 'bob', password: 'pw', roleName: 'Shift Leader'),
       );
-      expect(await repository.listUsers(), isEmpty);
+      expect(await _people(repository), isEmpty);
     });
 
     test('deleteUser', () async {
@@ -912,7 +980,7 @@ void main() {
           username: 'bob', password: 'pw', roleName: 'Shift Leader');
       repository.calls.clear();
       await expectGated('user.delete', (s) => s.deleteUser('bob'));
-      expect((await repository.listUsers()).single.username, 'bob');
+      expect((await _people(repository)).single.username, 'bob');
     });
 
     test('setUserRole', () async {
@@ -921,7 +989,7 @@ void main() {
       repository.calls.clear();
       await expectGated(
           'user.role', (s) => s.setUserRole('bob', 'Maintenance'));
-      expect((await repository.listUsers()).single.roleName, 'Shift Leader');
+      expect((await _people(repository)).single.roleName, 'Shift Leader');
     });
 
     test('setUserStationAccount', () async {
@@ -930,7 +998,7 @@ void main() {
       repository.calls.clear();
       await expectGated('user.station_account',
           (s) => s.setUserStationAccount('freezer', true));
-      expect((await repository.listUsers()).single.stationAccount, isFalse);
+      expect((await _people(repository)).single.stationAccount, isFalse);
     });
 
     test('setUserInactivityTimeout', () async {
@@ -939,7 +1007,7 @@ void main() {
       repository.calls.clear();
       await expectGated('user.inactivity_timeout',
           (s) => s.setUserInactivityTimeout('bob', 45));
-      expect((await repository.listUsers()).single.inactivityTimeoutMinutes,
+      expect((await _people(repository)).single.inactivityTimeoutMinutes,
           isNull);
     });
 
@@ -972,6 +1040,27 @@ void main() {
       await expectGated('user.pages', (s) => s.setUserPages('bob', {'/'}));
       expect((await repository.user('bob'))!.allowedPages, isNull);
     });
+
+    test('setRoleOrder', () async {
+      await expectGated(
+          'role.order',
+          (s) => s.setRoleOrder(
+              ['Engineering', 'Operator', 'Shift Leader', 'Maintenance']));
+      expect([for (final r in await repository.roles()) r.name],
+          ['Operator', 'Shift Leader', 'Maintenance', 'Engineering'],
+          reason: 'a refused reorder must not reach the column');
+    });
+
+    test('setUserOrder', () async {
+      await repository.createUser(
+          username: 'bob', password: 'pw', roleName: 'Shift Leader');
+      await repository.createUser(
+          username: 'ann', password: 'pw', roleName: 'Shift Leader');
+      repository.calls.clear();
+      await expectGated('user.order', (s) => s.setUserOrder(['bob', 'ann']));
+      expect((await _people(repository)).map((u) => u.username),
+          ['ann', 'bob']);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -979,6 +1068,20 @@ void main() {
   // -------------------------------------------------------------------------
 
   group('a refused write records no row', () {
+    test('MissingRoleError: ordering a role that is not there', () async {
+      final store = buildStore();
+
+      await expectLater(
+        () => store.setRoleOrder(['Engineering', 'Nonesuch', 'Operator']),
+        throwsA(isA<MissingRoleError>()),
+      );
+      expect(sink.rows, isEmpty);
+      expect(repository.calls, ['setRoleOrder:Engineering,Nonesuch,Operator']);
+      expect([for (final r in await repository.roles()) r.name],
+          ['Operator', 'Shift Leader', 'Maintenance', 'Engineering'],
+          reason: 'the reorder rolls back whole');
+    });
+
     test('LastUsersHolderException: deleting the last users holder', () async {
       await repository.createUser(
           username: 'admin1', password: 'pw', roleName: 'Engineering');
@@ -997,7 +1100,7 @@ void main() {
               'transaction, which is precisely the condition this layer '
               'cannot pre-check. So the allowed row is written after the call '
               'returns, and a refusal leaves nothing claiming it happened.');
-      expect((await repository.listUsers()).single.username, 'admin1');
+      expect((await _people(repository)).single.username, 'admin1');
     });
 
     test('LastUsersHolderException: unticking users from the only role',
@@ -1042,7 +1145,7 @@ void main() {
         throwsA(isA<UserExistsException>()),
       );
       expect(sink.rows, isEmpty);
-      expect((await repository.listUsers()).single.roleName, 'Shift Leader');
+      expect((await _people(repository)).single.roleName, 'Shift Leader');
     });
 
     test('UserNotFoundException: resetting an absent account password',
@@ -1056,15 +1159,27 @@ void main() {
       expect(sink.rows, isEmpty);
     });
 
-    test('ProtectedRoleError: deleting Operator', () async {
+    test('AnonymousAccountError: deleting the anonymous account', () async {
+      final store = buildStore();
+
+      await expectLater(
+        () => store.deleteUser(kAnonymousUsername),
+        throwsA(isA<AnonymousAccountError>()),
+        reason: 'it is an Error because reaching it means a caller skipped a '
+            'check; a screen offering a Delete on the anonymous row must fail '
+            'loudly rather than be swallowed here.',
+      );
+      expect(sink.rows, isEmpty);
+      expect(await repository.user(kAnonymousUsername), isNotNull);
+    });
+
+    test('RoleInUseException: deleting a role the anonymous account holds',
+        () async {
       final store = buildStore();
 
       await expectLater(
         () => store.deleteRole(kOperatorRoleName),
-        throwsA(isA<ProtectedRoleError>()),
-        reason: 'it is an Error because reaching it means a caller skipped a '
-            'check; a screen offering a Delete on the Operator row must fail '
-            'loudly rather than be swallowed here.',
+        throwsA(isA<RoleInUseException>()),
       );
       expect(sink.rows, isEmpty);
       expect(await repository.role(kOperatorRoleName), isNotNull);

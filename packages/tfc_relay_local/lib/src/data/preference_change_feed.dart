@@ -138,8 +138,20 @@ final class PreferenceChangeFeed {
   static const Duration probeRetryInterval = Duration(milliseconds: 100);
 
   /// The table whose rows this watches, and the column its trigger names.
-  static const String table = 'flutter_preferences';
-  static const String keyColumn = 'key';
+  // `config_item`, not `flutter_preferences`: the shared settings moved to
+  // rows in main's #465 and the old table is retired. `id` is the key column
+  // there. The feed is otherwise unchanged — same keyed trigger, same payload,
+  // same per-key fan-out — because what moved is where the row lives, not what
+  // a subscriber is asking about.
+  //
+  // One consequence worth stating: `config_item` holds every kind, so this
+  // channel now also fires for a page or a key-mapping save. Subscribers
+  // filter by the keys they registered, so the extra signals cost a filter
+  // and nothing else — but a preference key that happened to equal a page id
+  // would be woken by that page. No such collision exists today; a `kind`
+  // field in the payload is the fix if one ever does.
+  static const String table = 'config_item';
+  static const String keyColumn = 'id';
 
   final DatabaseSupplier database;
   final Duration window;

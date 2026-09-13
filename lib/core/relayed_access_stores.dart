@@ -370,7 +370,46 @@ final class RelayedAccessAdminStore implements AccessAdminStore {
             password: password,
             reason: reason,
           )));
+
+  // ---------------------------------------------------------------------------
+  // The two display-order writes, which the wire does not carry yet
+  // ---------------------------------------------------------------------------
+
+  /// Refused, loudly, until [AccessAdminApi] carries the reorder writes.
+  ///
+  /// `setRoleOrder` and `setUserOrder` arrived on main with the Access screen's
+  /// drag handles. Every other member of this class is a pass-through onto a
+  /// wire method that exists; these two have none, and inventing one is a
+  /// protocol change with a server handler, a policy decorator arm and four
+  /// pinned surface counts behind it — not something a merge may do quietly.
+  ///
+  /// **Throwing, not returning normally.** A silent no-op would let a gateway
+  /// panel's operator drag a row, see it settle, and find it back where it was
+  /// on the next read, with nothing written and nothing said. Writing to the
+  /// local store instead would be worse: the order is shared data, and one
+  /// panel holding an order no other panel can see is the same class of defect
+  /// [RelayedPreferences] exists to prevent. The screen must disable the
+  /// handles on this transport; until it does, this is the honest failure.
+  ///
+  /// Not an [AccessDenied]: nobody was refused. The capability is absent.
+  @override
+  Future<void> setRoleOrder(List<String> names,
+          {String origin = 'operator', String? reason}) async =>
+      throw UnsupportedError(_kNoReorderOverRelay('setRoleOrder'));
+
+  /// Refused for the reason [setRoleOrder] gives at length.
+  @override
+  Future<void> setUserOrder(List<String> usernames,
+          {String origin = 'operator', String? reason}) async =>
+      throw UnsupportedError(_kNoReorderOverRelay('setUserOrder'));
 }
+
+String _kNoReorderOverRelay(String member) =>
+    'AccessAdminStore.$member is not available in gateway mode: the display '
+    'order of roles and accounts is shared data and the relay protocol has no '
+    'method for it yet. Reorder from a station wired directly to the database, '
+    'or add the method to AccessAdminApi — do not write it locally, which '
+    'would give this panel an order no other panel can see.';
 
 /// The allowed/denied filter as the wire's nullable bool — the two spellings
 /// of three states, written down once.
@@ -420,6 +459,26 @@ final class RelayedAuditTrailStore implements AuditTrailStore {
   Future<Map<String, int>> memberCountsByAction(Iterable<String> actionIds) =>
       relayedAccessErrors(
           () => _api.memberCountsByAction(actionIds.toList()));
+
+  /// The action headers the configuration-history page reads, which the wire
+  /// does not carry yet.
+  ///
+  /// **An empty list, not a throw** — the opposite call to the one
+  /// `RelayedAccessAdminStore.setRoleOrder` makes, because this is a read and
+  /// the page has a defined behaviour for a header it cannot find:
+  /// `HistoryAction.isParentless`, which renders the action from its
+  /// `config_change` rows and flags that the header is missing. Every row still
+  /// says what changed, who changed it and when — both tables carry `who`. So
+  /// the degradation is visible and the page works, where a throw would take
+  /// the whole history down over a column of authors.
+  ///
+  /// It is still a gap: on this transport every action reads as parentless,
+  /// including the ones whose header is sitting in the backend's table. Closing
+  /// it is one more [AuditApi] method beside [memberCountsByAction], which is
+  /// its exact shape.
+  @override
+  Future<List<AuditRecord>> entriesByAction(Iterable<String> actionIds) async =>
+      const [];
 
   @override
   Future<List<String>> distinctWho() =>

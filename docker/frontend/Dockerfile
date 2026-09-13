@@ -2,7 +2,7 @@
 # Stage: rebuild the Wayland embedder with the keyboard patches
 #
 # The bundle ships a prebuilt libflutter_elinux_wayland.so that is wrong for
-# this station in three ways, so rebuild it from the exact source tag matching
+# this station in four ways, so rebuild it from the exact source tag matching
 # the bundled engine and swap it into the bundle below:
 #
 #   force-numlock  its xkb state is driven solely by the compositor's
@@ -14,6 +14,10 @@
 #                  bare CR instead of firing the input action.
 #   nav-keys       Home/End were dropped in the text-input keysym switch, and
 #                  Up/Down arrived but had no handler.
+#   dead-keys      characters were resolved from the bare keysym with no
+#                  compose state, so a dead key typed nothing and the letter
+#                  after it came out unaccented: no á é í ó ú ý on an
+#                  Icelandic keyboard, local or over VNC.
 # =============================================================================
 FROM debian:trixie-slim AS embedder-builder
 
@@ -34,11 +38,13 @@ RUN git clone https://github.com/flutter-elinux/flutter-embedded-linux.git /embe
     && git -C /embedder checkout ${EMBEDDER_REF}
 
 # nav-keys.patch is cut against the tree with the other two already applied,
-# so keep this order.
-COPY force-numlock.patch kp-enter.patch nav-keys.patch /tmp/embedder-patches/
+# and dead-keys.patch against the tree with all three, so keep this order.
+COPY force-numlock.patch kp-enter.patch nav-keys.patch dead-keys.patch \
+     /tmp/embedder-patches/
 RUN git -C /embedder apply --stat --apply /tmp/embedder-patches/force-numlock.patch \
       /tmp/embedder-patches/kp-enter.patch \
-      /tmp/embedder-patches/nav-keys.patch
+      /tmp/embedder-patches/nav-keys.patch \
+      /tmp/embedder-patches/dead-keys.patch
 
 # The embedder links against the engine at build/libflutter_engine.so
 # (hardcoded in its cmake). Use the one from the app bundle so the .so is
@@ -89,8 +95,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcups2t64 \
     libxcomposite1 \
     libxdamage1 \
+    libx11-data \
     curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# libx11-data is the X11 Compose tables, which the dead-keys patch reads to
+# turn a dead key and a letter into one accented character. libxkbcommon0 does
+# not pull it in, and without it the embedder silently falls back to typing
+# the bare letter — so check for the table the fallback locale resolves to.
+RUN test -f /usr/share/X11/locale/en_US.UTF-8/Compose \
+    || { echo "no Compose table: dead keys would type unaccented letters"; exit 1; }
 
 # libmpv2 is what plays the RTSP camera asset. package:media_kit loads it by
 # name at runtime (media_kit_libs_linux bundles nothing on Linux — it expects
@@ -116,6 +130,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ln -s /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0 /usr/lib/x86_64-linux-gnu/libgio-2.0.so
 RUN ln -s /usr/lib/x86_64-linux-gnu/libglib-2.0.so.0 /usr/lib/x86_64-linux-gnu/libglib-2.0.so
 RUN ln -s /usr/lib/x86_64-linux-gnu/libsecret-1.so.0 /usr/lib/x86_64-linux-gnu/libsecret-1.so
+
+# package:sqlite3 dlopens the unversioned name. The `sqlite3` package above
+# brings libsqlite3-0, which ships only libsqlite3.so.0 — the unversioned
+# symlink lives in libsqlite3-dev, which no runtime image installs. The local
+# configuration store is opened before runApp, so without this the app does not
+# start at all. Belt and braces: packages/tfc_dart/lib/core/sqlite_loader.dart
+# falls back to the versioned soname from Dart, which covers a station still
+# running an older image; this line covers an image built without that fallback.
+RUN ln -s /usr/lib/x86_64-linux-gnu/libsqlite3.so.0 /usr/lib/x86_64-linux-gnu/libsqlite3.so
 
 RUN useradd -m centroid
 

@@ -119,7 +119,49 @@ const String kAccessUsersHeadline = 'Accounts';
 const String kAccessUsersSubtitle =
     'An account is a username and one or more roles, with or without a '
     'password. What it may do is everything those roles together grant, and '
-    'changing them changes it at once.';
+    'changing them changes it at once. The "anonymous" account is every panel '
+    'with nobody signed in.';
+
+/// The tag under the anonymous account's name, saying what the row is.
+///
+/// Short enough to sit on one line in the name column: the longer "every
+/// logged-out panel" wrapped to three lines there.
+const String kAccessUserAnonymousTag = 'logged-out panels';
+
+/// What stands in for Created and Last login on the anonymous account.
+///
+/// Not [kAccessUserNever], which would imply it could be signed in to.
+const String kAccessUserNotApplicable = '—';
+
+/// The banner in the anonymous account's role picker.
+const String kAccessAnonymousBannerNote =
+    'This account is every panel with nobody signed in. A role ticked here is '
+    'granted to every logged-out panel on the floor.';
+
+/// The confirmation when a save widens what a logged-out panel may do, naming
+/// the groups being added by their labels.
+///
+/// Only when groups are **added**: narrowing is the safe direction, and a
+/// confirmation on every save is a confirmation nobody reads.
+String kAccessAnonymousConfirmMessage(List<AccessGroup> added) =>
+    'Saving this grants ${added.map((g) => g.label).join(', ')} to every panel '
+    'on the floor with nobody signed in, immediately and without a sign-in.';
+
+/// The confirmation's title. A question, because it is one.
+const String kAccessAnonymousConfirmTitle = 'Grant to every logged-out panel?';
+
+/// The confirmation's affirmative. Not "OK": the label says what happens.
+const String kAccessAnonymousConfirmLabel = 'Grant';
+
+/// The banner above the anonymous account's page list. No confirmation:
+/// this is what a panel shows, not what it may do.
+const String kAccessAnonymousPagesNote =
+    'These are the pages every panel with nobody signed in shows.';
+
+/// The create dialog's refusal of the reserved name.
+const String kAccessUserReservedNameNote =
+    '"anonymous" is the account every logged-out panel uses, so no other '
+    'account may take that name in any capitalisation.';
 
 /// The read failed, or the store could not be built.
 ///
@@ -148,9 +190,10 @@ const String kAccessUsersNoDatabaseNote =
 /// than the absence of a list. `first_user.dart` says the same thing on the
 /// screen that acts on it.
 const String kAccessUsersEmptyNote =
-    'No accounts at all, which means the first-user window is still open: this '
-    'station is claimable by whoever reaches the first-account screen first. '
-    'Create the first account now, at commissioning.';
+    'No account anybody can sign in to, which means the first-user window is '
+    'still open: this station is claimable by whoever reaches the '
+    'first-account screen first. Create the first account now, at '
+    'commissioning.';
 
 /// The four column headings, as constants so a test asserts the heading the
 /// screen renders.
@@ -424,6 +467,19 @@ const Key kAccessUsersHeaderKey = Key('access-users-header');
 /// One account's row.
 Key kAccessUserRowKey(String username) => Key('access-user-row-$username');
 
+/// The tag beside the anonymous account's name.
+const Key kAccessUserAnonymousTagKey = Key('access-user-anonymous-tag');
+
+/// The banner in the anonymous account's role picker.
+const Key kAccessAnonymousWarningKey = Key('access-user-anonymous-warning');
+
+/// The banner above the anonymous account's page list.
+const Key kAccessAnonymousPagesWarningKey =
+    Key('access-user-anonymous-pages-warning');
+
+/// The create dialog's reserved-name sentence.
+const Key kAccessUserReservedKey = Key('access-user-reserved');
+
 /// The station-account toggle on a user row.
 /// The Pages control on an account's row.
 Key kAccessUserPagesKey(String username) => Key('access-user-pages-$username');
@@ -587,6 +643,14 @@ Key kAccessUserRolePrimaryKey(String roleName) =>
 /// The "tick at least one" sentence.
 const Key kAccessUserRoleNoneKey = Key('access-user-role-none');
 
+/// One account's drag handle. The anonymous account has none: it is pinned
+/// first.
+Key kAccessUserDragHandleKey(String username) =>
+    Key('access-user-drag-$username');
+
+/// The drag handle's tooltip.
+const String kAccessUserDragTooltip = 'Drag to reorder';
+
 // ---------------------------------------------------------------------------
 // The section
 // ---------------------------------------------------------------------------
@@ -658,7 +722,17 @@ class AccessUsersSection extends ConsumerWidget {
       );
     }
 
-    final users = usersAsync.requireValue;
+    // The anonymous account pinned first and not draggable — it is every panel
+    // on the floor, not one person among the rest — and the people after it in
+    // the store's order, which a drag sets.
+    final all = usersAsync.requireValue;
+    final anonymous =
+        all.where((u) => u.username == kAnonymousUsername).toList();
+    final people = all.where((u) => u.username != kAnonymousUsername).toList();
+    final users = [...anonymous, ...people];
+    // "No accounts" means no account a person can sign in to: the first-user
+    // window is open whether or not the anonymous row is there.
+    final noPeople = people.isEmpty;
 
     return _frame(
       context,
@@ -676,15 +750,20 @@ class AccessUsersSection extends ConsumerWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _header(context),
-                for (final user in users)
+                for (final user in anonymous)
                   _UserTile(
-                    // Keyed by username so a row keeps its inline refusal
-                    // across the rebuild every write triggers.
                     key: ValueKey('access-user-${user.username}'),
                     user: user,
                     roles: roles,
                     store: store,
                   ),
+                if (people.isNotEmpty)
+                  _UserList(people: people, roles: roles, store: store),
+                if (noPeople) ...[
+                  const SizedBox(height: 8),
+                  _note(context, kAccessUsersEmptyNote,
+                      key: kAccessUsersEmptyKey),
+                ],
               ],
             ),
     );
@@ -743,6 +822,7 @@ class AccessUsersSection extends ConsumerWidget {
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         children: [
+          const SizedBox(width: _kHandleWidth),
           Expanded(
               flex: _kNameFlex,
               child: Text(kAccessUsersColumnUsername, style: style)),
@@ -810,6 +890,115 @@ const int _kWhenFlex = 6;
 /// a comment.
 const double _kActionsWidth = 288;
 
+/// The drag handle's slot at the start of every row, in front of the four
+/// flex columns so its width comes out of all of them in proportion. Taken out
+/// of the name column alone it wrapped `commissioning` and the anonymous tag;
+/// and 20 px here already took the timestamp columns under the gap rule above,
+/// so it is the icon's own width and no more. The header and the pinned
+/// anonymous row reserve the same slot, empty, so the columns align.
+const double _kHandleWidth = 16;
+
+// ---------------------------------------------------------------------------
+// The reorderable roster
+// ---------------------------------------------------------------------------
+
+/// Every account but the anonymous one, in display order, each row draggable
+/// by its handle.
+///
+/// The same shape as the roles section's list: the dropped order shows at
+/// once and is held in [_pending] until the roster provider hands back a new
+/// list instance; a refused or failed write clears it and the roster snaps
+/// back, beside the shared prompt when it was a permission refusal. No
+/// session refresh — an order changes nothing a session resolves.
+class _UserList extends ConsumerStatefulWidget {
+  const _UserList({
+    required this.people,
+    required this.roles,
+    required this.store,
+  });
+
+  final List<UserSummary> people;
+  final List<AccessRole> roles;
+  final AccessAdminStore store;
+
+  @override
+  ConsumerState<_UserList> createState() => _UserListState();
+}
+
+class _UserListState extends ConsumerState<_UserList> {
+  List<String>? _pending;
+
+  /// The section builds a new filtered list on every build, so "the provider
+  /// read again" is taken from the rows, which are new instances only then.
+  @override
+  void didUpdateWidget(covariant _UserList old) {
+    super.didUpdateWidget(old);
+    if (!_sameRows(old.people, widget.people)) _pending = null;
+  }
+
+  static bool _sameRows(List<UserSummary> a, List<UserSummary> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!identical(a[i], b[i])) return false;
+    }
+    return true;
+  }
+
+  List<UserSummary> get _ordered {
+    final pending = _pending;
+    if (pending == null) return widget.people;
+    final byName = {for (final user in widget.people) user.username: user};
+    return [
+      for (final name in pending)
+        if (byName[name] != null) byName[name]!,
+      for (final user in widget.people)
+        if (!pending.contains(user.username)) user,
+    ];
+  }
+
+  Future<void> _onReorder(int oldIndex, int newIndex) async {
+    if (newIndex > oldIndex) newIndex -= 1;
+    // Dropped where it started: no write, and no audit row claiming a change.
+    if (oldIndex == newIndex) return;
+    final names = [for (final user in _ordered) user.username];
+    names.insert(newIndex, names.removeAt(oldIndex));
+    setState(() => _pending = names);
+    final wrote = await _write(
+      context,
+      ref,
+      () => widget.store.setUserOrder(names),
+    );
+    if (!wrote && mounted) setState(() => _pending = null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final people = _ordered;
+    return ReorderableListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      buildDefaultDragHandles: false,
+      itemCount: people.length,
+      // onReorder, not onReorderItem — see system_clock_section.dart.
+      // ignore: deprecated_member_use
+      onReorder: _onReorder,
+      itemBuilder: (context, index) {
+        final user = people[index];
+        return _UserTile(
+          // Keyed by username so a row keeps its inline refusal across the
+          // rebuild every write triggers. The reorderable list needs it too.
+          key: ValueKey('access-user-${user.username}'),
+          reorderIndex: index,
+          user: user,
+          roles: widget.roles,
+          store: widget.store,
+        );
+      },
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // One row
 // ---------------------------------------------------------------------------
@@ -819,10 +1008,15 @@ const double _kActionsWidth = 288;
 class _UserTile extends ConsumerStatefulWidget {
   const _UserTile({
     super.key,
+    this.reorderIndex,
     required this.user,
     required this.roles,
     required this.store,
   });
+
+  /// This row's index in the reorderable roster, or null for the pinned
+  /// anonymous row, which draws an empty handle slot so the columns align.
+  final int? reorderIndex;
 
   final UserSummary user;
 
@@ -863,6 +1057,14 @@ class _UserTileState extends ConsumerState<_UserTile> {
 
   UserSummary get user => widget.user;
 
+  /// Whether this row is the reserved account every logged-out panel uses.
+  ///
+  /// It holds roles and pages like any account and nothing else: no password,
+  /// no station flag, no timeout and no delete. Those controls are **absent**
+  /// rather than greyed — they are not permission refusals, and the repository
+  /// throws `AnonymousAccountError` for each of them.
+  bool get _anonymous => user.username == kAnonymousUsername;
+
   /// Whether this account overrides its role's pages right now.
   bool get _overridesPages => user.allowedPages != null;
 
@@ -884,38 +1086,28 @@ class _UserTileState extends ConsumerState<_UserTile> {
           padding: const EdgeInsets.symmetric(vertical: 2),
           child: Row(
             children: [
-              Expanded(
-                flex: _kNameFlex,
-                child: Row(
-                  children: [
-                    Flexible(
-                      child: Text(user.username,
-                          key: kAccessUserNameKey(user.username),
-                          overflow: TextOverflow.ellipsis),
-                    ),
-                    // Beside the name, not in a column of its own: it is a
-                    // fact about *this account*, and a reader scanning the
-                    // roster for open accounts should find it without
-                    // crossing the row.
-                    if (!user.hasPassword) ...[
-                      const SizedBox(width: 8),
-                      Tooltip(
-                        message:
-                            kAccessUserNoPasswordBadgeTooltip(user.username),
-                        child: Text(
-                          kAccessUserNoPasswordBadge,
-                          key: kAccessUserNoPasswordBadgeKey(user.username),
-                          style: Theme.of(context)
-                              .textTheme
-                              .labelSmall
-                              ?.copyWith(
-                                  color: Theme.of(context).colorScheme.error),
+              SizedBox(
+                width: _kHandleWidth,
+                child: widget.reorderIndex == null
+                    ? null
+                    : ReorderableDragStartListener(
+                        index: widget.reorderIndex!,
+                        child: MouseRegion(
+                          cursor: SystemMouseCursors.grab,
+                          child: Tooltip(
+                            message: kAccessUserDragTooltip,
+                            child: Icon(
+                              Icons.drag_indicator,
+                              key: kAccessUserDragHandleKey(user.username),
+                              size: _kHandleWidth,
+                              color:
+                                  Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                          ),
                         ),
                       ),
-                    ],
-                  ],
-                ),
               ),
+              Expanded(flex: _kNameFlex, child: _nameCell(context)),
               Expanded(
                 flex: _kRoleFlex,
                 // The tag sits against the role on purpose: a personal page
@@ -967,16 +1159,22 @@ class _UserTileState extends ConsumerState<_UserTile> {
                 flex: _kWhenFlex,
                 // [kAccessUserUnknown], not "never": a missing created
                 // instant is a gap in the answer, not a fact about the
-                // account.
+                // account. The reserved row is neither — it was never created
+                // and can never sign in, so it reads as not applicable.
                 child: Text(
-                    kAccessUserWhen(user.createdAt,
-                        ifNull: kAccessUserUnknown),
+                    _anonymous
+                        ? kAccessUserNotApplicable
+                        : kAccessUserWhen(user.createdAt,
+                            ifNull: kAccessUserUnknown),
                     key: kAccessUserCreatedKey(user.username)),
               ),
               Expanded(
                 flex: _kWhenFlex,
                 // Never blank: a null renders as [kAccessUserNever].
-                child: Text(kAccessUserWhen(user.lastLoginAt),
+                child: Text(
+                    _anonymous
+                        ? kAccessUserNotApplicable
+                        : kAccessUserWhen(user.lastLoginAt),
                     key: kAccessUserLastLoginKey(user.username)),
               ),
               SizedBox(
@@ -985,34 +1183,36 @@ class _UserTileState extends ConsumerState<_UserTile> {
                   mainAxisAlignment: MainAxisAlignment.end,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    IconButton(
-                      key: kAccessUserStationAccountKey(user.username),
-                      icon: Icon(
-                          user.stationAccount
-                              ? Icons.desktop_windows
-                              : Icons.desktop_windows_outlined,
-                          size: 18),
-                      tooltip: user.stationAccount
-                          ? kAccessUserStationAccountOnTooltip
-                          : kAccessUserStationAccountOffTooltip,
-                      onPressed: _toggleStationAccount,
-                    ),
-                    IconButton(
-                      key: kAccessUserTimeoutKey(user.username),
-                      icon: Icon(
-                          _ownTimeout != null
-                              ? Icons.timer
-                              : Icons.timer_outlined,
-                          size: 18),
-                      tooltip: user.stationAccount
-                          ? kAccessUserTimeoutStationTooltip
-                          : kAccessUserTimeoutTooltip,
-                      // Disabled for a station account because the setting
-                      // does not apply to it, not for lack of a permission —
-                      // this file never greys a control for that. The tooltip
-                      // says which.
-                      onPressed: user.stationAccount ? null : _setTimeout,
-                    ),
+                    if (!_anonymous) ...[
+                      IconButton(
+                        key: kAccessUserStationAccountKey(user.username),
+                        icon: Icon(
+                            user.stationAccount
+                                ? Icons.desktop_windows
+                                : Icons.desktop_windows_outlined,
+                            size: 18),
+                        tooltip: user.stationAccount
+                            ? kAccessUserStationAccountOnTooltip
+                            : kAccessUserStationAccountOffTooltip,
+                        onPressed: _toggleStationAccount,
+                      ),
+                      IconButton(
+                        key: kAccessUserTimeoutKey(user.username),
+                        icon: Icon(
+                            _ownTimeout != null
+                                ? Icons.timer
+                                : Icons.timer_outlined,
+                            size: 18),
+                        tooltip: user.stationAccount
+                            ? kAccessUserTimeoutStationTooltip
+                            : kAccessUserTimeoutTooltip,
+                        // Disabled for a station account because the setting
+                        // does not apply to it, not for lack of a permission —
+                        // this file never greys a control for that. The
+                        // tooltip says which.
+                        onPressed: user.stationAccount ? null : _setTimeout,
+                      ),
+                    ],
                     IconButton(
                       key: kAccessUserPagesKey(user.username),
                       icon: Icon(
@@ -1029,18 +1229,20 @@ class _UserTileState extends ConsumerState<_UserTile> {
                       tooltip: 'Change role',
                       onPressed: _changeRole,
                     ),
-                    IconButton(
-                      key: kAccessUserSetPasswordKey(user.username),
-                      icon: const Icon(Icons.password_outlined, size: 18),
-                      tooltip: 'Set password',
-                      onPressed: _setPassword,
-                    ),
-                    IconButton(
-                      key: kAccessUserDeleteKey(user.username),
-                      icon: const Icon(Icons.delete_outline, size: 18),
-                      tooltip: 'Delete account',
-                      onPressed: _delete,
-                    ),
+                    if (!_anonymous) ...[
+                      IconButton(
+                        key: kAccessUserSetPasswordKey(user.username),
+                        icon: const Icon(Icons.password_outlined, size: 18),
+                        tooltip: 'Set password',
+                        onPressed: _setPassword,
+                      ),
+                      IconButton(
+                        key: kAccessUserDeleteKey(user.username),
+                        icon: const Icon(Icons.delete_outline, size: 18),
+                        tooltip: 'Delete account',
+                        onPressed: _delete,
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -1054,6 +1256,14 @@ class _UserTileState extends ConsumerState<_UserTile> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                if (_anonymous) ...[
+                  const AccessAdminWarning(
+                    blockKey: kAccessAnonymousPagesWarningKey,
+                    text: kAccessAnonymousPagesNote,
+                    icon: Icons.visibility_outlined,
+                  ),
+                  const SizedBox(height: 8),
+                ],
                 // The same widget the roles section mounts, told which level
                 // it is on so the "no whitelist" option reads as *follows the
                 // role* here and as *sees every page* there.
@@ -1091,6 +1301,53 @@ class _UserTileState extends ConsumerState<_UserTile> {
           AccessAdminRefusal.lastUsersHolder(refusal),
           const SizedBox(height: 8),
         ],
+      ],
+    );
+  }
+
+  /// The username, with the no-password badge beside it and, under the
+  /// reserved account's name, the tag saying what the row is.
+  ///
+  /// The badge sits beside the name rather than in a column of its own: it is
+  /// a fact about *this account*, and a reader scanning the roster for open
+  /// accounts should find it without crossing the row. It never appears on the
+  /// reserved row, which carries no password in a different sense — see
+  /// [kAnonymousPasswordSentinel] — and says so with its tag instead.
+  Widget _nameCell(BuildContext context) {
+    final theme = Theme.of(context);
+    final name = Row(
+      children: [
+        Flexible(
+          child: Text(user.username,
+              key: kAccessUserNameKey(user.username),
+              overflow: TextOverflow.ellipsis),
+        ),
+        if (!_anonymous && !user.hasPassword) ...[
+          const SizedBox(width: 8),
+          Tooltip(
+            message: kAccessUserNoPasswordBadgeTooltip(user.username),
+            child: Text(
+              kAccessUserNoPasswordBadge,
+              key: kAccessUserNoPasswordBadgeKey(user.username),
+              style: theme.textTheme.labelSmall
+                  ?.copyWith(color: theme.colorScheme.error),
+            ),
+          ),
+        ],
+      ],
+    );
+    if (!_anonymous) return name;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        name,
+        Text(
+          kAccessUserAnonymousTag,
+          key: kAccessUserAnonymousTagKey,
+          style: theme.textTheme.labelSmall
+              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        ),
       ],
     );
   }
@@ -1157,6 +1414,16 @@ class _UserTileState extends ConsumerState<_UserTile> {
         username: user.username,
         current: held,
         roles: widget.roles,
+        // Up the whole time the anonymous account's picker is open, not only
+        // at the moment of saving.
+        header: _anonymous
+            ? const AccessAdminWarning(
+                blockKey: kAccessAnonymousWarningKey,
+                text: kAccessAnonymousBannerNote,
+                // Something becoming *less* restricted.
+                icon: Icons.lock_open_outlined,
+              )
+            : null,
       ),
     );
     // Saving the set already held writes nothing: a no-op would still leave an
@@ -1166,6 +1433,21 @@ class _UserTileState extends ConsumerState<_UserTile> {
         const ListEquality<String>().equals(chosen, held) ||
         !mounted) {
       return;
+    }
+
+    if (_anonymous) {
+      // The second warning, and only when the save widens what a logged-out
+      // panel may do. Not `destructive: true` — nothing is being deleted.
+      final added = _addedGroups(held, chosen);
+      if (added.isNotEmpty) {
+        final confirmed = await showConfirmDialog(
+          context: context,
+          title: kAccessAnonymousConfirmTitle,
+          message: kAccessAnonymousConfirmMessage(added),
+          confirmLabel: kAccessAnonymousConfirmLabel,
+        );
+        if (!confirmed || !mounted) return;
+      }
     }
 
     _busy = true;
@@ -1186,6 +1468,20 @@ class _UserTileState extends ConsumerState<_UserTile> {
     // conditional on "is this me?" is a call site that gets the comparison
     // wrong once and then holds a stale privilege forever (T-06-77).
     await _afterWrite(ref);
+  }
+
+  /// The groups [chosen] grants that [held] did not, in [AccessGroup.values]
+  /// order, composed the way a session composes them — a union over the roles
+  /// the picker offered.
+  List<AccessGroup> _addedGroups(List<String> held, List<String> chosen) {
+    Set<AccessGroup> grants(List<String> names) => unionRoleGroups(
+        widget.roles.where((role) => names.contains(role.name)));
+    final before = grants(held);
+    final after = grants(chosen);
+    return [
+      for (final group in AccessGroup.values)
+        if (after.contains(group) && !before.contains(group)) group,
+    ];
   }
 
   /// Flips the station-account flag, after a confirmation that states the
@@ -1473,6 +1769,7 @@ class _RolePickerDialog extends StatefulWidget {
     required this.username,
     required this.current,
     required this.roles,
+    this.header,
   });
 
   final String username;
@@ -1481,6 +1778,10 @@ class _RolePickerDialog extends StatefulWidget {
   final List<String> current;
 
   final List<AccessRole> roles;
+
+  /// Rendered above everything else, or nothing. The anonymous account's
+  /// banner.
+  final Widget? header;
 
   @override
   State<_RolePickerDialog> createState() => _RolePickerDialogState();
@@ -1522,6 +1823,10 @@ class _RolePickerDialogState extends State<_RolePickerDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (widget.header != null) ...[
+            widget.header!,
+            const SizedBox(height: 8),
+          ],
           _note(context, kAccessUserRoleDialogNote),
           const SizedBox(height: 8),
           if (widget.roles.isEmpty)
@@ -1602,6 +1907,9 @@ enum _CredentialProblem {
   /// The name is already in the loaded roster, or the transaction said so.
   duplicate,
 
+  /// The name is the reserved anonymous account's, in some capitalisation.
+  reserved,
+
   /// No role could be read, so there is nothing to create the account into.
   noRole,
 
@@ -1679,6 +1987,10 @@ Widget _problemLine(
     _CredentialProblem.duplicate => (
         kAccessUserDuplicateKey,
         kAccessUserDuplicateNote(subject),
+      ),
+    _CredentialProblem.reserved => (
+        kAccessUserReservedKey,
+        kAccessUserReservedNameNote,
       ),
     _CredentialProblem.noRole => (
         kAccessUserNoRoleKey,
@@ -1802,6 +2114,10 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
       setState(() => _problem = _CredentialProblem.blankUsername);
       return;
     }
+    if (isAnonymousUsername(username)) {
+      setState(() => _problem = _CredentialProblem.reserved);
+      return;
+    }
     if (!_noPassword && password.isEmpty) {
       setState(() => _problem = _CredentialProblem.blankPassword);
       return;
@@ -1845,6 +2161,12 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
         _submitting = false;
         _subject = taken.username;
         _problem = _CredentialProblem.duplicate;
+      });
+    } on ReservedUsernameException {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _problem = _CredentialProblem.reserved;
       });
     } on AccessDenied {
       // See the note at [_write]: the shared prompt naming the `users` group is

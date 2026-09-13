@@ -22,6 +22,9 @@ import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/widgets/zoomable_canvas.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
+import 'package:tfc/providers/web_view_prewarm.dart';
+
 TransformationController _controller(WidgetTester tester) => tester
     .widget<InteractiveViewer>(find.byType(InteractiveViewer))
     .transformationController!;
@@ -169,6 +172,9 @@ void main() {
 
   group('PlantPageView', () {
     setUp(() {
+      // The asset stack reads the device-local store, which on this branch is
+      // opened by main() — a widget test seeds it instead.
+      useInMemoryDeviceLocalPreferences();
       SharedPreferences.setMockInitialValues({});
       SharedPreferencesAsyncPlatform.instance =
           InMemorySharedPreferencesAsync.empty();
@@ -190,6 +196,10 @@ void main() {
       await tester.pumpWidget(ProviderScope(
         overrides: [
           pageManagerProvider.overrideWith((ref) async => manager),
+          // Browsers are not warmed under a test: the prewarm waits on the page
+          // manager and then on a two-second timer, which would be left pending
+          // at teardown (#520).
+          webViewPrewarmProvider.overrideWithValue(0),
           bootstrapPageManagerProvider.overrideWithValue(manager),
         ],
         child: const MaterialApp(

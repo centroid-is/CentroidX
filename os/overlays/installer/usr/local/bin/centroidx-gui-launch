@@ -1,0 +1,59 @@
+#!/bin/sh
+# Starts the installer's compositor with a VNC head mirroring the panel.
+#
+# weston 14 takes a comma-separated backend list (weston(1): "The first backend
+# is the primary backend, and it provides the renderer"), so drm stays primary
+# with the GL renderer and vnc rides along as a secondary. weston.ini(5)'s
+# `[output] mirror-of=` then makes the remote output overlap the native one --
+# "useful for sharing or mirroring a native DRM output", and remote-mirrors-DRM
+# is the supported direction (only DRM-to-DRM is not).
+#
+# That is one compositor and one setup app. A second weston running a second
+# copy of the app was rejected outright: two instances means two processes each
+# entitled to wipe a disk, from two divergent sets of answers.
+#
+# This wrapper exists for one reason: `mirror-of` wants the literal DRM
+# connector name -- eDP-1, HDMI-A-1, DP-2 -- which is a property of the panel in
+# front of you and cannot be written into an image that boots on all of them. So
+# the shipped weston.ini is a template and the mirror stanza is appended here.
+set -eu
+
+RUNTIME=/run/centroidx-gui
+INI="$RUNTIME/weston.ini"
+
+mkdir -p "$RUNTIME"
+cp /etc/xdg/weston/weston.ini "$INI"
+
+# The first connected connector. /sys/class/drm entries are named
+# card<N>-<CONNECTOR>, and weston names the output after the connector alone.
+conn=""
+for status in /sys/class/drm/card*-*/status; do
+  [ -e "$status" ] || continue
+  [ "$(cat "$status")" = connected ] || continue
+  conn="${status%/status}"
+  conn="${conn##*/}"
+  conn="${conn#card*-}"
+  break
+done
+
+if [ -n "$conn" ]; then
+  # name=vnc is not a guess: weston-vnc(7) says "The name vnc is used to
+  # identify the VNC output."
+  printf '\n[output]\nname=vnc\nmirror-of=%s\n' "$conn" >> "$INI"
+  echo "centroidx-gui: mirroring $conn to the VNC output"
+else
+  # No panel attached -- a bench machine, or a dead backlight. weston still
+  # comes up and the VNC output stands alone at its default size, which is the
+  # more useful failure: the installer is then reachable even though the screen
+  # is not.
+  echo "centroidx-gui: no connected DRM connector; the VNC output stands alone"
+fi
+
+# No TLS on the VNC side, deliberately. noVNC cannot speak VeNCrypt, so the
+# browser path needs weston in its password-only mode (weston-vnc(7)), which
+# negotiates RA2ne -- RSA-AES, encrypted, and the one thing noVNC does speak.
+# The transport is still encrypted; what is turned off is the X.509 layer under
+# it. The browser leg gets its own TLS from websockify.
+exec /usr/bin/weston --config="$INI" \
+  --disable-transport-layer-security \
+  --log="$RUNTIME/weston.log"

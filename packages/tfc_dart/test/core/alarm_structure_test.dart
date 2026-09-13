@@ -195,6 +195,28 @@ void main() {
             '\nFound: ${gate.join('\n       ')}');
   });
 
+  test('arm 3b: AlarmMan declares no headless constructor and no write path',
+      () {
+    final alarm = code['lib/core/alarm.dart']!;
+
+    expect(_linesContaining(alarm, 'static Future<AlarmMan> headless'), isEmpty,
+        reason: 'ALRM-01 / D-6, and this arm exists because main grew one on '
+            'its own line and the merge had to take it back out. A headless '
+            'AlarmMan is an AlarmMan for a process with no store — which on '
+            'this line is the acquisition backend, and the backend does not '
+            'run an AlarmMan at all. Arm 3 refuses the class in bin/main.dart; '
+            'this refuses the constructor that exists only to be called from '
+            'there, so the two cannot come back one at a time.');
+
+    expect(_linesContaining(alarm, 'historyToDb'), isEmpty,
+        reason: 'the flag that decided whether this class wrote alarm history '
+            'to the shared database. Persistence is AlarmHistoryWriter\'s, '
+            'which always writes. A configuration switch that turns a write to '
+            'a shared table on and off is a switch somebody eventually sets '
+            'wrong, and the cost is two processes writing one plant\'s '
+            'history with no way to tell the copies apart.');
+  });
+
   // ------------------------------------------ arms 4-5: what must be ordered
 
   test('arm 4: the alarm engine is started AFTER every worker is registered',

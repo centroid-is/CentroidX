@@ -49,12 +49,11 @@ void main() {
     });
 
     test(
-        'uses the Operator role as it currently stands, without second-guessing'
-        ' it', () {
-      // Somebody ticked `setpoints` on the Operator role. That silently grants
-      // it to every panel on the floor with nobody signed in — the one footgun
-      // this simplification creates. The session's job is to report the role,
-      // not to overrule it.
+        'uses the anonymous account as it currently stands, without '
+        'second-guessing it', () {
+      // Somebody gave the anonymous account a role with `setpoints`. That
+      // grants it to every panel on the floor with nobody signed in. The
+      // session's job is to report the account, not to overrule it.
       final session = AccessSession.anonymous(
         {AccessGroup.operate, AccessGroup.setpoints},
       );
@@ -297,10 +296,27 @@ void main() {
       expect(sessionFor(['A', 'B'], {}).roleLabel, 'A + B');
     });
 
-    test('anonymous is still exactly the Operator role, singular', () {
+    test('anonymous defaults to the seeded role, singular', () {
       final anon = AccessSession.anonymous({AccessGroup.operate});
       expect(anon.roleNames, [kOperatorRoleName]);
       expect(anon.roleLabel, kOperatorRoleName);
+    });
+
+    test('anonymous answers with the roles its account holds', () {
+      final anon = AccessSession.anonymous(
+        {AccessGroup.operate},
+        roleNames: const ['Line', 'Viewer'],
+      );
+      expect(anon.isElevated, isFalse);
+      expect(anon.roleName, 'Line');
+      expect(anon.roleNames, ['Line', 'Viewer']);
+      expect(anon.roleLabel, 'Line + Viewer');
+      expect(
+        anon,
+        isNot(AccessSession.anonymous({AccessGroup.operate})),
+        reason: 'two logged-out panels holding different roles are different '
+            'sessions',
+      );
     });
 
     test('the payload carries the extra roles, and only when there are any',

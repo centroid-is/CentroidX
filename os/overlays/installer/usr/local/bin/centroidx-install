@@ -1,0 +1,634 @@
+#!/bin/bash
+# CentroidX station installer. Runs on tty1 of the USB key.
+#
+# It does not install Debian -- it writes an already-installed Debian onto the
+# SSD. Everything the old firstboot-install.sh did over the plant uplink
+# (debootstrap, 25 apt packages, an ansible run) happened in CI instead.
+set -uo pipefail
+
+PAYLOAD=/opt/centroidx
+# The USB is generic and reused for every customer, so answers are NOT baked in
+# at build time. An optional station.env for unattended installs goes here, on
+# the stick's FAT partition -- writable from any Windows/macOS/Linux laptop,
+# no rebuild. Absent, the installer asks.
+CFG_DIR=/boot/efi/centroidx
+SEED="$CFG_DIR/station.env"
+TARGET_MNT=/mnt/target
+RUNTIME_DIR=/run/centroidx
+NO_REBOOT=0
+
+# The graphical setup app (os/app) is a front end onto this script, not a second
+# implementation: it collects answers, writes them as station.env, and runs us
+# with --seed/--disk/--no-reboot so exactly one piece of code wipes a disk.
+usage() {
+  cat <<USAGE
+usage: centroidx-install [--seed FILE] [--disk DEVICE] [--no-reboot]
+  --seed FILE    read answers from FILE instead of prompting
+  --disk DEVICE  install onto DEVICE instead of asking
+  --no-reboot    finish without rebooting (the caller handles it)
+USAGE
+}
+
+PRESET_DISK=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --seed)      SEED="${2:?--seed needs a path}"; shift 2 ;;
+    --disk)      PRESET_DISK="${2:?--disk needs a device}"; shift 2 ;;
+    --no-reboot) NO_REBOOT=1; shift ;;
+    -h|--help)   usage; exit 0 ;;
+    *)           printf 'unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+# Declared up front: a station.env that omits one of these would otherwise trip
+# `set -u` much later, after the disk has already been written.
+TARGET=""
+BOOT_DISK=""
+# 1 between "the image is on the disk" and "the disk is configured". See
+# disarm_target().
+TARGET_ARMED=0
+UNATTENDED=0
+STATION_NAME=""
+CENTROID_PASSWORD=""
+ROOT_PASSWORD=""
+VNC_PASSWORD=""
+DB_PASSWORD=""
+VPN_ENDPOINT=""
+VPN_OBFUSCATOR_KEY=""
+VPN_SERVER_PUBKEY=""
+VPN_ADDRESS=""
+VPN_ALLOWED_IPS=""
+WG_PUBKEY=""
+# The layout the station's keyboards start in. The compose file hands it to
+# weston as KEYBOARD_DEFAULT; the other layouts stay one Alt+Shift (or one globe
+# key) away. Same three codes the weston wrapper in centroid-is/dockers accepts.
+KEYBOARD_DEFAULT=""
+KEYBOARD_LAYOUTS="is en pl"
+# wg-obfuscator listens here and wg talks to it over loopback; upstream default.
+OBF_PORT=13255
+
+# Colour only for a human at a tty. The setup app runs this with its output on
+# a pipe and renders each line verbatim, so unconditional escapes put
+# "\033[1;31m  FAILED: ..." on the panel in front of the operator. TERM=dumb
+# does not help: nothing here consults it.
+if [ -t 1 ]; then C_RED=$'\033[1;31m'; C_GRN=$'\033[1;32m'; C_BLD=$'\033[1m'; C_OFF=$'\033[0m'
+else                C_RED=''; C_GRN=''; C_BLD=''; C_OFF=''
+fi
+red()  { printf '%s%s%s\n' "$C_RED" "$*" "$C_OFF"; }
+grn()  { printf '%s%s%s\n' "$C_GRN" "$*" "$C_OFF"; }
+bold() { printf '%s%s%s\n' "$C_BLD" "$*" "$C_OFF"; }
+rule() { printf '%s\n' "------------------------------------------------------------"; }
+
+# Both on stderr: die is called from inside $(...) in places, and anything it
+# wrote to stdout there would be captured as data instead of shown. (Review #1:
+# the refusal text became the sole "install candidate".)
+die() {
+  if [ -t 2 ]; then printf '\033[1;31m%s\033[0m\n' "  FAILED: $*" >&2
+  else              printf '%s\n'                    "  FAILED: $*" >&2
+  fi
+  exit 1
+}
+
+# Every non-loopback IPv4 this machine currently holds, space separated.
+#
+# Printed rather than acted on. Most panels take a DHCP lease and nobody
+# standing at one can see what it got; the address is what you need to reach
+# the machine afterwards, and it is the one fact about the install that is
+# easier to read off the screen now than to hunt for on a router later.
+host_addresses() {
+  ip -o -4 addr show scope global 2>/dev/null \
+    | awk '{sub("/.*","",$4); printf "%s ", $4}' | sed 's/ $//'
+}
+
+# The credential centroidx-remote-access minted for this boot, if it did.
+remote_code() { read_kv "$RUNTIME_DIR/remote-access" code; }
+
+banner() {
+  clear 2>/dev/null || true
+  bold "  CentroidX station installer"
+  [ -r "$PAYLOAD/image-info" ] && sed 's/^/  /' "$PAYLOAD/image-info"
+  local ips code; ips="$(host_addresses)"; code="$(remote_code)"
+  printf '  address:    %s\n' "${ips:-no network}"
+  # Both or neither: an address with no code is a login prompt nobody can
+  # answer, and a code with no address is nothing at all. The text installer
+  # is the fallback path, but a fallback that drops the remote view is a
+  # fallback that strands whoever was watching it.
+  if [ -n "$ips" ] && [ -n "$code" ]; then
+    printf '  remote:     https://%s   root / %s\n' "${ips%% *}" "$code"
+  fi
+  rule
+}
+
+# ---------------------------------------------------------------- target disk
+# The USB we booted from must never appear in this list.
+boot_disk() { lsblk -no PKNAME "$(findmnt -no SOURCE /)" 2>/dev/null | head -1; }
+
+# $BOOT_DISK is resolved in main() before this is ever called. Do NOT try to
+# resolve it here: candidates() runs inside a command substitution, so a die()
+# from this depth would exit only the subshell and the caller would carry on
+# with the error message as its data.
+candidates() {
+  lsblk -dno NAME,SIZE,MODEL --sort NAME | while read -r name size model; do
+    [ "$name" = "$BOOT_DISK" ] && continue
+    case "$name" in loop*|sr*|fd*|ram*|zram*) continue ;; esac
+    printf '%s\t%s\t%s\n' "$name" "$size" "${model:-unknown}"
+  done
+}
+
+pick_disk() {
+  local list n
+  if [ -n "$PRESET_DISK" ]; then
+    # Still checked against the exclusion list: a caller that names the boot
+    # disk must not get to erase it just because it asked explicitly.
+    candidates | cut -f1 | sed 's|^|/dev/|' | grep -qxF "$PRESET_DISK" \
+      || die "$PRESET_DISK is not an installable target on this machine"
+    TARGET="$PRESET_DISK"
+    echo "  Target: $TARGET (given on the command line)"
+    echo
+    return
+  fi
+  list="$(candidates)"
+  [ -n "$list" ] || die "no disk found to install onto (the USB itself is excluded)"
+  n="$(printf '%s\n' "$list" | wc -l | tr -d ' ')"
+
+  bold "Install target"
+  printf '%s\n' "$list" | nl -w2 -s') ' | sed 's/^/  /'
+  echo
+  if [ "$n" = "1" ]; then
+    TARGET="/dev/$(printf '%s\n' "$list" | cut -f1)"
+    echo "  Only one candidate: $TARGET"
+  else
+    local choice
+    while :; do
+      read -r -p "  Which disk? [1-$n] " choice
+      case "$choice" in
+        ''|*[!0-9]*) ;;
+        *) if [ "$choice" -ge 1 ] && [ "$choice" -le "$n" ]; then
+             TARGET="/dev/$(printf '%s\n' "$list" | sed -n "${choice}p" | cut -f1)"
+             break
+           fi ;;
+      esac
+      echo "  Pick a number between 1 and $n."
+    done
+  fi
+  echo
+}
+
+# ------------------------------------------------------------------- questions
+# station.env is PARSED, not sourced. `. "$SEED"` hands every value to bash, so
+# a password containing a space runs its second word as a command and a `$`
+# truncates silently -- and the charset check below would run too late to stop
+# either, since sourcing has already happened by then. Same defect the firstboot
+# side was fixed for (review #2).
+read_kv() {   # read_kv FILE KEY -> value on stdout, empty if absent
+  local file="$1" key="$2" line
+  [ -r "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$key="*) printf '%s' "${line#*=}"; return 0 ;;
+    esac
+  done < "$file"
+}
+ask() {   # ask VAR "prompt"
+  local __var="$1" __prompt="$2"
+  while :; do
+    # Indirect assignment: read into the variable NAMED by $__var. Verified to
+    # work; shellcheck flags it because it is usually a typo.
+    # shellcheck disable=SC2229
+    read -r -p "  $__prompt: " "$__var"
+    [ -n "${!__var}" ] && break
+    echo "  This one cannot be empty."
+  done
+}
+
+# These values travel through station.conf, then .env, then compose
+# interpolation, then a shell command inside a container, so the charset is
+# restricted rather than escaped correctly at four layers. (Review #2, #3.)
+#
+# It is a DENY list, not the allow list it started as. The allow list banned
+# every symbol nobody had thought about -- including '#', which an operator
+# reasonably wants in a password and which is safe everywhere here: compose's
+# dotenv only treats '#' as a comment when whitespace precedes it, and
+# whitespace is banned below. What is refused is the set that turns a quoting
+# slip at any of those four layers into executed code or a silently truncated
+# value, which is a different and much shorter list:
+#
+#   space/tab   ' #' starts a dotenv comment; splits an unquoted word
+#   $ `         command and variable substitution; compose interpolation
+#   " ' \       end or escape a quoted string
+#   ; & | < > ( )   command separators, redirections, subshells
+#
+# Everything else printable is allowed: # ! , = ? * ^ [ ] { } . _ @ % + : ~ / -
+# at worst expand to the wrong filename inside a shell, never to a command.
+PASSWORD_RULE="no spaces, and none of: \" ' \` \$ \\ ; & | < > ( )"
+password_ok() {   # password_ok VALUE
+  local v="$1" left
+  [ -n "$v" ] || return 1
+  # Printable ASCII only: excludes space, tab, newline, control characters and
+  # anything non-ASCII, which chpasswd and the container's shell disagree
+  # about. Delete every byte in 0x21-0x7e and require nothing to be left.
+  #
+  # NOT `grep -qE '^[!-~]+$'`, which was the first version of this line: grep
+  # matches line by line, so a value containing a newline is two lines that
+  # each match it on their own and the check passes.
+  left="$(LC_ALL=C printf '%s' "$v" | LC_ALL=C tr -d '\041-\176' | LC_ALL=C wc -c)"
+  [ "${left// /}" = 0 ] || return 1
+  case "$v" in
+    *[\"\'\`\$\\\;\&\|\<\>\(\)]*) return 1 ;;
+  esac
+  return 0
+}
+
+ask_pass() {   # ask_pass VAR "prompt"
+  local __var="$1" __prompt="$2" a b
+  while :; do
+    read -r -s -p "  $__prompt: " a; echo
+    if [ ${#a} -lt 8 ]; then echo "  At least 8 characters, please."; continue; fi
+    if ! password_ok "$a"; then
+      echo "  $PASSWORD_RULE."
+      echo "  (those break one of the layers this password passes through)"
+      continue
+    fi
+    read -r -s -p "  $__prompt (again): " b; echo
+    [ "$a" = "$b" ] && break
+    echo "  They did not match."
+  done
+  eval "$__var=\$a"
+}
+
+questions() {
+  if [ -r "$SEED" ]; then
+    grn "  Using answers from $SEED (unattended install)"
+    UNATTENDED=1
+    STATION_NAME="$(read_kv "$SEED" STATION_NAME)"
+    CENTROID_PASSWORD="$(read_kv "$SEED" CENTROID_PASSWORD)"
+    ROOT_PASSWORD="$(read_kv "$SEED" ROOT_PASSWORD)"
+    VNC_PASSWORD="$(read_kv "$SEED" VNC_PASSWORD)"
+    DB_PASSWORD="$(read_kv "$SEED" DB_PASSWORD)"
+    VPN_ENDPOINT="$(read_kv "$SEED" VPN_ENDPOINT)"
+    VPN_OBFUSCATOR_KEY="$(read_kv "$SEED" VPN_OBFUSCATOR_KEY)"
+    VPN_SERVER_PUBKEY="$(read_kv "$SEED" VPN_SERVER_PUBKEY)"
+    VPN_ADDRESS="$(read_kv "$SEED" VPN_ADDRESS)"
+    VPN_ALLOWED_IPS="$(read_kv "$SEED" VPN_ALLOWED_IPS)"
+    KEYBOARD_DEFAULT="$(read_kv "$SEED" KEYBOARD_DEFAULT)"
+    local missing=""
+    for v in STATION_NAME CENTROID_PASSWORD ROOT_PASSWORD VNC_PASSWORD DB_PASSWORD; do
+      [ -n "${!v}" ] || missing="$missing $v"
+    done
+    [ -z "$missing" ] || die "$SEED is missing:$missing"
+    for v in DB_PASSWORD VNC_PASSWORD ROOT_PASSWORD CENTROID_PASSWORD; do
+      password_ok "${!v}" \
+        || die "$SEED: $v contains a character that will not survive the shell/compose path ($PASSWORD_RULE)"
+    done
+    valid_station_name "$STATION_NAME" \
+      || die "$SEED: STATION_NAME must be a DNS label -- letters, digits and hyphens, not starting or ending with one"
+    # VPN is optional, but all-or-nothing once any of it is given: a half-filled
+    # wg0.conf brings the station up looking configured and unreachable. The
+    # obfuscation key is the one exception, because without it the tunnel simply
+    # goes direct to the endpoint. Same rule the setup app's vpnComplete applies.
+    if [ -n "$VPN_ENDPOINT$VPN_OBFUSCATOR_KEY$VPN_SERVER_PUBKEY$VPN_ADDRESS$VPN_ALLOWED_IPS" ]; then
+      missing=""
+      for v in VPN_ENDPOINT VPN_SERVER_PUBKEY VPN_ADDRESS VPN_ALLOWED_IPS; do
+        [ -n "${!v}" ] || missing="$missing $v"
+      done
+      [ -z "$missing" ] || die "$SEED: VPN settings are all-or-nothing; missing:$missing"
+    fi
+    # Optional in the file; the panel's keyboards start in Icelandic unless told.
+    : "${KEYBOARD_DEFAULT:=is}"
+    valid_keyboard_layout "$KEYBOARD_DEFAULT" \
+      || die "$SEED: KEYBOARD_DEFAULT must be one of: $KEYBOARD_LAYOUTS"
+    return
+  fi
+  bold "Station settings"
+  echo "  These are the only things this installer cannot work out for itself."
+  echo
+  while :; do
+    ask STATION_NAME "Station name (shown in the browser tab)"
+    valid_station_name "$STATION_NAME" && break
+    red "  Letters, digits and hyphens; must not start or end with a hyphen."
+    STATION_NAME=""
+  done
+  ask_pass CENTROID_PASSWORD  "Password for the 'centroid' login"
+  ask_pass ROOT_PASSWORD      "Password for 'root'"
+  ask_pass VNC_PASSWORD       "Password for the VNC/remote screen"
+  ask_pass DB_PASSWORD        "Password for the database"
+  echo
+  keyboard_question
+  vpn_questions
+}
+
+# The station offers Icelandic, English and Polish on the panel, over VNC and on
+# the on-screen keyboard (docker-compose.yml, KEYBOARD_LAYOUTS). Which one it
+# STARTS in is the per-station answer: the compose default falls back to the
+# host locale, and the image's locale is en_US -- so a plant that wants
+# Icelandic first has to say so somewhere, and this is where.
+keyboard_question() {
+  local answer
+  bold "Keyboard"
+  echo "  The panel offers Icelandic (is), English (en) and Polish (pl). Alt+Shift"
+  echo "  on a keyboard and the globe key on the on-screen one switch between them."
+  while :; do
+    read -r -p "  Layout the station starts in [is/en/pl] (is): " answer
+    answer="${answer:-is}"
+    valid_keyboard_layout "$answer" && break
+    echo "  One of: $KEYBOARD_LAYOUTS"
+  done
+  KEYBOARD_DEFAULT="$answer"
+  echo
+}
+
+valid_keyboard_layout() {
+  case " $KEYBOARD_LAYOUTS " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
+# Everything this station needs to reach the VPN. The private key is NOT among
+# them: it is generated on this machine in a moment and never leaves it, so the
+# only thing that has to travel is the public key, shown at the end for
+# registration on the server. That is why no key file rides on the USB.
+vpn_questions() {
+  local answer
+  bold "Remote access (WireGuard)"
+  echo "  Skip this and the station installs without VPN access; you can add it"
+  echo "  later with two files in /etc and a systemctl enable."
+  echo
+  read -r -p "  Configure VPN access now? [Y/n] " answer
+  case "$answer" in
+    [nN]*) echo "  Skipped."; echo; return ;;
+  esac
+  ask VPN_ENDPOINT        "VPN server address and port (e.g. vpn.example.is:13255)"
+  ask VPN_OBFUSCATOR_KEY  "Obfuscation key (shared with the server)"
+  ask VPN_SERVER_PUBKEY   "Server's WireGuard public key"
+  # No defaults for the addresses: a product default would be one site's
+  # topology, and the examples are the documentation range on purpose.
+  ask VPN_ADDRESS         "This station's VPN address (e.g. 192.0.2.42/24)"
+  ask VPN_ALLOWED_IPS     "Subnet routed through the tunnel (e.g. 192.0.2.0/24)"
+  echo
+}
+
+valid_station_name() {
+  # Same rule as the setup app's validateStationName (os/app/lib/answers.dart).
+  # The value becomes /etc/hostname, a certificate CN and an unquoted line in
+  # .env that compose reads as dotenv -- where a space, or a " #", silently
+  # changes what it means.
+  printf '%s' "$1" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$'
+}
+
+# ----------------------------------------------------------------------- write
+confirm() {
+  local answer
+  if [ "$UNATTENDED" = 1 ]; then
+    if [ -n "$PRESET_DISK" ]; then
+      # The caller named the disk on the command line, which is the setup app
+      # after the operator confirmed on screen. There is no Ctrl-C to offer.
+      red "  Erasing $TARGET."
+    else
+      red "  UNATTENDED: erasing $TARGET in 15 seconds. Ctrl-C to stop."
+      sleep 15
+    fi
+    return
+  fi
+  red "  ****************************************************"
+  red "  *  EVERYTHING ON $TARGET WILL BE ERASED"
+  red "  ****************************************************"
+  echo
+  lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT "$TARGET" | sed 's/^/  /'
+  echo
+  read -r -p "  Type 'yes' to install, anything else to abort: " answer
+  [ "$answer" = "yes" ] || die "aborted at the confirmation prompt"
+}
+
+flash() {
+  local img bmap imgs
+  # centroidx-* not *.img.gz, and exactly one: two images on the key would mean
+  # flashing the alphabetically-first while image-info describes the other.
+  mapfile -t imgs < <(find "$PAYLOAD" -maxdepth 1 -name 'centroidx-*.img.gz' | sort)
+  [ "${#imgs[@]}" = 1 ] \
+    || die "expected exactly one centroidx-*.img.gz in $PAYLOAD, found ${#imgs[@]}"
+  img="${imgs[0]}"
+  bmap="${img%.img.gz}.img.bmap"
+  bold "Writing $(basename "$img") to $TARGET"
+  if [ -r "$bmap" ]; then
+    bmaptool copy --bmap "$bmap" "$img" "$TARGET" || die "bmaptool copy failed"
+  else
+    echo "  (no .bmap alongside the image; falling back to a full copy)"
+    bmaptool copy --nobmap "$img" "$TARGET" || die "bmaptool copy failed"
+  fi
+  sync
+  # From here on the disk carries a bootable system that is NOT yet this
+  # station. If anything below fails, it must not be left that way.
+  TARGET_ARMED=1
+  # The image is smaller than the disk, so its backup GPT header sits wherever
+  # the image ended rather than at the end of the device. parted (and therefore
+  # partprobe, just below) warns about that in a paragraph of prose that reads
+  # like a failure to an operator watching the screen; growpart at first boot
+  # then has to fix it anyway. Move it now, quietly. Best effort: a table this
+  # cannot correct is one partprobe is about to complain about for real.
+  sgdisk --move-second-header "$TARGET" >/dev/null 2>&1 || true
+  # Re-read the table so the new partitions appear as devices. NOT swallowed: on
+  # EBUSY the kernel keeps the old table, and because bmaptool leaves unmapped
+  # blocks untouched a stale superblock can then mount -- which would put
+  # station.conf and a journal replay inside the wrong filesystem.
+  partprobe "$TARGET" || die "the kernel would not re-read the partition table on $TARGET (is something holding it open?)"
+  udevadm settle
+}
+
+# A target that has the image on it but no station.conf is the worst possible
+# outcome of a failed install, and it is what the first real panel produced: it
+# boots, firstboot finds no answers, keeps the image builder's hostname
+# ("fakemachine"), mints its own secrets that nobody knows, and starts pulling
+# containers. A station that looks installed and is not.
+#
+# So if anything goes wrong between writing the image and configuring it, take
+# the boot path away again. Nothing is lost -- the operator already agreed to
+# erase this disk -- and the machine stops at the firmware instead of coming up
+# as a plausible-looking wrong station.
+disarm_target() {
+  # $(...) in this script runs die() in places, and a subshell inherits this
+  # trap. Wiping a disk from inside a command substitution is not a thing that
+  # should be possible, so only the original shell may do it.
+  [ "$BASHPID" = "$$" ] || return 0
+  [ "$TARGET_ARMED" = 1 ] || return 0
+  TARGET_ARMED=0
+  red "  The install did not finish, so $TARGET is being made unbootable."
+  red "  It would otherwise come up as a half-configured station."
+  umount "$TARGET_MNT" 2>/dev/null || true
+  sgdisk --zap-all "$TARGET" >/dev/null 2>&1 || true
+  wipefs --all "$TARGET" >/dev/null 2>&1 || true
+  sync
+  red "  Fix the problem above and run the installer again."
+}
+
+# Everything the installer leaves on the target's root filesystem, given its
+# mount point. Split out from the mount/unmount so it can be run against a plain
+# directory: os/test/installer-test.sh does exactly that, which is the only way
+# the files this writes get checked without erasing a disk.
+write_target_config() {   # write_target_config ROOT
+  local root="$1"
+  mkdir -p "$root/etc/centroid"
+  {
+    echo "# Written by the CentroidX installer on $(date -Is)."
+    echo "# centroidx-firstboot PARSES this as key=value -- it does not source it."
+    echo "# Values are restricted to [A-Za-z0-9._@%+:~/-] at the prompt, so they"
+    echo "# survive this file, .env, compose interpolation and a container shell."
+    printf 'STATION_NAME=%s\n'      "$STATION_NAME"
+    printf 'ROOT_PASSWORD=%s\n'     "$ROOT_PASSWORD"
+    printf 'CENTROID_PASSWORD=%s\n' "$CENTROID_PASSWORD"
+    printf 'VNC_PASSWORD=%s\n'      "$VNC_PASSWORD"
+    printf 'DB_PASSWORD=%s\n'       "$DB_PASSWORD"
+    printf 'KEYBOARD_DEFAULT=%s\n'  "$KEYBOARD_DEFAULT"
+  } > "$root/etc/centroid/station.conf"
+  chmod 0600 "$root/etc/centroid/station.conf"
+  echo "${STATION_NAME}" > "$root/etc/hostname"
+  # sudo warns "unable to resolve host" on every call without this line, which
+  # is written here because this is the first point at which the name is known.
+  # REPLACED, not appended: rootfs-setup.sh now ships a placeholder
+  # 127.0.1.1 line (so an unconfigured image resolves its own name too), and
+  # appending would leave two entries for the same address -- which resolves in
+  # file order, i.e. to the placeholder.
+  sed -i -E '/^127\.0\.1\.1[[:space:]]/d' "$root/etc/hosts"
+  printf '127.0.1.1\t%s\n' "$STATION_NAME" >> "$root/etc/hosts"
+
+  # Remote access is per-station: wg0.conf carries this machine's private key
+  # and wg-obfuscator.conf the endpoint and shared obfuscation key, so neither
+  # can be baked into an image every station shares. Drop them next to the
+  # payload on the USB and they are installed here. (Review #8.)
+  install -d -m 0700 "$root/etc/wireguard"
+  if [ -r "$PAYLOAD/wg0.conf" ]; then
+    install -m 0600 "$PAYLOAD/wg0.conf" "$root/etc/wireguard/wg0.conf"
+    grn "  installed wg0.conf"
+  elif [ -z "$VPN_ENDPOINT" ]; then
+    red "  NOTE: no VPN configured - this station will have no remote access."
+    red "        Put one at /etc/wireguard/wg0.conf and: systemctl enable --now wg-quick@wg0"
+  fi
+  if [ -r "$PAYLOAD/wg-obfuscator.conf" ]; then
+    install -m 0600 "$PAYLOAD/wg-obfuscator.conf" "$root/etc/wg-obfuscator.conf"
+    grn "  installed wg-obfuscator.conf"
+  fi
+
+  # Built from the answers rather than copied, when they were given. The private
+  # key is generated HERE, on the machine being installed, so it never exists on
+  # the USB or anywhere it could be left behind; only the public half leaves, and
+  # only by being shown on screen for registration. questions() has already
+  # required all four of these together, so there is no half-written config.
+  if [ -n "$VPN_ENDPOINT" ] && [ -n "$VPN_SERVER_PUBKEY" ] && [ -n "$VPN_ADDRESS" ] && [ -n "$VPN_ALLOWED_IPS" ]; then
+    local priv pub
+    umask 077
+    priv="$(wg genkey)"
+    pub="$(printf '%s' "$priv" | wg pubkey)"
+    {
+      echo "# Written by the CentroidX installer on $(date -Is)."
+      echo "[Interface]"
+      echo "PrivateKey = $priv"
+      echo "Address = $VPN_ADDRESS"
+      echo
+      echo "[Peer]"
+      echo "PublicKey = $VPN_SERVER_PUBKEY"
+      echo "AllowedIPs = $VPN_ALLOWED_IPS"
+      # Through the obfuscator on loopback when there is one, otherwise direct.
+      if [ -n "$VPN_OBFUSCATOR_KEY" ]; then
+        echo "Endpoint = 127.0.0.1:$OBF_PORT"
+      else
+        echo "Endpoint = $VPN_ENDPOINT"
+      fi
+      echo "PersistentKeepalive = 25"
+    } > "$root/etc/wireguard/wg0.conf"
+    chmod 0600 "$root/etc/wireguard/wg0.conf"
+
+    if [ -n "$VPN_OBFUSCATOR_KEY" ]; then
+      {
+        echo "# Written by the CentroidX installer on $(date -Is)."
+        echo "[main]"
+        echo "source-lport = $OBF_PORT"
+        echo "target = $VPN_ENDPOINT"
+        echo "key = $VPN_OBFUSCATOR_KEY"
+        # Explicit, not left at the upstream default. The default is AUTO,
+        # which on the CLIENT side sends no masking at all and auto-detects
+        # instead -- so a station left at the default is running the obfuscator
+        # with the DPI evasion switched off, which is the only reason it is in
+        # the path. Matches what Centroid's own clients are configured with.
+        echo "masking = STUN"
+      } > "$root/etc/wg-obfuscator.conf"
+      chmod 0600 "$root/etc/wg-obfuscator.conf"
+    fi
+
+    mkdir -p "$RUNTIME_DIR"
+    printf '%s\n' "$pub" > "$RUNTIME_DIR/wg-pubkey"
+    WG_PUBKEY="$pub"
+    grn "  generated this station's WireGuard key"
+  fi
+}
+
+# Pick the device labelled 'root' out of an lsblk NAME,PARTLABEL table on stdin.
+#
+# Split out from seed_station_conf so os/test/installer-test.sh can feed it a
+# recorded table -- which is the only way this gets tested without erasing a
+# disk, and it needed testing: the first version called lsblk WITHOUT --list,
+# whose NAME column carries the tree-drawing glyphs. It resolved the root
+# partition as "└─/dev/sda2", mount was handed a device that does not exist,
+# and the install failed on the first real panel it ran on, AFTER the image had
+# already been written. The sub() is the belt to --list's braces -- a device
+# path starts at the first '/', whatever is drawn in front of it.
+root_partition() { awk '$2=="root"{sub("^[^/]*", "", $1); print $1; exit}'; }
+
+seed_station_conf() {
+  local root
+  # By PARTLABEL, not by index: image.yaml sets partlabel: root, and an index
+  # would silently pick whatever partition 2 happens to be if the table the
+  # kernel holds is not the one we just wrote.
+  root="$(lsblk --paths --list --noheadings -o NAME,PARTLABEL "$TARGET" | root_partition)"
+  [ -n "$root" ] || die "no partition labelled 'root' on $TARGET after flashing"
+  [ -b "$root" ] || die "$root is not a block device (lsblk named it, the kernel does not have it)"
+  mkdir -p "$TARGET_MNT"
+  mount "$root" "$TARGET_MNT" || die "cannot mount $root"
+  write_target_config "$TARGET_MNT"
+  sync
+  umount "$TARGET_MNT" || die "cannot unmount $root"
+}
+
+# ------------------------------------------------------------------------ main
+# Sourced by os/test/installer-test.sh for the functions above; nothing below
+# this line runs in that case, and nothing above it touches a disk.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
+
+banner
+
+# Before anything else, and at top level so a failure here actually stops the
+# script. A slow-probing NVMe may not be in lsblk yet when the unit starts.
+udevadm settle
+BOOT_DISK="$(boot_disk)"
+[ -n "$BOOT_DISK" ] || die "cannot identify the disk this installer booted from - refusing to offer any target"
+
+pick_disk
+questions
+confirm
+# Installed here, not at the top: everything above runs before a single byte is
+# written, and a trap that can wipe a disk should not be armed while the
+# operator is still answering questions. flash() sets TARGET_ARMED.
+trap disarm_target EXIT
+flash
+seed_station_conf
+# Configured. The disk is now a station, so the trap has nothing left to undo.
+TARGET_ARMED=0
+
+rule
+grn "  Installed."
+echo
+if [ -n "$WG_PUBKEY" ]; then
+  bold "  Register this station's public key on the VPN server:"
+  printf '%s    %s%s\n' "$C_GRN" "$WG_PUBKEY" "$C_OFF"
+  echo
+fi
+if [ "$NO_REBOOT" = 1 ]; then
+  echo "  Not rebooting (--no-reboot)."
+  rule
+  exit 0
+fi
+bold "  Remove the USB key now."
+echo "  Rebooting in 30 seconds. First boot grows the filesystem to the disk,"
+echo "  generates this machine's keys, and starts the containers."
+rule
+sleep 30
+reboot

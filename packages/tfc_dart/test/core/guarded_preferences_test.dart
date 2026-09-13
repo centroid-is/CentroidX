@@ -80,7 +80,6 @@ class _RecordingPreferences implements Preferences {
   /// When true every read throws — the unreadable store of T-03-28.
   bool failReads = false;
 
-  final KeyCache _keyCache = KeyCache();
   final MySecureStorage _secureStorage = _NoSecrets();
   final StreamController<String> _changes =
       StreamController<String>.broadcast();
@@ -207,9 +206,6 @@ class _RecordingPreferences implements Preferences {
   Database? get database => null;
 
   @override
-  KeyCache get keyCache => _keyCache;
-
-  @override
   MySecureStorage get secureStorage => _secureStorage;
 
   @override
@@ -220,12 +216,6 @@ class _RecordingPreferences implements Preferences {
     _log('isKeyInDatabase($key)');
     return store.containsKey(key);
   }
-
-  @override
-  Future<void> syncToLocalCache() async => _log('syncToLocalCache()');
-
-  @override
-  Future<void> loadFromPostgres() async => _log('loadFromPostgres()');
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -710,7 +700,6 @@ void main() {
         audit: _RecordingAuditSink(),
         station: _station,
       );
-      expect(identical(guard.keyCache, inner.keyCache), isTrue);
       expect(identical(guard.secureStorage, inner.secureStorage), isTrue);
       expect(identical(guard.localCache, localCache), isTrue);
       expect(guard.database, same(inner.database));
@@ -726,8 +715,6 @@ void main() {
       expect(seen, ['a_key']);
 
       expect(await guard.isKeyInDatabase('nope'), isFalse);
-      await guard.loadFromPostgres();
-      expect(inner.calls, contains('loadFromPostgres()'));
     });
   });
 
@@ -819,7 +806,6 @@ void main() {
     test('its non-write members forward to the same inner store', () async {
       final f = _Fixture(initial: {'a': 1});
       final system = f.guard.systemWrites;
-      expect(identical(system.keyCache, f.inner.keyCache), isTrue);
       expect(identical(system.secureStorage, f.inner.secureStorage), isTrue);
       expect(system.database, same(f.inner.database));
       expect(system.localCache, same(f.inner.localCache));

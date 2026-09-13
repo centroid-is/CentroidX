@@ -311,8 +311,7 @@ class _ResolvedRoles {
   String get primary => roles.first.name;
 
   /// The rest, for `AuthenticatedUser.additionalRoles`.
-  List<String> get additional =>
-      [for (final role in roles.skip(1)) role.name];
+  List<String> get additional => [for (final role in roles.skip(1)) role.name];
 
   /// Everything these roles together grant.
   Set<AccessGroup> get groups => unionRoleGroups(roles);
@@ -654,6 +653,18 @@ class AccessSessionController extends _$AccessSessionController {
       return floor();
     }
 
+    if (isAnonymousUsername(stored.username)) {
+      // Nobody signs in as the reserved account, so a payload naming it was
+      // written by hand. Restoring it would show an elevated session called
+      // "anonymous" with a sign-out button.
+      Logger().w(
+        'The stored session in "$kAccessSessionPrefKey" names the reserved '
+        '"$kAnonymousUsername" account — clearing it and starting anonymous.',
+      );
+      await _clearStoredSession();
+      return floor();
+    }
+
     if (stored.isExpiredAt(clock.now())) {
       // The session ended while the station was off. It gets the same row a
       // live timeout does — otherwise a panel switched off at the end of a
@@ -780,33 +791,22 @@ class AccessSessionController extends _$AccessSessionController {
     }
   }
 
-  /// The whole anonymous identity — groups and pages — from one read.
-  ///
-  /// Anonymous resolves to [kOperatorRoleName] and has no `app_user` row, so
-  /// the Operator role is the session. Reading both halves from one
-  /// [AccessRepository.anonymousRole] call is what stops the groups and the
-  /// whitelist coming from two reads of a row somebody is editing.
-  Future<AccessRole> _anonymousRole(AccessRepository? repo) async {
+  /// The anonymous session: the reserved account's roles, groups and pages,
+  /// composed from one [AccessRepository.anonymousAccount] read so the halves
+  /// cannot come from two reads of a row somebody is editing.
+  Future<AccessSession> _anonymousSession(AccessRepository? repo) async {
     if (repo == null) {
       // No database. The seeded Operator role — and, deliberately, **no**
       // whitelist: see [_effectivePages] for why this window fails open.
-      return AccessRole(
-        name: kOperatorRoleName,
-        groups: {
-          ...kSeedRoles.firstWhere((r) => r.name == kOperatorRoleName).groups,
-        },
-        seeded: true,
-      );
+      return AccessSession.anonymous({
+        ...kSeedRoles.firstWhere((r) => r.name == kOperatorRoleName).groups,
+      });
     }
-    return repo.anonymousRole();
-  }
-
-  /// The anonymous session, groups and pages together.
-  Future<AccessSession> _anonymousSession(AccessRepository? repo) async {
-    final role = await _anonymousRole(repo);
+    final account = await repo.anonymousAccount();
     return AccessSession.anonymous(
-      role.groups,
-      operatorAllowedPages: role.allowedPages,
+      account.groups,
+      allowedPages: account.allowedPages,
+      roleNames: account.roleNames,
     );
   }
 
@@ -903,14 +903,16 @@ class AccessSessionController extends _$AccessSessionController {
         // it. The password is not passed anywhere near this record.
         who: username,
         station: _station,
+        // What the panel held while the attempt was made — the anonymous
+        // account's label, which is not necessarily `Operator` any more.
+        roleName: state.valueOrNull?.roleLabel ?? kOperatorRoleName,
         actionId: newActionId(),
         at: clock.now(),
       ));
       return AccessSignInResult.badCredentials;
     }
 
-    final roles =
-        await _rolesOrNull(repo, user.roleName, user.additionalRoles);
+    final roles = await _rolesOrNull(repo, user.roleName, user.additionalRoles);
     if (roles == null) {
       // `LocalAuthProvider` already refuses this, so reaching it means a second
       // implementation behind the same seam. Refuse rather than elevate against
@@ -980,8 +982,8 @@ class AccessSessionController extends _$AccessSessionController {
     // commit prompt is suppressed in exactly that case, so this session is the
     // panel's identity without ever having been resumed into, and it must
     // behave like one: no copy in the human slot, and no sign-out.
-    _onPanelSession = user.stationAccount &&
-        user.username == await _readPanelAccount();
+    _onPanelSession =
+        user.stationAccount && user.username == await _readPanelAccount();
     state = AsyncData(session);
     await _persist(session);
     // A sign-in over a live session must not inherit its countdown: `_attach`
@@ -1436,7 +1438,29 @@ class AccessSessionController extends _$AccessSessionController {
     if (session == null) return;
     if (!session.isElevated) return;
 
+    _monitor?.poke();
+
+    // A session with no expiry (a station account, a resumed panel) has
+    // nothing to extend, and an activity extension must not conjure one onto
+    // it — so there is no new session to publish either.
     final timeout = session.inactivityTimeout;
+    final expiresAt = session.expiresAt;
+    if (timeout == null || expiresAt == null) return;
+
+    // ## Throttled
+    //
+    // Publishing a session rebuilds every widget watching it — the scaffold's
+    // app bar and navigation bar among them — and `_persist` rewrites the
+    // device preferences file, which on Windows re-encodes and rewrites the
+    // whole store. Doing both on every pointer-down put a hitch at the start
+    // of every scroll gesture on every page while signed in. The monitor above
+    // is still re-armed on every touch, so the countdown itself is exact; only
+    // the recorded `expiresAt` may trail the last touch by up to one
+    // granularity, which can only end a restarted or re-attached session that
+    // much *earlier*, never later.
+    final extendedTo = clock.now().add(timeout);
+    if (extendedTo.difference(expiresAt) < _pokeGranularity(timeout)) return;
+
     final extended = AccessSession(
       user: session.user,
       groups: session.groups,
@@ -1446,16 +1470,19 @@ class AccessSessionController extends _$AccessSessionController {
       allowedPages: session.allowedPages,
       inactivityTimeout: timeout,
       // Extended by this session's own timeout — the account's, not the
-      // panel's. A session with no expiry (a station account, a resumed
-      // panel) has nothing to extend, and an activity extension must not
-      // conjure one onto it.
-      expiresAt: (timeout == null || session.expiresAt == null)
-          ? null
-          : clock.now().add(timeout),
+      // panel's.
+      expiresAt: extendedTo,
     );
     state = AsyncData(extended);
     unawaited(_persist(extended));
-    _monitor?.poke();
+  }
+
+  /// How far `expiresAt` must move before [poke] publishes it: a twentieth of
+  /// the timeout, capped at ten seconds.
+  static Duration _pokeGranularity(Duration timeout) {
+    const cap = Duration(seconds: 10);
+    final share = timeout ~/ 20;
+    return share < cap ? share : cap;
   }
 
   /// True while the inactivity countdown is armed.
@@ -1718,6 +1745,19 @@ class AccessSessionController extends _$AccessSessionController {
     final username = await _readPanelAccount();
     if (username == null) return null;
 
+    if (isAnonymousUsername(username)) {
+      // A hand-edited preference file. The reserved account is what a panel
+      // falls *to*, never an account a panel is committed to — and the seed
+      // forces its station flag off, so the check below would refuse it
+      // anyway. This says why.
+      Logger().w(
+        'This panel is committed to the reserved "$kAnonymousUsername" '
+        'account, which is not a station account. Un-committing the panel.',
+      );
+      await _clearPanelAccount();
+      return null;
+    }
+
     if (repo == null) {
       Logger().w(
         'This panel is committed to "$username" but the database is not '
@@ -1809,10 +1849,12 @@ class AccessSessionController extends _$AccessSessionController {
   ///
   /// Two call sites, both on the administration screen:
   ///
-  /// * **After any role write** (06-07). The roles section puts a banner on the
-  ///   `Operator` row saying that ticking a group there grants it to every
-  ///   logged-out panel on the floor. `AccessRepository.anonymousGroups()` is
-  ///   what resolves that claim, and until this method existed its only callers
+  /// * **After any role or anonymous-account write** (06-07). The roles section
+  ///   puts a banner on every role the anonymous account holds, and the
+  ///   accounts screen on the account itself, saying that a group granted
+  ///   there reaches every logged-out panel on the floor.
+  ///   `AccessRepository.anonymousAccount()` is what resolves that claim, and
+  ///   until this method existed its only callers
   ///   were [_anonymousSession] — reached at build, at restore and at
   ///   sign-out.
   ///   So without this call the banner warns about a change the app does not

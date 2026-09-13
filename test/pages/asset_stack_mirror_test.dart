@@ -10,6 +10,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/conveyor.dart';
 import 'package:tfc/pages/page_view.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// The page-wide mirror (`AssetStackConfig`) flips every asset's *position*,
 /// but the glyph flip is skipped for unrotated assets so text faces stay
@@ -32,6 +33,13 @@ void main() {
       'asset_stack_config':
           jsonEncode({'xMirror': xMirror, 'yMirror': yMirror}),
     });
+    // And the store the canvas actually reads since v1.2 plan 01-05 — the one
+    // `initDeviceLocalPreferences()` opens, not a wrapper over the platform
+    // instance above.
+    useInMemoryDeviceLocalPreferences().setString(
+      'asset_stack_config',
+      jsonEncode({'xMirror': xMirror, 'yMirror': yMirror}),
+    );
   }
 
   ConveyorConfig turnedConveyor() => ConveyorConfig.preview()

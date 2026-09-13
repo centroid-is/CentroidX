@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/feature_flags.dart';
@@ -90,7 +91,13 @@ Widget _host(WebViewAssetConfig config, {bool editing = false, double w = 320, d
 }
 
 void main() {
-  tearDown(() => WebViewAssetView.debugSurfaceFactory = null);
+  tearDown(() async {
+    WebViewAssetView.debugSurfaceFactory = null;
+    // The pool is process-wide: a browser parked by one test would be taken
+    // over by the next test on the same address.
+    await WebViewSurfacePool.instance.clear();
+    WebViewSurfacePool.instance = WebViewSurfacePool();
+  });
 
   group('JSON', () {
     // Runs in both build modes on purpose. WebViewAssetConfig.fromJson is
@@ -821,11 +828,28 @@ void main() {
       await tester.pumpWidget(_host(config));
       await tester.pump();
 
-      expect(first.disposed, isTrue, reason: 'the old browser is torn down');
+      expect(first.disposed, isFalse,
+          reason: 'the old browser is parked for its address, not torn down');
+      expect(WebViewSurfacePool.instance.urls,
+          ['https://grafana.plant/d/abc/line-1']);
       expect(second.navigations.single.toString(), 'https://other.plant/x');
     });
 
-    testWidgets('disposing tears the browser down', (tester) async {
+    testWidgets('disposing parks the browser on its address', (tester) async {
+      final surface = _FakeSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pump();
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(surface.disposed, isFalse);
+      expect(WebViewSurfacePool.instance.urls,
+          ['https://grafana.plant/d/abc/line-1']);
+    });
+
+    testWidgets('disposing tears the browser down when nothing is kept warm',
+        (tester) async {
+      WebViewSurfacePool.instance = WebViewSurfacePool(capacity: 0);
       final surface = _FakeSurface();
       WebViewAssetView.debugSurfaceFactory = (_) => surface;
       await tester.pumpWidget(_host(_configured()));
@@ -833,6 +857,7 @@ void main() {
 
       await tester.pumpWidget(const SizedBox.shrink());
       expect(surface.disposed, isTrue);
+      expect(WebViewSurfacePool.instance.size, 0);
     });
 
     testWidgets('being disposed mid-navigation throws nothing', (tester) async {
@@ -849,6 +874,480 @@ void main() {
       await tester.pumpWidget(_host(_configured()));
       await tester.pump();
       expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('warm browsers', () {
+    // Leaving a page tears its tiles down. Before the pool, coming back paid
+    // for a new engine and a full page load every time -- three seconds of
+    // cover on the plant for a dashboard the operator had just been looking
+    // at. Now the browser is parked and the returning tile takes it over.
+
+    testWidgets('a tile that comes back takes its browser over, unnavigated',
+        (tester) async {
+      final surface = _FakeSurface();
+      var built = 0;
+      WebViewAssetView.debugSurfaceFactory = (_) {
+        built++;
+        return surface;
+      };
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(WebViewSurfacePool.instance.size, 1);
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pump();
+
+      expect(built, 1, reason: 'no second browser was started');
+      expect(surface.navigations, hasLength(1),
+          reason: 'the page is already there; navigating would reload it');
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
+      expect(WebViewSurfacePool.instance.size, 0,
+          reason: 'a browser on screen is not also parked');
+      expect(surface.disposed, isFalse);
+    });
+
+    testWidgets('a different address starts its own browser', (tester) async {
+      final surfaces = <_FakeSurface>[];
+      WebViewAssetView.debugSurfaceFactory = (_) {
+        final s = _FakeSurface();
+        surfaces.add(s);
+        return s;
+      };
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox.shrink());
+
+      await tester.pumpWidget(_host(_configured(url: 'https://other.plant/x')));
+      await tester.pump();
+
+      expect(surfaces, hasLength(2));
+      expect(surfaces.last.navigations.single.toString(),
+          'https://other.plant/x');
+      expect(WebViewSurfacePool.instance.urls,
+          ['https://grafana.plant/d/abc/line-1'],
+          reason: 'the first browser waits for its own address');
+    });
+
+    testWidgets('the theme parameter is part of the address', (tester) async {
+      // A parked dark dashboard is no use to a tile that wants the light one.
+      final surfaces = <_FakeSurface>[];
+      WebViewAssetView.debugSurfaceFactory = (_) {
+        final s = _FakeSurface();
+        surfaces.add(s);
+        return s;
+      };
+      WebViewAssetConfig themed() => WebViewAssetConfig(
+          url: 'https://grafana.plant/d/abc/line-1', themeParam: 'theme');
+      Widget host(ThemeData theme) => MaterialApp(
+            theme: theme,
+            home: Scaffold(
+              body: SizedBox(
+                  width: 320, height: 240, child: WebViewAssetView(config: themed())),
+            ),
+          );
+
+      await tester.pumpWidget(host(ThemeData.dark()));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(WebViewSurfacePool.instance.urls,
+          ['https://grafana.plant/d/abc/line-1?theme=dark']);
+
+      await tester.pumpWidget(host(ThemeData.light()));
+      await tester.pump();
+      expect(surfaces, hasLength(2));
+      expect(surfaces.last.navigations.single.toString(),
+          'https://grafana.plant/d/abc/line-1?theme=light');
+    });
+
+    testWidgets('a taken-back browser is not asked about its engine again',
+        (tester) async {
+      final surface = _FakeAbsentableSurface(available: true);
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pumpAndSettle();
+      expect(surface.availabilityAsks, 1);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pumpAndSettle();
+
+      expect(surface.availabilityAsks, 1,
+          reason: 'it proved its engine present the first time');
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
+    });
+
+    testWidgets('a taken-back browser gets its reload interval back',
+        (tester) async {
+      final surface = _FakeSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured(reloadSeconds: 30)));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox.shrink());
+      // Parked: the tick belongs to the tile, and the tile is gone.
+      await tester.pump(const Duration(seconds: 31));
+      expect(surface.navigations, hasLength(1));
+
+      await tester.pumpWidget(_host(_configured(reloadSeconds: 30)));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 31));
+      expect(surface.navigations, hasLength(2));
+
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets('the page editor parks the browser and gets it back',
+        (tester) async {
+      final surface = _FakeSurface();
+      var built = 0;
+      WebViewAssetView.debugSurfaceFactory = (_) {
+        built++;
+        return surface;
+      };
+      final config = _configured();
+
+      await tester.pumpWidget(_host(config));
+      await tester.pump();
+      await tester.pumpWidget(_host(config, editing: true));
+      await tester.pump();
+      expect(WebViewSurfacePool.instance.size, 1);
+      expect(find.byKey(const ValueKey('fake-web')), findsNothing);
+
+      await tester.pumpWidget(_host(config));
+      await tester.pump();
+      expect(built, 1);
+      expect(surface.navigations, hasLength(1));
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
+    });
+
+    testWidgets('a browser whose engine turned out missing is not parked',
+        (tester) async {
+      final surface = _FakeAbsentableSurface(available: false);
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pumpAndSettle();
+      expect(surface.disposed, isTrue);
+      expect(WebViewSurfacePool.instance.size, 0);
+    });
+
+    group('WebViewSurfacePool', () {
+      test('take hands back the newest browser on the address, once', () {
+        final pool = WebViewSurfacePool(capacity: 3);
+        final a = _FakeSurface();
+        final b = _FakeSurface();
+        pool.park('https://x/1', a);
+        pool.park('https://x/1', b);
+
+        expect(pool.take('https://x/2'), isNull);
+        expect(pool.take('https://x/1'), same(b));
+        expect(pool.take('https://x/1'), same(a));
+        expect(pool.take('https://x/1'), isNull);
+        expect(a.disposed, isFalse);
+        expect(b.disposed, isFalse);
+      });
+
+      test('over capacity, the browser parked longest ago is disposed',
+          () async {
+        final pool = WebViewSurfacePool(capacity: 2);
+        final a = _FakeSurface();
+        final b = _FakeSurface();
+        final c = _FakeSurface();
+        pool.park('https://x/1', a);
+        pool.park('https://x/2', b);
+        pool.park('https://x/3', c);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(a.disposed, isTrue);
+        expect(b.disposed, isFalse);
+        expect(c.disposed, isFalse);
+        expect(pool.urls, ['https://x/2', 'https://x/3']);
+      });
+
+      test('capacity zero disposes on the spot', () async {
+        final pool = WebViewSurfacePool(capacity: 0);
+        final a = _FakeSurface();
+        pool.park('https://x/1', a);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(a.disposed, isTrue);
+        expect(pool.size, 0);
+      });
+
+      test('clear disposes every parked browser', () async {
+        final pool = WebViewSurfacePool(capacity: 3);
+        final a = _FakeSurface();
+        final b = _FakeSurface();
+        pool.park('https://x/1', a);
+        pool.park('https://x/2', b);
+        await pool.clear();
+
+        expect(a.disposed, isTrue);
+        expect(b.disposed, isTrue);
+        expect(pool.size, 0);
+      });
+
+      test('a browser that fails to dispose does not break the pool',
+          () async {
+        final pool = WebViewSurfacePool(capacity: 1);
+        pool.park('https://x/1', _UndisposableSurface());
+        pool.park('https://x/2', _UndisposableSurface());
+        await Future<void>.delayed(Duration.zero);
+        await pool.clear();
+        expect(pool.size, 0);
+      });
+
+      test('the default lot holds a few browsers, not one and not many', () {
+        expect(kWebViewWarmBrowsers, inInclusiveRange(2, 4));
+        expect(WebViewSurfacePool().capacity, kWebViewWarmBrowsers);
+      });
+    });
+
+    group('prewarm', () {
+      // The cold open is the engine starting plus the dashboard's own scripts
+      // running -- 3.8 s on a station -- and cannot be hurried. Starting the
+      // browser before anyone asks is what makes the first visit a take-back.
+      setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.linux);
+      tearDown(() => debugDefaultTargetPlatformOverride = null);
+
+      test('starts a browser per address, navigated and parked', () async {
+        final surfaces = <_FakeSurface>[];
+        WebViewAssetView.debugSurfaceFactory = (_) {
+          final s = _FakeSurface();
+          surfaces.add(s);
+          return s;
+        };
+        final pool = WebViewSurfacePool(capacity: 3);
+
+        final started = pool.prewarm([
+          _configured(url: 'https://grafana.plant/d/abc/line-1'),
+          _configured(url: 'https://grafana.plant/d/abc/line-2'),
+        ], brightness: Brightness.light);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(started, 2);
+        expect(surfaces, hasLength(2));
+        expect(surfaces[0].navigations.single.toString(),
+            'https://grafana.plant/d/abc/line-1');
+        expect(surfaces[1].navigations.single.toString(),
+            'https://grafana.plant/d/abc/line-2');
+        expect(pool.urls, [
+          'https://grafana.plant/d/abc/line-1',
+          'https://grafana.plant/d/abc/line-2',
+        ]);
+      });
+
+      testWidgets('a tile then takes the warm browser over', (tester) async {
+        final surface = _FakeSurface();
+        var built = 0;
+        WebViewAssetView.debugSurfaceFactory = (_) {
+          built++;
+          return surface;
+        };
+        WebViewSurfacePool.instance
+            .prewarm([_configured()], brightness: Brightness.light);
+        expect(built, 1);
+
+        await tester.pumpWidget(_host(_configured()));
+        await tester.pump();
+
+        expect(built, 1, reason: 'the first visit started no browser');
+        expect(surface.navigations, hasLength(1),
+            reason: 'the page the prewarm loaded is the page shown');
+        expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
+        // The widget binding checks foundation debug variables before the
+        // group's tearDown runs, so a widget test resets this itself.
+        debugDefaultTargetPlatformOverride = null;
+      });
+
+      test('warms the address for the brightness the tile will use', () {
+        final surfaces = <_FakeSurface>[];
+        WebViewAssetView.debugSurfaceFactory = (_) {
+          final s = _FakeSurface();
+          surfaces.add(s);
+          return s;
+        };
+        final pool = WebViewSurfacePool(capacity: 3);
+        pool.prewarm([
+          WebViewAssetConfig(
+              url: 'https://grafana.plant/d/abc/line-1', themeParam: 'theme'),
+        ], brightness: Brightness.dark);
+        expect(pool.urls, ['https://grafana.plant/d/abc/line-1?theme=dark']);
+      });
+
+      test('skips an address that is parked, on screen, or repeated', () {
+        var built = 0;
+        WebViewAssetView.debugSurfaceFactory = (_) {
+          built++;
+          return _FakeSurface();
+        };
+        final pool = WebViewSurfacePool(capacity: 3);
+        pool.park('https://grafana.plant/d/abc/line-1', _FakeSurface());
+        pool.claim('https://grafana.plant/d/abc/line-2');
+
+        final started = pool.prewarm([
+          _configured(url: 'https://grafana.plant/d/abc/line-1'),
+          _configured(url: 'https://grafana.plant/d/abc/line-2'),
+          _configured(url: 'https://grafana.plant/d/abc/line-3'),
+          _configured(url: 'https://grafana.plant/d/abc/line-3'),
+        ], brightness: Brightness.light);
+
+        expect(started, 1);
+        expect(built, 1);
+        expect(pool.size, 2);
+      });
+
+      test('stops at capacity instead of evicting', () {
+        WebViewAssetView.debugSurfaceFactory = (_) => _FakeSurface();
+        final pool = WebViewSurfacePool(capacity: 2);
+        final kept = _FakeSurface();
+        pool.park('https://grafana.plant/d/abc/kept', kept);
+
+        final started = pool.prewarm([
+          _configured(url: 'https://grafana.plant/d/abc/line-1'),
+          _configured(url: 'https://grafana.plant/d/abc/line-2'),
+        ], brightness: Brightness.light);
+
+        expect(started, 1);
+        expect(kept.disposed, isFalse);
+        expect(pool.urls, [
+          'https://grafana.plant/d/abc/kept',
+          'https://grafana.plant/d/abc/line-1',
+        ]);
+      });
+
+      test('an unbrowsable address and an unconfigured tile start nothing',
+          () {
+        var built = 0;
+        WebViewAssetView.debugSurfaceFactory = (_) {
+          built++;
+          return _FakeSurface();
+        };
+        final pool = WebViewSurfacePool(capacity: 3);
+        final started = pool.prewarm([
+          WebViewAssetConfig(),
+          _configured(url: 'javascript:alert(1)'),
+        ], brightness: Brightness.light);
+        expect(started, 0);
+        expect(built, 0);
+      });
+
+      test('a platform with no browser starts nothing', () {
+        WebViewAssetView.debugSurfaceFactory = (_) => null;
+        final pool = WebViewSurfacePool(capacity: 3);
+        expect(pool.prewarm([_configured()], brightness: Brightness.light), 0);
+        expect(pool.size, 0);
+      });
+
+      test('a surface that can be sized ahead gets the window, before it loads',
+          () {
+        // CEF's default view is 1 x 1 until a widget sizes it, and Grafana
+        // lazy-loads panels outside the viewport: unsized, a pre-started
+        // dashboard did all of that on first show (0.8 s of a 1.2 s visit).
+        final surface = _FakePresizingSurface();
+        WebViewAssetView.debugSurfaceFactory = (_) => surface;
+        final pool = WebViewSurfacePool(capacity: 3);
+
+        pool.prewarm([_configured()],
+            brightness: Brightness.light,
+            viewport: const Size(1920, 1080),
+            devicePixelRatio: 1.5);
+
+        expect(surface.presized, const Size(1920, 1080));
+        expect(surface.presizedRatio, 1.5);
+        expect(surface.presizedBeforeNavigate, isTrue);
+      });
+
+      test('no window means no size; a plain surface is never asked', () {
+        final plain = _FakeSurface();
+        final sizing = _FakePresizingSurface();
+        var n = 0;
+        WebViewAssetView.debugSurfaceFactory = (_) => n++ == 0 ? plain : sizing;
+        final pool = WebViewSurfacePool(capacity: 3);
+
+        pool.prewarm([
+          _configured(url: 'https://grafana.plant/d/abc/line-1'),
+          _configured(url: 'https://grafana.plant/d/abc/line-2'),
+        ], brightness: Brightness.light);
+
+        expect(pool.size, 2);
+        expect(sizing.presized, isNull);
+      });
+
+      test('WebView2 is left cold: its view needs a widget to exist', () {
+        debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+        var built = 0;
+        WebViewAssetView.debugSurfaceFactory = (_) {
+          built++;
+          return _FakeSurface();
+        };
+        final pool = WebViewSurfacePool(capacity: 3);
+        expect(pool.prewarm([_configured()], brightness: Brightness.light), 0);
+        expect(built, 0);
+      });
+
+      test('a browser whose engine is missing is forgotten again', () async {
+        final surface = _FakeAbsentableSurface(available: false);
+        WebViewAssetView.debugSurfaceFactory = (_) => surface;
+        final pool = WebViewSurfacePool(capacity: 3);
+
+        pool.prewarm([_configured()], brightness: Brightness.light);
+        expect(pool.size, 1);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(pool.size, 0);
+        expect(surface.disposed, isTrue);
+      });
+
+      test('a browser whose engine did not start is forgotten again',
+          () async {
+        final surface = _FakeAbsentableSurface(
+            error: const WebViewUnavailable('did not start'));
+        WebViewAssetView.debugSurfaceFactory = (_) => surface;
+        final pool = WebViewSurfacePool(capacity: 3);
+
+        pool.prewarm([_configured()], brightness: Brightness.light);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(pool.size, 0);
+        expect(surface.disposed, isTrue);
+      });
+
+      test('a browser whose first navigation throws is forgotten again',
+          () async {
+        WebViewAssetView.debugSurfaceFactory = (_) => _FailingSurface();
+        final pool = WebViewSurfacePool(capacity: 3);
+
+        pool.prewarm([_configured()], brightness: Brightness.light);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(pool.size, 0);
+      });
+
+      testWidgets('a tile on screen counts as known, and stops when it goes',
+          (tester) async {
+        WebViewAssetView.debugSurfaceFactory = (_) => _FakeSurface();
+        final pool = WebViewSurfacePool.instance;
+
+        await tester.pumpWidget(_host(_configured()));
+        await tester.pump();
+        expect(pool.isKnown('https://grafana.plant/d/abc/line-1'), isTrue);
+        expect(pool.size, 0);
+
+        // Parked now, so still known.
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(pool.isKnown('https://grafana.plant/d/abc/line-1'), isTrue);
+        expect(pool.size, 1);
+
+        await pool.clear();
+        expect(pool.isKnown('https://grafana.plant/d/abc/line-1'), isFalse);
+        debugDefaultTargetPlatformOverride = null;
+      });
     });
   });
 
@@ -1058,4 +1557,35 @@ class _FailingSurface implements WebViewSurface {
   Future<void> navigate(Uri uri) async => throw Exception('unreachable');
   @override
   Future<void> dispose() async {}
+}
+
+/// Can be laid out before it is shown, the CEF shape.
+class _FakePresizingSurface implements WebViewSurface, WebViewSurfacePresizing {
+  Size? presized;
+  double? presizedRatio;
+  bool presizedBeforeNavigate = false;
+  final navigations = <Uri>[];
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.expand();
+  @override
+  Future<void> navigate(Uri uri) async => navigations.add(uri);
+  @override
+  Future<void> dispose() async {}
+  @override
+  void presize(Size size, double devicePixelRatio) {
+    presized = size;
+    presizedRatio = devicePixelRatio;
+    presizedBeforeNavigate = navigations.isEmpty;
+  }
+}
+
+/// Cannot even be torn down, the way a plugin with a dead native side fails.
+class _UndisposableSurface implements WebViewSurface {
+  @override
+  Widget build(BuildContext context) => const SizedBox.expand();
+  @override
+  Future<void> navigate(Uri uri) async {}
+  @override
+  Future<void> dispose() async => throw Exception('channel closed');
 }

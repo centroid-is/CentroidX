@@ -82,7 +82,7 @@ final accessAdminRolesProvider =
 typedef AccessAdminRolesRef = AutoDisposeFutureProviderRef<List<AccessRole>>;
 String _$accessAdminUsersHash() => r'e15bba3a82aaef7dc40d7b3f903d2c9ac60ce40c';
 
-/// Every account, ordered by username, for the users section.
+/// Every account, in display order, for the users section.
 ///
 /// Autodispose, empty-when-null and error-propagating for the same three
 /// reasons as [accessAdminRoles]; the two are deliberately the same shape so a

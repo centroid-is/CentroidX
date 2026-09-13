@@ -1,0 +1,633 @@
+name: Station image
+
+# The OS under the containers. Path-filtered on purpose: every other workflow in
+# this repo triggers on pull_request with no filter, and an 8GB image build next
+# to the 20-minute macOS flutter-test job on every Flutter PR would be pure
+# waste. This only runs when the image, the compose file it bakes, or this
+# workflow changes.
+on:
+  # No push trigger. main-prerelease.yml calls this workflow on every push to
+  # main, so one here would build the same image twice whenever a push touched
+  # os/ -- and the two runs would then queue behind each other on the
+  # concurrency group below.
+  #
+  # Called by main-prerelease.yml and tag.yml so the rolling prerelease and
+  # every stable release carry a USB installer built from that same commit.
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to build (blank = the ref that triggered the caller)
+        type: string
+        default: ''
+      gpu:
+        type: string
+        default: intel
+      channel:
+        # Which published tag the baked compose file points at: 'prerelease'
+        # (centroid-hmi:latest-release) or 'stable' (*:stable). tag.yml passes
+        # stable; main-prerelease.yml takes this default.
+        #
+        # The default is NOT the compose file's own :latest, which is a DEBUG
+        # Flutter build (centroid-hmi.yml:213) -- every station built before
+        # this ran one. See os/Makefile's CHANNEL.
+        type: string
+        default: prerelease
+      preload:
+        # true, so every released stick installs with no uplink at all. A
+        # station pulling ~1.9GB of containers on its first boot cannot be
+        # commissioned on a plant with no internet, which is the normal case,
+        # and the operator has no way to tell a slow pull from a hung one.
+        # Costs ~2GB on the stick (16GB, not 8 -- see os/Makefile's USBSIZE)
+        # and the pull time moves from the panel into this runner.
+        #
+        # pull_request builds are unaffected: `inputs` is null there, so the
+        # `inputs.preload || 'false'` below still resolves to false and a
+        # recipe change is still checked in ~the same time as before.
+        type: boolean
+        default: true
+  pull_request:
+    # Duplicated rather than shared with a YAML anchor: GitHub Actions does not
+    # officially support anchors in workflow files.
+    paths:
+      - 'os/**'
+      - 'docker-compose.yml'
+      - '.env.example'
+      - '.github/workflows/station-image.yml'
+  # No tag trigger. A `paths` filter applies to tag pushes too, and a release
+  # tag usually points at a commit that did not touch os/ -- so it would never
+  # fire. Releasing an image is rare and deliberate, so it is a hand-run with an
+  # explicit tag instead.
+  workflow_dispatch:
+    inputs:
+      preload:
+        description: Bake the container images into the image (offline install)
+        type: boolean
+        default: false
+      gpu:
+        description: GPU driver set
+        type: choice
+        options: [ intel, amd ]
+        default: intel
+      channel:
+        description: Which image tag the baked compose points at
+        type: choice
+        options: [ prerelease, stable ]
+        default: prerelease
+      release_tag:
+        description: "Publish a release at this tag (e.g. station-v2026.09.12); blank = artifacts only"
+        default: ''
+
+concurrency:
+  # github.workflow is in the group so a run called by main-prerelease.yml or
+  # tag.yml does not serialise against a direct one on the same ref. Whether it
+  # resolves to the caller's name or this file's is NOT documented either way --
+  # if it is this file's, the two collide and the second queues behind the first,
+  # which is the behaviour before this line changed. Slow, never wrong.
+  group: station-image-${{ github.workflow }}-${{ github.ref }}
+  # Only supersede PR builds. A hand-run release must not be killed by someone
+  # merging a PR that touches os/ -- possibly between creating the release and
+  # uploading its assets. tag.yml uses cancel-in-progress: false for the same
+  # reason. (Review #16.)
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: os
+
+jobs:
+  # Cheap, runs anywhere, and catches the mistakes that actually happen:
+  # template errors, a script that moved, a package that no longer exists.
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: shellcheck
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w \
+            koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d \
+            scripts/*.sh test/*.sh \
+            overlays/base/usr/local/bin/centroidx-firstboot \
+            overlays/installer/usr/local/bin/centroidx-install \
+            overlays/installer/usr/local/bin/centroidx-install-failsafe \
+            overlays/installer/usr/local/bin/centroidx-gui-launch \
+            overlays/installer/usr/local/bin/centroidx-remote-access
+
+      # The installer's parser, validators, seed-file rules and the files it
+      # leaves on the target, run against a directory instead of a disk. wg is
+      # installed so the WireGuard cases run rather than skip.
+      - name: Installer functions
+        run: |
+          sudo apt-get install -y wireguard-tools >/dev/null
+          bash test/installer-test.sh
+
+      - name: Archive keys unchanged
+        run: make verify-keys
+
+      - name: debos --dry-run on every recipe
+        run: make dry-run
+
+      # The image bakes docker-compose.yml, so a compose file that cannot be
+      # interpolated is a broken image. .env.example is the contract.
+      - name: Compose interpolates against .env.example
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # Fill every empty key in .env.example so the :? guards are satisfied;
+          # this checks the contract is complete, not that the values are real.
+          sed -e 's/^\([A-Z_]*\)=$/\1=ci-placeholder/' .env.example > .env
+          docker compose config --quiet
+          echo "compose interpolates with nothing but .env.example filled in"
+          rm -f .env
+
+      # Every variable the compose file reads must be documented AND actually
+      # written by firstboot, or a station gets provisioned without it and
+      # nobody finds out until something is silently slow, insecure, or refuses
+      # to start. The old version of this gate matched only "${VAR", so a bare
+      # $VAR slipped past and a $${VAR} escape was miscounted.
+      - name: Compose variables are documented and provisioned
+        working-directory: .
+        run: |
+          python3 - <<'EOF'
+          import re, sys, pathlib
+
+          compose = pathlib.Path('docker-compose.yml').read_text()
+          example = pathlib.Path('.env.example').read_text()
+          firstboot = pathlib.Path(
+              'os/overlays/base/usr/local/bin/centroidx-firstboot').read_text()
+
+          # $$ is an escape meaning a literal $ -- the container's own shell
+          # expands it, compose does not, so it is not a compose variable.
+          compose_novar = re.sub(r'\$\$', '', compose)
+          used, required = set(), set()
+          for m in re.finditer(r'\$\{(\w+)(:?[-?][^}]*)?\}|\$(\w+)', compose_novar):
+              name = m.group(1) or m.group(3)
+              if not name.isupper():
+                  continue
+              used.add(name)
+              if (m.group(2) or '').startswith((':?', '?')):
+                  required.add(name)
+
+          documented = set(re.findall(r'^([A-Z_]+)=', example, re.M))
+          written    = set(re.findall(r'^\s*(?:echo|printf)[^\n]*?\b([A-Z_]+)=', firstboot, re.M))
+          written   |= set(re.findall(r"printf '([A-Z_]+)=", firstboot))
+
+          rc = 0
+          for v in sorted(used - documented):
+              print(f'::error::${v} is read by docker-compose.yml but absent from .env.example')
+              rc = 1
+          # Only the mandatory ones: compose starts without the optional ones.
+          for v in sorted(required - written):
+              print(f'::error::${v} is mandatory (:?) but centroidx-firstboot never writes it '
+                    f'- every fresh install would fail to start')
+              rc = 1
+          print(f'{len(used)} variables read, {len(required)} mandatory, '
+                f'{len(documented)} documented, {len(written)} written by firstboot')
+          sys.exit(rc)
+          EOF
+
+  # The setup app the installer USB shows on screen. Built in the same toolchain
+  # container as the HMI's elinux bundle (centroid-hmi.yml's elinux-build), so
+  # the engine and the flutter-elinux that produced it are the ones the embedder
+  # in that container was built against -- a mismatch there fails at link time,
+  # not at runtime.
+  # Runs on pull_request, unlike setup-app and build. The app is the only
+  # compiled code in os/, and nothing analysed or tested it: setup-app does
+  # create/pub get/build and is skipped on PRs anyway, so a PR that broke
+  # validatePassword or failed to compile main.dart was green. The 92-line
+  # widget_test.dart was never executed by anything.
+  #
+  # Same toolchain container as setup-app, so the Dart here is the Dart the
+  # bundle is built with -- which is the whole reason pubspec.yaml is pinned to
+  # ^3.5.1. No elinux platform: analyze and test do not need a platform runner.
+  app-checks:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/centroid-is/tfc-toolchain:latest
+    defaults:
+      run:
+        working-directory: os/app
+    steps:
+      - name: Make safe directory
+        run: git config --system --add safe.directory '*'
+        working-directory: .
+      - uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Checkout (retry)
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      # flutter-elinux, not flutter: the toolchain image has ONLY the wrapper on
+      # PATH (/flutter-elinux/bin), and `flutter` is not a command in it. The
+      # wrapper delegates both of these to its bundled SDK. Checked by running
+      # all three against os/app inside the image.
+      - name: Dependencies
+        run: flutter-elinux pub get
+
+      - name: Analyze
+        run: flutter-elinux analyze
+
+      - name: Test
+        run: flutter-elinux test
+
+  setup-app:
+    needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/centroid-is/tfc-toolchain:latest
+    defaults:
+      run:
+        working-directory: os/app
+    steps:
+      - name: Make safe directory
+        run: git config --system --add safe.directory '*'
+        working-directory: .
+      - uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Checkout (retry)
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      # elinux/ is generated, not committed: it is a platform runner that
+      # flutter-elinux owns and regenerates, and committing it would pin us to
+      # whatever version first created it.
+      - name: Add the elinux platform
+        run: flutter-elinux create --platforms=elinux .
+
+      - name: Dependencies
+        run: flutter-elinux pub get
+
+      - name: Build the bundle
+        run: flutter-elinux build elinux --release
+
+      - name: Bundle contents
+        run: ls -la build/elinux/x64/release/bundle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup-app-bundle
+          path: os/app/build/elinux/x64/release/bundle
+          retention-days: 14
+
+  build:
+    needs: [ validate, setup-app ]
+    # Building the image on every PR would be a 30-minute tax on a review. Main,
+    # a station tag, or asked for by hand.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      # The default token is read-only, so `gh release create` would 403 after a
+      # 30-minute build. tag.yml and main-prerelease.yml grant this for the same
+      # reason. (Review #14.)
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      # Hosted Ubuntu runners do expose /dev/kvm, but it is owned by the kvm
+      # group and not world-writable, so a container started as the runner user
+      # cannot open it. debos cannot do image-partition without a fakemachine,
+      # so there is no fallback worth taking -- fail loudly instead.
+      - name: Make /dev/kvm usable
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::/dev/kvm is absent on this runner - debos cannot build an image"
+            exit 1
+          fi
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Install host tools
+        run: sudo apt-get update && sudo apt-get install -y bmap-tools zstd
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: setup-app-bundle
+          path: os/out/app-bundle
+
+      # upload/download-artifact does not preserve the executable bit, so the
+      # app arrives mode 0644 and every `-x` test on it is false. That silently
+      # selected the text installer on the first green build -- the graceful
+      # fallback working so well it hid the failure.
+      - name: Restore the executable bit the artifact dropped
+        working-directory: .
+        run: |
+          set -euo pipefail
+          found=0
+          for b in flutter_elinux_wayland centroidx_setup; do
+            if [ -f "os/out/app-bundle/$b" ]; then
+              chmod 755 "os/out/app-bundle/$b"; found=1
+              echo "setup app binary: $b"
+            fi
+          done
+          [ "$found" = 1 ] || { echo "::error::no setup app binary in the bundle"; exit 1; }
+
+      # The on-screen keyboard is built in centroid-is/dockers, not here, and is
+      # a plain Wayland client (libwayland, cairo, xkbcommon -- it does not link
+      # libweston), so the binary from that image runs against trixie's weston
+      # 14. Taken from the published image rather than rebuilt: building it needs
+      # `apt-get build-dep weston`, which is ~7 minutes for one 52KB binary.
+      - name: Take centroidx-keyboard from the weston image
+        working-directory: .
+        run: |
+          set -euo pipefail
+          docker pull ghcr.io/centroid-is/weston:latest
+          docker create --name kb ghcr.io/centroid-is/weston:latest
+          mkdir -p os/out
+          mkdir -p os/out/bin
+          docker cp kb:/usr/local/bin/centroidx-keyboard os/out/bin/centroidx-keyboard
+          docker rm kb
+          chmod 755 os/out/bin/centroidx-keyboard
+          file os/out/bin/centroidx-keyboard
+
+          # docker/frontend/Dockerfile:4 records that the bundle ships a
+          # libflutter_elinux_wayland.so which is WRONG for the engine it was
+          # built with, and rebuilds a matched one. The published HMI image
+          # already contains that matched .so, built in the same toolchain
+          # container as our bundle, so take it rather than rebuild the embedder
+          # here. If the two ever diverge this fails loudly at app startup, not
+          # silently.
+          docker pull ghcr.io/centroid-is/centroid-hmi:latest
+          docker create --name hmi ghcr.io/centroid-is/centroid-hmi:latest
+          # /flutter-app/lib, verified against the published image. NOT tolerated
+          # on failure: the bundle's own .so does not match its engine, so
+          # falling back to it ships a stick that shows a blank screen. A build
+          # that cannot find this should fail, not warn.
+          docker cp hmi:/flutter-app/lib/libflutter_elinux_wayland.so \
+            os/out/app-bundle/lib/libflutter_elinux_wayland.so
+          docker rm hmi
+          ls -la os/out/app-bundle/lib/libflutter_elinux_wayland.so
+
+      - name: Free up disk
+        run: |
+          # An 8GB image plus the USB image plus debos scratch does not fit
+          # beside the runner's preinstalled toolchains.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h /
+
+      - name: Build station image
+        run: |
+          make image \
+            GPU=${{ inputs.gpu || 'intel' }} \
+            PRELOAD=${{ inputs.preload || 'false' }} \
+            CHANNEL=${{ inputs.channel || 'prerelease' }} \
+            DOCKER_TTY=
+
+      # The compose file goes into the STATION image, not the USB -- the USB only
+      # carries the station image as a gzipped payload. The first version of
+      # this asserted against the mounted USB, where the file does not exist:
+      # every check failed except "is not the debug :latest build", which passed
+      # VACUOUSLY because a grep on a missing file also returns non-zero. Hence
+      # the explicit existence check first, and hence checking the absence of
+      # :latest as well as the presence of the right tag -- a retag that
+      # silently did nothing would still satisfy a test that only looked for the
+      # image name.
+      #
+      # This is the file debos overlays into the rootfs one step earlier, so it
+      # proves the retag, not the copy. The copy is a debos overlay action that
+      # fails the build outright on a missing source.
+      - name: The baked compose points at the right image tags
+        run: |
+          set +e
+          set -uo pipefail
+          C=overlays/generated/home/centroid/docker-compose.yml
+          fail=0
+          ck() {
+            if [ "$2" = 0 ]; then printf '  ok    %s\n' "$1"
+            else printf '  FAIL  %s\n' "$1"; printf '::error::%s\n' "$1"; fail=1; fi
+          }
+          t() { local d="$1"; shift; "$@" >/dev/null 2>&1; ck "$d" $?; }
+
+          t "compose was staged"                       test -f "$C"
+          if [ ! -f "$C" ]; then exit 1; fi
+          # centroid-hmi:latest is a DEBUG Flutter build (centroid-hmi.yml:213),
+          # and every station built before CHANNEL ran one. Invisible from the
+          # outside until somebody notices the panel is slow.
+          if grep -qE 'centroid-hmi:latest[[:space:]]*$' "$C"; then
+            ck "HMI is not the debug :latest build" 1
+          else
+            ck "HMI is not the debug :latest build" 0
+          fi
+          if [ "${{ inputs.channel || 'prerelease' }}" = stable ]; then
+            t "stable: HMI is :stable"                 grep -q 'centroid-hmi:stable' "$C"
+            t "stable: backend is :stable"             grep -q 'centroid-backend:stable' "$C"
+            t "stable: profiler is :stable"            grep -q 'hmi-profiler:stable' "$C"
+          else
+            t "prerelease: HMI is :latest-release"     grep -q 'centroid-hmi:latest-release' "$C"
+          fi
+          # weston/novnc/docker-update are built in other repos and publish only
+          # :latest. A blanket retag would name tags that do not exist, and the
+          # station would find out on a first boot that may have no network.
+          t "weston left at :latest"                   grep -q 'weston:latest' "$C"
+          t "novnc left at :latest"                    grep -q 'novnc:latest' "$C"
+          t "docker-update left at :latest"            grep -q 'docker-update:latest' "$C"
+
+          echo "--- CentroidX images in the baked compose ---"
+          grep -E '^\s+image: ghcr.io/centroid-is/' "$C" | awk '{print "  " $2}' | sort -u
+          exit $fail
+
+      - name: Build installer USB
+        # PRELOAD is passed again, even though this target does not preload
+        # anything: os/Makefile derives USBSIZE from it, and a preloaded
+        # payload does not fit the 4GB default.
+        run: make usb DOCKER_TTY= PRELOAD=${{ inputs.preload || 'false' }}
+
+      # The first green build shipped a text-only installer: the bundle was
+      # present but not executable, so installer-setup.sh took the fallback
+      # branch and nothing said so. Three passing jobs told us nothing about
+      # which installer the image actually enables, so assert it on the artifact
+      # itself rather than on the steps that produced it.
+      - name: Assert the built USB is the graphical installer
+        run: |
+          # NOT -e. GitHub runs steps with `bash -e`, under which a failing
+          # `[ ... ]` aborts the script -- so the first failed check killed it
+          # before it could say which one, and reported nothing at all.
+          set +e
+          set -uo pipefail
+          img=$(mktemp /tmp/usb-XXXX.img)
+          gunzip -c out/usb-installer.img.gz > "$img" || { echo "::error::could not decompress the USB image"; exit 1; }
+          loop=$(sudo losetup -f --show -P "$img")
+          [ -n "$loop" ] || { echo "::error::losetup failed"; exit 1; }
+          sudo udevadm settle
+          mnt=$(mktemp -d)
+          if ! sudo mount -o ro "${loop}p2" "$mnt"; then
+            echo "::error::could not mount ${loop}p2"
+            lsblk "$loop" || true
+            sudo losetup -d "$loop"; exit 1
+          fi
+
+          fail=0
+          ck() { # ck DESCRIPTION  (body already run; $1 desc, $2 rc)
+            if [ "$2" = 0 ]; then printf '  ok    %s\n' "$1"
+            else printf '  FAIL  %s\n' "$1"; printf '::error::%s\n' "$1"; fail=1; fi
+          }
+          t() { # t DESCRIPTION TEST...
+            local d="$1"; shift
+            "$@" >/dev/null 2>&1; ck "$d" $?
+          }
+          # -L, not -e. systemctl enable writes an ABSOLUTE symlink
+          # (-> /etc/systemd/system/centroidx-gui.service), and inside a mounted
+          # image that resolves against the RUNNER's root, where it does not
+          # exist -- so `test -e` was false for a link sitting right there, and
+          # the negated check on the text installer passed vacuously because it
+          # could never be true either way. -L tests the link itself.
+          W="$mnt/etc/systemd/system/multi-user.target.wants"
+          t "graphical installer enabled"                       test -L "$W/centroidx-gui.service"
+          t "text installer not also enabled (OnFailure only)"  test ! -L "$W/centroidx-installer.service"
+          t "setup app binary present"                          sh -c "test -f '$mnt/opt/centroidx-setup/centroidx_setup' -o -f '$mnt/opt/centroidx-setup/flutter_elinux_wayland'"
+          t "setup app binary executable"                       sh -c "test -x '$mnt/opt/centroidx-setup/centroidx_setup' -o -x '$mnt/opt/centroidx-setup/flutter_elinux_wayland'"
+          t "matched embedder present"                          test -s "$mnt/opt/centroidx-setup/lib/libflutter_elinux_wayland.so"
+          t "on-screen keyboard executable"                     test -x "$mnt/usr/local/bin/centroidx-keyboard"
+          t "launcher executable"                               test -x "$mnt/usr/local/bin/centroidx-setup"
+          t "weston input-method points at the keyboard"        grep -q "^path=/usr/local/bin/centroidx-keyboard" "$mnt/etc/xdg/weston/weston.ini"
+          t "weston installed"                                  test -e "$mnt/usr/bin/weston"
+          # Both directions of the handover. OnFailure alone does not fire when
+          # the APP dies: weston exits 0 in that case, so the unit goes inactive
+          # rather than failed. Asserted because it is invisible on the happy
+          # path -- the boot test cannot see it either way.
+          G="$mnt/etc/systemd/system/centroidx-gui.service"
+          t "handover on failure"                               grep -q "^OnFailure=centroidx-installer.service" "$G"
+          t "handover on clean exit too"                        grep -q "^OnSuccess=centroidx-installer.service" "$G"
+          # Networking. Asserted rather than assumed because it is three
+          # separate things that each look fine alone: the USB had no network
+          # stack at all until now, and an installer that reports "no network"
+          # on every panel would be indistinguishable from one whose DHCP
+          # simply had not landed yet.
+          # The remote view. Every piece is invisible from a screenshot -- the
+          # panel looks identical whether or not the VNC head came up -- so it
+          # is asserted here and then proven live by the RFB read in the boot
+          # test below.
+          t "weston loads the vnc backend as a secondary"       grep -q '^backend=drm,vnc' "$mnt/etc/xdg/weston/weston.ini"
+          t "vnc-backend.so present"                            sh -c "ls '$mnt'/usr/lib/*/libweston-*/vnc-backend.so >/dev/null 2>&1"
+          # Debian does NOT build screen-share.so; mirror-of is its replacement
+          # and is what this design uses. Asserted so a future Debian that
+          # restores it does not quietly tempt anyone back to the old path.
+          t "compositor wrapper is the unit's ExecStart"        grep -q '^ExecStart=/usr/local/bin/centroidx-gui-launch' "$mnt/etc/systemd/system/centroidx-gui.service"
+          t "wrapper executable"                                test -x "$mnt/usr/local/bin/centroidx-gui-launch"
+          t "fd limit raised for VNC clients"                   grep -q '^LimitNOFILE=16384' "$mnt/etc/systemd/system/centroidx-gui.service"
+          # weston's VNC auth is PAM as the user running weston, and root is
+          # locked at build time -- without this unit nobody can ever connect.
+          t "credential unit enabled"                           test -L "$W/centroidx-remote-access.service"
+          t "credential script executable"                      test -x "$mnt/usr/local/bin/centroidx-remote-access"
+          t "PAM config for weston's VNC auth"                  test -f "$mnt/etc/pam.d/weston-remote-access"
+          t "browser view enabled"                              test -L "$W/centroidx-novnc.service"
+          t "websockify present"                                test -x "$mnt/usr/bin/websockify"
+          t "noVNC web root extracted"                          test -f "$mnt/usr/share/novnc/vnc.html"
+          # The whole point of extracting the web root by hand. If nodejs is
+          # here, someone added the novnc package and gave the stick ~60MB of
+          # runtime for a launcher we never invoke.
+          t "and without dragging in nodejs"                    sh -c "! test -e '$mnt/usr/bin/nodejs' -o -e '$mnt/usr/bin/node'"
+
+          t "DHCP config shipped"                               test -f "$mnt/etc/systemd/network/10-dhcp.network"
+          t "networkd enabled"                                  test -L "$W/systemd-networkd.service"
+          # Path not hardcoded: iproute2 has moved between /bin, /sbin and
+          # /usr/sbin across Debian releases and the merged-usr transition.
+          t "ip(8) present, so the text installer can report an address"  sh -c "test -x '$mnt/usr/sbin/ip' -o -x '$mnt/sbin/ip' -o -x '$mnt/usr/bin/ip'"
+
+          if [ "$fail" != 0 ]; then
+            echo "--- enabled units ---";        ls -la "$W" 2>&1 | head -20
+            echo "--- /opt/centroidx-setup ---"; ls -la "$mnt/opt/centroidx-setup" 2>&1 | head -20
+            echo "--- /usr/local/bin ---";       ls -la "$mnt/usr/local/bin" 2>&1 | head -20
+          fi
+
+          sudo umount "$mnt"; sudo losetup -d "$loop"; rm -f "$img"
+          exit $fail
+
+      # The assertion above proves the pieces are present and wired. This proves
+      # the thing actually boots and draws: QMP screendump captures the guest
+      # framebuffer with no cooperation from the guest, so the screenshots show
+      # what a panel would show. The three shots are
+      # ordered so the artifact says where the flow stopped: 01 black means
+      # weston never started and 01 empty means the app died (most likely the
+      # embedder not matching our bundle); 02 still showing the disk step means
+      # the tap never reached the app; 03 without a panel at the bottom means the
+      # field took focus but the input method did not raise.
+      #
+      # boot-test.py fails on a frame that is essentially one colour, because a
+      # compositor that never draws used to pass this step in silence.
+      - name: Boot the installer and photograph it
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y qemu-system-x86 ovmf
+          img=$(mktemp /tmp/usb-boot-XXXX.img)
+          gunzip -c out/usb-installer.img.gz > "$img"
+          python3 scripts/boot-test.py --usb "$img" --out out/boot-test
+          rm -f "$img"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: station-boot-test
+          path: os/out/boot-test
+          retention-days: 14
+
+      - name: Checksums and provenance
+        run: |
+          cd out && sha256sum *.img.gz *.bmap | tee SHA256SUMS
+          cat ../overlays/generated/etc/centroid/image-info
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: station-image
+          # centroidx-* explicitly, not *.img.gz: out/ also holds
+          # usb-installer.img.gz, and a bare glob packed the USB image in here
+          # too -- 1323MB of artifact for 549MB of station image.
+          path: |
+            os/out/centroidx-*.img.gz
+            os/out/centroidx-*.img.bmap
+            os/out/SHA256SUMS
+            os/overlays/generated/etc/centroid/image-info
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: station-usb-installer
+          path: |
+            os/out/usb-installer.img.gz
+            os/out/usb-installer.img.bmap
+          retention-days: 14
+
+      # Its own tag namespace, not this repo's `release` event: the app releases
+      # far more often than the OS under it, and tag.yml / main-prerelease.yml
+      # already have enough interaction between them without an app release
+      # implying an image release.
+      - name: Publish a station release
+        # Gated on the event too, not just the input. release_tag is a
+        # workflow_dispatch input only, so on a workflow_call it is null --
+        # and GitHub casts null and '' both to 0 when comparing, which makes
+        # `null != ''` quietly false. Relying on that coercion is how a
+        # boolean input silently skipped a job once already; say it outright.
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          # Assets passed to `create`, not a separate `upload`: a failed upload
+          # after a successful create would leave a tagged, empty release and a
+          # tag that cannot be reused. (Review #10.)
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "Station image $TAG" \
+            --notes-file overlays/generated/etc/centroid/image-info \
+            out/*.img.gz out/*.bmap out/SHA256SUMS

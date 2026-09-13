@@ -4,7 +4,9 @@ import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'package:tfc_dart/core/alarm.dart';
+import 'package:tfc_dart/core/config/config_item.dart' show ConfigKind;
 import '../core/relay_alarm_source.dart';
+import 'config_store.dart';
 import 'gateway.dart';
 import 'preferences.dart';
 import 'state_man.dart';
@@ -61,26 +63,46 @@ Future<AlarmSource> alarmMan(Ref ref) async {
   final prefs = await ref.read(preferencesProvider.future);
   final stateMan = await stateManFuture;
 
-  // `AlarmMan.create` writes an empty default when `alarm_man_config` is
-  // absent — at boot, on a station that has never been configured, with nobody
-  // signed in, against a `configure` key. Seeding it here through the system
-  // path means `create` finds the key present and never writes, which leaves
-  // `packages/tfc_dart/lib/core/alarm.dart` untouched: its own `_saveConfig`
-  // stays on the guarded object, which is right, because it is reached only
-  // from addAlarm/removeAlarm/updateAlarm behind the `configure`-gated alarm
-  // editor and never from `ackAlarm`.
   final gateway = await ref.read(gatewayConfigProvider.future);
 
-  // Direct mode only. On the relay the shared store is the backend's, so this
-  // seed would be a panel writing an EMPTY alarm config into the plant's
-  // configuration because its own store looked empty — racing every other
-  // panel that booted at the same time, and refused outright by the server's
-  // `configure` gate for a station that lacks the group, which would error
-  // this provider and take the alarm surface down at boot. The backend seeds
-  // its own config; `RelayAlarmSource.create` already reads a null as "no
-  // rules yet" rather than failing.
-  if (!gateway.isGateway &&
-      await prefs.getString('alarm_man_config') == null) {
+  // The seed below is **direct mode only**. On the relay the shared store is
+  // the backend's, so it would be a panel writing an EMPTY alarm config into
+  // the plant's configuration because its own store looked empty — racing
+  // every other panel that booted at the same time, and refused outright by
+  // the server's `configure` gate for a station that lacks the group, which
+  // would error this provider and take the alarm surface down at boot. The
+  // backend seeds its own config; `RelayAlarmSource.create` already reads a
+  // null as "no rules yet" rather than failing.
+  //
+  // In direct mode, "no alarm_man_config" means "this plant has none" only
+  // once the first reconcile has landed: the snapshot is filled from the local
+  // mirror, so a fresh station attached to a configured plant reads null until
+  // then. The seed must not write an empty configuration into a plant with two
+  // hundred alarms — the store would refuse it as a conflict, and swallow
+  // that, but the *read* that follows would still be null for this boot.
+  // Settles at once when no remote is attached — which is why the readiness
+  // provider is awaited first: it completes once the first attach has been
+  // acted on (or the station is offline, or the database has not answered
+  // in twenty seconds), and only then does `syncSettled` mean anything.
+  //
+  // Both awaits sit inside the direct-mode branch on purpose: in gateway mode
+  // there is no local config store to become ready, and awaiting one would
+  // hold the alarm surface at boot for a reconcile that is never coming.
+  var seedNeeded = false;
+  if (!gateway.isGateway) {
+    await ref.read(configStoreReadyProvider.future);
+    final store = (await ref.read(configStoreProvider.future)).inner;
+    await store.syncSettled;
+    seedNeeded = await prefs.getString('alarm_man_config') == null;
+  }
+
+  // `AlarmMan.create` treats an absent `alarm_man_config` as empty and writes
+  // nothing. The seed lives here, through the system path — no check, no
+  // refusal offline — so that the row exists once a station has seen the
+  // plant, and `create` never has to write: its own `_saveConfig` stays on
+  // the guarded object, reached only from addAlarm/removeAlarm/updateAlarm
+  // behind the `configure`-gated alarm editor and never from `ackAlarm`.
+  if (seedNeeded) {
     final systemPrefs = await ref.read(systemPreferencesProvider.future);
     await systemPrefs.setString(
         'alarm_man_config', jsonEncode(AlarmManConfig(alarms: [])));
@@ -113,7 +135,34 @@ Future<AlarmSource> alarmMan(Ref ref) async {
   // root that supplies it for a panel: `packages/tfc_dart/lib/core/alarm.dart`
   // spells the literal nowhere, so an alarm instant can only ever be the
   // plant's word or a reading someone handed in on purpose (14-07, D-2).
-  return await AlarmMan.create(prefs, stateMan, clock: DateTime.now);
+  final alarmMan =
+      await AlarmMan.create(prefs, stateMan, clock: DateTime.now);
+
+  // The row can still arrive *after* this built: a station that booted while
+  // another was migrating, or one whose first attach timed out. Nothing else
+  // rebuilds this provider on a shared change — the editor's invalidate is
+  // for edits made here — so the store's own feed does it, when the row it
+  // announces differs from what this instance was built from. Our own saves
+  // announce a row equal to the config they wrote, so they rebuild nothing
+  // twice. The store's stream, not the preference store's: the latter is
+  // rebuilt on every database rebuild and a listener on it goes deaf (D-2).
+  //
+  // Direct mode only, like the seed above and for the same reason: in gateway
+  // mode there is no local config store to feed from, and the branch returned
+  // before reaching here anyway.
+  final store = (await ref.read(configStoreProvider.future)).inner;
+  final feed = store.keyMappingChanges.listen((diff) async {
+    final touched = [...diff.added, ...diff.changed, ...diff.removed].any(
+        (item) =>
+            item.kind == ConfigKind.preference && item.id == 'alarm_man_config');
+    if (!touched) return;
+    final now = await prefs.getString('alarm_man_config');
+    if (now == jsonEncode(alarmMan.config.toJson())) return;
+    ref.invalidateSelf();
+  });
+  ref.onDispose(feed.cancel);
+
+  return alarmMan;
 }
 
 /// The alarm list of whichever [AlarmMan] is current, or `null` when there is

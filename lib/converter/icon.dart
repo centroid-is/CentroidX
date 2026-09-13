@@ -16,6 +16,8 @@ const IconData pallet_top =
     IconData(0xe806, fontFamily: "TfcIcons", fontPackage: "tfc");
 const IconData pallet_stack =
     IconData(0xe807, fontFamily: "TfcIcons", fontPackage: "tfc");
+const IconData ethercaticon =
+    IconData(0xe808, fontFamily: "TfcIcons", fontPackage: "tfc");
 
 class IconDataConverter implements JsonConverter<IconData, String> {
   const IconDataConverter();
@@ -878,6 +880,8 @@ class IconDataConverter implements JsonConverter<IconData, String> {
       // Custom Icon
       case 'baader':
         return baadericon;
+      case 'ethercat':
+        return ethercaticon;
       default:
         return Icons.help; // fallback icon
     }
@@ -1317,6 +1321,7 @@ class IconDataConverter implements JsonConverter<IconData, String> {
 
     // Custom Icon
     if (iconData == baadericon) return 'baader';
+    if (iconData == ethercaticon) return 'ethercat';
     return 'help'; // fallback
   }
 }
@@ -1774,4 +1779,5 @@ final List<IconData> iconList = <IconData>[
   warehouse_closed,
   pallet_top,
   pallet_stack,
+  ethercaticon,
 ];

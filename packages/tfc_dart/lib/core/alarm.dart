@@ -534,26 +534,35 @@ class AlarmMan implements AlarmSource {
   /// Loads the configuration and builds the engine.
   ///
   /// [clock] is required and has no default *here*. Composition roots supply
-  /// `DateTime.now` — `bin/main.dart` for the backend, the app's alarm
-  /// provider for a panel — and this file spells the literal nowhere, which is
-  /// the mechanism that keeps a second, hidden reading of the machine clock
-  /// from creeping back onto an alarm instant (D-2).
+  /// `DateTime.now` — the app's alarm provider for a panel — and this file
+  /// spells the literal nowhere, which is the mechanism that keeps a second,
+  /// hidden reading of the machine clock from creeping back onto an alarm
+  /// instant (D-2).
+  ///
+  /// **A missing `alarm_man_config` is an empty configuration, and nothing is
+  /// written here.** This used to seed the empty default through the checked
+  /// setter, which on the row store meant: with Postgres unreachable, or a
+  /// mirror that has not synced yet, or at boot before any session, the seed
+  /// was refused — `AccessDenied` on a `configure` key with nobody signed in,
+  /// or the offline refusal — and the throw took `alarmManProvider` and
+  /// every alarm widget down with it. Seeding is the app layer's, through the
+  /// system path (`lib/providers/alarm.dart`), which knows when "absent" means
+  /// the plant has none and when it means this station has not read it yet.
+  ///
+  /// There is no headless twin of this constructor, and there must not be one:
+  /// the backend does not run an `AlarmMan` at all (D-6, ALRM-01). Its engine
+  /// is `AlarmEngine` over the pipe's own value source, and its history is
+  /// `AlarmHistoryWriter`.
   static Future<AlarmMan> create(
     Preferences preferences,
     StateMan stateMan, {
     required DateTime Function() clock,
     Duration skewWarnAfter = kAlarmSkewWarnAfter,
   }) async {
-    var configJson = await preferences.getString('alarm_man_config');
-    if (configJson == null) {
-      configJson = await preferences.getString('alarm_man_config');
-      if (configJson == null) {
-        await preferences.setString(
-            'alarm_man_config', jsonEncode(AlarmManConfig(alarms: [])));
-        configJson = await preferences.getString('alarm_man_config');
-      }
-    }
-    final config = AlarmManConfig.fromJson(jsonDecode(configJson!));
+    final configJson = await preferences.getString('alarm_man_config');
+    final config = configJson == null
+        ? AlarmManConfig(alarms: [])
+        : AlarmManConfig.fromJson(jsonDecode(configJson));
     final alarmMan = AlarmMan._(
         config: config,
         preferences: preferences,
@@ -669,6 +678,19 @@ class AlarmMan implements AlarmSource {
           List<AlarmActive> alarms, String searchQuery) =>
       shared.filterAlarms(alarms, searchQuery);
 
+  /// Saves the configuration the editor just changed.
+  ///
+  /// Main grew a nullable [preferences] here and a synchronous
+  /// `UnsupportedError` in front of this write, for a headless `AlarmMan` in
+  /// the acquisition backend. Neither is carried across: on this line there is
+  /// no headless `AlarmMan` to guard against, because the backend runs
+  /// `AlarmEngine` and never constructs this class at all (D-6). A store is
+  /// therefore always present, and a null check on a non-nullable field would
+  /// be a guard against a caller that cannot exist.
+  void _saveConfig() {
+    _writeConfig(preferences);
+  }
+
   /// Turns the auto-navigation flag on or off and persists it.
   ///
   /// Assigns before saving so a caller that reads [config] back in the same
@@ -683,10 +705,8 @@ class AlarmMan implements AlarmSource {
     _saveConfig();
   }
 
-  void _saveConfig() async {
-    await preferences.setString(
-        'alarm_man_config', jsonEncode(config.toJson()));
-  }
+  Future<void> _writeConfig(Preferences prefs) =>
+      prefs.setString('alarm_man_config', jsonEncode(config.toJson()));
 
   /// Closes [alarm] at [stamp] and moves it into the history buffer.
   ///
@@ -727,6 +747,10 @@ class AlarmMan implements AlarmSource {
     DateTime? from,
     DateTime? to,
   }) async {
+    // Through the store, as before. Main split alarm history onto a
+    // `database` field of its own so a headless `AlarmMan` could be given one
+    // without a store; there is no headless `AlarmMan` on this line (D-6), so
+    // the split has nothing to buy and the field is not carried.
     if (preferences.database == null) return [];
 
     final db = preferences.database!.db;

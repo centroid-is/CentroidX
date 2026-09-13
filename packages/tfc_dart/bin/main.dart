@@ -1,14 +1,21 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:tfc_dart/core/config/key_mapping_codec.dart' show keyMappingsOf;
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_store.dart'
+    show kPreferencesMigratedMarkerId;
+import 'package:tfc_dart/core/config/key_mapping_migration.dart'
+    show kKeyMappingsMigratedMarkerId;
+import 'package:tfc_dart/core/config/key_mapping_rows.dart';
 import 'package:tfc_dart/core/database.dart';
-import 'package:tfc_dart/core/preferences.dart';
-import 'package:tfc_dart/core/preferences_watch.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/log_config.dart';
 import 'package:tfc_dart/core/pipe_main_endpoint.dart';
+import 'package:tfc_dart/core/relay/backend_shared_preferences.dart';
 import 'package:tfc_dart/core/relay/backend_alarm_history.dart';
 import 'package:tfc_dart/core/relay/backend_alarms.dart';
 import 'package:tfc_dart/core/relay/backend_composition.dart';
@@ -153,7 +160,13 @@ void main() async {
 
   final dbConfig = await DatabaseConfig.fromEnv();
   final db = await Database.connectWithRetry(dbConfig);
-  final prefs = await Preferences.create(db: db);
+
+  // `BackendSharedPreferences`, not `Preferences.create`. After #465 the
+  // latter reads nothing from the database it is handed — the shared settings
+  // are `config_item` rows now — so it would have answered null to
+  // `alarm_man_config` and this backend would have evaluated no alarms at all,
+  // silently, on a plant that has them. See that library's header.
+  final prefs = await BackendSharedPreferences.create(database: db);
 
   final statemanConfigFilePath =
       Platform.environment['CENTROID_STATEMAN_FILE_PATH'];
@@ -162,7 +175,40 @@ void main() async {
   }
   final smConfig = await StateManConfigStorage.fromFile(statemanConfigFilePath);
 
-  final keyMappings = await KeyMappings.fromPrefs(prefs, createDefault: false);
+  // Key mappings come from `config_item` rows, and from nowhere else. The
+  // `flutter_preferences.key_mappings` blob fallback retired with 04-12: it
+  // existed because the backend container could restart before any station
+  // had run the one-shot migration, and it is the last thing that made this
+  // process a reader of a table the cutover drops.
+  //
+  // No rows is therefore fatal, and loudly so. A backend that invented a key
+  // set would acquire nothing anybody is looking at, quietly, forever; the
+  // container restarts on the throw and says which migration is missing every
+  // time it does.
+  final mappingItems = await readSharedKeyMappingItems(db.db);
+  if (mappingItems.isEmpty) {
+    // Empty and migrated is a plant with no key mappings — an operator can
+    // delete every one — and a backend that exited on it would loop under
+    // `restart: unless-stopped` forever, blaming a migration that has run.
+    // Empty and *not* migrated is the cutover window, where the loop is the
+    // intended wait for the first station.
+    final migrated =
+        await readSharedPreferenceValue(db.db, kKeyMappingsMigratedMarkerId) !=
+            null;
+    if (!migrated) {
+      throw StateError(
+          'No config_item key_mapping rows and no $kKeyMappingsMigratedMarkerId '
+          'marker: this backend is pointed at a database that holds no plant '
+          'wiring at all. Either the blob → rows migration has not run (start '
+          'a station, which runs it at attach), or this is the wrong database.');
+    }
+    logger.w('No key_mapping rows and the key mappings migration has run: '
+        'this plant has none configured. Running with no acquisition keys; a '
+        'save in the key repository restarts this process.');
+  }
+  final keyMappings = keyMappingsOf(mappingItems);
+  logger.i('Loaded ${keyMappings.nodes.length} key mappings from '
+      'config_item rows');
 
   // Alarm evaluation used to start HERE, and it is deliberately gone from this
   // point in the file (ALRM-01). What stood between these two lines was a
@@ -511,37 +557,100 @@ void main() async {
 
   // Key mappings and alarm definitions were loaded above and then baked into
   // the spawned isolates; an HMI station editing them would otherwise need a
-  // manual backend restart to take effect. Watch the two preference rows
-  // (LISTEN/NOTIFY, with a slow digest poll as safety net) and restart the
-  // whole process on a real change — the container runs with
-  // `restart: unless-stopped`, so exiting cleanly relaunches with the fresh
-  // config. Idle cost: one tiny server-side md5 query per poll interval.
+  // manual backend restart to take effect. Restarting is the apply mechanism
+  // here rather than an incremental re-point: the isolates hold their own
+  // copies, the container runs with `restart: unless-stopped`, so exiting
+  // cleanly relaunches with the fresh config, and that is the behaviour the
+  // operators already know.
+  //
+  // **One watcher now.** Both configurations are `config_item` rows since
+  // 04-11 moved `alarm_man_config` out of `flutter_preferences`, so both are
+  // watched the same way: the `config_change` NOTIFY as the fast path and a
+  // two-integer poll as the net under it. The digest watcher over the old
+  // table is gone — kept until this plan only because the alarms were still
+  // in it, and after the move it could only ever have reported that the row
+  // nobody writes any more had not changed.
   final pollSeconds = int.tryParse(
           Platform.environment['CENTROID_CONFIG_POLL_SECONDS'] ?? '') ??
       300;
-  final configWatcher = PreferencesWatcher.forDatabase(
-    db,
-    keys: const {'key_mappings', 'alarm_man_config'},
-    pollInterval: Duration(seconds: pollSeconds),
-  );
-  await configWatcher.start();
+
   // Quiet period so a burst of saves (an operator editing several things in a
   // row) causes one restart, not one per save. Each further change re-arms it.
+  // One timer, armed in one place: two of them would mean a change seen by
+  // both paths restarts the process twice, the second time mid-restart.
   const restartQuiet = Duration(seconds: 10);
   Timer? restartTimer;
-  configWatcher.changes.listen((key) {
-    logger.w('Configuration "$key" changed in database; restarting backend '
-        'in ${restartQuiet.inSeconds}s to apply it');
+  void restartSoon(String why) {
+    logger.w('$why; restarting backend in ${restartQuiet.inSeconds}s to '
+        'apply it');
     restartTimer?.cancel();
     // The same shutdown as SIGTERM, deliberately (R-4). This path fires on
     // every operator config save, so an exit(0) that walked past the workers
-    // would leave their OPC UA sessions to be torn down by process exit on the
-    // most frequent restart this backend has.
-    restartTimer = Timer(
-      restartQuiet,
-      () => _shutdown(pipe, logger, 'configuration "$key" changed', relay),
+    // would leave their OPC UA sessions to be torn down by process exit on
+    // the most frequent restart this backend has.
+    restartTimer =
+        Timer(restartQuiet, () => _shutdown(pipe, logger, why, relay));
+  }
+
+  // The kinds this process bakes into its isolates, and nothing else. A
+  // `page` write must not restart an acquisition backend that would boot to
+  // exactly the same state, and a `page_image` write must not either — an
+  // operator pasting a picture would otherwise bounce the plant's data
+  // acquisition.
+  //
+  // And of the `preference` kind, only the one row this process reads:
+  // every shared preference is a row of that kind — the chat assistant's
+  // conversations on every message, the menu order on every page save — and
+  // a fingerprint over the whole kind restarted acquisition on each of them.
+  const watchedKinds = {ConfigKind.keyMapping, ConfigKind.preference};
+  const watchedPreferences = {'alarm_man_config'};
+
+  // Both paths answer a signal with the same cheap read and restart only if
+  // the answer moved, so the notification is the fast path to one check and
+  // the poll is the slow one.
+  var mappingFingerprint = await readSharedConfigFingerprint(
+      db.db, watchedKinds,
+      preferenceIds: watchedPreferences);
+  Future<void> checkMappings(String why) async {
+    try {
+      final now = await readSharedConfigFingerprint(db.db, watchedKinds,
+          preferenceIds: watchedPreferences);
+      if (now == mappingFingerprint) return;
+      mappingFingerprint = now;
+      restartSoon('$why (${now.count} shared key mapping and preference '
+          'rows)');
+    } catch (e) {
+      // A failed read is not a change. Postgres being briefly unreachable is
+      // the normal case on this path, and restarting on it would turn a
+      // network blip into a restart loop.
+      logger.w('Shared configuration check failed: $e');
+    }
+  }
+
+  // `listenToChannel`'s stream *ends* when the connection carrying it dies —
+  // no error, just `onDone` — so a subscriber that does not re-listen goes
+  // silent for the life of the process after the first reconnect. Re-listening
+  // is followed by an immediate check, so an edit made while the connection
+  // was down is not waited out until the next poll.
+  const relistenBackoff = Duration(seconds: 5);
+  void listenForConfigChanges() {
+    db.db.listenToChannel('config_change').listen(
+      (_) => checkMappings('Shared configuration changed'),
+      onError: (Object e) => logger.w('config_change channel error: $e'),
+      onDone: () {
+        logger.i('config_change channel ended; re-listening in '
+            '${relistenBackoff.inSeconds}s');
+        Timer(relistenBackoff, () {
+          listenForConfigChanges();
+          checkMappings('Shared configuration changed while disconnected');
+        });
+      },
     );
-  });
+  }
+
+  listenForConfigChanges();
+  Timer.periodic(Duration(seconds: pollSeconds),
+      (_) => checkMappings('Shared configuration changed in database'));
 
   // Keep main alive indefinitely
   await Completer<void>().future;

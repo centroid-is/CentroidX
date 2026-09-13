@@ -32,9 +32,67 @@ const _accessTables = [
   'audit_entry',
 ];
 
+/// The relational configuration tables added in the v10 migration.
+const _configTables = [
+  'config_item',
+  'config_change',
+];
+
+/// The indexes that go up with them, in the same arm.
+const _configIndexes = [
+  'idx_config_item_scope_kind',
+  'idx_config_change_entity',
+  'idx_config_change_action',
+  'idx_config_change_at',
+];
+
+/// Returns the set of named index names in the given [db].
+Future<Set<String>> _indexNames(GeneratedDatabase db) async {
+  final rows = await db.customSelect(
+    "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'",
+  ).get();
+  return rows.map((r) => r.read<String>('name')).toSet();
+}
+
+/// The `CREATE TABLE` text SQLite itself recorded for [table] — what the
+/// engine stored, not what drift meant to say.
+Future<String> _sqliteDdl(GeneratedDatabase db, String table) async {
+  final rows = await db.customSelect(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?",
+    variables: [Variable<String>(table)],
+  ).get();
+  expect(rows, hasLength(1), reason: 'no `$table` table to read DDL from');
+  return rows.first.read<String>('sql');
+}
+
+/// The v9 `config_change` NOTIFY statements as the database would receive
+/// them, joined for matching.
+///
+/// The arm that runs them is Postgres-only and nothing in this package can
+/// execute it — the gap the v6, v7 and v8 Postgres arms record about themselves.
+/// So what is left to assert is the text, and it is asserted against the
+/// runtime strings rather than the source, which carries Dart's escaping.
+String _notifyStatements() =>
+    AppDatabase.configChangeNotifyStatementsForTest.join('\n');
+
+/// Undoes the v10 arm on an already-created database, leaving it shaped like a
+/// v7 one so the arm can then be run against it for real.
+///
+/// Dropping is how a v7 database is reached from here: `inMemoryForTest`
+/// creates at the current schema version, so there is no other way to an older
+/// shape short of hand-writing the whole of v7.
+Future<void> _dropConfigSchema(GeneratedDatabase db) async {
+  for (final index in _configIndexes) {
+    await db.customStatement('DROP INDEX IF EXISTS $index');
+  }
+  for (final table in _configTables) {
+    await db.customStatement('DROP TABLE IF EXISTS $table');
+  }
+}
+
 void main() {
   group('AppDatabase migration', () {
-    test('fresh install (v6) creates all MCP tables', () async {
+    test('fresh install creates all MCP tables', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
 
@@ -59,12 +117,169 @@ void main() {
       }
     });
 
-    test('schema version is 8', () async {
+    test('schema version is 13', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      // v10 is 14-01's alarm_history change, renumbered twice as main took
-      // 7, 8 and 9 — see the arm's own comment in database_drift.dart.
-      expect(db.schemaVersion, 10);
+      // 13 is 14-01's alarm_history arm, renumbered three times as main took
+      // 7-9 and then 10-12 — see the arm's own comment in database_drift.dart.
+      expect(db.schemaVersion, 13);
+    });
+
+    test('fresh install creates the config tables and their indexes',
+        () async {
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      await db.customSelect('SELECT 1').getSingle();
+
+      final tables = await _tableNames(db);
+      for (final table in _configTables) {
+        expect(tables, contains(table),
+            reason: 'config table "$table" should exist on fresh install');
+      }
+
+      // The indexes come from `_createConfigIndexes`, called by `onCreate` as
+      // well as by the arm — a fresh install never runs the arm, so without
+      // that call a new station would read `config_item` by table scan.
+      final indexes = await _indexNames(db);
+      for (final index in _configIndexes) {
+        expect(indexes, contains(index),
+            reason: 'config index "$index" should exist on fresh install');
+      }
+    });
+
+    test('the SQLite config tables carry no CHECK on scope', () async {
+      // The invariant, from the side that is easy to break by accident.
+      // `CHECK (scope = 'shared')` belongs on the Postgres tables only: the
+      // local database is where `station:<hostname>` rows live, and the same
+      // constraint here would reject every row this milestone writes.
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      await db.customSelect('SELECT 1').getSingle();
+
+      for (final table in _configTables) {
+        final ddl = await _sqliteDdl(db, table);
+        expect(ddl.toUpperCase().contains('CHECK'), isFalse,
+            reason: 'the SQLite `$table` must not constrain `scope`. Station '
+                'rows are the only rows a local database will ever hold, so a '
+                "CHECK (scope = 'shared') here rejects all of them. It is the "
+                'Postgres DDL that carries it, and only that one.');
+      }
+    });
+
+    test('a v9 database upgrades to v10, twice over', () async {
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      await db.customSelect('SELECT 1').getSingle();
+
+      await _dropConfigSchema(db);
+      expect(await _tableNames(db), isNot(contains('config_item')),
+          reason: 'the teardown must actually reach a v9 shape, or the arm '
+              'below would be asserted against a database that already has '
+              'everything it creates');
+
+      await db.migration.onUpgrade(Migrator(db), 9, 10);
+
+      var tables = await _tableNames(db);
+      var indexes = await _indexNames(db);
+      for (final table in _configTables) {
+        expect(tables, contains(table),
+            reason: 'the v10 arm must create $table');
+      }
+      for (final index in _configIndexes) {
+        expect(indexes, contains(index),
+            reason: 'the v10 arm must create $index');
+      }
+
+      // Several SVN stations share one database and each of them runs the arm
+      // when it opens, so the second one through must be a no-op rather than
+      // an abort that leaves the database half-upgraded. Asserted on SQLite
+      // because that is the arm a test can execute — drift's `createTable`
+      // emits `CREATE TABLE IF NOT EXISTS` too. The Postgres arm's
+      // idempotency rests on its own `IF NOT EXISTS` literals and is
+      // unexercised here, exactly as that arm's comment says.
+      await db.migration.onUpgrade(Migrator(db), 9, 10);
+
+      tables = await _tableNames(db);
+      indexes = await _indexNames(db);
+      for (final table in _configTables) {
+        expect(tables, contains(table));
+      }
+      for (final index in _configIndexes) {
+        expect(indexes, contains(index));
+      }
+    });
+
+    test('the v12 arm creates the paging index on a database stamped 11',
+        () async {
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      await db.customSelect('SELECT 1').getSingle();
+      await db.customStatement('DROP INDEX IF EXISTS idx_config_change_at');
+      expect(await _indexNames(db), isNot(contains('idx_config_change_at')));
+
+      await db.migration.onUpgrade(Migrator(db), 11, 12);
+      await db.migration.onUpgrade(Migrator(db), 11, 12);
+
+      expect(await _indexNames(db), contains('idx_config_change_at'),
+          reason: 'an index added to the list after v11 stamped a database '
+              'reaches it only through an arm of its own');
+    });
+
+    test('the v11 arm is a no-op on SQLite, run twice over', () async {
+      // The whole content of v11 is a Postgres trigger, so on SQLite there is
+      // nothing to create and nothing to find afterwards. What this pins is
+      // that the arm *runs* here without throwing: an `if (native)` written
+      // the wrong way round, or a `customStatement` outside the dialect
+      // guard, would send `CREATE TRIGGER … EXECUTE FUNCTION` to SQLite and
+      // fail every local database's open — which on a station is not a failed
+      // migration, it is an HMI that will not start.
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      await db.customSelect('SELECT 1').getSingle();
+
+      final before = await _tableNames(db);
+      await db.migration.onUpgrade(Migrator(db), 10, 11);
+      await db.migration.onUpgrade(Migrator(db), 10, 11);
+
+      expect(await _tableNames(db), before,
+          reason: 'the v11 arm must add nothing to a SQLite database');
+    });
+
+    test('the v11 NOTIFY trigger carries a constant empty payload', () async {
+      // The one property of this trigger that must never drift. `pg_notify`
+      // does not truncate an oversized payload, it errors the statement that
+      // fired it — so a trigger that carried the changed row, or the changed
+      // key, would eventually fail the very save it was reporting. A constant
+      // payload also collapses to one delivery per transaction, which is what
+      // "one NOTIFY per action" is made of.
+      final source = _notifyStatements();
+
+      expect(source, contains("pg_notify('config_change', '')"),
+          reason: 'the payload must stay the empty string. Carrying the key '
+              'in it is what the retired keyed-notification trigger did, and '
+              'it is the wrong primitive here: N keys in one save become N '
+              'payloads and N deliveries, and a large one errors the save.');
+      expect(source.contains('json_build_object'), isFalse,
+          reason: 'a payload built from the row is the 8000-byte hazard this '
+              'trigger exists to avoid');
+    });
+
+    test('the v11 trigger is statement-level, insert-only and re-runnable',
+        () async {
+      final source = _notifyStatements();
+
+      expect(source, contains('AFTER INSERT ON config_change'),
+          reason: 'config_change is append-only; there is no UPDATE or '
+              'DELETE to notify about');
+      expect(source, contains('FOR EACH STATEMENT'),
+          reason: 'with a constant payload a row-level trigger does the same '
+              'work once per row instead of once per statement');
+      expect(source, contains('DROP TRIGGER IF EXISTS config_change_notify'),
+          reason: 'several SVN stations share one database and each of them '
+              'runs this arm when it opens, so it has to be safe twice');
+      expect(source, contains('CREATE OR REPLACE FUNCTION'),
+          reason: 'same reason as the DROP: the second station through must '
+              'not abort the migration half-way');
     });
 
     test('MCP tables support basic CRUD operations', () async {

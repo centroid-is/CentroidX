@@ -701,9 +701,6 @@ final class RelayedPreferences implements Preferences {
   Database? get database => null;
 
   @override
-  KeyCache get keyCache => _inner.keyCache;
-
-  @override
   MySecureStorage get secureStorage => _inner.secureStorage;
 
   @override

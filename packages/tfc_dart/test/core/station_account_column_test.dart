@@ -66,12 +66,12 @@ void main() {
             'otherwise — the default must not mint immortal sessions');
   });
 
-  test('schema version is 10', () async {
+  test('schema version is at least 6', () async {
     final db = AppDatabase.inMemoryForTest();
     addTearDown(() => db.close());
-    // v10 is 14-01's alarm_history change; station_account still arrives in
-    // the v6 arm, which is what the rest of this file is about.
-    expect(db.schemaVersion, 10);
+    // `station_account` arrived in the `from < 6` arm. The current number is
+    // asserted in `database_migration_test.dart`, not here.
+    expect(db.schemaVersion, greaterThanOrEqualTo(6));
   });
 
   group('upgrading a v5 database — the only upgrade path there is', () {

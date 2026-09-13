@@ -29,6 +29,7 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 // ---------------------------------------------------------------------------
 // Doubles
@@ -141,6 +142,7 @@ AccessRole _operatorWith(Set<AccessGroup> groups) => AccessRole(
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     // The device-local store the session persists into. In memory, and fresh
     // per test, so one test's stored payload cannot restore into the next.
     SharedPreferences.setMockInitialValues({});
@@ -287,7 +289,9 @@ void main() {
       expect(
         (await h.container.read(accessAdminUsersProvider.future))
             .map((u) => u.username),
-        ['jon'],
+        [kAnonymousUsername, 'jon'],
+        reason: 'the reserved account is in the roster too; the accounts '
+            'section pins it first',
       );
     });
 
@@ -499,7 +503,8 @@ void main() {
       );
       expect(h.session!.user, isNull);
       expect(h.session!.can(AccessGroup.users), isFalse);
-      expect(h.session!.groups, await h.repository.anonymousGroups());
+      expect(
+          h.session!.groups, (await h.repository.anonymousAccount()).groups);
       expect(
         await h.storedPayload(),
         isNull,

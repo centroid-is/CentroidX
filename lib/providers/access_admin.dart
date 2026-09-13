@@ -125,7 +125,7 @@ Future<List<AccessRole>> accessAdminRoles(Ref ref) async {
   return store.roles();
 }
 
-/// Every account, ordered by username, for the users section.
+/// Every account, in display order, for the users section.
 ///
 /// Autodispose, empty-when-null and error-propagating for the same three
 /// reasons as [accessAdminRoles]; the two are deliberately the same shape so a

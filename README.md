@@ -42,6 +42,19 @@ Checksums: [`SHA256SUMS.txt`](https://github.com/centroid-is/tfc-hmi/releases/do
 
 > These are development builds with no release testing, replaced on every merge to `main`. They do not auto-update — use the version manager above for production.
 
+### Station OS
+
+Panels do not run a desktop build — they run a Debian image with the container
+stack baked in, installed from one USB key that is the same for every customer
+and asks for the per-station answers on the panel itself.
+
+| Download | Notes |
+|----------|-------|
+| [`usb-installer.img.gz`](https://github.com/centroid-is/CentroidX/releases/download/main-latest/usb-installer.img.gz) | Write with `bmaptool copy --bmap usb-installer.img.bmap usb-installer.img.gz /dev/sdX`, boot it, answer the questions |
+
+Published on every release as well as the tip of `main`. See [`os/`](os/Readme.md)
+for what is in the image and how it is built.
+
 ## Development
 
 ### Prerequisites

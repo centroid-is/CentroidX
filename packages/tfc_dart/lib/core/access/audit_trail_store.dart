@@ -620,6 +620,44 @@ class AuditTrailStore {
         reason: row.reason,
       );
 
+  /// Every `audit_entry` row belonging to any of [actionIds], newest first.
+  ///
+  /// ## Why the config history needs this and the audit page does not
+  ///
+  /// The audit page starts from a window of rows and groups what it found. The
+  /// config history starts from a window of `config_change` rows and then has
+  /// to fetch the **header** of each action they belong to — the row carrying
+  /// `who`, `group_required` and the item key, which lives in this table.
+  ///
+  /// An id with no row here is not an error. The store commits its change rows
+  /// and writes the audit row afterwards, so a crash in between leaves an
+  /// action with changes and no header; `HistoryAction.isParentless` is that
+  /// state, and it renders rather than being dropped.
+  ///
+  /// `action_id` has no index on this table — a deliberate omission recorded in
+  /// Phase 5's deferred items — so this is a scan bounded by the `IN` list, at
+  /// most [kAuditTrailRowLimit] ids, once per page load.
+  ///
+  /// An empty [actionIds] returns an empty list **without issuing a
+  /// statement**: drift's `isIn([])` is not portable.
+  ///
+  /// `AuditRecord`, not drift's `AuditEntryData`, for the reason [entries]
+  /// gives: the store is where the row stops being a row, and the relayed
+  /// store on the other side of the pipe has no row id to answer with.
+  Future<List<AuditRecord>> entriesByAction(Iterable<String> actionIds) async {
+    final ids = actionIds.toSet().toList();
+    if (ids.isEmpty) return const [];
+
+    final statement = _db.select(_db.auditEntry)
+      ..where((t) => t.actionId.isIn(ids))
+      ..orderBy([
+        (t) => OrderingTerm(expression: t.at, mode: OrderingMode.desc),
+        (t) => OrderingTerm(expression: t.id, mode: OrderingMode.desc),
+      ]);
+
+    return (await statement.get()).map(_toRecord).toList();
+  }
+
   /// The true number of rows each of [actionIds] produced, counted over the
   /// **whole** table with no filter and no time bound.
   ///

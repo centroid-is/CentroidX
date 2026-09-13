@@ -266,6 +266,9 @@ class AuditTrailBodyState extends ConsumerState<AuditTrailBody> {
     for (final query in fresh) {
       ref.invalidate(auditTrailEntriesProvider(query));
     }
+    // Kept alive across visits, so refresh is what picks up a name that has
+    // written its first row since.
+    ref.invalidate(auditWhoOptionsProvider);
   }
 
   /// Append one page of strictly older rows.

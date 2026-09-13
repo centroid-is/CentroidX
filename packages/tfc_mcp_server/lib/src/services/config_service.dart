@@ -1,7 +1,19 @@
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
-import 'package:tfc_dart/tfc_dart_core.dart' show McpDatabase, fuzzyFilter;
+import 'package:tfc_dart/core/config/config_item.dart'
+    show ConfigItem, ConfigKind, ConfigScope;
+import 'package:tfc_dart/core/config/key_mapping_codec.dart'
+    show keyMappingBlobOf;
+import 'package:tfc_dart/tfc_dart_core.dart'
+    show
+        ConfigInconsistency,
+        McpDatabase,
+        checkConfigConsistency,
+        fuzzyFilter,
+        pagesJsonOf,
+        readSharedPageLayout,
+        readSharedPreferencePayload;
 
 import '../cache/ttl_cache.dart';
 import 'plc_code_service.dart';
@@ -10,8 +22,12 @@ import 'sql_dialect.dart';
 /// Service for reading system configuration from the database.
 ///
 /// Provides methods to query pages, assets, key mappings, and alarm
-/// definitions. All of it is stored as JSON blobs in the flutter_preferences
-/// table: page_editor_data, key_mappings and alarm_man_config.
+/// definitions. All of it is stored as `config_item` rows: pages and their
+/// assets as one row each, alarms as the `alarm_man_config` preference row,
+/// key mappings as one row per key. The `flutter_preferences` blobs those
+/// three used to live in are gone from this file — reading them after the
+/// cutover would serve a frozen copy of the plant to an operator who cannot
+/// tell it is frozen.
 ///
 /// The `alarm` table is *not* one of the sources. It exists in the schema but
 /// nothing writes it -- AlarmMan keeps every alarm in the alarm_man_config
@@ -25,13 +41,14 @@ import 'sql_dialect.dart';
 ///
 /// Accepts [McpDatabase] (not ServerDatabase) so it works with both
 /// AppDatabase (Flutter in-process) and ServerDatabase (standalone binary).
-/// Shared tables (flutter_preferences, alarm) are queried via raw SQL since
-/// AppDatabase and ServerDatabase define different row classes for the same
-/// physical tables.
+/// [McpDatabase] is a `GeneratedDatabase`, which is all the readers in
+/// `page_rows.dart` need: drift's generated table classes take their database
+/// as a constructor argument, so `config_item` attaches to a schema that does
+/// not declare it and the reads are ordinary builders. No raw SQL, and
+/// therefore no `?`-versus-`$N` branch to keep in step with the two backends.
 ///
-/// SQL queries use [adaptSql] to translate `?` placeholders to `$N` when
-/// running against PostgreSQL, since drift's `customSelect` passes raw SQL
-/// verbatim to the database engine without placeholder translation.
+/// The one query still written as SQL is the key-mappings read, which goes
+/// through [adaptSql] for that translation — see [_getKeyMappingsJson].
 class ConfigService implements KeyMappingLookup {
   /// Creates a [ConfigService] backed by the given [McpDatabase].
   ConfigService(this._db) : _isPostgres = isPostgresDb(_db);
@@ -69,28 +86,118 @@ class ConfigService implements KeyMappingLookup {
   /// Adapts SQL with `?` placeholders to `$N` for PostgreSQL.
   String _sql(String query) => adaptSql(query, isPostgres: _isPostgres);
 
-  /// Reads a JSON preference value from the flutter_preferences table.
+  /// The shared preference row named [key], decoded.
   ///
   /// Results are cached with a 5-minute TTL to avoid repeated DB round-trips.
-  /// ConfigService queries via raw SQL ([customSelect]), completely bypassing
-  /// the Flutter InMemoryPreferences layer, so this cache is valuable in both
-  /// in-process and subprocess modes.
   ///
-  /// Returns the decoded JSON value, or `null` if the key does not exist
-  /// or the value is null/empty.
+  /// Null when there is no such row. Until plan 04-11 migrates the
+  /// preferences that is *every* key, and it is the correct degraded answer
+  /// rather than an error: a standalone server can open a database no station
+  /// has migrated yet, and a caller that treats null as "not configured" is
+  /// right on both sides of the cutover. It is the same answer this service
+  /// gave for a missing `flutter_preferences` key.
+  Future<Map<String, dynamic>?> _preferenceJson(String key) async {
+    try {
+      return await _prefCache.getOrCompute(
+          key, () => readSharedPreferencePayload(_db, key));
+    } catch (_) {
+      // `config_item` is created by tfc_dart's migration. A server pointed
+      // at a database that has not run it must still answer — but the
+      // failure is **not cached**: it used to be, and a connection reset
+      // during one read then answered "no such preference" for the whole
+      // five-minute TTL, which for `alarm_man_config` is a plant with no
+      // alarms and for the key mappings an empty key universe handed to the
+      // access-template tools. The cache holds answers, not outages.
+      return null;
+    }
+  }
+
+  /// The whole shared layout, in the shape `page_editor_data` held: one entry
+  /// per page keyed by its path, each holding its own JSON with its `assets`
+  /// list in place.
   ///
-  /// Uses raw SQL via [customSelect] because flutter_preferences is a shared
-  /// table with different row classes in AppDatabase vs ServerDatabase.
-  Future<Map<String, dynamic>?> _getPreferenceJson(String key) {
-    return _prefCache.getOrCompute(key, () async {
-      final rows = await _db.customSelect(
-        _sql('SELECT value FROM flutter_preferences WHERE key = ?'),
-        variables: [Variable.withString(key)],
-      ).get();
+  /// **The shape is produced by `pagesJsonOf`, not assembled here.** The rule
+  /// it encodes — an asset belongs to the page whose id is its `parent_id`,
+  /// paint order is `sort_index`, a path-less page gets a slug — is the wire
+  /// format, and the editor reassembles the same rows with the same function.
+  /// A second reassembly in this package would be a second definition of that
+  /// format, and the way two definitions diverge is quietly: this one answers
+  /// `get_asset_detail`, so a subtly different one describes a plant that is
+  /// not the plant.
+  ///
+  /// Empty while the migration has not run, for the same reason
+  /// [_preferenceJson] is null then.
+  Future<Map<String, dynamic>> _pagesJson() async {
+    try {
+      final cached = await _prefCache.getOrCompute('page_editor_data#rows',
+          () async => pagesJsonOf(await readSharedPageLayout(_db)));
+      return cached ?? const {};
+    } catch (_) {
+      // Not cached, for the reason [_preferenceJson] gives.
+      return const {};
+    }
+  }
+
+  /// The key mappings, from `config_item` rows.
+  ///
+  /// Shaped `{'nodes': {key: entry}}`, which is what the blob held, because
+  /// that is [listKeyMappings]'s wire contract and the storage underneath it
+  /// is not the caller's business.
+  ///
+  /// **The shape is produced by [keyMappingBlobOf], not assembled here.** A
+  /// map built by hand would be a second definition of the blob, and the way
+  /// two definitions diverge is quietly: this one feeds `access_template_tools`
+  /// "the whole key universe", so a malformed or subtly different key set
+  /// becomes access rules written against wiring that does not match the
+  /// plant. Going through the codec also round-trips every payload through
+  /// `KeyMappingEntry.fromJson`, which validates them for free.
+  ///
+  /// **Why this one is still raw SQL** when the pages read beside it is drift
+  /// builders: not because it has to be. `readSharedKeyMappingItems` would do
+  /// it, and `$ConfigItemTableTable` attaches to this service's
+  /// [McpDatabase] exactly as it does in `page_rows.dart` — the schema
+  /// argument this comment used to make was wrong. What keeps the query here
+  /// is the import above it: `key_mapping_codec.dart` reaches
+  /// `state_man.dart` and so links open62541 into this binary, which is
+  /// deferred defect D-3, and `key_mapping_rows.dart` imports
+  /// `database_drift.dart` and would pull the same library a second way.
+  /// Moving the read without moving the codec would deepen D-3 rather than
+  /// undo it, so both stay put until D-3 is fixed properly.
+  ///
+  /// A missing `config_item` reads as no mappings, not as an error: a
+  /// standalone server can open a database tfc_dart has not migrated yet, and
+  /// failing here would take out `list_key_mappings` and every access template
+  /// tool built on it in order to report a table that is about to exist. The
+  /// blob fallback that used to sit here is gone with the blob: once the rows
+  /// exist the blob is a frozen copy, and an access template written against
+  /// a key set that stopped being updated is a rule that does not cover the
+  /// wiring it was meant to cover.
+  Future<Map<String, dynamic>?> _getKeyMappingsJson() {
+    return _prefCache.getOrCompute('key_mappings#rows', () async {
+      final List<QueryRow> rows;
+      try {
+        rows = await _db.customSelect(
+          _sql('SELECT id, payload FROM config_item '
+              'WHERE kind = ? AND scope = ? ORDER BY id'),
+          variables: [
+            Variable.withString(ConfigKind.keyMapping.wireName),
+            Variable.withString(ConfigScope.shared.wireName),
+          ],
+        ).get();
+      } catch (_) {
+        return null;
+      }
       if (rows.isEmpty) return null;
-      final value = rows.first.readNullable<String>('value');
-      if (value == null || value.isEmpty) return null;
-      return jsonDecode(value) as Map<String, dynamic>;
+
+      final items = [
+        for (final row in rows)
+          ConfigItem(
+            kind: ConfigKind.keyMapping,
+            id: row.read<String>('id'),
+            payload: row.read<String>('payload'),
+          ),
+      ];
+      return jsonDecode(keyMappingBlobOf(items)) as Map<String, dynamic>;
     });
   }
 
@@ -99,8 +206,7 @@ class ConfigService implements KeyMappingLookup {
   /// Each entry contains `key` and `title` fields. Results are limited
   /// to [limit] entries (default 50).
   Future<List<Map<String, dynamic>>> listPages({int limit = 50}) async {
-    final data = await _getPreferenceJson('page_editor_data');
-    if (data == null) return [];
+    final data = await _pagesJson();
 
     final pages = <Map<String, dynamic>>[];
     for (final entry in data.entries) {
@@ -119,8 +225,7 @@ class ConfigService implements KeyMappingLookup {
   /// Each page is treated as an asset. Each entry contains `key` and
   /// `title` fields. Results are limited to [limit] entries (default 50).
   Future<List<Map<String, dynamic>>> listAssets({int limit = 50}) async {
-    final data = await _getPreferenceJson('page_editor_data');
-    if (data == null) return [];
+    final data = await _pagesJson();
 
     final assets = <Map<String, dynamic>>[];
     for (final entry in data.entries) {
@@ -139,8 +244,7 @@ class ConfigService implements KeyMappingLookup {
   /// Returns `null` if no page with the given key exists. This provides
   /// the detailed view in the progressive discovery pattern (Level 2).
   Future<Map<String, dynamic>?> getAssetDetail(String pageKey) async {
-    final data = await _getPreferenceJson('page_editor_data');
-    if (data == null) return null;
+    final data = await _pagesJson();
 
     if (data.containsKey(pageKey)) {
       return data[pageKey] as Map<String, dynamic>;
@@ -168,7 +272,7 @@ class ConfigService implements KeyMappingLookup {
     String? filter,
     int limit = 50,
   }) async {
-    final data = await _getPreferenceJson('key_mappings');
+    final data = await _getKeyMappingsJson();
     if (data == null) return [];
 
     final nodes = data['nodes'] as Map<String, dynamic>?;
@@ -274,7 +378,7 @@ class ConfigService implements KeyMappingLookup {
   }) {
     final cacheKey = '${filter ?? ''}:$limit';
     return _alarmDefCache.getOrCompute(cacheKey, () async {
-      final data = await _getPreferenceJson('alarm_man_config');
+      final data = await _preferenceJson('alarm_man_config');
 
       var alarms = _alarmsOf(data)
           .map((a) => {
@@ -323,7 +427,7 @@ class ConfigService implements KeyMappingLookup {
       _prefCache.invalidate('alarm_man_config');
     }
     return _alarmConfigCache.getOrCompute(uid, () async {
-      final data = await _getPreferenceJson('alarm_man_config');
+      final data = await _preferenceJson('alarm_man_config');
       final alarm =
           _alarmsOf(data).where((a) => a['uid'] == uid).firstOrNull;
       if (alarm == null) return null;
@@ -363,8 +467,7 @@ class ConfigService implements KeyMappingLookup {
   /// named one, so it is not reported: nothing about it breaks when one alarm
   /// goes away.
   Future<List<Map<String, dynamic>>> findAlarmReferences(String uid) async {
-    final data = await _getPreferenceJson('page_editor_data');
-    if (data == null) return const [];
+    final data = await _pagesJson();
 
     final refs = <Map<String, dynamic>>[];
 
@@ -399,4 +502,25 @@ class ConfigService implements KeyMappingLookup {
 
     return refs;
   }
+
+  /// Every way this database's configuration contradicts its own history.
+  ///
+  /// SC-6's production arm. The same function CI runs against a throwaway
+  /// Postgres, pointed at whatever database this server was opened on — which
+  /// is the whole point of it existing here: the corruptions it looks for (a
+  /// row written without a change row, a `parent_id` orphaned by a rename)
+  /// happen on a live plant over months, and a check that only ever ran in CI
+  /// would be proving the invariant over rows the test had just written
+  /// itself.
+  ///
+  /// **Errors are not swallowed here**, unlike every other read in this
+  /// class. Those answer "nothing configured" when `config_item` is missing,
+  /// because a standalone server can open a database tfc_dart has not
+  /// migrated yet and taking out `list_pages` to report a table that is about
+  /// to exist helps nobody. A *check* cannot do that: "I read no rows" and
+  /// "the rows are consistent" are the same empty list, and a tool that
+  /// reported the first as the second would be worse than no tool at all. The
+  /// caller catches and says which one it is.
+  Future<List<ConfigInconsistency>> checkConsistency() =>
+      checkConfigConsistency(_db);
 }

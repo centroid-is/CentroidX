@@ -23,22 +23,24 @@ final String _maintenanceGroupsWithForce = const AccessRole(
   groups: {AccessGroup.operate, AccessGroup.force},
 ).encodeGroups();
 
-/// The eight admin factory names, in itemKey order.
+/// The ten admin factory names, in itemKey order.
 const _adminFactoryNames = <String>[
   'roleCreate',
   'roleUpdate',
   'roleDelete',
   'roleRename',
+  'roleOrder',
   'userCreate',
   'userDelete',
   'userRole',
   'userPassword',
+  'userOrder',
 ];
 
-/// One row from each of the eight admin constructors, in itemKey order.
+/// One row from each of the ten admin constructors, in itemKey order.
 ///
-/// Built as a list rather than asserted one constructor at a time so that a
-/// ninth admin constructor added without a row here is visible as a length
+/// Built as a list rather than asserted one constructor at a time so that an
+/// eleventh admin constructor added without a row here is visible as a length
 /// mismatch, not as a silently unasserted vocabulary entry.
 List<AuditRecord> _adminRows({required bool allowed}) => [
       AuditRecord.roleCreate(
@@ -78,6 +80,15 @@ List<AuditRecord> _adminRows({required bool allowed}) => [
         newName: 'Servicing',
         allowed: allowed,
       ),
+      AuditRecord.roleOrder(
+        who: 'jon',
+        station: 'panel-1',
+        roleName: 'Engineering',
+        actionId: 'a' * 32,
+        oldOrder: const ['Operator', 'Maintenance'],
+        newOrder: const ['Maintenance', 'Operator'],
+        allowed: allowed,
+      ),
       AuditRecord.userCreate(
         who: 'jon',
         station: 'st101',
@@ -112,6 +123,15 @@ List<AuditRecord> _adminRows({required bool allowed}) => [
         roleName: 'Engineering',
         actionId: 'a' * 32,
         subject: 'gudrun',
+        allowed: allowed,
+      ),
+      AuditRecord.userOrder(
+        who: 'jon',
+        station: 'panel-1',
+        roleName: 'Engineering',
+        actionId: 'a' * 32,
+        oldOrder: const ['gudrun', 'jon'],
+        newOrder: const ['jon', 'gudrun'],
         allowed: allowed,
       ),
     ];
@@ -336,6 +356,18 @@ void main() {
       expect(record.surface, 'auth');
       expect(record.itemKey, 'login.failed');
       expect(record.allowed, isFalse);
+    });
+
+    test('role defaults to the seeded role, and records what the panel held '
+        'when told', () {
+      expect(build().roleName, kOperatorRoleName);
+      final record = AuditRecord.loginFailed(
+        who: 'jon',
+        station: 'panel-1',
+        actionId: 'd' * 32,
+        roleName: 'Operator + Viewer',
+      );
+      expect(record.roleName, 'Operator + Viewer');
     });
 
     test('who is the attempted username', () {
@@ -907,8 +939,74 @@ void main() {
     });
   });
 
+  group('AuditRecord.roleOrder', () {
+    AuditRecord build({bool allowed = true}) => AuditRecord.roleOrder(
+          who: 'jon',
+          station: 'panel-1',
+          roleName: 'Engineering',
+          actionId: '5' * 32,
+          oldOrder: const ['Operator', 'Shift Leader', 'Maintenance'],
+          newOrder: const ['Maintenance', 'Operator', 'Shift Leader'],
+          allowed: allowed,
+        );
+
+    test('fixes the admin vocabulary', () {
+      final record = build();
+      expect(record.surface, 'admin');
+      expect(record.itemKey, 'role.order');
+      expect(record.isAuthEvent, isFalse);
+    });
+
+    test('carries both orders as JSON arrays, and no member', () {
+      final record = build();
+      expect(record.oldValue, '["Operator","Shift Leader","Maintenance"]');
+      expect(record.newValue, '["Maintenance","Operator","Shift Leader"]');
+      expect(record.member, isNull,
+          reason: 'a reorder moves every role at once and has no single '
+              'subject; the whole order is in the value columns instead');
+    });
+
+    test('is gated on users, and can record a refusal', () {
+      expect(build().groupRequired, AccessGroup.users.name);
+      expect(build(allowed: false).allowed, isFalse);
+      expect(build().allowed, isTrue);
+    });
+  });
+
+  group('AuditRecord.userOrder', () {
+    AuditRecord build({bool allowed = true}) => AuditRecord.userOrder(
+          who: 'jon',
+          station: 'panel-1',
+          roleName: 'Engineering',
+          actionId: '6' * 32,
+          oldOrder: const ['ada', 'gudrun', 'jon'],
+          newOrder: const ['jon', 'ada', 'gudrun'],
+          allowed: allowed,
+        );
+
+    test('fixes the admin vocabulary', () {
+      final record = build();
+      expect(record.surface, 'admin');
+      expect(record.itemKey, 'user.order');
+      expect(record.isAuthEvent, isFalse);
+    });
+
+    test('carries both orders as JSON arrays, and no member', () {
+      final record = build();
+      expect(record.oldValue, '["ada","gudrun","jon"]');
+      expect(record.newValue, '["jon","ada","gudrun"]');
+      expect(record.member, isNull);
+    });
+
+    test('is gated on users, and can record a refusal', () {
+      expect(build().groupRequired, AccessGroup.users.name);
+      expect(build(allowed: false).allowed, isFalse);
+      expect(build().allowed, isTrue);
+    });
+  });
+
   group('the admin surface as a whole', () {
-    test('the vocabulary is exactly these eight itemKeys', () {
+    test('the vocabulary is exactly these ten itemKeys', () {
       expect(
         _adminRows(allowed: true).map((r) => r.itemKey).toList(),
         [
@@ -916,10 +1014,12 @@ void main() {
           'role.update',
           'role.delete',
           'role.rename',
+          'role.order',
           'user.create',
           'user.delete',
           'user.role',
           'user.password',
+          'user.order',
         ],
       );
     });
@@ -940,12 +1040,12 @@ void main() {
     });
 
     test('each constructor can record a refusal as well as a grant', () {
-      // allowed is a parameter on all eight, not a hardcoded true. An admin
+      // allowed is a parameter on all ten, not a hardcoded true. An admin
       // action refused by the users gate is a row worth having, and if the
       // constructors could not build one the store would hand-build denial
       // rows — the vocabulary drifting on day one.
       final denied = _adminRows(allowed: false);
-      expect(denied, hasLength(8));
+      expect(denied, hasLength(10));
       for (final record in denied) {
         expect(record.allowed, isFalse);
       }
@@ -977,9 +1077,9 @@ void main() {
     });
 
     test('no admin constructor takes a password, a hash or a salt', () {
-      // The structural half is the eight signatures: every call site above
+      // The structural half is the ten signatures: every call site above
       // compiles, and none of them passes a credential. This is the other
-      // half — a source read of the eight parameter lists, so that adding a
+      // half — a source read of the ten parameter lists, so that adding a
       // "just the hash, for debugging" parameter fails here rather than
       // shipping.
       final source = File('${_packageRoot().path}/lib/src/audit.dart')

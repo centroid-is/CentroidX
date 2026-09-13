@@ -38,6 +38,7 @@ import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/pages/page_view.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc_dart/core/state_man.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// Minimal fake. Button.onTapDown writes a BOOL to the configured key;
 /// we capture those writes to detect that the tap reached the InkWell.
@@ -103,6 +104,7 @@ Widget _wrap({
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();

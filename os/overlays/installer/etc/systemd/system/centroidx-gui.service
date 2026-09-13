@@ -1,0 +1,59 @@
+[Unit]
+Description=CentroidX station installer (graphical)
+After=local-fs.target seatd.service systemd-udev-settle.service centroidx-remote-access.service
+Wants=seatd.service systemd-udev-settle.service centroidx-remote-access.service
+Conflicts=getty@tty1.service
+# Hand over to the text installer if weston or the app cannot start -- a panel
+# with no GPU, a missing bundle, a compositor that will not take the DRM device.
+# A blank screen with no way forward is the one outcome worth engineering around.
+#
+# BOTH directions, because OnFailure alone does not cover the case it was
+# written for. In weston 14's frontend/main.c the SIGCHLD handler for a watched
+# autolaunch child calls wl_display_terminate() and never sets
+# compositor->exit_code, which stays EXIT_SUCCESS -- so when the APP dies,
+# weston exits 0, this unit goes inactive rather than failed, and OnFailure does
+# not run. That is precisely the embedder-mismatch case: a blank screen with no
+# way forward. Compositor-level failures do exit non-zero and do reach
+# OnFailure.
+#
+# Safe as an unconditional pair: a successful install reboots from inside the
+# app, so control never returns here on the happy path. OnSuccess= needs
+# systemd 249; trixie has 257.
+OnFailure=centroidx-installer.service
+OnSuccess=centroidx-installer.service
+
+[Service]
+Type=simple
+Environment=XDG_RUNTIME_DIR=/run/centroidx-gui
+# The on-screen keyboard is the binary from the centroid-is/dockers weston image
+# and reads its language list from weston's environment (weston starts the
+# input method with its own env). Same three the station offers, in the same
+# order; the first is what it opens in, the globe key cycles the rest. On the
+# station the weston wrapper sets this from KEYBOARD_LAYOUTS/KEYBOARD_DEFAULT
+# in .env; there is no wrapper on the stick, so it is set here.
+Environment=KEYBOARD_LAYOUTS=is,en,pl
+RuntimeDirectory=centroidx-gui
+RuntimeDirectoryMode=0700
+# ~30 file descriptors per VNC client against the default 1024 soft limit is
+# the real ceiling under several viewers, and fd exhaustion kills weston's
+# internal clients and the compositor with them. Measured on hq-skjar,
+# 2026-09-02; the station's compose carries the same number for the same
+# reason. It matters here because the VNC server lives inside weston's own
+# process, not in a container beside it.
+LimitNOFILE=16384
+# Not weston directly: `[output] mirror-of=` needs the literal DRM connector
+# name, which is a property of the panel in front of you. The wrapper reads it
+# from /sys/class/drm and templates the real weston.ini into /run.
+ExecStart=/usr/local/bin/centroidx-gui-launch
+# weston exits when the app does (autolaunch watch=true). A successful install
+# reboots from inside the app, so reaching here at all means something stopped.
+Restart=no
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+
+[Install]
+WantedBy=multi-user.target

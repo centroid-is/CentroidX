@@ -72,15 +72,11 @@ void main() {
 
     test('alarms enabled advertises prompts and prompts/list responds',
         () async {
+      // Alarms on and nothing else: `explain_alarm` and `shift_handover` need
+      // only alarms, while `diagnose_equipment` needs tags as well, so this
+      // says exactly which prompts should appear.
       final server = createServer(
-        const McpToolToggles(
-          tagsEnabled: false,
-          configEnabled: false,
-          drawingsEnabled: false,
-          trendsEnabled: false,
-          plcCodeEnabled: false,
-          techDocsEnabled: false,
-        ),
+        McpToolToggles.allDisabled.copyWithToggle('alarms', true),
       );
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
