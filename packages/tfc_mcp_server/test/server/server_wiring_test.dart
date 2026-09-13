@@ -60,15 +60,16 @@ void main() {
       );
     }
 
-    test('1. All 41 expected tools are registered', () async {
+    test('1. All 52 expected tools are registered', () async {
       final server = createWiredServer();
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
         final tools = await client.listTools();
         final toolNames = tools.map((t) => t.name).toSet();
 
-        // All 41 expected tools: the pre-existing set, the four
-        // access-template writes, and the nine report tools.
+        // All 52 expected tools: the pre-existing set, the four
+        // access-template writes, the nine report tools, and the eleven
+        // account/role tools (two reads, nine proposals).
         expect(toolNames, containsAll([
           // Read tools
           'ping',
@@ -89,6 +90,8 @@ void main() {
           'diagnose_asset',
           'list_access_templates',
           'list_unbound_keys',
+          'list_accounts',
+          'list_roles',
           // Write tools
           'create_alarm',
           'update_alarm',
@@ -103,6 +106,15 @@ void main() {
           'update_access_template',
           'delete_access_template',
           'bind_key_access_template',
+          'create_account',
+          'delete_account',
+          'set_account_roles',
+          'set_station_account',
+          'reset_account_password',
+          'create_role',
+          'update_role',
+          'rename_role',
+          'delete_role',
           // Report tools
           'list_reports',
           'get_report_definition',
@@ -115,7 +127,7 @@ void main() {
           'delete_report',
         ]));
 
-        expect(toolNames, hasLength(41));
+        expect(toolNames, hasLength(52));
       } finally {
         await client.close();
       }
@@ -189,7 +201,7 @@ void main() {
         final toolNames = tools.map((t) => t.name).toSet();
 
         // All 41 tools are registered (drawing tools always present)
-        expect(toolNames, hasLength(41));
+        expect(toolNames, hasLength(52));
         expect(toolNames, contains('search_drawings'));
         expect(toolNames, contains('get_drawing_page'));
       } finally {

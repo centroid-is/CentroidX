@@ -543,6 +543,35 @@ Write tools emit a **proposal** that a human approves
 changes who may do what: an agent proposes the bindings, a person approves them
 in bulk.
 
+### 7d. Accounts and roles are visible — and proposable — over MCP
+
+Templates are the exceptions; accounts and roles are the rule, and a person
+locking a station down needs both halves. `access_account_tools.dart` adds:
+
+- `list_accounts`, `list_roles` — every account with the union of what its
+  roles grant, every role with its groups spelled out in words, the reserved
+  `anonymous` account called out as the floor, and who holds `users` (the
+  lockout guard). Neither ever returns a hash, a salt or any credential: the
+  service's SELECT names its columns and has no field one could land in.
+- `create_account`, `delete_account`, `set_account_roles`,
+  `set_station_account`, `reset_account_password`, `create_role`,
+  `update_role`, `rename_role`, `delete_role` — proposals, applied on the
+  access screen through `AccessAdminStore` with `origin: 'mcp'` and the
+  approver's own `who`.
+
+**No tool takes a password.** Tool arguments are written to the MCP audit
+table and the proposal JSON is shown on screen, so a password could never be
+an argument. `create_account` and `reset_account_password` propose the change
+only; the person accepting types the password at the panel, in the accounts
+screen's own dialog, and it goes from there to the store and nowhere else.
+
+The repository's refusals — the last-`users`-holder invariant, a role somebody
+still holds, the anonymous row's password, flag and existence — are decided at
+the accept, inside the transaction, exactly as for a hand-made edit. The tools
+predict each one from their snapshot and say so in the proposal's `warnings`,
+so an agent can fix the plan before a person is asked to approve something
+that cannot land.
+
 Gate these tools on **`users`** — they change authorization, which is the same
 concern as roles and the trail, not machine configuration. Audit them with
 `origin = 'mcp'` and `who` = the approving user, never the agent.

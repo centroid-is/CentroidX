@@ -13,6 +13,15 @@ const proposalRoutes = <String, String>{
   // second type for bindings would mean a second banner, a second accept and
   // a second place for the gate to be got wrong.
   'access_template': '/advanced/key-repository',
+  // Accounts and roles are edited on the access screen and applied through
+  // the same `users`-gated `AccessAdminStore` its own controls use. Two
+  // types rather than one because the banner and the feedback sentence name
+  // what was acted on — "the account proposal" reads; "the access proposal"
+  // does not — and both land on the same page and the same store either
+  // way. `_op` carries create/update/delete/rename; `field` says which
+  // attribute an update touches.
+  'access_account': '/advanced/access',
+  'access_role': '/advanced/access',
   // Both report types land in the report editor, which stages them into its
   // buffer. The person's Save is the approval, and it goes through
   // GuardedReportStore — so an agent proposing a report nobody may author
@@ -110,6 +119,9 @@ class PendingProposal {
       case 'key_mapping':
       case 'access_template':
         return 'Key Repository';
+      case 'access_account':
+      case 'access_role':
+        return 'Access';
       case 'page':
         return 'Page Editor';
       case 'asset':
@@ -154,6 +166,11 @@ class PendingProposal {
       // `_op` itself and does not go through this getter.
       case 'bind':
         return ProposalOp.create;
+      // A role rename changes an existing row's name and carries its holders
+      // across; the access screen reads `_op` itself, and to the banner it
+      // is an edit.
+      case 'rename':
+        return ProposalOp.update;
     }
     if (proposalType.endsWith('_update')) return ProposalOp.update;
     return ProposalOp.create;
@@ -189,6 +206,8 @@ String describeProposalFeedback(
         'alarm' || 'alarm_create' || 'alarm_update' => 'alarm',
         'key_mapping' => 'key mapping',
         'access_template' => 'access template',
+        'access_account' => 'account',
+        'access_role' => 'role',
         'page' => 'page',
         'asset' => 'asset',
         'asset_update' => 'asset update',

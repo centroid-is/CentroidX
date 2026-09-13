@@ -214,19 +214,19 @@ void main() {
       );
     }
 
-    test('allEnabled registers 41 tools (19 read + 13 write + 9 report)',
+    test('allEnabled registers 52 tools (21 read + 22 write + 9 report)',
         () async {
       final server = createServer();
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
         final tools = await client.listTools();
-        expect(tools, hasLength(41));
+        expect(tools, hasLength(52));
       } finally {
         await client.close();
       }
     });
 
-    test('tagsEnabled=false registers 38 tools', () async {
+    test('tagsEnabled=false registers 49 tools', () async {
       final server = createServer(
         toggles: const McpToolToggles(tagsEnabled: false),
       );
@@ -234,7 +234,7 @@ void main() {
       try {
         final tools = await client.listTools();
         final names = tools.map((t) => t.name).toSet();
-        expect(tools, hasLength(38));
+        expect(tools, hasLength(49));
         expect(names, isNot(contains('list_tags')));
         expect(names, isNot(contains('get_tag_value')));
       } finally {
@@ -242,7 +242,7 @@ void main() {
       }
     });
 
-    test('alarmsEnabled=false registers 33 tools', () async {
+    test('alarmsEnabled=false registers 44 tools', () async {
       final server = createServer(
         toggles: const McpToolToggles(alarmsEnabled: false),
       );
@@ -255,8 +255,8 @@ void main() {
         // both tagsEnabled && alarmsEnabled), create_alarm, update_alarm,
         // delete_alarm (write tools gated by alarmsEnabled inside the
         // proposalsEnabled block).
-        // 41 total - 8 = 33.
-        expect(tools, hasLength(33));
+        // 52 total - 8 = 44.
+        expect(tools, hasLength(44));
         expect(names, isNot(contains('list_alarms')));
         expect(names, isNot(contains('get_alarm_detail')));
         expect(names, isNot(contains('query_alarm_history')));
@@ -269,7 +269,7 @@ void main() {
       }
     });
 
-    test('proposalsEnabled=false registers 24 tools', () async {
+    test('proposalsEnabled=false registers 26 tools', () async {
       final server = createServer(
         toggles: const McpToolToggles(proposalsEnabled: false),
       );
@@ -277,9 +277,21 @@ void main() {
       try {
         final tools = await client.listTools();
         final names = tools.map((t) => t.name).toSet();
-        // 41 - 13 - the four report writes, which ride this toggle
-        // because they are proposals like every other write here.
-        expect(tools, hasLength(24));
+        // 52 - 13 - the four report writes - the nine account/role
+        // proposals, all of which ride this toggle because they are
+        // proposals like every other write here. The two account reads stay.
+        expect(tools, hasLength(26));
+        expect(names, contains('list_accounts'));
+        expect(names, contains('list_roles'));
+        expect(names, isNot(contains('create_account')));
+        expect(names, isNot(contains('delete_account')));
+        expect(names, isNot(contains('set_account_roles')));
+        expect(names, isNot(contains('set_station_account')));
+        expect(names, isNot(contains('reset_account_password')));
+        expect(names, isNot(contains('create_role')));
+        expect(names, isNot(contains('update_role')));
+        expect(names, isNot(contains('rename_role')));
+        expect(names, isNot(contains('delete_role')));
         expect(names, isNot(contains('create_report')));
         expect(names, isNot(contains('set_shift_calendar')));
         // The read half stays: reportsEnabled put it there.
@@ -311,16 +323,22 @@ void main() {
       try {
         final tools = await client.listTools();
         final names = tools.map((t) => t.name).toSet();
-        // Config read tools removed (8): list_pages, list_assets,
+        // Config read tools removed (10): list_pages, list_assets,
         // get_asset_detail, list_key_mappings, list_alarm_definitions,
-        // list_asset_types, list_access_templates, list_unbound_keys.
-        // Config-dependent write tools removed (10): create_alarm,
+        // list_asset_types, list_access_templates, list_unbound_keys,
+        // list_accounts, list_roles.
+        // Config-dependent write tools removed (19): create_alarm,
         // update_alarm, delete_alarm (the alarm write tools need
         // configEnabled for their lookups), create_key_mapping,
-        // update_key_mapping, delete_key_mapping, and the four
-        // access-template write tools, which validate against the read half.
-        // 41 total - 18 = 23.
+        // update_key_mapping, delete_key_mapping, the four
+        // access-template write tools and the nine account/role write
+        // tools, all of which validate against the read half.
+        // 52 total - 29 = 23.
         expect(tools, hasLength(23));
+        expect(names, isNot(contains('list_accounts')));
+        expect(names, isNot(contains('list_roles')));
+        expect(names, isNot(contains('create_account')));
+        expect(names, isNot(contains('delete_role')));
         expect(names, isNot(contains('list_pages')));
         expect(names, isNot(contains('list_assets')));
         expect(names, isNot(contains('get_asset_detail')));

@@ -23,8 +23,9 @@ live process values and the live configuration.
 ## The one thing to understand: every write tool is a PROPOSAL
 
 create_alarm, update_alarm, delete_alarm, create_key_mapping,
-update_key_mapping, delete_key_mapping, propose_page, propose_asset and
-update_asset DO NOT WRITE ANYTHING. Each one builds a proposal, hands it to
+update_key_mapping, delete_key_mapping, propose_page, propose_asset,
+update_asset, the access-template tools and the account/role tools DO NOT
+WRITE ANYTHING. Each one builds a proposal, hands it to
 the operator's screen as a black banner, and returns the proposal JSON to you.
 
     tool -> ProposalService -> the operator's banner -> Accept -> saved
@@ -124,6 +125,27 @@ range. It may not name the
 access tables (app_user, app_role, audit_entry, access_template,
 access_key_binding) — a report is rendered on a page any operator can open,
 so publishing credentials or the audit record through one is refused.
+
+## Who may do what
+
+list_accounts and list_roles read the station's accounts and roles and say,
+in words, what each one may actually do: the union of the groups its roles
+grant, whether it is a person or a station account, and who can manage
+accounts (the lockout guard). The reserved "anonymous" account is every
+logged-out panel, so its permissions are the floor of the whole station.
+Neither tool ever returns a password hash, a salt or any credential.
+
+create_account, delete_account, set_account_roles, set_station_account,
+reset_account_password, create_role, update_role, rename_role and
+delete_role are proposals like every other write here. A person holding
+"users" applies them on the access screen, and the row records origin
+"mcp" and the approver's own name. **No tool takes a password.** Creating
+an account or resetting a password proposes the change only; the approver
+types the password at the panel when accepting, and it never crosses MCP,
+the audit table or the screen. The store refuses, at the accept, any change
+that would leave nobody able to manage accounts, deleting a role somebody
+holds, and touching the anonymous account's password or existence — the
+proposal diff predicts each refusal so you can fix the plan first.
 
 ## Looking at the screen
 
