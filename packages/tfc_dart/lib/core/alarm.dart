@@ -19,6 +19,7 @@ import 'package:drift/drift.dart'
 // Prefixed: drift's `Expression` collides with this package's own.
 import 'package:drift/drift.dart' as drift show Constant, Expression;
 
+import 'database.dart' show Database;
 import 'database_drift.dart' show $AlarmHistoryTable;
 import 'preferences.dart';
 import 'state_man.dart';
@@ -310,7 +311,26 @@ class _DateTimeBound extends drift.Expression<bool> {
 class AlarmMan {
   final AlarmManConfig config;
   final AlarmManLocalConfig localConfig;
-  final Preferences preferences;
+
+  /// The store [addAlarm], [removeAlarm] and [updateAlarm] save through, or
+  /// null in a process that has none.
+  ///
+  /// Null is the headless case ([AlarmMan.headless]): the acquisition backend
+  /// reads the configuration as a value and never edits it. Those three
+  /// methods are the alarm editor's, reached only from behind a
+  /// `configure`-gated page, so a process with no editor needs no writer —
+  /// and giving it one would make it a second author of shared configuration
+  /// with none of a station's machinery behind the write. Calling them anyway
+  /// throws; it does not quietly do nothing.
+  final Preferences? preferences;
+
+  /// Where `alarm_history` lives, or null when there is nowhere to record.
+  ///
+  /// Separate from [preferences] since 04-12. It used to be reached through
+  /// `preferences.database` — the escape hatch that obliged every caller
+  /// wanting alarm history to hold a preferences object it otherwise had no
+  /// use for.
+  final Database? database;
   final StateMan stateMan;
   final Set<Alarm> alarms;
   final Set<AlarmActive> _activeAlarms;
@@ -320,6 +340,7 @@ class AlarmMan {
   AlarmMan._(
       {required this.config,
       required this.preferences,
+      required this.database,
       required this.stateMan,
       required this.localConfig})
       : alarms = config.alarms.map((e) => Alarm(config: e)).toSet(),
@@ -376,25 +397,73 @@ class AlarmMan {
     _activeAlarmsController.onCancel = () async {};
   }
 
+  /// The app's constructor: the configuration comes out of the store, and the
+  /// store stays for the editor to save through.
+  ///
+  /// **A missing `alarm_man_config` is an empty configuration, and nothing is
+  /// written here.** This used to seed the empty default through the checked
+  /// setter, which on the row store meant: with Postgres unreachable, or a
+  /// mirror that has not synced yet, or at boot before any session, the seed
+  /// was refused — `AccessDenied` on a `configure` key with nobody signed in,
+  /// or the offline refusal — and the throw took `alarmManProvider` and
+  /// every alarm widget down with it. Seeding is the app layer's, through the
+  /// system path (`lib/providers/alarm.dart`), which knows when "absent" means
+  /// the plant has none and when it means this station has not read it yet.
   static Future<AlarmMan> create(Preferences preferences, StateMan stateMan,
       {historyToDb = false}) async {
-    final localConfig = AlarmManLocalConfig(historyToDb: historyToDb);
+    final configJson = await preferences.getString('alarm_man_config');
+    return _build(
+      config: configJson == null
+          ? AlarmManConfig(alarms: [])
+          : AlarmManConfig.fromJson(jsonDecode(configJson)),
+      preferences: preferences,
+      database: preferences.database,
+      stateMan: stateMan,
+      historyToDb: historyToDb,
+    );
+  }
 
-    var configJson = await preferences.getString('alarm_man_config');
-    if (configJson == null) {
-      configJson = await preferences.getString('alarm_man_config');
-      if (configJson == null) {
-        await preferences.setString(
-            'alarm_man_config', jsonEncode(AlarmManConfig(alarms: [])));
-        configJson = await preferences.getString('alarm_man_config');
-      }
-    }
-    final config = AlarmManConfig.fromJson(jsonDecode(configJson!));
+  /// The constructor for a process that has no store: the configuration
+  /// arrives as a value, already read.
+  ///
+  /// The acquisition backend's, and the shape the rest of its boot already
+  /// uses — `KeyMappings` reaches `StateMan.create` the same way. It takes
+  /// [database] on its own because alarm history is a different thing from
+  /// alarm configuration and only ever shared a route by accident.
+  ///
+  /// There is deliberately no read here and no default written. A process
+  /// with one boot read and no reconcile cannot tell an empty configuration
+  /// from one whose migration has not run, so the decision about what absence
+  /// means belongs to the caller, who can ask the migration marker; and a
+  /// backend writing the plant's default would be a second author with none
+  /// of a station's checked group, `origin` or audit row behind it.
+  static Future<AlarmMan> headless({
+    required AlarmManConfig config,
+    required StateMan stateMan,
+    Database? database,
+    bool historyToDb = false,
+  }) =>
+      _build(
+        config: config,
+        preferences: null,
+        database: database,
+        stateMan: stateMan,
+        historyToDb: historyToDb,
+      );
+
+  static Future<AlarmMan> _build({
+    required AlarmManConfig config,
+    required Preferences? preferences,
+    required Database? database,
+    required StateMan stateMan,
+    required bool historyToDb,
+  }) async {
     final alarmMan = AlarmMan._(
         config: config,
         preferences: preferences,
+        database: database,
         stateMan: stateMan,
-        localConfig: localConfig);
+        localConfig: AlarmManLocalConfig(historyToDb: historyToDb));
     try {
       alarmMan._history.addAll(await alarmMan.getRecentAlarms());
       alarmMan._historyController.add(alarmMan._history.buffer);
@@ -505,6 +574,27 @@ class AlarmMan {
     ]);
   }
 
+  /// Saves the configuration the editor just changed.
+  ///
+  /// **The refusal is synchronous, and deliberately.** The write itself is
+  /// fire-and-forget, as it has always been — but a body declared `async`
+  /// turns even a throw on its first line into a future error, which
+  /// [addAlarm] and its siblings do not await and no caller would ever see.
+  /// The one condition worth telling the caller about is checked before that
+  /// gap, so a headless process that reaches an editor gets a stack trace at
+  /// the call site rather than a quiet success.
+  void _saveConfig() {
+    final prefs = preferences;
+    if (prefs == null) {
+      throw UnsupportedError(
+          'This AlarmMan was built headless (AlarmMan.headless), so it has no '
+          'store to save through. addAlarm/removeAlarm/updateAlarm belong to '
+          "the alarm editor; a process without one must not edit the plant's "
+          'alarm configuration.');
+    }
+    _writeConfig(prefs);
+  }
+
   /// Turns the auto-navigation flag on or off and persists it.
   ///
   /// Assigns before saving so a caller that reads [config] back in the same
@@ -519,10 +609,8 @@ class AlarmMan {
     _saveConfig();
   }
 
-  void _saveConfig() async {
-    await preferences.setString(
-        'alarm_man_config', jsonEncode(config.toJson()));
-  }
+  Future<void> _writeConfig(Preferences prefs) =>
+      prefs.setString('alarm_man_config', jsonEncode(config.toJson()));
 
   void _removeActiveAlarm(AlarmActive alarm) {
     alarm.notification.active = false;
@@ -562,8 +650,8 @@ class AlarmMan {
     //       : const Value.absent(),
     // ));
 
-    if (preferences.database == null) return;
-    final db = preferences.database!.db;
+    if (database == null) return;
+    final db = database!.db;
 
     // Use custom SQL with proper timestamp casting for PostgreSQL
     await db.customInsert(r'''
@@ -596,9 +684,9 @@ class AlarmMan {
     DateTime? from,
     DateTime? to,
   }) async {
-    if (preferences.database == null) return [];
+    if (database == null) return [];
 
-    final db = preferences.database!.db;
+    final db = database!.db;
 
     final query = db.select(db.alarmHistory);
     if (from != null || to != null) {

@@ -6,9 +6,26 @@ import 'dart:math';
 /// `/etc/centroid/station.conf`, then `/home/centroid/.env`, then compose
 /// interpolation, then a shell inside a privileged container. Escaping
 /// correctly at four layers is not worth attempting, so the charset is
-/// restricted here instead — the same restriction the shell installer enforces.
-const String allowedPasswordChars = r'A-Za-z0-9._@%+:~/-';
-final RegExp _passwordShape = RegExp('^[$allowedPasswordChars]+\$');
+/// restricted here instead — the same restriction the shell installer enforces
+/// in `password_ok`, and the two must agree character for character.
+///
+/// This is a DENY list. It began as an allow list, which banned every symbol
+/// nobody had thought about — `#` among them, which an operator reasonably
+/// wants in a password and which is safe at all four layers: compose's dotenv
+/// only treats `#` as a comment when whitespace precedes it, and whitespace is
+/// refused below. What remains refused is the much shorter set that turns a
+/// quoting slip into executed code or a silently truncated value.
+const String hazardousPasswordChars = '"\'`\$\\;&|<>()';
+
+/// Printable ASCII, which excludes space, tab, control characters and
+/// everything non-ASCII — `chpasswd` and a container's shell do not agree
+/// about the last of those.
+final RegExp _printableAscii = RegExp(r'^[\x21-\x7E]+$');
+
+/// Human-readable form of the rule, shown under the field. Phrased as what is
+/// refused because the permitted set is now most of the keyboard.
+const String passwordRule =
+    'No spaces, and none of:  " \' ` \$ \\ ; & | < > ( )';
 
 const int minPasswordLength = 8;
 
@@ -29,11 +46,21 @@ String? validatePassword(String? value) {
   final v = value ?? '';
   if (v.isEmpty) return 'Required';
   if (v.length < minPasswordLength) return 'At least $minPasswordLength characters';
-  if (!_passwordShape.hasMatch(v)) {
-    return 'Use letters, digits and . _ @ % + : ~ / - only';
+  if (!_printableAscii.hasMatch(v)) {
+    return 'No spaces or accented characters';
+  }
+  for (final c in hazardousPasswordChars.split('')) {
+    if (v.contains(c)) return 'Cannot contain  $c  — $passwordRule';
   }
   return null;
 }
+
+/// Centroid's obfuscator, which is what a station's `wg-obfuscator.conf` points
+/// its `target` at. The WireGuard server itself is `wireguard-1.centroid.is`,
+/// but a station never addresses it directly: the client obfuscator listens on
+/// loopback, `wg0.conf`'s Endpoint is `127.0.0.1`, and this is the only address
+/// that goes over the wire. Two hosts, one field, and it is this one.
+const String defaultVpnEndpoint = 'wireguard-obf.centroid.is:13256';
 
 /// Every VPN field is required once the operator has chosen to configure one:
 /// a half-filled `wg0.conf` is worse than none, because the station comes up
@@ -104,7 +131,17 @@ class Answers {
   // Remote access. All empty means the station installs without VPN access,
   // which firstboot reports loudly rather than silently.
   bool vpnWanted = false;
-  String vpnEndpoint = '';
+
+  /// Prefilled, unlike the two below it.
+  ///
+  /// This field is the obfuscator's `target`, not the WireGuard server's
+  /// endpoint — the app always configures the obfuscator (the key is a
+  /// required field), so `wg` talks to `127.0.0.1` and the only address that
+  /// leaves the machine is this one. Centroid runs exactly one, and typing
+  /// it on a touchscreen is a transcription error waiting to happen. It is a
+  /// default, not a constant: the field stays editable for a site with its
+  /// own server.
+  String vpnEndpoint = defaultVpnEndpoint;
   String vpnObfuscatorKey = '';
   String vpnServerPublicKey = '';
   String vpnAddress = '';

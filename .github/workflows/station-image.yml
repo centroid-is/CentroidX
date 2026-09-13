@@ -22,9 +22,29 @@ on:
       gpu:
         type: string
         default: intel
+      channel:
+        # Which published tag the baked compose file points at: 'prerelease'
+        # (centroid-hmi:latest-release) or 'stable' (*:stable). tag.yml passes
+        # stable; main-prerelease.yml takes this default.
+        #
+        # The default is NOT the compose file's own :latest, which is a DEBUG
+        # Flutter build (centroid-hmi.yml:213) -- every station built before
+        # this ran one. See os/Makefile's CHANNEL.
+        type: string
+        default: prerelease
       preload:
+        # true, so every released stick installs with no uplink at all. A
+        # station pulling ~1.9GB of containers on its first boot cannot be
+        # commissioned on a plant with no internet, which is the normal case,
+        # and the operator has no way to tell a slow pull from a hung one.
+        # Costs ~2GB on the stick (16GB, not 8 -- see os/Makefile's USBSIZE)
+        # and the pull time moves from the panel into this runner.
+        #
+        # pull_request builds are unaffected: `inputs` is null there, so the
+        # `inputs.preload || 'false'` below still resolves to false and a
+        # recipe change is still checked in ~the same time as before.
         type: boolean
-        default: false
+        default: true
   pull_request:
     # Duplicated rather than shared with a YAML anchor: GitHub Actions does not
     # officially support anchors in workflow files.
@@ -48,6 +68,11 @@ on:
         type: choice
         options: [ intel, amd ]
         default: intel
+      channel:
+        description: Which image tag the baked compose points at
+        type: choice
+        options: [ prerelease, stable ]
+        default: prerelease
       release_tag:
         description: "Publish a release at this tag (e.g. station-v2026.09.12); blank = artifacts only"
         default: ''
@@ -364,10 +389,67 @@ jobs:
           make image \
             GPU=${{ inputs.gpu || 'intel' }} \
             PRELOAD=${{ inputs.preload || 'false' }} \
+            CHANNEL=${{ inputs.channel || 'prerelease' }} \
             DOCKER_TTY=
 
+      # The compose file goes into the STATION image, not the USB -- the USB only
+      # carries the station image as a gzipped payload. The first version of
+      # this asserted against the mounted USB, where the file does not exist:
+      # every check failed except "is not the debug :latest build", which passed
+      # VACUOUSLY because a grep on a missing file also returns non-zero. Hence
+      # the explicit existence check first, and hence checking the absence of
+      # :latest as well as the presence of the right tag -- a retag that
+      # silently did nothing would still satisfy a test that only looked for the
+      # image name.
+      #
+      # This is the file debos overlays into the rootfs one step earlier, so it
+      # proves the retag, not the copy. The copy is a debos overlay action that
+      # fails the build outright on a missing source.
+      - name: The baked compose points at the right image tags
+        run: |
+          set +e
+          set -uo pipefail
+          C=overlays/generated/home/centroid/docker-compose.yml
+          fail=0
+          ck() {
+            if [ "$2" = 0 ]; then printf '  ok    %s\n' "$1"
+            else printf '  FAIL  %s\n' "$1"; printf '::error::%s\n' "$1"; fail=1; fi
+          }
+          t() { local d="$1"; shift; "$@" >/dev/null 2>&1; ck "$d" $?; }
+
+          t "compose was staged"                       test -f "$C"
+          if [ ! -f "$C" ]; then exit 1; fi
+          # centroid-hmi:latest is a DEBUG Flutter build (centroid-hmi.yml:213),
+          # and every station built before CHANNEL ran one. Invisible from the
+          # outside until somebody notices the panel is slow.
+          if grep -qE 'centroid-hmi:latest[[:space:]]*$' "$C"; then
+            ck "HMI is not the debug :latest build" 1
+          else
+            ck "HMI is not the debug :latest build" 0
+          fi
+          if [ "${{ inputs.channel || 'prerelease' }}" = stable ]; then
+            t "stable: HMI is :stable"                 grep -q 'centroid-hmi:stable' "$C"
+            t "stable: backend is :stable"             grep -q 'centroid-backend:stable' "$C"
+            t "stable: profiler is :stable"            grep -q 'hmi-profiler:stable' "$C"
+          else
+            t "prerelease: HMI is :latest-release"     grep -q 'centroid-hmi:latest-release' "$C"
+          fi
+          # weston/novnc/docker-update are built in other repos and publish only
+          # :latest. A blanket retag would name tags that do not exist, and the
+          # station would find out on a first boot that may have no network.
+          t "weston left at :latest"                   grep -q 'weston:latest' "$C"
+          t "novnc left at :latest"                    grep -q 'novnc:latest' "$C"
+          t "docker-update left at :latest"            grep -q 'docker-update:latest' "$C"
+
+          echo "--- CentroidX images in the baked compose ---"
+          grep -E '^\s+image: ghcr.io/centroid-is/' "$C" | awk '{print "  " $2}' | sort -u
+          exit $fail
+
       - name: Build installer USB
-        run: make usb DOCKER_TTY=
+        # PRELOAD is passed again, even though this target does not preload
+        # anything: os/Makefile derives USBSIZE from it, and a preloaded
+        # payload does not fit the 4GB default.
+        run: make usb DOCKER_TTY= PRELOAD=${{ inputs.preload || 'false' }}
 
       # The first green build shipped a text-only installer: the bundle was
       # present but not executable, so installer-setup.sh took the fallback
@@ -425,6 +507,16 @@ jobs:
           G="$mnt/etc/systemd/system/centroidx-gui.service"
           t "handover on failure"                               grep -q "^OnFailure=centroidx-installer.service" "$G"
           t "handover on clean exit too"                        grep -q "^OnSuccess=centroidx-installer.service" "$G"
+          # Networking. Asserted rather than assumed because it is three
+          # separate things that each look fine alone: the USB had no network
+          # stack at all until now, and an installer that reports "no network"
+          # on every panel would be indistinguishable from one whose DHCP
+          # simply had not landed yet.
+          t "DHCP config shipped"                               test -f "$mnt/etc/systemd/network/10-dhcp.network"
+          t "networkd enabled"                                  test -L "$W/systemd-networkd.service"
+          # Path not hardcoded: iproute2 has moved between /bin, /sbin and
+          # /usr/sbin across Debian releases and the merged-usr transition.
+          t "ip(8) present, so the text installer can report an address"  sh -c "test -x '$mnt/usr/sbin/ip' -o -x '$mnt/sbin/ip' -o -x '$mnt/usr/bin/ip'"
 
           if [ "$fail" != 0 ]; then
             echo "--- enabled units ---";        ls -la "$W" 2>&1 | head -20

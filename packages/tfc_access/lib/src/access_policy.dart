@@ -165,7 +165,11 @@ const List<PrefAccessRule> kPrefAccessRules = <PrefAccessRule>[
 
   // ---------------------------------------------------------------------
   // prefix -> configure.
-  // One preference key per stored page-editor image (`image_store.dart:94`).
+  // One preference key per stored page-editor image. Nothing writes one any
+  // more — v1.2 plan 04-09 moved the blobs onto `kind='page_image'` rows,
+  // checked under `page_editor_data` and so at this same group — but the
+  // rule stays for the rows already on a plant's disk, which the store's
+  // preferences editor can still open and the 04-11 migration still reads.
   (kind: PrefRuleKind.prefix, match: 'page_editor_image:', group: AccessGroup.configure),
   // Forward-looking only. **No key in the tree matches `page.`, `alarm.` or
   // `keymap.` today** — the real names use underscores, which is the defect

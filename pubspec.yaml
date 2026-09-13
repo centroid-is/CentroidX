@@ -29,6 +29,7 @@ dependencies:
   open62541: ^1.5.7+3
   postgres: ^3.4.5
   intl: ^0.20.2
+  crypto: ^3.0.0
   collection: ^1.18.0
   community_charts_flutter: ^1.0.4
   meta: ^1.15.0
@@ -36,6 +37,15 @@ dependencies:
   drift_postgres: ^1.3.1
   drift_flutter: ^0.2.4
   path_provider: ^2.1.5
+  # Declared, not transitive: `lib/core/device_local_store.dart` constructs
+  # these two platform classes directly rather than going through
+  # `package:path_provider`, because that is what `shared_preferences_linux`
+  # and `shared_preferences_windows` do themselves — and because
+  # flutter-elinux only registers plugins declaring an `elinux:` platform key,
+  # which neither of them does. Both were already resolved transitively; this
+  # changes no version, it makes the import legal.
+  path_provider_linux: ^2.2.2
+  path_provider_windows: ^2.3.0
   path: ^1.9.0
   basic_utils: ^5.7.0
   amplify_secure_storage_dart: ^0.5.6

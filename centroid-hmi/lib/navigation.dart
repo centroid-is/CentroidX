@@ -101,6 +101,7 @@ List<MenuItem> buildTopLevelMenuItems({
     MenuItem(label: 'Server Config', path: '/advanced/server-config', icon: FontAwesomeIcons.server.data),
     MenuItem(label: 'Key Repository', path: '/advanced/key-repository', icon: FontAwesomeIcons.key.data),
     MenuItem(label: 'Audit Trail', path: '/advanced/audit-trail', icon: Icons.receipt_long),
+    MenuItem(label: 'Config History', path: '/advanced/config-history', icon: Icons.history_edu),
     MenuItem(label: 'Access', path: '/advanced/access', icon: Icons.manage_accounts),
     if (kKnowledgeEnabled)
       MenuItem(label: 'Knowledge Base', path: '/advanced/knowledge-base', icon: Icons.library_books),

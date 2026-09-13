@@ -56,8 +56,57 @@ make dry-run            # validate all three recipes (works on macOS)
 
 ```bash
 make image GPU=amd      # AMD station instead of Intel
-make preload            # bake the container images in, for an offline install
+make image PRELOAD=true # bake the container images in, for an offline install
 ```
+
+### Which images a station runs
+
+The compose file at the repo root names `:latest` for every CentroidX image,
+which is right for a developer running the stack on a laptop and wrong for a
+station: **`centroid-hmi:latest` is a debug Flutter build.**
+`.github/workflows/centroid-hmi.yml` says so directly — `latest` is built
+`--debug`, and `latest-release` exists precisely because "`latest-release` is
+what stations pull". Every station installed before this change ran a debug
+engine.
+
+`make generated` therefore retags the copy it bakes, driven by `CHANNEL`:
+
+| `CHANNEL` | centroid-hmi | centroid-backend | hmi-profiler | who passes it |
+|---|---|---|---|---|
+| `prerelease` (default) | `latest-release` | `latest` | `latest` | main-prerelease.yml |
+| `stable` | `stable` | `stable` | `stable` | tag.yml |
+
+`weston`, `novnc` and `docker-update` are built in other repos and publish only
+`:latest`, so they are deliberately left alone — a blanket
+`s/:latest/:stable/` would bake a reference to a tag that does not exist, and
+the station would fail to pull on a first boot that may have no network. The
+retag is per image for that reason, and CI asserts both the rewrite and the
+absence of `centroid-hmi:latest` in the baked file.
+
+The embedder extracted from `centroid-hmi:latest` for the *setup app* (the
+`build` job) is a separate artifact for a separate binary and is intentionally
+unchanged.
+
+### Offline installs
+
+Every **released** stick is built with `PRELOAD=true` (it is the `workflow_call`
+default in `station-image.yml`, which is what `main-prerelease.yml` and
+`tag.yml` take). The ~1.9GB of container images the compose file names are
+pulled in CI, saved as zstd tarballs inside the station image, and loaded by
+`centroidx-firstboot` on first boot, which then deletes them. A plant with no
+uplink can be commissioned; nothing is downloaded at install time.
+
+The cost is on the stick. `USBSIZE` is derived from `PRELOAD` in the Makefile —
+4GB without, 8GB with — and an 8GB image does **not** fit a nominal 8GB USB
+key, so **a preloaded installer is a 16GB-stick product**. Both images are
+sparse and written with `bmaptool`, so the declared size costs nothing: only
+the ~4.3GB actually present is copied.
+
+PR builds stay `PRELOAD=false`. They are checking the recipe, not shipping a
+stick, and the pull would double the job. `make preload` also drops each image
+from the local daemon once it has been saved, because holding it twice does not
+fit beside debos's scratch on a runner; pass `PRELOAD_KEEP=true` when iterating
+locally to avoid re-pulling.
 
 `docker-compose.yml` is baked in from one directory up, at whatever commit the
 image is built from — there is no ref to pin and no copy to go stale, which is
@@ -91,10 +140,24 @@ Disks never include the USB it booted from.
 | VNC password | the remote screen |
 | database password | timescaledb |
 | keyboard layout | which of Icelandic, English and Polish the panel, VNC and the on-screen keyboard start in (`KEYBOARD_DEFAULT`); the other two stay one Alt+Shift or globe key away |
-| VPN endpoint, keys, addresses | WireGuard over wg-obfuscator; skippable |
+| VPN endpoint, keys, addresses | WireGuard over wg-obfuscator; skippable. The endpoint is prefilled with `wireguard-obf.centroid.is:13256` — the *obfuscator's* address, which is the only one that leaves the station: `wg0.conf`'s Endpoint is always `127.0.0.1`, and the WireGuard server itself (`wireguard-1.centroid.is`) is reached from the far side of the obfuscator |
 
 Then it writes the image, drops the answers in `/etc/centroid/station.conf`, and
 reboots.
+
+Every screen shows the addresses the installer currently holds, in the header
+band beside the wordmark. The USB takes a DHCP lease on any wired interface
+(`systemd-networkd`, `overlays/installer/etc/systemd/network/10-dhcp.network`)
+and does nothing else with it — the station's own image runs NetworkManager and
+has a settings page. It is there because a panel on DHCP is otherwise a machine
+whose address only the plant's router knows.
+
+If the install fails after the image has been written, the target is wiped on
+the way out. A disk carrying the image but no `station.conf` is the worst
+outcome available: it boots, `centroidx-firstboot` finds no answers, mints
+secrets nobody knows, and starts pulling containers — a station that looks
+installed and is not. Better to stop at the firmware and run the installer
+again.
 
 The WireGuard keypair is generated **on the station being installed**, so no
 private key ever travels on a USB stick; the public half is shown at the end to
@@ -106,9 +169,18 @@ filling in the VPN screen overwrites a file placed that way.
 To install without touching the screen, put a `station.env` on the USB's FAT
 partition at `centroidx/station.env` — the same `KEY=value` file the UI writes.
 Every value is validated the same way either way: the station name must be a
-DNS label, passwords are restricted to `[A-Za-z0-9._@%+:~/-]`, the VPN block
-is all-or-nothing, and `KEYBOARD_DEFAULT` is optional and one of `is`, `en`,
-`pl` (default `is`).
+DNS label, the VPN block is all-or-nothing, and `KEYBOARD_DEFAULT` is optional
+and one of `is`, `en`, `pl` (default `is`).
+
+Passwords are restricted by a deny list rather than an allow list: printable
+ASCII, no spaces, and none of ``" ' ` $ \ ; & | < > ( )``. Those are the
+characters that turn a quoting slip into executed code or a truncated value
+somewhere on the path from `station.conf` through `.env` and compose
+interpolation to a shell inside a container. Everything else — `#` included,
+which the original allow list refused for no reason that survived inspection —
+is allowed. `password_ok` in `centroidx-install` and `validatePassword` in
+`os/app/lib/answers.dart` implement the same rule and are tested against the
+same cases.
 
 If the graphical installer cannot start — no GPU, a compositor that will not
 take the DRM device — the unit hands over to a text installer on tty1 that asks

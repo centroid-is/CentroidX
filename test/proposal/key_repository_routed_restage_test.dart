@@ -30,10 +30,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:tfc_dart/core/preferences.dart';
+import 'package:tfc_dart/core/access/guarded_config_store.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import 'package:tfc/pages/key_repository.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/config_store.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/proposal_state.dart';
 import 'package:tfc/providers/state_man.dart';
@@ -63,12 +65,14 @@ PendingProposal _proposal(int id, String key) => PendingProposal(
 
 /// The page, its container, and every [Preferences] the provider has built.
 class _Rig {
-  _Rig(this.tester, this.container, this.proposals, this.prefs, this.routed);
+  _Rig(this.tester, this.container, this.proposals, this.prefs, this.store,
+      this.routed);
 
   final WidgetTester tester;
   final ProviderContainer container;
   final ProposalStateNotifier proposals;
   final List<Preferences> prefs;
+  final GuardedConfigStore store;
   final String? routed;
 
   Future<void> Function()? get commit => container.read(proposalCommitProvider);
@@ -101,11 +105,8 @@ class _Rig {
     await pumpPage();
   }
 
-  Future<Iterable<String>> get savedKeys async {
-    final json = await prefs.last.getString('key_mappings');
-    if (json == null) return const [];
-    return KeyMappings.fromJson(jsonDecode(json)).nodes.keys;
-  }
+  /// The mappings as stored — `config_item` rows since plan 02-06.
+  Iterable<String> get savedKeys => store.inner.keyMappings.nodes.keys;
 }
 
 /// Pumps the key repository with the proposal pending in state *and* its JSON
@@ -120,6 +121,7 @@ Future<_Rig> _pump(
   if (pending) proposals.addProposal(proposal);
 
   final built = <Preferences>[];
+  final store = await createTestConfigStore(session: kConfiguringTestSession);
   final container = ProviderContainer(overrides: [
     preferencesProvider.overrideWith((ref) async {
       final prefs = await createTestPreferences(
@@ -129,6 +131,7 @@ Future<_Rig> _pump(
       built.add(prefs);
       return prefs;
     }),
+    configStoreProvider.overrideWith((ref) async => store),
     databaseProvider.overrideWith((ref) async => null),
     stateManProvider
         .overrideWith((ref) => throw StateError('No StateMan in tests')),
@@ -136,7 +139,7 @@ Future<_Rig> _pump(
   ]);
   addTearDown(container.dispose);
 
-  final rig = _Rig(tester, container, proposals, built,
+  final rig = _Rig(tester, container, proposals, built, store,
       routed ? proposal.proposalJson : null);
   await rig.pumpPage();
   return rig;

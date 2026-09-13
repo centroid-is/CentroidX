@@ -6,6 +6,17 @@ set -euo pipefail
 echo "centroidx-installer" > /etc/hostname
 printf '127.0.0.1\tlocalhost\n127.0.1.1\tcentroidx-installer\n' > /etc/hosts
 
+# Networking, so the installer can say what address it is on. networkd is part
+# of the systemd package and ships disabled on Debian; the .network file comes
+# from overlays/installer.
+#
+# NOT systemd-resolved: it has been its own binary package since Debian 12, so
+# `systemctl enable` on it would fail the build here, and nothing on the stick
+# resolves a name -- the installer writes a disk and reports an address. Add
+# the package first if that ever stops being true.
+systemctl enable systemd-networkd.service
+chmod 0644 /etc/systemd/network/10-dhcp.network
+
 # The graphical installer when there is an app to run, the text one otherwise.
 # centroidx-installer.service is deliberately NOT enabled when the GUI is: it is
 # reached through centroidx-gui.service's OnFailure, so a compositor that will

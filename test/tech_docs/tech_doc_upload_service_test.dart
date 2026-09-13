@@ -1,13 +1,21 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/material.dart' show Icons;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_mcp_server/tfc_mcp_server.dart' show ParsedSection;
 
 import '../../packages/tfc_mcp_server/test/helpers/mock_tech_doc_index.dart';
 
+import 'package:tfc/core/config/page_codec.dart' show pageItems;
+import 'package:tfc/models/menu_item.dart';
+import 'package:tfc/page_creator/assets/led.dart';
+import 'package:tfc/page_creator/page.dart' show AssetPage;
 import 'package:tfc/tech_docs/section_detector.dart';
 import 'package:tfc/tech_docs/tech_doc_upload_service.dart';
+import '../helpers/test_helpers.dart'
+    show createTestConfigStore, kConfiguringTestSession;
 
 /// Stub [SectionDetector] that returns a fixed section list.
 class _StubSectionDetector extends SectionDetector {
@@ -185,54 +193,51 @@ void main() {
     });
 
     test(
-        'deleteAndCleanAssets scans page_editor_data, clears techDocId from linked asset JSON, calls deleteDocument',
+        'deleteAndCleanAssets strips techDocId from the shared layout rows, '
+        'then deletes the document',
         () async {
       final docId = await service.uploadDocument(
         pdfBytes: smallPdfBytes,
         name: 'linked-doc.pdf',
       );
 
-      // Simulate page_editor_data with an asset linking to this doc
-      final pageData = {
-        'page1': {
-          'title': 'Test Page',
-          'assets': {
-            'asset1': {
-              'type': 'Pump',
-              'key': 'pump1',
-              'techDocId': docId,
-            },
-            'asset2': {
-              'type': 'Motor',
-              'key': 'motor1',
-            },
-          },
-        },
-      };
-
-      final prefs = _MockPrefsStore();
-      prefs.data['page_editor_data'] = jsonEncode(pageData);
-
-      await service.deleteAndCleanAssets(
-        docId: docId,
-        prefsReader: prefs,
+      // A real layout: two LEDs on one page, one of them linked to the
+      // document. Built through the model rather than as a JSON string —
+      // `AssetPage` encodes `assets` as a List, and the map-shaped fixture
+      // this replaces is why the cleanup never removed an id (D-4).
+      final linked = LEDConfig(key: 'CN04.Run')
+        ..id = 'led-linked'
+        ..techDocId = docId;
+      final spare = LEDConfig(key: 'CN05.Run')..id = 'led-spare';
+      final store = await createTestConfigStore(
+          session: kConfiguringTestSession);
+      await store.inner.writeItems(
+        kinds: const {ConfigKind.page, ConfigKind.asset},
+        wanted: pageItems({
+          '/': AssetPage(
+            menuItem: const MenuItem(label: 'Home', icon: Icons.home, path: '/'),
+            assets: [linked, spare],
+            mirroringDisabled: false,
+          )..id = 'page-home',
+        }),
+        actionId: 'seed',
+        who: 'test',
+        roleName: 'system',
       );
 
-      // Verify document was deleted from index
-      final docs = await mockIndex.getSummary();
-      expect(docs, isEmpty);
+      await service.deleteAndCleanAssets(docId: docId, configStore: store);
 
-      // Verify techDocId was cleared from the asset JSON
-      final updatedData =
-          jsonDecode(prefs.data['page_editor_data']!) as Map<String, dynamic>;
-      final page = updatedData['page1'] as Map<String, dynamic>;
-      final assets = page['assets'] as Map<String, dynamic>;
-      final asset1 = assets['asset1'] as Map<String, dynamic>;
-      expect(asset1.containsKey('techDocId'), isFalse);
+      // The document is gone from the index.
+      expect(await mockIndex.getSummary(), isEmpty);
 
-      // asset2 should be unchanged (had no techDocId)
-      final asset2 = assets['asset2'] as Map<String, dynamic>;
-      expect(asset2['key'], equals('motor1'));
+      // And the link is gone from the row that carried it, while the asset
+      // that never referenced it is untouched.
+      final assets = {
+        for (final item in store.inner.itemsOf(const {ConfigKind.asset}))
+          item.id: item,
+      };
+      expect(assets['led-linked']!.decode()['techDocId'], isNull);
+      expect(assets['led-spare']!.decode()['key'], 'CN05.Run');
     });
   });
 }
@@ -251,15 +256,3 @@ class _TrackingDetector extends SectionDetector {
   }
 }
 
-/// Simple in-memory preferences store for testing deleteAndCleanAssets.
-class _MockPrefsStore implements PrefsReader {
-  final Map<String, String> data = {};
-
-  @override
-  Future<String?> getString(String key) async => data[key];
-
-  @override
-  Future<void> setString(String key, String value) async {
-    data[key] = value;
-  }
-}

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -133,7 +135,8 @@ class _SetupFlowState extends State<SetupFlow> {
         child: SetupStep(
           title: 'Station',
           subtitle: 'Generate fills a field with a strong value and shows it '
-              'once — use it for anything you do not need to recite.',
+              'once — use it for anything you do not need to recite. '
+              '$passwordRule',
           body: [
             Field(
               label: 'Station name',
@@ -202,20 +205,22 @@ class _SetupFlowState extends State<SetupFlow> {
           body: [
             Field(
               label: 'VPN server address and port',
-              helper: 'e.g. vpn.example.is:13255',
+              helper: "Centroid's obfuscator; change it only for a site that "
+                  'runs its own',
               validator: validateRequired,
               initial: _answers.vpnEndpoint,
               onChanged: (v) => _answers.vpnEndpoint = v.trim(),
             ),
             Field(
               label: 'Obfuscation key',
-              helper: 'Shared with the server',
+              helper: 'Shared with the server — not this station\'s own key',
               validator: validateRequired,
               initial: _answers.vpnObfuscatorKey,
               onChanged: (v) => _answers.vpnObfuscatorKey = v.trim(),
             ),
             Field(
               label: "Server's WireGuard public key",
+              helper: 'The 44-character key of the server the tunnel ends at',
               validator: validateRequired,
               initial: _answers.vpnServerPublicKey,
               onChanged: (v) => _answers.vpnServerPublicKey = v.trim(),
@@ -378,11 +383,96 @@ class _Brand extends StatelessWidget {
                   headingForeground, BlendMode.srcIn),
             ),
             const Spacer(),
+            const AddressBar(),
+            const SizedBox(width: 20),
             Text('Station installer',
                 style: Theme.of(context).textTheme.bodyMedium),
           ],
         ),
       );
+}
+
+/// The addresses this machine currently holds, in the header band.
+///
+/// Read-only, deliberately: nothing here configures networking — the station's
+/// own image runs NetworkManager and has a settings page for it. The panel is
+/// almost always on DHCP, and the lease it took is invisible to whoever is
+/// standing in front of it and needed by whoever is not.
+///
+/// Same shape as the HMI's About page header (`lib/pages/about_linux.dart`) —
+/// a globe, then the addresses joined by a middle dot — rather than the same
+/// code: that widget reads NetworkManager over D-Bus and neither is on the USB.
+///
+/// Polled rather than read once: the app starts within a couple of seconds of
+/// boot and a DHCP lease usually is not there yet.
+@visibleForTesting
+class AddressBar extends StatefulWidget {
+  const AddressBar({super.key, this.probe, this.interval = const Duration(seconds: 5)});
+
+  /// Overridden by tests; the default asks this machine.
+  final Future<List<String>> Function()? probe;
+  final Duration interval;
+
+  @override
+  State<AddressBar> createState() => _AddressBarState();
+}
+
+class _AddressBarState extends State<AddressBar> {
+  List<String> _addresses = const [];
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    _timer = Timer.periodic(widget.interval, (_) => _refresh());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    final a = await (widget.probe ?? hostAddresses)();
+    if (!mounted) return;
+    // Comparing before setState: this runs every few seconds for the whole
+    // install, and the answer almost never changes.
+    if (a.length == _addresses.length &&
+        List.generate(a.length, (i) => a[i] == _addresses[i]).every((e) => e)) {
+      return;
+    }
+    setState(() => _addresses = a);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context);
+    // Said rather than left blank: "no network" is an answer, and on a panel
+    // with an unplugged cable it is the one worth seeing.
+    final text = _addresses.isEmpty ? 'no network' : _addresses.join('  ·  ');
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.public,
+            size: 16,
+            color: _addresses.isEmpty
+                ? SolarizedColors.base01
+                : t.textTheme.bodyMedium?.color),
+        const SizedBox(width: 8),
+        Text(
+          text,
+          style: t.textTheme.bodyMedium?.copyWith(
+            fontFamily: 'monospace',
+            color: _addresses.isEmpty
+                ? SolarizedColors.base01
+                : t.textTheme.bodyMedium?.color,
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 /// Streams the shell installer's output. Everything destructive lives there.
@@ -434,6 +524,38 @@ class _ProgressStepState extends State<ProgressStep> {
           : (r.ok ? 'Installed' : 'Installation failed'),
       subtitle: r == null ? 'Do not remove the USB key or power off.' : null,
       body: [
+        if (r != null && !r.ok) ...[
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: SolarizedColors.base02,
+              border: Border.all(color: t.colorScheme.error, width: 2),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('The disk was not installed.',
+                    style: t.textTheme.titleMedium
+                        ?.copyWith(color: t.colorScheme.error)),
+                const SizedBox(height: 12),
+                // A partly-written target is erased on the way out
+                // (centroidx-install's disarm_target), so the machine stops at
+                // the firmware rather than booting something half made. Saying
+                // so here is the difference between "try again" and "wait, is
+                // it broken now?" — deliberately not promising anything about
+                // a disk the installer never got as far as writing.
+                Text(
+                  'No half-installed station was left behind: if the image had '
+                  'already been written, the disk was erased again on the way '
+                  'out. Read the log below, leave the USB key in, and reboot '
+                  'to try again.',
+                  style: t.textTheme.bodyLarge,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+        ],
         if (r != null && r.ok && r.publicKey != null) ...[
           Container(
             padding: const EdgeInsets.all(20),
@@ -469,6 +591,13 @@ class _ProgressStepState extends State<ProgressStep> {
           ),
         ),
       ],
+      // A dead button labelled "Failed" was the whole action row on a failed
+      // install: it restated the title, did nothing, and left the operator
+      // with no way off the screen but the power switch. Both outcomes now
+      // offer the thing you actually do next.
+      secondary: r == null || r.ok
+          ? null
+          : OutlinedButton(onPressed: powerOff, child: const Text('Power off')),
       primary: r == null
           ? const SizedBox(
               width: 200,
@@ -476,8 +605,8 @@ class _ProgressStepState extends State<ProgressStep> {
               child: Center(child: CircularProgressIndicator()),
             )
           : FilledButton(
-              onPressed: r.ok ? reboot : null,
-              child: Text(r.ok ? 'Remove USB and reboot' : 'Failed'),
+              onPressed: reboot,
+              child: Text(r.ok ? 'Remove USB and reboot' : 'Reboot'),
             ),
     );
   }

@@ -3,6 +3,7 @@ import 'package:tfc_dart/tfc_dart_core.dart';
 import 'package:tfc_mcp_server/src/database/server_database.dart';
 import 'package:tfc_mcp_server/src/services/report_service.dart';
 
+import '../helpers/config_rows.dart';
 import '../helpers/test_database.dart';
 
 void main() {
@@ -16,6 +17,7 @@ void main() {
 
   setUp(() async {
     db = createTestDatabase();
+    await createConfigItemTable(db);
     await db.customStatement('SELECT 1');
     service = ReportService(db, clock: () => now);
   });

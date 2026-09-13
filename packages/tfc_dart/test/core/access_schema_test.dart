@@ -84,10 +84,15 @@ void main() {
     // `access_key_binding` (`access_template_table_test.dart`) and
     // `app_user.station_account` (`station_account_column_test.dart`) all
     // arrive in the same v6 arm this suite covers.
-    test('schema version is 7', () async {
+    test('schema version is at least 6', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 9);
+      // At least, not exactly. What this suite cares about is that the access
+      // tables arrived in the `from < 6` arm and that the arm therefore runs
+      // for anything older; the current number is owned by
+      // `database_migration_test.dart`, which is where a bump is asserted
+      // rather than merely tolerated.
+      expect(db.schemaVersion, greaterThanOrEqualTo(6));
     });
 
     test('seeds exactly four roles', () async {
@@ -297,10 +302,11 @@ void main() {
 
       final row =
           await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 9,
+      expect(row.read<int>('user_version'), db.schemaVersion,
           reason: 'a v5 database opens straight to the current version — '
-              'onUpgrade(5, 9) runs the access branch and then the '
-              'page-whitelist branch');
+              'onUpgrade(5, current) runs the access branch, which is the '
+              'whole of the milestone this suite covers, and every arm added '
+              'since');
     });
   });
 
@@ -546,16 +552,65 @@ void main() {
               'spelled — it is not "sees every page"');
     });
 
-    test('carries on to the current schema version', () async {
+    test('leaves schema version at the current one', () async {
       await makeV6Database();
       final db = await reopen();
       addTearDown(() => db.close());
 
       final row = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 9);
+      // The current version, not 7: the later arms (through the config
+      // store's v10–v12) run in the same open, and the number they leave
+      // behind is theirs to own.
+      expect(row.read<int>('user_version'), db.schemaVersion);
     });
 
-    test('a v5 database upgrades in one open, with both columns', () async {
+    test('a database stamped 7 or 8 by a pre-merge build of the config '
+        'branch — config tables present, main\'s columns absent — heals',
+        () async {
+      // The renumbering: the relational-config branch shipped its tables as
+      // v7 and its trigger as v8 before main took those numbers for
+      // allowed_pages, inactivity_timeout_minutes and additional_roles. A
+      // database such a build stamped opens at 7 or 8 with none of the
+      // three columns, and a version-guarded arm would skip every one of
+      // them forever. The arms probe for their columns instead.
+      for (final stamped in [7, 8]) {
+        final db = AppDatabase.forTest(
+          DatabaseConfig(),
+          NativeDatabase(dbFile, logStatements: false),
+        );
+        await db.customSelect('SELECT 1').getSingle();
+        await db.customStatement(
+            'ALTER TABLE app_role DROP COLUMN allowed_pages');
+        await db.customStatement(
+            'ALTER TABLE app_user DROP COLUMN allowed_pages');
+        await db.customStatement(
+            'ALTER TABLE app_user DROP COLUMN inactivity_timeout_minutes');
+        await db.customStatement(
+            'ALTER TABLE app_user DROP COLUMN additional_roles');
+        await db.customStatement('PRAGMA user_version = $stamped');
+        await db.close();
+
+        final upgraded = await reopen();
+        expect(await columnNames(upgraded, 'app_role'),
+            contains('allowed_pages'),
+            reason: 'stamped $stamped');
+        expect(
+            await columnNames(upgraded, 'app_user'),
+            containsAll([
+              'allowed_pages',
+              'inactivity_timeout_minutes',
+              'additional_roles',
+            ]),
+            reason: 'stamped $stamped');
+        final row =
+            await upgraded.customSelect('PRAGMA user_version').getSingle();
+        expect(row.read<int>('user_version'), upgraded.schemaVersion);
+        await upgraded.close();
+      }
+    });
+
+    test('a v5 database reaches the current version in one open, with both '
+        'columns', () async {
       // The `from < 6` arm creates the tables from the current definitions,
       // which already carry the column — so the `from < 7` arm must NOT try to
       // add it again. This is the case the `from >= 6` guard exists for; drop
@@ -580,7 +635,7 @@ void main() {
           contains('allowed_pages'));
       final row =
           await upgraded.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 9);
+      expect(row.read<int>('user_version'), upgraded.schemaVersion);
     });
   });
 
@@ -589,7 +644,7 @@ void main() {
   // the three ways it can already be there: never (a v7 database), from the v6
   // arm's createTable in the same open (a v5 database), and from a previous
   // run (the version rewound over a table that already has it).
-  group('v7 -> v8 upgrade', () {
+  group('the per-account inactivity timeout arm', () {
     late Directory tempDir;
     late File dbFile;
 
@@ -644,7 +699,7 @@ void main() {
 
       expect(await columnNames(db, 'app_user'),
           contains('inactivity_timeout_minutes'));
-      expect(await userVersion(db), 9);
+      expect(await userVersion(db), db.schemaVersion);
     });
 
     test('a carried-over account upgrades to NULL — the default, not "never"',
@@ -670,12 +725,12 @@ void main() {
 
       expect(await columnNames(db, 'app_user'),
           contains('inactivity_timeout_minutes'));
-      expect(await userVersion(db), 9);
+      expect(await userVersion(db), db.schemaVersion);
     });
 
     test('a v5 database reaches the current version in one open', () async {
       // The v6 arm creates app_user from the current definition, which already
-      // carries the column; the v8 arm must see it and add nothing.
+      // carries the column; the timeout arm must see it and add nothing.
       final db = await reopen();
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
@@ -688,7 +743,7 @@ void main() {
 
       expect(await columnNames(upgraded, 'app_user'),
           contains('inactivity_timeout_minutes'));
-      expect(await userVersion(upgraded), 9);
+      expect(await userVersion(upgraded), upgraded.schemaVersion);
     });
 
     test('the Postgres arm adds the column idempotently', () {
@@ -759,7 +814,7 @@ void main() {
       addTearDown(() => db.close());
 
       expect(await columnNames(db, 'app_user'), contains('additional_roles'));
-      expect(await userVersion(db), 9);
+      expect(await userVersion(db), db.schemaVersion);
     });
 
     test('a carried-over account upgrades to NULL — one role, as it was',
@@ -785,10 +840,10 @@ void main() {
       addTearDown(() => db.close());
 
       expect(await columnNames(db, 'app_user'), contains('additional_roles'));
-      expect(await userVersion(db), 9);
+      expect(await userVersion(db), db.schemaVersion);
     });
 
-    test('a v5 database reaches v9 in one open', () async {
+    test('a v5 database reaches the current version in one open', () async {
       final db = await reopen();
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
@@ -801,7 +856,7 @@ void main() {
 
       expect(await columnNames(upgraded, 'app_user'),
           contains('additional_roles'));
-      expect(await userVersion(upgraded), 9);
+      expect(await userVersion(upgraded), upgraded.schemaVersion);
     });
 
     test('the Postgres arm adds the column idempotently', () {
@@ -811,6 +866,142 @@ void main() {
         contains('ALTER TABLE app_user ADD COLUMN IF NOT EXISTS '
             'additional_roles TEXT'),
       );
+    });
+  });
+
+  // `sort_order` on both identity tables — the Access screen's display order.
+  // There is no schema arm for it (another branch holds the next versions), so
+  // `beforeOpen` adds it, and the shapes that matter are a database at the
+  // current version that lacks the column, and one that already has it.
+  group('the sort_order columns (no schema arm)', () {
+    late Directory tempDir;
+    late File dbFile;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('tfc_sort_order_test');
+      dbFile = File('${tempDir.path}/app.sqlite');
+    });
+
+    tearDown(() {
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    Future<Set<String>> columnNames(GeneratedDatabase db, String table) async {
+      final rows = await db.customSelect('PRAGMA table_info($table)').get();
+      return rows.map((r) => r.read<String>('name')).toSet();
+    }
+
+    Future<AppDatabase> reopen() async {
+      final db = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      await db.customSelect('SELECT 1').getSingle();
+      return db;
+    }
+
+    Future<int> userVersion(GeneratedDatabase db) async =>
+        (await db.customSelect('PRAGMA user_version').getSingle())
+            .read<int>('user_version');
+
+    /// Builds a current-version database with an account in it, then takes
+    /// `sort_order` off [tables] — what a station running a build from before
+    /// the column looks like. Returns the `user_version` it was left at.
+    Future<int> makeDatabaseWithoutColumn({
+      List<String> tables = const ['app_role', 'app_user'],
+      bool deleteAnonymous = false,
+    }) async {
+      final db = await reopen();
+      await db.customStatement(
+        "INSERT INTO app_user "
+        "(username, role_name, password_hash, salt, created_at, station_account) "
+        "VALUES ('jon', 'Engineering', 'hash', 'salt', '2026-09-01T00:00:00Z', 0)",
+      );
+      if (deleteAnonymous) {
+        await db.customStatement(
+            "DELETE FROM app_user WHERE username = 'anonymous'");
+      }
+      for (final table in tables) {
+        await db.customStatement('ALTER TABLE $table DROP COLUMN sort_order');
+        expect(await columnNames(db, table), isNot(contains('sort_order')));
+      }
+      final version = await userVersion(db);
+      await db.close();
+      return version;
+    }
+
+    test('a fresh install has both columns', () async {
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_role'), contains('sort_order'));
+      expect(await columnNames(db, 'app_user'), contains('sort_order'));
+    });
+
+    test('a current-version database without them gains them on the next '
+        'open, at the same user_version', () async {
+      final before = await makeDatabaseWithoutColumn();
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_role'), contains('sort_order'));
+      expect(await columnNames(db, 'app_user'), contains('sort_order'));
+      expect(await userVersion(db), before,
+          reason: 'no schema arm: the version belongs to other branches');
+      expect(before, db.schemaVersion);
+    });
+
+    test('every carried-over row is NULL — unplaced, not position 0', () async {
+      await makeDatabaseWithoutColumn();
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      final roles = await db.customSelect('SELECT sort_order FROM app_role').get();
+      final users = await db.customSelect('SELECT sort_order FROM app_user').get();
+      expect(roles, hasLength(4));
+      expect(users, hasLength(2));
+      for (final row in [...roles, ...users]) {
+        expect(row.read<int?>('sort_order'), isNull);
+      }
+    });
+
+    test('a second open over columns that are already there is harmless',
+        () async {
+      await makeDatabaseWithoutColumn();
+      await (await reopen()).close();
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_role'), contains('sort_order'));
+      expect(await columnNames(db, 'app_user'), contains('sort_order'));
+      expect(
+          await db.customSelect('SELECT * FROM app_user').get(), hasLength(2));
+    });
+
+    test('the anonymous seed still runs, after the column is added', () async {
+      // The ordering in beforeOpen is load-bearing. The seed selects app_user
+      // through the generated mapping, which reads sort_order; run it first
+      // and that select throws, the seed swallows it, and the row stays gone.
+      await makeDatabaseWithoutColumn(
+          tables: ['app_user'], deleteAnonymous: true);
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      final rows = await db
+          .customSelect("SELECT * FROM app_user WHERE username = 'anonymous'")
+          .get();
+      expect(rows, hasLength(1));
+    });
+
+    test('the Postgres statements add both columns idempotently', () {
+      // Source-derived, like the v8 and v9 groups above: no test connects to a
+      // server, so these strings are what stands behind that branch.
+      final source = File('lib/core/database_drift.dart').readAsStringSync();
+      expect(source,
+          contains('ALTER TABLE app_role ADD COLUMN IF NOT EXISTS sort_order INTEGER'));
+      expect(source,
+          contains('ALTER TABLE app_user ADD COLUMN IF NOT EXISTS sort_order INTEGER'));
+      expect(source, contains('information_schema.columns'));
     });
   });
 
@@ -900,9 +1091,13 @@ void main() {
     });
 
     test('the seed needs no schema version of its own', () async {
+      // Main shipped the seed at 9 and the config branch carries 12; the
+      // seed added an arm to neither. Pinned to the number the branch owns
+      // rather than to `db.schemaVersion`, because a seed that quietly took
+      // an arm would move that too.
       final db = await open();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 9);
+      expect(db.schemaVersion, 12);
     });
   });
 

@@ -291,9 +291,11 @@ void main() {
 // chat/chat_widget.dart:394       prefs.setString(urlPrefKey, sanitizedUrl)        -> same two                     prefix 'llm.' -> administer
 //
 // --- keys resolved through string interpolation ----------------------------
-// page_creator/assets/image_store.dart:96   prefs.setString(key, ...)              -> 'page_editor_image:<sha256-prefix>'
-//                                                                                     prefix 'page_editor_image:' -> configure (keyPrefix :78, key built :94)
-// page_creator/assets/image_store.dart:129  prefs.remove('$keyPrefix$id')          -> 'page_editor_image:<sha256-prefix>'  prefix -> configure
+// page_creator/assets/image_store.dart          (no longer written) -> 'page_editor_image:<sha256-prefix>'
+//                                                                                     prefix 'page_editor_image:' -> configure. v1.2 plan 04-09
+//                                                                                     moved the blobs onto kind='page_image' rows, checked under
+//                                                                                     'page_editor_data' and so at the same group. The rule and this
+//                                                                                     line stay for the rows already on a plant's disk.
 // page_creator/assets/recipes.dart:269      prefs.setString(prefKey, ...)          -> '<bucket>.recipes'           suffix '.recipes' -> setpoints (built :266)
 //                                 ^ on the READ path: fires when an anonymous operator merely opens a recipes asset
 // page_creator/assets/recipes.dart:281      prefs.setString(prefKey, ...)          -> '<bucket>.recipes'           suffix -> setpoints

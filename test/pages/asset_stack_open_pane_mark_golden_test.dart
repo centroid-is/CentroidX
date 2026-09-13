@@ -46,6 +46,7 @@ import 'package:tfc_dart/core/state_man.dart';
 
 import '../helpers/golden_tolerance.dart';
 import '../helpers/golden_platform.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// Real letterforms and glyphs; the test font draws every label as a box,
 /// which for an image about how loud a mark is would be misleading.
@@ -116,6 +117,7 @@ void main() {
     setUpAll(_loadFonts);
 
     setUp(() {
+      useInMemoryDeviceLocalPreferences();
       SharedPreferences.setMockInitialValues({});
       SharedPreferencesAsyncPlatform.instance =
           InMemorySharedPreferencesAsync.empty();

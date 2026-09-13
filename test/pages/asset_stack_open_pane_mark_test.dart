@@ -35,9 +35,11 @@ import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/pages/page_view.dart';
 import 'package:tfc/widgets/hit_boundary.dart';
 import 'package:tfc/widgets/panes/side_pane.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();

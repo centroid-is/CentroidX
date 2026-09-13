@@ -10,13 +10,15 @@
 import 'dart:async';
 
 import 'package:logger/logger.dart';
+import 'package:drift/drift.dart' show Value;
 import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:test/test.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/drift_audit_sink.dart';
 import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
-import 'package:tfc_dart/core/database_drift.dart' show AppDatabase;
+import 'package:tfc_dart/core/database_drift.dart'
+    show AppDatabase, ConfigChangeTableCompanion, ConfigItemTableCompanion;
 import 'package:tfc_dart/core/state_man.dart';
 
 /// A policy that would otherwise be installed — well above
@@ -56,16 +58,47 @@ void main() {
   });
 
   group('kRetentionExemptTables', () {
-    test('is exactly the three access-control tables', () {
-      expect(kRetentionExemptTables,
-          {'audit_entry', 'app_user', 'app_role'},
+    test('is exactly the access-control tables and the configuration ones',
+        () {
+      expect(
+          kRetentionExemptTables,
+          {
+            'audit_entry',
+            'app_user',
+            'app_role',
+            'config_change',
+            'config_item',
+          },
           reason: 'Widening this set is a decision, not a detail: every name '
-              'in it is a table the retention machinery may never point at.');
+              'in it is a table the retention machinery may never point at. '
+              'The two config tables are the milestone\'s locked "retention: '
+              'forever" ruling, asserted here the way spec §8 asserts it for '
+              'the audit trail — and narrowing it is the change that would '
+              'quietly make the plant\'s configuration sweepable.');
+    });
+
+    test('every exempt table says why, in its own words', () {
+      expect(kRetentionExemptionReasons.keys.toSet(), kRetentionExemptTables,
+          reason: 'A table with no reason falls back to a generic sentence, '
+              'which is how a wrong claim gets into a log line.');
+      expect(kRetentionExemptionReasons['config_item'],
+          isNot(contains('append-only')),
+          reason: 'config_item is live configuration — mutable, never pruned. '
+              'Calling it append-only would send the next engineer looking '
+              'for a bug that is not there.');
+      expect(kRetentionExemptionReasons['config_change'],
+          contains('append-only'));
     });
   });
 
   group('registerRetentionPolicy refuses an exempt table', () {
-    for (final table in ['audit_entry', 'app_user', 'app_role']) {
+    for (final table in [
+      'audit_entry',
+      'app_user',
+      'app_role',
+      'config_change',
+      'config_item',
+    ]) {
       test('"$table" is not stored in retentionPolicies', () async {
         await database.registerRetentionPolicy(table, _usable);
 
@@ -83,9 +116,12 @@ void main() {
         final logged = _errorText(events);
         expect(logged, contains(table),
             reason: 'The line has to name the table, or nobody can act on it.');
-        expect(logged.toLowerCase(), contains('append-only'),
+        expect(logged, contains(kRetentionExemptionReasons[table]!),
             reason: 'And the reason, so the next person does not read this as '
-                'a bug to fix by removing the guard.');
+                'a bug to fix by removing the guard — the table\'s own '
+                'reason, because "append-only" is false of config_item.');
+        expect(logged.toLowerCase(), contains('never pruned'),
+            reason: 'Every one of them shares that much, whatever else it is.');
       });
 
       test('"$table" does not throw — a bad collect entry must not stop the '
@@ -94,6 +130,43 @@ void main() {
             database.registerRetentionPolicy(table, _usable), completes);
       });
     }
+
+    test('a refused registration issues nothing against the config tables '
+        'either — the rows that were there are still there', () async {
+      // The same assertion as the audit one below, for the two tables the
+      // locked "retention: forever" decision covers: one live configuration
+      // row and one history row beneath it.
+      await appDb.into(appDb.configItemTable).insert(
+            ConfigItemTableCompanion.insert(
+              kind: 'key_mapping',
+              id: 'CN04.Belt.Speed',
+              scope: 'shared',
+              payload: '{}',
+              updatedAt: DateTime.utc(2026, 8, 28),
+              updatedBy: 'gudrun',
+            ),
+          );
+      await appDb.into(appDb.configChangeTable).insert(
+            ConfigChangeTableCompanion.insert(
+              at: DateTime.utc(2026, 8, 28),
+              actionId: 'act-survives',
+              who: 'gudrun',
+              station: 'SVN-NES-OT-CL02',
+              roleName: 'Engineering',
+              kind: 'key_mapping',
+              entityId: 'CN04.Belt.Speed',
+              scope: 'shared',
+              op: 'insert',
+              newValue: const Value('{}'),
+            ),
+          );
+
+      await database.registerRetentionPolicy('config_item', _usable);
+      await database.registerRetentionPolicy('config_change', _usable);
+
+      expect(await appDb.select(appDb.configItemTable).get(), hasLength(1));
+      expect(await appDb.select(appDb.configChangeTable).get(), hasLength(1));
+    });
 
     test('an ordinary table is still registered', () async {
       // The guard must not break the thing registerRetentionPolicy exists for.
@@ -157,6 +230,35 @@ void main() {
       );
 
       expect(database.retentionPolicies.containsKey('audit_entry'), isFalse);
+    });
+
+    test('a CollectEntry named config_item gets no retention policy', () async {
+      // The same route, for the table that holds the plant's live wiring: a
+      // collected key called `config_item` must not become a sweep of it.
+      await collector.collectEntryImpl(
+        CollectEntry(
+          key: 'CN04.MOT01.HMI',
+          name: 'config_item',
+          retention: _usable,
+        ),
+        values.stream,
+      );
+
+      expect(database.retentionPolicies.containsKey('config_item'), isFalse);
+    });
+
+    test('a CollectEntry named config_change gets no retention policy',
+        () async {
+      await collector.collectEntryImpl(
+        CollectEntry(
+          key: 'CN04.MOT01.HMI',
+          name: 'config_change',
+          retention: _usable,
+        ),
+        values.stream,
+      );
+
+      expect(database.retentionPolicies.containsKey('config_change'), isFalse);
     });
 
     test('an ordinary CollectEntry does get one — the harness is not inert',

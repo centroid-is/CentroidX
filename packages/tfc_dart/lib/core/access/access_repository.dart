@@ -305,10 +305,76 @@ class AccessRepository {
   // Roles
   // ---------------------------------------------------------------------
 
-  /// Every row in `app_role`.
+  /// Every row in `app_role`, in display order.
+  ///
+  /// A role with a `sort_order` comes first, lowest first. A role nobody has
+  /// placed (NULL — every role before the first reorder, and any role created
+  /// since) follows: the seed roles in [kSeedRoles] order, then the rest in
+  /// the order the select returns them, which is insertion (rowid) order on
+  /// SQLite. That fallback is the order the screen listed roles in before the
+  /// column existed, when this method did not sort at all.
+  ///
+  /// Sorted here rather than by `ORDER BY`, because the middle tier is not a
+  /// column: it is a position in a Dart constant. The select position is the
+  /// last tiebreak explicitly, because `List.sort` is not guaranteed stable.
   Future<List<AccessRole>> roles() async {
     final rows = await db.select(db.appRole).get();
+    final selected = {for (var i = 0; i < rows.length; i++) rows[i].name: i};
+    rows.sort((a, b) {
+      final byOrder = _compareNullsLast(a.sortOrder, b.sortOrder);
+      if (byOrder != 0) return byOrder;
+      final bySeed = _compareNullsLast(_seedIndex(a.name), _seedIndex(b.name));
+      if (bySeed != 0) return bySeed;
+      return selected[a.name]!.compareTo(selected[b.name]!);
+    });
     return rows.map(_toRole).toList(growable: false);
+  }
+
+  /// [name]'s position in [kSeedRoles], or null for a role the seed did not
+  /// write.
+  static int? _seedIndex(String name) {
+    final index = kSeedRoles.indexWhere((r) => r.name == name);
+    return index < 0 ? null : index;
+  }
+
+  /// Ascending, with null after every value.
+  static int _compareNullsLast(int? a, int? b) {
+    if (a == null) return b == null ? 0 : 1;
+    if (b == null) return -1;
+    return a.compareTo(b);
+  }
+
+  /// Persist the display order of the roles: `names[i]` is given position i.
+  ///
+  /// Display order only — no permission rides on it, so there is no lockout
+  /// guard. A role [names] leaves out keeps whatever position it had; the
+  /// screen sends the whole list.
+  ///
+  /// One transaction, so a name with no row ([MissingRoleError]) rolls back
+  /// every position written before it rather than leaving the list half
+  /// reordered. Throws [ArgumentError] when a name appears twice, before
+  /// anything is written: the second position would silently win.
+  Future<void> setRoleOrder(List<String> names) async {
+    _requireDistinct(names, 'names');
+    await db.transaction(() async {
+      for (var i = 0; i < names.length; i++) {
+        final updated = await (db.update(db.appRole)
+              ..where((t) => t.name.equals(names[i])))
+            .write(AppRoleCompanion(sortOrder: Value(i)));
+        if (updated == 0) throw MissingRoleError(names[i]);
+      }
+    });
+  }
+
+  /// Throws [ArgumentError] when [values] holds a string more than once.
+  static void _requireDistinct(List<String> values, String argument) {
+    final seen = <String>{};
+    for (final value in values) {
+      if (!seen.add(value)) {
+        throw ArgumentError.value(
+            values, argument, '"$value" appears more than once');
+      }
+    }
   }
 
   /// The role named [name], or null when there is no such row.
@@ -721,6 +787,9 @@ class AccessRepository {
               // a rename would silently *widen* what an audience sees.
               // `renameRole preserves the whitelist` pins this.
               allowedPages: Value(existing.allowedPages),
+              // And its place in the list, so a rename does not drop the role
+              // to the bottom of the Access screen.
+              sortOrder: Value(existing.sortOrder),
             ),
           );
       await (db.update(db.appUser)..where((t) => t.roleName.equals(from)))
@@ -865,7 +934,12 @@ class AccessRepository {
         'first-user window is now closed.');
   }
 
-  /// Every row in `app_user`, ordered by username.
+  /// Every row in `app_user`, in display order: accounts with a `sort_order`
+  /// first, lowest first, then the unplaced ones (NULL) by username. On a
+  /// database nobody has reordered that is plain username order.
+  ///
+  /// Sorted here rather than by `ORDER BY`, as [roles] is, so the two lists
+  /// share one nulls-last rule on both backends.
   ///
   /// Returns the raw drift row, as [user] already does. A domain type here
   /// would be a fifth shape of the same four columns, and the users screen
@@ -873,9 +947,42 @@ class AccessRepository {
   ///
   /// Unguarded and unaudited: it is a read, and the screen that calls it is
   /// gated on [AccessGroup.users] before it gets here.
-  Future<List<AppUserData>> listUsers() =>
-      (db.select(db.appUser)..orderBy([(t) => OrderingTerm(expression: t.username)]))
-          .get();
+  Future<List<AppUserData>> listUsers() async {
+    final rows = await db.select(db.appUser).get();
+    rows.sort((a, b) {
+      final byOrder = _compareNullsLast(a.sortOrder, b.sortOrder);
+      return byOrder != 0 ? byOrder : a.username.compareTo(b.username);
+    });
+    return rows;
+  }
+
+  /// Persist the display order of the accounts: the i-th account in
+  /// [usernames] is given position i.
+  ///
+  /// [kAnonymousUsername] is skipped without complaint and without taking a
+  /// position: the screen pins it apart from the list, so it has no place in
+  /// the order to keep. An account [usernames] leaves out keeps whatever
+  /// position it had.
+  ///
+  /// One transaction; an account with no row ([UserNotFoundException]) rolls
+  /// back the whole write. Throws [ArgumentError] when a name appears twice,
+  /// before anything is written. No lockout guard — the order is not a
+  /// permission.
+  Future<void> setUserOrder(List<String> usernames) async {
+    _requireDistinct(usernames, 'usernames');
+    final placed = [
+      for (final username in usernames)
+        if (username != kAnonymousUsername) username,
+    ];
+    await db.transaction(() async {
+      for (var i = 0; i < placed.length; i++) {
+        final updated = await (db.update(db.appUser)
+              ..where((t) => t.username.equals(placed[i])))
+            .write(AppUserCompanion(sortOrder: Value(i)));
+        if (updated == 0) throw UserNotFoundException(placed[i]);
+      }
+    });
+  }
 
   /// Create an account in [roleName].
   ///

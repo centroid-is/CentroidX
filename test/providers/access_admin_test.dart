@@ -29,6 +29,7 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 // ---------------------------------------------------------------------------
 // Doubles
@@ -141,6 +142,7 @@ AccessRole _operatorWith(Set<AccessGroup> groups) => AccessRole(
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     // The device-local store the session persists into. In memory, and fresh
     // per test, so one test's stored payload cannot restore into the next.
     SharedPreferences.setMockInitialValues({});

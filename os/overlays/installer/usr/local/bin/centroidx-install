@@ -44,6 +44,9 @@ done
 # `set -u` much later, after the disk has already been written.
 TARGET=""
 BOOT_DISK=""
+# 1 between "the image is on the disk" and "the disk is configured". See
+# disarm_target().
+TARGET_ARMED=0
 UNATTENDED=0
 STATION_NAME=""
 CENTROID_PASSWORD=""
@@ -86,10 +89,23 @@ die() {
   exit 1
 }
 
+# Every non-loopback IPv4 this machine currently holds, space separated.
+#
+# Printed rather than acted on. Most panels take a DHCP lease and nobody
+# standing at one can see what it got; the address is what you need to reach
+# the machine afterwards, and it is the one fact about the install that is
+# easier to read off the screen now than to hunt for on a router later.
+host_addresses() {
+  ip -o -4 addr show scope global 2>/dev/null \
+    | awk '{sub("/.*","",$4); printf "%s ", $4}' | sed 's/ $//'
+}
+
 banner() {
   clear 2>/dev/null || true
   bold "  CentroidX station installer"
   [ -r "$PAYLOAD/image-info" ] && sed 's/^/  /' "$PAYLOAD/image-info"
+  local ips; ips="$(host_addresses)"
+  printf '  address:    %s\n' "${ips:-no network}"
   rule
 }
 
@@ -175,19 +191,52 @@ ask() {   # ask VAR "prompt"
   done
 }
 
+# These values travel through station.conf, then .env, then compose
+# interpolation, then a shell command inside a container, so the charset is
+# restricted rather than escaped correctly at four layers. (Review #2, #3.)
+#
+# It is a DENY list, not the allow list it started as. The allow list banned
+# every symbol nobody had thought about -- including '#', which an operator
+# reasonably wants in a password and which is safe everywhere here: compose's
+# dotenv only treats '#' as a comment when whitespace precedes it, and
+# whitespace is banned below. What is refused is the set that turns a quoting
+# slip at any of those four layers into executed code or a silently truncated
+# value, which is a different and much shorter list:
+#
+#   space/tab   ' #' starts a dotenv comment; splits an unquoted word
+#   $ `         command and variable substitution; compose interpolation
+#   " ' \       end or escape a quoted string
+#   ; & | < > ( )   command separators, redirections, subshells
+#
+# Everything else printable is allowed: # ! , = ? * ^ [ ] { } . _ @ % + : ~ / -
+# at worst expand to the wrong filename inside a shell, never to a command.
+PASSWORD_RULE="no spaces, and none of: \" ' \` \$ \\ ; & | < > ( )"
+password_ok() {   # password_ok VALUE
+  local v="$1" left
+  [ -n "$v" ] || return 1
+  # Printable ASCII only: excludes space, tab, newline, control characters and
+  # anything non-ASCII, which chpasswd and the container's shell disagree
+  # about. Delete every byte in 0x21-0x7e and require nothing to be left.
+  #
+  # NOT `grep -qE '^[!-~]+$'`, which was the first version of this line: grep
+  # matches line by line, so a value containing a newline is two lines that
+  # each match it on their own and the check passes.
+  left="$(LC_ALL=C printf '%s' "$v" | LC_ALL=C tr -d '\041-\176' | LC_ALL=C wc -c)"
+  [ "${left// /}" = 0 ] || return 1
+  case "$v" in
+    *[\"\'\`\$\\\;\&\|\<\>\(\)]*) return 1 ;;
+  esac
+  return 0
+}
+
 ask_pass() {   # ask_pass VAR "prompt"
   local __var="$1" __prompt="$2" a b
   while :; do
     read -r -s -p "  $__prompt: " a; echo
     if [ ${#a} -lt 8 ]; then echo "  At least 8 characters, please."; continue; fi
-    # These values travel through station.conf, then .env, then compose
-    # interpolation, then a shell command inside a container. Rather than try to
-    # escape correctly at four layers, refuse the characters that are hazardous
-    # at any of them. (Review #2, #3.)
-    if ! printf '%s' "$a" | grep -qE '^[A-Za-z0-9._@%+:~/-]+$'; then
-      echo "  Use letters, digits and . _ @ % + : ~ / - only."
-      echo "  (spaces, quotes, \$ and backticks break one of the layers this"
-      echo "   password passes through)"
+    if ! password_ok "$a"; then
+      echo "  $PASSWORD_RULE."
+      echo "  (those break one of the layers this password passes through)"
       continue
     fi
     read -r -s -p "  $__prompt (again): " b; echo
@@ -218,8 +267,8 @@ questions() {
     done
     [ -z "$missing" ] || die "$SEED is missing:$missing"
     for v in DB_PASSWORD VNC_PASSWORD ROOT_PASSWORD CENTROID_PASSWORD; do
-      printf '%s' "${!v}" | grep -qE '^[A-Za-z0-9._@%+:~/-]+$' \
-        || die "$SEED: $v contains a character that will not survive the shell/compose path"
+      password_ok "${!v}" \
+        || die "$SEED: $v contains a character that will not survive the shell/compose path ($PASSWORD_RULE)"
     done
     valid_station_name "$STATION_NAME" \
       || die "$SEED: STATION_NAME must be a DNS label -- letters, digits and hyphens, not starting or ending with one"
@@ -358,12 +407,48 @@ flash() {
     bmaptool copy --nobmap "$img" "$TARGET" || die "bmaptool copy failed"
   fi
   sync
+  # From here on the disk carries a bootable system that is NOT yet this
+  # station. If anything below fails, it must not be left that way.
+  TARGET_ARMED=1
+  # The image is smaller than the disk, so its backup GPT header sits wherever
+  # the image ended rather than at the end of the device. parted (and therefore
+  # partprobe, just below) warns about that in a paragraph of prose that reads
+  # like a failure to an operator watching the screen; growpart at first boot
+  # then has to fix it anyway. Move it now, quietly. Best effort: a table this
+  # cannot correct is one partprobe is about to complain about for real.
+  sgdisk --move-second-header "$TARGET" >/dev/null 2>&1 || true
   # Re-read the table so the new partitions appear as devices. NOT swallowed: on
   # EBUSY the kernel keeps the old table, and because bmaptool leaves unmapped
   # blocks untouched a stale superblock can then mount -- which would put
   # station.conf and a journal replay inside the wrong filesystem.
   partprobe "$TARGET" || die "the kernel would not re-read the partition table on $TARGET (is something holding it open?)"
   udevadm settle
+}
+
+# A target that has the image on it but no station.conf is the worst possible
+# outcome of a failed install, and it is what the first real panel produced: it
+# boots, firstboot finds no answers, keeps the image builder's hostname
+# ("fakemachine"), mints its own secrets that nobody knows, and starts pulling
+# containers. A station that looks installed and is not.
+#
+# So if anything goes wrong between writing the image and configuring it, take
+# the boot path away again. Nothing is lost -- the operator already agreed to
+# erase this disk -- and the machine stops at the firmware instead of coming up
+# as a plausible-looking wrong station.
+disarm_target() {
+  # $(...) in this script runs die() in places, and a subshell inherits this
+  # trap. Wiping a disk from inside a command substitution is not a thing that
+  # should be possible, so only the original shell may do it.
+  [ "$BASHPID" = "$$" ] || return 0
+  [ "$TARGET_ARMED" = 1 ] || return 0
+  TARGET_ARMED=0
+  red "  The install did not finish, so $TARGET is being made unbootable."
+  red "  It would otherwise come up as a half-configured station."
+  umount "$TARGET_MNT" 2>/dev/null || true
+  sgdisk --zap-all "$TARGET" >/dev/null 2>&1 || true
+  wipefs --all "$TARGET" >/dev/null 2>&1 || true
+  sync
+  red "  Fix the problem above and run the installer again."
 }
 
 # Everything the installer leaves on the target's root filesystem, given its
@@ -387,10 +472,13 @@ write_target_config() {   # write_target_config ROOT
   } > "$root/etc/centroid/station.conf"
   chmod 0600 "$root/etc/centroid/station.conf"
   echo "${STATION_NAME}" > "$root/etc/hostname"
-  # rootfs-setup.sh writes /etc/hosts without this line and its comment says the
-  # alias is added at first boot -- nothing did, so sudo warned "unable to
-  # resolve host" on every call. It is written here because this is the first
-  # point at which the name is known.
+  # sudo warns "unable to resolve host" on every call without this line, which
+  # is written here because this is the first point at which the name is known.
+  # REPLACED, not appended: rootfs-setup.sh now ships a placeholder
+  # 127.0.1.1 line (so an unconfigured image resolves its own name too), and
+  # appending would leave two entries for the same address -- which resolves in
+  # file order, i.e. to the placeholder.
+  sed -i -E '/^127\.0\.1\.1[[:space:]]/d' "$root/etc/hosts"
   printf '127.0.1.1\t%s\n' "$STATION_NAME" >> "$root/etc/hosts"
 
   # Remote access is per-station: wg0.conf carries this machine's private key
@@ -446,6 +534,12 @@ write_target_config() {   # write_target_config ROOT
         echo "source-lport = $OBF_PORT"
         echo "target = $VPN_ENDPOINT"
         echo "key = $VPN_OBFUSCATOR_KEY"
+        # Explicit, not left at the upstream default. The default is AUTO,
+        # which on the CLIENT side sends no masking at all and auto-detects
+        # instead -- so a station left at the default is running the obfuscator
+        # with the DPI evasion switched off, which is the only reason it is in
+        # the path. Matches what Centroid's own clients are configured with.
+        echo "masking = STUN"
       } > "$root/etc/wg-obfuscator.conf"
       chmod 0600 "$root/etc/wg-obfuscator.conf"
     fi
@@ -457,13 +551,26 @@ write_target_config() {   # write_target_config ROOT
   fi
 }
 
+# Pick the device labelled 'root' out of an lsblk NAME,PARTLABEL table on stdin.
+#
+# Split out from seed_station_conf so os/test/installer-test.sh can feed it a
+# recorded table -- which is the only way this gets tested without erasing a
+# disk, and it needed testing: the first version called lsblk WITHOUT --list,
+# whose NAME column carries the tree-drawing glyphs. It resolved the root
+# partition as "└─/dev/sda2", mount was handed a device that does not exist,
+# and the install failed on the first real panel it ran on, AFTER the image had
+# already been written. The sub() is the belt to --list's braces -- a device
+# path starts at the first '/', whatever is drawn in front of it.
+root_partition() { awk '$2=="root"{sub("^[^/]*", "", $1); print $1; exit}'; }
+
 seed_station_conf() {
   local root
   # By PARTLABEL, not by index: image.yaml sets partlabel: root, and an index
   # would silently pick whatever partition 2 happens to be if the table the
   # kernel holds is not the one we just wrote.
-  root="$(lsblk -pno NAME,PARTLABEL "$TARGET" | awk '$2=="root"{print $1; exit}')"
+  root="$(lsblk --paths --list --noheadings -o NAME,PARTLABEL "$TARGET" | root_partition)"
   [ -n "$root" ] || die "no partition labelled 'root' on $TARGET after flashing"
+  [ -b "$root" ] || die "$root is not a block device (lsblk named it, the kernel does not have it)"
   mkdir -p "$TARGET_MNT"
   mount "$root" "$TARGET_MNT" || die "cannot mount $root"
   write_target_config "$TARGET_MNT"
@@ -487,8 +594,14 @@ BOOT_DISK="$(boot_disk)"
 pick_disk
 questions
 confirm
+# Installed here, not at the top: everything above runs before a single byte is
+# written, and a trap that can wipe a disk should not be armed while the
+# operator is still answering questions. flash() sets TARGET_ARMED.
+trap disarm_target EXIT
 flash
 seed_station_conf
+# Configured. The disk is now a station, so the trap has nothing left to undo.
+TARGET_ARMED=0
 
 rule
 grn "  Installed."

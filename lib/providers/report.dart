@@ -2,9 +2,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tfc_dart/core/mcp_database.dart';
 import 'package:tfc_dart/tfc_dart.dart';
 
+import 'package:tfc_dart/core/config/shared_row_preferences.dart';
+
 import '../core/guarded_report_store.dart';
 import 'access.dart'; // stationNameProvider
 import 'access_policy.dart'; // sessionInForce, RefAuditSink, reportAccessDenial
+import 'preferences.dart';
 import 'server_database.dart';
 import 'state_man.dart';
 
@@ -95,5 +98,26 @@ final guardedReportStoreProvider = Provider<GuardedReportStore?>((ref) {
     audit: RefAuditSink(ref),
     station: ref.watch(stationNameProvider),
     onDenied: (denial) => reportAccessDenial(ref, denial),
+    // The save lands on the shared rows under the guard's own action id —
+    // compare-and-swapped, logged, announced to the other stations — rather
+    // than through ReportStore's unguarded seam, which reaches them only at
+    // their next sweep and the change log never. Preferences that are not
+    // the shared rows (a test that overrode the store; a station whose
+    // preferences fell back to device-local) take nothing here, and the
+    // guard writes through the store, as it did before the rows existed —
+    // a device-local `setString` would have put the plant's reports on one
+    // panel's disk.
+    //
+    // Read, never awaited: the provider is built at boot and holds its value
+    // for the life of the process, so a save finds it ready — and one that
+    // does not (a test container without it) must not *build* it here, which
+    // would open a database from inside a report save.
+    rowWriter: (key, json, {required actionId}) async {
+      if (!ref.exists(preferencesProvider)) return false;
+      final prefs = ref.read(preferencesProvider).valueOrNull;
+      if (prefs is! SharedRowPreferences) return false;
+      await prefs.setStringUnderAction(key, json, actionId: actionId);
+      return true;
+    },
   );
 });

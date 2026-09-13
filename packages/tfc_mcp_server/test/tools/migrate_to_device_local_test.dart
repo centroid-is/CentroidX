@@ -49,6 +49,7 @@ void main() {
       await shared.setBool('mcp_server_enabled', true);
       await shared.setInt('mcp_server_port', 7777);
       await shared.setBool(McpToolToggles.kTrendsEnabled, false);
+      await shared.setBool(McpToolToggles.kTagsEnabled, true);
 
       await migrateMcpConfigToDeviceLocal(shared: shared, local: local);
 
@@ -56,7 +57,10 @@ void main() {
       expect(migrated.serverEnabled, isTrue);
       expect(migrated.port, 7777);
       expect(migrated.toggles.trendsEnabled, isFalse);
+      // Carried down as written, not re-defaulted on the way.
       expect(migrated.toggles.tagsEnabled, isTrue);
+      // Never written on the shared side, so it arrives off.
+      expect(migrated.toggles.alarmsEnabled, isFalse);
       for (final key in McpConfig.legacyKeys) {
         expect(await shared.containsKey(key), isFalse,
             reason: 'legacy key $key must be removed from the shared store');
@@ -169,7 +173,7 @@ void main() {
     });
 
     test('differing toggles are not equal', () {
-      const a = McpConfig(toggles: McpToolToggles(tagsEnabled: false));
+      const a = McpConfig(toggles: McpToolToggles(tagsEnabled: true));
       const b = McpConfig();
       expect(a, isNot(b));
     });

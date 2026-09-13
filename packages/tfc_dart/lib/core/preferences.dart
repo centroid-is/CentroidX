@@ -1,21 +1,7 @@
 import 'dart:async';
 
-import 'package:logger/logger.dart';
-
-import 'package:drift/drift.dart' show UpdateKind, Variable;
-import 'package:meta/meta.dart' show visibleForTesting;
-
 import 'database.dart';
 import 'secure_storage/secure_storage.dart';
-
-/// File-level logger. These diagnostics used to go to stderr, which in a
-/// windowed MSIX build with no console is discarded outright.
-final Logger _log = Logger();
-
-class PreferencesException implements Exception {
-  final String message;
-  PreferencesException(this.message);
-}
 
 abstract class PreferencesApi {
   /// Returns all keys on the the platform that match provided [parameters].
@@ -90,12 +76,6 @@ abstract class PreferencesApi {
   Future<void> clear({Set<String>? allowList});
 }
 
-class KeyCache {
-  Set<String> keys = {};
-  DateTime lastUpdated = DateTime.now().subtract(const Duration(days: 100));
-  Future<void>? cacheUpdate;
-}
-
 /// In-memory cache that mimics the SharedPreferences API.
 class InMemoryPreferences implements PreferencesApi {
   final Map<String, Object> _cache = {};
@@ -150,9 +130,27 @@ class InMemoryPreferences implements PreferencesApi {
   }
 }
 
+/// A preferences store over an in-memory cache, a device-local mirror and the
+/// OS keychain.
+///
+/// **It reads and writes no shared table.** Every Postgres path this class had
+/// went to `flutter_preferences`, and 04-12 retired them with it: the shared
+/// settings are `config_item` rows, served by [SharedRowPreferences], which
+/// extends this class for exactly the parts that did not move — the secret
+/// cache, the change stream and the local mirror.
+///
+/// What remains is therefore the base every preferences store shares plus the
+/// keychain, and [database] is a handle it carries for callers rather than
+/// one it uses. The subclass is where a shared write goes through
+/// `ConfigStore`'s compare-and-swap and lands a change row; nothing here
+/// writes anything a second station could see.
 class Preferences implements PreferencesApi {
+  /// The database handle, carried for callers that ask.
+  ///
+  /// Nothing in this class reads it any more. It survives because
+  /// `preferencesProvider` hands one over and a caller reaching
+  /// `prefs.database` must get what it always got rather than null.
   final Database? database;
-  final KeyCache keyCache = KeyCache();
   final InMemoryPreferences _memoryCache = InMemoryPreferences();
   final MySecureStorage secureStorage;
   final PreferencesApi? localCache;
@@ -219,57 +217,23 @@ class Preferences implements PreferencesApi {
   Preferences(
       {required this.database, required this.secureStorage, this.localCache});
 
+  /// A store seeded from the device-local mirror, if there is one.
+  ///
+  /// [db] is carried through to [database] and otherwise unused: the load
+  /// from Postgres this used to perform read `flutter_preferences`, and the
+  /// shared settings have been `config_item` rows since 04-05. A caller that
+  /// wants those builds [SharedRowPreferences] instead — which is what
+  /// `preferencesProvider` does.
   static Future<Preferences> create(
       {required Database? db, PreferencesApi? localCache}) async {
-    final secureStorage = SecureStorage.getInstance();
-    try {
-      if (db == null) {
-        final prefs = Preferences(
-            database: null,
-            secureStorage: secureStorage,
-            localCache: localCache);
-        if (localCache != null) {
-          await prefs._loadFromLocalCache();
-        }
-        return prefs;
-      }
-      final prefs = Preferences(
-          database: db, secureStorage: secureStorage, localCache: localCache);
-      await prefs.loadFromPostgres();
-      if (localCache != null) {
-        await prefs.syncToLocalCache();
-      }
-      return prefs;
-    } on PreferencesException catch (e) {
-      // Loading the station's configuration failed and we are about to carry
-      // on with an empty one. On stderr that was invisible on every station;
-      // the symptom -- preferences that silently revert -- was not.
-      _log.e('Preferences could not be loaded from Postgres, '
-          'continuing with an unsynced set: ${e.message}');
-      return Preferences(
-          database: db, secureStorage: secureStorage, localCache: localCache);
+    final prefs = Preferences(
+        database: db,
+        secureStorage: SecureStorage.getInstance(),
+        localCache: localCache);
+    if (localCache != null) {
+      await prefs._loadFromLocalCache();
     }
-  }
-
-  Future<bool> _upsertToPostgres(String key, Object? value, String type) async {
-    final valStr = value is List<String> ? value.join(',') : value?.toString();
-    if (database == null) {
-      return false;
-    }
-    final db = database!.db;
-    // TODO: track changes, like have a timestamp and then we can revert to the previous value if we want
-    // then we can do a insert with primary key as timestamp
-    // and use drift instead of custom insert
-    await db.customInsert(
-      r'''INSERT INTO flutter_preferences (key, value, type) VALUES ($1, $2, $3) 
-      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, type = EXCLUDED.type''',
-      variables: [
-        Variable.withString(key),
-        Variable.withString(valStr ?? ''),
-        Variable.withString(type),
-      ],
-    );
-    return true;
+    return prefs;
   }
 
   @override
@@ -341,6 +305,12 @@ class Preferences implements PreferencesApi {
     }
   }
 
+  /// [saveToDb] is accepted and ignored here, and that is not a silent
+  /// no-op: this store has no shared database to save to, so there is nothing
+  /// for the flag to turn off. It stays on the signature because it means
+  /// something to [SharedRowPreferences], where `false` is a caller saying
+  /// "this value is not the shared configuration" — `StateManConfig.toPrefs`
+  /// writing a secret, in practice — and the subclass honours it.
   @override
   Future<void> setBool(String key, bool value,
       {bool saveToDb = true, bool secret = false}) async {
@@ -352,9 +322,6 @@ class Preferences implements PreferencesApi {
     }
     await _memoryCache.setBool(key, value);
     await localCache?.setBool(key, value);
-    if (saveToDb) {
-      await _upsertToPostgres(key, value, 'bool');
-    }
     _onPreferencesChanged.add(key);
   }
 
@@ -369,9 +336,6 @@ class Preferences implements PreferencesApi {
     }
     await _memoryCache.setInt(key, value);
     await localCache?.setInt(key, value);
-    if (saveToDb) {
-      await _upsertToPostgres(key, value, 'int');
-    }
     _onPreferencesChanged.add(key);
   }
 
@@ -386,9 +350,6 @@ class Preferences implements PreferencesApi {
     }
     await _memoryCache.setDouble(key, value);
     await localCache?.setDouble(key, value);
-    if (saveToDb) {
-      await _upsertToPostgres(key, value, 'double');
-    }
     _onPreferencesChanged.add(key);
   }
 
@@ -403,9 +364,6 @@ class Preferences implements PreferencesApi {
     }
     await _memoryCache.setString(key, value);
     await localCache?.setString(key, value);
-    if (saveToDb) {
-      await _upsertToPostgres(key, value, 'String');
-    }
     _onPreferencesChanged.add(key);
   }
 
@@ -420,9 +378,6 @@ class Preferences implements PreferencesApi {
     }
     await _memoryCache.setStringList(key, value);
     await localCache?.setStringList(key, value);
-    if (saveToDb) {
-      await _upsertToPostgres(key, value, 'List<String>');
-    }
     _onPreferencesChanged.add(key);
   }
 
@@ -433,13 +388,6 @@ class Preferences implements PreferencesApi {
     } else {
       await _memoryCache.remove(key);
       await localCache?.remove(key);
-      if (database != null) {
-        await database!.db.customUpdate(
-          r'DELETE FROM flutter_preferences WHERE key = $1',
-          variables: [Variable.withString(key)],
-          updateKind: UpdateKind.delete,
-        );
-      }
     }
     _onPreferencesChanged.add(key);
   }
@@ -452,34 +400,23 @@ class Preferences implements PreferencesApi {
 
   Stream<String> get onPreferencesChanged => _onPreferencesChanged.stream;
 
+  /// Whether the shared database holds [key] — which this store cannot say.
+  ///
+  /// It used to answer from a ten-minute cache of the old shared preference
+  /// table's key column. With that table retired there is no shared key set
+  /// here to consult, and
+  /// the honest answer is neither true nor false. **Throws rather than
+  /// answering false**: the one caller is the preferences editor, which uses
+  /// it to mark a setting as stored rather than defaulted, and a blanket
+  /// "not stored" would relabel every configured value on the page.
+  ///
+  /// [SharedRowPreferences] overrides it and answers from the rows, which is
+  /// what every production caller is holding.
   Future<bool> isKeyInDatabase(String key) async {
-    if (keyCache.lastUpdated
-        .isBefore(DateTime.now().subtract(const Duration(minutes: 10)))) {
-      if (keyCache.cacheUpdate != null) {
-        await keyCache.cacheUpdate!;
-      } else {
-        // Start the update
-        keyCache.cacheUpdate = _updateCache();
-        await keyCache.cacheUpdate!;
-        keyCache.cacheUpdate = null;
-      }
-    }
-    return keyCache.keys.contains(key);
-  }
-
-  Future<void> _updateCache() async {
-    if (database == null) {
-      return;
-    }
-    final db = database!.db;
-    final select = db.selectOnly(db.flutterPreferences)
-      ..addColumns([db.flutterPreferences.key]);
-    final result = await select.get();
-    keyCache.keys = result
-        .map((e) => e.read(db.flutterPreferences.key))
-        .whereType<String>()
-        .toSet();
-    keyCache.lastUpdated = DateTime.now();
+    throw UnsupportedError(
+        'This Preferences has no shared database: the old shared preference '
+        'table retired in 04-12 and the shared settings are config_item rows. '
+        'Ask SharedRowPreferences, which answers from those rows.');
   }
 
   /// Loads all preferences from local cache into memory cache.
@@ -503,182 +440,4 @@ class Preferences implements PreferencesApi {
       }
     }
   }
-
-  /// Syncs all in-memory preferences to local cache.
-  /// Called after loading from Postgres so local cache stays up to date.
-  ///
-  /// Only keys whose value actually differs are written. The local cache is
-  /// `shared_preferences`, and on Windows its `_setValue` re-encodes the whole
-  /// preference map and rewrites the entire file with `writeAsStringSync` per
-  /// call — measured at 35.5 ms for four keys against a 754,707-byte file on a
-  /// Mac NVMe, on the UI isolate, on every startup and every database
-  /// reconnect. There is no batch-write API to fold those into one, so the
-  /// only lever is not writing: on a normal restart Postgres hands back
-  /// exactly what is already on disk and this does nothing at all. One
-  /// `getAll` read replaces the per-key writes.
-  ///
-  /// Additive on purpose. Keys the local cache holds but the database has
-  /// never heard of are left alone: `localPreferencesProvider` keeps
-  /// per-station settings in the same store, and pruning would wipe them.
-  @visibleForTesting
-  Future<void> syncToLocalCache() async {
-    final cache = localCache!;
-    final all = await _memoryCache.getAll();
-    final onDisk = await cache.getAll();
-    for (final entry in all.entries) {
-      final value = entry.value;
-      if (value == null) continue;
-      if (_sameStoredValue(onDisk[entry.key], value)) continue;
-      if (value is bool) {
-        await cache.setBool(entry.key, value);
-      } else if (value is int) {
-        await cache.setInt(entry.key, value);
-      } else if (value is double) {
-        await cache.setDouble(entry.key, value);
-      } else if (value is String) {
-        await cache.setString(entry.key, value);
-      } else if (value is List<String>) {
-        await cache.setStringList(entry.key, value);
-      }
-    }
-  }
-
-  /// Whether the value already on disk is indistinguishable from [wanted].
-  ///
-  /// Types are compared too, not just contents: `'7'` and `7` round-trip
-  /// through shared_preferences as different things.
-  static bool _sameStoredValue(Object? onDisk, Object wanted) {
-    if (onDisk == null) return false;
-    if (wanted is List<String>) {
-      if (onDisk is! List) return false;
-      if (onDisk.length != wanted.length) return false;
-      for (var i = 0; i < wanted.length; i++) {
-        if (onDisk[i] != wanted[i]) return false;
-      }
-      return true;
-    }
-    return onDisk.runtimeType == wanted.runtimeType && onDisk == wanted;
-  }
-
-  /// Loads all preferences from Postgres into memory cache.
-  Future<void> loadFromPostgres() async {
-    final db = database!.db;
-    final result = await db.select(db.flutterPreferences).get();
-    for (final row in result) {
-      final key = row.key;
-      final value = row.value;
-      final type = row.type;
-      switch (type) {
-        case 'bool':
-          if (value != null) {
-            await _memoryCache.setBool(key, value == 'true');
-          }
-          break;
-        case 'int':
-          if (value != null) {
-            await _memoryCache.setInt(key, int.parse(value));
-          }
-          break;
-        case 'double':
-          if (value != null) {
-            await _memoryCache.setDouble(key, double.parse(value));
-          }
-          break;
-        case 'String':
-          if (value != null) {
-            await _memoryCache.setString(key, value);
-          }
-          break;
-        case 'List<String>':
-          if (value != null) {
-            await _memoryCache.setStringList(key, value.split(','));
-          }
-          break;
-        default:
-          throw Exception('Unsupported type: $type');
-      }
-    }
-  }
 }
-
-/// A wrapper around SharedPreferencesAsync that implements PreferencesApi
-// class SharedPreferencesWrapper implements PreferencesApi {
-//   final SharedPreferencesAsync _prefs;
-
-//   SharedPreferencesWrapper(this._prefs);
-
-//   @override
-//   Future<Set<String>> getKeys({Set<String>? allowList}) {
-//     return _prefs.getKeys(allowList: allowList);
-//   }
-
-//   @override
-//   Future<Map<String, Object?>> getAll({Set<String>? allowList}) {
-//     return _prefs.getAll(allowList: allowList);
-//   }
-
-//   @override
-//   Future<bool?> getBool(String key) {
-//     return _prefs.getBool(key);
-//   }
-
-//   @override
-//   Future<int?> getInt(String key) {
-//     return _prefs.getInt(key);
-//   }
-
-//   @override
-//   Future<double?> getDouble(String key) {
-//     return _prefs.getDouble(key);
-//   }
-
-//   @override
-//   Future<String?> getString(String key) {
-//     return _prefs.getString(key);
-//   }
-
-//   @override
-//   Future<List<String>?> getStringList(String key) {
-//     return _prefs.getStringList(key);
-//   }
-
-//   @override
-//   Future<bool> containsKey(String key) {
-//     return _prefs.containsKey(key);
-//   }
-
-//   @override
-//   Future<void> setBool(String key, bool value) {
-//     return _prefs.setBool(key, value);
-//   }
-
-//   @override
-//   Future<void> setInt(String key, int value) {
-//     return _prefs.setInt(key, value);
-//   }
-
-//   @override
-//   Future<void> setDouble(String key, double value) {
-//     return _prefs.setDouble(key, value);
-//   }
-
-//   @override
-//   Future<void> setString(String key, String value) {
-//     return _prefs.setString(key, value);
-//   }
-
-//   @override
-//   Future<void> setStringList(String key, List<String> value) {
-//     return _prefs.setStringList(key, value);
-//   }
-
-//   @override
-//   Future<void> remove(String key) {
-//     return _prefs.remove(key);
-//   }
-
-//   @override
-//   Future<void> clear({Set<String>? allowList}) {
-//     return _prefs.clear(allowList: allowList);
-//   }
-// }

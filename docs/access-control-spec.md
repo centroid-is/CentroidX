@@ -220,6 +220,11 @@ OIDC lands, an incoming group claim of `"Shift Leader"` matches the role by name
 with no mapping table, exactly as Ignition and SIMATIC Logon do it. Do not
 replace it with an integer id.
 
+`app_role.sort_order` and `app_user.sort_order` are nullable integers that hold
+the display order of the two lists on the Access screen and nothing else — no
+permission reads them — and they are added on open (`_ensureSortOrderColumns`)
+rather than by a schema version, so they take no migration arm.
+
 ### Struct writes must be diffed to members
 
 Several assets are copy-on-write: clone the struct, set one field, write the
@@ -627,7 +632,8 @@ username/cert (`state_man.dart:133`), one Postgres credential
 is bypassed by anyone with UaExpert or `psql`.
 
 This is an operational guardrail against accident, **not** an access control.
-Say that in the PR description and in the admin screen's own help text. The
+Say that in the PR description and in the deployment doc. (The admin screen
+carried it as a help-text card until the operators asked for it off the page.) The
 failure mode is not the guardrail — it is someone concluding "the HMI has
 logins" and deprioritising network segmentation.
 

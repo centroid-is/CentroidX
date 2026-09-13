@@ -16,6 +16,7 @@ import 'package:tfc_dart/tfc_dart_core.dart';
 import '../helpers/mock_alarm_reader.dart';
 import '../helpers/mock_mcp_client.dart';
 import '../helpers/mock_state_reader.dart';
+import '../helpers/config_rows.dart';
 import '../helpers/test_database.dart';
 
 const _reportToolNames = [
@@ -65,9 +66,13 @@ void main() {
     });
 
     test('report tools vanish when the group is disabled', () async {
-      final client = await MockMcpClient.connect(
-          createServer(const McpToolToggles(reportsEnabled: false))
-              .mcpServer);
+      // Every other group on, only reports off: the constructor's defaults
+      // are all-off (a fresh config enables nothing until somebody turns it
+      // on), so `McpToolToggles(reportsEnabled: false)` would be a server
+      // with nothing but ping and the neighbour check below meaningless.
+      final client = await MockMcpClient.connect(createServer(
+              McpToolToggles.allEnabled.copyWithToggle('reports', false))
+          .mcpServer);
       try {
         final names = (await client.listTools()).map((t) => t.name).toList();
         for (final name in _reportToolNames) {
@@ -95,6 +100,10 @@ void main() {
     setUp(() async {
       db = createTestDatabase();
       await db.customStatement('SELECT 1');
+      // The report and shift documents are `config_item` rows now; the
+      // service reads and writes them there, so the fixture carries the
+      // table the way a migrated plant does.
+      await createConfigItemTable(db);
       proposals = [];
       capturedDetails = null;
 

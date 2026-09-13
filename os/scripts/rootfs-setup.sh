@@ -25,9 +25,22 @@ systemctl enable systemd-timesyncd.service
 # /etc/hostname per station and appends the matching `127.0.1.1 <name>` line to
 # this file, which is the Debian convention. It cannot be written here: the
 # name is not known until install time.
-log "hosts file"
+log "hostname and hosts file"
+# debos builds this rootfs inside a fakemachine, and debootstrap copies the
+# BUILDER's /etc/hostname into the chroot -- so the golden image shipped with
+# "fakemachine" baked in. The installer overwrites it per station, which hid
+# this until an install failed after the image was written: the machine booted,
+# firstboot found no station.conf, fell back to `hostname`, and came up calling
+# itself fakemachine with that name in NOVNC_STATION_NAME and the
+# docker-update certificate CN.
+#
+# A name that says what is wrong is better than one that says nothing, and
+# better still than one that names the build host.
+echo "centroidx-unconfigured" > /etc/hostname
+
 cat > /etc/hosts <<'EOF'
 127.0.0.1	localhost
+127.0.1.1	centroidx-unconfigured
 ::1		localhost ip6-localhost ip6-loopback
 fe00::0		ip6-localnet
 ff00::0		ip6-mcastprefix
