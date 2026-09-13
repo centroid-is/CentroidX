@@ -86,7 +86,7 @@ void main() {
       addTearDown(() => db.close());
       // Read off an open database rather than grepped out of the source: the
       // value the migrator actually compares `from` against.
-      expect(db.schemaVersion, 8);
+      expect(db.schemaVersion, 9);
     });
 
     test('creates the access_key_binding template_name index', () async {
@@ -308,7 +308,7 @@ void main() {
       addTearDown(() => db.close());
 
       final row = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 8);
+      expect(row.read<int>('user_version'), 9);
     });
   });
 }

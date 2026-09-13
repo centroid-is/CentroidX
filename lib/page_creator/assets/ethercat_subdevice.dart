@@ -467,6 +467,82 @@ class EcBus {
   int count(EcHealth h) => subdevices.where((s) => s.health == h).length;
 }
 
+/// A subdevice or asset name reduced to what two spellings of it share.
+///
+/// Whitespace goes — the ATV320 labels on the plant pages carry a line break
+/// (`CVS01.\nCN01.FD01`) — and case goes, since TwinCAT is case-insensitive
+/// and nobody typing a label thinks about it.
+String normaliseEcName(String s) =>
+    s.replaceAll(RegExp(r'\s+'), '').toUpperCase();
+
+/// Where one device on a page gets its EtherCAT diagnostics from.
+///
+/// Self-contained on purpose: the device reads its master's arrays by key and
+/// needs nothing else on the page to find itself. [position] is the join the
+/// PLC defines; [name] is the identity that survives a subdevice being inserted
+/// upstream, which shifts every position after it.
+@JsonSerializable(includeIfNull: false)
+class EcSubDeviceBinding {
+  EcSubDeviceBinding({
+    this.diagKey = '',
+    this.infoKey = '',
+    this.position = 0,
+    this.name,
+  });
+
+  /// Key of the master's `ECT_Diag.Device_<n>_Diag` array.
+  String diagKey;
+
+  /// Key of the master's `ECT_Diag.Device_<n>_SlaveInfo` array.
+  String infoKey;
+
+  /// 1-based array index; 0 when only [name] is known.
+  int position;
+
+  /// The subdevice's short name (`p_stat_sName` without its model), when known.
+  String? name;
+
+  bool get isBound =>
+      diagKey.isNotEmpty && (position >= 1 || (name?.isNotEmpty ?? false));
+
+  bool get isEmpty =>
+      diagKey.isEmpty &&
+      infoKey.isEmpty &&
+      position < 1 &&
+      (name?.isEmpty ?? true);
+
+  List<String> get keys => [
+        if (diagKey.isNotEmpty) diagKey,
+        if (infoKey.isNotEmpty) infoKey,
+      ];
+
+  /// The subdevice this binding points at on [bus]: by name when the name is
+  /// found, else by position.
+  EcSubDevice? resolve(EcBus bus) => _byName(bus) ?? bus.at(position);
+
+  /// True when the name now lives at a different position than stored — a
+  /// subdevice was added or removed upstream since this device was bound.
+  bool drifted(EcBus bus) {
+    final s = _byName(bus);
+    return s != null && s.position != position;
+  }
+
+  EcSubDevice? _byName(EcBus bus) {
+    final n = name;
+    if (n == null || n.isEmpty) return null;
+    final want = normaliseEcName(n);
+    for (final s in bus.subdevices) {
+      final info = s.info;
+      if (info != null && normaliseEcName(info.shortName) == want) return s;
+    }
+    return null;
+  }
+
+  factory EcSubDeviceBinding.fromJson(Map<String, dynamic> json) =>
+      _$EcSubDeviceBindingFromJson(json);
+  Map<String, dynamic> toJson() => _$EcSubDeviceBindingToJson(this);
+}
+
 /// One master, as the table knows it: a name and the keys of its arrays.
 @JsonSerializable(includeIfNull: false)
 class EcBusConfig {

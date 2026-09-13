@@ -140,6 +140,11 @@ enum class LossCause {
   // at all, so nothing running on it -- including the engine -- can be
   // presumed alive.
   kPlatformThreadWedged,
+  // Observed: the UI isolate asked the engine to rasterise a 1 x 1 picture on
+  // consecutive liveness stamps and got an empty image back each time. The
+  // isolate is alive and building frames; the engine cannot draw them. The
+  // only detector that saw the 2026-09-12 freeze -- see DartLiveness.
+  kRasterFailed,
 };
 
 const char* DescribeLossCause(LossCause cause);

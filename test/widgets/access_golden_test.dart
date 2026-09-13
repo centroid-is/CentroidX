@@ -2,10 +2,11 @@
 /// affordance, the sign-in dialog, and the account menu and change-password
 /// form that hang off the badge.
 ///
-/// Twelve images, one per state that looks different:
+/// Thirteen images, one per state that looks different:
 ///
 /// * `access_appbar_anonymous.png`   — nobody signed in: the Sign in icon, no name.
 /// * `access_appbar_elevated.png`    — signed in: who, their role, and Sign out, in orange.
+/// * `access_appbar_panel.png`       — the panel's own account: no Sign out, the panel icon instead.
 /// * `access_account_menu.png`       — the same badge with its account menu open.
 /// * `access_change_password_dialog.png` — the self-service form at rest.
 /// * `access_change_password_dialog_dark.png` — the same form on the dark scheme.
@@ -187,9 +188,16 @@ AccessSession _anonymous() =>
 /// logo, a clock and a theme toggle in a picture whose subject is the
 /// affordance. The placement is the one `base_scaffold.dart:325-333` uses —
 /// first child of a right-aligned, min-size `Row`.
-Widget _appBarHost({required ThemeData theme, required AccessSession session}) {
+Widget _appBarHost({
+  required ThemeData theme,
+  required AccessSession session,
+  String? committedTo,
+}) {
   return ProviderScope(
-    overrides: [accessSessionProvider.overrideWith(() => _FixedSession(session))],
+    overrides: [
+      accessSessionProvider.overrideWith(() => _FixedSession(session)),
+      panelAccountProvider.overrideWith((ref) async => committedTo),
+    ],
     child: MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: theme,
@@ -494,10 +502,31 @@ void main() {
       );
     });
 
+    testWidgets('app bar, the panel\'s own account', (tester) async {
+      // No Sign out: the panel icon stands in its place, and its tooltip says
+      // where the panel is released.
+      _sizeView(tester, const Size(800, 200));
+      await tester.pumpWidget(_appBarHost(
+        theme: light,
+        session: AccessSession(user: _freezer, groups: const {
+          AccessGroup.operate,
+        }),
+        committedTo: _freezer.username,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Sign out'), findsNothing);
+
+      await expectLater(
+        find.byKey(_appBarBoundary),
+        matchesGoldenFile('goldens/access_appbar_panel.png'),
+      );
+    });
+
     testWidgets('the account menu, open', (tester) async {
       // The one image that shows the affordance exists. The badge itself is
       // unchanged from `access_appbar_elevated.png`, so what this adds is the
-      // menu surface over it and the entry's wording at real width.
+      // menu surface over it and both entries' wording at real width.
       _sizeView(tester, const Size(800, 300));
       await tester.pumpWidget(_accountMenuHost(theme: light));
       await _settle(tester);
@@ -506,6 +535,7 @@ void main() {
       await _settle(tester);
 
       expect(find.text(kAccessAccountMenuChangePasswordLabel), findsOneWidget);
+      expect(find.text(kAccessAccountMenuSwitchAccountLabel), findsOneWidget);
 
       await expectLater(
         find.byKey(_accountMenuBoundary),

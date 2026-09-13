@@ -244,7 +244,7 @@ class AccessLockedBody extends ConsumerWidget {
                 Text(
                   kAccessLockedRoleNote(
                     session.user!.displayName,
-                    session.roleName,
+                    session.roleLabel,
                     group,
                   ),
                   textAlign: TextAlign.center,

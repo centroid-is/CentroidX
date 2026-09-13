@@ -284,6 +284,8 @@ in §5.
 | `packages/tfc_dart/lib/core/alarm.dart:303` | `preferences.setString('alarm_man_config', ...)` | preferences | `addAlarm`/`removeAlarm`/`updateAlarm`/`setAutoNavigate`, behind the `configure`-gated alarm editor. **Not** `ackAlarm` | `guarded by 03-06` |
 | `packages/tfc_mcp_server/lib/src/tools/read_toggles.dart:38, 114` | `prefs.setString(McpConfig.kPrefKey, ...)`, `local.setString(...)` | preferences and device-local | an MCP tool call, in the HMI process | `left open: reached over MCP, not from a widget` — see §3.2 |
 | `packages/tfc_mcp_server/lib/src/services/config_service.dart:64` | `_prefCache.clear()` | — | `invalidateCache()` | `not widget-reachable` — `_prefCache` is a `TtlCache` (`config_service.dart:45`), not a preferences store. A false positive of section 9b's receiver-spelling filter, recorded rather than quietly dropped |
+| `lib/core/last_route.dart:52` | `prefs.setString(lastRoutePrefsKey, location)` | device-local | every router location change, via `MyApp.onLocationChanged` in `centroid-hmi/lib/main.dart` | construction `enforced by 03-11` -- the `PreferencesApi` is the one `main()` builds from the factory; the write stays on the deliberately unguarded device-local store, exactly like the startup page. Per-panel UI state for the resume-after-engine-rebuild path, no plant configuration. New 2026-09-12 |
+| `lib/core/pending_proposals_store.dart:223, 225` | `_prefs.remove/setString(pendingProposalsPrefsKey, ...)` | device-local | every `ProposalStateNotifier` state change, through `pendingProposalStoreProvider` reading `localPreferencesProvider` | construction `enforced by 03-11`; the write stays on the deliberately unguarded device-local store. It mirrors the operator's *undecided* proposal queue across an engine rebuild and applies nothing: the Accept that applies a proposal still goes through the editor's guarded path. New 2026-09-12 |
 
 ### 2.10 Two rows that exist because of this phase's design
 
@@ -871,6 +873,8 @@ from one behind a Save button.
 | `lib/core/preferences.dart:54-84` | `key` (a parameter) | pass-through — `SharedPreferencesWrapper` delegates the caller's key | n/a | the caller's | n/a |
 | `tfc_dart/core/preferences.dart:344-585` | `key` / `entry.key` (parameters) | pass-through — the cache fan-out inside `Preferences` | n/a | the caller's | n/a |
 | `config_service.dart:64` | `_prefCache.clear()` | **not a preference key** — `_prefCache` is a `TtlCache` (`:45`) | n/a | n/a | n/a |
+| `lib/core/last_route.dart:52` | `lastRoutePrefsKey` | `last_route` | none -- device-local store, outside `kPrefAccessRules` by design (as `startup_url` on the local store) | n/a | on every navigation |
+| `lib/core/pending_proposals_store.dart:223, 225` | `pendingProposalsPrefsKey` | `pending_proposals` | none -- device-local store, outside `kPrefAccessRules` by design | n/a | on every change to the pending-proposal queue, and at most 2 MiB |
 
 **One key is written outside section 9 and belongs in this table anyway.**
 `server_config_envelope` (`lib/core/server_config_db.dart:55`) is written

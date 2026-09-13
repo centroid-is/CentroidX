@@ -103,4 +103,24 @@ void GpuDeviceProbe::Reset() {
   device_id_ = 0;
 }
 
+bool QuerySessionDisplayAdapterLuid(unsigned long long* luid_out) {
+  if (luid_out == nullptr) {
+    return false;
+  }
+  Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+  if (FAILED(::CreateDXGIFactory1(IID_PPV_ARGS(&factory))) || !factory) {
+    return false;
+  }
+  Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+  if (FAILED(factory->EnumAdapters1(0, &adapter)) || !adapter) {
+    return false;
+  }
+  DXGI_ADAPTER_DESC1 desc = {};
+  if (FAILED(adapter->GetDesc1(&desc))) {
+    return false;
+  }
+  *luid_out = LuidToU64(desc.AdapterLuid);
+  return true;
+}
+
 }  // namespace tfc

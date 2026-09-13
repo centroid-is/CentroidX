@@ -268,4 +268,96 @@ void main() {
       );
     });
   });
+
+  // -------------------------------------------------------------------------
+  // More than one role
+  // -------------------------------------------------------------------------
+
+  group('several roles', () {
+    AccessSession sessionFor(List<String> names, Set<AccessGroup> groups) =>
+        AccessSession(
+          user: AuthenticatedUser(
+            username: 'jon',
+            roleName: names.first,
+            additionalRoles: names.skip(1).toList(),
+          ),
+          groups: groups,
+          expiresAt: DateTime.utc(2026, 1, 1),
+        );
+
+    test('roleName stays the primary one and roleNames carries them all', () {
+      final session = sessionFor(
+          ['Maintenance', 'Shift Leader'], {AccessGroup.operate});
+      expect(session.roleName, 'Maintenance');
+      expect(session.roleNames, ['Maintenance', 'Shift Leader']);
+    });
+
+    test('roleLabel joins them, and is unchanged for one role', () {
+      expect(sessionFor(['Engineering'], {}).roleLabel, 'Engineering');
+      expect(sessionFor(['A', 'B'], {}).roleLabel, 'A + B');
+    });
+
+    test('anonymous is still exactly the Operator role, singular', () {
+      final anon = AccessSession.anonymous({AccessGroup.operate});
+      expect(anon.roleNames, [kOperatorRoleName]);
+      expect(anon.roleLabel, kOperatorRoleName);
+    });
+
+    test('the payload carries the extra roles, and only when there are any',
+        () {
+      expect(sessionFor(['Engineering'], {}).toJson(),
+          isNot(contains('additionalRoles')),
+          reason: 'a single-role account writes exactly the payload this file '
+              'wrote before multi-role existed, so a downgrade reads it back '
+              'unchanged');
+      expect(sessionFor(['A', 'B'], {}).toJson()['additionalRoles'], ['B']);
+    });
+
+    test('a payload round-trips every role', () {
+      final json = jsonEncode(sessionFor(['A', 'B', 'C'], {}).toJson());
+      final parsed = AccessSession.parse(json)!;
+      expect(parsed.roleName, 'A');
+      expect(parsed.roleNames, ['A', 'B', 'C']);
+    });
+
+    test('a payload written before multi-role parses as one role', () {
+      // The upgrade path for a preferences file already on a panel.
+      final parsed = AccessSession.parse(jsonEncode({
+        'username': 'jon',
+        'roleName': 'Engineering',
+        'expiresAt': DateTime.utc(2026, 1, 1).toIso8601String(),
+      }))!;
+      expect(parsed.roleNames, ['Engineering']);
+      expect(parsed.additionalRoles, isEmpty);
+    });
+
+    test('a hand-edited additionalRoles that is not a list of names is dropped',
+        () {
+      for (final mangled in [17, 'Engineering', {'a': 1}]) {
+        final parsed = AccessSession.parse(jsonEncode({
+          'username': 'jon',
+          'roleName': 'Operator',
+          'additionalRoles': mangled,
+          'expiresAt': DateTime.utc(2026, 1, 1).toIso8601String(),
+        }))!;
+        expect(parsed.roleNames, ['Operator'], reason: '$mangled');
+      }
+    });
+
+    test('the stored names are still only names — no groups come back', () {
+      // The rule the whole payload exists under: a hand-edited preferences
+      // file on a panel anybody can walk up to must not be able to grant a
+      // group. Adding a role name to it can at most name a role that then has
+      // to be resolved from the database, which is what the provider does.
+      final json = sessionFor(['A', 'B'], {AccessGroup.administer}).toJson();
+      expect(json.keys,
+          unorderedEquals(
+              ['username', 'roleName', 'additionalRoles', 'displayName',
+               'expiresAt']));
+    });
+
+    test('two sessions differing only in a second role are not equal', () {
+      expect(sessionFor(['A'], {}), isNot(sessionFor(['A', 'B'], {})));
+    });
+  });
 }

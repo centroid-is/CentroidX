@@ -1,4 +1,5 @@
 import 'dart:collection' show LinkedHashMap;
+import 'dart:math' as math;
 
 import 'package:json_annotation/json_annotation.dart';
 import 'package:flutter/material.dart';
@@ -8,6 +9,9 @@ import 'package:rxdart/rxdart.dart';
 import 'package:open62541/open62541.dart' show DynamicValue;
 
 import 'common.dart';
+import 'ethercat_asset.dart';
+import 'ethercat_subdevice_editor.dart';
+import 'link_anchors.dart' show ChildPlacer, NativelySized, NetworkPort;
 import '../../painter/beckhoff/cu2508.dart';
 import '../../painter/beckhoff/cx5010.dart';
 import '../../painter/beckhoff/ek1100.dart';
@@ -62,7 +66,63 @@ const Map<String, Asset Function()> _availableSubdevices = {
 /// the right shape, not a photograph. That is the same bargain every mimic on
 /// this page makes — the asset is there to be identified and clicked, and the
 /// label is what identifies it.
-abstract class BeckhoffCXConfig extends BaseAsset {
+/// Where slice [index] of a rack's row lands inside the rack's own box.
+///
+/// The same arithmetic the rack's `build` does with a `Row` inside a
+/// `BoxFit.contain` `FittedBox`: the head at its native size, every slice
+/// scaled to the head's height, the whole row centred in the box. Written out
+/// here because a cable has to know where a slice is without laying anything
+/// out — and because a laid-out rectangle is not available at the time the
+/// run is resolved.
+Rect? ecRackChildBox({
+  required Size headNative,
+  required List<Asset> slices,
+  required int index,
+  required Rect boxOnPage,
+  required Size canvas,
+}) {
+  if (index < 0 || index >= slices.length) return null;
+  if (canvas.isEmpty) return null;
+
+  // Explicit cast: `Asset` and `NativelySized` are unrelated declarations, so
+  // there is no promotion to lean on here — the same reason `portsOf` casts.
+  double widthOf(Asset a) => (a is NativelySized
+          ? (a as NativelySized).nativeSize
+          : kEcIo8SliceSize)
+      .width;
+
+  var rowWidth = headNative.width;
+  var before = headNative.width;
+  for (var i = 0; i < slices.length; i++) {
+    final w = widthOf(slices[i]);
+    if (i < index) before += w;
+    rowWidth += w;
+  }
+
+  final boxW = boxOnPage.width * canvas.width;
+  final boxH = boxOnPage.height * canvas.height;
+  final scale = math.min(boxW / rowWidth, boxH / headNative.height);
+  final left = boxOnPage.left * canvas.width + (boxW - rowWidth * scale) / 2;
+  final top =
+      boxOnPage.top * canvas.height + (boxH - headNative.height * scale) / 2;
+
+  return Rect.fromLTWH(
+    (left + before * scale) / canvas.width,
+    top / canvas.height,
+    widthOf(slices[index]) * scale / canvas.width,
+    headNative.height * scale / canvas.height,
+  );
+}
+
+/// A terminal-width slice in a rack row: [IO8Widget] and the EK1110 both draw
+/// at width = height / 6, so a row of them lines up.
+const Size kEcIo8SliceSize = Size(1000 / 6, 1000);
+
+/// The PS2001's housing is wider than a terminal — 48 mm against a 124 mm
+/// face — and the rack row has to leave it that room.
+const Size kEcPs2001SliceSize = Size(1000 * 48 / 124, 1000);
+
+abstract class BeckhoffCXConfig extends BaseAsset implements ChildPlacer {
   BeckhoffCXConfig();
 
   @override
@@ -107,6 +167,20 @@ abstract class BeckhoffCXConfig extends BaseAsset {
 
   /// Native painter size for the CX drawing (keeps 105.5:100 aspect).
   static const Size cxNativeSize = Size(1055, 1000);
+
+  /// Where one of this rack's slices sits, so a cable can plug into it.
+  @override
+  Rect? childBox(Asset child, Size canvas) => ecRackChildBox(
+        headNative: cxNativeSize,
+        slices: subdevices,
+        index: subdevices.indexOf(child),
+        boxOnPage: Rect.fromCenter(
+          center: Offset(coordinates.x, coordinates.y),
+          width: size.width,
+          height: size.height,
+        ),
+        canvas: canvas,
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -361,7 +435,20 @@ class _CXxxxxConfigContentState extends State<_CXxxxxConfigContent> {
                               context: context,
                               title: sub.runtimeType.toString(),
                               subtitle: 'Configuration',
-                              builder: (_) => sub.configure(context),
+                              // A slice is a subdevice of its own: its binding
+                              // goes under its form, the same way the page
+                              // editor adds it under a top-level device.
+                              builder: (_) => sub is EtherCatAsset
+                                  ? Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        sub.configure(context),
+                                        EcSubDeviceBindingEditor(asset: sub),
+                                      ],
+                                    )
+                                  : sub.configure(context),
                             ),
                             trailing: IconButton(
                               icon: const Icon(Icons.delete),
@@ -386,7 +473,18 @@ class _CXxxxxConfigContentState extends State<_CXxxxxConfigContent> {
 }
 
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEK1100Config extends BaseAsset {
+class BeckhoffEK1100Config extends EtherCatAsset
+    with EcNamedByNameOrId
+    implements ChildPlacer {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEk1100Ports;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['EK1100'];
+
   @override
   String get displayName => 'Beckhoff EK1100';
   @override
@@ -409,12 +507,27 @@ class BeckhoffEK1100Config extends BaseAsset {
   /// which is what every page saved before the field existed deserialises
   /// to, so those drawings are unchanged.
   @JsonKey(defaultValue: '')
+  @override
   String nameOrId = '';
 
   BeckhoffEK1100Config();
 
   /// Native painter size for the EK1100 drawing (keeps 44:100 aspect).
   static const Size _ekNativeSize = Size(440, 1000);
+
+  /// Where one of this coupler's slices sits, so a cable can plug into it.
+  @override
+  Rect? childBox(Asset child, Size canvas) => ecRackChildBox(
+        headNative: _ekNativeSize,
+        slices: subdevices,
+        index: subdevices.indexOf(child),
+        boxOnPage: Rect.fromCenter(
+          center: Offset(coordinates.x, coordinates.y),
+          width: size.width,
+          height: size.height,
+        ),
+        canvas: canvas,
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -615,7 +728,20 @@ class _EK1100ConfigContentState extends State<_EK1100ConfigContent> {
                               context: context,
                               title: sub.runtimeType.toString(),
                               subtitle: 'Configuration',
-                              builder: (_) => sub.configure(context),
+                              // A slice is a subdevice of its own: its binding
+                              // goes under its form, the same way the page
+                              // editor adds it under a top-level device.
+                              builder: (_) => sub is EtherCatAsset
+                                  ? Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        sub.configure(context),
+                                        EcSubDeviceBindingEditor(asset: sub),
+                                      ],
+                                    )
+                                  : sub.configure(context),
                             ),
                             trailing: IconButton(
                               icon: const Icon(Icons.delete),
@@ -640,12 +766,27 @@ class _EK1100ConfigContentState extends State<_EK1100ConfigContent> {
 }
 
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL1008Config extends BaseAsset {
+class BeckhoffEL1008Config extends EtherCatAsset with EcNamedByNameOrId implements NativelySized {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
+  /// The aspect this slice draws at, for a rack laying its row out.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  Size get nativeSize => kEcIo8SliceSize;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['EL1008'];
+
   @override
   String get displayName => 'Beckhoff EL1008';
   @override
   String get category => 'Beckhoff Devices';
 
+  @override
   String nameOrId;
   String? descriptionsKey;
   String? rawStateKey;
@@ -784,12 +925,27 @@ class _EL1008ConfigContentState extends State<_EL1008ConfigContent> {
 }
 
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL2008Config extends BaseAsset {
+class BeckhoffEL2008Config extends EtherCatAsset with EcNamedByNameOrId implements NativelySized {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
+  /// The aspect this slice draws at, for a rack laying its row out.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  Size get nativeSize => kEcIo8SliceSize;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['EL2008'];
+
   @override
   String get displayName => 'Beckhoff EL2008';
   @override
   String get category => 'Beckhoff Devices';
 
+  @override
   String nameOrId;
   String? descriptionsKey;
   String? rawStateKey;
@@ -988,12 +1144,27 @@ class _BeckhoffEL2008 extends ConsumerWidget {
 }
 
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL9222Config extends BaseAsset {
+class BeckhoffEL9222Config extends EtherCatAsset with EcNamedByNameOrId implements NativelySized {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
+  /// The aspect this slice draws at, for a rack laying its row out.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  Size get nativeSize => kEcIo8SliceSize;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['EL9222-5500'];
+
   @override
   String get displayName => 'Beckhoff EL9222';
   @override
   String get category => 'Beckhoff Devices';
 
+  @override
   String nameOrId;
 
   /// Key of the terminal's `ST_EL9222_5500` struct. Without it the module is
@@ -1298,9 +1469,14 @@ class _BeckhoffEL9222 extends ConsumerWidget {
 }
 
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL9187Config extends BaseAsset {
+class BeckhoffEL9187Config extends BaseAsset implements NativelySized {
   @override
   String get displayName => 'Beckhoff EL9187';
+
+  /// The aspect this slice draws at, for a rack laying its row out.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  Size get nativeSize => kEcIo8SliceSize;
   @override
   String get category => 'Beckhoff Devices';
 
@@ -1408,9 +1584,14 @@ class _BeckhoffEL9187 extends StatelessWidget {
 }
 
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL9186Config extends BaseAsset {
+class BeckhoffEL9186Config extends BaseAsset implements NativelySized {
   @override
   String get displayName => 'Beckhoff EL9186';
+
+  /// The aspect this slice draws at, for a rack laying its row out.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  Size get nativeSize => kEcIo8SliceSize;
   @override
   String get category => 'Beckhoff Devices';
 
@@ -2009,12 +2190,27 @@ class TriangleBoxPainter extends CustomPainter {
 }
 
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL3054Config extends BaseAsset {
+class BeckhoffEL3054Config extends EtherCatAsset with EcNamedByNameOrId implements NativelySized {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
+  /// The aspect this slice draws at, for a rack laying its row out.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  Size get nativeSize => kEcIo8SliceSize;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['EL3054'];
+
   @override
   String get displayName => 'Beckhoff EL3054';
   @override
   String get category => 'Beckhoff Devices';
 
+  @override
   String nameOrId;
   String? descriptionsKey;
   String? stateKey;
@@ -2309,7 +2505,21 @@ class _BeckhoffEL3054 extends ConsumerWidget {
 /// loose BOOLs, not a struct. See `el2912.dart` for what the face and the
 /// pane make of them, and why the terminal's own output lamps stay dark.
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL2912Config extends BaseAsset {
+class BeckhoffEL2912Config extends EtherCatAsset with EcNamedByNameOrId implements NativelySized {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
+  /// The aspect this slice draws at, for a rack laying its row out.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  Size get nativeSize => kEcIo8SliceSize;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['EL2912'];
+
   @override
   String get displayName => 'Beckhoff EL2912';
   @override
@@ -2318,6 +2528,7 @@ class BeckhoffEL2912Config extends BaseAsset {
   @override
   List<String> get searchKeywords => const ['twinsafe', 'safety', 'output'];
 
+  @override
   String nameOrId;
 
   /// `Fieldvoltage Underrange` off the terminal's DEVICEIO module.
@@ -2522,7 +2733,21 @@ class _BeckhoffEL2912 extends ConsumerWidget {
 ///
 /// See `ps2001.dart` for the decode and the operator surface.
 @JsonSerializable(explicitToJson: true)
-class BeckhoffPS2001Config extends BaseAsset {
+class BeckhoffPS2001Config extends EtherCatAsset with EcNamedByNameOrId implements NativelySized {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
+  /// The aspect this slice draws at, for a rack laying its row out.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  Size get nativeSize => kEcPs2001SliceSize;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['PS2001-2410'];
+
   @override
   String get displayName => 'Beckhoff PS2001';
   @override
@@ -2532,6 +2757,7 @@ class BeckhoffPS2001Config extends BaseAsset {
   List<String> get searchKeywords =>
       const ['power supply', 'psu', '24v', 'ps2000'];
 
+  @override
   String nameOrId;
 
   /// Key of the unit's `ST_PS2001_2410` struct. Without it the supply is a
@@ -2768,7 +2994,21 @@ class _BeckhoffPS2001 extends ConsumerWidget {
 /// terminal points are unused, so they are drawn unlabelled rather than
 /// given invented signal names.
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEL6070Config extends BaseAsset {
+class BeckhoffEL6070Config extends EtherCatAsset with EcNamedByNameOrId implements NativelySized {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEcTerminalPorts;
+
+  /// The aspect this slice draws at, for a rack laying its row out.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  Size get nativeSize => kEcIo8SliceSize;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['EL6070'];
+
   @override
   String get displayName => 'Beckhoff EL6070';
   @override
@@ -2785,6 +3025,7 @@ class BeckhoffEL6070Config extends BaseAsset {
   /// which is what every page saved before the field existed deserialises
   /// to, so those drawings are unchanged.
   @JsonKey(defaultValue: '')
+  @override
   String nameOrId = '';
 
   BeckhoffEL6070Config();
@@ -2827,7 +3068,21 @@ class BeckhoffEL6070Config extends BaseAsset {
 /// topology page it is where one rack's terminal block hands over to the
 /// next.
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEK1110Config extends BaseAsset {
+class BeckhoffEK1110Config extends EtherCatAsset with EcNamedByNameOrId implements NativelySized {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEk1110Ports;
+
+  /// The aspect this slice draws at, for a rack laying its row out.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  Size get nativeSize => kEcIo8SliceSize;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['EK1110'];
+
   @override
   String get displayName => 'Beckhoff EK1110';
   @override
@@ -2844,6 +3099,7 @@ class BeckhoffEK1110Config extends BaseAsset {
   /// which is what every page saved before the field existed deserialises
   /// to, so those drawings are unchanged.
   @JsonKey(defaultValue: '')
+  @override
   String nameOrId = '';
 
   BeckhoffEK1110Config();
@@ -2880,7 +3136,16 @@ class BeckhoffEK1110Config extends BaseAsset {
 /// anything. The name is what makes the drawing useful, so it is
 /// configurable: a page with three CU2508s wants to say which is which.
 @JsonSerializable(explicitToJson: true)
-class BeckhoffCU2508Config extends BaseAsset {
+class BeckhoffCU2508Config extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kCu2508Ports;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['CU2508'];
+
   @override
   String get displayName => 'Beckhoff CU2508';
   @override
@@ -2890,6 +3155,7 @@ class BeckhoffCU2508Config extends BaseAsset {
   List<String> get searchKeywords =>
       const ['port multiplier', 'switch', 'ethercat', 'network'];
 
+  @override
   String nameOrId;
 
   BeckhoffCU2508Config({required this.nameOrId});
@@ -2967,7 +3233,20 @@ class _CU2508ConfigContentState extends State<_CU2508ConfigContent> {
 /// carried by [EPBoxVariant.isLive] rather than by two near-identical
 /// classes. See `assets/ep_box.dart`.
 @JsonSerializable(explicitToJson: true)
-class BeckhoffEPBoxConfig extends BaseAsset {
+class BeckhoffEPBoxConfig extends EtherCatAsset with EcNamedByNameOrId {
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kEpBoxPorts;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const [
+        'EP2338-0002',
+        'EP2338-1002',
+        'EP1918-0002',
+      ];
+
   @override
   String get displayName => 'Beckhoff ${variantModel.model}';
   @override
@@ -2983,6 +3262,7 @@ class BeckhoffEPBoxConfig extends BaseAsset {
   @JsonKey(name: 'variant_model')
   EPBoxVariant variantModel;
 
+  @override
   String nameOrId;
 
   /// Key of the box's `ST_EP2338_0002`. Meaningless on an EP1918, which

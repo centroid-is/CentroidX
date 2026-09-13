@@ -103,16 +103,33 @@ class _LinkEditOverlayState extends State<LinkEditOverlay> {
   /// box contains the point is the one drawn on top and the one the operator
   /// thinks they dropped onto.
   Asset? _assetUnder(Offset at) {
+    final anchors = PageLinkAnchors(widget.assets, widget.canvas);
     Asset? found;
-    for (final asset in widget.assets) {
-      if (identical(asset, widget.link)) continue;
-      final box = asset.boxOn(widget.assets, widget.canvas);
-      final cx = (box?.center.dx ?? asset.coordinates.x) * widget.canvas.width;
-      final cy = (box?.center.dy ?? asset.coordinates.y) * widget.canvas.height;
-      final w = (box?.width ?? asset.size.width) * widget.canvas.width;
-      final h = (box?.height ?? asset.size.height) * widget.canvas.height;
+
+    void test(Asset asset, Rect box) {
+      final cx = box.center.dx * widget.canvas.width;
+      final cy = box.center.dy * widget.canvas.height;
+      final w = box.width * widget.canvas.width;
+      final h = box.height * widget.canvas.height;
       if ((at.dx - cx).abs() <= w / 2 && (at.dy - cy).abs() <= h / 2) {
         found = asset;
+      }
+    }
+
+    for (final asset in widget.assets) {
+      if (identical(asset, widget.link)) continue;
+      final box = asset.boxOn(widget.assets, widget.canvas) ??
+          Rect.fromCenter(
+            center: Offset(asset.coordinates.x, asset.coordinates.y),
+            width: asset.size.width,
+            height: asset.size.height,
+          );
+      test(asset, box);
+      // A rack's slices are the devices a cable plugs into, and they sit on
+      // top of the rack: tested after it, so dropping on a slice picks the
+      // slice rather than the block it is part of.
+      for (final child in asset.childAssets) {
+        test(child, anchors.boxOf(child));
       }
     }
     return found;

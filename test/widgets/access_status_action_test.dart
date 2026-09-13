@@ -135,8 +135,12 @@ Widget _host({
   ThemeData? theme,
   /// What `authProviderProvider` resolves to. Null means "no database", which
   /// is also what every test predating the account menu gets — the badge fails
-  /// closed and shows no menu, which is why none of them needed changing.
+  /// closed and offers no Change password entry.
   AuthProvider? auth,
+  /// The account this panel is committed to, or null for none.
+  String? committedTo,
+  /// When true, the commitment never resolves — the boot frame.
+  bool commitmentPending = false,
 }) {
   // Each opener is only passed when the test supplies one, so the
   // "the default opener is the real dialog" assertions still see the
@@ -159,6 +163,9 @@ Widget _host({
     overrides: [
       accessSessionProvider.overrideWith(() => controller),
       authProviderProvider.overrideWith((ref) async => auth),
+      panelAccountProvider.overrideWith((ref) => commitmentPending
+          ? Completer<String?>().future
+          : Future<String?>.value(committedTo)),
     ],
     child: MaterialApp(
       theme: theme,
@@ -459,7 +466,8 @@ void main() {
       expect(opened, 1);
     });
 
-    testWidgets('a station account is not offered it', (tester) async {
+    testWidgets('a station account is offered Switch account, not a password',
+        (tester) async {
       // A committed panel resumes its account with nobody having presented a
       // credential, and the account is shared — so there is no "your own
       // password" to change. It belongs to an administrator on the users
@@ -471,12 +479,133 @@ void main() {
         openSignIn: (_, __) async {},
         openChangePassword: (_, __) async {},
         auth: _CapableAuthProvider(),
+        committedTo: 'freezer',
       ));
       await tester.pumpAndSettle();
 
-      expect(find.byKey(kAccessAccountMenuKey), findsNothing);
-      expect(find.text('freezer'), findsOneWidget,
-          reason: 'the identity is still shown — only the menu is withheld');
+      await tester.tap(find.byKey(kAccessAccountMenuKey));
+      await tester.pumpAndSettle();
+
+      expect(find.text(kAccessAccountMenuSwitchAccountLabel), findsOneWidget);
+      expect(find.text(kAccessAccountMenuChangePasswordLabel), findsNothing);
+    });
+
+    testWidgets('Switch account opens the sign-in and signs nobody out',
+        (tester) async {
+      // The whole point: elevating over a committed panel without signing the
+      // panel out first.
+      var opened = 0;
+      final controller = _FakeSessionController(
+        session: _elevated(username: 'freezer', stationAccount: true),
+      );
+      await tester.pumpWidget(_host(
+        controller: controller,
+        openSignIn: (_, __) async => opened++,
+        committedTo: 'freezer',
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(kAccessAccountMenuKey));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(kAccessAccountMenuSwitchAccountLabel));
+      await tester.pumpAndSettle();
+
+      expect(opened, 1);
+      expect(controller.signOutCalls, 0);
+    });
+
+    testWidgets('the panel\'s own account has no Sign out', (tester) async {
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(
+          session: _elevated(username: 'freezer', stationAccount: true),
+        ),
+        openSignIn: (_, __) async {},
+        committedTo: 'freezer',
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Sign out'), findsNothing);
+      expect(find.byKey(kAccessPanelBadgeKey), findsOneWidget,
+          reason: 'the missing button is explained, not just absent');
+      expect(find.text('freezer'), findsOneWidget);
+    });
+
+    testWidgets('a station account on an uncommitted panel can sign out',
+        (tester) async {
+      // "Just this session" — an ordinary session that happens not to expire.
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(
+          session: _elevated(username: 'freezer', stationAccount: true),
+        ),
+        openSignIn: (_, __) async {},
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Sign out'), findsOneWidget);
+      expect(find.byKey(kAccessPanelBadgeKey), findsNothing);
+    });
+
+    testWidgets('a station account on a panel committed elsewhere can sign out',
+        (tester) async {
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(
+          session: _elevated(username: 'freezer', stationAccount: true),
+        ),
+        openSignIn: (_, __) async {},
+        committedTo: 'other_panel',
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Sign out'), findsOneWidget);
+    });
+
+    testWidgets('a person over a committed panel keeps one-tap Sign out',
+        (tester) async {
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(session: _elevated()),
+        openSignIn: (_, __) async {},
+        committedTo: 'freezer',
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Sign out'), findsOneWidget);
+    });
+
+    testWidgets('no Sign out flashes on a station account before the '
+        'commitment has loaded', (tester) async {
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(
+          session: _elevated(username: 'freezer', stationAccount: true),
+        ),
+        openSignIn: (_, __) async {},
+        commitmentPending: true,
+      ));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byTooltip('Sign out'), findsNothing);
+    });
+
+    testWidgets('the panel badge stays inside the app-bar budget',
+        (tester) async {
+      await tester.pumpWidget(_host(
+        controller: _FakeSessionController(
+          session: _elevated(
+            username: 'freezer',
+            displayName: 'a' * 60,
+            stationAccount: true,
+          ),
+        ),
+        openSignIn: (_, __) async {},
+        committedTo: 'freezer',
+      ));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(
+        tester.getSize(find.byType(AccessStatusAction)).width,
+        lessThanOrEqualTo(kAccessStatusActionMaxWidth),
+      );
     });
 
     testWidgets('sign-out stays one tap, menu or no menu', (tester) async {
@@ -530,12 +659,12 @@ void main() {
       expect(find.byKey(kAccessAccountMenuKey), findsNothing);
     });
 
-    testWidgets('is absent when the provider has no password to change',
+    testWidgets('offers no Change password when the provider has none',
         (tester) async {
       // The OIDC shape, and the test that makes `PasswordSelfService`'s promise
-      // enforceable rather than merely stated. Without this the menu would keep
-      // rendering on the day a provider without the capability arrives, and
-      // every use of it would dead-end in a sentence about a log.
+      // enforceable rather than merely stated. Without this the entry would
+      // keep rendering on the day a provider without the capability arrives,
+      // and every use of it would dead-end in a sentence about a log.
       await tester.pumpWidget(_host(
         controller: _FakeSessionController(session: _elevated()),
         openSignIn: (_, __) async {},
@@ -544,16 +673,18 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      expect(find.byKey(kAccessAccountMenuKey), findsNothing);
-      expect(find.text('anna'), findsOneWidget,
-          reason: 'the identity is still shown — only the menu is withheld');
-      expect(find.byTooltip('Sign out'), findsOneWidget,
-          reason: 'and signing out is unaffected by any of this');
+      await tester.tap(find.byKey(kAccessAccountMenuKey));
+      await tester.pumpAndSettle();
+
+      expect(find.text(kAccessAccountMenuChangePasswordLabel), findsNothing);
+      expect(find.text(kAccessAccountMenuSwitchAccountLabel), findsOneWidget,
+          reason: 'switching account needs no password capability');
     });
 
-    testWidgets('is absent when there is no database at all', (tester) async {
-      // Fails closed. A missing menu is a non-event; a menu that cannot work is
-      // a support call.
+    testWidgets('offers no Change password when there is no database at all',
+        (tester) async {
+      // Fails closed. A missing entry is a non-event; one that cannot work is a
+      // support call.
       await tester.pumpWidget(_host(
         controller: _FakeSessionController(session: _elevated()),
         openSignIn: (_, __) async {},
@@ -561,7 +692,12 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      expect(find.byKey(kAccessAccountMenuKey), findsNothing);
+      await tester.tap(find.byKey(kAccessAccountMenuKey));
+      await tester.pumpAndSettle();
+
+      expect(find.text(kAccessAccountMenuChangePasswordLabel), findsNothing);
+      expect(find.byTooltip('Sign out'), findsOneWidget,
+          reason: 'and signing out is unaffected by any of this');
     });
 
     test('the default opener is the real change-password dialog', () {

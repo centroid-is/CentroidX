@@ -271,10 +271,11 @@ including a list naming nothing. A whitelist set too tight is **not** a
 lockout and needs no break-glass: it cannot take away the screen that repairs
 it. Two independent reasons, and both are enforced rather than remembered:
 
-* The Advanced routes — the access screen among them — answer to groups alone
-  and are not whitelistable. No whitelist state can hide `/advanced/access`
-  beyond the `users` gate it already has, and the last-`users`-holder
-  invariant guarantees somebody still holds that group.
+* The access screen is exempt from the whitelist. Every other Advanced
+  destination can be granted or withheld like any page, but no whitelist state
+  can hide `/advanced/access` beyond the `users` gate it already has
+  (`routeExemptFromPageWhitelist`), and the last-`users`-holder invariant
+  guarantees somebody still holds that group.
 * Signing in is not a page. The app bar carries the sign-in control on every
   screen, and the refusal page a hidden page shows carries one of its own — so
   a panel whitelisted down to nothing is still a panel somebody can sign in at.
@@ -320,6 +321,13 @@ There is deliberately no per-account "never". A session that must not expire
 belongs to a station account, which is an administrator saying "this identity
 is a panel, not a person" — one place to look, and one row in the trail when
 it changes.
+
+A committed panel's own account has **no sign-out** in the app bar. To move a
+panel to another account, or back to anonymous: tap the name in the app bar,
+choose **Switch account…** and sign in with an account holding `users`, then
+open Advanced → Access and press **Release panel** on the Session card. It
+leaves a `panel.release` row in the trail. Signing in as the station account
+again offers to keep the panel signed in as it.
 
 ### The database-outage rule, and the cost it accepts
 

@@ -46,12 +46,17 @@ import 'access_role.dart';
 /// Phase 6 adds a fifth surface, `'admin'`, for the writes the roles and users
 /// screens make. A role edit that grants somebody `force` and leaves no trace
 /// is the widest gap this product could ship with — re-scoping a role is the
-/// most consequential hand-made write in it. The itemKey vocabulary is twelve
+/// most consequential hand-made write in it. The itemKey vocabulary is thirteen
 /// strings:
 ///
 ///     role.create | role.update | role.delete | role.rename | role.pages
 ///     user.create | user.delete | user.role   | user.password | user.pages
 ///     user.station_account | user.inactivity_timeout
+///     panel.release
+///
+/// `panel.release` is the odd one out: its subject is this panel's committed
+/// station account, which is device-local state rather than a database row.
+/// See [AuditRecord.panelRelease].
 ///
 /// `role.pages` and `user.pages` are the page-visibility whitelist at its two
 /// levels (`docs/page-visibility-whitelist-design.md`). They join the admin
@@ -773,6 +778,47 @@ class AuditRecord {
         surface: _adminSurface,
         itemKey: 'user.password',
         member: subject,
+        groupRequired: AccessGroup.users.name,
+        allowed: allowed,
+        origin: origin,
+        actionId: actionId,
+        reason: reason,
+      );
+
+  /// This panel stopped returning to its station account: `panel.release`,
+  /// the released account in [member] and in [oldValue].
+  ///
+  /// The one admin row whose subject is **device-local**. A panel's commitment
+  /// lives in its own preference key, not in `app_user`, so this is written by
+  /// the session controller that owns the key rather than by the admin store —
+  /// but it is gated on `users` like every other admin row, because ending a
+  /// panel's identity is decommissioning, not a person signing out. Before it
+  /// existed the only way out was signing the account out from the app bar,
+  /// which anybody at the panel could do and which wrote a `logout` row that
+  /// did not say the panel had been released.
+  ///
+  /// Thirteenth of the admin itemKeys, and the first under `panel.`, because
+  /// what it changes is a panel and not an account or a role.
+  factory AuditRecord.panelRelease({
+    required String who,
+    required String station,
+    required String roleName,
+    required String actionId,
+    required String subject,
+    required bool allowed,
+    DateTime? at,
+    String? reason,
+    String origin = 'operator',
+  }) =>
+      AuditRecord(
+        at: at ?? clock.now(),
+        who: who,
+        station: station,
+        roleName: roleName,
+        surface: _adminSurface,
+        itemKey: 'panel.release',
+        member: subject,
+        oldValue: subject,
         groupRequired: AccessGroup.users.name,
         allowed: allowed,
         origin: origin,

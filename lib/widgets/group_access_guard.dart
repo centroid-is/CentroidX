@@ -102,7 +102,7 @@ Future<bool> guardGroupAction(
       at: DateTime.now(),
       who: session.user?.username ?? _anonymousWho,
       station: sink.station,
-      roleName: session.roleName,
+      roleName: session.roleLabel,
       // `pref`, not a new enum value. Every non-tag surface in the app already
       // records as `pref` — history views, knowledge stores, access templates
       // and the session section — and a fifth spelling for the same idea would

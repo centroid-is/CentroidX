@@ -194,6 +194,152 @@ TEST(a_never_arrived_line_blames_dart_not_the_engine) {
   CHECK(Mentions(line, "main()"));
 }
 
+// --- The raster verdict -----------------------------------------------------
+//
+// The 2026-09-12 freeze: the isolate stamps on time with frames counted, the
+// next-frame probe answers, the sentinel is healthy, stderr is quiet -- and
+// the engine returns an empty image for every snapshot. The stamp now carries
+// that answer, and the verdict below is the only detector that saw it.
+
+DartLivenessStamp RasterStamp(unsigned long long tick, bool ok) {
+  DartLivenessStamp stamp = StampFor(1, tick, tick * 1000);
+  stamp.raster_probed = true;
+  stamp.raster_ok = ok;
+  stamp.frames = 25;
+  return stamp;
+}
+
+TEST(three_consecutive_failed_raster_probes_declare_the_renderer_lost) {
+  DartLiveness liveness(FastConfig());
+  liveness.EpochStarted(1, 0);
+  liveness.OnStamp(RasterStamp(1, true), 1000);
+
+  DartLiveness::Decision one = liveness.OnStamp(RasterStamp(2, false), 2000);
+  CHECK(!one.raster_lost);
+  CHECK_EQ(one.raster_failures, 1);
+  DartLiveness::Decision two = liveness.OnStamp(RasterStamp(3, false), 3000);
+  CHECK(!two.raster_lost);
+  CHECK_EQ(two.raster_failures, 2);
+
+  DartLiveness::Decision three = liveness.OnStamp(RasterStamp(4, false), 4000);
+  CHECK(three.raster_lost);
+  CHECK_EQ(three.raster_failures, 3);
+  CHECK(liveness.raster_lost());
+  // The isolate is fine throughout: the silence verdict has nothing to say.
+  CHECK(three.verdict == Verdict::kNothingToSay);
+}
+
+TEST(the_raster_loss_is_declared_once_per_episode) {
+  DartLiveness liveness(FastConfig());
+  liveness.EpochStarted(1, 0);
+  for (unsigned long long tick = 1; tick <= 3; tick++) {
+    liveness.OnStamp(RasterStamp(tick, false), tick * 1000);
+  }
+  CHECK(liveness.raster_lost());
+  // The loss path is rebuilding; until a new epoch, keep counting quietly.
+  DartLiveness::Decision fourth = liveness.OnStamp(RasterStamp(4, false), 4000);
+  CHECK(!fourth.raster_lost);
+  CHECK_EQ(fourth.raster_failures, 4);
+}
+
+TEST(a_successful_probe_resets_the_run) {
+  DartLiveness liveness(FastConfig());
+  liveness.EpochStarted(1, 0);
+  liveness.OnStamp(RasterStamp(1, false), 1000);
+  liveness.OnStamp(RasterStamp(2, false), 2000);
+  DartLiveness::Decision ok = liveness.OnStamp(RasterStamp(3, true), 3000);
+  CHECK(!ok.raster_lost);
+  CHECK(!ok.raster_recovered);
+  CHECK_EQ(ok.raster_failures, 0);
+  // Two more failures are two, not four.
+  liveness.OnStamp(RasterStamp(4, false), 4000);
+  DartLiveness::Decision second = liveness.OnStamp(RasterStamp(5, false), 5000);
+  CHECK(!second.raster_lost);
+  CHECK_EQ(second.raster_failures, 2);
+}
+
+TEST(a_stamp_that_did_not_probe_is_not_evidence_either_way) {
+  // An older Dart build, or a probe that threw: the count neither grows nor
+  // resets. "Unknown" must not clear a real run, and must not add to it.
+  DartLiveness liveness(FastConfig());
+  liveness.EpochStarted(1, 0);
+  liveness.OnStamp(RasterStamp(1, false), 1000);
+  liveness.OnStamp(RasterStamp(2, false), 2000);
+  DartLiveness::Decision unknown = liveness.OnStamp(StampFor(1, 3, 3000), 3000);
+  CHECK(!unknown.raster_lost);
+  CHECK_EQ(liveness.raster_failures(), 2);
+  DartLiveness::Decision third = liveness.OnStamp(RasterStamp(4, false), 4000);
+  CHECK(third.raster_lost);
+
+  // And a build that never probes never declares, however long it runs.
+  DartLiveness plain(FastConfig());
+  plain.EpochStarted(1, 0);
+  for (unsigned long long tick = 1; tick <= 50; tick++) {
+    CHECK(!plain.OnStamp(StampFor(1, tick, tick * 1000), tick * 1000).raster_lost);
+  }
+  CHECK(!plain.raster_lost());
+}
+
+TEST(a_renderer_that_recovers_on_its_own_says_so_once) {
+  DartLiveness liveness(FastConfig());
+  liveness.EpochStarted(1, 0);
+  for (unsigned long long tick = 1; tick <= 3; tick++) {
+    liveness.OnStamp(RasterStamp(tick, false), tick * 1000);
+  }
+  DartLiveness::Decision back = liveness.OnStamp(RasterStamp(4, true), 4000);
+  CHECK(back.raster_recovered);
+  CHECK(!liveness.raster_lost());
+  CHECK(!liveness.OnStamp(RasterStamp(5, true), 5000).raster_recovered);
+}
+
+TEST(a_new_epoch_forgets_the_raster_run) {
+  DartLiveness liveness(FastConfig());
+  liveness.EpochStarted(1, 0);
+  liveness.OnStamp(RasterStamp(1, false), 1000);
+  liveness.OnStamp(RasterStamp(2, false), 2000);
+  // The loss path rebuilt the engine: its context is a new question.
+  liveness.EpochStarted(2, 3000);
+  CHECK_EQ(liveness.raster_failures(), 0);
+  DartLivenessStamp stamp = RasterStamp(1, false);
+  stamp.epoch = 2;
+  CHECK(!liveness.OnStamp(stamp, 4000).raster_lost);
+  CHECK_EQ(liveness.raster_failures(), 1);
+}
+
+TEST(a_zero_threshold_disables_the_raster_verdict) {
+  DartLiveness::Config config = FastConfig();
+  config.raster_failures_before_loss = 0;
+  DartLiveness liveness(config);
+  liveness.EpochStarted(1, 0);
+  for (unsigned long long tick = 1; tick <= 20; tick++) {
+    CHECK(!liveness.OnStamp(RasterStamp(tick, false), tick * 1000).raster_lost);
+  }
+}
+
+TEST(the_raster_lines_say_what_happened) {
+  DartLiveness liveness(FastConfig());
+  liveness.EpochStarted(1, 0);
+  CHECK(DescribeRaster(liveness.OnStamp(RasterStamp(1, false), 1000),
+                       liveness.config())
+            .empty());
+  liveness.OnStamp(RasterStamp(2, false), 2000);
+  const std::string lost = DescribeRaster(
+      liveness.OnStamp(RasterStamp(3, false), 3000), liveness.config());
+  CHECK(Mentions(lost, "CANNOT RASTERISE"));
+  CHECK(Mentions(lost, "3 consecutive"));
+  CHECK(Mentions(lost, "3.0 s"));
+  CHECK(Mentions(lost, "25 frame(s)"));
+
+  const std::string back = DescribeRaster(
+      liveness.OnStamp(RasterStamp(4, true), 4000), liveness.config());
+  CHECK(Mentions(back, "rasterising again"));
+  CHECK(Mentions(back, "ENDED without a rebuild"));
+
+  CHECK(DescribeRaster(liveness.OnStamp(RasterStamp(5, true), 5000),
+                       liveness.config())
+            .empty());
+}
+
 }  // namespace
 
 int main() { return tfc_test::RunAll(); }
