@@ -19,7 +19,32 @@ against it. Nothing runs it, and nothing should: it carries the
 unattended-upgrades pattern that never matched (below) and a `curl | bash`
 ZeroTier install.
 
+## Get the USB
+
+The same key installs any station, so there is nothing customer-specific to
+build — it asks at install time. Published on every release, and rebuilt from
+the tip of `main` on every merge:
+
+```bash
+# the current release
+gh release download --repo centroid-is/CentroidX --pattern 'usb-installer.img.*'
+# or the tip of main
+gh release download main-latest --repo centroid-is/CentroidX --pattern 'usb-installer.img.*'
+
+sudo bmaptool copy --bmap usb-installer.img.bmap usb-installer.img.gz /dev/sdX
+```
+
+Both are also on the releases page for anyone without `gh`. Checksums are in
+that release's `SHA256SUMS.txt`.
+
+Only the installer is published, not the station image inside it — the key
+already carries it. For flashing an SSD directly, build below or take one from a
+`station-v*` release.
+
 ## Build
+
+Only needed to change the image itself; installing a station needs nothing from
+this section.
 
 ```bash
 make generated          # stage ../docker-compose.yml + the provenance stamp
