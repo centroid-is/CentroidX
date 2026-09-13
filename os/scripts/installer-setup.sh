@@ -31,6 +31,11 @@ else
   echo "no setup app bundle: enabling the text installer on tty1"
   systemctl enable centroidx-installer.service
 fi
+# The Makefile touches a .keep in each staged directory so debos always has a
+# non-empty overlay source, even on a local build with no CI artifacts. They
+# have done their job by now and would otherwise ship in the image.
+rm -f /opt/centroidx-setup/.keep /usr/local/bin/.keep /opt/centroidx/.keep
+
 # getty would otherwise race the installer for tty1 and eat its prompts.
 systemctl mask getty@tty1.service
 # Nothing to log into; the installer is the only interface.

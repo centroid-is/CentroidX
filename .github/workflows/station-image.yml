@@ -161,6 +161,46 @@ jobs:
   # the engine and the flutter-elinux that produced it are the ones the embedder
   # in that container was built against -- a mismatch there fails at link time,
   # not at runtime.
+  # Runs on pull_request, unlike setup-app and build. The app is the only
+  # compiled code in os/, and nothing analysed or tested it: setup-app does
+  # create/pub get/build and is skipped on PRs anyway, so a PR that broke
+  # validatePassword or failed to compile main.dart was green. The 92-line
+  # widget_test.dart was never executed by anything.
+  #
+  # Same toolchain container as setup-app, so the Dart here is the Dart the
+  # bundle is built with -- which is the whole reason pubspec.yaml is pinned to
+  # ^3.5.1. No elinux platform: analyze and test do not need a platform runner.
+  app-checks:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/centroid-is/tfc-toolchain:latest
+    defaults:
+      run:
+        working-directory: os/app
+    steps:
+      - name: Make safe directory
+        run: git config --system --add safe.directory '*'
+        working-directory: .
+      - uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Checkout (retry)
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
   setup-app:
     needs: validate
     if: github.event_name != 'pull_request'
@@ -322,11 +362,6 @@ jobs:
       # branch and nothing said so. Three passing jobs told us nothing about
       # which installer the image actually enables, so assert it on the artifact
       # itself rather than on the steps that produced it.
-      # The first green build shipped a text-only installer: the bundle was
-      # present but not executable, so installer-setup.sh took the fallback
-      # branch and nothing said so. Three passing jobs told us nothing about
-      # which installer the image actually enables, so assert it on the artifact
-      # itself rather than on the steps that produced it.
       - name: Assert the built USB is the graphical installer
         run: |
           # NOT -e. GitHub runs steps with `bash -e`, under which a failing
@@ -371,6 +406,13 @@ jobs:
           t "launcher executable"                               test -x "$mnt/usr/local/bin/centroidx-setup"
           t "weston input-method points at the keyboard"        grep -q "^path=/usr/local/bin/centroidx-keyboard" "$mnt/etc/xdg/weston/weston.ini"
           t "weston installed"                                  test -e "$mnt/usr/bin/weston"
+          # Both directions of the handover. OnFailure alone does not fire when
+          # the APP dies: weston exits 0 in that case, so the unit goes inactive
+          # rather than failed. Asserted because it is invisible on the happy
+          # path -- the boot test cannot see it either way.
+          G="$mnt/etc/systemd/system/centroidx-gui.service"
+          t "handover on failure"                               grep -q "^OnFailure=centroidx-installer.service" "$G"
+          t "handover on clean exit too"                        grep -q "^OnSuccess=centroidx-installer.service" "$G"
 
           if [ "$fail" != 0 ]; then
             echo "--- enabled units ---";        ls -la "$W" 2>&1 | head -20
@@ -384,11 +426,15 @@ jobs:
       # The assertion above proves the pieces are present and wired. This proves
       # the thing actually boots and draws: QMP screendump captures the guest
       # framebuffer with no cooperation from the guest, so the screenshots show
-      # what a panel would show. A black first frame means weston did not start;
-      # an empty desktop means the app died (most likely the embedder taken from
-      # the HMI image not matching our bundle); and the third shot says whether
-      # tapping a field raises the on-screen keyboard, which is the only
-      # headless way to exercise the input-method-v1 path.
+      # what a panel would show. The three shots are
+      # ordered so the artifact says where the flow stopped: 01 black means
+      # weston never started and 01 empty means the app died (most likely the
+      # embedder not matching our bundle); 02 still showing the disk step means
+      # the tap never reached the app; 03 without a panel at the bottom means the
+      # field took focus but the input method did not raise.
+      #
+      # boot-test.py fails on a frame that is essentially one colour, because a
+      # compositor that never draws used to pass this step in silence.
       - name: Boot the installer and photograph it
         run: |
           set -euo pipefail

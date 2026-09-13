@@ -35,6 +35,12 @@ String? validatePassword(String? value) {
   return null;
 }
 
+/// Every VPN field is required once the operator has chosen to configure one:
+/// a half-filled `wg0.conf` is worse than none, because the station comes up
+/// looking configured and is unreachable.
+String? validateRequired(String? value) =>
+    (value ?? '').trim().isEmpty ? 'Required' : null;
+
 String? validateStationName(String? value) {
   final v = (value ?? '').trim();
   if (v.isEmpty) return 'Required';
@@ -77,13 +83,19 @@ class Answers {
   String vpnObfuscatorKey = '';
   String vpnServerPublicKey = '';
   String vpnAddress = '';
-  String vpnAllowedIps = '10.13.1.0/24';
+  // No default. It was a specific RFC 1918 subnet, which reads as one site's
+  // topology shipped as a product default; required and empty is honest.
+  String vpnAllowedIps = '';
 
+  /// Must agree field-for-field with the validators on the VPN step: this is
+  /// what decides whether the VPN block is written to station.env, so a field
+  /// the form requires but this ignores would be dropped on the floor.
   bool get vpnComplete =>
       vpnEndpoint.isNotEmpty &&
       vpnObfuscatorKey.isNotEmpty &&
       vpnServerPublicKey.isNotEmpty &&
-      vpnAddress.isNotEmpty;
+      vpnAddress.isNotEmpty &&
+      vpnAllowedIps.isNotEmpty;
 
   /// The seed file the shell installer reads. Deliberately the same key=value
   /// format it already parses (never sources), so the graphical and text paths

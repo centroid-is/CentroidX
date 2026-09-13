@@ -59,15 +59,27 @@ WG_PUBKEY=""
 # wg-obfuscator listens here and wg talks to it over loopback; upstream default.
 OBF_PORT=13255
 
-red()  { printf '\033[1;31m%s\033[0m\n' "$*"; }
-grn()  { printf '\033[1;32m%s\033[0m\n' "$*"; }
-bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+# Colour only for a human at a tty. The setup app runs this with its output on
+# a pipe and renders each line verbatim, so unconditional escapes put
+# "\033[1;31m  FAILED: ..." on the panel in front of the operator. TERM=dumb
+# does not help: nothing here consults it.
+if [ -t 1 ]; then C_RED=$'\033[1;31m'; C_GRN=$'\033[1;32m'; C_BLD=$'\033[1m'; C_OFF=$'\033[0m'
+else                C_RED=''; C_GRN=''; C_BLD=''; C_OFF=''
+fi
+red()  { printf '%s%s%s\n' "$C_RED" "$*" "$C_OFF"; }
+grn()  { printf '%s%s%s\n' "$C_GRN" "$*" "$C_OFF"; }
+bold() { printf '%s%s%s\n' "$C_BLD" "$*" "$C_OFF"; }
 rule() { printf '%s\n' "------------------------------------------------------------"; }
 
 # Both on stderr: die is called from inside $(...) in places, and anything it
 # wrote to stdout there would be captured as data instead of shown. (Review #1:
 # the refusal text became the sole "install candidate".)
-die() { printf '\033[1;31m%s\033[0m\n' "  FAILED: $*" >&2; exit 1; }
+die() {
+  if [ -t 2 ]; then printf '\033[1;31m%s\033[0m\n' "  FAILED: $*" >&2
+  else              printf '%s\n'                    "  FAILED: $*" >&2
+  fi
+  exit 1
+}
 
 banner() {
   clear 2>/dev/null || true
@@ -259,8 +271,14 @@ valid_station_name() {
 confirm() {
   local answer
   if [ "$UNATTENDED" = 1 ]; then
-    red "  UNATTENDED: erasing $TARGET in 15 seconds. Ctrl-C to stop."
-    sleep 15
+    if [ -n "$PRESET_DISK" ]; then
+      # The caller named the disk on the command line, which is the setup app
+      # after the operator confirmed on screen. There is no Ctrl-C to offer.
+      red "  Erasing $TARGET."
+    else
+      red "  UNATTENDED: erasing $TARGET in 15 seconds. Ctrl-C to stop."
+      sleep 15
+    fi
     return
   fi
   red "  ****************************************************"
@@ -412,7 +430,7 @@ grn "  Installed."
 echo
 if [ -n "$WG_PUBKEY" ]; then
   bold "  Register this station's public key on the VPN server:"
-  printf '\033[1;32m    %s\033[0m\n' "$WG_PUBKEY"
+  printf '%s    %s%s\n' "$C_GRN" "$WG_PUBKEY" "$C_OFF"
   echo
 fi
 if [ "$NO_REBOOT" = 1 ]; then

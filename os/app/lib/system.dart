@@ -31,8 +31,10 @@ Future<String?> bootDisk() async {
 /// Candidate install targets. Returns empty rather than throwing when the boot
 /// disk cannot be determined — the caller turns that into a refusal, because
 /// there is no safe way to guess which disk not to erase.
-Future<List<TargetDisk>> listDisks() async {
-  final boot = await bootDisk();
+/// Pass [boot] when the caller has already resolved the boot disk, so probing
+/// it does not run twice for one screen.
+Future<List<TargetDisk>> listDisks({String? boot}) async {
+  boot ??= await bootDisk();
   if (boot == null) return const [];
   final out = await _out('lsblk', ['-dno', 'NAME,SIZE,MODEL', '--sort', 'NAME']);
   if (out == null) return const [];
@@ -51,10 +53,6 @@ Future<List<TargetDisk>> listDisks() async {
   }
   return disks;
 }
-
-/// True when the boot disk could not be identified. The UI must refuse to offer
-/// any target in that case rather than risk listing the USB it is running from.
-Future<bool> bootDiskUnknown() async => (await bootDisk()) == null;
 
 class InstallResult {
   InstallResult(this.exitCode, this.publicKey);

@@ -43,7 +43,7 @@ void main() {
 
   group('station name', () {
     test('must be a usable hostname and certificate CN', () {
-      expect(validateStationName('Frystar'), isNull);
+      expect(validateStationName('line1'), isNull);
       expect(validateStationName('st-101'), isNull);
       expect(validateStationName(''), isNotNull);
       expect(validateStationName('-leading'), isNotNull);
@@ -56,13 +56,13 @@ void main() {
   group('station.env', () {
     test('is key=value the shell installer can parse, and omits VPN when skipped', () {
       final a = Answers()
-        ..stationName = 'Frystar'
+        ..stationName = 'line1'
         ..centroidPassword = 'aaaaaaaa'
         ..rootPassword = 'bbbbbbbb'
         ..vncPassword = 'cccccccc'
         ..dbPassword = 'dddddddd';
       final env = a.toStationEnv();
-      expect(env, contains('STATION_NAME=Frystar'));
+      expect(env, contains('STATION_NAME=line1'));
       expect(env, contains('DB_PASSWORD=dddddddd'));
       expect(env, isNot(contains('VPN_')));
       // Every non-comment line must be a single KEY=value the parser handles.
@@ -83,10 +83,16 @@ void main() {
       a
         ..vpnObfuscatorKey = 'k'
         ..vpnServerPublicKey = 'p'
-        ..vpnAddress = '10.13.1.42/24';
+        ..vpnAddress = '192.0.2.42/24';
+      // Still incomplete: allowed-IPs has no default any more, and the form
+      // requires it, so this must too or the field is silently dropped.
+      expect(a.vpnComplete, isFalse);
+      expect(a.toStationEnv(), isNot(contains('VPN_ENDPOINT')));
+
+      a.vpnAllowedIps = '192.0.2.0/24';
       expect(a.vpnComplete, isTrue);
       expect(a.toStationEnv(), contains('VPN_ENDPOINT=vpn:13255'));
-      expect(a.toStationEnv(), contains('VPN_ALLOWED_IPS=10.13.1.0/24'));
+      expect(a.toStationEnv(), contains('VPN_ALLOWED_IPS=192.0.2.0/24'));
     });
   });
 }

@@ -38,6 +38,13 @@ import sys
 import tempfile
 import time
 
+# A frame this uniform is a blank screen, not a UI. Measured against the disk
+# step -- the emptiest of the three -- of run 34743482120: 86.8% of sampled
+# pixels are 002b36, which is Solarized base03, the app's own background. So the
+# floor is the background, and the margin to this ceiling is real.
+UNIFORM_MAX = 0.99
+
+
 def find_ovmf():
     """OVMF's filename is not stable across distributions."""
     code = [
@@ -103,6 +110,47 @@ class Qmp:
             self.cmd('screendump', filename=ppm)
             return ppm
         return path
+
+    def uniformity(self):
+        """Fraction of sampled pixels that are the single most common colour.
+
+        A compositor that never draws, or an app that died leaving an empty
+        desktop, produces a frame that is essentially one colour -- and used to
+        pass this test in silence, because rc was only ever set by an exception.
+
+        Measured on a PPM dump rather than the PNG beside it: P6 is a header
+        and then raw RGB triples, where reading a PNG back would mean an
+        inflate and an unfilter pass for a number this coarse.
+        """
+        tmp = os.path.join(tempfile.gettempdir(), 'frame.ppm')
+        self.cmd('screendump', filename=tmp)
+        with open(tmp, 'rb') as f:
+            data = f.read()
+        os.unlink(tmp)
+        # P6\n<w> <h>\n<maxval>\n then w*h*3 bytes. Fields are whitespace
+        # separated and a comment line may follow the magic.
+        fields, i = [], 2
+        while len(fields) < 3:
+            while i < len(data) and data[i:i + 1].isspace():
+                i += 1
+            if data[i:i + 1] == b'#':
+                while data[i:i + 1] not in (b'\n', b''):
+                    i += 1
+                continue
+            j = i
+            while j < len(data) and not data[j:j + 1].isspace():
+                j += 1
+            fields.append(int(data[i:j]))
+            i = j
+        px = data[i + 1:]
+        counts = {}
+        # Every 97th pixel: a prime stride, so it cannot land on a column or row
+        # period and read one stripe of the screen as the whole screen.
+        for k in range(0, len(px) - 3, 97 * 3):
+            c = px[k:k + 3]
+            counts[c] = counts.get(c, 0) + 1
+        total = sum(counts.values())
+        return (max(counts.values()) / total) if total else 1.0
 
     def tap(self, x, y):
         """Tap at x,y as a fraction (0..1) of the screen."""
@@ -175,12 +223,18 @@ def main():
             ('02-station',  (0.90, 0.94),   4),   # Continue -> the station step
             ('03-keyboard', (0.30, 0.26),   5),   # first field -> keyboard up?
         ]
+        blank = []
         for label, point, wait in script:
             if point:
                 q.tap(*point)
             time.sleep(wait * a.slow)
             shot = q.screenshot(os.path.join(a.out, f'{label}.png'))
-            print(f'  {label}: {shot}')
+            u = q.uniformity()
+            print(f'  {label}: {shot}  ({u:.1%} one colour)')
+            if u > UNIFORM_MAX:
+                blank.append(f'{label} is {u:.1%} a single colour')
+        if blank:
+            raise RuntimeError('nothing was drawn: ' + '; '.join(blank))
         if not a.keep_running:
             try:
                 q.cmd('quit')

@@ -45,7 +45,10 @@ class _SetupFlowState extends State<SetupFlow> {
   }
 
   Future<void> _loadDisks() async {
-    if (await bootDiskUnknown()) {
+    // Resolved once and handed to listDisks: this used to call bootDisk()
+    // here and again inside listDisks, probing the same thing twice.
+    final boot = await bootDisk();
+    if (boot == null) {
       // No safe way to guess which disk not to erase, so offer none. The shell
       // installer refuses for the same reason.
       setState(() => _diskError =
@@ -53,7 +56,7 @@ class _SetupFlowState extends State<SetupFlow> {
           'can be offered safely. Power off and report this.');
       return;
     }
-    final d = await listDisks();
+    final d = await listDisks(boot: boot);
     setState(() {
       _disks = d;
       if (d.isEmpty) {
@@ -190,29 +193,35 @@ class _SetupFlowState extends State<SetupFlow> {
             Field(
               label: 'VPN server address and port',
               helper: 'e.g. vpn.example.is:13255',
+              validator: validateRequired,
               initial: _answers.vpnEndpoint,
               onChanged: (v) => _answers.vpnEndpoint = v.trim(),
             ),
             Field(
               label: 'Obfuscation key',
               helper: 'Shared with the server',
+              validator: validateRequired,
               initial: _answers.vpnObfuscatorKey,
               onChanged: (v) => _answers.vpnObfuscatorKey = v.trim(),
             ),
             Field(
               label: "Server's WireGuard public key",
+              validator: validateRequired,
               initial: _answers.vpnServerPublicKey,
               onChanged: (v) => _answers.vpnServerPublicKey = v.trim(),
             ),
             Field(
               label: "This station's VPN address",
-              helper: 'e.g. 10.13.1.42/24',
+              helper: 'e.g. 192.0.2.42/24',
+              validator: validateRequired,
               initial: _answers.vpnAddress,
               onChanged: (v) => _answers.vpnAddress = v.trim(),
             ),
             Field(
               label: 'Routed through the tunnel',
+              helper: 'Subnet reachable over the VPN, e.g. 192.0.2.0/24',
               initial: _answers.vpnAllowedIps,
+              validator: validateRequired,
               onChanged: (v) => _answers.vpnAllowedIps = v.trim(),
             ),
           ],
@@ -226,7 +235,11 @@ class _SetupFlowState extends State<SetupFlow> {
           primary: FilledButton(
             onPressed: () {
               _answers.vpnWanted = true;
-              if (!_answers.vpnComplete) return;
+              // Was a bare `if (!vpnComplete) return`, so an incomplete form
+              // made Continue do nothing at all, with no message: the operator
+              // is left pressing a button that looks broken. validate() puts
+              // the reason under the field that is missing.
+              if (!_vpnForm.currentState!.validate()) return;
               _go(_Stage.confirm);
             },
             child: const Text('Continue'),

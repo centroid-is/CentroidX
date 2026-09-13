@@ -78,8 +78,10 @@ If the SSD is reachable on the bench, skip the USB entirely:
 
 ## Installing
 
-Plug the key in, boot it. It lists the disks — never the USB it booted from —
-and asks for five things:
+Plug the key in, boot it. A touch UI comes up on the panel — with an on-screen
+keyboard, because a station has no keyboard attached — and walks through four
+screens: the disk, the station settings, remote access, and a confirmation.
+Disks never include the USB it booted from.
 
 | answer | used for |
 |---|---|
@@ -88,10 +90,26 @@ and asks for five things:
 | `root` password | the host login |
 | VNC password | the remote screen |
 | database password | timescaledb |
+| VPN endpoint, keys, addresses | WireGuard over wg-obfuscator; skippable |
 
 Then it writes the image, drops the answers in `/etc/centroid/station.conf`, and
-reboots. Put a `station.env` beside the Makefile before `make usb` to bake the
-answers in and install without prompting.
+reboots.
+
+The WireGuard keypair is generated **on the station being installed**, so no
+private key ever travels on a USB stick; the public half is shown at the end to
+register on the server. Dropping a ready-made `wg0.conf` and
+`wg-obfuscator.conf` next to the payload still works, for a station whose key
+already exists — but answers win: they are written after the payload copy, so
+filling in the VPN screen overwrites a file placed that way.
+
+To install without touching the screen, put a `station.env` on the USB's FAT
+partition at `centroidx/station.env` — the same `KEY=value` file the UI writes.
+Every value is validated the same way either way: the station name must be a
+DNS label, and passwords are restricted to `[A-Za-z0-9._@%+:~/-]`.
+
+If the graphical installer cannot start — no GPU, a compositor that will not
+take the DRM device — the unit hands over to a text installer on tty1 that asks
+the same questions.
 
 ### First boot
 
