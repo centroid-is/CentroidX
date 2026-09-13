@@ -100,12 +100,22 @@ host_addresses() {
     | awk '{sub("/.*","",$4); printf "%s ", $4}' | sed 's/ $//'
 }
 
+# The credential centroidx-remote-access minted for this boot, if it did.
+remote_code() { read_kv "$RUNTIME_DIR/remote-access" code; }
+
 banner() {
   clear 2>/dev/null || true
   bold "  CentroidX station installer"
   [ -r "$PAYLOAD/image-info" ] && sed 's/^/  /' "$PAYLOAD/image-info"
-  local ips; ips="$(host_addresses)"
+  local ips code; ips="$(host_addresses)"; code="$(remote_code)"
   printf '  address:    %s\n' "${ips:-no network}"
+  # Both or neither: an address with no code is a login prompt nobody can
+  # answer, and a code with no address is nothing at all. The text installer
+  # is the fallback path, but a fallback that drops the remote view is a
+  # fallback that strands whoever was watching it.
+  if [ -n "$ips" ] && [ -n "$code" ]; then
+    printf '  remote:     https://%s   root / %s\n' "${ips%% *}" "$code"
+  fi
   rule
 }
 

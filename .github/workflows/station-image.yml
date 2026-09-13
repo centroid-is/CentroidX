@@ -114,7 +114,9 @@ jobs:
             scripts/*.sh test/*.sh \
             overlays/base/usr/local/bin/centroidx-firstboot \
             overlays/installer/usr/local/bin/centroidx-install \
-            overlays/installer/usr/local/bin/centroidx-install-failsafe
+            overlays/installer/usr/local/bin/centroidx-install-failsafe \
+            overlays/installer/usr/local/bin/centroidx-gui-launch \
+            overlays/installer/usr/local/bin/centroidx-remote-access
 
       # The installer's parser, validators, seed-file rules and the files it
       # leaves on the target, run against a directory instead of a disk. wg is
@@ -512,6 +514,31 @@ jobs:
           # stack at all until now, and an installer that reports "no network"
           # on every panel would be indistinguishable from one whose DHCP
           # simply had not landed yet.
+          # The remote view. Every piece is invisible from a screenshot -- the
+          # panel looks identical whether or not the VNC head came up -- so it
+          # is asserted here and then proven live by the RFB read in the boot
+          # test below.
+          t "weston loads the vnc backend as a secondary"       grep -q '^backend=drm,vnc' "$mnt/etc/xdg/weston/weston.ini"
+          t "vnc-backend.so present"                            sh -c "ls '$mnt'/usr/lib/*/libweston-*/vnc-backend.so >/dev/null 2>&1"
+          # Debian does NOT build screen-share.so; mirror-of is its replacement
+          # and is what this design uses. Asserted so a future Debian that
+          # restores it does not quietly tempt anyone back to the old path.
+          t "compositor wrapper is the unit's ExecStart"        grep -q '^ExecStart=/usr/local/bin/centroidx-gui-launch' "$mnt/etc/systemd/system/centroidx-gui.service"
+          t "wrapper executable"                                test -x "$mnt/usr/local/bin/centroidx-gui-launch"
+          t "fd limit raised for VNC clients"                   grep -q '^LimitNOFILE=16384' "$mnt/etc/systemd/system/centroidx-gui.service"
+          # weston's VNC auth is PAM as the user running weston, and root is
+          # locked at build time -- without this unit nobody can ever connect.
+          t "credential unit enabled"                           test -L "$W/centroidx-remote-access.service"
+          t "credential script executable"                      test -x "$mnt/usr/local/bin/centroidx-remote-access"
+          t "PAM config for weston's VNC auth"                  test -f "$mnt/etc/pam.d/weston-remote-access"
+          t "browser view enabled"                              test -L "$W/centroidx-novnc.service"
+          t "websockify present"                                test -x "$mnt/usr/bin/websockify"
+          t "noVNC web root extracted"                          test -f "$mnt/usr/share/novnc/vnc.html"
+          # The whole point of extracting the web root by hand. If nodejs is
+          # here, someone added the novnc package and gave the stick ~60MB of
+          # runtime for a launcher we never invoke.
+          t "and without dragging in nodejs"                    sh -c "! test -e '$mnt/usr/bin/nodejs' -o -e '$mnt/usr/bin/node'"
+
           t "DHCP config shipped"                               test -f "$mnt/etc/systemd/network/10-dhcp.network"
           t "networkd enabled"                                  test -L "$W/systemd-networkd.service"
           # Path not hardcoded: iproute2 has moved between /bin, /sbin and

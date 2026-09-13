@@ -13,6 +13,14 @@ class Paths {
   static const runtimeDir = '/run/centroidx';
   static const seed = '$runtimeDir/station.env';
 
+  /// Written once per boot by centroidx-remote-access, as `code=XXXX`.
+  ///
+  /// weston's VNC backend authenticates through PAM as the user running
+  /// weston, which is root — and the stick ships with root locked, so without
+  /// that unit nobody could ever connect. The code is shown on screen because
+  /// the person who needs it is on the phone to the person at the panel.
+  static const remoteAccess = '$runtimeDir/remote-access';
+
   /// Written by the installer once it has generated the station's WireGuard
   /// keypair. The private half never leaves the machine; this is the half that
   /// has to be registered on the server, so the app shows it at the end.
@@ -108,6 +116,27 @@ Future<void> powerOff() => Process.run('systemctl', ['poweroff']);
 /// same and this needs no subprocess. The station's own About page builds the
 /// equivalent from NetworkManager over D-Bus — there is no NetworkManager on
 /// the USB, so the source differs even though the answer does not.
+/// The per-boot remote-access code, or null when there is none.
+///
+/// Absent means the credential unit did not run, which is the one case worth
+/// distinguishing: the remote view is then unreachable no matter what is typed,
+/// so the UI must not offer an address as though it were usable.
+Future<String?> remoteAccessCode() async {
+  try {
+    final f = File(Paths.remoteAccess);
+    if (!f.existsSync()) return null;
+    for (final line in (await f.readAsString()).split('\n')) {
+      if (line.startsWith('code=')) {
+        final v = line.substring('code='.length).trim();
+        return v.isEmpty ? null : v;
+      }
+    }
+  } on FileSystemException {
+    return null;
+  }
+  return null;
+}
+
 Future<List<String>> hostAddresses() async {
   try {
     final ifs = await NetworkInterface.list(

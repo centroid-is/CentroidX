@@ -392,7 +392,7 @@ class _Brand extends StatelessWidget {
       );
 }
 
-/// The addresses this machine currently holds, in the header band.
+/// Where to reach this installer, in the header band.
 ///
 /// Read-only, deliberately: nothing here configures networking — the station's
 /// own image runs NetworkManager and has a settings page for it. The panel is
@@ -403,14 +403,43 @@ class _Brand extends StatelessWidget {
 /// a globe, then the addresses joined by a middle dot — rather than the same
 /// code: that widget reads NetworkManager over D-Bus and neither is on the USB.
 ///
+/// When the remote view is up this also carries the credential for it, because
+/// the two facts are only useful together: an address with no code is a login
+/// prompt nobody can answer, and a code with no address is nothing at all. This
+/// line is what one person reads aloud to another.
+///
 /// Polled rather than read once: the app starts within a couple of seconds of
-/// boot and a DHCP lease usually is not there yet.
+/// boot, and neither the DHCP lease nor the credential file is necessarily
+/// there yet.
+/// What the operator reads out of the header band.
+///
+/// https, not http, and not a bare address: noVNC's RA2ne handshake needs
+/// `window.crypto.subtle`, which browsers withhold on an insecure origin, so an
+/// http URL loads a page that then cannot authenticate at all. The certificate
+/// is self-signed and the browser warns once.
+///
+/// A null code means centroidx-remote-access did not run, and the remote view
+/// is then unreachable no matter what is typed — so no URL is offered rather
+/// than one that cannot work.
+@visibleForTesting
+String addressBarDescribe(List<String> addresses, String? code) {
+  if (addresses.isEmpty) return 'no network';
+  if (code == null) return addresses.join('  ·  ');
+  return 'https://${addresses.first}   root / $code';
+}
+
 @visibleForTesting
 class AddressBar extends StatefulWidget {
-  const AddressBar({super.key, this.probe, this.interval = const Duration(seconds: 5)});
+  const AddressBar({
+    super.key,
+    this.probe,
+    this.codeProbe,
+    this.interval = const Duration(seconds: 5),
+  });
 
-  /// Overridden by tests; the default asks this machine.
+  /// Overridden by tests; the defaults ask this machine.
   final Future<List<String>> Function()? probe;
+  final Future<String?> Function()? codeProbe;
   final Duration interval;
 
   @override
@@ -419,6 +448,7 @@ class AddressBar extends StatefulWidget {
 
 class _AddressBarState extends State<AddressBar> {
   List<String> _addresses = const [];
+  String? _code;
   Timer? _timer;
 
   @override
@@ -436,38 +466,40 @@ class _AddressBarState extends State<AddressBar> {
 
   Future<void> _refresh() async {
     final a = await (widget.probe ?? hostAddresses)();
+    final c = await (widget.codeProbe ?? remoteAccessCode)();
     if (!mounted) return;
     // Comparing before setState: this runs every few seconds for the whole
     // install, and the answer almost never changes.
-    if (a.length == _addresses.length &&
+    if (c == _code &&
+        a.length == _addresses.length &&
         List.generate(a.length, (i) => a[i] == _addresses[i]).every((e) => e)) {
       return;
     }
-    setState(() => _addresses = a);
+    setState(() {
+      _addresses = a;
+      _code = c;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context);
-    // Said rather than left blank: "no network" is an answer, and on a panel
-    // with an unplugged cable it is the one worth seeing.
-    final text = _addresses.isEmpty ? 'no network' : _addresses.join('  ·  ');
+    final dim = _addresses.isEmpty;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Icon(Icons.public,
             size: 16,
-            color: _addresses.isEmpty
-                ? SolarizedColors.base01
-                : t.textTheme.bodyMedium?.color),
+            color: dim ? SolarizedColors.base01 : t.textTheme.bodyMedium?.color),
         const SizedBox(width: 8),
+        // Said rather than left blank: "no network" is an answer, and on a
+        // panel with an unplugged cable it is the one worth seeing.
         Text(
-          text,
+          addressBarDescribe(_addresses, _code),
           style: t.textTheme.bodyMedium?.copyWith(
             fontFamily: 'monospace',
-            color: _addresses.isEmpty
-                ? SolarizedColors.base01
-                : t.textTheme.bodyMedium?.color,
+            color:
+                dim ? SolarizedColors.base01 : t.textTheme.bodyMedium?.color,
           ),
         ),
       ],
