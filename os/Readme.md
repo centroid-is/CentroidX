@@ -186,6 +186,57 @@ If the graphical installer cannot start — no GPU, a compositor that will not
 take the DRM device — the unit hands over to a text installer on tty1 that asks
 the same questions.
 
+### Watching an install from somewhere else
+
+The installer mirrors the panel over VNC, so a support engineer can see and
+drive the same screen the operator is looking at. The header band shows what to
+connect to and the credential for it:
+
+```
+https://10.104.29.5   root / k4m2p9qd
+```
+
+- **Browser**: `https://<address>/vnc.html`. https is not cosmetic — noVNC's
+  RA2ne handshake needs `window.crypto.subtle`, which browsers withhold on an
+  insecure origin, so http loads a page that then cannot authenticate. The
+  certificate is self-signed and minted per boot; the browser warns once.
+- **Native client**: port 5900, TigerVNC ≥ 1.12 or anything else that speaks
+  RSA-AES.
+- **One viewer at a time.** `weston-vnc(7)`: "The VNC backend is not multi-seat
+  aware, so if a second client connects to the backend, the first client will be
+  disconnected." The person at the panel is unaffected; a second remote is not.
+
+How it works, and why not the obvious way:
+
+- `--backend=drm,vnc` with `[output] mirror-of=<connector>`. weston 14 takes a
+  comma-separated backend list where the first is primary and provides the
+  renderer, and `mirror-of` makes the remote output overlap the native one.
+  Debian does **not** build `screen-share.so` (verified with `dpkg -L`);
+  `mirror-of` is its upstream replacement and is what the station's weston 16
+  already uses.
+- `mirror-of` needs the literal DRM connector name, which differs per panel, so
+  `centroidx-gui-launch` reads the first `connected` entry under
+  `/sys/class/drm` and templates the real `weston.ini` into `/run`.
+- **One compositor, one setup app.** A second weston running a second copy of
+  the app was rejected outright: two instances means two processes each entitled
+  to wipe a disk, from two divergent sets of answers.
+- **The credential.** weston's VNC backend authenticates through PAM as the user
+  running weston — root here — with no way to turn authentication off, and
+  `installer-setup.sh` locks root. So `centroidx-remote-access` sets a code for
+  exactly one boot, seeded from `REMOTE_PASSWORD` in the ESP's `station.env`
+  when nobody is at the panel to read one. There is no sshd on the stick and the
+  host keys are stripped, so the code reaches only the VNC session and a local
+  VT — and anyone at a local VT can already erase every disk through the
+  installer's own UI, unauthenticated, by design.
+- No TLS on the VNC leg, deliberately: noVNC cannot speak VeNCrypt, so weston
+  runs in its password-only mode and negotiates RA2ne, which is encrypted and is
+  what noVNC does speak. The browser leg gets its own TLS from websockify. This
+  is the same trade the station's compose file documents.
+
+`boot-test.py` forwards the guest's 5900 and asserts the 12-byte `RFB 003.008`
+greeting. A screenshot cannot tell you whether the second head came up — the
+panel looks identical either way — so that one TCP read is the CI guard.
+
 ### Keyboards on the stick
 
 The keyboard pieces are the station's own, not copies: the on-screen keyboard

@@ -65,6 +65,14 @@ actions:
       # the machine being installed, and never travels on the stick.
       - wireguard-tools
       - ca-certificates
+      # Remote view of the installer. websockify bridges the browser's wss to
+      # weston's VNC on loopback; openssl mints the per-boot certificate it
+      # serves. noVNC's own web root is NOT taken from the `novnc` package --
+      # that package hard-Depends on nodejs, ~60MB for a launcher script we
+      # never run, when what we need is static JavaScript the browser executes.
+      # installer-setup.sh extracts just the web root instead.
+      - websockify
+      - openssl
       # all-hardware: the stick has to boot machines nobody profiled first
       - firmware-misc-nonfree
       - firmware-linux-free

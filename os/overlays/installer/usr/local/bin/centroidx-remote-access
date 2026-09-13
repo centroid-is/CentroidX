@@ -1,0 +1,52 @@
+#!/bin/sh
+# Per-boot credentials for the remote view of the installer.
+#
+# weston's VNC backend authenticates through PAM "as the user running weston"
+# (weston-vnc(7)), and there is no way to turn authentication off. weston here
+# runs as root, and installer-setup.sh locks root at build time so the stick
+# ships with no login -- which means that without this unit nobody could ever
+# authenticate to the remote view, no matter what they typed.
+#
+# So root gets a credential that exists for exactly one boot. What this does not
+# do is weaken the stick: there is no sshd on it and the host keys are stripped,
+# so the only things reachable with this password are the VNC session (inside
+# RA2ne) and a local VT -- and anyone standing at a local VT can already erase
+# every disk in the machine through the installer's own UI, unauthenticated, by
+# design.
+set -eu
+
+RUNTIME=/run/centroidx
+SEED=/boot/efi/centroidx/station.env
+
+install -d -m 0700 "$RUNTIME"
+
+# Seeded, if the person who prepared the stick said so. This is the case where
+# nobody is at the panel to read a code off it: the same laptop-writable FAT
+# file the unattended install already uses, so it needs no rebuild.
+pw=""
+if [ -r "$SEED" ]; then
+  pw="$(sed -n 's/^REMOTE_PASSWORD=//p' "$SEED" | head -1)"
+fi
+
+# Otherwise generated. The alphabet drops i/l/o/1/0 because this code's whole
+# job is to be read off a screen and typed somewhere else.
+if [ -z "$pw" ]; then
+  pw="$(LC_ALL=C tr -dc 'a-hj-np-z2-9' < /dev/urandom | head -c 8)"
+fi
+
+printf 'root:%s\n' "$pw" | chpasswd
+
+# 0600. The setup app runs as root under weston and reads this to show the code
+# beside the address; nothing else on the machine needs it.
+umask 077
+printf 'code=%s\n' "$pw" > "$RUNTIME/remote-access"
+
+# The browser leg's certificate, minted here because it must not be baked into
+# an image every station shares. Self-signed: the browser warns once, which is
+# the same posture the station's own noVNC has.
+if [ ! -s "$RUNTIME/novnc.crt" ]; then
+  openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+    -subj /CN=centroidx-installer \
+    -addext subjectAltName=DNS:centroidx-installer \
+    -keyout "$RUNTIME/novnc.key" -out "$RUNTIME/novnc.crt" >/dev/null 2>&1
+fi

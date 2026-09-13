@@ -1,0 +1,18 @@
+[Unit]
+Description=Per-boot credentials for the remote view of the installer
+Documentation=man:weston-vnc(7)
+After=local-fs.target
+# Before all three consumers: weston authenticates VNC clients against the
+# password this sets, the text installer prints the code in its banner, and
+# websockify serves the certificate this mints.
+Before=centroidx-gui.service centroidx-installer.service centroidx-novnc.service
+
+[Service]
+Type=oneshot
+# The credential lives in /run and in the shadow file, not in this unit's
+# state; RemainAfterExit keeps the ordering guarantee above meaningful.
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/centroidx-remote-access
+
+[Install]
+WantedBy=multi-user.target

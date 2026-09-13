@@ -172,6 +172,40 @@ void main() {
       expect(find.text('no network'), findsOneWidget);
     });
 
+    testWidgets('carries the remote-access credential once there is one',
+        (tester) async {
+      // The address and the code are only useful together: an address with no
+      // code is a login prompt nobody can answer, and a code with no address is
+      // nothing at all. This line is what one person reads to another.
+      await tester.pumpWidget(MaterialApp(
+        theme: buildTheme(),
+        home: Scaffold(
+          body: AddressBar(
+            probe: () async => ['10.104.29.5'],
+            codeProbe: () async => 'k4m2p9qd',
+            interval: const Duration(days: 1),
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('https://10.104.29.5   root / k4m2p9qd'), findsOneWidget);
+    });
+
+    test('the header line says only what is true', () {
+      // https, never http: noVNC's RA2ne handshake needs window.crypto.subtle,
+      // which browsers withhold on an insecure origin, so an http URL loads a
+      // page that then cannot authenticate at all.
+      expect(_AddressBarDescribe.call(['10.0.0.9'], 'abcd2345'),
+          'https://10.0.0.9   root / abcd2345');
+      // No credential unit means the remote view is unreachable whatever is
+      // typed, so no URL is offered.
+      expect(_AddressBarDescribe.call(['10.0.0.9'], null), '10.0.0.9');
+      expect(_AddressBarDescribe.call(['10.0.0.9', '192.168.1.4'], null),
+          '10.0.0.9  ·  192.168.1.4');
+      expect(_AddressBarDescribe.call(const [], 'abcd2345'), 'no network');
+      expect(_AddressBarDescribe.call(const [], null), 'no network');
+    });
+
     testWidgets('picks up a DHCP lease that arrives after start',
         (tester) async {
       // The app is on screen within a couple of seconds of boot, which is
@@ -197,4 +231,11 @@ void main() {
       expect(find.text('10.0.0.9'), findsOneWidget);
     });
   });
+}
+
+/// `AddressBar.describe` is on the private State class, so reach it through a
+/// named alias rather than making the widget's API wider for a test.
+class _AddressBarDescribe {
+  static String call(List<String> addresses, String? code) =>
+      addressBarDescribe(addresses, code);
 }
