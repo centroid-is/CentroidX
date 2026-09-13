@@ -186,9 +186,10 @@ const String kAccessUsersNoDatabaseNote =
 /// than the absence of a list. `first_user.dart` says the same thing on the
 /// screen that acts on it.
 const String kAccessUsersEmptyNote =
-    'No accounts at all, which means the first-user window is still open: this '
-    'station is claimable by whoever reaches the first-account screen first. '
-    'Create the first account now, at commissioning.';
+    'No account anybody can sign in to, which means the first-user window is '
+    'still open: this station is claimable by whoever reaches the '
+    'first-account screen first. Create the first account now, at '
+    'commissioning.';
 
 /// The four column headings, as constants so a test asserts the heading the
 /// screen renders.

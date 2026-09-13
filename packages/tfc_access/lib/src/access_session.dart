@@ -143,8 +143,14 @@ class AccessSession {
   /// Every role this session holds, primary first.
   ///
   /// The anonymous account's roles when nobody is signed in — see
-  /// [AccessSession.anonymous].
-  List<String> get roleNames => user?.roleNames ?? anonymousRoleNames;
+  /// [AccessSession.anonymous]. Never empty: a caller that built an anonymous
+  /// session with no role names gets the seeded one, so [roleName] and
+  /// [roleLabel] always have something to say.
+  List<String> get roleNames =>
+      user?.roleNames ??
+      (anonymousRoleNames.isEmpty
+          ? const <String>[kOperatorRoleName]
+          : anonymousRoleNames);
 
   /// What a badge shows and what the audit row's `role` column records: one
   /// name for one role, `A + B` for several. See [roleLabelFor].
