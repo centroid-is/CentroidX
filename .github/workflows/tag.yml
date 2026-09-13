@@ -192,6 +192,27 @@ jobs:
           name: station-usb-installer
           path: release-artifacts/
 
+
+      # upload-artifact roots an artifact at the least common ancestor of its
+      # upload paths, which for os/out/usb-installer.* puts both files at the
+      # artifact root -- so they should already be at release-artifacts/. That is an
+      # implicit consequence of those paths rather than a guarantee, and the only
+      # symptom of being wrong is a release quietly missing its installer. So it
+      # is normalised instead of assumed, and the release publishes either way.
+      - name: Put the installer where the asset list expects it
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          for f in usb-installer.img.gz usb-installer.img.bmap; do
+            [ -f "$f" ] && continue
+            found=$(find . -name "$f" -type f -print -quit)
+            if [ -n "$found" ]; then
+              echo "::warning::$f was at $found, not the artifact root - moving it"
+              mv "$found" "$f"
+            fi
+          done
+          ls -l usb-installer.* 2>/dev/null || echo "no station installer in this run"
+
       - name: Generate SHA256SUMS.txt
         working-directory: release-artifacts
         run: |
