@@ -20,7 +20,11 @@ trap 'rm -rf "$tmp"' EXIT
 # `source` hands the caller's positional parameters to the script, and the
 # script parses them as its own options.
 set --
-# shellcheck disable=SC1091
+# SC1091 is "not specified as input"; SC1090 is "can't follow non-constant
+# source" and is what you get instead once SC1091 is silenced, because the
+# path is a variable. Both are the same fact: shellcheck is not reading the
+# installer. That is also why SC2034 is off for the file.
+# shellcheck disable=SC1090,SC1091
 . "$installer"
 PAYLOAD="$tmp/payload"
 RUNTIME_DIR="$tmp/run"
@@ -37,6 +41,8 @@ expect_eq()    { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want 
 # ------------------------------------------------------------------- read_kv
 echo "read_kv"
 kv="$tmp/kv"
+# The $ in has$dollar is test data: read_kv must not expand it.
+# shellcheck disable=SC2016
 printf 'A=b c\nB=has$dollar\nKEY=abc==\nEMPTY=\n# C=comment\nD=first=second\n' > "$kv"
 expect_eq "keeps a space"               "$(read_kv "$kv" A)"     'b c'
 # shellcheck disable=SC2016
