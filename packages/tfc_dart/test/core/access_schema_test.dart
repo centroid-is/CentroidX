@@ -922,9 +922,13 @@ void main() {
     });
 
     test('the seed needs no schema version of its own', () async {
+      // Main shipped the seed at 9 and the config branch carries 12; the
+      // seed added an arm to neither. Pinned to the number the branch owns
+      // rather than to `db.schemaVersion`, because a seed that quietly took
+      // an arm would move that too.
       final db = await open();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 9);
+      expect(db.schemaVersion, 12);
     });
   });
 
