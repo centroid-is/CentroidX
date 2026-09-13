@@ -1,7 +1,8 @@
 /// Every EtherCAT subdevice on the station, one dense row each.
 ///
 /// The mimic answers "where is it"; this answers "is anything wrong, and
-/// what". One row per subdevice across every master, in bus order, with the four
+/// what". One row per subdevice, under its master and its PLC in the order they
+/// were configured, like the stop timeline's tree; with the four
 /// ports as four cells so a bad cable shows up as the same colour on two
 /// adjacent rows — the port that sends and the port that receives.
 ///
@@ -48,31 +49,53 @@ class EtherCatDeviceTableConfig extends BaseAsset {
         'topology',
       ];
 
-  /// One entry per EtherCAT master.
-  List<EcBusConfig> buses;
+  /// The PLCs, each with the EtherCAT masters it runs, in the order the table
+  /// lists them.
+  ///
+  /// Pages saved before PLCs existed carry a flat `buses` list instead; see
+  /// [EtherCatDeviceTableConfig.fromJson]. Only `plcs` is written back, so an
+  /// older build opening a newer page finds no masters and falls back to
+  /// discovery — the right station's table, just not in the chosen order.
+  List<EcPlcConfig> plcs;
 
   /// Open filtered to the rows that need attention.
   bool problemsOnly;
 
-  EtherCatDeviceTableConfig({List<EcBusConfig>? buses, this.problemsOnly = false})
-      : buses = buses ?? [] {
+  EtherCatDeviceTableConfig({List<EcPlcConfig>? plcs, this.problemsOnly = false})
+      : plcs = plcs ?? [] {
     // A table wants most of a page; the 3% default square is a dot.
     size = const RelativeSize(width: 0.62, height: 0.7);
   }
 
   EtherCatDeviceTableConfig.preview() : this();
 
-  factory EtherCatDeviceTableConfig.fromJson(Map<String, dynamic> json) =>
-      _$EtherCatDeviceTableConfigFromJson(json);
+  factory EtherCatDeviceTableConfig.fromJson(Map<String, dynamic> json) {
+    // A page saved before PLCs existed: its masters become one unnamed PLC,
+    // which the table draws exactly as it drew the flat list.
+    final legacy = json['buses'];
+    if (json['plcs'] == null && legacy is List && legacy.isNotEmpty) {
+      json = {
+        ...json,
+        'plcs': [
+          {'label': '', 'masters': legacy},
+        ],
+      };
+    }
+    return _$EtherCatDeviceTableConfigFromJson(json);
+  }
 
   @override
   Map<String, dynamic> toJson() => _$EtherCatDeviceTableConfigToJson(this);
 
-  /// The keys sit one level down, in [buses], where the introspection in
+  /// Every configured master, PLC by PLC.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  Iterable<EcBusConfig> get masters => plcs.expand((p) => p.masters);
+
+  /// The keys sit two levels down, in [plcs], where the introspection in
   /// `BaseAsset.allKeys` cannot see them.
   @override
   List<String> get allKeys => [
-        for (final b in buses) ...[
+        for (final b in masters) ...[
           if (b.diagKey.isNotEmpty) b.diagKey,
           if (b.infoKey.isNotEmpty) b.infoKey,
         ],
@@ -98,8 +121,8 @@ class EtherCatDeviceTable extends ConsumerStatefulWidget {
 }
 
 class _EtherCatDeviceTableState extends ConsumerState<EtherCatDeviceTable> {
-  /// Masters found in the key mappings, used while the config names none.
-  List<EcBusConfig> _discovered = const [];
+  /// PLCs found in the key mappings, used while the config names no master.
+  List<EcPlcConfig> _discovered = const [];
   Timer? _rediscover;
 
   /// Key mappings are edited in place — accepting one does not rebuild
@@ -139,17 +162,20 @@ class _EtherCatDeviceTableState extends ConsumerState<EtherCatDeviceTable> {
   }
 
   Future<void> _discover() async {
-    if (widget.config.buses.isNotEmpty) return;
-    List<EcBusConfig> found;
+    if (widget.config.masters.isNotEmpty) return;
+    List<EcPlcConfig> found;
     try {
       final sm = await ref.read(stateManProvider.future);
-      found = discoverEcMasters(sm.keyMappings);
+      found = discoverEcPlcs(sm.keyMappings);
     } catch (_) {
       found = const [];
     }
     if (_disposed) return;
-    String sig(List<EcBusConfig> l) =>
-        [for (final b in l) '${b.label}|${b.keys.join(',')}'].join(';');
+    String sig(List<EcPlcConfig> l) => [
+          for (final p in l)
+            '${p.label}>'
+                '${[for (final b in p.masters) '${b.label}|${b.keys.join(',')}'].join(';')}',
+        ].join('/');
     if (!mounted || sig(found) == sig(_discovered)) return;
     setState(() => _discovered = found);
   }
@@ -162,13 +188,14 @@ class _EtherCatDeviceTableState extends ConsumerState<EtherCatDeviceTable> {
     // other scope. That is the line between a table and a picture of one, and
     // the only side of it that may go looking for the station's masters.
     if (PageAssetsScope.maybeOf(context) != null) _discoverOnce();
-    final buses = config.buses.isNotEmpty ? config.buses : _discovered;
-    if (buses.isEmpty) {
+    final plcs = config.masters.isNotEmpty ? config.plcs : _discovered;
+    final masters = [for (final p in plcs) ...p.masters];
+    if (masters.isEmpty) {
       // Nothing configured yet — on the palette and on a freshly dropped
       // asset. A sample says what the thing is for better than an empty box.
       return EcDeviceTableView(
-        buses: ecSampleBuses(),
-        caption: 'Sample — add a master in the editor',
+        plcs: ecSamplePlcs(),
+        caption: 'Sample — add a PLC in the editor',
         initialProblemsOnly: config.problemsOnly,
         // A picture of the table, not a working one: this is what the palette
         // tile shows, and a tile must not hold a focusable field.
@@ -177,36 +204,47 @@ class _EtherCatDeviceTableState extends ConsumerState<EtherCatDeviceTable> {
     }
     return EcKeyValues(
       keys: [
-        for (final b in buses) ...[b.diagKey, b.infoKey],
+        for (final b in masters) ...[b.diagKey, b.infoKey],
       ],
       builder: (context, values, errors) {
-        final live = <EcBus>[];
-        final notes = <String, String>{};
-        for (final b in buses) {
-          live.add(EcBus.fromValues(
-            b.label,
-            info: values[b.infoKey],
-            diag: values[b.diagKey],
-          ));
-          final err = errors[b.diagKey] ?? errors[b.infoKey];
-          if (err != null) {
-            notes[b.label] = 'cannot read';
-          } else if (b.diagKey.isNotEmpty && values[b.diagKey] == null) {
-            notes[b.label] = 'waiting for data';
+        final live = <EcPlc>[];
+        // Keyed by the very objects built here rather than by label: two PLCs
+        // can each have a Device 1.
+        final configOf = <EcBus, (EcPlcConfig, EcBusConfig)>{};
+        final notes = <EcBus, String>{};
+        for (final p in plcs) {
+          final buses = <EcBus>[];
+          for (final b in p.masters) {
+            final bus = EcBus.fromValues(
+              b.label,
+              info: values[b.infoKey],
+              diag: values[b.diagKey],
+            );
+            buses.add(bus);
+            configOf[bus] = (p, b);
+            final err = errors[b.diagKey] ?? errors[b.infoKey];
+            if (err != null) {
+              notes[bus] = 'cannot read';
+            } else if (b.diagKey.isNotEmpty && values[b.diagKey] == null) {
+              notes[bus] = 'waiting for data';
+            }
           }
+          live.add(EcPlc(p.label, buses));
         }
         return EcDeviceTableView(
-          buses: live,
+          plcs: live,
           busNotes: notes,
           initialProblemsOnly: config.problemsOnly,
           onOpen: (bus, subdevice) {
-            final cfg = buses.firstWhere((b) => b.label == bus.label,
-                orElse: () => buses.first);
+            final (plc, cfg) = configOf[bus]!;
             showSidePane(
               context: context,
               id: 'ethercat-subdevice-${cfg.diagKey}-${subdevice.position}',
-              builder: (_) =>
-                  EcSubDeviceLivePane(bus: cfg, position: subdevice.position),
+              builder: (_) => EcSubDeviceLivePane(
+                bus: cfg,
+                position: subdevice.position,
+                plcLabel: plc.label,
+              ),
             );
           },
         );
@@ -230,6 +268,12 @@ abstract final class _Col {
   static const clean = 72.0;
   static const rowHeight = 22.0;
 
+  /// A PLC or master row: its name and a summary line under it.
+  static const groupRowHeight = 34.0;
+
+  /// How far each level of the tree sits in from the one above.
+  static const indent = 14.0;
+
   /// Below these the columns that are least often read go first.
   static const hideModelBelow = 620.0;
   static const hideCleanBelow = 760.0;
@@ -244,7 +288,7 @@ abstract final class _Col {
 class EcDeviceTableView extends StatefulWidget {
   const EcDeviceTableView({
     super.key,
-    required this.buses,
+    required this.plcs,
     this.busNotes = const {},
     this.initialProblemsOnly = false,
     this.onOpen,
@@ -252,10 +296,11 @@ class EcDeviceTableView extends StatefulWidget {
     this.interactive = true,
   });
 
-  final List<EcBus> buses;
+  /// The PLCs, each with its masters, in the order they are listed.
+  final List<EcPlc> plcs;
 
-  /// A word per master when its data is missing, keyed by label.
-  final Map<String, String> busNotes;
+  /// A word per master when its data is missing.
+  final Map<EcBus, String> busNotes;
   final bool initialProblemsOnly;
   final void Function(EcBus bus, EcSubDevice subdevice)? onOpen;
 
@@ -274,9 +319,29 @@ class EcDeviceTableView extends StatefulWidget {
   State<EcDeviceTableView> createState() => _EcDeviceTableViewState();
 }
 
+/// One line of the table: how tall it is, and how to draw it at its index.
+typedef _Row = ({double height, Widget Function(int index) build});
+
 class _EcDeviceTableViewState extends State<EcDeviceTableView> {
   late bool _problemsOnly = widget.initialProblemsOnly;
   String _query = '';
+
+  /// The PLC and master rows somebody has closed.
+  ///
+  /// Everything starts open: the table is there to answer "is anything
+  /// wrong", and a closed group hides the answer. Kept as the closed set, not
+  /// the open one, so a master that turns up later arrives open.
+  final Set<String> _collapsed = {};
+
+  /// A PLC row is only worth drawing when it tells PLCs apart, or when the one
+  /// PLC was given a name. A page from before PLCs existed stays a list of
+  /// masters.
+  bool get _showPlcRows =>
+      widget.plcs.length > 1 ||
+      (widget.plcs.length == 1 && widget.plcs.single.label.isNotEmpty);
+
+  static String _plcKey(EcPlc p) => 'p:${p.label}';
+  static String _busKey(EcPlc p, EcBus b) => 'm:${p.label}/${b.label}';
 
   bool _matches(EcSubDevice s) {
     if (_problemsOnly &&
@@ -293,32 +358,124 @@ class _EcDeviceTableViewState extends State<EcDeviceTableView> {
         '${s.position}' == q;
   }
 
+  /// Opens every group holding a row the filter just picked out, so a search
+  /// never lands on a closed group and looks like it found nothing.
+  void _openMatches() {
+    if (!_problemsOnly && _query.isEmpty) return;
+    for (final p in widget.plcs) {
+      for (final b in p.buses) {
+        if (b.subdevices.any(_matches)) {
+          _collapsed
+            ..remove(_plcKey(p))
+            ..remove(_busKey(p, b));
+        }
+      }
+    }
+  }
+
+  void _toggle(String key) => setState(() {
+        if (!_collapsed.remove(key)) _collapsed.add(key);
+      });
+
+  /// "1 fault, 2 warnings" or "all OK", in the colour of the worst of them.
+  static (String, Color?) _health(int faults, int warns, HmiStateColors states) {
+    String n(int c, String word) => '$c $word${c == 1 ? '' : 's'}';
+    if (faults > 0) {
+      return (
+        n(faults, 'fault') + (warns > 0 ? ', ${n(warns, 'warning')}' : ''),
+        states.red,
+      );
+    }
+    if (warns > 0) return (n(warns, 'warning'), states.yellow);
+    return ('all OK', null);
+  }
+
+  (String, Color?) _busSummary(EcBus bus, HmiStateColors states) {
+    final note = widget.busNotes[bus];
+    final (text, colour) = note != null
+        ? (note, states.violet)
+        : _health(
+            bus.count(EcHealth.fault), bus.count(EcHealth.warning), states);
+    return ('${bus.subdevices.length} subdevices · $text', colour);
+  }
+
+  (String, Color?) _plcSummary(EcPlc plc, HmiStateColors states) {
+    // A PLC none of whose masters can be read says why, like a master does.
+    final unread = plc.buses.isNotEmpty &&
+        plc.buses.every((b) => widget.busNotes.containsKey(b));
+    final (text, colour) = unread
+        ? (widget.busNotes[plc.buses.first]!, states.violet)
+        : _health(
+            plc.count(EcHealth.fault), plc.count(EcHealth.warning), states);
+    final m = plc.buses.length;
+    return (
+      '$m master${m == 1 ? '' : 's'} · ${plc.subdeviceCount} subdevices · $text',
+      colour,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final states =
         theme.extension<HmiStateColors>() ?? HmiStateColors.solarizedLight;
+    final showPlcs = _showPlcRows;
+    final busDepth = showPlcs ? 1 : 0;
 
-    final rows = <Widget Function(int index)>[];
-    for (final bus in widget.buses) {
-      final shown = bus.subdevices.where(_matches).toList();
-      rows.add((_) => _BusHeader(
-            bus: bus,
-            note: widget.busNotes[bus.label],
-            states: states,
+    final rows = <_Row>[];
+    for (final plc in widget.plcs) {
+      if (showPlcs) {
+        final key = _plcKey(plc);
+        final open = !_collapsed.contains(key);
+        final summary = _plcSummary(plc, states);
+        rows.add((
+          height: _Col.groupRowHeight,
+          build: (_) => _GroupRow(
+                key: ValueKey('ec-row-$key'),
+                label: plc.label.isEmpty ? 'PLC' : plc.label,
+                summary: summary,
+                depth: 0,
+                isPlc: true,
+                open: open,
+                onTap: () => _toggle(key),
+              ),
+        ));
+        if (!open) continue;
+      }
+      for (final bus in plc.buses) {
+        final key = _busKey(plc, bus);
+        final open = !_collapsed.contains(key);
+        final summary = _busSummary(bus, states);
+        rows.add((
+          height: _Col.groupRowHeight,
+          build: (_) => _GroupRow(
+                key: ValueKey('ec-row-$key'),
+                label: bus.label,
+                summary: summary,
+                depth: busDepth,
+                isPlc: false,
+                open: open,
+                onTap: () => _toggle(key),
+              ),
+        ));
+        if (!open) continue;
+        for (final s in bus.subdevices.where(_matches)) {
+          rows.add((
+            height: _Col.rowHeight,
+            build: (i) => _SubdeviceRow(
+                  bus: bus,
+                  subdevice: s,
+                  states: states,
+                  zebra: i.isOdd,
+                  onTap: widget.onOpen == null
+                      ? null
+                      : () => widget.onOpen!(bus, s),
+                ),
           ));
-      for (final s in shown) {
-        rows.add((i) => _SubdeviceRow(
-              bus: bus,
-              subdevice: s,
-              states: states,
-              zebra: i.isOdd,
-              onTap: widget.onOpen == null
-                  ? null
-                  : () => widget.onOpen!(bus, s),
-            ));
+        }
       }
     }
+    final leafIndent = (busDepth + 1) * _Col.indent;
 
     return Material(
       color: theme.colorScheme.surface,
@@ -343,11 +500,11 @@ class _EcDeviceTableViewState extends State<EcDeviceTableView> {
               child: SizedBox(
                 width: w.isFinite && w > _Col.minWidth ? w : _Col.minWidth,
                 height: h.isFinite && h > _Col.minHeight ? h : _Col.minHeight,
-                child: _table(context, states, rows, _Col.minWidth),
+                child: _table(context, states, rows, _Col.minWidth, leafIndent),
               ),
             );
           }
-          return _table(context, states, rows, w);
+          return _table(context, states, rows, w, leafIndent);
         }),
       ),
     );
@@ -357,32 +514,41 @@ class _EcDeviceTableViewState extends State<EcDeviceTableView> {
   Widget _table(
     BuildContext context,
     HmiStateColors states,
-    List<Widget Function(int index)> rows,
+    List<_Row> rows,
     double width,
+    double leafIndent,
   ) {
     return _LayoutScope(
       layout: _Layout(
         showModel: width >= _Col.hideModelBelow,
         showClean: width >= _Col.hideCleanBelow,
+        leafIndent: leafIndent,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _Toolbar(
-            buses: widget.buses,
+            buses: [for (final p in widget.plcs) ...p.buses],
             states: states,
             caption: widget.caption,
             interactive: widget.interactive,
             problemsOnly: _problemsOnly,
-            onProblemsOnly: (v) => setState(() => _problemsOnly = v),
-            onQuery: (v) => setState(() => _query = v.trim()),
+            onProblemsOnly: (v) => setState(() {
+              _problemsOnly = v;
+              _openMatches();
+            }),
+            onQuery: (v) => setState(() {
+              _query = v.trim();
+              _openMatches();
+            }),
           ),
           const _HeaderRow(),
           Expanded(
             child: ListView.builder(
               itemCount: rows.length,
-              itemExtent: _Col.rowHeight,
-              itemBuilder: (context, i) => rows[i](i),
+              itemExtentBuilder: (i, _) =>
+                  i < rows.length ? rows[i].height : null,
+              itemBuilder: (context, i) => rows[i].build(i),
             ),
           ),
         ],
@@ -392,9 +558,17 @@ class _EcDeviceTableViewState extends State<EcDeviceTableView> {
 }
 
 class _Layout {
-  const _Layout({required this.showModel, required this.showClean});
+  const _Layout({
+    required this.showModel,
+    required this.showClean,
+    required this.leafIndent,
+  });
   final bool showModel;
   final bool showClean;
+
+  /// How far a subdevice row sits in, under its master (and its PLC). The
+  /// header takes the same, so the columns stay over their figures.
+  final double leafIndent;
 }
 
 class _LayoutScope extends InheritedWidget {
@@ -403,12 +577,13 @@ class _LayoutScope extends InheritedWidget {
 
   static _Layout of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<_LayoutScope>()?.layout ??
-      const _Layout(showModel: true, showClean: true);
+      const _Layout(showModel: true, showClean: true, leafIndent: _Col.indent);
 
   @override
   bool updateShouldNotify(_LayoutScope old) =>
       old.layout.showModel != layout.showModel ||
-      old.layout.showClean != layout.showClean;
+      old.layout.showClean != layout.showClean ||
+      old.layout.leafIndent != layout.leafIndent;
 }
 
 class _Toolbar extends StatelessWidget {
@@ -574,7 +749,7 @@ class _HeaderRow extends StatelessWidget {
         );
     return Container(
       height: _Col.rowHeight,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
+      padding: EdgeInsets.only(left: 6 + layout.leafIndent, right: 8),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHigh,
         border: Border(bottom: BorderSide(color: theme.dividerColor)),
@@ -600,55 +775,89 @@ class _HeaderRow extends StatelessWidget {
   }
 }
 
-class _BusHeader extends StatelessWidget {
-  const _BusHeader({required this.bus, required this.states, this.note});
+/// A PLC's or a master's row: its name, and a line saying how it is doing.
+///
+/// Drawn after the stop timeline's group lanes — a triangle, the name in bold,
+/// a small summary under it, one indent step per level — so a tree of devices
+/// and a tree of stops read the same way. A tap opens or closes what is under
+/// it.
+class _GroupRow extends StatelessWidget {
+  const _GroupRow({
+    super.key,
+    required this.label,
+    required this.summary,
+    required this.depth,
+    required this.isPlc,
+    required this.open,
+    required this.onTap,
+  });
 
-  final EcBus bus;
-  final HmiStateColors states;
-  final String? note;
+  final String label;
+  final (String, Color?) summary;
+  final int depth;
+
+  /// A PLC row rather than a master's. Coloured by what it is, not by depth:
+  /// a page with no PLC rows keeps its masters in the colour they always had.
+  final bool isPlc;
+  final bool open;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final faults = bus.count(EcHealth.fault);
-    final warns = bus.count(EcHealth.warning);
-    final String summary;
-    final Color? colour;
-    if (note != null) {
-      summary = note!;
-      colour = states.violet;
-    } else if (faults > 0) {
-      summary = '$faults fault${faults == 1 ? '' : 's'}'
-          '${warns > 0 ? ', $warns warning${warns == 1 ? '' : 's'}' : ''}';
-      colour = states.red;
-    } else if (warns > 0) {
-      summary = '$warns warning${warns == 1 ? '' : 's'}';
-      colour = states.yellow;
-    } else {
-      summary = 'all OK';
-      colour = null;
-    }
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      alignment: Alignment.centerLeft,
-      color: theme.colorScheme.surfaceContainer,
-      child: Text.rich(
-        TextSpan(children: [
-          TextSpan(
-            text: bus.label,
-            style: const TextStyle(fontWeight: FontWeight.w700),
+    final (text, colour) = summary;
+    return Material(
+      // A PLC a step darker than its masters, so it stands off them. Highest
+      // rather than High: the app's themes set only the low and highest
+      // containers, and the others fall back to a lighter default.
+      color: isPlc
+          ? theme.colorScheme.surfaceContainerHighest
+          : theme.colorScheme.surfaceContainer,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          padding: EdgeInsets.only(left: 6 + depth * _Col.indent, right: 8),
+          decoration: BoxDecoration(
+            border: Border(bottom: BorderSide(color: theme.dividerColor)),
           ),
-          TextSpan(
-            text: '   ${bus.subdevices.length} subdevices · ',
-            style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 16,
+                child: Icon(
+                  open ? Icons.arrow_drop_down : Icons.arrow_right,
+                  size: 16,
+                ),
+              ),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelMedium
+                          ?.copyWith(fontWeight: FontWeight.w600),
+                    ),
+                    Text(
+                      text,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        fontSize: 9,
+                        color: colour ?? theme.colorScheme.onSurfaceVariant,
+                        fontWeight: colour != null ? FontWeight.w600 : null,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-          TextSpan(
-            text: summary,
-            style: TextStyle(color: colour, fontWeight: FontWeight.w600),
-          ),
-        ]),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+        ),
       ),
     );
   }
@@ -689,7 +898,7 @@ class _SubdeviceRow extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
+          padding: EdgeInsets.only(left: 6 + layout.leafIndent, right: 8),
           child: Row(
             children: [
               SizedBox(
@@ -901,7 +1110,16 @@ List<EcBus> ecSampleBuses() {
   ];
 }
 
-/// Configure form: the masters, and whether to open filtered.
+/// [ecSampleBuses] as two PLCs, so the sample shows both levels of the tree.
+List<EcPlc> ecSamplePlcs() {
+  final buses = ecSampleBuses();
+  return [
+    EcPlc('PLC 1', [buses[0]]),
+    EcPlc('PLC 2', [buses[1]]),
+  ];
+}
+
+/// Configure form: the PLCs and their masters, and whether to open filtered.
 class _EtherCatDeviceTableEditor extends StatefulWidget {
   const _EtherCatDeviceTableEditor({required this.config});
 
@@ -914,67 +1132,37 @@ class _EtherCatDeviceTableEditor extends StatefulWidget {
 
 class _EtherCatDeviceTableEditorState
     extends State<_EtherCatDeviceTableEditor> {
+  List<EcPlcConfig> get _plcs => widget.config.plcs;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final buses = widget.config.buses;
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            'One entry per EtherCAT master: the key of its '
-            'ECT_Diag.Device_<n>_Diag array and of its '
-            'ECT_Diag.Device_<n>_SlaveInfo array.',
+            'One entry per PLC, and in it one per EtherCAT master: the key of '
+            'its ECT_Diag.Device_<n>_Diag array and of its '
+            'ECT_Diag.Device_<n>_SlaveInfo array. The table lists them in '
+            'this order; drag a handle to change it.',
+            style: theme.textTheme.bodySmall,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Leave the PLC name empty when there is only one; the table then '
+            'lists masters only.',
             style: theme.textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
-          for (var i = 0; i < buses.length; i++)
-            Card(
-              key: ObjectKey(buses[i]),
-              margin: const EdgeInsets.only(bottom: 12),
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextFormField(
-                            initialValue: buses[i].label,
-                            decoration:
-                                const InputDecoration(labelText: 'Master'),
-                            onChanged: (v) => buses[i].label = v,
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Remove',
-                          icon: const Icon(Icons.delete_outline),
-                          onPressed: () => setState(() => buses.removeAt(i)),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    KeyField(
-                      label: 'Diagnostics array key',
-                      initialValue: buses[i].diagKey,
-                      onChanged: (v) => buses[i].diagKey = v,
-                    ),
-                    const SizedBox(height: 8),
-                    KeyField(
-                      label: 'Subdevice info array key',
-                      initialValue: buses[i].infoKey,
-                      onChanged: (v) => buses[i].infoKey = v,
-                    ),
-                  ],
-                ),
-              ),
-            ),
+          _reorderable(_plcs, _plcCard),
           OutlinedButton.icon(
-            onPressed: () => setState(() =>
-                buses.add(EcBusConfig(label: 'Device ${buses.length + 1}'))),
+            onPressed: () => setState(() => _plcs.add(EcPlcConfig(
+                  label: 'PLC ${_plcs.length + 1}',
+                  masters: [EcBusConfig(label: 'Device 1')],
+                ))),
             icon: const Icon(Icons.add),
-            label: const Text('Add master'),
+            label: const Text('Add PLC'),
           ),
           const SizedBox(height: 8),
           SwitchListTile(
@@ -997,6 +1185,153 @@ class _EtherCatDeviceTableEditorState
             onChanged: (c) => setState(() => widget.config.coordinates = c),
           ),
         ],
+      ),
+    );
+  }
+
+  /// [items] as cards dragged into order by their handles, laid out in full
+  /// inside the form's own scroll view — a station has a handful of each.
+  ///
+  /// Both levels use it, one inside the other. A handle drags within the
+  /// nearest list above it, which is why a PLC's handle sits in its card's
+  /// header, outside the list of its masters. Dragging a master into another
+  /// PLC is the card's move menu, not a drag: two lists cannot hand an item
+  /// between them.
+  Widget _reorderable<T>(List<T> items, IndexedWidgetBuilder itemBuilder) =>
+      ReorderableListView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        padding: EdgeInsets.zero,
+        buildDefaultDragHandles: false,
+        itemCount: items.length,
+        // onReorder, not onReorderItem — see system_clock_section.dart.
+        // ignore: deprecated_member_use
+        onReorder: (oldIndex, newIndex) => setState(() {
+          if (newIndex > oldIndex) newIndex -= 1;
+          items.insert(newIndex, items.removeAt(oldIndex));
+        }),
+        itemBuilder: itemBuilder,
+      );
+
+  Widget _handle(int index) => ReorderableDragStartListener(
+        index: index,
+        child: const Padding(
+          padding: EdgeInsets.only(right: 8),
+          child: Tooltip(
+            message: 'Drag to reorder',
+            child: Icon(Icons.drag_indicator),
+          ),
+        ),
+      );
+
+  Widget _plcCard(BuildContext context, int i) {
+    final plc = _plcs[i];
+    return Card(
+      key: ObjectKey(plc),
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                _handle(i),
+                Expanded(
+                  child: TextFormField(
+                    initialValue: plc.label,
+                    decoration: const InputDecoration(labelText: 'PLC'),
+                    onChanged: (v) => plc.label = v,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Remove PLC',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: () => setState(() => _plcs.removeAt(i)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _reorderable(
+              plc.masters,
+              (context, j) => _masterCard(context, plc, j),
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => setState(() => plc.masters.add(
+                    EcBusConfig(label: 'Device ${plc.masters.length + 1}'))),
+                icon: const Icon(Icons.add),
+                label: const Text('Add master'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _masterCard(BuildContext context, EcPlcConfig plc, int j) {
+    final bus = plc.masters[j];
+    final others = [
+      for (final (k, p) in _plcs.indexed)
+        if (!identical(p, plc)) (k, p),
+    ];
+    return Card.outlined(
+      key: ObjectKey(bus),
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                _handle(j),
+                Expanded(
+                  child: TextFormField(
+                    initialValue: bus.label,
+                    decoration: const InputDecoration(labelText: 'Master'),
+                    onChanged: (v) => bus.label = v,
+                  ),
+                ),
+                if (others.isNotEmpty)
+                  PopupMenuButton<EcPlcConfig>(
+                    tooltip: 'Move to another PLC',
+                    icon: const Icon(Icons.drive_file_move_outline),
+                    onSelected: (to) => setState(() {
+                      plc.masters.remove(bus);
+                      to.masters.add(bus);
+                    }),
+                    itemBuilder: (_) => [
+                      for (final (k, p) in others)
+                        PopupMenuItem(
+                          value: p,
+                          child: Text(
+                              p.label.isEmpty ? 'PLC ${k + 1}' : p.label),
+                        ),
+                    ],
+                  ),
+                IconButton(
+                  tooltip: 'Remove master',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: () => setState(() => plc.masters.removeAt(j)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            KeyField(
+              label: 'Diagnostics array key',
+              initialValue: bus.diagKey,
+              onChanged: (v) => bus.diagKey = v,
+            ),
+            const SizedBox(height: 8),
+            KeyField(
+              label: 'Subdevice info array key',
+              initialValue: bus.infoKey,
+              onChanged: (v) => bus.infoKey = v,
+            ),
+          ],
+        ),
       ),
     );
   }

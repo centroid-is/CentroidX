@@ -1104,7 +1104,29 @@ class AccessSessionController extends _$AccessSessionController {
     if (session == null) return;
     if (!session.isElevated) return;
 
+    _monitor?.poke();
+
+    // A session with no expiry (a station account, a resumed panel) has
+    // nothing to extend, and an activity extension must not conjure one onto
+    // it — so there is no new session to publish either.
     final timeout = session.inactivityTimeout;
+    final expiresAt = session.expiresAt;
+    if (timeout == null || expiresAt == null) return;
+
+    // ## Throttled
+    //
+    // Publishing a session rebuilds every widget watching it — the scaffold's
+    // app bar and navigation bar among them — and `_persist` rewrites the
+    // device preferences file, which on Windows re-encodes and rewrites the
+    // whole store. Doing both on every pointer-down put a hitch at the start
+    // of every scroll gesture on every page while signed in. The monitor above
+    // is still re-armed on every touch, so the countdown itself is exact; only
+    // the recorded `expiresAt` may trail the last touch by up to one
+    // granularity, which can only end a restarted or re-attached session that
+    // much *earlier*, never later.
+    final extendedTo = clock.now().add(timeout);
+    if (extendedTo.difference(expiresAt) < _pokeGranularity(timeout)) return;
+
     final extended = AccessSession(
       user: session.user,
       groups: session.groups,
@@ -1114,16 +1136,19 @@ class AccessSessionController extends _$AccessSessionController {
       allowedPages: session.allowedPages,
       inactivityTimeout: timeout,
       // Extended by this session's own timeout — the account's, not the
-      // panel's. A session with no expiry (a station account, a resumed
-      // panel) has nothing to extend, and an activity extension must not
-      // conjure one onto it.
-      expiresAt: (timeout == null || session.expiresAt == null)
-          ? null
-          : clock.now().add(timeout),
+      // panel's.
+      expiresAt: extendedTo,
     );
     state = AsyncData(extended);
     unawaited(_persist(extended));
-    _monitor?.poke();
+  }
+
+  /// How far `expiresAt` must move before [poke] publishes it: a twentieth of
+  /// the timeout, capped at ten seconds.
+  static Duration _pokeGranularity(Duration timeout) {
+    const cap = Duration(seconds: 10);
+    final share = timeout ~/ 20;
+    return share < cap ? share : cap;
   }
 
   /// True while the inactivity countdown is armed.

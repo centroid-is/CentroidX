@@ -9,8 +9,8 @@ part of 'ethercat_devices.dart';
 EtherCatDeviceTableConfig _$EtherCatDeviceTableConfigFromJson(
         Map<String, dynamic> json) =>
     EtherCatDeviceTableConfig(
-      buses: (json['buses'] as List<dynamic>?)
-          ?.map((e) => EcBusConfig.fromJson(e as Map<String, dynamic>))
+      plcs: (json['plcs'] as List<dynamic>?)
+          ?.map((e) => EcPlcConfig.fromJson(e as Map<String, dynamic>))
           .toList(),
       problemsOnly: json['problemsOnly'] as bool? ?? false,
     )
@@ -35,7 +35,7 @@ Map<String, dynamic> _$EtherCatDeviceTableConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
-      'buses': instance.buses.map((e) => e.toJson()).toList(),
+      'plcs': instance.plcs.map((e) => e.toJson()).toList(),
       'problemsOnly': instance.problemsOnly,
     };
 

@@ -14,13 +14,10 @@ import 'ethercat_subdevice.dart';
 
 final RegExp _masterArray = RegExp(r'Device_(\d+)_(Diag|SlaveInfo|SlaveCount)$');
 
-/// The masters [mappings] has arrays for, in server then master order.
-///
-/// Labelled `Device <n>` — what TwinCAT calls them — prefixed with the server
-/// alias when the mappings span more than one server, since two stations
-/// both have a Device 1. A master is listed once its diag array is mapped;
-/// the info and count arrays are optional.
-List<EcBusConfig> discoverEcMasters(KeyMappings mappings) {
+/// Every master [mappings] has a diag array for, in server then master order,
+/// with the servers any of the arrays came from.
+({Set<String> servers, List<(String, int, EcBusConfig)> masters}) _collect(
+    KeyMappings mappings) {
   final found = <(String, int), EcBusConfig>{};
   for (final entry in mappings.nodes.entries) {
     final node = entry.value.opcuaNode;
@@ -42,17 +39,49 @@ List<EcBusConfig> discoverEcMasters(KeyMappings mappings) {
     }
   }
 
-  final servers = {for (final k in found.keys) k.$1};
   final keys = found.keys.where((k) => found[k]!.diagKey.isNotEmpty).toList()
     ..sort((a, b) {
       final s = a.$1.compareTo(b.$1);
       return s != 0 ? s : a.$2.compareTo(b.$2);
     });
+  return (
+    servers: {for (final k in found.keys) k.$1},
+    masters: [for (final k in keys) (k.$1, k.$2, found[k]!)],
+  );
+}
+
+/// The masters [mappings] has arrays for, in server then master order.
+///
+/// Labelled `Device <n>` — what TwinCAT calls them — prefixed with the server
+/// alias when the mappings span more than one server, since two stations
+/// both have a Device 1. A master is listed once its diag array is mapped;
+/// the info and count arrays are optional.
+List<EcBusConfig> discoverEcMasters(KeyMappings mappings) {
+  final (:servers, :masters) = _collect(mappings);
   return [
-    for (final k in keys)
-      found[k]!
-        ..label = servers.length > 1 && k.$1.isNotEmpty
-            ? '${k.$1} · Device ${k.$2}'
-            : 'Device ${k.$2}',
+    for (final (server, n, bus) in masters)
+      bus
+        ..label = servers.length > 1 && server.isNotEmpty
+            ? '$server · Device $n'
+            : 'Device $n',
   ];
+}
+
+/// The PLCs [mappings] has masters for — one per OPC UA server, in server
+/// order — each with its masters in master order.
+///
+/// One server makes one unnamed PLC, which the devices table draws as a plain
+/// list of masters. With several, each PLC is named for its server alias and
+/// its masters are a plain `Device <n>`: the PLC row already says whose.
+List<EcPlcConfig> discoverEcPlcs(KeyMappings mappings) {
+  final (:servers, :masters) = _collect(mappings);
+  final plcs = <String, EcPlcConfig>{};
+  for (final (server, n, bus) in masters) {
+    plcs
+        .putIfAbsent(
+            server, () => EcPlcConfig(label: servers.length > 1 ? server : ''))
+        .masters
+        .add(bus..label = 'Device $n');
+  }
+  return plcs.values.toList();
 }

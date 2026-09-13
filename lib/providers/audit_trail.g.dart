@@ -373,10 +373,14 @@ String _$auditWhoOptionsHash() => r'314988cb41608661fc6d7e47b23dac945325b10e';
 /// the page already says "unavailable" once, from [auditTrailEntriesProvider].
 /// Saying it twice, in two shapes, is not more honest.
 ///
+/// `keepAlive`: `distinctWho` groups the whole table, and on an autoDispose
+/// provider it ran again, in series with the page's own queries, on every visit.
+/// The page's refresh action invalidates it, which is when a newly seen name
+/// can reasonably be expected to appear.
+///
 /// Copied from [auditWhoOptions].
 @ProviderFor(auditWhoOptions)
-final auditWhoOptionsProvider =
-    AutoDisposeFutureProvider<List<String>>.internal(
+final auditWhoOptionsProvider = FutureProvider<List<String>>.internal(
   auditWhoOptions,
   name: r'auditWhoOptionsProvider',
   debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
@@ -388,6 +392,6 @@ final auditWhoOptionsProvider =
 
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
-typedef AuditWhoOptionsRef = AutoDisposeFutureProviderRef<List<String>>;
+typedef AuditWhoOptionsRef = FutureProviderRef<List<String>>;
 // ignore_for_file: type=lint
 // ignore_for_file: subtype_of_sealed_class, invalid_use_of_internal_member, invalid_use_of_visible_for_testing_member, deprecated_member_use_from_same_package

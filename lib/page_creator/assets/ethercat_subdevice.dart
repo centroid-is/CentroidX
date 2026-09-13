@@ -578,6 +578,36 @@ class EcBusConfig {
   Map<String, dynamic> toJson() => _$EcBusConfigToJson(this);
 }
 
+/// One PLC, as the devices table is configured with it: a name and the masters
+/// it runs, in the order they are listed.
+@JsonSerializable(includeIfNull: false, explicitToJson: true)
+class EcPlcConfig {
+  EcPlcConfig({this.label = '', List<EcBusConfig>? masters})
+      : masters = masters ?? [];
+
+  /// What to call this PLC. Empty for the one PLC of a page saved before
+  /// PLCs existed, which the table then draws as a plain list of masters.
+  String label;
+
+  List<EcBusConfig> masters;
+
+  factory EcPlcConfig.fromJson(Map<String, dynamic> json) =>
+      _$EcPlcConfigFromJson(json);
+  Map<String, dynamic> toJson() => _$EcPlcConfigToJson(this);
+}
+
+/// One PLC's masters, read — what the devices table draws a group row for.
+class EcPlc {
+  EcPlc(this.label, this.buses);
+
+  final String label;
+  final List<EcBus> buses;
+
+  int get subdeviceCount => buses.fold(0, (n, b) => n + b.subdevices.length);
+
+  int count(EcHealth health) => buses.fold(0, (n, b) => n + b.count(health));
+}
+
 List<T?> _elements<T>(DynamicValue? array, T? Function(DynamicValue) parse) {
   if (array == null || !array.isArray) return const [];
   return [for (final e in array.asArray) parse(e)];

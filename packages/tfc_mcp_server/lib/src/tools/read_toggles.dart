@@ -277,10 +277,15 @@ Future<void> migrateMcpConfigToDeviceLocal({
   }
   sharedConfig ??= await _readLegacyConfigIfAny(shared);
 
-  // Drop every MCP key from the shared store.
-  await shared.remove(McpConfig.kPrefKey);
-  for (final key in McpConfig.legacyKeys) {
-    await shared.remove(key);
+  // Drop every MCP key the shared store still carries. Only the ones present:
+  // this re-runs on every database reconnect, the app's shared store audits
+  // every remove, and removing a key that is already gone wrote a
+  // `mcp_tools_…_enabled — → —` row into the audit trail per legacy key, per
+  // reconnect, forever after the first migration had done its job.
+  for (final key in [McpConfig.kPrefKey, ...McpConfig.legacyKeys]) {
+    if (await shared.containsKey(key)) {
+      await shared.remove(key);
+    }
   }
 
   if (localJson != null) {

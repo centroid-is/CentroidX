@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -54,8 +57,10 @@ void main() {
       ..push('i1', _info());
     await tester.pumpWidget(wrap(
       EtherCatDeviceTable(
-        config: EtherCatDeviceTableConfig(buses: [
-          EcBusConfig(label: 'Device 1', diagKey: 'd1', infoKey: 'i1'),
+        config: EtherCatDeviceTableConfig(plcs: [
+          EcPlcConfig(masters: [
+            EcBusConfig(label: 'Device 1', diagKey: 'd1', infoKey: 'i1'),
+          ]),
         ]),
       ),
       sm,
@@ -78,7 +83,11 @@ void main() {
     await tester.pumpWidget(wrap(
       EtherCatDeviceTable(
         config: EtherCatDeviceTableConfig(
-          buses: [EcBusConfig(label: 'Device 1', diagKey: 'd1', infoKey: 'i1')],
+          plcs: [
+            EcPlcConfig(masters: [
+              EcBusConfig(label: 'Device 1', diagKey: 'd1', infoKey: 'i1'),
+            ]),
+          ],
           problemsOnly: true,
         ),
       ),
@@ -150,6 +159,195 @@ void main() {
     expect(config.size.width, closeTo(0.40, 1e-9));
     expect(config.size.height, closeTo(0.25, 1e-9));
     expect(config.coordinates.x, closeTo(0.1, 1e-9));
+  });
+
+  testWidgets('the table lists PLCs and their masters in the configured order',
+      (tester) async {
+    final sm = _FakeStateMan()
+      ..push('d1', _diag())
+      ..push('i1', _info())
+      ..push('d2', _diag())
+      ..push('i2', _info());
+    await tester.pumpWidget(wrap(
+      EtherCatDeviceTable(
+        config: EtherCatDeviceTableConfig(plcs: [
+          EcPlcConfig(label: 'PLC B', masters: [
+            EcBusConfig(label: 'Device 1', diagKey: 'd2', infoKey: 'i2'),
+          ]),
+          EcPlcConfig(label: 'PLC A', masters: [
+            EcBusConfig(label: 'Device 1', diagKey: 'd1', infoKey: 'i1'),
+          ]),
+        ]),
+      ),
+      sm,
+    ));
+    await tester.pump();
+    await tester.pump();
+
+    double top(String key) =>
+        tester.getTopLeft(find.byKey(ValueKey('ec-row-$key'))).dy;
+    expect(top('p:PLC B'), lessThan(top('m:PLC B/Device 1')));
+    expect(top('m:PLC B/Device 1'), lessThan(top('p:PLC A')));
+    expect(top('p:PLC A'), lessThan(top('m:PLC A/Device 1')));
+    // Both PLCs have a Device 1, and each lists its own subdevices.
+    expect(find.text('SAFEOP'), findsNWidgets(2));
+  });
+
+  testWidgets('one unnamed PLC draws no PLC row', (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: SizedBox(
+          width: 900,
+          height: 400,
+          child: EcDeviceTableView(
+            plcs: [EcPlc('', ecSampleBuses())],
+          ),
+        ),
+      ),
+    ));
+    expect(find.byKey(const ValueKey('ec-row-p:')), findsNothing);
+    expect(find.byKey(const ValueKey('ec-row-m:/Device 1')), findsOneWidget);
+  });
+
+  testWidgets('a tap closes a PLC or a master, and a search reopens it',
+      (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: SizedBox(
+          width: 900,
+          height: 600,
+          child: EcDeviceTableView(plcs: ecSamplePlcs()),
+        ),
+      ),
+    ));
+    expect(find.text('EL6070'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('ec-row-m:PLC 1/Device 1')));
+    await tester.pump();
+    expect(find.text('EL6070'), findsNothing);
+    expect(find.byKey(const ValueKey('ec-row-p:PLC 2')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('ec-row-p:PLC 2')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('ec-row-m:PLC 2/Device 2')), findsNothing);
+
+    // Part of a model: the box holds 'EL607', so only the row matches exactly.
+    await tester.enterText(find.byType(TextField), 'EL607');
+    await tester.pump();
+    expect(find.text('EL6070'), findsOneWidget);
+    // Nothing under PLC 2 matched, so it stays as it was left.
+    expect(find.byKey(const ValueKey('ec-row-m:PLC 2/Device 2')), findsNothing);
+  });
+
+  test('a page saved with a flat list of masters opens as one unnamed PLC', () {
+    final saved = EtherCatDeviceTableConfig().toJson()
+      ..remove('plcs')
+      ..['buses'] = [
+        {'label': 'Device 1', 'diagKey': 'd1', 'infoKey': 'i1'},
+        {'label': 'Device 2', 'diagKey': 'd2', 'infoKey': 'i2'},
+      ];
+    final config = EtherCatDeviceTableConfig.fromJson(
+        jsonDecode(jsonEncode(saved)) as Map<String, dynamic>);
+    expect(config.plcs, hasLength(1));
+    expect(config.plcs.single.label, '');
+    expect([for (final m in config.masters) m.diagKey], ['d1', 'd2']);
+    expect(config.allKeys, ['d1', 'i1', 'd2', 'i2']);
+
+    final json = jsonDecode(jsonEncode(config.toJson())) as Map<String, dynamic>;
+    expect(json.containsKey('buses'), isFalse);
+    final again = EtherCatDeviceTableConfig.fromJson(json);
+    expect([for (final m in again.masters) m.label], ['Device 1', 'Device 2']);
+  });
+
+  Finder labelled(String label) => find.byWidgetPredicate(
+      (w) => w is TextField && w.decoration?.labelText == label);
+
+  Future<void> pumpForm(
+      WidgetTester tester, EtherCatDeviceTableConfig config) async {
+    tester.view.physicalSize = const Size(900, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(ProviderScope(
+      // A server that never answers. The key fields list the keys of the one
+      // they are given as they build, and the fake has no key list.
+      overrides: [
+        stateManProvider.overrideWith((_) => Completer<StateMan>().future),
+      ],
+      child: MaterialApp(
+        home: Scaffold(body: Builder(builder: config.configure)),
+      ),
+    ));
+    await tester.pump();
+  }
+
+  /// The drag handle on the card for [model] — its own, not one of its
+  /// masters': the card's header comes first.
+  Finder handleOf(Object model) => find
+      .descendant(
+          of: find.byKey(ObjectKey(model)),
+          matching: find.byIcon(Icons.drag_indicator))
+      .first;
+
+  /// Drags [handle] to just above [target], in steps: the list only moves its
+  /// gap once the drag has travelled, and one long jump skips straight past.
+  Future<void> dragAbove(
+      WidgetTester tester, Finder handle, Finder target) async {
+    final from = tester.getCenter(handle);
+    final to = tester.getCenter(target);
+    final gesture = await tester.startGesture(from);
+    await tester.pump();
+    for (var i = 0; i < 20; i++) {
+      await gesture.moveBy(Offset(0, (to.dy - from.dy - 40) / 20));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await gesture.up();
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('the config form drags a PLC above another', (tester) async {
+    final a = EcPlcConfig(label: 'PLC 1', masters: [EcBusConfig()]);
+    final b = EcPlcConfig(label: 'PLC 2', masters: [EcBusConfig()]);
+    final config = EtherCatDeviceTableConfig(plcs: [a, b]);
+    await pumpForm(tester, config);
+
+    await dragAbove(tester, handleOf(b), handleOf(a));
+    expect(config.plcs, [b, a]);
+    expect(
+      [
+        for (final t in tester.widgetList<TextField>(labelled('PLC')))
+          t.controller!.text,
+      ],
+      ['PLC 2', 'PLC 1'],
+    );
+  });
+
+  testWidgets(
+      'the config form drags a master within its PLC, and moves one to another',
+      (tester) async {
+    final one = EcBusConfig(label: 'Device 1', diagKey: 'd1');
+    final two = EcBusConfig(label: 'Device 2', diagKey: 'd2');
+    final three = EcBusConfig(label: 'Device 3', diagKey: 'd3');
+    final a = EcPlcConfig(label: 'PLC 1', masters: [one, two]);
+    final b = EcPlcConfig(label: 'PLC 2', masters: [three]);
+    await pumpForm(tester, EtherCatDeviceTableConfig(plcs: [a, b]));
+
+    await dragAbove(tester, handleOf(two), handleOf(one));
+    expect(a.masters, [two, one]);
+    expect(b.masters, [three]);
+    // Each card kept its own fields through the move: the top one is now
+    // Device 2's, not Device 1's text left behind in the slot.
+    await tester.enterText(labelled('Master').first, 'Line A');
+    expect(two.label, 'Line A');
+    expect(one.label, 'Device 1');
+
+    await tester.tap(find.descendant(
+        of: find.byKey(ObjectKey(one)),
+        matching: find.byTooltip('Move to another PLC')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(PopupMenuItem<EcPlcConfig>, 'PLC 2'));
+    await tester.pumpAndSettle();
+    expect(a.masters, [two]);
+    expect(b.masters, [three, one]);
   });
 
   group('reset commands', () {

@@ -48,11 +48,12 @@ Future<Set<String>> _indexNames(GeneratedDatabase db) async {
 /// The three tables added by the v5→v6 migration.
 const _accessTables = ['app_role', 'app_user', 'audit_entry'];
 
-/// The three `audit_entry` indexes.
+/// The `audit_entry` indexes.
 const _auditIndexes = [
   'idx_audit_entry_at',
   'idx_audit_entry_item_key_at',
   'idx_audit_entry_who_at',
+  'idx_audit_entry_action_id',
 ];
 
 /// The seeded roles as `{name: groups}`, read straight out of `app_role`.
@@ -143,7 +144,7 @@ void main() {
       expect(roles['Engineering'], hasLength(7));
     });
 
-    test('creates the three audit_entry indexes', () async {
+    test('creates the audit_entry indexes', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
       await db.customSelect('SELECT 1').getSingle();
@@ -153,6 +154,38 @@ void main() {
         expect(indexes, contains(index),
             reason: 'audit index "$index" should exist on a fresh install');
       }
+    });
+
+    test(
+        'an audit index missing from a current-version database is created '
+        'on the next open', () async {
+      // The shape of a station that passed `from < 6` before
+      // `idx_audit_entry_action_id` was added to the list: same schema
+      // version, one index short. No upgrade arm runs for it, so only the
+      // open can put it there.
+      final tempDir =
+          Directory.systemTemp.createTempSync('tfc_audit_index_test');
+      addTearDown(() => tempDir.deleteSync(recursive: true));
+      final dbFile = File('${tempDir.path}/app.sqlite');
+
+      final first = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      await first.customSelect('SELECT 1').getSingle();
+      await first.customStatement('DROP INDEX idx_audit_entry_action_id');
+      expect(await _indexNames(first),
+          isNot(contains('idx_audit_entry_action_id')));
+      await first.close();
+
+      final reopened = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      addTearDown(() => reopened.close());
+      await reopened.customSelect('SELECT 1').getSingle();
+
+      expect(await _indexNames(reopened), containsAll(_auditIndexes));
     });
   });
 
