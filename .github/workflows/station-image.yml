@@ -392,6 +392,59 @@ jobs:
             CHANNEL=${{ inputs.channel || 'prerelease' }} \
             DOCKER_TTY=
 
+      # The compose file goes into the STATION image, not the USB -- the USB only
+      # carries the station image as a gzipped payload. The first version of
+      # this asserted against the mounted USB, where the file does not exist:
+      # every check failed except "is not the debug :latest build", which passed
+      # VACUOUSLY because a grep on a missing file also returns non-zero. Hence
+      # the explicit existence check first, and hence checking the absence of
+      # :latest as well as the presence of the right tag -- a retag that
+      # silently did nothing would still satisfy a test that only looked for the
+      # image name.
+      #
+      # This is the file debos overlays into the rootfs one step earlier, so it
+      # proves the retag, not the copy. The copy is a debos overlay action that
+      # fails the build outright on a missing source.
+      - name: The baked compose points at the right image tags
+        run: |
+          set +e
+          set -uo pipefail
+          C=overlays/generated/home/centroid/docker-compose.yml
+          fail=0
+          ck() {
+            if [ "$2" = 0 ]; then printf '  ok    %s\n' "$1"
+            else printf '  FAIL  %s\n' "$1"; printf '::error::%s\n' "$1"; fail=1; fi
+          }
+          t() { local d="$1"; shift; "$@" >/dev/null 2>&1; ck "$d" $?; }
+
+          t "compose was staged"                       test -f "$C"
+          if [ ! -f "$C" ]; then exit 1; fi
+          # centroid-hmi:latest is a DEBUG Flutter build (centroid-hmi.yml:213),
+          # and every station built before CHANNEL ran one. Invisible from the
+          # outside until somebody notices the panel is slow.
+          if grep -qE 'centroid-hmi:latest[[:space:]]*$' "$C"; then
+            ck "HMI is not the debug :latest build" 1
+          else
+            ck "HMI is not the debug :latest build" 0
+          fi
+          if [ "${{ inputs.channel || 'prerelease' }}" = stable ]; then
+            t "stable: HMI is :stable"                 grep -q 'centroid-hmi:stable' "$C"
+            t "stable: backend is :stable"             grep -q 'centroid-backend:stable' "$C"
+            t "stable: profiler is :stable"            grep -q 'hmi-profiler:stable' "$C"
+          else
+            t "prerelease: HMI is :latest-release"     grep -q 'centroid-hmi:latest-release' "$C"
+          fi
+          # weston/novnc/docker-update are built in other repos and publish only
+          # :latest. A blanket retag would name tags that do not exist, and the
+          # station would find out on a first boot that may have no network.
+          t "weston left at :latest"                   grep -q 'weston:latest' "$C"
+          t "novnc left at :latest"                    grep -q 'novnc:latest' "$C"
+          t "docker-update left at :latest"            grep -q 'docker-update:latest' "$C"
+
+          echo "--- CentroidX images in the baked compose ---"
+          grep -E '^\s+image: ghcr.io/centroid-is/' "$C" | awk '{print "  " $2}' | sort -u
+          exit $fail
+
       - name: Build installer USB
         # PRELOAD is passed again, even though this target does not preload
         # anything: os/Makefile derives USBSIZE from it, and a preloaded
@@ -459,27 +512,6 @@ jobs:
           # stack at all until now, and an installer that reports "no network"
           # on every panel would be indistinguishable from one whose DHCP
           # simply had not landed yet.
-          # The compose file this image will actually run. centroid-hmi:latest is
-          # a DEBUG Flutter build, and every station built before the CHANNEL
-          # work ran one -- a mistake that is invisible from the outside until
-          # somebody notices the panel is slow. Assert the absence, not just
-          # the presence, because a retag that silently failed would leave
-          # :latest in place and still pass a "does it mention the image" test.
-          C="$mnt/home/centroid/docker-compose.yml"
-          t "compose baked into the image"                      test -f "$C"
-          t "HMI is not the debug :latest build"                sh -c "! grep -qE 'centroid-hmi:latest\\s*$' '$C'"
-          if [ "${{ inputs.channel || 'prerelease' }}" = stable ]; then
-            t "stable channel: HMI is :stable"                  grep -q 'centroid-hmi:stable' "$C"
-            t "stable channel: backend is :stable"              grep -q 'centroid-backend:stable' "$C"
-          else
-            t "prerelease channel: HMI is :latest-release"      grep -q 'centroid-hmi:latest-release' "$C"
-          fi
-          # weston/novnc/docker-update are built in other repos and publish only
-          # :latest. A blanket retag would point at tags that do not exist and
-          # the station would fail to pull on a first boot with no network.
-          t "weston left at :latest"                            grep -q 'weston:latest' "$C"
-          t "novnc left at :latest"                             grep -q 'novnc:latest' "$C"
-
           t "DHCP config shipped"                               test -f "$mnt/etc/systemd/network/10-dhcp.network"
           t "networkd enabled"                                  test -L "$W/systemd-networkd.service"
           # Path not hardcoded: iproute2 has moved between /bin, /sbin and
