@@ -905,23 +905,29 @@ class AssetTypeCatalog {
       category: 'Beckhoff',
       description:
           'A dense table of every EtherCAT subdevice on the station, one row '
-          'each in bus order: state (OP, SAFEOP, ...), the four ports A-D '
+          'each under its master and PLC in configured order: state (OP, '
+          'SAFEOP, ...), the four ports A-D '
           'coloured by link health, CRC errors, link drops and the time '
           'since CRC errors last rose. Tapping a row opens that subdevice\'s '
           'pane with what each port connects to and buttons to clear its '
           'counters. Reads the ECT_Diag arrays FB_EcDeviceDiag publishes. '
-          'Leave buses empty to use every master whose '
+          'Leave plcs empty to use every master whose '
           'ECT_Diag.Device_<n>_Diag array has a key mapping; one key mapping '
           'per array (Device_<n>_Diag and Device_<n>_SlaveInfo) is all the '
           'setup a station needs. Size it large: it is a page, not a lamp.',
       properties: [
         AssetPropertyInfo(
-            name: 'buses',
-            type: 'List<{label, diagKey, infoKey, countKey?}>',
-            description: 'Optional explicit masters. Each: a label, the key '
-                'of its ECT_Diag.Device_<n>_Diag array, the key of its '
+            name: 'plcs',
+            type: 'List<{label, masters: List<{label, diagKey, infoKey, '
+                'countKey?}>}>',
+            description: 'Optional explicit PLCs, listed in this order, each '
+                'with its masters in order. A PLC: a label (empty when there '
+                'is only one) and its masters. A master: a label, the key of '
+                'its ECT_Diag.Device_<n>_Diag array, the key of its '
                 'Device_<n>_SlaveInfo array, and optionally its '
-                'Device_<n>_SlaveCount. Empty = discover from key mappings.'),
+                'Device_<n>_SlaveCount. Empty = discover from key mappings, '
+                'one PLC per server. A legacy flat `buses` list is still read '
+                'as one unnamed PLC.'),
         AssetPropertyInfo(
             name: 'problemsOnly',
             type: 'bool',

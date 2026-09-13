@@ -194,10 +194,19 @@ class _EcKeyValuesState extends ConsumerState<EcKeyValues> {
 /// Subscribes for itself rather than being handed a snapshot: a pane opened
 /// to watch a flapping link has to show it flapping.
 class EcSubDeviceLivePane extends ConsumerWidget {
-  const EcSubDeviceLivePane({super.key, required this.bus, required this.position});
+  const EcSubDeviceLivePane({
+    super.key,
+    required this.bus,
+    required this.position,
+    this.plcLabel = '',
+  });
 
   final EcBusConfig bus;
   final int position;
+
+  /// The PLC [bus] belongs to, when it has a name: two PLCs can each have a
+  /// Device 1, and the pane has to say which one it is showing.
+  final String plcLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -211,6 +220,7 @@ class EcSubDeviceLivePane extends ConsumerWidget {
         return SidePane(
           title: subdevice?.label ?? '#$position',
           subtitle: [
+            if (plcLabel.isNotEmpty) plcLabel,
             bus.label,
             '#$position',
             if (model.isNotEmpty) model,
