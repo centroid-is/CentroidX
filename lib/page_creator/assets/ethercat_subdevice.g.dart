@@ -36,3 +36,16 @@ Map<String, dynamic> _$EcBusConfigToJson(EcBusConfig instance) =>
       'infoKey': instance.infoKey,
       if (instance.countKey case final value?) 'countKey': value,
     };
+
+EcPlcConfig _$EcPlcConfigFromJson(Map<String, dynamic> json) => EcPlcConfig(
+      label: json['label'] as String? ?? '',
+      masters: (json['masters'] as List<dynamic>?)
+          ?.map((e) => EcBusConfig.fromJson(e as Map<String, dynamic>))
+          .toList(),
+    );
+
+Map<String, dynamic> _$EcPlcConfigToJson(EcPlcConfig instance) =>
+    <String, dynamic>{
+      'label': instance.label,
+      'masters': instance.masters.map((e) => e.toJson()).toList(),
+    };

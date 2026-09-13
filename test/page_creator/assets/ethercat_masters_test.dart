@@ -10,6 +10,28 @@ KeyMappingEntry _node(String id, {String alias = 'st101', int? index}) =>
     );
 
 void main() {
+  test('one server: one unnamed PLC, a plain list of masters', () {
+    final plcs = discoverEcPlcs(KeyMappings(nodes: {
+      'ect2.diag': _node('ECT_Diag.Device_2_Diag'),
+      'ect1.diag': _node('ECT_Diag.Device_1_Diag'),
+    }));
+    expect(plcs, hasLength(1));
+    expect(plcs.single.label, '');
+    expect([for (final m in plcs.single.masters) m.label],
+        ['Device 1', 'Device 2']);
+  });
+
+  test('several servers: a PLC per server, each with its own Device 1', () {
+    final plcs = discoverEcPlcs(KeyMappings(nodes: {
+      'b.diag': _node('ECT_Diag.Device_1_Diag', alias: 'plc2'),
+      'a.diag': _node('ECT_Diag.Device_1_Diag', alias: 'plc1'),
+      'a2.diag': _node('ECT_Diag.Device_2_Diag', alias: 'plc1'),
+    }));
+    expect([for (final p in plcs) p.label], ['plc1', 'plc2']);
+    expect([for (final m in plcs[0].masters) m.diagKey], ['a.diag', 'a2.diag']);
+    expect(plcs[1].masters.single.label, 'Device 1');
+  });
+
   test('groups the generated arrays by master, in master order', () {
     final masters = discoverEcMasters(KeyMappings(nodes: {
       'ect2.info': _node('ECT_Diag.Device_2_SlaveInfo'),
