@@ -28,7 +28,7 @@ import 'package:tfc/routes.dart';
 import 'package:tfc/widgets/access_gate.dart';
 import 'package:tfc/widgets/page_access_gate.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessSession;
-import 'package:tfc_dart/core/access/access_repository.dart' show AccessRepository;
+import 'package:tfc/core/access_authority.dart' show AccessAuthority;
 import 'package:tfc/widgets/dbus_gate.dart';
 import 'package:tfc/widgets/route_redirect.dart';
 
@@ -553,7 +553,10 @@ void main() {
           resolvePageAccess(
             group: accessGroupForRoute('/chiller'),
             path: '/chiller',
-            repository: const AsyncValue<AccessRepository?>.loading(),
+            // The gate asks whether anything on this station can verify a
+            // credential, not whether a repository exists — the two coincide
+            // on a direct station and part company on a gateway panel.
+            authority: const AsyncValue<AccessAuthority>.loading(),
             session: const AsyncValue<AccessSession>.loading(),
           ),
           AccessGateState.allowed,
