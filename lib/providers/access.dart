@@ -46,6 +46,7 @@ import 'gateway_link.dart';
 import 'gateway_preferences_slot.dart';
 import 'preferences.dart';
 import 'state_man.dart';
+import '../core/gateway_default.dart';
 
 part 'access.g.dart';
 
@@ -181,7 +182,7 @@ Future<AccessAuthority> accessAuthority(Ref ref) async {
   try {
     gateway = await ref.read(gatewayConfigProvider.future);
   } catch (_) {
-    gateway = GatewayConfig.defaults;
+    gateway = defaultGatewayConfig();
   }
   if (gateway.isGateway) {
     return accessAuthorityFor(isGateway: true, hasRepository: false);

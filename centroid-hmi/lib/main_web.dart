@@ -45,9 +45,11 @@ import 'package:tfc/pages/access_admin.dart';
 import 'package:tfc/pages/alarm_editor.dart';
 import 'package:tfc/pages/alarm_view.dart';
 import 'package:tfc/pages/audit_trail.dart';
+import 'package:tfc/pages/key_repository.dart';
 import 'package:tfc/pages/not_found.dart';
 import 'package:tfc/pages/page_editor.dart';
 import 'package:tfc/pages/page_view.dart';
+import 'package:tfc/pages/preferences.dart';
 import 'package:tfc/pages/server_config.dart';
 import 'package:tfc/providers/theme.dart';
 import 'package:tfc/theme.dart';
@@ -122,6 +124,26 @@ RoutesLocationBuilder buildWebRoutes() {
           key: const ValueKey('/advanced/access'),
           title: 'Access',
           child: gated('/advanced/access', 'Access', const AccessAdminPage()),
+        ),
+    // Key mappings are plant configuration and travel over the socket like the
+    // rest of it. The one part of this page that touched a filesystem — export
+    // and import — is behind `pages/key_mappings_file.dart`, so the buttons
+    // download and upload here instead of throwing.
+    '/advanced/key-repository': (context, state, args) => BeamPage(
+          key: const ValueKey('/advanced/key-repository'),
+          title: 'Key Repository',
+          child: gated('/advanced/key-repository', 'Key Repository',
+              KeyRepositoryPage(proposalData: args is String ? args : null)),
+        ),
+    // The settings screen. Its MCP card is absent rather than disabled (see
+    // `widgets/mcp_server_section.dart`), and its database card edits a
+    // connection this client never opens — the gateway owns the database — so
+    // what remains here is appearance, theme and the shared configuration keys.
+    '/advanced/preferences': (context, state, args) => BeamPage(
+          key: const ValueKey('/advanced/preferences'),
+          title: 'Preferences',
+          child: gated(
+              '/advanced/preferences', 'Preferences', const PreferencesPage()),
         ),
   });
 }
