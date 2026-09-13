@@ -1017,7 +1017,15 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
 
     // One timer however many times this runs: a retry that picked up a table
     // appearing late would otherwise start a second one on the same buffer.
-    if (_rtThrottleTimer == null && _realtimeSubscriptions.isNotEmpty) {
+    //
+    // **Or a poll timer**, and the `or` is load-bearing. This buffer is filled
+    // by `ingest`, which both delivery paths share, and drained only here. On
+    // a transport with no push channel there are no subscriptions by
+    // construction — the branch above cancels them — so a guard that asked
+    // only about subscriptions would leave the poll filling a buffer nothing
+    // empties, and a gateway panel's trend would never draw a live point.
+    if (_rtThrottleTimer == null &&
+        (_realtimeSubscriptions.isNotEmpty || _rtPollTimer != null)) {
       _rtThrottleTimer = Timer.periodic(_rtThrottleInterval, (timer) {
         if (_rtThrottleBuffer.isNotEmpty && mounted) {
           _addData(_rtThrottleBuffer);
@@ -1031,6 +1039,16 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
     if (!_realTimeActive) {
       _disableRealtimeUpdates();
       return 0;
+    }
+    // The poll delivers every series at once, so on a pull-only transport the
+    // live count is the series count and not the (zero) subscription count.
+    // `_reportHistory` reserves the dead-chart error panel for "no history and
+    // nothing arriving either"; returning zero here would put that panel on a
+    // gateway panel whose poll is working, which is the one place the chart is
+    // allowed to lie and must not.
+    if (_rtPollTimer != null) {
+      return widget.config.primarySeries.length +
+          widget.config.secondarySeries.length;
     }
     return _realtimeSubscriptions.length;
   }
@@ -1469,6 +1487,15 @@ class _GraphAssetState extends ConsumerState<GraphAsset> {
     // alive for the life of the process.
     _rtThrottleTimer?.cancel();
     _rtThrottleTimer = null;
+    // And the tail poll, for the same reason and with more of it: on a
+    // transport with no push channel this is the *only* live delivery, so it
+    // is running on every such chart, and a leaked one holds this State — and
+    // the whole chart — alive for the life of the process while re-querying
+    // the database every five seconds. `_disableRealtimeUpdates` cancels it
+    // when the operator picks a range; nothing cancelled it on teardown.
+    _rtPollTimer?.cancel();
+    _rtPollTimer = null;
+    _rtPolledThrough = null;
     _rtThrottleBuffer.clear();
   }
 }
