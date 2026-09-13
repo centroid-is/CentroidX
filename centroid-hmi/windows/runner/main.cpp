@@ -142,7 +142,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
-  Win32Window::Point origin(10, 10);
+  // Opens maximized on the primary monitor; |size| is only what it restores
+  // to, and is fitted to the display. See window_placement.h.
+  Win32Window::Point origin(0, 0);
   Win32Window::Size size(1920, 1080);
   if (!window.Create(L"CentroidX", origin, size)) {
     return EXIT_FAILURE;
