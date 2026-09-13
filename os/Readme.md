@@ -59,6 +59,34 @@ make image GPU=amd      # AMD station instead of Intel
 make image PRELOAD=true # bake the container images in, for an offline install
 ```
 
+### Which images a station runs
+
+The compose file at the repo root names `:latest` for every CentroidX image,
+which is right for a developer running the stack on a laptop and wrong for a
+station: **`centroid-hmi:latest` is a debug Flutter build.**
+`.github/workflows/centroid-hmi.yml` says so directly — `latest` is built
+`--debug`, and `latest-release` exists precisely because "`latest-release` is
+what stations pull". Every station installed before this change ran a debug
+engine.
+
+`make generated` therefore retags the copy it bakes, driven by `CHANNEL`:
+
+| `CHANNEL` | centroid-hmi | centroid-backend | hmi-profiler | who passes it |
+|---|---|---|---|---|
+| `prerelease` (default) | `latest-release` | `latest` | `latest` | main-prerelease.yml |
+| `stable` | `stable` | `stable` | `stable` | tag.yml |
+
+`weston`, `novnc` and `docker-update` are built in other repos and publish only
+`:latest`, so they are deliberately left alone — a blanket
+`s/:latest/:stable/` would bake a reference to a tag that does not exist, and
+the station would fail to pull on a first boot that may have no network. The
+retag is per image for that reason, and CI asserts both the rewrite and the
+absence of `centroid-hmi:latest` in the baked file.
+
+The embedder extracted from `centroid-hmi:latest` for the *setup app* (the
+`build` job) is a separate artifact for a separate binary and is intentionally
+unchanged.
+
 ### Offline installs
 
 Every **released** stick is built with `PRELOAD=true` (it is the `workflow_call`

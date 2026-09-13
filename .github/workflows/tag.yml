@@ -140,6 +140,10 @@ jobs:
     uses: ./.github/workflows/station-image.yml
     with:
       ref: ${{ needs.retag-pubspec.outputs.ref }}
+      # A stable release bakes the :stable images. Everything else (the rolling
+      # prerelease from main-prerelease.yml) takes the workflow's own default,
+      # which is centroid-hmi:latest-release.
+      channel: stable
     secrets: inherit
 
   create-release:

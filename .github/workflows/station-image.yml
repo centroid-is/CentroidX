@@ -22,6 +22,16 @@ on:
       gpu:
         type: string
         default: intel
+      channel:
+        # Which published tag the baked compose file points at: 'prerelease'
+        # (centroid-hmi:latest-release) or 'stable' (*:stable). tag.yml passes
+        # stable; main-prerelease.yml takes this default.
+        #
+        # The default is NOT the compose file's own :latest, which is a DEBUG
+        # Flutter build (centroid-hmi.yml:213) -- every station built before
+        # this ran one. See os/Makefile's CHANNEL.
+        type: string
+        default: prerelease
       preload:
         # true, so every released stick installs with no uplink at all. A
         # station pulling ~1.9GB of containers on its first boot cannot be
@@ -58,6 +68,11 @@ on:
         type: choice
         options: [ intel, amd ]
         default: intel
+      channel:
+        description: Which image tag the baked compose points at
+        type: choice
+        options: [ prerelease, stable ]
+        default: prerelease
       release_tag:
         description: "Publish a release at this tag (e.g. station-v2026.09.12); blank = artifacts only"
         default: ''
@@ -374,6 +389,7 @@ jobs:
           make image \
             GPU=${{ inputs.gpu || 'intel' }} \
             PRELOAD=${{ inputs.preload || 'false' }} \
+            CHANNEL=${{ inputs.channel || 'prerelease' }} \
             DOCKER_TTY=
 
       - name: Build installer USB
@@ -443,6 +459,27 @@ jobs:
           # stack at all until now, and an installer that reports "no network"
           # on every panel would be indistinguishable from one whose DHCP
           # simply had not landed yet.
+          # The compose file this image will actually run. centroid-hmi:latest is
+          # a DEBUG Flutter build, and every station built before the CHANNEL
+          # work ran one -- a mistake that is invisible from the outside until
+          # somebody notices the panel is slow. Assert the absence, not just
+          # the presence, because a retag that silently failed would leave
+          # :latest in place and still pass a "does it mention the image" test.
+          C="$mnt/home/centroid/docker-compose.yml"
+          t "compose baked into the image"                      test -f "$C"
+          t "HMI is not the debug :latest build"                sh -c "! grep -qE 'centroid-hmi:latest\\s*$' '$C'"
+          if [ "${{ inputs.channel || 'prerelease' }}" = stable ]; then
+            t "stable channel: HMI is :stable"                  grep -q 'centroid-hmi:stable' "$C"
+            t "stable channel: backend is :stable"              grep -q 'centroid-backend:stable' "$C"
+          else
+            t "prerelease channel: HMI is :latest-release"      grep -q 'centroid-hmi:latest-release' "$C"
+          fi
+          # weston/novnc/docker-update are built in other repos and publish only
+          # :latest. A blanket retag would point at tags that do not exist and
+          # the station would fail to pull on a first boot with no network.
+          t "weston left at :latest"                            grep -q 'weston:latest' "$C"
+          t "novnc left at :latest"                             grep -q 'novnc:latest' "$C"
+
           t "DHCP config shipped"                               test -f "$mnt/etc/systemd/network/10-dhcp.network"
           t "networkd enabled"                                  test -L "$W/systemd-networkd.service"
           # Path not hardcoded: iproute2 has moved between /bin, /sbin and

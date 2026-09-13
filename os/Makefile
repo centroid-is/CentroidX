@@ -19,15 +19,14 @@ COMPOSE_SRC    ?= ../docker-compose.yml
 SUITE          ?= trixie
 GPU            ?= intel
 IMAGESIZE      ?= 8GB
-# 4GB, not a round "size of the stick you intend to use". debos reads 8GB as
-# 8,000,000,000 bytes and a nominal 8 GB stick is typically 7.7-8.0e9, so an
-# 8GB image can fail to fit one: dd truncates, the backup GPT and partition 2's
-# end land past the device, the kernel's GPT parser drops the partition, and the
-# initramfs finds no root -- after GRUB has already started, which makes it look
-# like a broken image rather than a truncated write. Contents are ~2.3GB (a
-# minbase system plus the ~550MB payload), so this fits any 8GB stick with room.
-# Raise it for PRELOAD=true. (Review #9.)
-# true on every release build: main-prerelease.yml and tag.yml take the
+# Why USBSIZE below is not a round "size of the stick you intend to use": debos
+# reads 8GB as 8,000,000,000 bytes and a nominal 8 GB stick is typically
+# 7.7-8.0e9, so an 8GB image can fail to fit one -- dd truncates, the backup GPT
+# and partition 2's end land past the device, the kernel's GPT parser drops the
+# partition, and the initramfs finds no root, after GRUB has already started.
+# That looks like a broken image rather than a truncated write. (Review #9.)
+#
+# PRELOAD is true on every release build: main-prerelease.yml and tag.yml take the
 # workflow_call default in station-image.yml, which is true. A station that has
 # to pull ~1.9GB of containers on its first boot is a station that cannot be
 # commissioned on a plant with no uplink, which is the normal case. PR builds
@@ -57,6 +56,20 @@ USBSIZE        ?= 8GB
 else
 USBSIZE        ?= 4GB
 endif
+
+# Which published tag the baked compose file points its CentroidX images at.
+#
+#   prerelease  centroid-hmi:latest-release   (default)
+#   stable      *:stable                      (tag.yml passes this)
+#
+# NOT :latest, which is what the compose file in the repo root says and what
+# every station built so far has therefore run. `latest` is a DEBUG Flutter
+# build -- .github/workflows/centroid-hmi.yml:213 says so in as many words, and
+# :295 says "`latest-release` is what stations pull". A debug engine on a panel
+# is slower, larger, and carries asserts nobody wants in a plant. The root
+# compose file keeps :latest because that is the right default for a developer
+# running the stack on a laptop; only the copy baked into an image is retagged.
+CHANNEL        ?= prerelease
 
 OUT            := out
 GEN            := overlays/generated
@@ -93,6 +106,7 @@ help:
 	@echo
 	@echo "Variables: COMPOSE_SRC=$(COMPOSE_SRC) SUITE=$(SUITE) GPU=$(GPU)"
 	@echo "           IMAGESIZE=$(IMAGESIZE) USBSIZE=$(USBSIZE) PRELOAD=$(PRELOAD)"
+	@echo "           CHANNEL=$(CHANNEL)"
 
 # ---------------------------------------------------------------- generated/
 # Everything here is derived, never committed. The station's compose file is
@@ -108,6 +122,29 @@ generated:
 	@mkdir -p $(GEN)/home/centroid $(GEN)/etc/centroid $(GEN)/var/lib/centroid/preload
 	@test -r "$(COMPOSE_SRC)" || { echo "no compose file at $(COMPOSE_SRC)"; exit 1; }
 	@cp "$(COMPOSE_SRC)" $(GEN)/home/centroid/docker-compose.yml
+	@# Retag, per image, never with a blanket s/:latest/:$(CHANNEL)/. weston,
+	@# novnc and docker-update are built in other repos and publish ONLY
+	@# :latest -- rewriting those would bake a reference to a tag that does not
+	@# exist, and the station would fail to pull on its first boot with no
+	@# network to fix it. centroid-hmi is the only image with :latest-release.
+	@set -e; \
+	case "$(CHANNEL)" in \
+	  prerelease) \
+	    sed -i.bak -e 's|centroid-hmi:latest|centroid-hmi:latest-release|' \
+	      $(GEN)/home/centroid/docker-compose.yml ;; \
+	  stable) \
+	    sed -i.bak \
+	      -e 's|centroid-hmi:latest|centroid-hmi:stable|' \
+	      -e 's|centroid-backend:latest|centroid-backend:stable|' \
+	      -e 's|hmi-profiler:latest|hmi-profiler:stable|' \
+	      $(GEN)/home/centroid/docker-compose.yml ;; \
+	  *) echo "CHANNEL must be prerelease or stable, got '$(CHANNEL)'"; exit 1 ;; \
+	esac; \
+	rm -f $(GEN)/home/centroid/docker-compose.yml.bak
+	@echo "  compose channel: $(CHANNEL)"
+	@grep -E '^\s+image: ghcr.io/centroid-is/' \
+	  $(GEN)/home/centroid/docker-compose.yml \
+	  | awk '{print "    " $$2}' | sort -u
 	@test -r ../.env.example && cp ../.env.example $(GEN)/etc/centroid/env.example || true
 	@{ echo "CentroidX station image"; \
 	   echo "built:      $$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
@@ -116,6 +153,7 @@ generated:
 	   echo "suite:      $(SUITE)"; \
 	   echo "gpu:        $(GPU)"; \
 	   echo "preloaded:  $(PRELOAD)"; \
+	   echo "channel:    $(CHANNEL)"; \
 	 } > $(GEN)/etc/centroid/image-info
 	@cat $(GEN)/etc/centroid/image-info | sed 's/^/  /'
 
