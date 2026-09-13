@@ -26,6 +26,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/access_admin.dart';
 import '../widgets/base_scaffold.dart';
+import 'access_admin_proposals.dart';
 import 'access_roles_section.dart';
 import 'access_session_section.dart';
 import 'access_users_section.dart';
@@ -183,6 +184,11 @@ class AccessAdminBody extends ConsumerWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // Nothing at all until an agent has proposed something, so the
+          // measured heights below still hold on every station; with a batch
+          // staged it lists what Accept will do, above the sections it will
+          // do it to, and carries its own gap.
+          AccessAdminProposalsSection(),
           AccessRolesSection(),
           SizedBox(height: _kSectionGap),
           AccessUsersSection(),

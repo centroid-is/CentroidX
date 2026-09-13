@@ -22,6 +22,7 @@ import 'resources/history_resource.dart';
 import 'resources/plc_code_index_resource.dart';
 import 'resources/knowledge_resource.dart';
 import 'resources/tech_docs_resource.dart';
+import 'services/access_account_service.dart';
 import 'services/access_template_service.dart';
 import 'services/alarm_context_service.dart';
 import 'services/alarm_service.dart';
@@ -38,6 +39,7 @@ import 'expression/expression_validator.dart';
 import 'safety/elicitation_risk_gate.dart';
 import 'services/proposal_feedback_bus.dart';
 import 'services/proposal_service.dart';
+import 'tools/access_account_tools.dart';
 import 'tools/access_template_tools.dart';
 import 'tools/alarm_tools.dart';
 import 'tools/alarm_tree_tools.dart';
@@ -155,6 +157,7 @@ class TfcMcpServer {
 
     // Create trend and context services (Phase 7)
     final accessTemplateService = AccessTemplateService(_database);
+    final accessAccountService = AccessAccountService(_database);
     final trendService = TrendService(_database);
 
     // Static reports: definitions + shift calendar live in the shared
@@ -197,6 +200,12 @@ class TfcMcpServer {
         registry: registry,
         service: accessTemplateService,
         configService: configService,
+      );
+      // The roster and the roles: the other half of "who may do what",
+      // gated exactly like the templates for the same reason.
+      registerAccessAccountTools(
+        registry: registry,
+        service: accessAccountService,
       );
     }
     if (toggles.drawingsEnabled) {
@@ -270,6 +279,12 @@ class TfcMcpServer {
         registerAccessTemplateWriteTools(
           registry: registry,
           service: accessTemplateService,
+          riskGate: riskGate,
+          proposalService: proposalService,
+        );
+        registerAccessAccountWriteTools(
+          registry: registry,
+          service: accessAccountService,
           riskGate: riskGate,
           proposalService: proposalService,
         );

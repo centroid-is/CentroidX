@@ -261,19 +261,19 @@ void main() {
       );
     }
 
-    test('allEnabled registers 42 tools (20 read + 13 write + 9 report)',
+    test('allEnabled registers 53 tools (22 read + 22 write + 9 report)',
         () async {
       final server = createServer();
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
         final tools = await client.listTools();
-        expect(tools, hasLength(42));
+        expect(tools, hasLength(53));
       } finally {
         await client.close();
       }
     });
 
-    test('tagsEnabled=false registers 39 tools', () async {
+    test('tagsEnabled=false registers 50 tools', () async {
       final server = createServer(
         toggles: McpToolToggles.allEnabled.copyWithToggle('tags', false),
       );
@@ -281,7 +281,7 @@ void main() {
       try {
         final tools = await client.listTools();
         final names = tools.map((t) => t.name).toSet();
-        expect(tools, hasLength(39));
+        expect(tools, hasLength(50));
         expect(names, isNot(contains('list_tags')));
         expect(names, isNot(contains('get_tag_value')));
       } finally {
@@ -289,7 +289,7 @@ void main() {
       }
     });
 
-    test('alarmsEnabled=false registers 34 tools', () async {
+    test('alarmsEnabled=false registers 45 tools', () async {
       final server = createServer(
         toggles: McpToolToggles.allEnabled.copyWithToggle('alarms', false),
       );
@@ -303,7 +303,7 @@ void main() {
         // delete_alarm (write tools gated by alarmsEnabled inside the
         // proposalsEnabled block).
         // 42 total - 8 = 34.
-        expect(tools, hasLength(34));
+        expect(tools, hasLength(45));
         expect(names, isNot(contains('list_alarms')));
         expect(names, isNot(contains('get_alarm_detail')));
         expect(names, isNot(contains('query_alarm_history')));
@@ -316,7 +316,7 @@ void main() {
       }
     });
 
-    test('proposalsEnabled=false registers 25 tools', () async {
+    test('proposalsEnabled=false registers 27 tools', () async {
       final server = createServer(
         toggles: McpToolToggles.allEnabled.copyWithToggle('proposals', false),
       );
@@ -326,7 +326,20 @@ void main() {
         final names = tools.map((t) => t.name).toSet();
         // 42 - 13 - the four report writes, which ride this toggle
         // because they are proposals like every other write here.
-        expect(tools, hasLength(25));
+        expect(tools, hasLength(27));
+        // The nine account/role proposals ride this toggle too; the two
+        // account reads stay, configEnabled put them there.
+        expect(names, contains('list_accounts'));
+        expect(names, contains('list_roles'));
+        expect(names, isNot(contains('create_account')));
+        expect(names, isNot(contains('delete_account')));
+        expect(names, isNot(contains('set_account_roles')));
+        expect(names, isNot(contains('set_station_account')));
+        expect(names, isNot(contains('reset_account_password')));
+        expect(names, isNot(contains('create_role')));
+        expect(names, isNot(contains('update_role')));
+        expect(names, isNot(contains('rename_role')));
+        expect(names, isNot(contains('delete_role')));
         expect(names, isNot(contains('create_report')));
         expect(names, isNot(contains('set_shift_calendar')));
         // The read half stays: reportsEnabled put it there.
@@ -368,7 +381,13 @@ void main() {
         // update_key_mapping, delete_key_mapping, and the four
         // access-template write tools, which validate against the read half.
         // 41 total - 18 = 23.
+        // The two account reads and nine account/role proposals go with
+        // configEnabled as well: 53 - 30 = 23.
         expect(tools, hasLength(23));
+        expect(names, isNot(contains('list_accounts')));
+        expect(names, isNot(contains('list_roles')));
+        expect(names, isNot(contains('create_account')));
+        expect(names, isNot(contains('delete_role')));
         expect(names, isNot(contains('list_pages')));
         expect(names, isNot(contains('list_assets')));
         expect(names, isNot(contains('get_asset_detail')));
