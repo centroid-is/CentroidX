@@ -129,10 +129,29 @@ jobs:
       ref: ${{ needs.retag-pubspec.outputs.ref }}
     secrets: inherit
 
+  # Built from the retagged commit, like every other asset here, so a stable
+  # release carries a USB installer matching exactly the app it ships.
+  #
+  # Not in create-release's required set -- see the `if` there. The OS image has
+  # its own failure modes (debian mirrors, debos, KVM on the runner) and none of
+  # them should be able to stop an app release.
+  station-image:
+    needs: [retag-pubspec]
+    uses: ./.github/workflows/station-image.yml
+    with:
+      ref: ${{ needs.retag-pubspec.outputs.ref }}
+    secrets: inherit
+
   create-release:
-    needs: [retag-pubspec, build-manager, windows-build, macos-build]
+    needs: [retag-pubspec, build-manager, windows-build, macos-build, station-image]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: >-
+      !cancelled()
+      && startsWith(github.ref, 'refs/tags/')
+      && needs.retag-pubspec.result == 'success'
+      && needs.build-manager.result == 'success'
+      && needs.windows-build.result == 'success'
+      && needs.macos-build.result == 'success'
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -156,6 +175,22 @@ jobs:
       # into the user's Downloads folder.
       - name: Zip Windows portable build
         run: zip -qr release-artifacts/centroidx_windows_x64.zip centroidx-windows-x64
+
+      # The flat download above does already pull these in -- upload-artifact
+      # roots an artifact at the least common ancestor of its paths, which for
+      # os/out/usb-installer.* puts both files at the artifact root. That is an
+      # implicit consequence of the upload paths, though, and silently yields a
+      # release missing its installer if those paths ever change. Named
+      # explicitly so the location is a stated contract instead.
+      #
+      # continue-on-error: station-image is permitted to have failed, and then
+      # there is no artifact to download.
+      - name: Download station USB installer
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: station-usb-installer
+          path: release-artifacts/
 
       - name: Generate SHA256SUMS.txt
         working-directory: release-artifacts
@@ -187,11 +222,23 @@ jobs:
           # Windows machine can install.
           echo "Artifacts to checksum:"
           ls -la
-          sha256sum centroidx-manager_* \
-                    centroidx_darwin_arm64.dmg \
-                    centroidx_windows_x64.zip \
-                    centroidx_windows_amd64.msix \
-                    centroidx-sideload.cer > SHA256SUMS.txt
+          sums=( centroidx-manager_*
+                 centroidx_darwin_arm64.dmg
+                 centroidx_windows_x64.zip
+                 centroidx_windows_amd64.msix
+                 centroidx-sideload.cer )
+
+          # The one asset allowed to be absent, so it is tested for rather than
+          # named. Both halves or neither: bmaptool needs the .bmap to flash the
+          # sparse image.
+          if [ -f usb-installer.img.gz ] && [ -f usb-installer.img.bmap ]; then
+            sums+=( usb-installer.img.gz usb-installer.img.bmap )
+          else
+            echo "::warning::no station USB installer in this run - releasing without it"
+            rm -f usb-installer.img.gz usb-installer.img.bmap
+          fi
+
+          sha256sum "${sums[@]}" > SHA256SUMS.txt
           echo ""
           echo "SHA256SUMS.txt contents:"
           cat SHA256SUMS.txt
@@ -208,3 +255,5 @@ jobs:
             release-artifacts/SHA256SUMS.txt
             release-artifacts/centroidx_windows_amd64.msix
             release-artifacts/centroidx-sideload.cer
+            release-artifacts/usb-installer.img.gz
+            release-artifacts/usb-installer.img.bmap

@@ -6,16 +6,28 @@ name: Station image
 # waste. This only runs when the image, the compose file it bakes, or this
 # workflow changes.
 on:
-  push:
-    branches: [ main ]
+  # No push trigger. main-prerelease.yml calls this workflow on every push to
+  # main, so one here would build the same image twice whenever a push touched
+  # os/ -- and the two runs would then queue behind each other on the
+  # concurrency group below.
+  #
+  # Called by main-prerelease.yml and tag.yml so the rolling prerelease and
+  # every stable release carry a USB installer built from that same commit.
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to build (blank = the ref that triggered the caller)
+        type: string
+        default: ''
+      gpu:
+        type: string
+        default: intel
+      preload:
+        type: boolean
+        default: false
+  pull_request:
     # Duplicated rather than shared with a YAML anchor: GitHub Actions does not
     # officially support anchors in workflow files.
-    paths:
-      - 'os/**'
-      - 'docker-compose.yml'
-      - '.env.example'
-      - '.github/workflows/station-image.yml'
-  pull_request:
     paths:
       - 'os/**'
       - 'docker-compose.yml'
@@ -41,7 +53,7 @@ on:
         default: ''
 
 concurrency:
-  group: station-image-${{ github.ref }}
+  group: station-image-${{ github.workflow }}-${{ github.ref }}
   # Only supersede PR builds. A hand-run release must not be killed by someone
   # merging a PR that touches os/ -- possibly between creating the release and
   # uploading its assets. tag.yml uses cancel-in-progress: false for the same
@@ -62,6 +74,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: shellcheck
         run: |
@@ -158,9 +172,13 @@ jobs:
       - uses: actions/checkout@v4
         id: checkout
         continue-on-error: true
+        with:
+          ref: ${{ inputs.ref }}
       - name: Checkout (retry)
         if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       # elinux/ is generated, not committed: it is a platform runner that
       # flutter-elinux owns and regenerates, and committing it would pin us to
@@ -196,6 +214,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       # Hosted Ubuntu runners do expose /dev/kvm, but it is owned by the kvm
       # group and not world-writable, so a container started as the runner user
@@ -410,7 +430,12 @@ jobs:
       # already have enough interaction between them without an app release
       # implying an image release.
       - name: Publish a station release
-        if: inputs.release_tag != ''
+        # Gated on the event too, not just the input. release_tag is a
+        # workflow_dispatch input only, so on a workflow_call it is null --
+        # and GitHub casts null and '' both to 0 when comparing, which makes
+        # `null != ''` quietly false. Relying on that coercion is how a
+        # boolean input silently skipped a job once already; say it outright.
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.release_tag }}
