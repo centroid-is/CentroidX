@@ -941,6 +941,25 @@ Net: the surface did not grow. A device-local write that bypassed
 `GuardedPreferences` and paid for it with a hand-rolled audit row became a
 database write already sitting behind `guarded by 06-03`.
 
+### 4.3c What the display-order change added (2026-09-13)
+
+Roles and accounts can be reordered on the Access screen, and the order is kept
+in a nullable `sort_order` column on each of `app_role` and `app_user`.
+
+- **No new row.** `AccessRepository.setRoleOrder` and
+  `AccessRepository.setUserOrder` are two more `update(...)` writes in the file
+  §2.2 already lists, covered by its existing row the way
+  `setInactivityTimeout` was in §4.3b. The column itself is added on open by
+  `_ensureSortOrderColumns` in `database_drift.dart`, schema statements of the
+  same kind as the `_ensureAuditIndexes` ones beside them, with no schema
+  version.
+- **The same gate.** `AccessAdminStore.setRoleOrder` and
+  `AccessAdminStore.setUserOrder` ask `kAccessAdminGroup` — `users` — and record
+  `role.order` / `user.order`, refusals included, with the whole order before
+  and after as JSON arrays. An order grants nothing, but it is shared data every
+  panel shows, so it goes through the gate over the rest of both tables rather
+  than around it.
+
 ### 4.4 What §5 checked and did not find
 
 The rule this document is meant to enforce — *a key the app writes in normal

@@ -35,6 +35,9 @@
 ///
 /// **That call goes last, and the ordering is load-bearing.** See [_afterWrite].
 ///
+/// The fifth write, the display order a drag sets, is the one that skips it:
+/// where a role sits in the list changes nothing any session resolves.
+///
 /// ## Two refusals, one dialog, and no override
 ///
 /// A role delete can be blocked for two independent reasons: accounts still
@@ -251,6 +254,12 @@ Key kAccessRoleSaveKey(String name) => Key('access-role-save-$name');
 /// One editor's Cancel.
 Key kAccessRoleCancelKey(String name) => Key('access-role-cancel-$name');
 
+/// One role's drag handle.
+Key kAccessRoleDragHandleKey(String name) => Key('access-role-drag-$name');
+
+/// The drag handle's tooltip.
+const String kAccessRoleDragTooltip = 'Drag to reorder';
+
 // ---------------------------------------------------------------------------
 // The section
 // ---------------------------------------------------------------------------
@@ -352,26 +361,11 @@ class AccessRolesSection extends ConsumerWidget {
       onCreate: () => _create(context, ref, store, names),
       child: roles.isEmpty
           ? _note(context, kAccessRolesEmptyNote, key: kAccessRolesEmptyKey)
-          : Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                for (final role in roles)
-                  _RoleTile(
-                    // Keyed by name so that an open editor stays open across
-                    // the rebuild every write triggers — otherwise saving one
-                    // role would collapse the row being edited.
-                    key: ValueKey('access-role-${role.name}'),
-                    role: role,
-                    otherNames: [
-                      for (final n in names)
-                        if (n != role.name) n,
-                    ],
-                    holders: holders?[role.name],
-                    heldByAnonymous: heldByAnonymous.contains(role.name),
-                    store: store,
-                  ),
-              ],
+          : _RoleList(
+              roles: roles,
+              holders: holders,
+              heldByAnonymous: heldByAnonymous,
+              store: store,
             ),
     );
   }
@@ -446,6 +440,107 @@ class AccessRolesSection extends ConsumerWidget {
 }
 
 // ---------------------------------------------------------------------------
+// The reorderable list
+// ---------------------------------------------------------------------------
+
+/// The roles, in display order, each row draggable by its handle.
+///
+/// The order is display only: nothing resolves a permission by position, and
+/// the account role picker simply lists roles in the order this writes.
+///
+/// **The dropped order shows at once.** It is held in [_pending] until the
+/// provider hands back a new list — the invalidate `_write` issues keeps the
+/// previous list instance while it reloads, so an identity change is exactly
+/// "the reordered read has arrived". A refused or failed write clears it and
+/// the list snaps back, beside the shared prompt when the refusal was a
+/// permission one. The handle is never greyed.
+class _RoleList extends ConsumerStatefulWidget {
+  const _RoleList({
+    required this.roles,
+    required this.holders,
+    required this.heldByAnonymous,
+    required this.store,
+  });
+
+  final List<AccessRole> roles;
+  final Map<String, int>? holders;
+  final Set<String> heldByAnonymous;
+  final AccessAdminStore store;
+
+  @override
+  ConsumerState<_RoleList> createState() => _RoleListState();
+}
+
+class _RoleListState extends ConsumerState<_RoleList> {
+  List<String>? _pending;
+
+  @override
+  void didUpdateWidget(covariant _RoleList old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.roles, widget.roles)) _pending = null;
+  }
+
+  List<AccessRole> get _ordered {
+    final pending = _pending;
+    if (pending == null) return widget.roles;
+    final byName = {for (final role in widget.roles) role.name: role};
+    return [
+      for (final name in pending)
+        if (byName[name] != null) byName[name]!,
+      for (final role in widget.roles)
+        if (!pending.contains(role.name)) role,
+    ];
+  }
+
+  Future<void> _onReorder(int oldIndex, int newIndex) async {
+    if (newIndex > oldIndex) newIndex -= 1;
+    // Dropped where it started: no write, and no audit row claiming a change.
+    if (oldIndex == newIndex) return;
+    final names = [for (final role in _ordered) role.name];
+    names.insert(newIndex, names.removeAt(oldIndex));
+    setState(() => _pending = names);
+    final wrote =
+        await _write(context, ref, () => widget.store.setRoleOrder(names));
+    if (!wrote && mounted) setState(() => _pending = null);
+    // No `_afterWrite`: an order changes nothing any session resolves.
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final roles = _ordered;
+    final names = [for (final role in roles) role.name];
+    return ReorderableListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      buildDefaultDragHandles: false,
+      itemCount: roles.length,
+      // onReorder, not onReorderItem — see system_clock_section.dart.
+      // ignore: deprecated_member_use
+      onReorder: _onReorder,
+      itemBuilder: (context, index) {
+        final role = roles[index];
+        return _RoleTile(
+          // Keyed by name so that an open editor stays open across the rebuild
+          // every write triggers — otherwise saving one role would collapse the
+          // row being edited. The reorderable list needs the key too.
+          key: ValueKey('access-role-${role.name}'),
+          reorderIndex: index,
+          role: role,
+          otherNames: [
+            for (final n in names)
+              if (n != role.name) n,
+          ],
+          holders: widget.holders?[role.name],
+          heldByAnonymous: widget.heldByAnonymous.contains(role.name),
+          store: widget.store,
+        );
+      },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // One row
 // ---------------------------------------------------------------------------
 
@@ -454,6 +549,7 @@ class AccessRolesSection extends ConsumerWidget {
 class _RoleTile extends ConsumerStatefulWidget {
   const _RoleTile({
     super.key,
+    required this.reorderIndex,
     required this.role,
     required this.otherNames,
     required this.holders,
@@ -462,6 +558,9 @@ class _RoleTile extends ConsumerStatefulWidget {
   });
 
   final AccessRole role;
+
+  /// This row's index in the reorderable list, for its drag handle.
+  final int reorderIndex;
 
   /// Whether the anonymous account holds this role, so an edit reaches every
   /// logged-out panel. Drives [kAccessRoleHeldByAnonymousNote].
@@ -526,9 +625,29 @@ class _RoleTileState extends ConsumerState<_RoleTile> {
           dense: true,
           contentPadding: EdgeInsets.zero,
           onTap: _toggle,
-          leading: Icon(
-              draft == null ? Icons.expand_more : Icons.expand_less,
-              size: 18),
+          leading: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ReorderableDragStartListener(
+                index: widget.reorderIndex,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.grab,
+                  child: Tooltip(
+                    message: kAccessRoleDragTooltip,
+                    child: Icon(
+                      Icons.drag_indicator,
+                      key: kAccessRoleDragHandleKey(role.name),
+                      size: 18,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(draft == null ? Icons.expand_more : Icons.expand_less,
+                  size: 18),
+            ],
+          ),
           title: Text(role.name),
           subtitle: Text(kAccessRoleSummary(role.groups, widget.holders)),
           trailing: Row(

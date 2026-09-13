@@ -577,6 +577,14 @@ Key kAccessUserRolePrimaryKey(String roleName) =>
 /// The "tick at least one" sentence.
 const Key kAccessUserRoleNoneKey = Key('access-user-role-none');
 
+/// One account's drag handle. The anonymous account has none: it is pinned
+/// first.
+Key kAccessUserDragHandleKey(String username) =>
+    Key('access-user-drag-$username');
+
+/// The drag handle's tooltip.
+const String kAccessUserDragTooltip = 'Drag to reorder';
+
 // ---------------------------------------------------------------------------
 // The section
 // ---------------------------------------------------------------------------
@@ -648,17 +656,17 @@ class AccessUsersSection extends ConsumerWidget {
       );
     }
 
-    // The anonymous account pinned first — it is every panel on the floor, not
-    // one person among the rest — and the people after it in the store's
-    // order.
+    // The anonymous account pinned first and not draggable — it is every panel
+    // on the floor, not one person among the rest — and the people after it in
+    // the store's order, which a drag sets.
     final all = usersAsync.requireValue;
-    final users = [
-      ...all.where((u) => u.username == kAnonymousUsername),
-      ...all.where((u) => u.username != kAnonymousUsername),
-    ];
+    final anonymous =
+        all.where((u) => u.username == kAnonymousUsername).toList();
+    final people = all.where((u) => u.username != kAnonymousUsername).toList();
+    final users = [...anonymous, ...people];
     // "No accounts" means no account a person can sign in to: the first-user
     // window is open whether or not the anonymous row is there.
-    final noPeople = users.every((u) => u.username == kAnonymousUsername);
+    final noPeople = people.isEmpty;
 
     return _frame(
       context,
@@ -676,15 +684,15 @@ class AccessUsersSection extends ConsumerWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _header(context),
-                for (final user in users)
+                for (final user in anonymous)
                   _UserTile(
-                    // Keyed by username so a row keeps its inline refusal
-                    // across the rebuild every write triggers.
                     key: ValueKey('access-user-${user.username}'),
                     user: user,
                     roles: roles,
                     store: store,
                   ),
+                if (people.isNotEmpty)
+                  _UserList(people: people, roles: roles, store: store),
                 if (noPeople) ...[
                   const SizedBox(height: 8),
                   _note(context, kAccessUsersEmptyNote,
@@ -748,6 +756,7 @@ class AccessUsersSection extends ConsumerWidget {
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         children: [
+          const SizedBox(width: _kHandleWidth),
           Expanded(
               flex: _kNameFlex,
               child: Text(kAccessUsersColumnUsername, style: style)),
@@ -815,6 +824,115 @@ const int _kWhenFlex = 6;
 /// a comment.
 const double _kActionsWidth = 288;
 
+/// The drag handle's slot at the start of every row, in front of the four
+/// flex columns so its width comes out of all of them in proportion. Taken out
+/// of the name column alone it wrapped `commissioning` and the anonymous tag;
+/// and 20 px here already took the timestamp columns under the gap rule above,
+/// so it is the icon's own width and no more. The header and the pinned
+/// anonymous row reserve the same slot, empty, so the columns align.
+const double _kHandleWidth = 16;
+
+// ---------------------------------------------------------------------------
+// The reorderable roster
+// ---------------------------------------------------------------------------
+
+/// Every account but the anonymous one, in display order, each row draggable
+/// by its handle.
+///
+/// The same shape as the roles section's list: the dropped order shows at
+/// once and is held in [_pending] until the roster provider hands back a new
+/// list instance; a refused or failed write clears it and the roster snaps
+/// back, beside the shared prompt when it was a permission refusal. No
+/// session refresh — an order changes nothing a session resolves.
+class _UserList extends ConsumerStatefulWidget {
+  const _UserList({
+    required this.people,
+    required this.roles,
+    required this.store,
+  });
+
+  final List<AppUserData> people;
+  final List<AccessRole> roles;
+  final AccessAdminStore store;
+
+  @override
+  ConsumerState<_UserList> createState() => _UserListState();
+}
+
+class _UserListState extends ConsumerState<_UserList> {
+  List<String>? _pending;
+
+  /// The section builds a new filtered list on every build, so "the provider
+  /// read again" is taken from the rows, which are new instances only then.
+  @override
+  void didUpdateWidget(covariant _UserList old) {
+    super.didUpdateWidget(old);
+    if (!_sameRows(old.people, widget.people)) _pending = null;
+  }
+
+  static bool _sameRows(List<AppUserData> a, List<AppUserData> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!identical(a[i], b[i])) return false;
+    }
+    return true;
+  }
+
+  List<AppUserData> get _ordered {
+    final pending = _pending;
+    if (pending == null) return widget.people;
+    final byName = {for (final user in widget.people) user.username: user};
+    return [
+      for (final name in pending)
+        if (byName[name] != null) byName[name]!,
+      for (final user in widget.people)
+        if (!pending.contains(user.username)) user,
+    ];
+  }
+
+  Future<void> _onReorder(int oldIndex, int newIndex) async {
+    if (newIndex > oldIndex) newIndex -= 1;
+    // Dropped where it started: no write, and no audit row claiming a change.
+    if (oldIndex == newIndex) return;
+    final names = [for (final user in _ordered) user.username];
+    names.insert(newIndex, names.removeAt(oldIndex));
+    setState(() => _pending = names);
+    final wrote = await _write(
+      context,
+      ref,
+      () => widget.store.setUserOrder(names),
+    );
+    if (!wrote && mounted) setState(() => _pending = null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final people = _ordered;
+    return ReorderableListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      buildDefaultDragHandles: false,
+      itemCount: people.length,
+      // onReorder, not onReorderItem — see system_clock_section.dart.
+      // ignore: deprecated_member_use
+      onReorder: _onReorder,
+      itemBuilder: (context, index) {
+        final user = people[index];
+        return _UserTile(
+          // Keyed by username so a row keeps its inline refusal across the
+          // rebuild every write triggers. The reorderable list needs it too.
+          key: ValueKey('access-user-${user.username}'),
+          reorderIndex: index,
+          user: user,
+          roles: widget.roles,
+          store: widget.store,
+        );
+      },
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // One row
 // ---------------------------------------------------------------------------
@@ -824,10 +942,15 @@ const double _kActionsWidth = 288;
 class _UserTile extends ConsumerStatefulWidget {
   const _UserTile({
     super.key,
+    this.reorderIndex,
     required this.user,
     required this.roles,
     required this.store,
   });
+
+  /// This row's index in the reorderable roster, or null for the pinned
+  /// anonymous row, which draws an empty handle slot so the columns align.
+  final int? reorderIndex;
 
   final AppUserData user;
 
@@ -897,31 +1020,28 @@ class _UserTileState extends ConsumerState<_UserTile> {
           padding: const EdgeInsets.symmetric(vertical: 2),
           child: Row(
             children: [
-              Expanded(
-                flex: _kNameFlex,
-                child: _anonymous
-                    ? Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(user.username,
-                              key: kAccessUserNameKey(user.username)),
-                          Text(
-                            kAccessUserAnonymousTag,
-                            key: kAccessUserAnonymousTagKey,
-                            style: Theme.of(context)
-                                .textTheme
-                                .labelSmall
-                                ?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant),
+              SizedBox(
+                width: _kHandleWidth,
+                child: widget.reorderIndex == null
+                    ? null
+                    : ReorderableDragStartListener(
+                        index: widget.reorderIndex!,
+                        child: MouseRegion(
+                          cursor: SystemMouseCursors.grab,
+                          child: Tooltip(
+                            message: kAccessUserDragTooltip,
+                            child: Icon(
+                              Icons.drag_indicator,
+                              key: kAccessUserDragHandleKey(user.username),
+                              size: _kHandleWidth,
+                              color:
+                                  Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
                           ),
-                        ],
-                      )
-                    : Text(user.username,
-                        key: kAccessUserNameKey(user.username)),
+                        ),
+                      ),
               ),
+              Expanded(flex: _kNameFlex, child: _nameCell(context)),
               Expanded(
                 flex: _kRoleFlex,
                 // The tag sits against the role on purpose: a personal page
@@ -1110,6 +1230,27 @@ class _UserTileState extends ConsumerState<_UserTile> {
           AccessAdminRefusal.lastUsersHolder(refusal),
           const SizedBox(height: 8),
         ],
+      ],
+    );
+  }
+
+  /// The username, and under the anonymous account's name the tag saying what
+  /// the row is.
+  Widget _nameCell(BuildContext context) {
+    final name = Text(user.username, key: kAccessUserNameKey(user.username));
+    if (!_anonymous) return name;
+    final theme = Theme.of(context);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        name,
+        Text(
+          kAccessUserAnonymousTag,
+          key: kAccessUserAnonymousTagKey,
+          style: theme.textTheme.labelSmall
+              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        ),
       ],
     );
   }

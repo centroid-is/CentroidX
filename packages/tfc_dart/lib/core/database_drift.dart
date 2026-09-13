@@ -126,6 +126,16 @@ class AppRole extends Table {
   /// Keep it small, for the same reason [groups] says so: the backend config
   /// watcher fires on preference writes and `pg_notify` has an 8000-byte cap.
   TextColumn get allowedPages => text().nullable()();
+
+  /// Where this role sits in the Access screen's list, lowest first, or NULL
+  /// for a role nobody has placed — every role until the first reorder, and
+  /// any role created after it.
+  ///
+  /// **Display order only.** Nothing that decides what a session may do reads
+  /// it. Added on open by `_ensureSortOrderColumns` rather than by a schema
+  /// arm, so it takes no version number; `AccessRepository.roles` supplies the
+  /// fallback order for the NULLs.
+  IntColumn get sortOrder => integer().nullable()();
 }
 
 /// A user: a name, a password hash, and one or more roles.
@@ -224,6 +234,14 @@ class AppUser extends Table {
   /// value outside it is clamped on read by `resolveInactivityTimeout`, so a
   /// `psql` edit cannot end sessions instantly or never.
   IntColumn get inactivityTimeoutMinutes => integer().nullable()();
+
+  /// Where this account sits in the Access screen's list, lowest first, or
+  /// NULL for an account nobody has placed, which lists after the placed ones
+  /// by username. The reserved anonymous account never gets one.
+  ///
+  /// Display order only, added on open with no schema version — see
+  /// [AppRole.sortOrder].
+  IntColumn get sortOrder => integer().nullable()();
 }
 
 /// The human-action audit trail: append-only, never pruned.
@@ -646,6 +664,63 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     }
   }
 
+  /// Make sure `app_role` and `app_user` carry the nullable `sort_order`
+  /// column the Access screen orders its two lists by.
+  ///
+  /// **Not a schema arm**, for the reason [_ensureAuditIndexes] is not: the
+  /// column is display order only, every existing row is correct as NULL, and
+  /// a version number would collide with another branch's arms. So it runs
+  /// from `beforeOpen` on every open, on both backends, and the column arrives
+  /// the first time a build that knows about it opens the database.
+  ///
+  /// Probed before it is added on both backends. SQLite has no
+  /// `ADD COLUMN IF NOT EXISTS`, so the `PRAGMA table_info` check is what makes
+  /// a second open harmless there. Postgres has it, and the
+  /// `information_schema` probe in front of it keeps an already-migrated open
+  /// from taking the `ALTER TABLE` lock at all — several stations share one
+  /// database and each of them opens it. No test executes the Postgres half;
+  /// `access_schema_test.dart` reads these literals out of the source.
+  ///
+  /// Never throws, and logs what it could not do: a missing display-order
+  /// column must not fail an open. It does break every generated select over
+  /// the two tables, which is why `beforeOpen` runs this before
+  /// [_seedAnonymousAccount].
+  Future<void> _ensureSortOrderColumns() async {
+    for (final table in const ['app_role', 'app_user']) {
+      try {
+        if (await _hasSortOrderColumn(table)) continue;
+        if (native) {
+          await customStatement(table == 'app_role'
+              ? 'ALTER TABLE app_role ADD COLUMN sort_order INTEGER'
+              : 'ALTER TABLE app_user ADD COLUMN sort_order INTEGER');
+        } else {
+          await customStatement(table == 'app_role'
+              ? 'ALTER TABLE app_role ADD COLUMN IF NOT EXISTS sort_order INTEGER'
+              : 'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS sort_order INTEGER');
+        }
+        logger.i('Added $table.sort_order');
+      } on Object catch (e) {
+        logger.w('Could not ensure $table.sort_order: $e');
+      }
+    }
+  }
+
+  /// Whether [table] already has `sort_order`. [table] is one of the two
+  /// literals [_ensureSortOrderColumns] passes, never caller input, which is
+  /// why it is interpolated.
+  Future<bool> _hasSortOrderColumn(String table) async {
+    if (native) {
+      final cols = await customSelect("PRAGMA table_info('$table')").get();
+      return cols.any((r) => r.read<String>('name') == 'sort_order');
+    }
+    final rows = await customSelect(
+      'SELECT 1 FROM information_schema.columns '
+      "WHERE table_schema = current_schema() AND table_name = '$table' "
+      "AND column_name = 'sort_order'",
+    ).get();
+    return rows.isNotEmpty;
+  }
+
   /// The `access_key_binding` index.
   ///
   /// `keysBoundTo` runs on every template delete — it is what produces the
@@ -924,6 +999,12 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   MigrationStrategy get migration => MigrationStrategy(
         beforeOpen: (details) async {
           await _ensureAuditIndexes();
+          // Before the seed, and the order is load-bearing: the seed selects
+          // `app_user` through the generated mapping, which reads `sort_order`.
+          // On a database that does not have the column yet that select
+          // throws, the seed swallows it, and the anonymous account is not
+          // put back.
+          await _ensureSortOrderColumns();
           await _seedAnonymousAccount();
         },
         onCreate: (m) async {

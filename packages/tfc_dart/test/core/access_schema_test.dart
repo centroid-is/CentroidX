@@ -869,6 +869,142 @@ void main() {
     });
   });
 
+  // `sort_order` on both identity tables — the Access screen's display order.
+  // There is no schema arm for it (another branch holds the next versions), so
+  // `beforeOpen` adds it, and the shapes that matter are a database at the
+  // current version that lacks the column, and one that already has it.
+  group('the sort_order columns (no schema arm)', () {
+    late Directory tempDir;
+    late File dbFile;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('tfc_sort_order_test');
+      dbFile = File('${tempDir.path}/app.sqlite');
+    });
+
+    tearDown(() {
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    Future<Set<String>> columnNames(GeneratedDatabase db, String table) async {
+      final rows = await db.customSelect('PRAGMA table_info($table)').get();
+      return rows.map((r) => r.read<String>('name')).toSet();
+    }
+
+    Future<AppDatabase> reopen() async {
+      final db = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      await db.customSelect('SELECT 1').getSingle();
+      return db;
+    }
+
+    Future<int> userVersion(GeneratedDatabase db) async =>
+        (await db.customSelect('PRAGMA user_version').getSingle())
+            .read<int>('user_version');
+
+    /// Builds a current-version database with an account in it, then takes
+    /// `sort_order` off [tables] — what a station running a build from before
+    /// the column looks like. Returns the `user_version` it was left at.
+    Future<int> makeDatabaseWithoutColumn({
+      List<String> tables = const ['app_role', 'app_user'],
+      bool deleteAnonymous = false,
+    }) async {
+      final db = await reopen();
+      await db.customStatement(
+        "INSERT INTO app_user "
+        "(username, role_name, password_hash, salt, created_at, station_account) "
+        "VALUES ('jon', 'Engineering', 'hash', 'salt', '2026-09-01T00:00:00Z', 0)",
+      );
+      if (deleteAnonymous) {
+        await db.customStatement(
+            "DELETE FROM app_user WHERE username = 'anonymous'");
+      }
+      for (final table in tables) {
+        await db.customStatement('ALTER TABLE $table DROP COLUMN sort_order');
+        expect(await columnNames(db, table), isNot(contains('sort_order')));
+      }
+      final version = await userVersion(db);
+      await db.close();
+      return version;
+    }
+
+    test('a fresh install has both columns', () async {
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_role'), contains('sort_order'));
+      expect(await columnNames(db, 'app_user'), contains('sort_order'));
+    });
+
+    test('a current-version database without them gains them on the next '
+        'open, at the same user_version', () async {
+      final before = await makeDatabaseWithoutColumn();
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_role'), contains('sort_order'));
+      expect(await columnNames(db, 'app_user'), contains('sort_order'));
+      expect(await userVersion(db), before,
+          reason: 'no schema arm: the version belongs to other branches');
+      expect(before, db.schemaVersion);
+    });
+
+    test('every carried-over row is NULL — unplaced, not position 0', () async {
+      await makeDatabaseWithoutColumn();
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      final roles = await db.customSelect('SELECT sort_order FROM app_role').get();
+      final users = await db.customSelect('SELECT sort_order FROM app_user').get();
+      expect(roles, hasLength(4));
+      expect(users, hasLength(2));
+      for (final row in [...roles, ...users]) {
+        expect(row.read<int?>('sort_order'), isNull);
+      }
+    });
+
+    test('a second open over columns that are already there is harmless',
+        () async {
+      await makeDatabaseWithoutColumn();
+      await (await reopen()).close();
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_role'), contains('sort_order'));
+      expect(await columnNames(db, 'app_user'), contains('sort_order'));
+      expect(
+          await db.customSelect('SELECT * FROM app_user').get(), hasLength(2));
+    });
+
+    test('the anonymous seed still runs, after the column is added', () async {
+      // The ordering in beforeOpen is load-bearing. The seed selects app_user
+      // through the generated mapping, which reads sort_order; run it first
+      // and that select throws, the seed swallows it, and the row stays gone.
+      await makeDatabaseWithoutColumn(
+          tables: ['app_user'], deleteAnonymous: true);
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      final rows = await db
+          .customSelect("SELECT * FROM app_user WHERE username = 'anonymous'")
+          .get();
+      expect(rows, hasLength(1));
+    });
+
+    test('the Postgres statements add both columns idempotently', () {
+      // Source-derived, like the v8 and v9 groups above: no test connects to a
+      // server, so these strings are what stands behind that branch.
+      final source = File('lib/core/database_drift.dart').readAsStringSync();
+      expect(source,
+          contains('ALTER TABLE app_role ADD COLUMN IF NOT EXISTS sort_order INTEGER'));
+      expect(source,
+          contains('ALTER TABLE app_user ADD COLUMN IF NOT EXISTS sort_order INTEGER'));
+      expect(source, contains('information_schema.columns'));
+    });
+  });
+
   group('the anonymous account seed', () {
     Future<AppDatabase> open() async {
       final db = AppDatabase.inMemoryForTest();

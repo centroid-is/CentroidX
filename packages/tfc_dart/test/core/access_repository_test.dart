@@ -1909,6 +1909,176 @@ void main() {
     });
   });
 
+  group('display order', () {
+    const seedOrder = [
+      kOperatorRoleName,
+      'Shift Leader',
+      'Maintenance',
+      'Engineering',
+    ];
+
+    Future<List<String>> roleNames() async =>
+        [for (final role in await repo.roles()) role.name];
+
+    Future<List<String>> usernames() async =>
+        [for (final user in await repo.listUsers()) user.username];
+
+    /// `name -> sort_order` for every row of [table], read with raw SQL.
+    Future<Map<String, int?>> rawSortOrders(String table, String key) async {
+      final rows =
+          await db.customSelect('SELECT $key, sort_order FROM $table').get();
+      return {
+        for (final r in rows) r.read<String>(key): r.read<int?>('sort_order'),
+      };
+    }
+
+    test('the seed order when nothing has been ordered', () async {
+      // Created out of name order on purpose: the non-seed tail keeps the
+      // order the roles were created in, as the screen showed it before
+      // sort_order existed, rather than being re-sorted by name.
+      await repo.upsertRole(
+          const AccessRole(name: 'Packing', groups: {AccessGroup.operate}));
+      await repo.upsertRole(
+          const AccessRole(name: 'Cleaning', groups: {AccessGroup.operate}));
+
+      expect(await roleNames(), [...seedOrder, 'Packing', 'Cleaning']);
+      expect((await rawSortOrders('app_role', 'name')).values,
+          everyElement(isNull));
+    });
+
+    test('setRoleOrder persists', () async {
+      const wanted = [
+        'Engineering',
+        kOperatorRoleName,
+        'Maintenance',
+        'Shift Leader',
+      ];
+
+      await repo.setRoleOrder(wanted);
+
+      expect(await roleNames(), wanted);
+      expect(await rawSortOrders('app_role', 'name'), {
+        'Engineering': 0,
+        kOperatorRoleName: 1,
+        'Maintenance': 2,
+        'Shift Leader': 3,
+      });
+    });
+
+    test('a missing role throws and changes nothing', () async {
+      await expectLater(
+        () => repo.setRoleOrder(['Engineering', 'Ghost', kOperatorRoleName]),
+        throwsA(isA<MissingRoleError>()),
+      );
+
+      expect(await roleNames(), seedOrder);
+      expect((await rawSortOrders('app_role', 'name')).values,
+          everyElement(isNull),
+          reason: 'Engineering was placed before Ghost was found; the '
+              'transaction has to take that back too');
+    });
+
+    test('a name listed twice is refused', () async {
+      await expectLater(
+        () => repo.setRoleOrder(
+            [kOperatorRoleName, 'Engineering', kOperatorRoleName]),
+        throwsA(isA<ArgumentError>()),
+      );
+
+      expect((await rawSortOrders('app_role', 'name')).values,
+          everyElement(isNull));
+    });
+
+    test('a role created after ordering lands last', () async {
+      await repo.setRoleOrder(
+          ['Engineering', 'Maintenance', 'Shift Leader', kOperatorRoleName]);
+      await repo.upsertRole(
+          const AccessRole(name: 'Cleaning', groups: {AccessGroup.operate}));
+
+      expect(await roleNames(), [
+        'Engineering',
+        'Maintenance',
+        'Shift Leader',
+        kOperatorRoleName,
+        'Cleaning',
+      ]);
+    });
+
+    test('rename keeps the role in its place', () async {
+      await repo.setRoleOrder(
+          ['Engineering', 'Maintenance', 'Shift Leader', kOperatorRoleName]);
+
+      await repo.renameRole('Maintenance', 'Servicing');
+
+      expect(await roleNames(),
+          ['Engineering', 'Servicing', 'Shift Leader', kOperatorRoleName]);
+    });
+
+    test('an edit to a placed role keeps its place', () async {
+      await repo.setRoleOrder(
+          ['Engineering', 'Maintenance', 'Shift Leader', kOperatorRoleName]);
+
+      await repo.upsertRole(const AccessRole(
+        name: 'Shift Leader',
+        groups: {AccessGroup.operate},
+      ));
+      await repo.setRoleAllowedPages('Shift Leader', {'/'});
+
+      expect((await rawSortOrders('app_role', 'name'))['Shift Leader'], 2);
+    });
+
+    test('listUsers is by username when nobody has been ordered', () async {
+      await _rawInsertUser(db, username: 'zoe', roleName: 'Engineering');
+      await _rawInsertUser(db, username: 'ada', roleName: 'Maintenance');
+      await _rawInsertUser(db, username: 'jon', roleName: kOperatorRoleName);
+
+      expect(await usernames(), ['ada', kAnonymousUsername, 'jon', 'zoe']);
+    });
+
+    test('setUserOrder persists, with unlisted accounts after it by name',
+        () async {
+      for (final name in ['zoe', 'ada', 'jon', 'bea']) {
+        await _rawInsertUser(db, username: name, roleName: kOperatorRoleName);
+      }
+
+      await repo.setUserOrder(['zoe', 'jon']);
+
+      expect(await usernames(),
+          ['zoe', 'jon', 'ada', kAnonymousUsername, 'bea']);
+      final raw = await rawSortOrders('app_user', 'username');
+      expect(raw['zoe'], 0);
+      expect(raw['jon'], 1);
+      expect(raw['ada'], isNull);
+    });
+
+    test('setUserOrder skips the anonymous account and throws for a missing '
+        'name', () async {
+      await _rawInsertUser(db, username: 'jon', roleName: kOperatorRoleName);
+      await _rawInsertUser(db, username: 'ada', roleName: kOperatorRoleName);
+
+      await repo.setUserOrder(['jon', kAnonymousUsername, 'ada']);
+
+      expect(await usernames(), ['jon', 'ada', kAnonymousUsername]);
+      expect(await rawSortOrders('app_user', 'username'), {
+        'jon': 0,
+        'ada': 1,
+        kAnonymousUsername: null,
+      }, reason: 'the anonymous account is pinned apart and takes no position, '
+          'so the accounts either side of it stay contiguous');
+
+      await expectLater(
+        () => repo.setUserOrder(['ada', 'nobody', 'jon']),
+        throwsA(isA<UserNotFoundException>()),
+      );
+      expect(await usernames(), ['jon', 'ada', kAnonymousUsername],
+          reason: 'ada was moved to 0 before nobody was found, and rolled back');
+      expect(
+        () => repo.setUserOrder(['jon', 'jon']),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+  });
+
   group('resolveRoles', () {
     test('primary first, a missing extra dropped', () async {
       final roles = await repo.resolveRoles(
