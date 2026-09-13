@@ -25,6 +25,7 @@ import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart' show LinkState;
 
 import 'alarm_fixture.dart';
+import '../helpers/golden_platform.dart';
 
 final Uri _url = Uri.parse('wss://10.50.10.11:9444');
 final DateTime _raisedAt = DateTime(2026, 9, 8, 7, 5, 0);
@@ -230,7 +231,7 @@ void main() {
   });
 
   group('goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('local alarm atop the plant list', (tester) async {
       await _pump(tester, report: _unreachable(), alarms: _plant());
       await expectLater(find.byKey(_listKey),

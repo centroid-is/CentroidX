@@ -43,7 +43,6 @@
 library;
 
 import 'dart:convert';
-import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -56,6 +55,7 @@ import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
     show BackendConfigApi, BackendConfigDocument, ConfigValidation;
 
 import '../helpers/themed_golden_host.dart';
+import '../helpers/golden_platform.dart';
 
 /// The station name in every frame. A constant, because the production value
 /// is `Platform.localHostname` and a golden with a hostname in it disagrees
@@ -250,7 +250,7 @@ void main() {
   setUpAll(loadThemedGoldenFonts);
 
   group('config target goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     for (final dark in [false, true]) {
       final label = dark ? 'dark' : 'light';
       final suffix = dark ? '_dark' : '';

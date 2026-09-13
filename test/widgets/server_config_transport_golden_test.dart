@@ -51,7 +51,6 @@
 library;
 
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -74,6 +73,7 @@ import 'package:tfc_dart/core/preferences.dart';
 import '../helpers/test_helpers.dart';
 import '../helpers/themed_golden_host.dart';
 import '../helpers/golden_tolerance.dart';
+import '../helpers/golden_platform.dart';
 
 /// Tall enough that the whole page is laid out and painted at once — the
 /// sections live in a SingleChildScrollView, and anything below the fold
@@ -170,7 +170,7 @@ void main() {
   setUpAll(loadThemedGoldenFonts);
 
   group('transport mode golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     Future<void> pumpPage(
       WidgetTester tester, {
       required bool dark,

@@ -35,6 +35,7 @@ import 'package:tfc_relay_client/tfc_relay_client.dart' show LinkState;
 
 import 'alarm_fixture.dart';
 import '../helpers/golden_tolerance.dart';
+import '../helpers/golden_platform.dart';
 
 /// Frozen so the ticking header does not churn the PNGs — same instant family
 /// as base_scaffold_appbar_golden_test.
@@ -275,7 +276,7 @@ void main() {
   });
 
   group('goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('gateway unreachable', (tester) async {
       await withClock(_goldenClock, () async {
         await _pump(tester, report: _unreachable());

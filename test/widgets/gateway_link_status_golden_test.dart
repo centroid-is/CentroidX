@@ -30,7 +30,6 @@
 @Tags(['golden'])
 library;
 
-import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -39,6 +38,7 @@ import 'package:tfc/widgets/gateway_link_status_row.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart' show LinkState;
 
 import '../helpers/themed_golden_host.dart';
+import '../helpers/golden_platform.dart';
 
 /// Wide enough that the detail wraps the way it wraps on a station, tall enough
 /// that the certificate frame — headline, four lines of detail, the SAN hint
@@ -145,7 +145,7 @@ void main() {
       // Belt and braces: `dart_test.yaml` already skips the `golden` tag on
       // linux and windows via `on_os`, and this says so again at the group so
       // a file read on its own is not misleading.
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     Future<void> shoot(
       WidgetTester tester,
       _Frame frame, {
