@@ -971,13 +971,27 @@ void main() {
     // renders a roster.
     // -----------------------------------------------------------------------
 
+    /// Every account a test in this group inserted — the reserved anonymous
+    /// row left out.
+    ///
+    /// `listUsers` answers it too, because it is an ordinary `app_user` row
+    /// that main's #521 seeds into every database. These arms are about the
+    /// accounts they created themselves, and `.single` on a roster that now
+    /// always holds one extra reads as "Bad state: Too many elements" rather
+    /// than as what changed. `access_admin_store_test.dart` has the same
+    /// helper, for the same reason.
+    Future<List<UserSummary>> people() async =>
+        (await repo.listUsers())
+            .where((u) => u.username != kAnonymousUsername)
+            .toList();
+
     test('an account with a password reports hasPassword true', () async {
       await _rawInsertUser(db,
           username: 'ada',
           roleName: 'Maintenance',
           passwordHash: 'argon2id\$v=19\$m=65536,t=3,p=4\$abc');
 
-      expect((await repo.listUsers()).single.hasPassword, isTrue);
+      expect((await people()).single.hasPassword, isTrue);
     });
 
     test('an account holding the no-password marker reports hasPassword false',
@@ -987,7 +1001,7 @@ void main() {
           roleName: 'Operator',
           passwordHash: kNoPasswordMarker);
 
-      expect((await repo.listUsers()).single.hasPassword, isFalse,
+      expect((await people()).single.hasPassword, isFalse,
           reason: 'this account signs in on its username alone, and the roster '
               'has to mark it. Drawing an open account exactly like a '
               'protected one is the failure mode the feature exists to avoid.');
@@ -1000,7 +1014,7 @@ void main() {
           roleName: 'Maintenance',
           passwordHash: 'argon2id\$v=19\$m=65536,t=3,p=4\$secret-material');
 
-      final user = (await repo.listUsers()).single;
+      final user = (await people()).single;
 
       // Structural, not stylistic. `UserSummary` declares no credential field,
       // so a hash cannot reach a caller by somebody forgetting to strip it —
@@ -1018,7 +1032,7 @@ void main() {
       await _rawInsertUser(db,
           username: 'zoe', roleName: 'Operator', createdAt: '2026-01-02T03:04:05Z');
 
-      final users = await repo.listUsers();
+      final users = await people();
 
       expect(users[0].createdAt, DateTime.utc(2026, 3, 4, 5, 6, 7));
       expect(users[0].lastLoginAt, DateTime.utc(2026, 7, 8, 9, 10, 11));
@@ -1035,7 +1049,7 @@ void main() {
       await db.customStatement(
           "UPDATE app_user SET station_account = 1 WHERE username = 'ada'");
 
-      expect((await repo.listUsers()).single.stationAccount, isTrue);
+      expect((await people()).single.stationAccount, isTrue);
     });
   });
 

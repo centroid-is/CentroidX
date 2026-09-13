@@ -1002,17 +1002,36 @@ void main() {
               'guard — off means no socket, not a socket nobody uses');
     });
 
-    test('the config-watch key set gained nothing', () {
-      // The relay config lives in the stateman file, not in a preference row,
-      // so a relay-config change is applied by restarting the process exactly
-      // like a stateman change is today. No file watcher, no new key.
-      final watcher = _statementAt(main, 'PreferencesWatcher.forDatabase');
-      expect(watcher, contains("'key_mappings'"));
-      expect(watcher, contains("'alarm_man_config'"));
-      expect(watcher, isNot(contains('relay')),
+    test('the config-watch set gained nothing', () {
+      // The relay config lives in the stateman file, not in a config row, so a
+      // relay-config change is applied by restarting the process exactly like
+      // a stateman change is today. No file watcher, no new key.
+      //
+      // What is scanned moved in main's #465 and the property did not. The
+      // backend used to watch two named preference keys through
+      // `PreferencesWatcher.forDatabase`; the shared settings are `config_item`
+      // rows now, so it watches two config *kinds* plus the one preference id
+      // it still reads. Both spellings answer the same question — which
+      // changes restart this process — and the arm asks it of the new one.
+      final kinds = _statementAt(main, 'const watchedKinds');
+      expect(kinds, contains('ConfigKind.keyMapping'),
+          reason: 'the plant wiring is baked into the isolates at boot');
+      final prefs = _statementAt(main, 'const watchedPreferences');
+      expect(prefs, contains("'alarm_man_config'"),
+          reason: 'and so are the alarm definitions');
+
+      expect(kinds, isNot(contains('relay')));
+      expect(prefs, isNot(contains('relay')),
           reason: 'restart-to-apply goes through the existing shutdown; a '
               'relay key here would be a second restart trigger for a value '
               'that is not in the database at all');
+
+      // The narrowing main added with the move, restated because losing it is
+      // silent: `page` and `page_image` are of no interest to a process that
+      // acquires data, and a fingerprint over every preference row restarted
+      // acquisition on every chat message.
+      expect(kinds, isNot(contains('ConfigKind.page')),
+          reason: 'an operator pasting a picture must not bounce the plant');
     });
 
     test('the shutdown path did not grow a teardown', () {

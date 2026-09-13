@@ -45,6 +45,11 @@ const _oneShotTools = <String>{
   'read_key.dart', // reads one key off OPC UA and exits
   'generate_certs.dart', // writes a cert pair and exits
   'page_geometry.dart', // dumps page geometry and exits
+  // Arrived with main's #465: drops the retired `flutter_preferences` table
+  // once the row cutover has been verified. One statement, then the end of
+  // `main` — the `await database.close()` the gate caught is a human at a
+  // terminal waiting a moment, not a container missing its stop deadline.
+  'drop_flutter_preferences.dart',
 };
 
 /// Everything on main's or the pipe's shutdown path.
@@ -197,7 +202,15 @@ void main() {
     // R-4: the config-watch restart is a shutdown too. It fires on every
     // operator config save, so a path that skipped the kill would put the
     // stall back into the most common restart in the plant.
-    final restart = _bodyOf(main, 'configWatcher.changes.listen');
+    //
+    // `void restartSoon`, not `configWatcher.changes.listen`: main's #465
+    // replaced the `PreferencesWatcher` this used to scan for — it polled a
+    // digest over `flutter_preferences`, and that table is retired — with a
+    // `config_change` NOTIFY plus a row-count poll, both of which call one
+    // named function. The scan follows the function rather than the watcher,
+    // which is the more durable target anyway: there are two callers now and
+    // a third would be free.
+    final restart = _bodyOf(main, 'void restartSoon');
     expect(restart, contains('shutdown('),
         reason: 'the config-watch restart must route through the same '
             'shutdown() as SIGTERM');
