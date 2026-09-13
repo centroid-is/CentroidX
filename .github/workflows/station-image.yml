@@ -192,14 +192,18 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
+      # flutter-elinux, not flutter: the toolchain image has ONLY the wrapper on
+      # PATH (/flutter-elinux/bin), and `flutter` is not a command in it. The
+      # wrapper delegates both of these to its bundled SDK. Checked by running
+      # all three against os/app inside the image.
       - name: Dependencies
-        run: flutter pub get
+        run: flutter-elinux pub get
 
       - name: Analyze
-        run: flutter analyze
+        run: flutter-elinux analyze
 
       - name: Test
-        run: flutter test
+        run: flutter-elinux test
 
   setup-app:
     needs: validate
