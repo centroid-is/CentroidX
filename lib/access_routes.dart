@@ -167,9 +167,27 @@ import 'package:tfc_access/tfc_access.dart';
 import 'models/menu_item.dart';
 import 'route_registry.dart';
 
-/// The Server Config route — the one exemption while the access repository is
-/// unavailable. See [routeAllowedWhenRepositoryUnavailable].
+/// The Server Config route — one of the two exemptions while the access
+/// repository is unavailable. See [routeAllowedWhenRepositoryUnavailable].
 const String kServerConfigRoute = '/advanced/server-config';
+
+/// The IP Settings route — the other exemption, and for a reason Server Config
+/// does not have: on a station that has just been commissioned, the network is
+/// what the database is *reached over*.
+///
+/// Server Config lets you say which database to talk to. That is no use on a
+/// machine with no usable address, and giving it one is this page — so gating
+/// it behind a group that only a working database can grant is a loop with no
+/// entry. The engineer standing at a new panel could open the page naming the
+/// server and not the page that lets the machine reach it.
+///
+/// Exempt where [kAccessAdminRoute] and [kAuditTrailRoute] are not, because the
+/// objection to those does not apply here: this page edits NetworkManager over
+/// D-Bus (`lib/pages/ip_settings.dart`) and reads nothing from the repository,
+/// so with the database down it still does exactly what it claims. The admin
+/// page would edit nothing while looking like it worked; the audit trail *is*
+/// the database. Neither is true of an address on an interface.
+const String kIpSettingsRoute = '/advanced/ip-settings';
 
 /// The audit trail route — the only `users` entry, and deliberately **not**
 /// exempt while the access repository is unavailable: the trail is the
@@ -217,7 +235,7 @@ const Map<String, AccessGroup> kRaisedRoutes = {
   '/advanced/knowledge-base': AccessGroup.configure,
   kReportEditorRoute: AccessGroup.configure,
   kServerConfigRoute: AccessGroup.administer,
-  '/advanced/ip-settings': AccessGroup.administer,
+  kIpSettingsRoute: AccessGroup.administer,
   '/advanced/preferences': AccessGroup.administer,
   kAuditTrailRoute: AccessGroup.users,
   kAccessAdminRoute: AccessGroup.users,
@@ -225,18 +243,25 @@ const Map<String, AccessGroup> kRaisedRoutes = {
 
 /// Whether [path] stays reachable while the access repository is unavailable.
 ///
-/// True for [kServerConfigRoute] and nothing else — not for the other raised
-/// routes, not for an unraised path, and not for null. Both the route gate
-/// and the menu badge call this rather than each keeping a copy of "except
-/// Server Config"; two copies is a lock on a page that opens, or an open page
+/// True for [kServerConfigRoute] and [kIpSettingsRoute], and nothing else — not
+/// for the other raised routes, not for an unraised path, and not for null.
+/// Both the route gate and the menu badge call this rather than each keeping a
+/// copy of the list; two copies is a lock on a page that opens, or an open page
 /// wearing a lock, the first time one of them is edited.
+///
+/// The two together are what makes a fresh station recoverable: IP Settings
+/// gives the machine an address, Server Config points it at a database, and
+/// only then can the repository grant anybody a group. Exempting the second
+/// without the first, which is what this did until a commissioning engineer hit
+/// it, leaves a loop with no entry — the page naming the server opens, and the
+/// page that lets the machine reach it does not.
 ///
 /// The name states the condition it actually enforces. It was
 /// `routeAllowedWhenUnconfigured` for one revision, back when the exemption
 /// was narrower than the outage it now covers; a name that claims a narrower
 /// condition than the code enforces is its own defect.
 bool routeAllowedWhenRepositoryUnavailable(String? path) {
-  return path == kServerConfigRoute;
+  return path == kServerConfigRoute || path == kIpSettingsRoute;
 }
 
 /// Whether [path] is outside the page-visibility whitelist's reach.
