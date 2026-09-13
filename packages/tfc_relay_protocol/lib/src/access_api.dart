@@ -181,6 +181,25 @@ abstract interface class AccessAdminApi {
   Future<void> setUserStationAccount(String subject, bool value,
       {String? reason});
 
+  /// Replaces role [subject]'s page whitelist.
+  ///
+  /// **Null and the empty set are different writes and both are legal.** Null
+  /// clears the whitelist — the role sees every page again — while the empty
+  /// set is a whitelist naming nothing, i.e. block all. A wire encoding that
+  /// collapsed the two would make block-all unexpressible, which is the state
+  /// the feature was asked for by name; `pagesToJson` / `pagesFromJson` keep
+  /// them apart.
+  Future<void> setRolePages(String subject, Set<String>? pages,
+      {String? reason});
+
+  /// Replaces account [subject]'s personal page whitelist.
+  ///
+  /// Null clears the override and puts the account back under its role's
+  /// whitelist — which is **not** "sees every page". The same two-nulls rule
+  /// as [setRolePages] applies, and for the same reason.
+  Future<void> setUserPages(String subject, Set<String>? pages,
+      {String? reason});
+
   /// Resets [subject]'s password. See [SetUserPasswordParams].
   Future<void> setUserPassword(SetUserPasswordParams params);
 }
@@ -605,6 +624,12 @@ AuthenticatedUser authenticatedUserFromJson(Map<String, Object?> json) =>
 /// ends to parse differently. Both keys are omitted when null rather than sent
 /// as an explicit null — 17-06 recorded what a present-null field costs (every
 /// create/update/delete answering `-32602`), so absence is spelled by absence.
+///
+/// `allowedPages` follows the same omit-when-null rule, and here the omission
+/// carries meaning rather than saving bytes: absent is "this account has no
+/// personal whitelist and follows its role", while a present `[]` is a
+/// personal block-all. Sorted, for the reason `encodeAllowedPagesColumn` sorts
+/// — a frame that changes nothing must not look like a change.
 Map<String, Object?> userSummaryToJson(UserSummary value) => <String, Object?>{
       'username': value.username,
       'roleName': value.roleName,
@@ -615,6 +640,8 @@ Map<String, Object?> userSummaryToJson(UserSummary value) => <String, Object?>{
         'createdAtMs': value.createdAt!.toUtc().millisecondsSinceEpoch,
       if (value.lastLoginAt != null)
         'lastLoginAtMs': value.lastLoginAt!.toUtc().millisecondsSinceEpoch,
+      if (value.allowedPages != null)
+        'allowedPages': pagesToJson(value.allowedPages),
     };
 
 /// The inverse of [userSummaryToJson].
@@ -622,6 +649,12 @@ Map<String, Object?> userSummaryToJson(UserSummary value) => <String, Object?>{
 /// A missing timestamp key decodes to null, which is what lets a panel on this
 /// build talk to a backend that predates the DTO without throwing: it renders
 /// the created column as unknown instead of failing the whole roster.
+///
+/// `allowedPages` decodes **fail-closed**, matching
+/// `decodeAllowedPagesColumn`: absent is null (follow the role), and anything
+/// present but unreadable is the empty set (see nothing). A backend that
+/// predates the field therefore leaves every account following its role, which
+/// is the behaviour that build had.
 UserSummary userSummaryFromJson(Map<String, Object?> json) => UserSummary(
       username: json['username'] as String,
       roleName: json['roleName'] as String,
@@ -630,7 +663,34 @@ UserSummary userSummaryFromJson(Map<String, Object?> json) => UserSummary(
       hasPassword: (json['hasPassword'] as bool?) ?? true,
       createdAt: _utcFromMs(json['createdAtMs']),
       lastLoginAt: _utcFromMs(json['lastLoginAtMs']),
+      allowedPages: _pagesFromJson(json['allowedPages']),
     );
+
+/// A page whitelist as a wire value: a sorted JSON array, or null.
+///
+/// The inverse of [pagesFromJson]. Sorted so a frame that changes nothing does
+/// not read as a change, matching `encodeAllowedPagesColumn`.
+List<String>? pagesToJson(Set<String>? pages) =>
+    pages == null ? null : (pages.toList()..sort());
+
+/// A wire page whitelist back as a set, **fail-closed**.
+///
+/// Null — and only null — is "no whitelist". Anything present but unreadable
+/// is the empty set, which denies: the same ruling `decodeAllowedPagesColumn`
+/// makes for a stored column, and the deliberate opposite of the forgiving
+/// group decode, because a page list that failed open would show pages the
+/// whitelist exists to hide.
+Set<String>? pagesFromJson(Object? value) {
+  if (value == null) return null;
+  if (value is! List) return <String>{};
+  return value.whereType<String>().toSet();
+}
+
+/// A wire `allowedPages` value as a set, or null when the key was absent.
+///
+/// Non-string entries are dropped rather than failing the roster, the same
+/// narrowing choice `decodeAllowedPagesColumn` makes for a stored column.
+Set<String>? _pagesFromJson(Object? value) => pagesFromJson(value);
 
 /// Epoch milliseconds to a UTC [DateTime], or null when the key was absent.
 DateTime? _utcFromMs(Object? ms) => ms == null

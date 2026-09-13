@@ -39,7 +39,8 @@ tools/st-oracle-venv/
 # Local data / secrets
 timescale_data/
 timescale_certs/
-.claude/
+.claude/*
+!.claude/skills/
 .mcp.json
 page-editor.json
 

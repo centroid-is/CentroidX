@@ -223,6 +223,11 @@ const Set<String> expectedHandlerTable = {
   'accessAdmin.deleteUser',
   'accessAdmin.setUserRole',
   'accessAdmin.setUserStationAccount',
+  // The page-visibility whitelist's two writes, arriving with the merge from
+  // main. Both are graded `users` server-side by `_PolicyAccessAdmin`, like
+  // every other `accessAdmin.` name here.
+  'accessAdmin.setRolePages',
+  'accessAdmin.setUserPages',
   'accessAdmin.setUserPassword',
   'audit.entries',
   'audit.memberCountsByAction',
@@ -336,11 +341,12 @@ void main() {
               'registration.');
     });
 
-    test('the table is exactly the seventy-five names a client may call today',
+    test('the table is exactly the seventy-seven names a client may call today',
         () {
-      // The sentence is unchanged in shape and still true: seventy-five names
-      // a client may *call* — forty-four through Phase 14, 17-09's
-      // twenty-eight access methods, and `alarmHistory`. `h` is not one of them — it is
+      // The sentence is unchanged in shape and still true: seventy-seven
+      // names a client may *call* — forty-four through Phase 14, 17-09's
+      // twenty-eight access methods, `alarmHistory`, and the whitelist's two
+      // admin writes. `h` is not one of them — it is
       // announced, never called — so it is taken out of the ledger by name
       // here rather than being added to the literal, which would say a
       // client may ask the gateway to tick.
@@ -351,7 +357,7 @@ void main() {
               'failure prints the whole table rather than a difference');
     });
 
-    test('the registered table is the seventy-five callable names plus the '
+    test('the registered table is the seventy-seven callable names plus the '
         'client notifications', () {
       expect(_session().registeredMethods, everyRegisterableName,
           reason: 'the ledger is the union, because json_rpc_2 dispatches a '

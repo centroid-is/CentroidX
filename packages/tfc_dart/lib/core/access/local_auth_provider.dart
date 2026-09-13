@@ -42,7 +42,7 @@ import 'access_repository.dart';
 /// Anyone holding the station's Postgres credential can rewrite `app_user`
 /// directly. What it buys is that a shoulder-surfed screen or a shared
 /// workstation does not hand over somebody else's role.
-class LocalAuthProvider implements AuthProvider {
+class LocalAuthProvider implements AuthProvider, PasswordSelfService {
   LocalAuthProvider(this.repository, {Logger? logger})
       : _logger = logger ?? Logger();
 
@@ -221,5 +221,106 @@ class LocalAuthProvider implements AuthProvider {
       roleName: row.roleName,
       stationAccount: row.stationAccount,
     );
+  }
+
+  /// Verify the current password and, on success, write the new one.
+  ///
+  /// ## Why this does not call [authenticate]
+  ///
+  /// It would be two lines shorter and it would be wrong, in three separate
+  /// ways. [authenticate] writes `last_login_at`, and a password change is not
+  /// a login — a trail that moves somebody's last-login timestamp every time
+  /// they change their password is a trail that cannot answer "when was this
+  /// account last actually used?", which is the question `last_login_at` exists
+  /// for and the one an administrator asks before deleting a stale account. It
+  /// runs the rehash migration, deriving a fresh hash for a row this method is
+  /// about to overwrite anyway — one wasted ~150 ms derivation on exactly the
+  /// path already paying for two. And it resolves the role and refuses when the
+  /// role is gone, which is correct for a login and wrong here: somebody whose
+  /// role was deleted out from under them should still be able to change their
+  /// password, and refusing would hand them an error message about a role when
+  /// they asked about a password.
+  ///
+  /// Sharing the derivation-and-compare with [authenticate] is not worth
+  /// inheriting three behaviours this method must not have.
+  ///
+  /// ## No enumeration defence, and why none is needed
+  ///
+  /// [authenticate] burns a dummy derivation for an unknown user so that "no
+  /// such user" and "wrong password" cost the same. There is nothing to defend
+  /// here: [username] comes from the live session, so the only name that
+  /// reaches this method is one that was signed in moments ago. An attacker has
+  /// no field to type a guess into, and [PasswordChangeResult.accountMissing]
+  /// is not a leak — it is the answer to a question only the account's own
+  /// holder can ask.
+  ///
+  /// ## The legacy row
+  ///
+  /// A user still on `pbkdf2-sha256` verifies at the iteration count recorded
+  /// in their row — [PasswordHasher.verify] reads the parameters out of the
+  /// stored form rather than the ambient ones — and the write lands as Argon2id
+  /// at current parameters, because [AccessRepository.setPassword] hashes with
+  /// [PasswordHasher.hash]. So changing your password migrates you, by the same
+  /// mechanism and with the same silence as logging in does. There is
+  /// deliberately no [PasswordHasher.needsRehash] check: the row is being
+  /// rewritten either way, so there is nothing to decide.
+  @override
+  Future<PasswordChangeResult> changePassword({
+    required String username,
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    if (newPassword.isEmpty) {
+      // No value in the message, exactly as `AccessRepository.setPassword`
+      // refuses: an ArgumentError carrying the credential ends up wherever the
+      // error is logged. The dialog blocks this before it gets here; the throw
+      // is for the second caller.
+      throw ArgumentError('newPassword must not be empty');
+    }
+
+    // An empty current password cannot be right, and short-circuiting saves a
+    // derivation. Nothing leaks: see the enumeration note above.
+    if (currentPassword.isEmpty) {
+      return PasswordChangeResult.wrongCurrentPassword;
+    }
+
+    final row = await repository.user(username);
+    if (row == null) {
+      // The account was deleted while its owner had a session open. A real
+      // state, and deliberately neither a throw nor a wrong-password: the
+      // caller drops the session, which is the true story.
+      _logger.w(
+        'Refusing a password change for "$username": the account no longer '
+        'exists in app_user.',
+      );
+      return PasswordChangeResult.accountMissing;
+    }
+
+    final stored = decodeStoredHash(row.passwordHash, saltB64: row.salt);
+    if (stored == null) {
+      // Same judgement, and the same words, as the login path: a row edited by
+      // hand is not a credential failure in spirit, but it is one in effect,
+      // and it must not take the dialog down with a FormatException.
+      _logger.w(
+        'The stored password hash for "$username" could not be decoded — the '
+        'row has been edited outside the app. Refusing the password change.',
+      );
+      return PasswordChangeResult.wrongCurrentPassword;
+    }
+
+    final ok = await PasswordHasher.verify(
+      password: currentPassword,
+      stored: stored,
+    );
+    if (!ok) return PasswordChangeResult.wrongCurrentPassword;
+
+    // Deliberately not wrapped in a try/catch. The rule at the top of this file
+    // holds here too: a database failure on this write is infrastructure and
+    // must reach the caller as a throw. Swallowing it would tell somebody their
+    // password had changed when it had not — and they would find out at the
+    // next sign-in, having thrown away the password that still works.
+    await repository.setPassword(row.username, newPassword);
+
+    return PasswordChangeResult.ok;
   }
 }

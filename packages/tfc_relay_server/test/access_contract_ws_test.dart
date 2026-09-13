@@ -205,7 +205,7 @@ StateManApi wssServedFake() {
 /// The set-level parity sweep in 13-11's shape, for the access surface: a leg
 /// that runs the suite but skips half the wire is a different failure from a
 /// leg that fails, and only a coverage assertion catches it. Every one of the
-/// twenty-eight names in `AccessMethods.all` must appear here, reached by a
+/// thirty names in `AccessMethods.all` must appear here, reached by a
 /// named check; the arm below asserts the union covers the declared set with no
 /// method left unexercised.
 const _methodsByCheck = <String, Set<String>>{
@@ -272,6 +272,14 @@ const _methodsByCheck = <String, Set<String>>{
   'flipping a station-account flag refuses configure and permits users': {
     AccessMethods.adminCreateUser,
     AccessMethods.adminSetUserStationAccount,
+  },
+  'setting a role page whitelist refuses configure and permits users': {
+    AccessMethods.adminCreateRole,
+    AccessMethods.adminSetRolePages,
+  },
+  'setting an account page whitelist refuses configure and permits users': {
+    AccessMethods.adminCreateUser,
+    AccessMethods.adminSetUserPages,
   },
   'resetting a password refuses configure and permits users': {
     AccessMethods.adminCreateUser,
@@ -368,11 +376,13 @@ void main() {
               'unjudged under TLS as it would be with the capability off');
     });
 
-    test('the access check count is the same on all three legs — 27', () {
+    test('the access check count is the same on all three legs — 29', () {
       // In memory (17-05, access_contract_meta_test), over the channel (17-08),
       // and over wss:// here: one declared set, so the count cannot drift
       // between legs without the meta test and this arm disagreeing.
-      const declaredOnEveryLeg = 27;
+      // 27 until the page-visibility whitelist merged in; setRolePages and
+      // setUserPages take a check each, and both grade `users`.
+      const declaredOnEveryLeg = 29;
       expect(accessChecks.length, declaredOnEveryLeg,
           reason: 'the kit declares ${accessChecks.length} access checks; the '
               'in-memory and channel legs run that many and so must this one. '
@@ -419,10 +429,12 @@ void main() {
           reason: 'the uncovered set must be exactly the named gap '
               '($namedGap); anything else is a NEW uncovered method wearing the '
               "known one's exemption");
-      expect(AccessMethods.all, hasLength(28),
-          reason: 'the access wire surface is twenty-eight names (the audit cut '
-              'accessTemplates.template); a change to that count is a change to '
-              'what this leg must cover, and it should be a deliberate edit');
+      expect(AccessMethods.all, hasLength(30),
+          reason: 'the access wire surface is thirty names — twenty-eight '
+              'after the audit cut accessTemplates.template, plus the '
+              'whitelist\'s setRolePages and setUserPages; a change to that '
+              'count is a change to what this leg must cover, and it should '
+              'be a deliberate edit');
     });
   });
 }

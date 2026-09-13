@@ -485,5 +485,11 @@ final class _Admin implements AccessAdminApi {
   Future<void> setUserStationAccount(String subject, bool value,
       {String? reason}) async {}
   @override
+  Future<void> setRolePages(String subject, Set<String>? pages,
+      {String? reason}) async {}
+  @override
+  Future<void> setUserPages(String subject, Set<String>? pages,
+      {String? reason}) async {}
+  @override
   Future<void> setUserPassword(SetUserPasswordParams params) async {}
 }

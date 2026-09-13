@@ -39,6 +39,7 @@ final class UserSummary {
     this.hasPassword = true,
     this.createdAt,
     this.lastLoginAt,
+    this.allowedPages,
   });
 
   /// The account name — `app_user.username`, the primary key.
@@ -78,8 +79,25 @@ final class UserSummary {
   /// When the account last signed in, or null when it never has.
   final DateTime? lastLoginAt;
 
+  /// This account's personal page whitelist, decoded — `app_user.allowed_pages`.
+  ///
+  /// **Null and empty are different claims**, as everywhere else the whitelist
+  /// appears: null is "no personal opinion, follow the role", the empty set is
+  /// a personal block-all. `effectiveAllowedPages` is the one place the two
+  /// levels are composed; see `allowed_pages.dart`.
+  ///
+  /// Decoded rather than the raw column, matching [AccessRole.allowedPages] —
+  /// the roster type is what the users screen renders and what crosses the
+  /// wire, and neither should have to know the storage encoding.
+  ///
+  /// It is roster data, not a credential: it says what an account may see, and
+  /// the roster is gated on `users` either way. The rule keeping hashes out of
+  /// this type is about there being nowhere to put one, and that is unchanged.
+  final Set<String>? allowedPages;
+
   @override
   String toString() => 'UserSummary($username, role: $roleName, '
       'station: $stationAccount, password: $hasPassword, '
-      'created: $createdAt, lastLogin: $lastLoginAt)';
+      'created: $createdAt, lastLogin: $lastLoginAt, '
+      'pages: $allowedPages)';
 }

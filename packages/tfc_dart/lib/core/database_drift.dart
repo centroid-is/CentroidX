@@ -64,7 +64,7 @@ class AlarmHistory extends Table {
   /// possible at all; backing definitions with the dead table instead is
   /// recorded as a refused alternative (14-CONTEXT DI-5).
   ///
-  /// Measured, not asserted: `test/integration/alarm_schema_v7_test.dart`
+  /// Measured, not asserted: `test/integration/alarm_schema_v8_test.dart`
   /// arms 1 and 2, against a real Postgres. A SQLite test cannot see this —
   /// drift never issues `PRAGMA foreign_keys = ON`, so the constraint is inert
   /// there and a green unit suite proves nothing about the plant.
@@ -89,7 +89,7 @@ class AlarmHistory extends Table {
   /// **Nullable, and that has a consequence every writer must honour: NULLs are
   /// DISTINCT in a unique index.** Two open rows for the same `alarm_uid` with
   /// a NULL `rule_index` both insert — measured, arm 5 of
-  /// `alarm_schema_v7_test.dart`. So the "one open row per alarm-rule"
+  /// `alarm_schema_v8_test.dart`. So the "one open row per alarm-rule"
   /// guarantee holds only for rows written WITH a rule index, and every writer
   /// added by Phase 14 must supply one. It is nullable only because rows
   /// written before v7 have no rule to point at; do not "fix" the index into
@@ -154,6 +154,25 @@ class AppRole extends Table {
 
   /// True for the rows the v6 migration seeded. Informational only.
   BoolColumn get seeded => boolean().withDefault(const Constant(false))();
+
+  /// The page-visibility whitelist (schema v7): a JSON array of page paths,
+  /// or SQL NULL for "this role sees every page".
+  ///
+  /// Written by `encodeAllowedPagesColumn` and read by
+  /// `decodeAllowedPagesColumn`. **NULL and `'[]'` are different claims** —
+  /// NULL is no whitelist, `'[]'` is a whitelist naming nothing, i.e. block
+  /// all — so this column is nullable rather than defaulting to an empty
+  /// array. Every row carried over from v6 gets NULL and therefore behaves
+  /// exactly as it did before the column existed.
+  ///
+  /// Authorization data, which is why it lives here rather than beside the
+  /// pages in `page_editor_data`: that preference is classified `configure`,
+  /// and anybody who can edit a page must not be able to re-scope who sees
+  /// which pages. See `docs/page-visibility-whitelist-design.md` §1a.
+  ///
+  /// Keep it small, for the same reason [groups] says so: the backend config
+  /// watcher fires on preference writes and `pg_notify` has an 8000-byte cap.
+  TextColumn get allowedPages => text().nullable()();
 }
 
 /// A user: a name, a password hash, and exactly one role.
@@ -192,6 +211,22 @@ class AppUser extends Table {
   /// otherwise, which is also what an account carried over from v5 gets.
   BoolColumn get stationAccount =>
       boolean().withDefault(const Constant(false))();
+
+  /// This account's personal page whitelist (schema v7), or NULL to follow
+  /// whatever [AppRole.allowedPages] says.
+  ///
+  /// Three states, and the null one is the subtle one: **NULL means inherit
+  /// the role**, not "sees every page". Every account carried over from v6
+  /// lands on NULL, and if that meant unrestricted then the upgrade would mint
+  /// a personal exemption for every existing account — the first role
+  /// whitelist anybody configured would govern nobody who already existed.
+  /// `effectiveAllowedPages` is where that rule is written down.
+  ///
+  /// A non-null value **replaces** the role's whitelist rather than
+  /// intersecting or unioning with it, so both directions of exception are
+  /// expressible. It can widen what this account *sees*; it can never widen
+  /// what this account may *do*, because the group gate is ANDed on top.
+  TextColumn get allowedPages => text().nullable()();
 }
 
 /// The human-action audit trail: append-only, never pruned.
@@ -521,7 +556,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   }
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
 
   /// The `audit_entry` indexes, created outside Drift because Drift's
   /// `@TableIndex` cannot express `DESC` and every one of these is a
@@ -620,13 +655,13 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     ).get();
 
     if (found.isEmpty) {
-      logger.i('Schema v7: no alarm_history -> alarm foreign key present; '
+      logger.i('Schema v8: no alarm_history -> alarm foreign key present; '
           'nothing to drop');
       return;
     }
     for (final row in found) {
       final name = row.read<String>('name');
-      logger.i('Schema v7: dropping alarm_history foreign key "$name"');
+      logger.i('Schema v8: dropping alarm_history foreign key "$name"');
       await m.database.customStatement(
           'ALTER TABLE alarm_history DROP CONSTRAINT IF EXISTS "$name"');
     }
@@ -842,9 +877,9 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
               // a reader would expect: see [AccessKeyBindingTable.templateName]
               // for why a dangling binding has to be storable.
               await m.database.customStatement(
-                  'CREATE TABLE IF NOT EXISTS app_role (name TEXT PRIMARY KEY, groups TEXT NOT NULL, seeded BOOLEAN NOT NULL DEFAULT FALSE)');
+                  'CREATE TABLE IF NOT EXISTS app_role (name TEXT PRIMARY KEY, groups TEXT NOT NULL, seeded BOOLEAN NOT NULL DEFAULT FALSE, allowed_pages TEXT)');
               await m.database.customStatement(
-                  'CREATE TABLE IF NOT EXISTS app_user (username TEXT PRIMARY KEY, role_name TEXT NOT NULL REFERENCES app_role(name), password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at TEXT NOT NULL, last_login_at TEXT, station_account BOOLEAN NOT NULL DEFAULT FALSE)');
+                  'CREATE TABLE IF NOT EXISTS app_user (username TEXT PRIMARY KEY, role_name TEXT NOT NULL REFERENCES app_role(name), password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at TEXT NOT NULL, last_login_at TEXT, station_account BOOLEAN NOT NULL DEFAULT FALSE, allowed_pages TEXT)');
               await m.database.customStatement(
                   'CREATE TABLE IF NOT EXISTS audit_entry (id SERIAL PRIMARY KEY, at TEXT NOT NULL, who TEXT NOT NULL, station TEXT NOT NULL, role_name TEXT NOT NULL, surface TEXT NOT NULL, item_key TEXT NOT NULL, member TEXT, old_value TEXT, new_value TEXT, group_required TEXT NOT NULL, allowed BOOLEAN NOT NULL, origin TEXT NOT NULL DEFAULT \'operator\', action_id TEXT NOT NULL, reason TEXT)');
               await m.database.customStatement(
@@ -856,17 +891,58 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
             await _createAccessBindingIndexes(m);
             await _seedAccessRoles();
           }
-          // Schema v7: `alarm_history` becomes writable, and an open
+          // The page-visibility whitelist, at both levels. One nullable column
+          // per identity table and nothing else: every existing row — the four
+          // seeded roles included — upgrades to NULL, which is "no whitelist"
+          // on a role and "follow the role" on a user, so a station that
+          // upgrades behaves identically until somebody turns the mode on.
+          // See `docs/page-visibility-whitelist-design.md` §2.
+          //
+          // A station that ran the v6 arm above in this same upgrade already
+          // has both columns, because the CREATE TABLE literals there carry
+          // them. `addColumn` on SQLite would then fail, and the Postgres
+          // `IF NOT EXISTS` would be a no-op — so the SQLite side is guarded
+          // by `from >= 6` rather than by hoping the order works out.
+          if (from < 7) {
+            if (native) {
+              // Only when the tables predate this upgrade. `from < 6` created
+              // them fresh from the table definitions, which already include
+              // the column.
+              if (from >= 6) {
+                await m.addColumn(appRole, appRole.allowedPages);
+                await m.addColumn(appUser, appUser.allowedPages);
+              }
+            } else {
+              // Raw `IF NOT EXISTS` DDL, and the v6 arm's warning applies
+              // unchanged: several SVN stations share one Postgres database
+              // and each of them runs this branch when it opens, so it has to
+              // be safe to run twice. No test executes this arm — what stands
+              // behind these two strings is the source-derived column-parity
+              // check in `access_schema_test.dart`.
+              await m.database.customStatement(
+                  'ALTER TABLE app_role ADD COLUMN IF NOT EXISTS allowed_pages TEXT');
+              await m.database.customStatement(
+                  'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS allowed_pages TEXT');
+            }
+          }
+
+          // **v7 is main's page-visibility whitelist; this arm is v8.** Both
+          // landed as "the next version" on separate branches and collided at
+          // the merge. main's shipped first, so it keeps 7 and the alarm change
+          // moved up — which is also the safe direction: a station that has
+          // already run 7 gets 8 on its next open, and one that has run
+          // neither gets both in order.
+          // Schema v8: `alarm_history` becomes writable, and an open
           // activation row becomes a thing the database can hold exactly one
           // of. See 14-CONTEXT D-5.
           //
           // **This is the first migration arm in this repository with an
-          // executed Postgres test** — `test/integration/alarm_schema_v7_test
+          // executed Postgres test** — `test/integration/alarm_schema_v8_test
           // .dart`, twelve legs against a real server, half of them against a
           // v6 shape built by hand and lifted through this branch. The v6
-          // comment above records that no test had ever run one. v7 does not
+          // comment above records that no test had ever run one. v8 does not
           // inherit that.
-          if (from < 7) {
+          if (from < 8) {
             if (native) {
               // SQLite has no `ADD COLUMN IF NOT EXISTS` and no
               // `DROP CONSTRAINT`. Neither matters here:
@@ -902,7 +978,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
               // `DriftSqlType.int` and a client binding an int8 parameter
               // against an int4 column gets SQLSTATE 08P01, "insufficient data
               // left in message", which reads like a driver bug rather than a
-              // schema mismatch. Measured — `alarm_schema_v7_test.dart`'s
+              // schema mismatch. Measured — `alarm_schema_v8_test.dart`'s
               // column-parity arm compares the created and upgraded shapes
               // column for column so the two paths cannot drift apart again.
               for (final stmt in [
@@ -914,8 +990,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
               }
               await _dropAlarmHistoryForeignKeys(m);
             }
-            await _createAlarmHistoryOpenRowIndex(m);
-          }
+            await _createAlarmHistoryOpenRowIndex(m);          }
         },
       );
 

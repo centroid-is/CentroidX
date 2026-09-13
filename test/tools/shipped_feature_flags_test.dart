@@ -9,10 +9,17 @@
 /// build step that had the flags and dropping them, which shipped the chat FAB
 /// to `latest-release` and `latest-profile` without anyone noticing.
 ///
-/// So: find every real build invocation in the workflows and Dockerfiles, and
-/// require both defines on each. A new platform, mode, or image is caught the
-/// first time CI runs it rather than the first time an operator sees a feature
-/// that was supposed to be off.
+/// So: find every real build invocation in the workflows, and require both
+/// defines on each. A new platform, mode, or image is caught the first time CI
+/// runs it rather than the first time an operator sees a feature that was
+/// supposed to be off.
+///
+/// No Dockerfile is listed because none of them builds the app any more:
+/// `docker/frontend/Dockerfile` assembles the bundle that
+/// `.github/workflows/centroid-hmi.yml` already built under this gate, and
+/// `docker/backend` builds no Flutter at all. The one that did —
+/// `docker/frontend-ivi/Dockerfile.build`, the ivi-homescreen experiment — was
+/// deleted. Add a Dockerfile back here the moment one runs `flutter build`.
 @TestOn('!windows')
 library;
 
@@ -26,7 +33,6 @@ const _sources = [
   '.github/workflows/linux.yml',
   '.github/workflows/macos.yml',
   '.github/workflows/windows.yml',
-  'docker/frontend-ivi/Dockerfile.build',
 ];
 
 /// A `flutter build <platform>`, a `flutter-elinux build elinux`, or the

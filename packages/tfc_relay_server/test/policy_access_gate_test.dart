@@ -121,6 +121,16 @@ final class _FakeAccessAdmin implements AccessAdminApi {
       reached.add('setUserStationAccount');
 
   @override
+  Future<void> setRolePages(String subject, Set<String>? pages,
+          {String? reason}) async =>
+      reached.add('setRolePages');
+
+  @override
+  Future<void> setUserPages(String subject, Set<String>? pages,
+          {String? reason}) async =>
+      reached.add('setUserPages');
+
+  @override
   Future<void> setUserPassword(SetUserPasswordParams params) async =>
       reached.add('setUserPassword');
 }

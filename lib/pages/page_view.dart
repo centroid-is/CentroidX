@@ -1341,6 +1341,7 @@ class _PlantPageViewState extends ConsumerState<PlantPageView> {
       // knows where the tapped device is.
       content = SidePaneInset(
         child: ZoomableCanvas(
+          interactive: !page.zoomPanDisabled,
           child: LayoutBuilder(
             // A tap on empty page -- nothing under it that takes taps --
             // closes an open pane. Translucent so every asset still sees

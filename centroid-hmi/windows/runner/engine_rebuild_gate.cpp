@@ -1,4 +1,4 @@
-#include "session_rebuild_gate.h"
+#include "engine_rebuild_gate.h"
 
 #include <cstdio>
 
@@ -13,17 +13,17 @@ std::string Seconds(unsigned long long ms) {
 
 }  // namespace
 
-void SessionRebuildGate::EngineCreated(unsigned long long now_ms) {
+void EngineRebuildGate::EngineCreated(unsigned long long now_ms) {
   startup_in_flight_ = true;
   startup_started_ms_ = now_ms;
 }
 
-void SessionRebuildGate::StartupComplete(unsigned long long now_ms) {
+void EngineRebuildGate::StartupComplete(unsigned long long now_ms) {
   (void)now_ms;
   startup_in_flight_ = false;
 }
 
-bool SessionRebuildGate::StartupBlocking(unsigned long long now_ms) const {
+bool EngineRebuildGate::StartupBlocking(unsigned long long now_ms) const {
   if (!startup_in_flight_) {
     return false;
   }
@@ -32,7 +32,7 @@ bool SessionRebuildGate::StartupBlocking(unsigned long long now_ms) const {
   return elapsed < config_.startup_timeout_ms;
 }
 
-SessionRebuildGate::Decision SessionRebuildGate::Release(
+EngineRebuildGate::Decision EngineRebuildGate::Release(
     unsigned long long now_ms) {
   Decision decision;
   decision.verdict = Verdict::kRebuildNow;
@@ -54,7 +54,7 @@ SessionRebuildGate::Decision SessionRebuildGate::Release(
   return decision;
 }
 
-SessionRebuildGate::Decision SessionRebuildGate::Request(
+EngineRebuildGate::Decision EngineRebuildGate::Request(
     const std::string& reason, unsigned long long now_ms) {
   // The debounce still earns its place: one disconnect emits several
   // WM_WTSSESSION_CHANGE messages inside a second, and they all describe the
@@ -99,7 +99,7 @@ SessionRebuildGate::Decision SessionRebuildGate::Request(
   return Release(now_ms);
 }
 
-SessionRebuildGate::Decision SessionRebuildGate::Poll(
+EngineRebuildGate::Decision EngineRebuildGate::Poll(
     unsigned long long now_ms) {
   if (!queued_) {
     return Decision();
@@ -110,48 +110,49 @@ SessionRebuildGate::Decision SessionRebuildGate::Poll(
   return Release(now_ms);
 }
 
-std::string DescribeSessionRebuild(
-    const SessionRebuildGate::Decision& decision) {
+std::string DescribeEngineRebuild(
+    const EngineRebuildGate::Decision& decision) {
   const std::string& reason =
       decision.reason.empty() ? std::string("unspecified") : decision.reason;
   switch (decision.verdict) {
-    case SessionRebuildGate::Verdict::kIdle:
+    case EngineRebuildGate::Verdict::kIdle:
       return std::string();
 
-    case SessionRebuildGate::Verdict::kDebounced:
-      return "session change (" + reason +
-             ") ignored: a duplicate of the message the rebuild just above "
+    case EngineRebuildGate::Verdict::kDebounced:
+      return "rebuild request (" + reason +
+             ") ignored: a duplicate of the one the rebuild just above "
              "already answered";
 
-    case SessionRebuildGate::Verdict::kQueued:
-      return "session change (" + reason +
-             ") QUEUED: the current engine is still starting up, and tearing "
-             "one down mid-startup is what orphaned a generation of OPC UA "
-             "clients on 2026-09-10. The rebuild will run once startup "
-             "reports complete.";
+    case EngineRebuildGate::Verdict::kQueued:
+      return "rebuild request (" + reason +
+             ") QUEUED: the current engine is still starting up. Tearing one "
+             "down mid-startup orphaned a generation of OPC UA clients on "
+             "2026-09-10, and on 2026-09-11 it restarted a startup three "
+             "times over until the app never came up at all. The rebuild will "
+             "run once startup reports complete.";
 
-    case SessionRebuildGate::Verdict::kCoalesced:
-      return "session change (" + reason +
+    case EngineRebuildGate::Verdict::kCoalesced:
+      return "rebuild request (" + reason +
              ") folded into the queued rebuild -- " +
              std::to_string(decision.coalesced) +
              " request(s) will now cost one rebuild, not " +
              std::to_string(decision.coalesced);
 
-    case SessionRebuildGate::Verdict::kRebuildNow:
+    case EngineRebuildGate::Verdict::kRebuildNow:
       if (decision.waited_ms == 0 && decision.coalesced <= 1) {
-        return "session change (" + reason +
+        return "rebuild request (" + reason +
                ") -- REBUILDING the renderer rather than probing it. The probe "
                "cannot see this class of loss: the next-frame callback is "
                "answered whether or not rasterisation succeeded.";
       }
-      return "session change (" + reason + ") -- REBUILDING now, answering " +
+      return "rebuild request (" + reason + ") -- REBUILDING now, answering " +
              std::to_string(decision.coalesced) +
              " queued request(s) after waiting " +
              Seconds(decision.waited_ms) +
              " s for startup" +
              (decision.startup_timed_out
                   ? ", which never reported complete -- rebuilding anyway "
-                    "rather than leaving the session without a renderer"
+                    "rather than leaving the operator without a renderer"
                   : " to finish");
   }
   return std::string();

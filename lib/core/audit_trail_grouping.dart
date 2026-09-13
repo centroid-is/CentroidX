@@ -41,7 +41,10 @@ import 'package:tfc_access/tfc_access.dart';
 /// administration — `itemKey`s `role.create` / `role.update` / `role.delete` /
 /// `role.rename` and `user.create` / `user.delete` / `user.role` /
 /// `user.password`, all carrying `groupRequired: 'users'` — and the whole cost
-/// of that arriving was this one line and the one assertion that pins it.
+/// of that arriving was this one line and the one assertion that pins it. The
+/// page-visibility whitelist later added `role.pages` and `user.pages` to the
+/// same surface and cost nothing at all here, which is the property this set
+/// exists to have.
 /// `test/widgets/audit_trail_admin_surface_test.dart` proved beforehand, end to
 /// end through the real store and the real reader, that the viewer renders an
 /// `admin` row with no change of any kind: no new chip either, because the

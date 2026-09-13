@@ -102,6 +102,18 @@ class AlarmVisibilityConfig extends BaseAsset {
   /// these alarms", and asking for that intent a second time is how the
   /// navigation pulse went unused for a month. Turn it off per beacon for
   /// alarms that belong on the page but not in everyone's face.
+  ///
+  /// It is also what the plant-wide auto-navigation setting steers by — see
+  /// `lib/providers/alarm_auto_navigation.dart`. With that setting on, a
+  /// beacon announcing here is a page the screen will jump to when one of its
+  /// alarms raises, so switching this off silences the jump as well as the
+  /// pulse. Which page an alarm goes to is never configured anywhere else;
+  /// this is the only statement of it.
+  ///
+  /// Two pages may carry a beacon for the same alarm, and the pulse lights
+  /// both entries. The jump has to pick one: the page the operator is already
+  /// on if it is one of them, else the earlier of the two in the page list.
+  /// Reordering the pages is the lever for changing that answer.
   @JsonKey(name: 'announce_in_navigation', defaultValue: true)
   bool announceInNavigation;
 

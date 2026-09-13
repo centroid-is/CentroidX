@@ -119,26 +119,6 @@ class NavDropdownState extends ConsumerState<NavDropdown> {
   /// Navigation is performed in [PopupMenuItem.onTap] (which fires before
   /// Flutter's internal `Navigator.pop(null)`), so the pop value is always
   /// `void` — compatible with any route type on the root Navigator stack.
-  /// Paths this session cannot open, recomputed on every build.
-  Set<String> _lockedPaths = const {};
-
-  Set<String> _collectLockedPaths(MenuItem root) {
-    final locked = <String>{};
-    void walk(MenuItem item) {
-      for (final child in item.children) {
-        if (child.isNavigationSection) {
-          walk(child);
-        } else {
-          final path = child.path;
-          if (path != null && accessRouteLocked(ref, path)) locked.add(path);
-        }
-      }
-    }
-
-    walk(root);
-    return locked;
-  }
-
   List<PopupMenuEntry<void>> buildFlatMenu(MenuItem root,
       {required BuildContext parentContext, int depth = 0}) {
     final items = <PopupMenuEntry<void>>[];
@@ -176,12 +156,13 @@ class NavDropdownState extends ConsumerState<NavDropdown> {
           items.addAll(sub);
         }
       } else {
-        // Hidden, not locked-and-visible. An entry this session cannot open is
-        // left out of the menu entirely; `accessRouteLocked` is the same
-        // question `AccessLockBadge` asks, so the menu and the route gate
-        // cannot disagree. The gate still refuses anyone who reaches the path
-        // directly -- hiding is presentation, never the enforcement point.
-        if (_lockedPaths.contains(child.path)) continue;
+        // **No filtering here any more.** `widget.menuItem` arrives already
+        // filtered by `visibleMenuProvider`, which drops the entries this
+        // session cannot open and collapses the sections they emptied. This
+        // widget used to compute that set itself, during build, because it
+        // could not `watch` from `showMenu`'s item builder — one filter in a
+        // provider removes both the duplication and the timing problem, and
+        // is what lets the bar above change between logins too.
         items.add(PopupMenuItem<void>(
           height: NavDropdown.itemHeight,
           onTap: () => beamSafelyKids(parentContext, child),
@@ -215,17 +196,6 @@ class NavDropdownState extends ConsumerState<NavDropdown> {
     // Capture the parent context so we can safely navigate after the popup closes
     final parentContext = context;
 
-    // Which entries this session cannot open, resolved HERE rather than in
-    // `buildFlatMenu`.
-    //
-    // `buildFlatMenu` runs from `showMenu`'s item list, i.e. when the menu is
-    // opened, not while this widget builds. `ref.watch` is only legal during
-    // build, and a `read` there is worse than useless: the session resolves
-    // asynchronously, so at menu-open time it is still loading and NOTHING
-    // reads as denied yet. Watching here means the set is already settled by
-    // the time a menu can be opened, and a session that resolves later rebuilds
-    // this widget and updates it.
-    _lockedPaths = _collectLockedPaths(widget.menuItem);
     final activeRoot = findRootNodeOfLeaf(RouteRegistry().root, null,
         (context.currentBeamLocation.state as BeamState).uri.path);
     if (activeRoot != null) {

@@ -46,6 +46,9 @@ ThirdPartyEquipmentConfig _$ThirdPartyEquipmentConfigFromJson(
       showTag: json['showTag'] as bool? ?? false,
       notes: json['notes'] as String?,
       strapMachines: (json['strapMachines'] as num?)?.toInt() ?? 3,
+      robotStations: (json['robotStations'] as num?)?.toInt() ?? 2,
+      mirrorX: json['mirrorX'] as bool? ?? false,
+      mirrorY: json['mirrorY'] as bool? ?? false,
       childTextAngle: (json['childTextAngle'] as num?)?.toDouble() ?? 0.0,
       acceptWindowMinutes: (json['acceptWindowMinutes'] as num?)?.toInt() ?? 30,
       acceptBarsClockAligned: json['acceptBarsClockAligned'] as bool? ?? true,
@@ -87,6 +90,9 @@ Map<String, dynamic> _$ThirdPartyEquipmentConfigToJson(
       'showTag': instance.showTag,
       'notes': instance.notes,
       'strapMachines': instance.strapMachines,
+      'mirrorX': instance.mirrorX,
+      'mirrorY': instance.mirrorY,
+      'robotStations': instance.robotStations,
       'children': _childrenToJson(instance.children),
       'extraBits': instance.extraBits.map((e) => e.toJson()).toList(),
       'childTextAngle': instance.childTextAngle,
@@ -101,6 +107,8 @@ const _$ThirdPartyEquipmentKindEnumMap = {
   ThirdPartyEquipmentKind.boxErector: 'boxErector',
   ThirdPartyEquipmentKind.strappingLine: 'strappingLine',
   ThirdPartyEquipmentKind.fishAligner: 'fishAligner',
+  ThirdPartyEquipmentKind.optimarPalletiser: 'optimarPalletiser',
+  ThirdPartyEquipmentKind.palletMagazine: 'palletMagazine',
 };
 
 Value? _$JsonConverterFromJson<Json, Value>(

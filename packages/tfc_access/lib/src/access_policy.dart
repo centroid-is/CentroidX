@@ -351,6 +351,8 @@ class AccessPolicy {
 
   /// `AccessAdminStore.setUserStationAccount`.
   static const String adminSetUserStationAccount = 'setUserStationAccount';
+  static const String adminSetRolePages = 'setRolePages';
+  static const String adminSetUserPages = 'setUserPages';
 
   /// `AccessAdminStore.setUserPassword`.
   static const String adminSetUserPassword = 'setUserPassword';

@@ -109,6 +109,19 @@ final class AccessHandlers {
     return reason is String ? reason : null;
   }
 
+  /// A page whitelist parameter, decoded fail-closed.
+  ///
+  /// `valueOr(null)` for the same reason [_reason] uses it: the client sends
+  /// `{'pages': pages}` with `pages` null on the common path — clearing a
+  /// whitelist — and `.asList` on a present-null throws `-32602`.
+  ///
+  /// The null and the empty list are **different writes** and both are legal,
+  /// so this must not collapse them: null clears the whitelist, `[]` is a
+  /// whitelist naming nothing. `pagesFromJson` is the one place that decision
+  /// is written down, and it denies on anything unreadable.
+  static Set<String>? _pages(rpc.Parameters params) =>
+      pagesFromJson(params['pages'].valueOr(null));
+
   // ------------------------------------------------- templates (nine names)
 
   Future<Object?> templateList(rpc.Parameters _) async => [
@@ -228,6 +241,20 @@ final class AccessHandlers {
     await source.accessAdmin.setUserStationAccount(
         params['subject'].asString, params['value'].asBool,
         reason: _reason(params));
+    return null;
+  }
+
+  Future<Object?> adminSetRolePages(rpc.Parameters params) async {
+    await source.accessAdmin
+        .setRolePages(params['subject'].asString, _pages(params),
+            reason: _reason(params));
+    return null;
+  }
+
+  Future<Object?> adminSetUserPages(rpc.Parameters params) async {
+    await source.accessAdmin
+        .setUserPages(params['subject'].asString, _pages(params),
+            reason: _reason(params));
     return null;
   }
 

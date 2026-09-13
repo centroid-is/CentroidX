@@ -93,6 +93,7 @@ import '../core/access_admin_store.dart';
 import '../providers/access.dart';
 import '../providers/access_admin.dart';
 import '../widgets/access_admin_notice.dart';
+import '../widgets/access_pages_editor.dart';
 import '../widgets/panes/pane_chrome.dart';
 import '../widgets/panes/standard_dialog.dart';
 
@@ -299,13 +300,46 @@ const String kAccessUserSetPasswordConfirmLabel = 'Set password';
 
 /// One line above the set-password form.
 ///
-/// Says the two things the operator would otherwise have to guess: the old
-/// password stops working at once, and there is nothing to force the person
-/// into afterwards — there is no change-password flow to send them to, and
-/// password self-service is out of scope for this milestone.
+/// Says the three things the administrator would otherwise have to guess: the
+/// old password stops working at once, the account is not signed out, and
+/// nothing forces the person to change it again afterwards.
+///
+/// That last clause is a statement about **policy**, not about plumbing, and it
+/// stayed true when self-service arrived. The person can now change this
+/// password themselves from the app bar's account menu
+/// (`access_change_password_dialog.dart`), so the administrator has somewhere
+/// to point them — but there is deliberately no must-change-at-next-login flag
+/// to set, for the same reason there is no length floor and no expiry: this
+/// screen has no password policy, and a forced change is one.
+///
+/// **Two sentences, because the promise is not true of every row.** A station
+/// account is not offered the account menu and `changeOwnPassword` refuses it,
+/// so telling an administrator resetting `freezer` that "the person can change
+/// it themselves" would send them to a control that does not exist for that
+/// account — and the administrator resetting a panel account is precisely the
+/// person who must not be told that. [kAccessUserSetPasswordNoteFor] picks.
 const String kAccessUserSetPasswordNote =
     'The new password works immediately and the old one stops working. The '
-    'account is not signed out and is not asked to change it again.';
+    'account is not signed out and is not asked to change it again — but the '
+    'person can change it themselves from the app bar once signed in.';
+
+/// The same note for a station account, with the self-service half replaced by
+/// what is true instead.
+///
+/// It names this screen as the way it changes, because it is the only one: a
+/// panel account's password is commissioning material, shared across every
+/// panel committed to it, and there is nobody whose "own" password it is.
+const String kAccessUserSetPasswordStationNote =
+    'The new password works immediately and the old one stops working. The '
+    'account is not signed out. This is a station account, so it is not '
+    'offered the app bar\'s change-password menu — this screen is where its '
+    'password changes.';
+
+/// Which of the two notes a row gets.
+String kAccessUserSetPasswordNoteFor({required bool stationAccount}) =>
+    stationAccount
+        ? kAccessUserSetPasswordStationNote
+        : kAccessUserSetPasswordNote;
 
 /// The username field was blank. First of the three checks.
 const String kAccessUserBlankUsernameNote = 'Enter a username.';
@@ -362,6 +396,26 @@ const Key kAccessUsersHeaderKey = Key('access-users-header');
 Key kAccessUserRowKey(String username) => Key('access-user-row-$username');
 
 /// The station-account toggle on a user row.
+/// The Pages control on an account's row.
+Key kAccessUserPagesKey(String username) => Key('access-user-pages-$username');
+
+/// Save and Cancel inside an account's open Pages block.
+Key kAccessUserPagesSaveKey(String username) =>
+    Key('access-user-pages-save-$username');
+Key kAccessUserPagesCancelKey(String username) =>
+    Key('access-user-pages-cancel-$username');
+
+/// The marker beside the role of an account that overrides its role's pages.
+Key kAccessUserPagesOverrideKey(String username) =>
+    Key('access-user-pages-override-$username');
+
+/// Said beside the role, because that is where somebody moving the account to
+/// another role is looking — a personal page list survives the move, and this
+/// is what keeps that from being a surprise.
+const String kAccessUserPagesOverrideTag = 'own pages';
+
+const String kAccessUserPagesTooltip = 'Which pages this account sees';
+
 Key kAccessUserStationAccountKey(String username) =>
     Key('access-user-station-$username');
 
@@ -661,7 +715,11 @@ class AccessUsersSection extends ConsumerWidget {
 const int _kNameFlex = 3;
 const int _kRoleFlex = 3;
 const int _kWhenFlex = 3;
-const double _kActionsWidth = 192;
+/// Five 48 px icon buttons: pages, station account, role, password, delete.
+/// Widened from 192 when the Pages control joined them — a fixed width with
+/// one more button than it was sized for overflows the row rather than
+/// wrapping, which is how this number earns a comment.
+const double _kActionsWidth = 240;
 
 // ---------------------------------------------------------------------------
 // One row
@@ -704,7 +762,20 @@ class _UserTileState extends ConsumerState<_UserTile> {
   /// during the round trip is simply ignored.
   bool _busy = false;
 
+  /// The page-whitelist draft, or null while the block is closed.
+  ///
+  /// Two nullables, because the value being edited is itself nullable and the
+  /// two nulls mean different things: [_pagesOpen] says whether the block is
+  /// showing at all, and [_pagesDraft] null then means "this account follows
+  /// its role's pages". Collapsing them would make a closed row
+  /// indistinguishable from an open one set to inherit.
+  bool _pagesOpen = false;
+  Set<String>? _pagesDraft;
+
   UserSummary get user => widget.user;
+
+  /// Whether this account overrides its role's pages right now.
+  bool get _overridesPages => user.allowedPages != null;
 
   @override
   Widget build(BuildContext context) {
@@ -752,7 +823,31 @@ class _UserTileState extends ConsumerState<_UserTile> {
               ),
               Expanded(
                 flex: _kRoleFlex,
-                child: Text(user.roleName, key: kAccessUserRoleKey(user.username)),
+                // The tag sits against the role on purpose: a personal page
+                // list survives a move to another role, so the place somebody
+                // needs to be told is the place they change the role.
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(user.roleName,
+                          key: kAccessUserRoleKey(user.username)),
+                    ),
+                    if (_overridesPages) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        kAccessUserPagesOverrideTag,
+                        key: kAccessUserPagesOverrideKey(user.username),
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelSmall
+                            ?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant),
+                      ),
+                    ],
+                  ],
+                ),
               ),
               Expanded(
                 flex: _kWhenFlex,
@@ -789,6 +884,16 @@ class _UserTileState extends ConsumerState<_UserTile> {
                       onPressed: _toggleStationAccount,
                     ),
                     IconButton(
+                      key: kAccessUserPagesKey(user.username),
+                      icon: Icon(
+                          _overridesPages
+                              ? Icons.layers
+                              : Icons.layers_outlined,
+                          size: 18),
+                      tooltip: kAccessUserPagesTooltip,
+                      onPressed: _togglePages,
+                    ),
+                    IconButton(
                       key: kAccessUserChangeRoleKey(user.username),
                       icon: const Icon(Icons.badge_outlined, size: 18),
                       tooltip: 'Change role',
@@ -812,6 +917,42 @@ class _UserTileState extends ConsumerState<_UserTile> {
             ],
           ),
         ),
+        if (_pagesOpen)
+          Padding(
+            padding: const EdgeInsets.only(left: 16, bottom: 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // The same widget the roles section mounts, told which level
+                // it is on so the "no whitelist" option reads as *follows the
+                // role* here and as *sees every page* there.
+                AccessPagesEditor(
+                  level: AccessPagesLevel.user,
+                  owner: user.username,
+                  selection: _pagesDraft,
+                  onChanged: (next) => setState(() => _pagesDraft = next),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      key: kAccessUserPagesCancelKey(user.username),
+                      onPressed: _togglePages,
+                      child: const Text('Cancel'),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton(
+                      key: kAccessUserPagesSaveKey(user.username),
+                      onPressed: _savePages,
+                      child: const Text('Save'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         if (refusal != null) ...[
           const SizedBox(height: 4),
           // The exception goes straight to the shared widget; this file builds
@@ -822,6 +963,56 @@ class _UserTileState extends ConsumerState<_UserTile> {
         ],
       ],
     );
+  }
+
+  /// Opens or closes the Pages block, seeding the draft from the roster row
+  /// each time it opens so a cancelled edit really is discarded.
+  ///
+  /// The roster speaks [UserSummary], which carries the whitelist already
+  /// decoded, so there is no `decodeAllowedPagesColumn` call here: the decode
+  /// happens once, in `AccessRepository._toUserSummary` in direct mode and in
+  /// `userSummaryFromJson` over the wire. A copy is taken because the draft is
+  /// mutated in place by the editor and the roster row is shared.
+  void _togglePages() => setState(() {
+        if (_pagesOpen) {
+          _pagesOpen = false;
+          _pagesDraft = null;
+          return;
+        }
+        _pagesOpen = true;
+        final pages = user.allowedPages;
+        _pagesDraft = pages == null ? null : Set<String>.of(pages);
+      });
+
+  /// Writes the draft as one `user.pages` row.
+  ///
+  /// Nothing here is gated. A session without `users` may open this block and
+  /// tick boxes; Save is what asks, and the refusal reaches the shared prompt
+  /// — signing in from there and pressing Save again is the intended flow,
+  /// the same as everywhere else on this screen.
+  Future<void> _savePages() async {
+    if (_busy) return;
+    _busy = true;
+    final wrote = await _write(
+      context,
+      ref,
+      () => widget.store.setUserPages(user.username, _pagesDraft),
+      onRefused: _showRefusal,
+      vanished: user.username,
+    );
+    _busy = false;
+    if (!wrote) return;
+    if (mounted) {
+      setState(() {
+        _pagesOpen = false;
+        _pagesDraft = null;
+        _refusal = null;
+      });
+    }
+    // The session refresh last, because it can unmount this subtree — and it
+    // is what makes the menu on this panel follow an edit to the account that
+    // is signed in on it.
+    await _afterWrite(ref);
   }
 
   /// Moves the account onto another role.
@@ -938,6 +1129,7 @@ class _UserTileState extends ConsumerState<_UserTile> {
       builder: (_) => _SetPasswordDialog(
         username: user.username,
         store: widget.store,
+        stationAccount: user.stationAccount,
       ),
     );
     if (changed != true || !mounted) return;
@@ -1556,21 +1748,38 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
 
 /// Reset an account's password: the new one, typed twice.
 ///
-/// No username field and no current-password field. There is no verify-current
-/// flow to run and password self-service is out of scope for this milestone —
-/// 06-CONTEXT fixes this at "an admin types the new password directly", and
-/// there is no "force a change on next login" either, because there is nothing
-/// to force somebody into.
+/// No username field and no current-password field. The username is the row the
+/// control was pressed on, and there is no current password for an administrator
+/// to present — they are resetting somebody else's credential, not proving they
+/// hold it. 06-CONTEXT fixes this at "an admin types the new password directly",
+/// and there is no "force a change on next login" either, because a forced
+/// change is a policy and this screen has none.
+///
+/// A verify-current flow does now exist — `AccessChangePasswordDialog`, off the
+/// app bar's account menu — and it is deliberately **not** this dialog with a
+/// flag. That one is ungated and self-service, reached by anybody signed in and
+/// acting only on their own account; this one is behind the `users` group and
+/// acts on somebody else's. One boolean is the wrong distance between a gated
+/// path and an ungated one.
 ///
 /// Every rule in [_CreateUserDialog]'s doc applies here unchanged: the password
 /// goes to the store and nowhere else, no exception is ever rendered, and the
 /// confirming action is disabled for the duration of the derivation rather than
 /// for lack of a permission.
 class _SetPasswordDialog extends StatefulWidget {
-  const _SetPasswordDialog({required this.username, required this.store});
+  const _SetPasswordDialog({
+    required this.username,
+    required this.store,
+    required this.stationAccount,
+  });
 
   final String username;
   final AccessAdminStore store;
+
+  /// Whether this row is a panel account. Only the note varies on it — the
+  /// write is identical, because an administrator resetting a station account
+  /// is exactly as legitimate as resetting anybody else's.
+  final bool stationAccount;
 
   @override
   State<_SetPasswordDialog> createState() => _SetPasswordDialogState();
@@ -1650,7 +1859,11 @@ class _SetPasswordDialogState extends State<_SetPasswordDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _note(context, kAccessUserSetPasswordNote),
+          _note(
+            context,
+            kAccessUserSetPasswordNoteFor(
+                stationAccount: widget.stationAccount),
+          ),
           const SizedBox(height: 12),
           TextField(
             key: kAccessUserPasswordFieldKey,

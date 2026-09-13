@@ -233,6 +233,12 @@ final List<_Member> _members = <_Member>[
       (a) => a.admin.setUserRole('nyr-madur', 'Supervisor'), () => null),
   _Member(AccessMethods.adminSetUserStationAccount,
       (a) => a.admin.setUserStationAccount('nyr-madur', true), () => null),
+  // Both nulls are exercised elsewhere; the table's job is one request and one
+  // answer per member, so a non-null set is enough here.
+  _Member(AccessMethods.adminSetRolePages,
+      (a) => a.admin.setRolePages('Supervisor', {'/fillet'}), () => null),
+  _Member(AccessMethods.adminSetUserPages,
+      (a) => a.admin.setUserPages('nyr-madur', {'/fillet'}), () => null),
   _Member(
       AccessMethods.adminSetUserPassword,
       (a) => a.admin.setUserPassword(const SetUserPasswordParams(
@@ -490,6 +496,18 @@ final class _ServedAccessGateway {
     _on(AccessMethods.adminSetUserStationAccount, (p) async {
       await fake.setUserStationAccount(
           p['subject'].asString, p['value'].asBool,
+          reason: reasonOf(p));
+      return null;
+    });
+    _on(AccessMethods.adminSetRolePages, (p) async {
+      await fake.setRolePages(
+          p['subject'].asString, pagesFromJson(p['pages'].valueOr(null)),
+          reason: reasonOf(p));
+      return null;
+    });
+    _on(AccessMethods.adminSetUserPages, (p) async {
+      await fake.setUserPages(
+          p['subject'].asString, pagesFromJson(p['pages'].valueOr(null)),
           reason: reasonOf(p));
       return null;
     });
@@ -922,11 +940,12 @@ void main() {
     // run itself did, not what it intended.
     test('LEDGER: the leg ran the whole access roster with an empty gap', () {
       // The declared count, reconciled against the in-memory leg's:
-      // access_contract_meta_test.dart pins `_declaredAccessCheckCount = 27`
-      // and the 17-05b roster holds 78 = 51 + 27. If the kit's roster moves,
-      // this literal must move with it — deliberately, on the record.
-      expect(accessChecks.length, 27,
-          reason: 'the in-memory leg declares 27 access checks; this leg '
+      // access_contract_meta_test.dart pins `_declaredAccessCheckCount = 29`
+      // — 27 until the page-visibility whitelist merged in and added
+      // setRolePages and setUserPages. If the kit's roster moves, this
+      // literal must move with it — deliberately, on the record.
+      expect(accessChecks.length, 29,
+          reason: 'the in-memory leg declares 29 access checks; this leg '
               'must judge the same roster, not a subset that happens to be '
               'green');
       expect(_legsBuilt, accessChecks.length,

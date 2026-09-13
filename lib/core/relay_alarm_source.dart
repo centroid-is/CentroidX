@@ -475,6 +475,15 @@ class RelayAlarmSource implements AlarmSource {
     alarms.add(Alarm(config: alarm));
   }
 
+  /// The same optimistic shape [updateAlarm] has: the in-memory flag moves
+  /// first and the write follows, so the switch does not lag a round trip.
+  @override
+  void setAutoNavigate(bool value) {
+    if (config.autoNavigate == value) return;
+    config.autoNavigate = value;
+    _saveConfig();
+  }
+
   void _saveConfig() async {
     await preferences.setString(
         'alarm_man_config', jsonEncode(config.toJson()));

@@ -313,25 +313,103 @@ class AccessRepository {
   /// dead because the database blinked is a stopped line. The seeded set is the
   /// conservative floor rather than a guess: it is the narrowest thing Operator
   /// has ever been.
-  Future<Set<AccessGroup>> anonymousGroups() async {
+  ///
+  /// Delegates to [anonymousRole] so the two answers come from one read and
+  /// one set of fallbacks. Kept as its own method because its callers ask only
+  /// this question.
+  Future<Set<AccessGroup>> anonymousGroups() async =>
+      (await anonymousRole()).groups;
+
+  /// The whole `Operator` row — groups **and** page whitelist — as it stands.
+  ///
+  /// [anonymousGroups] answers half of this and is kept as a delegating
+  /// wrapper so its callers are untouched. This is the version a session
+  /// builder wants: anonymous resolves to [kOperatorRoleName] by construction
+  /// and has no `app_user` row, so the Operator role *is* the anonymous
+  /// session — both halves of it, read from the same row at the same moment,
+  /// which is what stops the groups and the whitelist coming from two
+  /// different reads of a row somebody is editing.
+  ///
+  /// Falls back to the seeded Operator role — `{operate}` and **no
+  /// whitelist** — when the row is missing or the query throws, for the reason
+  /// [anonymousGroups] gives: a panel that goes dead because the database
+  /// blinked is a stopped line. The fallback deliberately carries a null
+  /// whitelist rather than an empty one: failing closed here would blank every
+  /// page on every panel during an outage, and visibility is not the surface
+  /// where that trade is worth making (the write guards still refuse).
+  Future<AccessRole> anonymousRole() async {
+    AccessRole seeded() => AccessRole(
+          name: kOperatorRoleName,
+          groups: {..._seededOperatorGroups},
+          seeded: true,
+        );
     try {
       final operator = await role(kOperatorRoleName);
       if (operator == null) {
         _logger.w(
           'No "$kOperatorRoleName" role in app_role — falling back to the '
-          'seeded anonymous groups. Someone has deleted the row that an '
+          'seeded anonymous role. Someone has deleted the row that an '
           'unauthenticated panel resolves to.',
         );
-        return {..._seededOperatorGroups};
+        return seeded();
       }
-      return operator.groups;
+      return operator;
     } on Object catch (e) {
       _logger.w(
         'Could not read the "$kOperatorRoleName" role — falling back to the '
-        'seeded anonymous groups: $e',
+        'seeded anonymous role: $e',
       );
-      return {..._seededOperatorGroups};
+      return seeded();
     }
+  }
+
+  /// Replace the page whitelist on the role named [name].
+  ///
+  /// [pages] null clears it — the role sees every page again; the empty set is
+  /// a whitelist naming nothing, i.e. block all. The two are different writes
+  /// and both are legal.
+  ///
+  /// A targeted column update rather than an `upsertRole`, so a caller holding
+  /// a stale group set cannot roll groups back as a side effect of changing
+  /// pages.
+  ///
+  /// **No lockout guard, and that is a decision rather than an omission.** A
+  /// whitelist cannot remove [AccessGroup.users] from anybody, and the
+  /// Advanced routes — the access screen among them — are governed by groups
+  /// alone and are not whitelistable, so no whitelist state can take the
+  /// roles screen away from the people who hold the group.
+  Future<void> setRoleAllowedPages(String name, Set<String>? pages) async {
+    await db.transaction(() async {
+      final existing = await (db.select(db.appRole)
+            ..where((t) => t.name.equals(name)))
+          .getSingleOrNull();
+      if (existing == null) throw MissingRoleError(name);
+      await (db.update(db.appRole)..where((t) => t.name.equals(name))).write(
+        AppRoleCompanion(allowedPages: Value(encodeAllowedPagesColumn(pages))),
+      );
+    });
+  }
+
+  /// Replace one account's personal page whitelist.
+  ///
+  /// [pages] null clears the override, putting the account back under its
+  /// role's whitelist — which is **not** the same as granting it every page.
+  /// The empty set is a personal block-all that outranks whatever the role
+  /// allows.
+  ///
+  /// Throws [UserNotFoundException] when there is no such account, rather than
+  /// writing nothing and reporting success.
+  Future<void> setUserAllowedPages(String username, Set<String>? pages) async {
+    await db.transaction(() async {
+      final existing = await (db.select(db.appUser)
+            ..where((t) => t.username.equals(username)))
+          .getSingleOrNull();
+      if (existing == null) throw UserNotFoundException(username);
+      await (db.update(db.appUser)..where((t) => t.username.equals(username)))
+          .write(
+        AppUserCompanion(allowedPages: Value(encodeAllowedPagesColumn(pages))),
+      );
+    });
   }
 
   /// Insert [role], or update the groups of an existing row with that name.
@@ -362,6 +440,10 @@ class AccessRepository {
                 name: name,
                 groups: role.encodeGroups(),
                 seeded: Value(role.seeded),
+                // A create carries whatever the caller built — null for every
+                // production caller, since the roles screen creates a role
+                // before anybody can choose its pages.
+                allowedPages: Value(role.encodeAllowedPages()),
               ),
             );
       } else {
@@ -372,6 +454,12 @@ class AccessRepository {
           roleName: name,
           groups: role.groups,
         ));
+        // **Groups only, deliberately.** The whitelist has its own write
+        // ([setRoleAllowedPages]) and its own audit row, and the roles screen
+        // can save groups without having loaded a page tree. Widening this to
+        // an `AccessRole`-shaped write would let a caller holding a stale
+        // value object silently reset a whitelist to null — which fails
+        // *open*, showing the role every page.
         await (db.update(db.appRole)..where((t) => t.name.equals(name)))
             .write(AppRoleCompanion(groups: Value(role.encodeGroups())));
       }
@@ -549,6 +637,12 @@ class AccessRepository {
               name: target,
               groups: existing.groups,
               seeded: Value(existing.seeded),
+              // Every column of the old row moves, `allowed_pages` included.
+              // Dropping it here would be the dangerous direction: the renamed
+              // role would come back with NULL, which is "sees every page", so
+              // a rename would silently *widen* what an audience sees.
+              // `renameRole preserves the whitelist` pins this.
+              allowedPages: Value(existing.allowedPages),
             ),
           );
       await (db.update(db.appUser)..where((t) => t.roleName.equals(from)))
@@ -932,6 +1026,7 @@ class AccessRepository {
         name: row.name,
         groupsJson: row.groups,
         seeded: row.seeded,
+        allowedPagesJson: row.allowedPages,
       );
 
   /// `app_user`'s row onto the roster type. See [listUsers].
@@ -940,6 +1035,10 @@ class AccessRepository {
   /// cross; [isPasswordless] reduces the first to the one bit a roster needs,
   /// which says that there is nothing to steal and never what the thing to
   /// steal is.
+  ///
+  /// `allowed_pages` is decoded here through the shared codec, the same call
+  /// [_toRole] makes one method up, so the roster and the roles screen cannot
+  /// read one stored column two ways.
   UserSummary _toUserSummary(AppUserData row) => UserSummary(
         username: row.username,
         roleName: row.roleName,
@@ -947,5 +1046,6 @@ class AccessRepository {
         hasPassword: !isPasswordless(row.passwordHash),
         createdAt: row.createdAt,
         lastLoginAt: row.lastLoginAt,
+        allowedPages: decodeAllowedPagesColumn(row.allowedPages),
       );
 }

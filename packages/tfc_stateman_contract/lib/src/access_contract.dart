@@ -424,6 +424,45 @@ Future<void> checkSetUserStationAccountRefusesConfigurePermitsUsers(
       action: () => api.accessAdmin.setUserStationAccount('stodvar', true));
 }
 
+/// The page whitelist is `users`, not `configure` — the whole reason it lives
+/// on the admin surface.
+///
+/// A whitelist behind the page editor's gate would let anybody who can author
+/// a page re-scope who sees which pages, including widening their own view.
+/// These two checks are what stop a leg from grading it `configure` quietly.
+Future<void> checkSetRolePagesRefusesConfigurePermitsUsers(
+    StateManApi api) async {
+  final h = accessHarnessOf(api);
+  h.actAs(usersSession);
+  await _seed(
+      () => api.accessAdmin.createRole(
+          const AccessRole(name: 'Sidur', groups: {AccessGroup.operate})),
+      'Sidur');
+  await _refusedThenPermitted(api,
+      denied: configureSession,
+      permitted: usersSession,
+      what: 'setting a role page whitelist',
+      action: () => api.accessAdmin.setRolePages('Sidur', {'/fillet'}));
+}
+
+/// And the account level, whose null clears the override rather than granting
+/// every page — so this check deliberately passes a non-null set and leaves
+/// the null-versus-empty distinction to the codec's own tests.
+Future<void> checkSetUserPagesRefusesConfigurePermitsUsers(
+    StateManApi api) async {
+  final h = accessHarnessOf(api);
+  h.actAs(usersSession);
+  await _seed(
+      () => api.accessAdmin.createUser(const NewUserParams(
+          subject: 'sidumadur', password: 'x-9', grantedRole: 'Operator')),
+      'sidumadur');
+  await _refusedThenPermitted(api,
+      denied: configureSession,
+      permitted: usersSession,
+      what: 'setting an account page whitelist',
+      action: () => api.accessAdmin.setUserPages('sidumadur', {'/fillet'}));
+}
+
 Future<void> checkSetUserPasswordRefusesConfigurePermitsUsers(
     StateManApi api) async {
   final h = accessHarnessOf(api);
@@ -765,6 +804,10 @@ const accessChecks = <String, Check<StateManApi>>{
       checkSetUserRoleRefusesConfigurePermitsUsers,
   'flipping a station-account flag refuses configure and permits users':
       checkSetUserStationAccountRefusesConfigurePermitsUsers,
+  'setting a role page whitelist refuses configure and permits users':
+      checkSetRolePagesRefusesConfigurePermitsUsers,
+  'setting an account page whitelist refuses configure and permits users':
+      checkSetUserPagesRefusesConfigurePermitsUsers,
   'resetting a password refuses configure and permits users':
       checkSetUserPasswordRefusesConfigurePermitsUsers,
   'the admin reads are ungated and still answer': checkAdminReadsAreUngated,

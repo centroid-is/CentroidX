@@ -30,6 +30,7 @@ import 'package:tfc/access_routes.dart';
 import 'package:tfc/core/access_authority.dart';
 import 'package:tfc/core/gateway_config.dart';
 import 'package:tfc/models/menu_item.dart';
+import 'package:tfc/providers/menu.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/preferences.dart';
@@ -141,7 +142,26 @@ class _NavBarLocation extends BeamLocation<BeamState> {
               alignment: Alignment.bottomCenter,
               child: SizedBox(
                 height: 80,
-                child: NavDropdown(menuItem: menuItem),
+                // Through `visibleMenuProvider`, exactly as `BaseScaffold`
+                // does. `NavDropdown` no longer filters during its own build
+                // — the page-visibility whitelist moved that decision into
+                // one provider so the menu, the lock badge and the route gate
+                // cannot disagree — so a test that handed the widget an
+                // unfiltered tree would be asserting against a widget that
+                // has nothing left to hide with, and would show Page Editor
+                // to an anonymous panel.
+                //
+                // Watched, not read: the whole claim of this file is that
+                // signing in changes the menu by rebuild rather than by
+                // remount, and a read would not carry that.
+                child: Consumer(builder: (context, ref, _) {
+                  final visible = ref.watch(visibleMenuProvider);
+                  final advanced = visible.topLevel.firstWhere(
+                    (item) => item.label == menuItem.label,
+                    orElse: () => menuItem,
+                  );
+                  return NavDropdown(menuItem: advanced);
+                }),
               ),
             ),
           ),
@@ -289,6 +309,15 @@ void main() {
             'Engineering, which holds every group');
     expect(_row('Server Config'), findsOneWidget);
     expect(_row('Dashboard'), findsOneWidget);
+
+    // Ends the session it started. An elevated session holds an armed
+    // `InactivityMonitor` — a real fifteen-minute timer — and `testWidgets`
+    // fails a body that leaves one pending. Cancelling it is what signing out
+    // is FOR, so the arm closes the way the product closes rather than by
+    // reaching into the controller; the third arm below has always done this,
+    // and it is the reason that one never tripped the assertion.
+    await container.read(accessSessionProvider.notifier).signOut();
+    await tester.pumpAndSettle();
   });
 
   testWidgets(
@@ -314,6 +343,10 @@ void main() {
     expect(find.byKey(BeamerLocationStub.childKey), findsOneWidget,
         reason: 'the page itself, reached by a rebuild rather than a push');
     expect(find.byKey(kAccessLockedBodyKey), findsNothing);
+
+    // Ends the session it started — see the arm above for why.
+    await container.read(accessSessionProvider.notifier).signOut();
+    await tester.pumpAndSettle();
   });
 
   testWidgets('signing out on a gateway panel takes the pages away again',

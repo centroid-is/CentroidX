@@ -186,6 +186,33 @@ void main() {
       );
     });
 
+    // The theme URL parameter set: its dark/light value fields appear, one
+    // left at its default (hint shown) and one overridden.
+    testWidgets('config editor with a theme parameter', (tester) async {
+      tester.view.physicalSize = const Size(420, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      final (light, _) = solarized();
+      final config = WebViewAssetConfig(
+        url: 'https://grafana.plant/public-dashboards/abc123',
+        reloadSeconds: 300,
+        themeParam: 'theme',
+        themeLightValue: 'light',
+      )..text = 'Line 1 dashboard';
+      await tester.pumpWidget(MaterialApp(
+        theme: light,
+        home: Scaffold(
+          backgroundColor: light.colorScheme.surface,
+          body: Builder(builder: (context) => config.configure(context)),
+        ),
+      ));
+      await tester.pump();
+      await expectLater(
+        find.byType(SingleChildScrollView).first,
+        matchesGoldenFile('goldens/web_view_config_editor_theme.png'),
+      );
+    });
+
     testWidgets('config editor rejects a non-http address', (tester) async {
       tester.view.physicalSize = const Size(420, 900);
       tester.view.devicePixelRatio = 1.0;

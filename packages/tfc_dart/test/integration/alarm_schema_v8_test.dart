@@ -65,7 +65,7 @@ import 'docker_compose.dart';
 const String createdSubject = 'freshly created (onCreate)';
 
 /// The subject drift lifted from a hand-built v6 shape with `onUpgrade(6, 7)`.
-const String upgradedSubject = 'upgraded from v6 (onUpgrade 6 -> 7)';
+const String upgradedSubject = 'upgraded from v6 (onUpgrade 6 -> 8)';
 
 const List<String> subjects = <String>[createdSubject, upgradedSubject];
 
@@ -136,7 +136,7 @@ DatabaseConfig configFor(String database) {
     sslMode: base.sslMode,
     connectTimeout: base.connectTimeout,
     queryTimeout: base.queryTimeout,
-    applicationName: 'alarm_schema_v7_test',
+    applicationName: 'alarm_schema_v8_test',
   );
 }
 
@@ -340,8 +340,18 @@ Future<int> historyCount(pg.Connection c) async {
 // The v6 shape, by hand
 // ---------------------------------------------------------------------------
 
-/// `alarm_history` exactly as schema v6 leaves it: the foreign key present, and
-/// none of v7's three columns.
+/// The database exactly as schema v6 leaves it: `alarm_history`'s foreign key
+/// present, none of v8's three columns, and the v6 access tables **without**
+/// `allowed_pages`, which is v7's addition.
+///
+/// The access tables are here even though nothing in this file reads them,
+/// because the migration does: v7's Postgres arm runs
+/// `ALTER TABLE app_role ADD COLUMN IF NOT EXISTS allowed_pages` on the way
+/// from 6 to 8, and `IF NOT EXISTS` says nothing about a table that is not
+/// there — the statement fails with `42P01`. A fixture claiming to be v6 has
+/// to carry what v6 created, or the first arm above 6 dies on the shape rather
+/// than on the change it is testing. Copied from the v6 branch's own CREATE
+/// literals in `database_drift.dart`, minus the column v7 adds.
 ///
 /// Datetimes are TEXT on both backends — this database sets
 /// `DriftDatabaseOptions(storeDateTimeAsText: true)`.
@@ -376,12 +386,63 @@ const List<String> v6Ddl = <String>[
     acknowledged_at TEXT
   )
   ''',
+  '''
+  CREATE TABLE app_role (
+    name TEXT PRIMARY KEY,
+    groups TEXT NOT NULL,
+    seeded BOOLEAN NOT NULL DEFAULT FALSE
+  )
+  ''',
+  '''
+  CREATE TABLE app_user (
+    username TEXT PRIMARY KEY,
+    role_name TEXT NOT NULL REFERENCES app_role(name),
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_login_at TEXT,
+    station_account BOOLEAN NOT NULL DEFAULT FALSE
+  )
+  ''',
+  '''
+  CREATE TABLE audit_entry (
+    id BIGSERIAL PRIMARY KEY,
+    at TEXT NOT NULL,
+    who TEXT NOT NULL,
+    station TEXT NOT NULL,
+    role_name TEXT NOT NULL,
+    surface TEXT NOT NULL,
+    item_key TEXT NOT NULL,
+    member TEXT,
+    old_value TEXT,
+    new_value TEXT,
+    group_required TEXT NOT NULL,
+    allowed BOOLEAN NOT NULL,
+    origin TEXT NOT NULL DEFAULT 'operator',
+    action_id TEXT NOT NULL,
+    reason TEXT
+  )
+  ''',
+  '''
+  CREATE TABLE access_template (
+    name TEXT PRIMARY KEY,
+    rules TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )
+  ''',
+  '''
+  CREATE TABLE access_key_binding (
+    key_name TEXT PRIMARY KEY,
+    template_name TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )
+  ''',
 ];
 
 // ---------------------------------------------------------------------------
 
 void main() {
-  group('alarm_history schema v7, against a real Postgres', () {
+  group('alarm_history schema v8, against a real Postgres', () {
     setUpAll(() async {
       // Two AppDatabase instances are open at once ON PURPOSE — one per
       // subject, each against its own physical database. Drift's warning is
@@ -471,7 +532,7 @@ void main() {
         expect(migrationFailures[subject], isNull,
             reason: 'the migration for the "$subject" subject THREW: '
                 '${describe(migrationFailures[subject])}. Every arm below is '
-                'about the shape v7 produces, and none of them can mean '
+                'about the shape v8 produces, and none of them can mean '
                 'anything until it produces one. On a real station this is '
                 'not a failed test — it is a backend that will not open its '
                 'database.');
@@ -632,7 +693,7 @@ void main() {
     // ------------------------------------------------------------------ 3 --
     group('the upgrade itself', () {
       test(
-          'arm 3: a v6-shaped Postgres database reaches v7 — FK gone, three '
+          'arm 3: a v6-shaped Postgres database reaches v8 — FK gone, three '
           'columns added, partial unique index created', () async {
         final c = conns[upgradedSubject]!;
 
@@ -645,10 +706,15 @@ void main() {
                 'one AppDatabase declares; the v6 stamp below would then mean '
                 'something other than "this database is at v6"');
 
-        expect(await readDriftMarker(c), 7,
-            reason: 'the upgraded database did not end at schema version 7. '
+        // The literal, not `drifts[createdSubject]!.schemaVersion`: this arm
+        // is about the upgrade arriving at a NAMED version, and reading the
+        // number off the thing under test would pass for any number at all.
+        // 8 rather than 7 because main's page-visibility whitelist took 7
+        // when the two branches collided; the alarm change moved up.
+        expect(await readDriftMarker(c), 8,
+            reason: 'the upgraded database did not end at schema version 8. '
                 'It was stamped 6 and opened with the real AppDatabase, so '
-                'either schemaVersion is not yet 7 or onUpgrade threw.');
+                'either schemaVersion is not yet 8 or onUpgrade threw.');
 
         final fks = await foreignKeysToAlarm(c);
         expect(fks, isEmpty,

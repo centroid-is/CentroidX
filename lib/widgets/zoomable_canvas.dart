@@ -9,6 +9,12 @@ class ZoomableCanvas extends StatefulWidget {
   final bool panEnabled;
   final bool scaleEnabled;
 
+  /// False pins the canvas at 1:1: no zoom, no pan — not even the middle
+  /// button, which otherwise always pans. Turning it off while zoomed snaps
+  /// back to 1:1, since there would be no gesture left to get back there.
+  /// Overrides [panEnabled] and [scaleEnabled].
+  final bool interactive;
+
   const ZoomableCanvas({
     Key? key,
     required this.child,
@@ -17,6 +23,7 @@ class ZoomableCanvas extends StatefulWidget {
     this.aspectRatio = 16 / 9,
     this.panEnabled = true,
     this.scaleEnabled = true,
+    this.interactive = true,
   }) : super(key: key);
 
   @override
@@ -65,6 +72,15 @@ class _ZoomableCanvasState extends State<ZoomableCanvas> {
   }
 
   @override
+  void didUpdateWidget(ZoomableCanvas oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.interactive && !widget.interactive) {
+      _middleButtonPanning = false;
+      _resetZoom();
+    }
+  }
+
+  @override
   void dispose() {
     _transformationController.dispose();
     super.dispose();
@@ -92,7 +108,8 @@ class _ZoomableCanvasState extends State<ZoomableCanvas> {
               children: [
                 Listener(
                   onPointerDown: (event) {
-                    if (event.buttons & kMiddleMouseButton != 0) {
+                    if (widget.interactive &&
+                        event.buttons & kMiddleMouseButton != 0) {
                       setState(() => _middleButtonPanning = true);
                     }
                   },
@@ -111,8 +128,9 @@ class _ZoomableCanvasState extends State<ZoomableCanvas> {
                     minScale: widget.minScale,
                     maxScale: widget.maxScale,
                     boundaryMargin: EdgeInsets.zero,
-                    panEnabled: widget.panEnabled || _middleButtonPanning,
-                    scaleEnabled: widget.scaleEnabled,
+                    panEnabled: widget.interactive &&
+                        (widget.panEnabled || _middleButtonPanning),
+                    scaleEnabled: widget.interactive && widget.scaleEnabled,
                     child: Stack(
                       fit: StackFit.expand,
                       children: [

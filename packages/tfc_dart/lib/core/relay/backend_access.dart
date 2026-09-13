@@ -287,6 +287,18 @@ final class BackendAccessAdmin implements relay.AccessAdminApi {
           origin: kRelayOrigin, reason: reason);
 
   @override
+  Future<void> setRolePages(String subject, Set<String>? pages,
+          {String? reason}) async =>
+      _require('setRolePages')
+          .setRolePages(subject, pages, origin: kRelayOrigin, reason: reason);
+
+  @override
+  Future<void> setUserPages(String subject, Set<String>? pages,
+          {String? reason}) async =>
+      _require('setUserPages')
+          .setUserPages(subject, pages, origin: kRelayOrigin, reason: reason);
+
+  @override
   Future<void> setUserPassword(relay.SetUserPasswordParams params) async =>
       _require('setUserPassword').setUserPassword(
         params.subject,

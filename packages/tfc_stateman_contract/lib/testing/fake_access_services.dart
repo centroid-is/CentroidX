@@ -316,7 +316,13 @@ class FakeAccessServices
     final existing = _roles.remove(from);
     if (existing != null) {
       _roles[to] = AccessRole(
-          name: to, groups: existing.groups, seeded: existing.seeded);
+          name: to,
+          groups: existing.groups,
+          seeded: existing.seeded,
+          // Carried, not dropped: a rename moves a role, and a fake that lost
+          // the whitelist on the way would let a real implementation lose it
+          // too and still pass the contract.
+          allowedPages: existing.allowedPages);
     }
     _touch('admin.renameRole:$from->$to');
   }
@@ -354,7 +360,8 @@ class FakeAccessServices
           stationAccount: existing.stationAccount,
           hasPassword: existing.hasPassword,
           createdAt: existing.createdAt,
-          lastLoginAt: existing.lastLoginAt);
+          lastLoginAt: existing.lastLoginAt,
+          allowedPages: existing.allowedPages);
     }
     _touch('admin.setUserRole:$subject->$newRole');
   }
@@ -372,9 +379,47 @@ class FakeAccessServices
           stationAccount: value,
           hasPassword: existing.hasPassword,
           createdAt: existing.createdAt,
-          lastLoginAt: existing.lastLoginAt);
+          lastLoginAt: existing.lastLoginAt,
+          allowedPages: existing.allowedPages);
     }
     _touch('admin.setUserStationAccount:$subject=$value');
+  }
+
+  @override
+  Future<void> setRolePages(String subject, Set<String>? pages,
+      {String? reason}) async {
+    requireGroup(AccessGroup.users, subject, 'admin.setRolePages');
+    final existing = _roles[subject];
+    if (existing != null) {
+      _roles[subject] = AccessRole(
+          name: existing.name,
+          groups: existing.groups,
+          seeded: existing.seeded,
+          allowedPages: pages);
+    }
+    // Null and the empty set are different writes, so the trace has to tell
+    // them apart: a fake that logged both as "setRolePages:x=" would let an
+    // implementation collapse them and still pass.
+    _touch('admin.setRolePages:$subject=${pages == null ? 'null' : '[${(pages.toList()..sort()).join(',')}]'}');
+  }
+
+  @override
+  Future<void> setUserPages(String subject, Set<String>? pages,
+      {String? reason}) async {
+    requireGroup(AccessGroup.users, subject, 'admin.setUserPages');
+    final existing = _users[subject];
+    if (existing != null) {
+      _users[subject] = UserSummary(
+          username: existing.username,
+          roleName: existing.roleName,
+          displayName: existing.displayName,
+          stationAccount: existing.stationAccount,
+          hasPassword: existing.hasPassword,
+          createdAt: existing.createdAt,
+          lastLoginAt: existing.lastLoginAt,
+          allowedPages: pages);
+    }
+    _touch('admin.setUserPages:$subject=${pages == null ? 'null' : '[${(pages.toList()..sort()).join(',')}]'}');
   }
 
   @override
@@ -394,7 +439,8 @@ class FakeAccessServices
           stationAccount: existing.stationAccount,
           hasPassword: params.password.isNotEmpty,
           createdAt: existing.createdAt,
-          lastLoginAt: existing.lastLoginAt);
+          lastLoginAt: existing.lastLoginAt,
+          allowedPages: existing.allowedPages);
     }
     _touch('admin.setUserPassword:${params.subject}');
   }

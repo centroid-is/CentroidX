@@ -622,6 +622,18 @@ final class ChannelAccessAdminApi implements AccessAdminApi {
           {'subject': subject, 'value': value, 'reason': reason});
 
   @override
+  Future<void> setRolePages(String subject, Set<String>? pages,
+          {String? reason}) async =>
+      await _send(HarnessMethods.accessAdminSetRolePages,
+          {'subject': subject, 'pages': pagesToJson(pages), 'reason': reason});
+
+  @override
+  Future<void> setUserPages(String subject, Set<String>? pages,
+          {String? reason}) async =>
+      await _send(HarnessMethods.accessAdminSetUserPages,
+          {'subject': subject, 'pages': pagesToJson(pages), 'reason': reason});
+
+  @override
   Future<void> setUserPassword(SetUserPasswordParams params) async =>
       await _send(HarnessMethods.accessAdminSetUserPassword, params.toJson());
 }

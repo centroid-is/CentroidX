@@ -4,6 +4,7 @@ import 'package:collection/collection.dart';
 import 'package:meta/meta.dart';
 
 import 'access_group.dart';
+import 'allowed_pages.dart';
 
 /// The name of the role an unauthenticated panel resolves to.
 ///
@@ -38,6 +39,7 @@ class AccessRole {
     required this.name,
     required this.groups,
     this.seeded = false,
+    this.allowedPages,
   });
 
   /// Rebuild a role from its stored `AppRole` columns.
@@ -48,11 +50,13 @@ class AccessRole {
     required String name,
     required String groupsJson,
     required bool seeded,
+    String? allowedPagesJson,
   }) =>
       AccessRole(
         name: name,
         groups: decodeGroups(groupsJson),
         seeded: seeded,
+        allowedPages: decodeAllowedPagesColumn(allowedPagesJson),
       );
 
   /// Primary key of the `AppRole` row.
@@ -61,6 +65,24 @@ class AccessRole {
   /// The groups this role grants. Order is not meaningful; see [encodeGroups]
   /// for the stable serialised form.
   final Set<AccessGroup> groups;
+
+  /// The page paths this role may see, or null when it may see every page.
+  ///
+  /// Null and empty are different claims and both are meaningful: null is "no
+  /// whitelist" — today's behaviour, and what every row carried over from
+  /// schema v6 holds — while the empty set is a whitelist naming nothing, i.e.
+  /// block all. See `docs/page-visibility-whitelist-design.md` §1b.
+  ///
+  /// **A page path, never a section path**, and never a role or a group: this
+  /// is the identity side of the relation pointing at pages, which is the
+  /// direction that fails closed when a page is renamed away. The inverse —
+  /// pages naming roles — is ruled out by [kOperatorRoleName]'s reasoning and
+  /// by `MenuItem.requiredGroup`'s doc.
+  ///
+  /// A role's whitelist governs everyone holding it who has no personal
+  /// override, and — because anonymous *is* [kOperatorRoleName] — the Operator
+  /// row's whitelist governs every logged-out panel on the floor.
+  final Set<String>? allowedPages;
 
   /// True for the rows written by the schema-v6 seed migration.
   ///
@@ -80,6 +102,12 @@ class AccessRole {
   String encodeGroups() => jsonEncode(
         AccessGroup.values.where(groups.contains).map((g) => g.name).toList(),
       );
+
+  /// The `AppRole.allowed_pages` TEXT column for this role, or null.
+  ///
+  /// Delegates to the shared codec so the role and the user levels cannot
+  /// serialise the same data two ways.
+  String? encodeAllowedPages() => encodeAllowedPagesColumn(allowedPages);
 
   /// Read an `AppRole.groups` column back into a set.
   ///
@@ -108,19 +136,36 @@ class AccessRole {
   static const SetEquality<AccessGroup> _groupEquality =
       SetEquality<AccessGroup>();
 
+  /// Nullable-aware on purpose: null (no whitelist) and the empty set (block
+  /// all) are different roles and must not compare equal, which a bare
+  /// `SetEquality` over `{}` would get wrong if either side were defaulted.
+  static const SetEquality<String> _pageEquality = SetEquality<String>();
+
+  static bool _samePages(Set<String>? a, Set<String>? b) {
+    if (a == null || b == null) return a == null && b == null;
+    return _pageEquality.equals(a, b);
+  }
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is AccessRole &&
           other.name == name &&
           other.seeded == seeded &&
-          _groupEquality.equals(other.groups, groups);
+          _groupEquality.equals(other.groups, groups) &&
+          _samePages(other.allowedPages, allowedPages);
 
   @override
-  int get hashCode => Object.hash(name, seeded, _groupEquality.hash(groups));
+  int get hashCode => Object.hash(
+        name,
+        seeded,
+        _groupEquality.hash(groups),
+        allowedPages == null ? null : _pageEquality.hash(allowedPages!),
+      );
 
   @override
-  String toString() => 'AccessRole($name, ${encodeGroups()}, seeded: $seeded)';
+  String toString() => 'AccessRole($name, ${encodeGroups()}, seeded: $seeded, '
+      'pages: ${encodeAllowedPages() ?? 'all'})';
 }
 
 /// True when [name] names a role the system refuses to delete or rename.

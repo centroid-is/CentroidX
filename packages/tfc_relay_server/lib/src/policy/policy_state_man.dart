@@ -1602,6 +1602,35 @@ final class _PolicyAccessAdmin with _GroupGate implements AccessAdminApi {
           'role "$from" keeps its name', 'role.rename', from,
           () => _source().renameRole(from, to, reason: reason));
 
+  /// A whitelist write is `users`, like every other member here.
+  ///
+  /// Not `configure`, and the distinction is the point: a page whitelist is
+  /// authorization data, so grading it with the page editor would let anybody
+  /// who can author a page re-scope who sees which pages. The direct-mode
+  /// store makes the same call in the same words; this decorator is the
+  /// server-side half of it, and it is the half that actually enforces.
+  @override
+  Future<void> setRolePages(String subject, Set<String>? pages,
+          {String? reason}) =>
+      _write(
+          AccessPolicy.adminSetRolePages,
+          AccessMethods.adminSetRolePages,
+          'role "$subject" keeps its pages',
+          'role.pages',
+          subject,
+          () => _source().setRolePages(subject, pages, reason: reason));
+
+  @override
+  Future<void> setUserPages(String subject, Set<String>? pages,
+          {String? reason}) =>
+      _write(
+          AccessPolicy.adminSetUserPages,
+          AccessMethods.adminSetUserPages,
+          'account "$subject" keeps its pages',
+          'user.pages',
+          subject,
+          () => _source().setUserPages(subject, pages, reason: reason));
+
   /// The `what` names the subject and NEVER the credential riding beside it
   /// in [params] — see the class doc.
   @override

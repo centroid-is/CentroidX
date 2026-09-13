@@ -59,6 +59,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/access_routes.dart';
 import 'package:tfc/models/menu_item.dart';
+import 'package:tfc/providers/menu.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/theme.dart' show muted;
@@ -245,6 +246,16 @@ void _registerShellMenu() {
           label: 'Preferences',
           path: '/advanced/preferences',
           icon: Icons.tune),
+      // An unraised sibling, because the real Advanced menu has several and
+      // the section's survival now depends on it: a section whose every child
+      // this session cannot open is dropped from the bar entirely. With
+      // Preferences alone, an anonymous shell would render no Advanced
+      // destination — and, at two top-level entries minimum, no bar at all,
+      // which is not the shell this image is meant to show.
+      MenuItem(
+          label: 'About Linux',
+          path: '/advanced/about-linux',
+          icon: Icons.info),
     ],
   ));
 }
@@ -272,10 +283,7 @@ MenuItem _advancedMenu() => const MenuItem(
 /// `NavDropdown` opens a 16 px popup with the entries scrolled out of view.
 /// The same reason `nav_dropdown_test.dart`'s bar location exists.
 class _MenuLocation extends BeamLocation<BeamState> {
-  _MenuLocation(this.menuItem)
-      : super(RouteInformation(uri: Uri.parse('/dashboard')));
-
-  final MenuItem menuItem;
+  _MenuLocation() : super(RouteInformation(uri: Uri.parse('/dashboard')));
 
   static const double barHeight = 80.0;
 
@@ -290,7 +298,16 @@ class _MenuLocation extends BeamLocation<BeamState> {
             alignment: Alignment.bottomCenter,
             child: SizedBox(
               height: barHeight,
-              child: NavDropdown(menuItem: menuItem),
+              // Fed from `visibleMenuProvider`, exactly as `BaseScaffold`
+              // feeds it. The hiding of entries this session cannot open is
+              // the provider's job now, not the popup's — so a host that
+              // handed `NavDropdown` an unfiltered tree would be testing a
+              // wiring the app does not have.
+              child: Consumer(builder: (context, ref, _) {
+                final visible = ref.watch(visibleMenuProvider).topLevel;
+                if (visible.isEmpty) return const SizedBox.shrink();
+                return NavDropdown(menuItem: visible.first);
+              }),
             ),
           ),
         ),
@@ -310,7 +327,7 @@ Widget _menuHost({
   required Future<AccessRepository?> Function() repository,
 }) {
   final router = BeamerDelegate(
-    locationBuilder: (routeInformation, _) => _MenuLocation(_advancedMenu()),
+    locationBuilder: (routeInformation, _) => _MenuLocation(),
   );
   return ProviderScope(
     overrides: _accessOverrides(session: session, repository: repository),

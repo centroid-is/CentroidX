@@ -1,15 +1,26 @@
-/// Goldens for the two access surfaces this phase puts in front of an
-/// operator: the app-bar affordance and the sign-in dialog.
+/// Goldens for the access surfaces put in front of an operator: the app-bar
+/// affordance, the sign-in dialog, and the account menu and change-password
+/// form that hang off the badge.
 ///
-/// Seven images, one per state that looks different:
+/// Twelve images, one per state that looks different:
 ///
 /// * `access_appbar_anonymous.png`   — nobody signed in: the Sign in icon, no name.
 /// * `access_appbar_elevated.png`    — signed in: who, their role, and Sign out, in orange.
+/// * `access_account_menu.png`       — the same badge with its account menu open.
+/// * `access_change_password_dialog.png` — the self-service form at rest.
+/// * `access_change_password_dialog_dark.png` — the same form on the dark scheme.
+/// * `access_change_password_dialog_dark_error.png` — and its refusal, where a colour carries meaning.
+/// * `access_change_password_dialog_error.png` — the same form after a wrong current password.
 /// * `access_sign_in_dialog.png`     — the form at rest, honesty subtitle showing.
 /// * `access_sign_in_dialog_error.png` — the same form after a rejected password.
 /// * `access_panel_commit_prompt.png` — the prompt a station account gets, over the form.
 /// * `access_session_card_committed.png`   — the Session card on a committed panel.
 /// * `access_session_card_uncommitted.png` — the same card on an uncommitted one.
+///
+/// The change-password pair differs by exactly one thing worth looking at: the
+/// inline note, *and* which fields kept their contents. The image is what shows
+/// that the two new-password fields survived the refusal and the current one
+/// was cleared — a `find.text` cannot see that.
 ///
 /// The last pair is the read-out support reads. Both sentences are long, and
 /// the failure a `find.text` cannot catch is exactly the one that matters
@@ -52,6 +63,7 @@ import 'package:tfc/pages/access_session_section.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/theme.dart' show muted;
+import 'package:tfc/widgets/access_change_password_dialog.dart';
 import 'package:tfc/widgets/access_sign_in_dialog.dart';
 import 'package:tfc/widgets/access_status_action.dart';
 import 'package:tfc_access/tfc_access.dart';
@@ -60,6 +72,8 @@ import '../helpers/page_editor_harness.dart' show FakeEditorPreferences;
 
 const _appBarBoundary = Key('access_appbar_golden');
 const _dialogBoundary = Key('access_sign_in_dialog_golden');
+const _changePasswordBoundary = Key('access_change_password_golden');
+const _accountMenuBoundary = Key('access_account_menu_golden');
 const _commitBoundary = Key('access_panel_commit_golden');
 const _sessionCardBoundary = Key('access_session_card_golden');
 
@@ -72,12 +86,28 @@ const _sessionCardBoundary = Key('access_session_card_golden');
 /// under `AsyncLoading`, so a golden that let the real chain run could capture
 /// an empty app bar.
 class _FixedSession extends AccessSessionController {
-  _FixedSession(this._session, {this.result = AccessSignInResult.ok, this.signsInAs});
+  _FixedSession(
+    this._session, {
+    this.result = AccessSignInResult.ok,
+    this.signsInAs,
+    this.passwordChangeResult = AccessPasswordChangeResult.ok,
+  });
 
   AccessSession _session;
 
   /// What [signIn] answers. The error image needs `badCredentials`.
   final AccessSignInResult result;
+
+  /// What [changeOwnPassword] answers. The change-password error image needs
+  /// `wrongCurrentPassword`.
+  final AccessPasswordChangeResult passwordChangeResult;
+
+  @override
+  Future<AccessPasswordChangeResult> changeOwnPassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async =>
+      passwordChangeResult;
 
   /// Who a successful [signIn] publishes. The panel-commitment image needs a
   /// station account, because the prompt it captures is only offered to one.
@@ -106,6 +136,20 @@ class _FixedSession extends AccessSessionController {
 
   @override
   void poke() {}
+}
+
+/// Stands in for `LocalAuthProvider` where only the capability matters.
+class _CapableAuth implements AuthProvider, PasswordSelfService {
+  @override
+  Future<AuthenticatedUser?> authenticate(String u, String p) async => null;
+
+  @override
+  Future<PasswordChangeResult> changePassword({
+    required String username,
+    required String currentPassword,
+    required String newPassword,
+  }) async =>
+      PasswordChangeResult.ok;
 }
 
 /// The fictional panel account in the commitment image. Not a real account.
@@ -198,6 +242,91 @@ Widget _dialogHost({required ThemeData theme, required _FixedSession session}) {
                 width: 620,
                 height: 620,
                 child: AccessSignInDialog(),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+/// The change-password form, on its own, at the width the dialog frame gives
+/// it.
+///
+/// [result] is what the fake session answers, so the error image walks the real
+/// refusal path rather than fabricating the sentence.
+Widget _changePasswordHost({
+  required ThemeData theme,
+  AccessPasswordChangeResult result = AccessPasswordChangeResult.ok,
+}) {
+  return ProviderScope(
+    overrides: [
+      accessSessionProvider.overrideWith(
+        () => _FixedSession(_elevated(), passwordChangeResult: result),
+      ),
+    ],
+    child: MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: theme,
+      home: Scaffold(
+        backgroundColor: theme.colorScheme.surface,
+        body: Center(
+          child: RepaintBoundary(
+            key: _changePasswordBoundary,
+            child: ColoredBox(
+              color: theme.colorScheme.surface,
+              child: const SizedBox(
+                width: 620,
+                height: 560,
+                child: AccessChangePasswordDialog(),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+/// The app-bar cluster with the account menu open.
+///
+/// The boundary sits **above** `MaterialApp`, for the same reason
+/// [_commitHost]'s does: a popup menu renders in the Navigator's overlay, and a
+/// boundary inside the `Scaffold` would capture the bar with a hole where the
+/// menu is.
+Widget _accountMenuHost({required ThemeData theme}) {
+  return ProviderScope(
+    overrides: [
+      accessSessionProvider.overrideWith(() => _FixedSession(_elevated())),
+      // The badge only offers the menu when the resolved provider can change a
+      // password. Without this the image would capture a bar with no menu on
+      // it, and the golden would silently document the wrong thing.
+      authProviderProvider.overrideWith((ref) async => _CapableAuth()),
+    ],
+    child: RepaintBoundary(
+      key: _accountMenuBoundary,
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: Scaffold(
+          backgroundColor: theme.colorScheme.surface,
+          body: Align(
+            alignment: Alignment.topCenter,
+            child: Material(
+              color: theme.colorScheme.surface,
+              child: SizedBox(
+                width: 720,
+                height: kToolbarHeight,
+                child: Row(
+                  children: [
+                    const SizedBox(width: 16),
+                    Text('Overview', style: theme.textTheme.titleLarge),
+                    const Spacer(),
+                    const AccessStatusAction(),
+                    const SizedBox(width: 16),
+                  ],
+                ),
               ),
             ),
           ),
@@ -312,7 +441,7 @@ void _sizeView(WidgetTester tester, Size size) {
 }
 
 void main() {
-  final (light, _) = muted();
+  final (light, dark) = muted();
 
   setUpAll(() async {
     Future<void> loadFont(String family, String path) async {
@@ -373,6 +502,114 @@ void main() {
       await expectLater(
         find.byKey(_appBarBoundary),
         matchesGoldenFile('goldens/access_appbar_elevated.png'),
+      );
+    });
+
+    testWidgets('the account menu, open', (tester) async {
+      // The one image that shows the affordance exists. The badge itself is
+      // unchanged from `access_appbar_elevated.png`, so what this adds is the
+      // menu surface over it and the entry's wording at real width.
+      _sizeView(tester, const Size(800, 300));
+      await tester.pumpWidget(_accountMenuHost(theme: light));
+      await _settle(tester);
+
+      await tester.tap(find.byKey(kAccessAccountMenuKey));
+      await _settle(tester);
+
+      expect(find.text(kAccessAccountMenuChangePasswordLabel), findsOneWidget);
+
+      await expectLater(
+        find.byKey(_accountMenuBoundary),
+        matchesGoldenFile('goldens/access_account_menu.png'),
+      );
+    });
+
+    testWidgets('change-password dialog at rest', (tester) async {
+      _sizeView(tester, const Size(700, 700));
+      await tester.pumpWidget(_changePasswordHost(theme: light));
+      await _settle(tester);
+
+      await expectLater(
+        find.byKey(_changePasswordBoundary),
+        matchesGoldenFile('goldens/access_change_password_dialog.png'),
+      );
+    });
+
+    testWidgets('change-password dialog after a wrong current password',
+        (tester) async {
+      _sizeView(tester, const Size(700, 700));
+      await tester.pumpWidget(_changePasswordHost(
+        theme: light,
+        result: AccessPasswordChangeResult.wrongCurrentPassword,
+      ));
+      await _settle(tester);
+
+      // Driven through the real refusal path, as the sign-in error image is:
+      // the picture has to show what somebody actually gets, including that the
+      // two new-password fields kept what was typed and the current one did
+      // not.
+      await tester.enterText(
+          find.byKey(kAccessChangePasswordCurrentKey), 'not-my-password');
+      await tester.enterText(
+          find.byKey(kAccessChangePasswordNewKey), 'battery staple');
+      await tester.enterText(
+          find.byKey(kAccessChangePasswordConfirmKey), 'battery staple');
+      await tester.tap(find.byKey(kAccessChangePasswordSubmitKey));
+      await _settle(tester);
+
+      expect(
+          find.text(kAccessChangePasswordWrongCurrentNote), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await expectLater(
+        find.byKey(_changePasswordBoundary),
+        matchesGoldenFile('goldens/access_change_password_dialog_error.png'),
+      );
+    });
+
+    testWidgets('change-password dialog, dark', (tester) async {
+      // The dark variant earns its own image rather than being assumed from the
+      // light one. Neither scheme in this repo sets `colorScheme.outline`, so a
+      // border that reads fine on the light surface can come out invisible on
+      // the dark one — and the three field outlines are most of this form's
+      // structure.
+      _sizeView(tester, const Size(700, 700));
+      await tester.pumpWidget(_changePasswordHost(theme: dark));
+      await _settle(tester);
+
+      await expectLater(
+        find.byKey(_changePasswordBoundary),
+        matchesGoldenFile('goldens/access_change_password_dialog_dark.png'),
+      );
+    });
+
+    testWidgets('change-password dialog, dark, after a wrong current password',
+        (tester) async {
+      // The error row is `colorScheme.error` on the dark surface — the token
+      // family the solarized-outline lesson came from, and the one state of
+      // this form where a colour carries meaning rather than decoration.
+      _sizeView(tester, const Size(700, 700));
+      await tester.pumpWidget(_changePasswordHost(
+        theme: dark,
+        result: AccessPasswordChangeResult.wrongCurrentPassword,
+      ));
+      await _settle(tester);
+
+      await tester.enterText(
+          find.byKey(kAccessChangePasswordCurrentKey), 'not-my-password');
+      await tester.enterText(
+          find.byKey(kAccessChangePasswordNewKey), 'battery staple');
+      await tester.enterText(
+          find.byKey(kAccessChangePasswordConfirmKey), 'battery staple');
+      await tester.tap(find.byKey(kAccessChangePasswordSubmitKey));
+      await _settle(tester);
+
+      expect(find.text(kAccessChangePasswordWrongCurrentNote), findsOneWidget);
+
+      await expectLater(
+        find.byKey(_changePasswordBoundary),
+        matchesGoldenFile(
+            'goldens/access_change_password_dialog_dark_error.png'),
       );
     });
 

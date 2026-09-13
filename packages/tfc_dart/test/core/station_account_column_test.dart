@@ -33,7 +33,7 @@ Future<List<String>> _userColumns(AppDatabase db) async {
 /// This file's v5 fixture is built by creating the CURRENT schema and removing
 /// what came later, so every version after v6 has to add its own rollback here
 /// or the fixture is not the shape it claims to be. Without these,
-/// `onUpgrade(5, 7)`'s SQLite arm aborts on
+/// `onUpgrade(5, 8)`'s SQLite arm aborts on
 /// `duplicate column name: rule_index` — the fixture, not the migration: a
 /// real v5 SQLite database has none of these columns.
 ///
@@ -66,12 +66,12 @@ void main() {
             'otherwise — the default must not mint immortal sessions');
   });
 
-  test('schema version is 7', () async {
+  test('schema version is 8', () async {
     final db = AppDatabase.inMemoryForTest();
     addTearDown(() => db.close());
-    // v7 is 14-01's alarm_history change; station_account still arrives in the
+    // v8 is 14-01's alarm_history change; station_account still arrives in the
     // v6 arm, which is what the rest of this file is about.
-    expect(db.schemaVersion, 7);
+    expect(db.schemaVersion, 8);
   });
 
   group('upgrading a v5 database — the only upgrade path there is', () {

@@ -57,9 +57,11 @@ AlarmManConfig _$AlarmManConfigFromJson(Map<String, dynamic> json) =>
       alarms: (json['alarms'] as List<dynamic>)
           .map((e) => AlarmConfig.fromJson(e as Map<String, dynamic>))
           .toList(),
+      autoNavigate: json['auto_navigate'] as bool? ?? false,
     );
 
 Map<String, dynamic> _$AlarmManConfigToJson(AlarmManConfig instance) =>
     <String, dynamic>{
       'alarms': instance.alarms,
+      'auto_navigate': instance.autoNavigate,
     };

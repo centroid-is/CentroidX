@@ -330,6 +330,8 @@ abstract final class AccessMethods {
   static const adminDeleteUser = 'accessAdmin.deleteUser';
   static const adminSetUserRole = 'accessAdmin.setUserRole';
   static const adminSetUserStationAccount = 'accessAdmin.setUserStationAccount';
+  static const adminSetRolePages = 'accessAdmin.setRolePages';
+  static const adminSetUserPages = 'accessAdmin.setUserPages';
   static const adminSetUserPassword = 'accessAdmin.setUserPassword';
 
   /// Every `AccessAdminApi` method, as data.
@@ -344,6 +346,8 @@ abstract final class AccessMethods {
     adminDeleteUser,
     adminSetUserRole,
     adminSetUserStationAccount,
+    adminSetRolePages,
+    adminSetUserPages,
     adminSetUserPassword,
   };
 

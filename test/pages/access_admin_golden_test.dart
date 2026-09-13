@@ -525,7 +525,12 @@ void main() {
     testWidgets('the Operator editor open, with the warning above the boxes',
         (tester) async {
       await withClock(Clock.fixed(_frozen), () async {
-        const size = Size(900, 1700);
+        // Tall enough for the whole open editor: the seven group checkboxes,
+        // and below them the Pages block with its two mode options and a row
+        // per page. Raised from 1700 when the Pages block landed —
+        // `_expectNothingClipped` is what caught the truncation rather than
+        // letting a cut-off image quietly match its own new baseline.
+        const size = Size(900, 2000);
         _sizeView(tester, size);
 
         await tester.pumpWidget(_pageHost(

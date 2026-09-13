@@ -51,10 +51,16 @@ import 'access_gate.dart';
 /// locked page, which is one tap away.
 /// True when [path] names a route this session cannot open.
 ///
+/// **The group question only — the whitelist is deliberately not asked here.**
+/// A page the whitelist hides is not rendered at all: `visibleMenuProvider`
+/// drops it from the menu before any row is built, so a badge for it would
+/// have nowhere to appear. Asking anyway would cost the property below, which
+/// is the one this widget exists to have.
+///
 /// **One copy of the question, deliberately.** [AccessLockBadge] draws a lock
-/// from this and the navigation menu hides an entry from it. Two copies of
-/// "locked when..." is exactly how a lock ends up on a page that opens, or a
-/// page vanishes that would have opened — the first time one of them is edited.
+/// from this, and `resolveAccessGate` is the same function the route gate
+/// calls. Two copies of "locked when..." is exactly how a lock ends up on a
+/// page that opens — the first time one of them is edited.
 /// It calls [resolveAccessGate] for the same reason the badge did: the route
 /// gate and the menu must agree in every repository state, including both
 /// causes of an unavailable one.

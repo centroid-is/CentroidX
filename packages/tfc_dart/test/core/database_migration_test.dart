@@ -59,11 +59,11 @@ void main() {
       }
     });
 
-    test('schema version is 7', () async {
+    test('schema version is 8', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      // v7 is 14-01's alarm_history change.
-      expect(db.schemaVersion, 7);
+      // v8 is 14-01's alarm_history change.
+      expect(db.schemaVersion, 8);
     });
 
     test('MCP tables support basic CRUD operations', () async {

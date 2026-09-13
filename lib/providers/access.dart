@@ -377,6 +377,44 @@ enum AccessSignInResult {
   unavailable,
 }
 
+/// What a self-service password change did.
+///
+/// Sibling of [AccessSignInResult], and shaped the same way for the same
+/// reason: the dialog has to say something different for each of these, and
+/// collapsing any two of them produces a sentence that sends somebody to fix
+/// the wrong thing.
+enum AccessPasswordChangeResult {
+  /// The stored password is now the new one. The session is untouched.
+  ok,
+
+  /// The current password did not verify.
+  wrongCurrentPassword,
+
+  /// It could not be attempted: no database, the provider threw, or the session
+  /// belongs to a station account.
+  ///
+  /// Three causes, one answer, deliberately. Each is a fact about the station or
+  /// the account rather than about what was typed, none is anything the person
+  /// at the panel can act on differently, and the message for all three points
+  /// at the log — which is where the three *are* distinguished.
+  unavailable,
+
+  /// Nobody is signed in — either already, or as of a moment ago.
+  ///
+  /// Two ways in, and neither is defensive padding. The inactivity countdown
+  /// keeps running while the dialog is open, so a session can expire between
+  /// opening the form and submitting it. And the signed-in account can be
+  /// deleted by an administrator mid-session, which
+  /// [AccessSessionController.changeOwnPassword] answers by flooring the
+  /// session and then reporting it here.
+  ///
+  /// Its own value because it is the one case with a useful next step — sign in
+  /// again — and because the app bar has just stopped showing an identity.
+  /// Saying "could not be changed, the log has the details" while the badge
+  /// disappears would describe a different event from the one on screen.
+  notSignedIn,
+}
+
 /// Who is standing at this panel, and what they may do.
 ///
 /// Holds the session, restores it across a restart while it is still valid,
@@ -623,14 +661,14 @@ class AccessSessionController extends _$AccessSessionController {
     /// needs it, and resuming writes an audit row.
     Future<AccessSession> floor() async =>
         await _resumePanelAccount(repo) ??
-        AccessSession.anonymous(await _anonymousGroups(repo));
+        await _anonymousSession(repo);
 
     // A gateway panel never restores a session: its elevation is a server
     // session that a reconnect does not carry, so a restored one would be an
     // unbacked client claim (see [_isGateway]). Anonymous — the seeded
     // Operator floor — is the honest boot state until somebody signs in.
     if (_isGateway) {
-      return AccessSession.anonymous(await _anonymousGroups(repo));
+      return await _anonymousSession(repo);
     }
 
     final raw = await _readStoredSession();
@@ -686,22 +724,80 @@ class AccessSessionController extends _$AccessSessionController {
         displayName: stored.displayName,
       ),
       groups: role.groups,
+      // Re-resolved from the database like the groups are, and for the same
+      // reason: the payload cannot carry one, so a hand-edited preferences
+      // file cannot widen what this panel sees.
+      allowedPages: await _effectivePages(repo, role, stored.username),
       expiresAt: stored.expiresAt,
     );
   }
 
-  Future<Set<AccessGroup>> _anonymousGroups(AccessRepository? repo) async {
-    if (repo == null) {
-      // No database. Fall back to the seeded Operator groups rather than
-      // throwing: a logged-out panel that cannot jog a conveyor because
-      // Postgres blinked is a stopped line. The seeded set is the narrowest
-      // Operator has ever been, so this is the conservative floor and not a
-      // guess.
-      return {
-        ...kSeedRoles.firstWhere((r) => r.name == kOperatorRoleName).groups,
-      };
+  /// The pages a session built on [role] for [username] may see.
+  ///
+  /// The composition point: the account's own whitelist replaces its role's
+  /// when it has one, and inherits the role's when it does not
+  /// (`effectiveAllowedPages`). Resolved here, once, so that nothing
+  /// downstream of the session has to know two levels exist.
+  ///
+  /// [username] null is an anonymous session — no `app_user` row, so nothing
+  /// to override with, and the role's whitelist *is* the session's.
+  ///
+  /// **An unreadable user row composes as inherit, not as block.** The row
+  /// cannot be read exactly when the database is unreachable, and the ruling
+  /// for that window is the same one `anonymousRole` makes: a panel that
+  /// blanks its pages because Postgres blinked is worse than one showing pages
+  /// whose controls still refuse.
+  Future<Set<String>?> _effectivePages(
+    AccessRepository? repo,
+    AccessRole role,
+    String? username,
+  ) async {
+    if (repo == null || username == null) {
+      return effectiveAllowedPages(user: null, role: role.allowedPages);
     }
-    return repo.anonymousGroups();
+    try {
+      final row = await repo.user(username);
+      return effectiveAllowedPages(
+        user: decodeAllowedPagesColumn(row?.allowedPages),
+        role: role.allowedPages,
+      );
+    } on Object catch (e) {
+      Logger().w(
+        'Could not read the page whitelist for "$username" — falling back to '
+        'the role\'s: $e',
+      );
+      return effectiveAllowedPages(user: null, role: role.allowedPages);
+    }
+  }
+
+  /// The whole anonymous identity — groups and pages — from one read.
+  ///
+  /// Anonymous resolves to [kOperatorRoleName] and has no `app_user` row, so
+  /// the Operator role is the session. Reading both halves from one
+  /// [AccessRepository.anonymousRole] call is what stops the groups and the
+  /// whitelist coming from two reads of a row somebody is editing.
+  Future<AccessRole> _anonymousRole(AccessRepository? repo) async {
+    if (repo == null) {
+      // No database. The seeded Operator role — and, deliberately, **no**
+      // whitelist: see [_effectivePages] for why this window fails open.
+      return AccessRole(
+        name: kOperatorRoleName,
+        groups: {
+          ...kSeedRoles.firstWhere((r) => r.name == kOperatorRoleName).groups,
+        },
+        seeded: true,
+      );
+    }
+    return repo.anonymousRole();
+  }
+
+  /// The anonymous session, groups and pages together.
+  Future<AccessSession> _anonymousSession(AccessRepository? repo) async {
+    final role = await _anonymousRole(repo);
+    return AccessSession.anonymous(
+      role.groups,
+      operatorAllowedPages: role.allowedPages,
+    );
   }
 
   Future<AccessRole?> _roleOrNull(AccessRepository repo, String name) async {
@@ -782,6 +878,7 @@ class AccessSessionController extends _$AccessSessionController {
     final session = AccessSession(
       user: user,
       groups: role.groups,
+      allowedPages: await _effectivePages(repo, role, user.username),
       // Never-expiring two ways: the station-wide disable (null timeout) or
       // the account's own v8 flag. The flag wins even under a normal
       // timeout — the freezer display's identity does not time out anywhere.
@@ -887,6 +984,176 @@ class AccessSessionController extends _$AccessSessionController {
     return AccessSignInResult.ok;
   }
 
+
+  /// Change the signed-in account's own password.
+  ///
+  /// The username is never a parameter. It comes from the live session, which
+  /// is what makes this self-service rather than an ungated way to rewrite
+  /// anybody's credential — and it is why nothing here needs the `users` group
+  /// that [AccessAdminStore.setUserPassword] requires. The two paths write the
+  /// same column and must not be merged: one is an administrator acting on
+  /// somebody else and is gated, the other is an account's own holder proving
+  /// they hold it and must never be.
+  ///
+  /// ## The session is left exactly as it was
+  ///
+  /// Not signed out, not re-persisted, and its `expiresAt` not moved. The
+  /// authority came from the sign-in and is unchanged; a session stores no
+  /// password, so there is nothing in it to invalidate. Signing somebody out
+  /// here would punish the one flow that did everything right, and on a panel
+  /// it would be worse than that.
+  ///
+  /// Nor does it count as activity. [refreshGroupsFromRoles] set that
+  /// precedent: the countdown measures *inactivity at the panel*, and a dialog
+  /// submission is already a pointer event that poked it. Poking it again from
+  /// here would extend the window a second time for one interaction.
+  ///
+  /// **Sessions elsewhere keep working.** Somebody signed in as the same
+  /// account on another panel stays signed in, because nothing anywhere
+  /// re-checks a password mid-session — sessions end by timeout or by
+  /// sign-out, and that is as true after this call as before it. Worth stating
+  /// because "change the password, kick out the other sessions" is what the
+  /// reader expects from a web application, and this is not one.
+  ///
+  /// **A session that expires between the guard below and the write still gets
+  /// its change.** That is correct, not a race to close: the operation is
+  /// authorised by the current password, which was just presented and verified,
+  /// not by the session. The session decides whether the affordance is offered
+  /// and whose account is meant; it is not the credential. Refusing here would
+  /// throw away a correct password because a countdown elapsed during the two
+  /// derivations the change itself was paying for.
+  ///
+  /// ## Station accounts are refused
+  ///
+  /// A station account's password is commissioning material. It is changed on
+  /// the users screen, by an administrator, and it records itself as
+  /// `user.password`. Two reasons it cannot be changed from here:
+  ///
+  /// A resumed panel session carries no proof of anybody's presence — nobody
+  /// presented a credential to get it; `_resumePanelAccount` handed it over
+  /// when the previous human's session ended. Recording a credential change
+  /// against an identity that never logged in is precisely the confusion
+  /// `session.resume` exists to prevent, and it would be recorded as
+  /// *self-service*, which is the one thing it certainly was not.
+  ///
+  /// And the account is shared, so "your own password" is not a thing it has.
+  /// One person changing it at one panel silently breaks every other panel
+  /// committed to it, and the trail would name that person as though they had
+  /// only changed their own.
+  ///
+  /// The dialog is not offered for these sessions at all
+  /// (`access_status_action.dart`), so reaching the refusal below means a
+  /// second call site got it wrong — the same belt-and-braces shape
+  /// [commitPanelAccount] uses, and for the same reason.
+  Future<AccessPasswordChangeResult> changeOwnPassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    final session = state.valueOrNull;
+    final user = session?.user;
+    if (session == null || user == null) {
+      return AccessPasswordChangeResult.notSignedIn;
+    }
+
+    if (user.stationAccount) {
+      Logger().w(
+        'Refusing a self-service password change for the station account '
+        '"${user.username}". A station account\'s password is changed by an '
+        'administrator on the users screen; the app bar does not offer this '
+        'for station accounts, so this call came from somewhere that should '
+        'not have made it.',
+      );
+      return AccessPasswordChangeResult.unavailable;
+    }
+
+    final AuthProvider? resolved;
+    try {
+      resolved = await ref.read(authProviderProvider.future);
+    } on Object {
+      return AccessPasswordChangeResult.unavailable;
+    }
+
+    // Asked for the capability rather than assumed: an implementation with no
+    // password to change — OIDC, one day — simply does not implement it, and
+    // this returns `unavailable` instead of throwing behind an affordance that
+    // should not have been offered. `access_status_action.dart` asks the same
+    // question before offering the menu, so in practice this is the second
+    // answer to a question already answered — and on the day the answer turns
+    // to "no", neither site needs editing.
+    //
+    // This also absorbs the no-database case without a separate branch: the
+    // provider yields null when no Postgres is configured and during the boot
+    // window, and null is not a `PasswordSelfService`. Both are the same normal
+    // state `accessRepositoryProvider` documents, and both deserve the same
+    // answer.
+    //
+    // An if-case rather than `is!` plus a cast. `PasswordSelfService` is not a
+    // subtype of `AuthProvider` — the two are deliberately unrelated
+    // interfaces — so an `is!` test would narrow nothing and the call would
+    // still need an `as` behind it. The pattern binds the capability directly.
+    final PasswordSelfService auth;
+    if (resolved case final PasswordSelfService capable) {
+      auth = capable;
+    } else {
+      return AccessPasswordChangeResult.unavailable;
+    }
+
+    final PasswordChangeResult outcome;
+    try {
+      outcome = await auth.changePassword(
+        username: user.username,
+        currentPassword: currentPassword,
+        newPassword: newPassword,
+      );
+    } on Object catch (e) {
+      // Infrastructure, not a credential — and no audit row, the same rule
+      // `signIn` keeps. The message carries neither password: `e` here is a
+      // database error, never the ArgumentError, which the dialog's own
+      // validation makes unreachable.
+      Logger().w('A password change could not be attempted: $e');
+      return AccessPasswordChangeResult.unavailable;
+    }
+
+    switch (outcome) {
+      case PasswordChangeResult.ok:
+        await _record(AuditRecord.passwordChange(
+          who: user.username,
+          station: _station,
+          roleName: session.roleName,
+          actionId: newActionId(),
+          at: clock.now(),
+        ));
+        return AccessPasswordChangeResult.ok;
+
+      case PasswordChangeResult.wrongCurrentPassword:
+        await _record(AuditRecord.passwordChangeFailed(
+          who: user.username,
+          station: _station,
+          roleName: session.roleName,
+          actionId: newActionId(),
+          at: clock.now(),
+        ));
+        return AccessPasswordChangeResult.wrongCurrentPassword;
+
+      case PasswordChangeResult.accountMissing:
+        // The account was deleted while this session was open. No audit row:
+        // an account being gone is not a password event, and the drop routes
+        // deliberately write none either. `refreshGroupsFromRoles` already owns
+        // this exact situation — it re-resolves the session and drops it to the
+        // floor when the account has vanished, clearing the stored session on
+        // the way.
+        await refreshGroupsFromRoles();
+
+        // `notSignedIn`, not `unavailable`, and the reason is on the screen
+        // rather than in the enum: the line above has just floored the session,
+        // so the app bar's badge disappears in the same frame this answer is
+        // rendered in. "The password could not be changed, the log has the
+        // details" next to an identity visibly vanishing is two unrelated
+        // stories; "your session ended" is the one the person is watching
+        // happen, and by the time it is shown it is the literal truth.
+        return AccessPasswordChangeResult.notSignedIn;
+    }
+  }
 
   /// Commit this panel to the account that is signed in right now.
   ///
@@ -1023,6 +1290,10 @@ class AccessSessionController extends _$AccessSessionController {
     final extended = AccessSession(
       user: session.user,
       groups: session.groups,
+      // Carried forward unchanged. An activity extension re-resolves nothing —
+      // it must not silently widen or narrow what is visible, and it runs on
+      // every pointer-down, where a database read would be indefensible.
+      allowedPages: session.allowedPages,
       // A session with no expiry — the station-wide disable or a station
       // account — has nothing to extend, and an activity extension must not
       // conjure one onto it.
@@ -1049,10 +1320,20 @@ class AccessSessionController extends _$AccessSessionController {
 
   /// Append one row.
   ///
-  /// There are exactly four call sites — login, login.failed, logout and the
-  /// two timeout paths — and each writes one row. There is deliberately a fifth
-  /// branch that writes none: `signIn`'s `unavailable` path, commented where it
-  /// happens.
+  /// Every call site writes exactly one row: login, login.failed, logout, the
+  /// two timeout paths, and the two outcomes of [changeOwnPassword] that were
+  /// judged rather than prevented.
+  ///
+  /// There are deliberately more branches that write none than branches that
+  /// write. `signIn`'s `unavailable` path; and four of [changeOwnPassword]'s —
+  /// nobody signed in, the station-account refusal, no provider or one without
+  /// the capability, and the throw. Each is commented where it happens, and all
+  /// for one reason: a row here asserts that somebody did something, and an
+  /// outage, a guard and a request that was never made are none of them.
+  ///
+  /// [changeOwnPassword]'s `accountMissing` writes none either, for a different
+  /// reason worth keeping separate — the account being gone is not a password
+  /// event, and the session drop it triggers deliberately records nothing.
   ///
   /// **No `reason` is prompted for on any auth event.** The free-text reason
   /// prompt belongs to `configure` and `administer` *writes* and arrives in
@@ -1191,7 +1472,12 @@ class AccessSessionController extends _$AccessSessionController {
     final repo = await ref.read(accessRepositoryProvider.future);
     if (_disposed) return;
     _onPanelSession = false;
-    state = AsyncData(AccessSession.anonymous(await _anonymousGroups(repo)));
+    // `_anonymousSession`, not a bare `AccessSession.anonymous(groups)`: the
+    // Operator row now carries a page whitelist as well as groups, and a
+    // gateway panel dropping to the floor must land under the same whitelist a
+    // direct one does. Reading both halves from one call is also what stops
+    // the two coming from two reads of a row somebody is editing.
+    state = AsyncData(await _anonymousSession(repo));
   }
 
   /// The one way down: this panel's committed account, or anonymous.
@@ -1214,7 +1500,7 @@ class AccessSessionController extends _$AccessSessionController {
     }
 
     _onPanelSession = false;
-    state = AsyncData(AccessSession.anonymous(await _anonymousGroups(repo)));
+    state = AsyncData(await _anonymousSession(repo));
   }
 
   /// This panel's committed account as a live session, or null.
@@ -1327,6 +1613,7 @@ class AccessSessionController extends _$AccessSessionController {
         stationAccount: true,
       ),
       groups: role.groups,
+      allowedPages: await _effectivePages(repo, role, username),
       // A panel does not time out. Nothing arms for a null `expiresAt` —
       // `_attach` and `poke` both already decline — so this needs no new
       // guard anywhere.
@@ -1345,7 +1632,8 @@ class AccessSessionController extends _$AccessSessionController {
   ///   `Operator` row saying that ticking a group there grants it to every
   ///   logged-out panel on the floor. `AccessRepository.anonymousGroups()` is
   ///   what resolves that claim, and until this method existed its only callers
-  ///   were [_anonymousGroups] — reached at build, at restore and at sign-out.
+  ///   were [_anonymousSession] — reached at build, at restore and at
+  ///   sign-out.
   ///   So without this call the banner warns about a change the app does not
   ///   apply until something else happens to rebuild the session, which is
   ///   worse than no banner: it is a promise the screen does not keep.
@@ -1441,11 +1729,11 @@ class AccessSessionController extends _$AccessSessionController {
     }
     if (_disposed) return;
 
-    // The anonymous arm. `_anonymousGroups` keeps its own fallback to the
+    // The anonymous arm. `_anonymousSession` keeps its own fallback to the
     // seeded Operator set when there is no repository, which is the same
     // conservative floor a build resolves on.
     if (!session.isElevated) {
-      state = AsyncData(AccessSession.anonymous(await _anonymousGroups(repo)));
+      state = AsyncData(await _anonymousSession(repo));
       return;
     }
 
@@ -1508,6 +1796,9 @@ class AccessSessionController extends _$AccessSessionController {
     final localRepo = repo!;
 
     final String roleNameNow;
+    // The account's own whitelist column, lifted out of the try beside the
+    // role name so the session below composes from the same single read.
+    final String? userPagesNow;
     try {
       final row = await localRepo.user(username);
       if (row == null) {
@@ -1515,6 +1806,7 @@ class AccessSessionController extends _$AccessSessionController {
         return;
       }
       roleNameNow = row.roleName;
+      userPagesNow = row.allowedPages;
     } on Object catch (e) {
       await drop('the app_user row could not be read: $e');
       return;
@@ -1535,6 +1827,13 @@ class AccessSessionController extends _$AccessSessionController {
         displayName: session.user!.displayName,
       ),
       groups: role.groups,
+      // Composed from the row this method already read, rather than from a
+      // second read that could disagree with it. This is what makes an edit on
+      // the access screen change the menu on this panel without a restart.
+      allowedPages: effectiveAllowedPages(
+        user: decodeAllowedPagesColumn(userPagesNow),
+        role: role.allowedPages,
+      ),
       expiresAt: session.expiresAt,
     );
     state = AsyncData(next);

@@ -14,6 +14,7 @@ export 'src/access_policy.dart';
 export 'src/access_role.dart';
 export 'src/access_session.dart';
 export 'src/access_template.dart';
+export 'src/allowed_pages.dart';
 export 'src/audit.dart';
 export 'src/auth_provider.dart';
 export 'src/authenticated_user.dart';

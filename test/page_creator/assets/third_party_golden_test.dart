@@ -37,10 +37,12 @@ const _key = Key('third_party_golden');
 /// Fitted into a 720 x 820 box rather than fixed-width, because the kinds run
 /// from a 5.4:1 Multivac strip to a PORTRAIT SpeedBatcher — pinning the width
 /// would run the SpeedBatcher off the bottom of the golden.
-Size _canvasFor(ThirdPartyEquipmentKind kind, {int strapMachines = 3}) {
+Size _canvasFor(ThirdPartyEquipmentKind kind,
+    {int strapMachines = 3, int robotStations = 2}) {
   const maxW = 720.0;
   const maxH = 820.0;
-  final aspect = kind.aspectRatio(strapMachines: strapMachines);
+  final aspect = kind.aspectRatio(
+      strapMachines: strapMachines, robotStations: robotStations);
   double w = maxW;
   double h = maxW / aspect;
   if (h > maxH) {
@@ -61,8 +63,12 @@ Widget buildBody({
   Color outlineColor = const Color(0xFF37474F),
   double strokeWidth = 2.5,
   int strapMachines = 3,
+  int robotStations = 2,
+  bool mirrorX = false,
+  bool mirrorY = false,
 }) {
-  final size = _canvasFor(kind, strapMachines: strapMachines);
+  final size = _canvasFor(kind,
+      strapMachines: strapMachines, robotStations: robotStations);
   return MaterialApp(
     home: Scaffold(
       backgroundColor: Colors.white,
@@ -75,6 +81,9 @@ Widget buildBody({
               color: outlineColor,
               strokeWidth: strokeWidth,
               strapMachines: strapMachines,
+              robotStations: robotStations,
+              mirrorX: mirrorX,
+              mirrorY: mirrorY,
             ),
             paintSize: size,
             ledColor: ledColor,
@@ -437,6 +446,57 @@ void main() {
         await expectLater(
           find.byKey(_key),
           matchesGoldenFile('goldens/third_party_strappingLine_${heads}x.png'),
+        );
+      });
+    }
+
+    // Mirroring, on the palletiser because it is the most chiral kind: the
+    // robot stands on ONE side of its lane and the cabinet at ONE end, so a
+    // flip is obvious by eye. Both axes and the pair together, which is the
+    // combination an installer reaches for when a hall runs the other way —
+    // and the one that must not come out as a plain 180° rotation.
+    for (final (name, mx, my) in const [
+      ('mirror_x', true, false),
+      ('mirror_y', false, true),
+      ('mirror_xy', true, true),
+    ]) {
+      testWidgets('optimarPalletiser — $name', (tester) async {
+        tester.view.physicalSize = const Size(1400, 1400);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        await tester.pumpWidget(buildBody(
+          kind: ThirdPartyEquipmentKind.optimarPalletiser,
+          mirrorX: mx,
+          mirrorY: my,
+        ));
+        await expectLater(
+          find.byKey(_key),
+          matchesGoldenFile('goldens/third_party_optimarPalletiser_$name.png'),
+        );
+      });
+    }
+
+    // The palletising cell is built for one, two or three pallet stations.
+    // Station count changes the number of pallets, the fork-truck openings in
+    // the fence, where the arm points, and the cell's proportions, so each
+    // variant gets its own golden. (Two is covered by the per-kind loop
+    // above.) These are the drawings to judge the cell layout by.
+    for (final stations in const [1, 3]) {
+      testWidgets('optimarPalletiser — $stations pallet station(s)',
+          (tester) async {
+        tester.view.physicalSize = const Size(1400, 1400);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        await tester.pumpWidget(buildBody(
+          kind: ThirdPartyEquipmentKind.optimarPalletiser,
+          robotStations: stations,
+        ));
+        await expectLater(
+          find.byKey(_key),
+          matchesGoldenFile(
+              'goldens/third_party_optimarPalletiser_${stations}x.png'),
         );
       });
     }

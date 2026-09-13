@@ -334,6 +334,16 @@ final class RelayedAccessAdminStore implements AccessAdminStore {
       _guarded(() => _api.setUserRole(username, roleName, reason: reason));
 
   @override
+  Future<void> setRolePages(String name, Set<String>? pages,
+          {String origin = 'operator', String? reason}) =>
+      _guarded(() => _api.setRolePages(name, pages, reason: reason));
+
+  @override
+  Future<void> setUserPages(String username, Set<String>? pages,
+          {String origin = 'operator', String? reason}) =>
+      _guarded(() => _api.setUserPages(username, pages, reason: reason));
+
+  @override
   Future<void> setUserStationAccount(String username, bool value,
           {String origin = 'operator', String? reason}) =>
       _guarded(

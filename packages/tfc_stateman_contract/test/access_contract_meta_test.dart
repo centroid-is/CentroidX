@@ -30,7 +30,12 @@ import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
 /// wire: the cut removed a *read* inside `checkTemplateReadsAreUngated` (four
 /// ungated reads became three), not a check. Written down here so the next
 /// reader knows the non-shift was a decision, not an oversight.
-const _declaredAccessCheckCount = 27;
+///
+/// 29 since the page-visibility whitelist merged in: `setRolePages` and
+/// `setUserPages` are two new admin *writes*, so each takes a check of its
+/// own. Both grade `users` rather than `configure`, and the pair of checks is
+/// what pins that on every leg rather than only on the direct one.
+const _declaredAccessCheckCount = 29;
 
 /// Tokens that mark a check name as asserting a refusal, and the tokens that
 /// mark its permission twin. Exactly 17-CONTEXT D-12's pairing rule, mechanised.

@@ -93,6 +93,24 @@ jobs:
         working-directory: centroid-hmi
         run: flutter-elinux create --platforms=elinux .
 
+      # libcef.so records ALSA and NSS/NSPR in its DT_NEEDED, so the link fails
+      # without them even though nothing of ours calls either:
+      #
+      #   libcef.so: undefined reference to `snd_pcm_readi@ALSA_0.9'
+      #   libcef.so: undefined reference to `PK11_GetAllTokens@NSS_3.2'
+      #
+      # These are the same three the runtime image installs (docker/frontend),
+      # here because tfc-toolchain does not carry them. libasound2t64, not
+      # libasound2 — trixie's t64 transition renamed it and the old name does
+      # not resolve at all. Lives in the workflow rather than the toolchain
+      # image so this PR is self-contained; folding it into tfc-toolchain and
+      # dropping this step is the tidier follow-up.
+      - name: Install CEF link dependencies
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libnss3 libnspr4 libasound2t64
+
       - name: Get Flutter Packages
         uses: ./.github/actions/pub-get
         with:
@@ -119,9 +137,10 @@ jobs:
           name: centroid-hmi-artifacts
           path: centroid-hmi/assets/
 
-  # `docker-build` and `backend-build` are also job ids in centroid-hmi-ivi.yml,
-  # so without a `name` both workflows publish identically-named checks on every
-  # PR. Job ids are unchanged — `needs:` below refers to them.
+  # The `name` says which embedder the image carries. It dates from when
+  # centroid-hmi-ivi.yml published a second image from the same job ids and the
+  # two checks were indistinguishable on a PR; that workflow is gone, but the
+  # name is still the useful one to read in the checks list.
   docker-build:
     name: Docker Image (flutter-elinux)
     needs: elinux-build
@@ -242,6 +261,24 @@ jobs:
       - name: Setup elinux platform
         working-directory: centroid-hmi
         run: flutter-elinux create --platforms=elinux .
+
+      # libcef.so records ALSA and NSS/NSPR in its DT_NEEDED, so the link fails
+      # without them even though nothing of ours calls either:
+      #
+      #   libcef.so: undefined reference to `snd_pcm_readi@ALSA_0.9'
+      #   libcef.so: undefined reference to `PK11_GetAllTokens@NSS_3.2'
+      #
+      # These are the same three the runtime image installs (docker/frontend),
+      # here because tfc-toolchain does not carry them. libasound2t64, not
+      # libasound2 — trixie's t64 transition renamed it and the old name does
+      # not resolve at all. Lives in the workflow rather than the toolchain
+      # image so this PR is self-contained; folding it into tfc-toolchain and
+      # dropping this step is the tidier follow-up.
+      - name: Install CEF link dependencies
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libnss3 libnspr4 libasound2t64
 
       - name: Get Flutter Packages
         uses: ./.github/actions/pub-get
@@ -367,6 +404,24 @@ jobs:
       - name: Setup elinux platform
         working-directory: centroid-hmi
         run: flutter-elinux create --platforms=elinux .
+
+      # libcef.so records ALSA and NSS/NSPR in its DT_NEEDED, so the link fails
+      # without them even though nothing of ours calls either:
+      #
+      #   libcef.so: undefined reference to `snd_pcm_readi@ALSA_0.9'
+      #   libcef.so: undefined reference to `PK11_GetAllTokens@NSS_3.2'
+      #
+      # These are the same three the runtime image installs (docker/frontend),
+      # here because tfc-toolchain does not carry them. libasound2t64, not
+      # libasound2 — trixie's t64 transition renamed it and the old name does
+      # not resolve at all. Lives in the workflow rather than the toolchain
+      # image so this PR is self-contained; folding it into tfc-toolchain and
+      # dropping this step is the tidier follow-up.
+      - name: Install CEF link dependencies
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libnss3 libnspr4 libasound2t64
 
       - name: Get Flutter Packages
         uses: ./.github/actions/pub-get

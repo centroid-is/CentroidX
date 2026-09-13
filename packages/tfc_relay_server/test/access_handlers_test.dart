@@ -169,8 +169,22 @@ final class _RecordingAdmin implements AccessAdminApi {
           {String? reason}) async =>
       writes.add('setUserStationAccount:$subject:$value');
   @override
+  // Null and the empty set are recorded differently on purpose: a fake that
+  // spelled both `pages=` would let an implementation collapse "no whitelist"
+  // into "block all" and still pass every arm below.
+  Future<void> setRolePages(String subject, Set<String>? pages,
+          {String? reason}) async =>
+      writes.add('setRolePages:$subject:${_pages(pages)}');
+  @override
+  Future<void> setUserPages(String subject, Set<String>? pages,
+          {String? reason}) async =>
+      writes.add('setUserPages:$subject:${_pages(pages)}');
+  @override
   Future<void> setUserPassword(SetUserPasswordParams params) async =>
       writes.add('setUserPassword:${params.subject}');
+
+  static String _pages(Set<String>? pages) =>
+      pages == null ? 'null' : '[${(pages.toList()..sort()).join(',')}]';
 }
 
 final class _RecordingAudit implements AuditApi {
@@ -294,6 +308,19 @@ const Map<String, Map<String, Object?>> _validParams = {
     'subject': 'ST999-panel',
     'value': true
   },
+  // A non-null list here on purpose. The null form — clearing a whitelist —
+  // is the other legal write, and `_pages` in the handler is what keeps the
+  // two apart; a table that only ever sent null would leave the list decode
+  // unexercised, and one that only ever sent a list would leave the clear.
+  // The clear is covered by the contract kit's own arms.
+  AccessMethods.adminSetRolePages: {
+    'subject': 'Wire Role',
+    'pages': ['/fillet']
+  },
+  AccessMethods.adminSetUserPages: {
+    'subject': 'ST999-panel',
+    'pages': ['/fillet']
+  },
   AccessMethods.adminSetUserPassword: {
     'subject': 'ST999-panel',
     'password': 'wire-probe-credential-000001',
@@ -389,11 +416,12 @@ void main() {
             'with no params row cannot have its post-hello half exercised, '
             'and a row naming nothing on the wire is a claim about surface '
             'that does not exist');
-    expect(AccessMethods.all, hasLength(28),
-        reason: 'twenty-eight is the count the audit cut settled on '
-            '(accessTemplates.template removed, no caller anywhere). A '
-            'twenty-ninth is an access-control decision, not a convenience — '
-            'grow this literal deliberately');
+    expect(AccessMethods.all, hasLength(30),
+        reason: 'twenty-eight was the count the audit cut settled on '
+            '(accessTemplates.template removed, no caller anywhere); thirty '
+            'since the page-visibility whitelist added setRolePages and '
+            'setUserPages. A thirty-first is an access-control decision, not '
+            'a convenience — grow this literal deliberately');
   });
 
   group('the handshake gate covers every access method', () {

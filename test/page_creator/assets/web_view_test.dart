@@ -23,6 +23,46 @@ class _FakeSurface implements WebViewSurface {
   Future<void> dispose() async => disposed = true;
 }
 
+/// A surface whose engine can be missing, i.e. the WebView2 shape.
+///
+/// Separate from [_FakeSurface] on purpose: the plain fake must keep *not*
+/// implementing [WebViewSurfaceAvailability], so the tests can prove the view
+/// asks only the surfaces that opt in.
+class _FakeAbsentableSurface
+    implements WebViewSurface, WebViewSurfaceAvailability {
+  _FakeAbsentableSurface({this.available = true, this.error});
+
+  final bool available;
+
+  /// When set, the probe fails with this instead of answering, the way CEF
+  /// reports a browser that never came up.
+  final Object? error;
+  final navigations = <Uri>[];
+  bool disposed = false;
+  int availabilityAsks = 0;
+
+  /// Held open so a test can answer the probe at a moment of its choosing.
+  final gate = Completer<bool>();
+  bool useGate = false;
+
+  @override
+  Widget build(BuildContext context) =>
+      const SizedBox.expand(key: ValueKey('fake-web'));
+
+  @override
+  Future<void> navigate(Uri uri) async => navigations.add(uri);
+
+  @override
+  Future<void> dispose() async => disposed = true;
+
+  @override
+  Future<bool> get isAvailable {
+    availabilityAsks++;
+    if (error != null) return Future<bool>.error(error!);
+    return useGate ? gate.future : Future<bool>.value(available);
+  }
+}
+
 WebViewAssetConfig _configured({
   String url = 'https://grafana.plant/d/abc/line-1',
   int reloadSeconds = 0,
@@ -73,6 +113,53 @@ void main() {
       expect(restored.interactive, isTrue);
       expect(restored.text, 'Line 1');
       expect(restored.coordinates.x, 0.25);
+    });
+
+    test('theme parameter fields survive a round trip', () {
+      final config = WebViewAssetConfig(
+        url: 'https://grafana.plant/public-dashboards/tok',
+        themeParam: 'theme',
+        themeDarkValue: 'midnight',
+        themeLightValue: 'day',
+      );
+
+      final json = config.toJson();
+      expect(json['themeParam'], 'theme');
+      expect(json['themeDarkValue'], 'midnight');
+      expect(json['themeLightValue'], 'day');
+
+      final restored = WebViewAssetConfig.fromJson(json);
+      expect(restored.themeParam, 'theme');
+      expect(restored.themeDarkValue, 'midnight');
+      expect(restored.themeLightValue, 'day');
+    });
+
+    test('a tile that never used the theme parameter saves no new keys', () {
+      // Existing pages must save byte-for-byte what they saved before: the
+      // fields are omitted while null rather than written as null.
+      final json = WebViewAssetConfig(url: 'https://plant/dash').toJson();
+      expect(json.containsKey('themeParam'), isFalse);
+      expect(json.containsKey('themeDarkValue'), isFalse);
+      expect(json.containsKey('themeLightValue'), isFalse);
+    });
+
+    test('JSON saved before the theme parameter existed still loads', () {
+      final restored = WebViewAssetConfig.fromJson({
+        'asset_name': 'WebViewAssetConfig',
+        'coordinates': {'x': 0.1, 'y': 0.2},
+        'size': {'width': 0.25, 'height': 0.2},
+        'url': 'https://plant/dash?from=now-6h',
+        'reloadSeconds': 60,
+        'interactive': false,
+      });
+
+      expect(restored.themeParam, isNull);
+      expect(restored.themeDarkValue, isNull);
+      expect(restored.themeLightValue, isNull);
+      expect(restored.effectiveUrl(Brightness.dark).toString(),
+          'https://plant/dash?from=now-6h',
+          reason: 'feature off: the configured URL is loaded as written');
+      expect(restored.toJson().containsKey('themeParam'), isFalse);
     });
 
     test('defaults are a blank, non-interactive, never-reloading tile', () {
@@ -126,28 +213,256 @@ void main() {
     });
   });
 
+  group('withQueryParameter', () {
+    test('appends to a URL with no query', () {
+      expect(
+        withQueryParameter(Uri.parse('https://g.plant/d/x'), 'theme', 'dark')
+            .toString(),
+        'https://g.plant/d/x?theme=dark',
+      );
+    });
+
+    test('replaces an existing parameter where it stands', () {
+      expect(
+        withQueryParameter(
+                Uri.parse('https://g.plant/d/x?orgId=1&theme=light&from=now-6h'),
+                'theme',
+                'dark')
+            .toString(),
+        'https://g.plant/d/x?orgId=1&theme=dark&from=now-6h',
+      );
+    });
+
+    test('collapses a repeated parameter to the one value', () {
+      expect(
+        withQueryParameter(
+                Uri.parse('https://g.plant/?theme=a&x=1&theme=b'), 'theme', 'dark')
+            .toString(),
+        'https://g.plant/?theme=dark&x=1',
+      );
+    });
+
+    test('keeps every other parameter verbatim, repeats and encoding included',
+        () {
+      // Grafana template variables repeat (var-host=a&var-host=b), and a
+      // round trip through queryParameters would merge them and re-encode
+      // %20 as +.
+      expect(
+        withQueryParameter(
+                Uri.parse(
+                    'https://g.plant/d/x?var-host=a&var-host=b&q=a%20b&flag'),
+                'theme',
+                'light')
+            .toString(),
+        'https://g.plant/d/x?var-host=a&var-host=b&q=a%20b&flag&theme=light',
+      );
+    });
+
+    test('keeps the fragment', () {
+      expect(
+        withQueryParameter(
+                Uri.parse('https://g.plant/d/x?orgId=1#viewPanel=4'), 'theme', 'dark')
+            .toString(),
+        'https://g.plant/d/x?orgId=1&theme=dark#viewPanel=4',
+      );
+      expect(
+        withQueryParameter(Uri.parse('https://g.plant/d/x#top'), 'theme', 'dark')
+            .toString(),
+        'https://g.plant/d/x?theme=dark#top',
+      );
+    });
+
+    test('matches an encoded parameter name', () {
+      expect(
+        withQueryParameter(
+                Uri.parse('https://g.plant/?ui%20theme=x&a=1'), 'ui theme', 'dark')
+            .toString(),
+        'https://g.plant/?ui+theme=dark&a=1',
+      );
+    });
+
+    test('encodes a value that needs it', () {
+      expect(
+        withQueryParameter(Uri.parse('https://g.plant/'), 'theme', 'a&b')
+            .queryParameters['theme'],
+        'a&b',
+      );
+    });
+  });
+
+  group('effectiveWebViewUrl', () {
+    const grafana = 'https://grafana.plant/public-dashboards/tok?orgId=1';
+
+    test('off when the parameter name is null, empty or blank', () {
+      for (final name in [null, '', '   ']) {
+        for (final b in Brightness.values) {
+          expect(
+            effectiveWebViewUrl(grafana, brightness: b, themeParam: name)
+                .toString(),
+            grafana,
+            reason: 'themeParam ${name == null ? 'null' : '"$name"'} is off',
+          );
+        }
+      }
+    });
+
+    test('sends dark and light by default', () {
+      expect(
+        effectiveWebViewUrl(grafana,
+                brightness: Brightness.dark, themeParam: 'theme')
+            .toString(),
+        '$grafana&theme=dark',
+      );
+      expect(
+        effectiveWebViewUrl(grafana,
+                brightness: Brightness.light, themeParam: 'theme')
+            .toString(),
+        '$grafana&theme=light',
+      );
+    });
+
+    test('sends the configured values when set', () {
+      Uri? at(Brightness b) => effectiveWebViewUrl(grafana,
+          brightness: b,
+          themeParam: 'mode',
+          darkValue: 'night',
+          lightValue: 'day');
+      expect(at(Brightness.dark)!.queryParameters['mode'], 'night');
+      expect(at(Brightness.light)!.queryParameters['mode'], 'day');
+    });
+
+    test('a blank value falls back to the default', () {
+      expect(
+        effectiveWebViewUrl(grafana,
+                brightness: Brightness.dark,
+                themeParam: 'theme',
+                darkValue: '  ')!
+            .queryParameters['theme'],
+        'dark',
+      );
+    });
+
+    test('replaces a theme already typed into the address', () {
+      expect(
+        effectiveWebViewUrl(
+          'https://grafana.plant/public-dashboards/tok?theme=light&orgId=1',
+          brightness: Brightness.dark,
+          themeParam: 'theme',
+        ).toString(),
+        'https://grafana.plant/public-dashboards/tok?theme=dark&orgId=1',
+      );
+    });
+
+    test('trims the parameter name', () {
+      expect(
+        effectiveWebViewUrl(grafana,
+                brightness: Brightness.dark, themeParam: ' theme ')
+            .toString(),
+        '$grafana&theme=dark',
+      );
+    });
+
+    test('an address that is not browsable stays null', () {
+      expect(
+        effectiveWebViewUrl('javascript:alert(1)',
+            brightness: Brightness.dark, themeParam: 'theme'),
+        isNull,
+      );
+      expect(
+        effectiveWebViewUrl('',
+            brightness: Brightness.dark, themeParam: 'theme'),
+        isNull,
+      );
+    });
+  });
+
   group('WebViewAvailability', () {
-    test('the three platforms webview_flutter implements', () {
+    test('the platforms with an OS-provided browser', () {
       for (final platform in [
         TargetPlatform.macOS,
         TargetPlatform.android,
         TargetPlatform.iOS,
+        TargetPlatform.windows,
+        TargetPlatform.linux,
       ]) {
         expect(WebViewAvailability.check(isWeb: false, platform: platform),
             isTrue,
-            reason: '$platform has a webview_flutter implementation');
+            reason: '$platform has a webview implementation');
       }
     });
 
-    test('the platforms we actually run on the plant floor do not', () {
+    test('a platform with no port at all does not', () {
+      expect(
+          WebViewAvailability.check(
+              isWeb: false, platform: TargetPlatform.fuchsia),
+          isFalse);
+    });
+
+    test('windows is the WebView2 platform, and nothing else is', () {
+      // Two different questions: `check` asks whether a webview exists at
+      // all, `usesWebView2` picks the engine and, with it, whether the engine
+      // can be missing from the machine.
+      expect(
+          WebViewAvailability.usesWebView2(
+              isWeb: false, platform: TargetPlatform.windows),
+          isTrue);
       for (final platform in [
+        TargetPlatform.macOS,
+        TargetPlatform.iOS,
+        TargetPlatform.android,
         TargetPlatform.linux,
+        TargetPlatform.fuchsia,
+      ]) {
+        expect(
+            WebViewAvailability.usesWebView2(isWeb: false, platform: platform),
+            isFalse,
+            reason: '$platform is not served by WebView2');
+      }
+      expect(
+          WebViewAvailability.usesWebView2(
+              isWeb: true, platform: TargetPlatform.windows),
+          isFalse,
+          reason: 'a browser tab is not WebView2');
+    });
+
+    test('linux is the CEF platform, and nothing else is', () {
+      // Covers the eLinux stations too: flutter-elinux reports
+      // TargetPlatform.linux, indistinguishable from the desktop build here,
+      // and deliberately so — packages/webview_cef carries a port for each and
+      // the plugin registrant picks at build time.
+      expect(
+          WebViewAvailability.usesCef(
+              isWeb: false, platform: TargetPlatform.linux),
+          isTrue);
+      for (final platform in [
+        TargetPlatform.macOS,
+        TargetPlatform.iOS,
+        TargetPlatform.android,
         TargetPlatform.windows,
         TargetPlatform.fuchsia,
       ]) {
-        expect(WebViewAvailability.check(isWeb: false, platform: platform),
+        expect(WebViewAvailability.usesCef(isWeb: false, platform: platform),
             isFalse,
-            reason: '$platform would need a bundled browser engine');
+            reason: '$platform has a browser it does not have to ship');
+      }
+      expect(
+          WebViewAvailability.usesCef(
+              isWeb: true, platform: TargetPlatform.linux),
+          isFalse,
+          reason: 'a browser tab is not CEF');
+    });
+
+    test('the three engines never claim the same platform', () {
+      // The factory checks WebView2 then CEF then falls through to
+      // webview_flutter, so an overlap would silently give one platform the
+      // wrong engine rather than fail.
+      for (final platform in TargetPlatform.values) {
+        final two = WebViewAvailability.usesWebView2(
+            isWeb: false, platform: platform);
+        final cef =
+            WebViewAvailability.usesCef(isWeb: false, platform: platform);
+        expect(two && cef, isFalse,
+            reason: '$platform is claimed by both WebView2 and CEF');
       }
     });
 
@@ -329,6 +644,167 @@ void main() {
     });
   });
 
+  group('following the HMI theme', () {
+    const base = 'https://grafana.plant/public-dashboards/tok?orgId=1';
+
+    Widget themed(WebViewAssetConfig config, Brightness brightness,
+            {Color? seed}) =>
+        MaterialApp(
+          theme: ThemeData(
+            brightness: brightness,
+            colorSchemeSeed: seed,
+          ),
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 240,
+              child: WebViewAssetView(config: config),
+            ),
+          ),
+        );
+
+    testWidgets('the loaded URL flips with the theme brightness',
+        (tester) async {
+      final surface = _FakeSurface();
+      var built = 0;
+      WebViewAssetView.debugSurfaceFactory = (_) {
+        built++;
+        return surface;
+      };
+      final config = WebViewAssetConfig(url: base, themeParam: 'theme');
+
+      await tester.pumpWidget(themed(config, Brightness.light));
+      await tester.pump();
+      expect(surface.navigations.map((u) => u.toString()),
+          ['$base&theme=light']);
+
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pumpAndSettle();
+      expect(surface.navigations.map((u) => u.toString()),
+          ['$base&theme=light', '$base&theme=dark']);
+
+      await tester.pumpWidget(themed(config, Brightness.light));
+      await tester.pumpAndSettle();
+      expect(surface.navigations.last.toString(), '$base&theme=light');
+      expect(surface.navigations, hasLength(3));
+
+      expect(built, 1,
+          reason: 'a theme flip re-navigates the browser, it does not '
+              'build a new one');
+      expect(surface.disposed, isFalse);
+    });
+
+    testWidgets('an unrelated rebuild does not reload', (tester) async {
+      final surface = _FakeSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+      final config = WebViewAssetConfig(url: base, themeParam: 'theme');
+
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pump();
+      expect(surface.navigations, hasLength(1));
+
+      // Same brightness, different theme: didChangeDependencies fires, the
+      // effective URL does not move.
+      await tester.pumpWidget(
+          themed(config, Brightness.dark, seed: const Color(0xFF00897B)));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pumpAndSettle();
+
+      expect(surface.navigations, hasLength(1));
+    });
+
+    testWidgets('a tile without a theme parameter ignores theme flips',
+        (tester) async {
+      final surface = _FakeSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+      final config = WebViewAssetConfig(url: base);
+
+      await tester.pumpWidget(themed(config, Brightness.light));
+      await tester.pump();
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pumpAndSettle();
+
+      expect(surface.navigations.map((u) => u.toString()), [base]);
+    });
+
+    testWidgets('a reload tick keeps the current theme', (tester) async {
+      final surface = _FakeSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+      final config = WebViewAssetConfig(
+          url: base, themeParam: 'theme', reloadSeconds: 30);
+
+      await tester.pumpWidget(themed(config, Brightness.light));
+      await tester.pump();
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 30));
+
+      expect(surface.navigations.last.toString(), '$base&theme=dark');
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets('setting the parameter in the editor re-navigates',
+        (tester) async {
+      final first = _FakeSurface();
+      final second = _FakeSurface();
+      var calls = 0;
+      WebViewAssetView.debugSurfaceFactory =
+          (_) => calls++ == 0 ? first : second;
+      final config = WebViewAssetConfig(url: base);
+
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pump();
+      config.themeParam = 'theme';
+      await tester.pumpWidget(themed(config, Brightness.dark));
+      await tester.pump();
+
+      expect(second.navigations.single.toString(), '$base&theme=dark');
+    });
+  });
+
+  group('config editor theme fields', () {
+    Future<void> pumpEditor(WidgetTester tester, WebViewAssetConfig config) async {
+      tester.view.physicalSize = const Size(420, 1200);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(builder: (context) => config.configure(context)),
+        ),
+      ));
+    }
+
+    testWidgets('value fields appear once a parameter name is typed',
+        (tester) async {
+      if (!kWebViewEnabled) return;
+      final config = WebViewAssetConfig(url: 'https://grafana.plant/d/x');
+      await pumpEditor(tester, config);
+
+      expect(find.text('Theme URL parameter'), findsOneWidget);
+      expect(find.text('Dark value'), findsNothing);
+
+      await tester.enterText(
+          find.byKey(const ValueKey('web-view-theme-param')), 'theme');
+      await tester.pump();
+      expect(config.themeParam, 'theme');
+      expect(find.text('Dark value'), findsOneWidget);
+      expect(find.text('Light value'), findsOneWidget);
+
+      await tester.enterText(
+          find.byKey(const ValueKey('web-view-theme-dark')), ' night ');
+      await tester.pump();
+      expect(config.themeDarkValue, 'night');
+
+      await tester.enterText(
+          find.byKey(const ValueKey('web-view-theme-param')), '  ');
+      await tester.pump();
+      expect(config.themeParam, isNull,
+          reason: 'clearing the name turns the feature back off');
+      expect(find.text('Dark value'), findsNothing);
+    });
+  });
+
   group('lifecycle', () {
     testWidgets('editing the URL re-navigates', (tester) async {
       final first = _FakeSurface();
@@ -404,6 +880,162 @@ void main() {
       expect(find.text('Web view is not available on this platform'),
           findsNothing);
       expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('WebView2 availability (Windows)', () {
+    // WKWebView is part of macOS and cannot be missing. WebView2 is a separate
+    // runtime, so a Windows tile has one state a macOS tile does not: the
+    // engine reporting that it is not installed, after the tile has started.
+
+    testWidgets('an engine that reports itself missing flips to the placeholder',
+        (tester) async {
+      final surface = _FakeAbsentableSurface(available: false);
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget,
+          reason: 'the browser is on screen until the probe answers');
+
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('fake-web')), findsNothing);
+      expect(find.text('Web view is not available on this platform'),
+          findsOneWidget);
+      expect(surface.disposed, isTrue,
+          reason: 'a browser that cannot render should not be left running');
+    });
+
+    testWidgets('an engine that is present is left alone', (tester) async {
+      final surface = _FakeAbsentableSurface(available: true);
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pumpAndSettle();
+
+      expect(surface.availabilityAsks, 1);
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
+      expect(find.text('Web view is not available on this platform'),
+          findsNothing);
+      expect(surface.disposed, isFalse);
+    });
+
+    testWidgets('a surface that cannot be absent is never asked',
+        (tester) async {
+      // _FakeSurface does not implement WebViewSurfaceAvailability. If the
+      // view asked every surface the separate interface would be pointless,
+      // and macOS would be paying for a Windows problem.
+      final surface = _FakeSurface();
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
+      expect(surface.navigations, hasLength(1));
+    });
+
+    testWidgets('a probe answering after dispose does not throw',
+        (tester) async {
+      final surface = _FakeAbsentableSurface()..useGate = true;
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+
+      surface.gate.complete(false);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a probe for a superseded surface does not blank the new one',
+        (tester) async {
+      // A URL edit restarts the browser. The old surface's probe can land
+      // afterwards, and must not report on a tile that has moved on.
+      final first = _FakeAbsentableSurface()..useGate = true;
+      final second = _FakeAbsentableSurface(available: true);
+      var built = 0;
+      WebViewAssetView.debugSurfaceFactory =
+          (_) => (built++ == 0) ? first : second;
+
+      final config = _configured();
+      await tester.pumpWidget(_host(config));
+      await tester.pump();
+
+      config.url = 'https://grafana.plant/d/abc/line-2';
+      await tester.pumpWidget(_host(config));
+      await tester.pumpAndSettle();
+      expect(built, 2);
+
+      first.gate.complete(false);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget,
+          reason: "the live surface must survive the dead one's answer");
+      expect(find.text('Web view is not available on this platform'),
+          findsNothing);
+    });
+  });
+
+  group('an engine that is installed but does not start (CEF)', () {
+    // Seen on a station 2026-09-11: CEF was in the image and `init` answered,
+    // then its platform layer failed and the browser never came up. Before
+    // this, the tile was a blank box with nothing on it to say why.
+    const reason =
+        'The web browser did not start. See the HMI log for the reason.';
+
+    testWidgets('the placeholder carries the reason the engine gave',
+        (tester) async {
+      final surface =
+          _FakeAbsentableSurface(error: const WebViewUnavailable(reason));
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('fake-web')), findsNothing);
+      expect(find.text(reason), findsOneWidget);
+      expect(find.text('Web view is not available on this platform'),
+          findsNothing,
+          reason: 'the engine is installed; "not available" would be untrue');
+      expect(surface.disposed, isTrue,
+          reason: 'a browser that never came up should not be left running');
+    });
+
+    testWidgets('any other probe failure leaves the tile alone',
+        (tester) async {
+      // A probe that could not answer is not proof the browser is missing.
+      final surface = _FakeAbsentableSurface(error: Exception('channel hiccup'));
+      WebViewAssetView.debugSurfaceFactory = (_) => surface;
+
+      await tester.pumpWidget(_host(_configured()));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
+      expect(surface.disposed, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('editing the URL afterwards clears the reason', (tester) async {
+      final dead =
+          _FakeAbsentableSurface(error: const WebViewUnavailable(reason));
+      final live = _FakeAbsentableSurface(available: true);
+      var built = 0;
+      WebViewAssetView.debugSurfaceFactory =
+          (_) => (built++ == 0) ? dead : live;
+
+      final config = _configured();
+      await tester.pumpWidget(_host(config));
+      await tester.pumpAndSettle();
+      expect(find.text(reason), findsOneWidget);
+
+      config.url = 'https://grafana.plant/d/abc/line-2';
+      await tester.pumpWidget(_host(config));
+      await tester.pumpAndSettle();
+
+      expect(find.text(reason), findsNothing);
+      expect(find.byKey(const ValueKey('fake-web')), findsOneWidget);
     });
   });
 }

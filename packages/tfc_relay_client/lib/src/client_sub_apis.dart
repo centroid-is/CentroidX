@@ -715,6 +715,23 @@ final class ClientAccessAdminApi implements AccessAdminApi {
           {'subject': subject, 'value': value, 'reason': reason});
 
   @override
+  // `pagesToJson(pages)` and not `pages?.toList()`: null must stay null on the
+  // wire (no whitelist) while the empty list must survive as an empty list
+  // (block all), and the shared codec is what keeps the two apart at every
+  // hop. Sorted there too, so a save that changes nothing does not read as a
+  // change in the audit row's old-to-new columns.
+  Future<void> setRolePages(String subject, Set<String>? pages,
+          {String? reason}) async =>
+      await _send(AccessMethods.adminSetRolePages,
+          {'subject': subject, 'pages': pagesToJson(pages), 'reason': reason});
+
+  @override
+  Future<void> setUserPages(String subject, Set<String>? pages,
+          {String? reason}) async =>
+      await _send(AccessMethods.adminSetUserPages,
+          {'subject': subject, 'pages': pagesToJson(pages), 'reason': reason});
+
+  @override
   Future<void> setUserPassword(SetUserPasswordParams params) async =>
       await _send(AccessMethods.adminSetUserPassword, params.toJson());
 }

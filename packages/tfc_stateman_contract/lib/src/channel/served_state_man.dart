@@ -450,6 +450,8 @@ final class ServedStateMan {
     _on(HarnessMethods.accessAdminDeleteUser, _admDeleteUser);
     _on(HarnessMethods.accessAdminSetUserRole, _admSetUserRole);
     _on(HarnessMethods.accessAdminSetUserStationAccount, _admSetStationAccount);
+    _on(HarnessMethods.accessAdminSetRolePages, _admSetRolePages);
+    _on(HarnessMethods.accessAdminSetUserPages, _admSetUserPages);
     _on(HarnessMethods.accessAdminSetUserPassword, _admSetUserPassword);
 
     _on(HarnessMethods.auditEntries, _audEntries);
@@ -628,6 +630,22 @@ final class ServedStateMan {
       _access(HarnessMethods.accessAdminSetUserStationAccount, () async {
         await api.accessAdmin.setUserStationAccount(
             params['subject'].asString, params['value'].asBool,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admSetRolePages(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminSetRolePages, () async {
+        await api.accessAdmin.setRolePages(
+            params['subject'].asString, pagesFromJson(params['pages'].valueOr(null)),
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admSetUserPages(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminSetUserPages, () async {
+        await api.accessAdmin.setUserPages(
+            params['subject'].asString, pagesFromJson(params['pages'].valueOr(null)),
             reason: params['reason'].valueOr(null) as String?);
         return null;
       });

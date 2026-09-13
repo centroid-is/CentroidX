@@ -38,10 +38,67 @@ GpuWatchdog::Action GpuWatchdog::OnStarted(unsigned long long now_ms) {
   return action;
 }
 
+void GpuWatchdog::SetJudgeable(bool judgeable, unsigned long long now_ms) {
+  if (judgeable) {
+    judgement_holding_ = false;
+    judgement_hold_since_ms_ = 0;
+    judgement_hold_expired_ = false;
+    return;
+  }
+  // Idempotent on purpose: re-holding must not restart the cap clock, or a
+  // caller that asks once per tick could hold the watchdog off forever.
+  if (judgement_holding_) {
+    return;
+  }
+  judgement_holding_ = true;
+  judgement_hold_since_ms_ = now_ms;
+  judgement_hold_expired_ = false;
+}
+
+bool GpuWatchdog::judgement_held(unsigned long long now_ms) const {
+  if (!judgement_holding_) {
+    return false;
+  }
+  if (config_.max_judgement_hold_ms == 0) {
+    return true;
+  }
+  const unsigned long long held =
+      now_ms > judgement_hold_since_ms_ ? now_ms - judgement_hold_since_ms_ : 0;
+  return held < config_.max_judgement_hold_ms;
+}
+
+bool GpuWatchdog::ConsumeJudgementHoldExpired() {
+  if (!judgement_hold_expired_) {
+    return false;
+  }
+  judgement_hold_expired_ = false;
+  // The hold is over for good: clear it so the next SetJudgeable(false) can
+  // open a fresh one rather than being swallowed as a no-op.
+  judgement_holding_ = false;
+  judgement_hold_since_ms_ = 0;
+  return true;
+}
+
 GpuWatchdog::Action GpuWatchdog::OnTick(unsigned long long now_ms) {
   Action action;
   if (disabled_) {
     return action;
+  }
+
+  if (judgement_held(now_ms)) {
+    // Keep probing -- a frame that does arrive is still the proof we want,
+    // and OnFramePresented releases the hold. Just do not count its absence
+    // against an engine that has not started, or that is already on its way
+    // out.
+    probe_outstanding_ = true;
+    action.start_probe = true;
+    return action;
+  }
+  if (judgement_holding_ && !judgement_hold_expired_) {
+    // The hold outlived its cap. Latched so the host reports it once, and
+    // then judgement resumes: a watchdog the watched code can silence
+    // indefinitely is not a watchdog.
+    judgement_hold_expired_ = true;
   }
 
   if (probe_outstanding_) {
@@ -164,6 +221,11 @@ GpuWatchdog::Action GpuWatchdog::OnFramePresented(unsigned long long now_ms) {
   missed_probes_ = 0;
   // A presented frame ends the episode, so the next loss reports again.
   reported_loss_ = false;
+  // ...and it is proof the engine is running, whatever the host believed. A
+  // hold exists because absence was unreadable; a frame is not absence.
+  judgement_holding_ = false;
+  judgement_hold_since_ms_ = 0;
+  judgement_hold_expired_ = false;
 
   if (recovery_attempts_ > 0) {
     // The engine we restarted is drawing again: drop the backoff.
