@@ -48,6 +48,10 @@ dependencies:
 dev_dependencies:
   # Same analyzer-recommended lint set as the other three relay packages.
   lints: ^4.0.0
+  # A virtual clock for the dial-timeout arms. A wall-clock test of a 10 s
+  # bound is slow, flakes on a loaded runner, and cannot express the arm that
+  # elapses PAST a deadline which must never fire.
+  fake_async: ^1.3.0
   # The suite runner. It stays on this side of the line for the reason in the
   # description above.
   test: ^1.25.0

@@ -495,6 +495,31 @@ jobs:
           exit 1
         fi
 
+    # The client's browser lane. `test/web/dial_web_test.dart` says its first
+    # job is to be compiled — it is what keeps `dart:io` out of the fifteen
+    # platform-free files and out of the dial — and until this step existed
+    # nothing in CI ever compiled it, so that job was being done only on
+    # whichever laptop last ran it by hand. It also carries the two arms that
+    # prove the browser dial is bounded at all.
+    - name: Test tfc_relay_client on dart2js
+      if: runner.os == 'Linux'
+      shell: bash
+      working-directory: packages/tfc_relay_client
+      run: |
+        dart test -p chrome test/web/ -r expanded --file-reporter "json:web-report.json"
+        [ -f web-report.json ] || { echo "::error::no web-report.json — the client chrome lane never produced a report"; exit 1; }
+        total=$( { grep -o '"type":"testStart"' web-report.json || true; } | wc -l)
+        loading=$( { grep -o '"name":"loading ' web-report.json || true; } | wc -l)
+        ran=$((total - loading))
+        echo "browser-tagged client tests reported: $ran"
+        # Same guard as the protocol lane below, and for the same reason: a
+        # selector that matches nothing exits 0, so a green step is not
+        # evidence that anything ran.
+        if [ "$ran" -lt 5 ]; then
+          echo "::error::the client chrome lane ran only $ran tests, expected at least 5 — the browser lane is not selecting what it used to"
+          exit 1
+        fi
+
     - name: Test tfc_stateman_contract
       working-directory: packages/tfc_stateman_contract
       run: |

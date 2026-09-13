@@ -89,6 +89,49 @@ void main() {
           contains('browser cannot use one'));
     });
 
+    test('a dial that opens a socket is still bounded by the deadline',
+        () async {
+      // The plumbing witness, not the proof — `test/dial_timeout_test.dart`
+      // holds that, on a fake channel under a virtual clock, because a
+      // load-bearing assertion should not depend on a real network.
+      //
+      // What only this lane can show is that the two ignored fields are wired:
+      // a browser really does reach `awaitReady` with a deadline, and the
+      // deadline really does end the attempt. TEST-NET-1 (RFC 5737) is
+      // reserved for documentation and black-holed nearly everywhere, so the
+      // socket hangs; 1 ms beats any real network anyway, so this is fast even
+      // where it does not.
+      //
+      // The message is asserted and not merely the type: on a network that
+      // answers with an immediate ICMP refusal this would still be a
+      // `ConnectFailed`, and an arm that accepted that would pass without ever
+      // exercising the timeout.
+      final attempt = await PinnedDialer(null).dial(
+        Uri.parse('wss://192.0.2.1:9443'),
+        connectTimeout: const Duration(milliseconds: 1),
+      );
+      expect(attempt, isA<ConnectFailed>());
+      expect('${(attempt as ConnectFailed).error}',
+          contains('did not complete within'),
+          reason: 'the browser gives Dart no connect timeout, so this can only '
+              'be the one awaitReady applies — and before it did, this dial '
+              'sat on the OS TCP timeout while the supervisor backed off '
+              'against nothing');
+    });
+
+    test('the constructor bound applies when the dial names none', () async {
+      // The other half of the same defect. `connectionTimeout` was accepted
+      // and dropped exactly as `connectTimeout` was, so fixing only the dial
+      // parameter would have left the field that *reads* as honoured still
+      // doing nothing — which is the fault this file's header argues against
+      // one field over, at the trust root.
+      final dialler =
+          PinnedDialer(null, connectionTimeout: const Duration(milliseconds: 1));
+      final attempt = await dialler.dial(Uri.parse('wss://192.0.2.1:9443'));
+      expect('${(attempt as ConnectFailed).error}',
+          contains('did not complete within'));
+    });
+
     test('a refused dial never claims the certificate was untrusted',
         () async {
       // A browser cannot tell a refused certificate from an absent gateway:

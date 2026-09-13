@@ -184,12 +184,70 @@ final class ConnectFailed extends ConnectAttempt {
 /// `backoff.dart`'s and the loop is the supervisor's, because a transport that
 /// retried on its own would be a second, invisible policy sitting under the
 /// one the operator can see.
+///
+/// ## [timeout], and why only one platform passes it
+///
+/// It bounds the dial itself, which is **the one thing the supervisor's
+/// schedule cannot bound**: a connect to an address that answers nothing takes
+/// 75 s to fail (06-RESEARCH C.4), so a single attempt can otherwise outlive
+/// the whole backoff ceiling of 30 s. That sentence used to live on the old
+/// `connect()` this function replaced; it went missing in the web split, and
+/// the web arm then walked straight into the condition it described.
+///
+/// **The io arm must not pass it, and does not.** `pinned_dialer_io.dart`
+/// bounds its connect twice already — `HttpClient.connectionTimeout`, which
+/// *cancels*, and `IOWebSocketChannel.connect(connectTimeout:)`, which
+/// abandons — so a third bound here would only race those two. Null is
+/// therefore not "no policy": it is "this platform has its own, closer to the
+/// socket". The io tests (`tls_client_test`, `tls_fault_test`,
+/// `ws_transport_test`) are untouched by this parameter and are the guard that
+/// it stays that way.
+///
+/// The web arm passes it because a browser gives Dart no hook at all: the
+/// WebSocket API has no connect timeout, and the only cancellation available
+/// is closing the socket, which is what expiry does here.
 Future<ConnectAttempt> awaitReady(
   WebSocketChannel ws, {
   required bool Function(Object error) certificateUntrusted,
+  Duration? timeout,
 }) async {
   try {
-    await ws.ready;
+    // `Future.timeout`, deliberately, and not a `Future.any` race. `timeout`
+    // consumes a late completion of the source — the error included — so the
+    // abandoned `ws.ready` can never surface as an unhandled rejection on the
+    // isolate's ambient handler. A `Future.any` leaves that copy live, which
+    // is the same fault the catch arm below spends two lines defusing.
+    await (timeout == null
+        ? ws.ready
+        // `onTimeout` rather than the default, whose message is
+        // "TimeoutException after 0:00:10.000000: Future not completed" — a
+        // type name and a duration, which is what the supervisor would then
+        // put on the operator's health line. This one names the thing that
+        // did not happen.
+        : ws.ready.timeout(timeout,
+            onTimeout: () => throw TimeoutException(
+                'the dial did not complete within '
+                '${timeout.inMilliseconds} ms',
+                timeout)));
+  } on TimeoutException catch (error, stack) {
+    // Guards first, close second. The socket may still be connecting, and it
+    // will error both `ws.ready` (already consumed, above) and the stream when
+    // it gives up; the stream copy needs a home before anything can emit it.
+    ws.stream.listen(null, onError: (Object _) {}, cancelOnError: true);
+    unawaited(ws.sink.done.catchError((Object _) => null));
+    // **This close is the cancellation, and it is unconditional on purpose.**
+    // Closing during CONNECTING fails the connection attempt, which is the
+    // whole point — a timeout that left the socket opening would be a leak and,
+    // worse, a socket that connects later with nobody holding it. If the timer
+    // won against a peer that answered in the same instant, this is an ordinary
+    // clean close of an OPEN socket. Either way the loser of that race is
+    // closed rather than orphaned, and `close()` is legal in every readyState.
+    //
+    // No close code. Nothing was established, so no close frame reaches any
+    // wire and a code would be inert — and a null code already means "there was
+    // never a connection" to [ConnectFailed.closeCode]'s readers.
+    unawaited(ws.sink.close());
+    return ConnectFailed(ws, error, stack, certificateUntrusted: false);
   } catch (error, stack) {
     // The same exception is queued on the stream as well. Nothing will ever
     // read it, and an unread error on a socket stream is exactly the fault
