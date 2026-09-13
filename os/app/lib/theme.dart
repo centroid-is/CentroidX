@@ -12,6 +12,19 @@ const double fieldGap = 20;
 /// never end up behind the keyboard.
 const double keyboardReserve = 220;
 
+/// How far an `OutlineInputBorder`'s floating label sticks out above the
+/// field's own layout box.
+///
+/// Material draws the floated label straddling the top border line, so roughly
+/// half of it is painted above the `InputDecorator`'s top edge — measured at
+/// 5.75px for the 18px [InputDecorationTheme.labelStyle] this app uses. That
+/// is fine anywhere except as the first child of a scroll view, which clips at
+/// exactly that edge: "Station name" lost its top half the moment it floated,
+/// which is what an operator reported from a panel. Reserved rather than
+/// worked around per field, because it applies to whichever field happens to
+/// be first on a step.
+const double labelOverhang = 8;
+
 /// Solarized, lifted from the HMI's own `lib/theme.dart` rather than
 /// approximated, so the installer and the thing it installs look like one
 /// product. The HMI defaults to this scheme (`providers/theme.dart` falls back

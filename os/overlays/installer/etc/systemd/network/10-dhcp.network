@@ -1,0 +1,22 @@
+# Any wired interface, DHCP, no questions asked.
+#
+# The installer does not configure networking on the target -- the station's own
+# image runs NetworkManager for that. This exists so the INSTALLER itself has an
+# address: a panel is usually plugged into the plant LAN with a DHCP server on
+# it, and the lease it gets is shown on the installer's first screen. Without
+# this the USB had no network stack running at all.
+#
+# systemd-networkd rather than a DHCP client package: it ships inside systemd,
+# so it adds nothing to a 4GB image that is already mostly holes.
+[Match]
+Name=en* eth*
+
+[Network]
+DHCP=yes
+# A station being installed has no name to register and no business claiming
+# one; the address is all that is wanted here.
+LinkLocalAddressing=ipv4
+
+[DHCPv4]
+UseHostname=false
+SendHostname=false
