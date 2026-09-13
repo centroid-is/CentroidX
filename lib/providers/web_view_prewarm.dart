@@ -17,7 +17,7 @@ library;
 
 import 'dart:async';
 
-import 'package:flutter/material.dart' show Brightness, ThemeMode;
+import 'package:flutter/material.dart' show Brightness, Size, ThemeMode;
 import 'package:flutter/scheduler.dart';
 import 'package:riverpod/riverpod.dart';
 
@@ -90,11 +90,27 @@ final webViewPrewarmProvider = Provider<int>((ref) {
     }
     await Future<void>.delayed(kWebViewPrewarmDelay);
     if (disposed) return;
+    final window = windowViewport();
     started = WebViewSurfacePool.instance.prewarm(
       webViewTilesIn(pageManager.pages),
       brightness: brightnessFor(mode),
+      viewport: window?.$1,
+      devicePixelRatio: window?.$2 ?? 1.0,
     );
     ref.state = started;
   }();
   return started;
 });
+
+/// The main window's logical size and device pixel ratio, or null when there
+/// is no window yet. A pre-started browser is laid out for this, so it has
+/// loaded every panel a tile could show before the tile exists; see
+/// [WebViewSurfacePresizing].
+(Size, double)? windowViewport() {
+  final views = SchedulerBinding.instance.platformDispatcher.views;
+  if (views.isEmpty) return null;
+  final view = views.first;
+  final ratio = view.devicePixelRatio;
+  if (ratio <= 0 || view.physicalSize.isEmpty) return null;
+  return (view.physicalSize / ratio, ratio);
+}

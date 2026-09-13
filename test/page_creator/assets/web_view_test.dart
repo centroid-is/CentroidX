@@ -1244,6 +1244,41 @@ void main() {
         expect(pool.size, 0);
       });
 
+      test('a surface that can be sized ahead gets the window, before it loads',
+          () {
+        // CEF's default view is 1 x 1 until a widget sizes it, and Grafana
+        // lazy-loads panels outside the viewport: unsized, a pre-started
+        // dashboard did all of that on first show (0.8 s of a 1.2 s visit).
+        final surface = _FakePresizingSurface();
+        WebViewAssetView.debugSurfaceFactory = (_) => surface;
+        final pool = WebViewSurfacePool(capacity: 3);
+
+        pool.prewarm([_configured()],
+            brightness: Brightness.light,
+            viewport: const Size(1920, 1080),
+            devicePixelRatio: 1.5);
+
+        expect(surface.presized, const Size(1920, 1080));
+        expect(surface.presizedRatio, 1.5);
+        expect(surface.presizedBeforeNavigate, isTrue);
+      });
+
+      test('no window means no size; a plain surface is never asked', () {
+        final plain = _FakeSurface();
+        final sizing = _FakePresizingSurface();
+        var n = 0;
+        WebViewAssetView.debugSurfaceFactory = (_) => n++ == 0 ? plain : sizing;
+        final pool = WebViewSurfacePool(capacity: 3);
+
+        pool.prewarm([
+          _configured(url: 'https://grafana.plant/d/abc/line-1'),
+          _configured(url: 'https://grafana.plant/d/abc/line-2'),
+        ], brightness: Brightness.light);
+
+        expect(pool.size, 2);
+        expect(sizing.presized, isNull);
+      });
+
       test('WebView2 is left cold: its view needs a widget to exist', () {
         debugDefaultTargetPlatformOverride = TargetPlatform.windows;
         var built = 0;
@@ -1522,6 +1557,27 @@ class _FailingSurface implements WebViewSurface {
   Future<void> navigate(Uri uri) async => throw Exception('unreachable');
   @override
   Future<void> dispose() async {}
+}
+
+/// Can be laid out before it is shown, the CEF shape.
+class _FakePresizingSurface implements WebViewSurface, WebViewSurfacePresizing {
+  Size? presized;
+  double? presizedRatio;
+  bool presizedBeforeNavigate = false;
+  final navigations = <Uri>[];
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.expand();
+  @override
+  Future<void> navigate(Uri uri) async => navigations.add(uri);
+  @override
+  Future<void> dispose() async {}
+  @override
+  void presize(Size size, double devicePixelRatio) {
+    presized = size;
+    presizedRatio = devicePixelRatio;
+    presizedBeforeNavigate = navigations.isEmpty;
+  }
 }
 
 /// Cannot even be torn down, the way a plugin with a dead native side fails.

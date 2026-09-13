@@ -507,6 +507,23 @@ abstract class WebViewSurfaceLoading {
   ValueListenable<WebViewLoad> get load;
 }
 
+/// Implemented *in addition to* [WebViewSurface] by a surface whose engine
+/// can be given a size before any widget shows it. Same opt-in shape as
+/// [WebViewSurfaceAvailability], for the same reason.
+///
+/// A browser started ahead of its tile (see [WebViewSurfacePool.prewarm])
+/// otherwise lays its page out at whatever default the engine has, and a
+/// dashboard that lazy-loads panels outside its viewport does that loading on
+/// first show — measured at 0.8 s of a 1.2 s first visit on a station. Sized
+/// to the window, it has loaded every panel the tile could show, and the
+/// tile's own size on take-back is at most a shrink.
+abstract class WebViewSurfacePresizing {
+  /// Lays the page out for [size] logical pixels at [devicePixelRatio].
+  /// Effective only before the surface's widget mounts; the widget's own
+  /// size wins from then on.
+  void presize(Size size, double devicePixelRatio);
+}
+
 /// How long a page may stay covered while it is still loading.
 ///
 /// Heavy dashboards — Grafana is the one on the plant — paint long before the
@@ -593,9 +610,15 @@ class WebViewSurfacePool {
   ///
   /// WebView2 needs its widget in the tree before the native view exists,
   /// so on Windows this starts nothing; the first visit there stays cold.
+  ///
+  /// [viewport] is the window's logical size, handed to every surface that
+  /// can be sized before it is shown (see [WebViewSurfacePresizing]); null
+  /// leaves each engine at its default.
   int prewarm(
     Iterable<WebViewAssetConfig> configs, {
     required Brightness brightness,
+    Size? viewport,
+    double devicePixelRatio = 1.0,
   }) {
     if (WebViewAvailability.usesWebView2()) return 0;
     final factory = WebViewAssetView.debugSurfaceFactory ?? _defaultFactory;
@@ -610,6 +633,9 @@ class WebViewSurfacePool {
       final surface = factory(config);
       // No browser on this platform: none of the rest will fare better.
       if (surface == null) break;
+      if (viewport != null && surface is WebViewSurfacePresizing) {
+        (surface as WebViewSurfacePresizing).presize(viewport, devicePixelRatio);
+      }
       park(url, surface);
       started++;
       unawaited(surface.navigate(uri).then((_) {}, onError: (Object _) {
@@ -1376,7 +1402,11 @@ class _WebView2Surface
 /// And a third, which looks nothing like the other two: CEF present and
 /// initialised, but its browser never coming up. See [startTimeout].
 class _CefSurface
-    implements WebViewSurface, WebViewSurfaceAvailability, WebViewSurfaceLoading {
+    implements
+        WebViewSurface,
+        WebViewSurfaceAvailability,
+        WebViewSurfaceLoading,
+        WebViewSurfacePresizing {
   _CefSurface(WebViewAssetConfig config) {
     // Nobody may be listening when a failed `create` lands (a tile that
     // already gave up via [_browserFailed]); that must not surface as an
@@ -1478,6 +1508,22 @@ class _CefSurface
       if (!_created.isCompleted) _created.completeError(e);
       rethrow;
     }
+    // After `initialize`: the browser id the size is sent for exists only
+    // then. The page is already loading at the default size; CEF re-lays it
+    // out on the resize, well before the widget would have asked.
+    final presized = _presized;
+    if (presized != null && !_disposed) {
+      await _controller.resize(presized.$2, presized.$1);
+    }
+  }
+
+  /// Size and device pixel ratio to lay the page out for before any widget
+  /// shows it; see [WebViewSurfacePresizing].
+  (Size, double)? _presized;
+
+  @override
+  void presize(Size size, double devicePixelRatio) {
+    _presized = (size, devicePixelRatio);
   }
 
   @override

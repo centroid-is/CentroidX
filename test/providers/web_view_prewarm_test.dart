@@ -19,14 +19,17 @@ import 'package:tfc/providers/theme.dart';
 import 'package:tfc/providers/web_view_prewarm.dart';
 import '../helpers/page_editor_harness.dart' show FakeEditorPreferences;
 
-class _FakeSurface implements WebViewSurface {
+class _FakeSurface implements WebViewSurface, WebViewSurfacePresizing {
   final navigations = <Uri>[];
+  Size? presized;
   @override
   Widget build(BuildContext context) => const SizedBox.expand();
   @override
   Future<void> navigate(Uri uri) async => navigations.add(uri);
   @override
   Future<void> dispose() async {}
+  @override
+  void presize(Size size, double devicePixelRatio) => presized = size;
 }
 
 AssetPage _page(String path, List<Asset> assets) => AssetPage(
@@ -121,6 +124,9 @@ void main() {
           'https://grafana.plant/d/abc/line-1?theme=dark');
       expect(WebViewSurfacePool.instance.urls,
           ['https://grafana.plant/d/abc/line-1?theme=dark']);
+      // The test binding's window is 800 x 600 logical; the browser is laid
+      // out for it before the tile exists.
+      expect(surfaces.single.presized, const Size(800, 600));
       // The widget binding checks foundation debug variables before tearDown
       // runs, so a widget test resets this itself.
       debugDefaultTargetPlatformOverride = null;
