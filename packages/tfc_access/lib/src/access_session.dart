@@ -10,6 +10,7 @@ import 'role_set.dart';
 
 const _setEquality = SetEquality<AccessGroup>();
 const _pageEquality = SetEquality<String>();
+const _roleNameEquality = ListEquality<String>();
 
 /// Who is standing at this panel, and what they may do.
 ///
@@ -28,40 +29,39 @@ class AccessSession {
     this.expiresAt,
     this.allowedPages,
     this.inactivityTimeout,
+    this.anonymousRoleNames = const <String>[kOperatorRoleName],
   });
 
   /// A session with no user signed in.
   ///
-  /// Anonymous **is** the role named [kOperatorRoleName] — by construction, not
-  /// through a configurable pointer. Full stop: there is no setting that makes
-  /// anonymous resolve to something else, which is what keeps "anonymous is
-  /// operator" true without anyone maintaining it.
-  ///
-  /// [operatorGroups] is passed in rather than hardcoded because those groups
-  /// are customer data. The `Operator` row is editable, and editing it changes
-  /// what an *unauthenticated* panel may do: ticking `setpoints` on Operator
-  /// silently grants it to every panel on the floor with nobody signed in. That
-  /// is the one footgun this simplification creates, and the Phase 6 roles
-  /// screen has to say so at the point of edit. Read the groups from the
-  /// database at the moment you build the session, so an edit takes effect
-  /// without a restart.
+  /// What it may do is the reserved anonymous account's — see
+  /// `anonymous_account.dart`. [groups], [allowedPages] and [roleNames] are
+  /// passed in rather than hardcoded because they are customer data, composed
+  /// from that account's roles and its personal whitelist at the moment the
+  /// session is built, so an edit to the account takes effect without a
+  /// restart.
   ///
   /// [expiresAt] is deliberately absent: anonymous is the state a session times
   /// out *into*, so it never expires itself.
-  /// [operatorAllowedPages] is the `Operator` row's page whitelist, resolved
-  /// at the same moment and from the same row as [operatorGroups] — anonymous
-  /// has no `app_user` row, so there is no personal override to compose and
-  /// the role's whitelist *is* the session's. Optional and defaulting to null
-  /// (every page) so that a caller which has not been taught about the
-  /// whitelist behaves exactly as it did before it existed.
+  ///
+  /// [allowedPages] defaults to null (every page) and [roleNames] to the seeded
+  /// role, so a caller which has not been taught about either behaves exactly
+  /// as it did before they existed.
   factory AccessSession.anonymous(
-    Set<AccessGroup> operatorGroups, {
-    Set<String>? operatorAllowedPages,
+    Set<AccessGroup> groups, {
+    Set<String>? allowedPages,
+    List<String> roleNames = const <String>[kOperatorRoleName],
   }) =>
       AccessSession(
-        groups: operatorGroups,
-        allowedPages: operatorAllowedPages,
+        groups: groups,
+        allowedPages: allowedPages,
+        anonymousRoleNames: roleNames,
       );
+
+  /// The roles the anonymous account holds, primary first. Read only while
+  /// nobody is signed in; a signed-in session answers [roleNames] from its
+  /// [user].
+  final List<String> anonymousRoleNames;
 
   /// The signed-in user, or null when nobody is — see [AccessSession.anonymous].
   final AuthenticatedUser? user;
@@ -131,21 +131,26 @@ class AccessSession {
   /// True when somebody is signed in. The app bar shows who, and offers logout.
   bool get isElevated => user != null;
 
-  /// The **primary** role this session answers as — the user's, or
-  /// [kOperatorRoleName] when nobody is signed in.
+  /// The **primary** role this session answers as — the user's, or the
+  /// anonymous account's when nobody is signed in.
   ///
   /// Identity, not authority. An account can hold several roles and this is
   /// only the first of them; [groups] is already the union and is what decides
   /// anything. Ask [roleNames] when the question is which roles, and
   /// [roleLabel] when the answer is going on a screen or into a trail row.
-  String get roleName => user?.roleName ?? kOperatorRoleName;
+  String get roleName => user?.roleName ?? roleNames.first;
 
   /// Every role this session holds, primary first.
   ///
-  /// `[kOperatorRoleName]` for anonymous, by construction rather than through a
-  /// configurable pointer — see [AccessSession.anonymous].
+  /// The anonymous account's roles when nobody is signed in — see
+  /// [AccessSession.anonymous]. Never empty: a caller that built an anonymous
+  /// session with no role names gets the seeded one, so [roleName] and
+  /// [roleLabel] always have something to say.
   List<String> get roleNames =>
-      user?.roleNames ?? const <String>[kOperatorRoleName];
+      user?.roleNames ??
+      (anonymousRoleNames.isEmpty
+          ? const <String>[kOperatorRoleName]
+          : anonymousRoleNames);
 
   /// What a badge shows and what the audit row's `role` column records: one
   /// name for one role, `A + B` for several. See [roleLabelFor].
@@ -241,6 +246,8 @@ class AccessSession {
           other.user == user &&
           other.expiresAt == expiresAt &&
           other.inactivityTimeout == inactivityTimeout &&
+          _roleNameEquality.equals(
+              other.anonymousRoleNames, anonymousRoleNames) &&
           _setEquality.equals(other.groups, groups) &&
           _samePages(other.allowedPages, allowedPages);
 
@@ -256,6 +263,7 @@ class AccessSession {
         user,
         expiresAt,
         inactivityTimeout,
+        _roleNameEquality.hash(anonymousRoleNames),
         _setEquality.hash(groups),
         allowedPages == null ? null : _pageEquality.hash(allowedPages!),
       );

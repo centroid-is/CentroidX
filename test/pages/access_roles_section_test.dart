@@ -9,9 +9,8 @@
 ///    "the store errored", "this station has no database" and "the list came
 ///    back empty" are four different sentences and only one of them is ever
 ///    true,
-///  * the `Operator` row carries neither a Rename nor a Delete affordance, and
-///    the predicate deciding that is `isProtectedRoleName` rather than a string
-///    comparison, so a row stored as `operator` is protected too,
+///  * every role, `Operator` included, carries Rename and Delete, and a role the
+///    anonymous account holds says so in its editor,
 ///  * a session without `users` sees every control, may press every one of
 ///    them, and reaches the shared `AccessDeniedPrompt` — nothing is greyed,
 ///  * a duplicate name is refused inside the dialog, before the store is asked,
@@ -459,9 +458,9 @@ void main() {
         expect(find.text(role.name), findsOneWidget);
       }
       expect(
-        find.text(kAccessRoleSummary({AccessGroup.operate}, 0)),
+        find.text(kAccessRoleSummary({AccessGroup.operate}, 1)),
         findsOneWidget,
-        reason: 'the Operator row: one group, nobody holds it',
+        reason: 'the Operator row: one group, held by the anonymous account',
       );
       expect(
         find.textContaining(AccessGroup.force.label),
@@ -492,46 +491,32 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
-  // Operator: protected in the UI as well as in the repository
+  // Every role is ordinary: a logged-out panel is an account, not a role
   // -------------------------------------------------------------------------
 
-  group('Operator', () {
-    testWidgets('the Operator row offers no Rename and no Delete at all',
+  group('every role is ordinary', () {
+    testWidgets('Operator offers Rename and Delete like every other role',
         (tester) async {
       await pumpSection(tester, overrides());
 
-      expect(find.byKey(kAccessRoleRenameKey(kOperatorRoleName)), findsNothing,
-          reason: 'absent, not disabled: an unauthenticated panel resolves to '
-              'this row and no session can change that, so a control that is '
-              'present and always refuses would teach a second press');
-      expect(find.byKey(kAccessRoleDeleteKey(kOperatorRoleName)), findsNothing);
-
-      // By count rather than by looking for a disabled one: the other three
-      // seeded roles have both controls, so the totals pin that exactly one
-      // row is missing them.
-      expect(find.byType(IconButton),
-          findsNWidgets((kSeedRoles.length - 1) * 2));
+      expect(
+          find.byKey(kAccessRoleRenameKey(kOperatorRoleName)), findsOneWidget);
+      expect(
+          find.byKey(kAccessRoleDeleteKey(kOperatorRoleName)), findsOneWidget);
+      expect(find.byType(IconButton), findsNWidgets(kSeedRoles.length * 2));
     });
 
-    testWidgets("a row stored as ' operator ' is protected too — the UI uses "
-        'isProtectedRoleName, not a string comparison', (tester) async {
-      // Inserted through drift rather than through the repository, because
-      // `upsertRole` trims: the whitespace variant is only reachable as stored
-      // data written by something older or by hand. The predicate is
-      // whitespace-tolerant and case-insensitive precisely for this row.
-      await db.into(db.appRole).insert(
-            AppRoleCompanion.insert(name: ' operator ', groups: '["operate"]'),
-          );
-
+    testWidgets('deleting a role the anonymous account holds is blocked, '
+        'naming the account', (tester) async {
       await pumpSection(tester, overrides());
 
-      expect(find.byKey(kAccessRoleTileKey(' operator ')), findsOneWidget);
-      expect(find.byKey(kAccessRoleRenameKey(' operator ')), findsNothing);
-      expect(find.byKey(kAccessRoleDeleteKey(' operator ')), findsNothing);
-      expect(find.byType(IconButton),
-          findsNWidgets((kSeedRoles.length - 1) * 2),
-          reason: 'the extra row added no controls: five rows, three of them '
-              'renameable and deletable');
+      await tester.tap(find.byKey(kAccessRoleDeleteKey(kOperatorRoleName)));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessRoleDeleteConfirmKey), findsNothing);
+      expect(find.text(kAnonymousUsername), findsWidgets,
+          reason: 'every logged-out panel depends on this role, and the '
+              'refusal says which account to move off it');
     });
   });
 
@@ -590,23 +575,6 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text(kAccessRoleInvalidNameNote), findsOneWidget);
-      expect(store!.calls.where((c) => c.startsWith('createRole')), isEmpty);
-    });
-
-    testWidgets('a name that is a capitalisation of Operator is refused '
-        'inside the dialog', (tester) async {
-      await pumpSection(tester, overrides());
-      store!.calls.clear();
-
-      await tester.tap(find.byKey(kAccessRolesCreateKey));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byKey(kAccessRoleNameFieldKey), 'operator');
-      await tester.tap(find.byKey(kAccessRoleNameConfirmKey));
-      await tester.pumpAndSettle();
-
-      expect(find.text(kAccessRoleProtectedNameNote), findsOneWidget,
-          reason: 'a second row the UI would render with no controls, and '
-              'which nothing could then delete, is worse than a refusal here');
       expect(store!.calls.where((c) => c.startsWith('createRole')), isEmpty);
     });
 
@@ -759,123 +727,57 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
-  // Warning one of two: the persistent inline banner
+  // The banner on a role a logged-out panel holds
   // -------------------------------------------------------------------------
 
-  group('the Operator banner', () {
-    testWidgets('is rendered the whole time the protected row is open',
+  group('the held-by-anonymous banner', () {
+    testWidgets('is rendered the whole time a role the account holds is open',
         (tester) async {
       await pumpSection(tester, overrides());
 
-      expect(find.byKey(kAccessOperatorWarningKey), findsNothing,
+      expect(find.byKey(kAccessRoleHeldByAnonymousKey), findsNothing,
           reason: 'nothing is open yet');
 
       await openEditor(tester, kOperatorRoleName);
-      expect(find.byKey(kAccessOperatorWarningKey), findsOneWidget);
-      expect(find.text(kAccessOperatorBannerNote), findsOneWidget,
-          reason: 'access_repository.dart:90-96 asks for the warning "at the '
-              'point of edit, not in a help page"');
+      expect(find.byKey(kAccessRoleHeldByAnonymousKey), findsOneWidget);
+      expect(find.text(kAccessRoleHeldByAnonymousNote), findsOneWidget);
 
-      // Still up after a tick, and after another. A banner that vanished the
-      // moment the operator started editing would be a banner about nothing.
+      // Still up after a tick. A banner that vanished the moment the operator
+      // started editing would be a banner about nothing.
       await tester.tap(find.byKey(
           kAccessRoleGroupKey(kOperatorRoleName, AccessGroup.setpoints)));
       await tester.pumpAndSettle();
-      expect(find.byKey(kAccessOperatorWarningKey), findsOneWidget);
-      await tester.tap(find.byKey(
-          kAccessRoleGroupKey(kOperatorRoleName, AccessGroup.device)));
-      await tester.pumpAndSettle();
-      expect(find.byKey(kAccessOperatorWarningKey), findsOneWidget);
+      expect(find.byKey(kAccessRoleHeldByAnonymousKey), findsOneWidget);
     });
 
-    testWidgets('is not rendered for any other role', (tester) async {
+    testWidgets('is not rendered for a role the account does not hold',
+        (tester) async {
       await pumpSection(tester, overrides());
 
       for (final name in ['Shift Leader', 'Maintenance', 'Engineering']) {
         await openEditor(tester, name);
-        expect(find.byKey(kAccessOperatorWarningKey), findsNothing,
-            reason: '$name is an ordinary role; a warning shown everywhere is '
-                'a warning nobody reads');
+        expect(find.byKey(kAccessRoleHeldByAnonymousKey), findsNothing,
+            reason: 'a warning shown everywhere is a warning nobody reads');
         await openEditor(tester, name);
       }
     });
 
-    testWidgets('the Operator row is marked as the anonymous identity',
-        (tester) async {
+    testWidgets('follows the account, not the name Operator', (tester) async {
+      await repository.setRole(kAnonymousUsername, 'Maintenance');
       await pumpSection(tester, overrides());
 
-      expect(find.byKey(kAccessRoleAnonymousTagKey), findsOneWidget);
-      expect(find.text(kAccessRoleAnonymousTag), findsOneWidget,
-          reason: 'the row is legible as the anonymous identity rather than '
-              'merely as the row with no controls');
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Warning two of two: the confirmation on save
-  // -------------------------------------------------------------------------
-
-  group('the Operator save confirmation', () {
-    testWidgets('names the groups being added by label, and cancelling it '
-        'writes nothing', (tester) async {
-      await pumpSection(tester, overrides());
       await openEditor(tester, kOperatorRoleName);
-      store!.calls.clear();
-
-      for (final group in [AccessGroup.setpoints, AccessGroup.force]) {
-        await tester
-            .tap(find.byKey(kAccessRoleGroupKey(kOperatorRoleName, group)));
-        await tester.pumpAndSettle();
-      }
-      await tester.tap(find.byKey(kAccessRoleSaveKey(kOperatorRoleName)));
-      await tester.pumpAndSettle();
-
-      expect(find.text(kAccessOperatorConfirmTitle), findsOneWidget);
-      expect(
-        find.text(kAccessOperatorConfirmMessage(
-            const [AccessGroup.setpoints, AccessGroup.force])),
-        findsOneWidget,
-      );
-      expect(
-          find.descendant(
-              of: find.byType(StandardDialog),
-              matching: find.textContaining(AccessGroup.force.label)),
-          findsOneWidget,
-          reason: 'by label. AccessGroup.force.name is "force", which is '
-              'exactly the word 06-01 exists to stop the screen using');
-      expect(find.byKey(kAccessOperatorWarningKey), findsOneWidget,
-          reason: 'both halves at once — the banner does not go away because '
-              'the dialog arrived');
-
-      await tester.tap(find.descendant(
-          of: find.byType(StandardDialog), matching: find.text('Cancel')));
-      await tester.pumpAndSettle();
-
-      expect(store!.calls.where((c) => c.startsWith('updateRole')), isEmpty);
-      expect(
-          (await roleNamed(kOperatorRoleName))!.groups, {AccessGroup.operate});
-      expect(
-        tester
-            .widget<CheckboxListTile>(find.byKey(
-                kAccessRoleGroupKey(kOperatorRoleName, AccessGroup.force)))
-            .value,
-        isTrue,
-        reason: 'the draft is left as the operator left it, so a second Save '
-            'does not need the boxes ticked again',
-      );
-    });
-
-    testWidgets('a save that only removes groups shows the banner and no '
-        'confirmation', (tester) async {
-      await repository.upsertRole(const AccessRole(
-        name: kOperatorRoleName,
-        groups: {AccessGroup.operate, AccessGroup.setpoints},
-        seeded: true,
-      ));
-      await pumpSection(tester, overrides());
+      expect(find.byKey(kAccessRoleHeldByAnonymousKey), findsNothing);
       await openEditor(tester, kOperatorRoleName);
 
-      expect(find.byKey(kAccessOperatorWarningKey), findsOneWidget);
+      await openEditor(tester, 'Maintenance');
+      expect(find.byKey(kAccessRoleHeldByAnonymousKey), findsOneWidget);
+    });
+
+    testWidgets('saving a role the account holds asks nothing more — the '
+        'confirmation lives on the account', (tester) async {
+      await pumpSection(tester, overrides());
+      await openEditor(tester, kOperatorRoleName);
 
       await tester.tap(find.byKey(
           kAccessRoleGroupKey(kOperatorRoleName, AccessGroup.setpoints)));
@@ -883,28 +785,9 @@ void main() {
       await tester.tap(find.byKey(kAccessRoleSaveKey(kOperatorRoleName)));
       await tester.pumpAndSettle();
 
-      expect(find.text(kAccessOperatorConfirmTitle), findsNothing,
-          reason: 'narrowing is the safe direction, and a confirm on every '
-              'save is a confirm nobody reads');
-      expect(
-          (await roleNamed(kOperatorRoleName))!.groups, {AccessGroup.operate});
-    });
-
-    testWidgets('an ordinary role shows neither warning on save',
-        (tester) async {
-      await pumpSection(tester, overrides());
-      await openEditor(tester, 'Maintenance');
-
-      await tester.tap(find
-          .byKey(kAccessRoleGroupKey('Maintenance', AccessGroup.configure)));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(kAccessRoleSaveKey('Maintenance')));
-      await tester.pumpAndSettle();
-
-      expect(find.byKey(kAccessOperatorWarningKey), findsNothing);
-      expect(find.text(kAccessOperatorConfirmTitle), findsNothing);
-      expect((await roleNamed('Maintenance'))!.groups,
-          contains(AccessGroup.configure));
+      expect(find.byType(StandardDialog), findsNothing);
+      expect((await roleNamed(kOperatorRoleName))!.groups,
+          {AccessGroup.operate, AccessGroup.setpoints});
     });
   });
 
@@ -925,8 +808,6 @@ void main() {
           kAccessRoleGroupKey(kOperatorRoleName, AccessGroup.setpoints)));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessRoleSaveKey(kOperatorRoleName)));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text(kAccessOperatorConfirmLabel));
       await tester.pumpAndSettle();
 
       expect(
@@ -1325,7 +1206,7 @@ void main() {
       (tester) async {
     await pumpSection(tester, overrides());
 
-    expect(find.byKey(kAccessOperatorWarningKey), findsNothing);
+    expect(find.byKey(kAccessRoleHeldByAnonymousKey), findsNothing);
     expect(find.byKey(kAccessAdminRefusalKey), findsNothing);
 
     // The editor is closed, so no checkbox is on screen either.

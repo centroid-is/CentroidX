@@ -166,10 +166,10 @@ void main() {
       expect(s.pageVisible('fillet'), isFalse);
     });
 
-    test('anonymous carries the Operator row whitelist', () {
+    test('anonymous carries the anonymous account whitelist', () {
       final s = AccessSession.anonymous(
         const {AccessGroup.operate},
-        operatorAllowedPages: const {'/'},
+        allowedPages: const {'/'},
       );
       expect(s.pageVisible('/'), isTrue);
       expect(s.pageVisible('/packing'), isFalse);

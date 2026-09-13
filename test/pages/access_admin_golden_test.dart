@@ -1,13 +1,17 @@
-/// Five goldens of the administration screen — the milestone's last new page.
+/// Six goldens of the administration screen — the milestone's last new page.
 ///
 ///  * `access_admin_elevated.png`         — the page as the person who commissions a
-///    station sees it: four roles with their group summaries and holder counts, three
-///    accounts under all four column headings (one of them never signed in), and the
+///    station sees it: four roles with their group summaries and holder counts, the
+///    anonymous account pinned first with only its two controls, three accounts under
+///    all four column headings (one of them never signed in), and the
 ///    "guardrail, not security" note **collapsed**.
-///  * `access_admin_operator_warning.png` — the role editor open on `Operator`: the
-///    seven `CheckboxListTile`s with their labels *and* their descriptions, in
-///    `AccessGroup.values` order, under the persistent warning banner. This is the
-///    ROADMAP's named deliverable for the phase.
+///  * `access_admin_operator_warning.png` — the role editor open on `Operator`, the role
+///    the anonymous account holds: the seven `CheckboxListTile`s with their labels *and*
+///    their descriptions, in `AccessGroup.values` order, under the banner saying a
+///    logged-out panel holds it.
+///  * `access_admin_anonymous_roles.png`  — the roles dialog open on the anonymous
+///    account, with the banner saying a role ticked there reaches every logged-out
+///    panel.
 ///  * `access_admin_lockout_refused.png`  — the delete dialog on the only role granting
 ///    `users`, blocked: the refusal sentence, the remaining holders named, the pointer
 ///    at the deployment doc's break-glass section, and **no confirming action** anywhere
@@ -184,6 +188,10 @@ List<AppUserData> _users() => [
       _user('admin', 'Engineering',
           createdAt: DateTime(2026, 6, 2, 8, 15),
           lastLoginAt: DateTime(2026, 8, 31, 7, 5)),
+      // The reserved account the seed writes into every database. The section
+      // pins it first whatever order the store returns it in.
+      _user(kAnonymousUsername, kOperatorRoleName,
+          createdAt: DateTime(2026, 6, 2, 8, 0)),
       _user('commissioning', 'Engineering',
           createdAt: DateTime(2026, 6, 2, 8, 20)),
       _user('linar', 'Shift Leader',
@@ -552,7 +560,7 @@ void main() {
     testWidgets('the page, elevated, with the honesty note at its foot',
         (tester) async {
       await withClock(Clock.fixed(_frozen), () async {
-        const size = Size(900, 1120);
+        const size = Size(900, 1200);
         _sizeView(tester, size);
 
         await tester.pumpWidget(_pageHost(
@@ -583,6 +591,14 @@ void main() {
         }
         // The row a roster is read to find.
         expect(find.text(kAccessUserNever), findsOneWidget);
+        // The anonymous account: first, tagged, and holding roles and pages only.
+        expect(
+          tester.getTopLeft(find.byKey(kAccessUserRowKey(kAnonymousUsername))).dy,
+          lessThan(tester.getTopLeft(find.byKey(kAccessUserRowKey('admin'))).dy),
+        );
+        expect(find.byKey(kAccessUserAnonymousTagKey), findsOneWidget);
+        expect(find.byKey(kAccessUserDeleteKey(kAnonymousUsername)), findsNothing);
+        expect(find.byKey(kAccessRoleDeleteKey(kOperatorRoleName)), findsOneWidget);
         expect(tester.takeException(), isNull);
 
         _expectNothingClipped(
@@ -596,7 +612,8 @@ void main() {
       });
     });
 
-    testWidgets('the Operator editor open, with the warning above the boxes',
+    testWidgets('a role the logged-out panel holds, open, with the warning above '
+        'the boxes',
         (tester) async {
       await withClock(Clock.fixed(_frozen), () async {
         // Tall enough for the whole open editor: the seven group checkboxes,
@@ -614,13 +631,13 @@ void main() {
         ));
         await tester.pumpAndSettle();
 
-        // `Operator` and no other row: the banner is rendered for the protected row
-        // alone, and it is the row that governs every logged-out panel.
+        // `Operator`, because the anonymous account holds it: the banner is rendered
+        // for the roles every logged-out panel holds and no others.
         await tester.tap(find.byKey(kAccessRoleTileKey(kOperatorRoleName)));
         await tester.pumpAndSettle();
 
         // The state key.
-        expect(find.byKey(kAccessOperatorWarningKey), findsOneWidget);
+        expect(find.byKey(kAccessRoleHeldByAnonymousKey), findsOneWidget);
 
         // All seven, each with a label and a description, in the enum's order. An eye
         // can count seven boxes; it cannot see that the seventh is `users` rather than
@@ -651,11 +668,11 @@ void main() {
         final firstBox = find.byKey(
             kAccessRoleGroupKey(kOperatorRoleName, AccessGroup.values.first));
         expect(
-          tester.getBottomLeft(find.byKey(kAccessOperatorWarningKey)).dy,
+          tester.getBottomLeft(find.byKey(kAccessRoleHeldByAnonymousKey)).dy,
           lessThanOrEqualTo(tester.getTopLeft(firstBox).dy),
         );
         expect(
-          tester.getTopLeft(find.byKey(kAccessOperatorWarningKey)).dy,
+          tester.getTopLeft(find.byKey(kAccessRoleHeldByAnonymousKey)).dy,
           lessThan(tester.getTopLeft(firstBox).dy),
         );
         // No other row opened with it.
@@ -823,6 +840,44 @@ void main() {
         await expectLater(
           find.byType(MaterialApp),
           matchesGoldenFile('goldens/access_admin_roles_picker.png'),
+        );
+      });
+    });
+
+    testWidgets('the roles dialog on the anonymous account, with its warning',
+        (tester) async {
+      await withClock(Clock.fixed(_frozen), () async {
+        _sizeView(tester, const Size(900, 860));
+
+        await tester.pumpWidget(_dialogHost(
+          theme: light,
+          store: _AnsweringStore(roleRows: _roles(), userRows: _users()),
+          session: _withUsers(),
+        ));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(kAccessUserChangeRoleKey(kAnonymousUsername)));
+        await tester.pumpAndSettle();
+
+        // The state key: the picker is open on the anonymous account, the banner
+        // above everything else in it.
+        expect(find.byKey(kAccessUserRoleConfirmKey), findsOneWidget);
+        expect(find.byKey(kAccessAnonymousWarningKey), findsOneWidget);
+        expect(find.text(kAccessAnonymousBannerNote), findsOneWidget);
+        expect(
+          tester.getBottomLeft(find.byKey(kAccessAnonymousWarningKey)).dy,
+          lessThan(tester
+              .getTopLeft(find.byKey(kAccessUserRoleChoiceKey(kOperatorRoleName)))
+              .dy),
+        );
+        expect(find.byIcon(Icons.check_box), findsOneWidget);
+        expect(find.byKey(kAccessUserRolePrimaryKey(kOperatorRoleName)),
+            findsOneWidget);
+        expect(tester.takeException(), isNull);
+
+        await expectLater(
+          find.byType(MaterialApp),
+          matchesGoldenFile('goldens/access_admin_anonymous_roles.png'),
         );
       });
     });

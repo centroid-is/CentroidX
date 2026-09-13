@@ -166,10 +166,16 @@ class AuditRecord {
   ///
   /// The role is [kOperatorRoleName] because nobody was signed in: anonymous
   /// resolves to Operator by construction.
+  ///
+  /// [roleName] is what the panel held while the attempt was made — the
+  /// anonymous account's label when nobody was signed in. It defaults to
+  /// [kOperatorRoleName], which is what that label is on every station whose
+  /// anonymous account was never moved off its seeded role.
   factory AuditRecord.loginFailed({
     required String who,
     required String station,
     required String actionId,
+    String roleName = kOperatorRoleName,
     DateTime? at,
     String? reason,
   }) =>
@@ -179,7 +185,7 @@ class AuditRecord {
             ? who.substring(0, maxAttemptedUsernameLength)
             : who,
         station: station,
-        roleName: kOperatorRoleName,
+        roleName: roleName,
         surface: _authSurface,
         itemKey: 'login.failed',
         groupRequired: '',

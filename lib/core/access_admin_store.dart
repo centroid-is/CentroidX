@@ -171,7 +171,8 @@ typedef _RowBuilder = AuditRecord Function(
 /// gate → (denied: record the deny row, call `onDenied`, throw) → call the
 /// repository → (the repository threw [LastUsersHolderException],
 /// [RoleInUseException], [UserExistsException], [UserNotFoundException],
-/// [MissingRoleError] or [ProtectedRoleError]: record **nothing**, rethrow) →
+/// [MissingRoleError], [AnonymousAccountError] or [ReservedUsernameException]:
+/// record **nothing**, rethrow) →
 /// record the allowed row.
 ///
 /// If you move a `_recordAllowed` call above its repository call, five named
@@ -376,10 +377,9 @@ class AccessAdminStore {
   /// The groups it granted are read **before** the gate, so the row still says
   /// what was lost after the row it described is gone.
   ///
-  /// Three refusals reach the caller from the repository, unchanged and
-  /// unrecorded, and none of them is an [AccessDenied]: [ProtectedRoleError]
-  /// for `Operator` — an [Error], because reaching it means a screen offered a
-  /// Delete it should not have; [LastUsersHolderException] for trip route (d),
+  /// Two refusals reach the caller from the repository, unchanged and
+  /// unrecorded, and neither is an [AccessDenied]: [LastUsersHolderException]
+  /// for trip route (d),
   /// deleting the only role granting `users`; and [RoleInUseException] when
   /// accounts still hold it, with the holders named so the dialog can list
   /// them. That last one is blocked in application code rather than by the
@@ -418,9 +418,9 @@ class AccessAdminStore {
   /// point refers to.
   ///
   /// A rename cannot trip the lockout invariant: the role keeps its groups and
-  /// its holders. It can still throw [ProtectedRoleError] at either end,
-  /// [MissingRoleError] for an absent source and [ArgumentError] for a name
-  /// collision, all from the repository and all recorded as nothing.
+  /// its holders. It can still throw [MissingRoleError] for an absent source
+  /// and [ArgumentError] for a name collision, both from the repository and
+  /// both recorded as nothing.
   Future<void> renameRole(
     String from,
     String to, {

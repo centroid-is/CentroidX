@@ -14,27 +14,15 @@
 /// because the session may not use it — it is pressed, and the shared
 /// `AccessDeniedPrompt` says which group to go and get.
 ///
-/// ## The `Operator` row, and the one footgun this model creates
+/// ## Every role is ordinary
 ///
-/// Anonymous **is** the role named `Operator`, by construction. So editing that
-/// row changes what an *unauthenticated* panel may do: ticking a group there
-/// grants it to every logged-out panel on the floor. That is allowed — it is
-/// the knob a site turns when it wants a permissive line — and
-/// `AccessRepository`'s class doc has asked since Phase 1 that "the Phase 6
-/// roles screen must say so at the point of edit, not in a help page". The long
-/// form of the argument is there; the same words appear in
-/// `packages/tfc_access/lib/src/access_role.dart` and in
-/// `docs/access-control-deployment.md` §5. This screen does not add a fourth
-/// phrasing. It says the short version **twice**, because a banner alone is
-/// read once and then ignored:
-///
-///  1. [kAccessOperatorBannerNote] — a persistent inline banner, rendered the
-///     whole time the protected row's editor is open.
-///  2. [kAccessOperatorConfirmMessage] — a confirmation on save, naming the
-///     groups being added by their labels.
-///
-/// Both, always. Neither is conditional on the other, and each has its own
-/// passing test.
+/// A panel with nobody signed in is the reserved anonymous **account**, edited
+/// in the accounts section beside this one — no role here is special, and each
+/// may be renamed or deleted. What this screen still owes is one sentence:
+/// editing a role the anonymous account holds changes what every logged-out
+/// panel may do. [kAccessRoleHeldByAnonymousNote] is up the whole time such a
+/// role's editor is open. The confirmation on granting lives with the account,
+/// where the roles it holds are chosen.
 ///
 /// ## A role write is not finished when the row is written
 ///
@@ -42,7 +30,7 @@
 /// running app permits is re-resolved by
 /// `AccessSessionController.refreshGroupsFromRoles`, and this section calls it
 /// after **all four** role writes — create, update, rename and delete — not
-/// only after an `Operator` edit. Deleting or re-scoping the role the signed-in
+/// only after an edit to a role a logged-out panel holds. Deleting or re-scoping the role the signed-in
 /// person holds is the same staleness with a different subject.
 ///
 /// **That call goes last, and the ordering is load-bearing.** See [_afterWrite].
@@ -96,7 +84,7 @@ const String kAccessRolesHeadline = 'Roles';
 const String kAccessRolesSubtitle =
     'A role is a name and the permission groups it grants. An account holds one '
     'or more and may do what they together grant; a panel with nobody signed '
-    'in holds "Operator".';
+    'in holds whatever the "anonymous" account holds.';
 
 /// The read failed, or the store could not be built.
 ///
@@ -120,14 +108,14 @@ const String kAccessRolesNoDatabaseNote =
 
 /// A database that answered, with nothing in it.
 ///
-/// Deliberately not "no roles yet". The schema-v6 migration seeds four, and
-/// `Operator` cannot be deleted, so an empty list is not a state a commissioned
-/// station reaches — it means the migration did not run, or something emptied
-/// the table underneath.
+/// Deliberately not "no roles yet". The schema-v6 migration seeds four, and a
+/// role the anonymous account holds cannot be deleted, so an empty list is not
+/// a state a commissioned station reaches — it means the migration did not
+/// run, or something emptied the table underneath.
 const String kAccessRolesEmptyNote =
     'No roles at all, which should not be possible: a migrated database is '
-    'seeded with four and "Operator" cannot be deleted. Check that the '
-    'database this station is pointed at is the one that was migrated.';
+    'seeded with four and the anonymous account always holds one. Check that '
+    'the database this station is pointed at is the one that was migrated.';
 
 /// `n account` / `n accounts`, with the number in the sentence.
 ///
@@ -152,16 +140,6 @@ String kAccessRoleSummary(Set<AccessGroup> groups, int? holders) {
   return '$grants — held by ${_accounts(holders)}';
 }
 
-/// Rendered immediately after the protected row's name, so the row reads as
-/// "Operator (Anonymous)".
-///
-/// A parenthetical rather than a separate chip: the point is that this role IS
-/// the anonymous identity, not that it has a property. "Logged-out panels" said
-/// the same thing but read as a label attached to a role, which invited the
-/// question this wording forecloses -- which role anonymous points at. It does
-/// not point anywhere; it is this row.
-const String kAccessRoleAnonymousTag = '(Anonymous)';
-
 /// Shown in the create dialog. A role with no groups grants nothing, and saying
 /// so beats somebody moving an account onto it and wondering why every control
 /// stayed locked.
@@ -178,45 +156,16 @@ const String kAccessRoleInvalidNameNote =
 const String kAccessRoleDuplicateNameNote =
     'A role with that name already exists.';
 
-/// The name is a capitalisation of the protected name.
+/// The inline banner, rendered the whole time the editor of a role the
+/// anonymous account holds is open.
 ///
-/// Refused here rather than left to the repository, which guards its own delete
-/// and rename but lets a *second* row take a case variant of the name. Such a
-/// row would render with no Rename and no Delete — [isProtectedRoleName] is
-/// case-insensitive — and nothing on this screen could then remove it.
-const String kAccessRoleProtectedNameNote =
-    '"Operator" is the role a panel with nobody signed in resolves to, so no '
-    'other role may take that name in any capitalisation.';
-
-/// **Warning one of two.** The persistent inline banner, rendered the whole
-/// time the protected row's editor is open.
-///
-/// Short on purpose. The full argument is in `access_repository.dart`'s class
-/// doc — "Ticking `setpoints` on Operator silently grants it to every panel on
-/// the floor with nobody signed in […] the one footgun this simplification
-/// creates" — and exists in the same words twice more, in `access_role.dart`
-/// and in `docs/access-control-deployment.md` §5. The screen's job is to make
-/// the reader stop, not to reproduce the reasoning, so this cites one and adds
-/// no fourth phrasing.
-const String kAccessOperatorBannerNote =
-    'This is the role a panel with nobody signed in resolves to. A group '
-    'ticked here is granted to every logged-out panel on the floor.';
-
-/// **Warning two of two.** The confirmation on save, naming what is being
-/// added.
-///
-/// By [AccessGroupInfo.label], never by the persisted identifier: 06-01 exists
-/// because `force` and `device` are not self-explanatory, and a confirmation
-/// reading "force" undoes that.
-String kAccessOperatorConfirmMessage(List<AccessGroup> added) =>
-    'Saving this grants ${added.map((g) => g.label).join(', ')} to every panel '
-    'on the floor with nobody signed in, immediately and without a sign-in.';
-
-/// The confirmation's title. A question, because it is one.
-const String kAccessOperatorConfirmTitle = 'Grant to every logged-out panel?';
-
-/// The confirmation's affirmative. Not "OK": the label says what happens.
-const String kAccessOperatorConfirmLabel = 'Grant';
+/// Data-driven rather than tied to a name: whichever roles the account holds
+/// today get it, and a role it was moved off stops getting it. The
+/// confirmation on granting is on the account's own role picker, in the
+/// accounts section — see `kAccessAnonymousConfirmMessage`.
+const String kAccessRoleHeldByAnonymousNote =
+    'A panel with nobody signed in holds this role. A group ticked here is '
+    'granted to every logged-out panel on the floor.';
 
 /// While the delete dialog's two questions are in flight.
 const String kAccessRoleDeleteCheckingNote = 'Checking who holds this role…';
@@ -273,23 +222,21 @@ const Key kAccessRoleDeleteUnknownKey = Key('access-role-delete-unknown');
 /// The delete dialog's nothing-in-the-way line.
 const Key kAccessRoleDeleteFreeKey = Key('access-role-delete-free');
 
-/// The protected row's inline banner.
+/// The banner on a role the anonymous account holds.
 ///
 /// Its own key rather than `kAccessAdminWarningKey`, so a test meaning "the
-/// Operator banner is up" cannot pass on some other warning.
-const Key kAccessOperatorWarningKey = Key('access-role-operator-warning');
+/// logged-out-panel banner is up" cannot pass on some other warning.
+const Key kAccessRoleHeldByAnonymousKey =
+    Key('access-role-held-by-anonymous-warning');
 
 /// One role's row.
 Key kAccessRoleTileKey(String name) => Key('access-role-tile-$name');
 
-/// One role's rename control. Absent on the protected row.
+/// One role's rename control.
 Key kAccessRoleRenameKey(String name) => Key('access-role-rename-$name');
 
-/// One role's delete control. Absent on the protected row.
+/// One role's delete control.
 Key kAccessRoleDeleteKey(String name) => Key('access-role-delete-$name');
-
-/// The protected row's marker beside its name.
-const Key kAccessRoleAnonymousTagKey = Key('access-role-anonymous-tag');
 
 /// One checkbox in one role's editor.
 ///
@@ -391,6 +338,15 @@ class AccessRolesSection extends ConsumerWidget {
                   .length,
           };
 
+    // The roles a logged-out panel holds, from the same roster read. Empty
+    // while it is loading: the banner is a warning, and a frame without it
+    // costs less than a banner on the wrong role.
+    final anonymousRow =
+        roster?.firstWhereOrNull((u) => u.username == kAnonymousUsername);
+    final heldByAnonymous = anonymousRow == null
+        ? const <String>{}
+        : AccessRepository.rolesOf(anonymousRow).toSet();
+
     return _frame(
       context,
       onCreate: () => _create(context, ref, store, names),
@@ -412,6 +368,7 @@ class AccessRolesSection extends ConsumerWidget {
                         if (n != role.name) n,
                     ],
                     holders: holders?[role.name],
+                    heldByAnonymous: heldByAnonymous.contains(role.name),
                     store: store,
                   ),
               ],
@@ -500,10 +457,15 @@ class _RoleTile extends ConsumerStatefulWidget {
     required this.role,
     required this.otherNames,
     required this.holders,
+    this.heldByAnonymous = false,
     required this.store,
   });
 
   final AccessRole role;
+
+  /// Whether the anonymous account holds this role, so an edit reaches every
+  /// logged-out panel. Drives [kAccessRoleHeldByAnonymousNote].
+  final bool heldByAnonymous;
 
   /// Every other role's name, for the duplicate check the rename dialog makes
   /// before the store is called.
@@ -552,16 +514,8 @@ class _RoleTileState extends ConsumerState<_RoleTile> {
   AccessRole get role => widget.role;
   AccessAdminStore get store => widget.store;
 
-  /// The same predicate the repository uses — case-insensitive and
-  /// whitespace-tolerant. A `==` against the constant here would let a row
-  /// stored as `operator` render a Delete the repository would then refuse with
-  /// a `ProtectedRoleError`, which is an `Error`: a screen bug, not a
-  /// condition.
-  bool get _protected => isProtectedRoleName(role.name);
-
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final draft = _draft;
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -575,49 +529,25 @@ class _RoleTileState extends ConsumerState<_RoleTile> {
           leading: Icon(
               draft == null ? Icons.expand_more : Icons.expand_less,
               size: 18),
-          title: Row(
+          title: Text(role.name),
+          subtitle: Text(kAccessRoleSummary(role.groups, widget.holders)),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Flexible(child: Text(role.name)),
-              if (_protected) ...[
-                // The parenthetical sits against the name -- the icon moved
-                // after it, because an icon between the two broke the phrase
-                // the reader is meant to see as one thing.
-                const SizedBox(width: 4),
-                Text(
-                  kAccessRoleAnonymousTag,
-                  key: kAccessRoleAnonymousTagKey,
-                  style: theme.textTheme.labelSmall
-                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-                ),
-                const SizedBox(width: 6),
-                Icon(Icons.no_accounts_outlined,
-                    size: 14, color: theme.colorScheme.onSurfaceVariant),
-              ],
+              IconButton(
+                key: kAccessRoleRenameKey(role.name),
+                icon: const Icon(Icons.drive_file_rename_outline, size: 18),
+                tooltip: 'Rename',
+                onPressed: _rename,
+              ),
+              IconButton(
+                key: kAccessRoleDeleteKey(role.name),
+                icon: const Icon(Icons.delete_outline, size: 18),
+                tooltip: 'Delete',
+                onPressed: _delete,
+              ),
             ],
           ),
-          subtitle: Text(kAccessRoleSummary(role.groups, widget.holders)),
-          // Neither control on the protected row: absent, not disabled. See
-          // [_protected].
-          trailing: _protected
-              ? null
-              : Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      key: kAccessRoleRenameKey(role.name),
-                      icon: const Icon(Icons.drive_file_rename_outline,
-                          size: 18),
-                      tooltip: 'Rename',
-                      onPressed: _rename,
-                    ),
-                    IconButton(
-                      key: kAccessRoleDeleteKey(role.name),
-                      icon: const Icon(Icons.delete_outline, size: 18),
-                      tooltip: 'Delete',
-                      onPressed: _delete,
-                    ),
-                  ],
-                ),
         ),
         if (draft != null) _editor(context, draft),
       ],
@@ -656,12 +586,12 @@ class _RoleTileState extends ConsumerState<_RoleTile> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Warning one of two, and it is up the whole time this row is open —
-          // not only at the moment of saving. See the library doc.
-          if (_protected)
+          // Up the whole time this row is open — not only at the moment of
+          // saving. See the library doc.
+          if (widget.heldByAnonymous)
             AccessAdminWarning(
-              blockKey: kAccessOperatorWarningKey,
-              text: kAccessOperatorBannerNote,
+              blockKey: kAccessRoleHeldByAnonymousKey,
+              text: kAccessRoleHeldByAnonymousNote,
               // Something becoming *less* restricted, matching
               // `_WarningBlock`'s own choice for the rename warning.
               icon: Icons.lock_open_outlined,
@@ -733,33 +663,9 @@ class _RoleTileState extends ConsumerState<_RoleTile> {
     );
   }
 
-  /// Writes the draft as one `role.update`, after the second half of the
-  /// `Operator` warning.
-  ///
-  /// The confirmation fires only when the protected row is **gaining** groups.
-  /// A save that only removes them still shows the banner and needs no dialog:
-  /// narrowing is the safe direction, and a confirmation on every save is a
-  /// confirmation nobody reads. That is a judgement, not an omission.
+  /// Writes the draft as one `role.update`.
   Future<void> _save(Set<AccessGroup> draft) async {
     if (_saving) return;
-
-    if (_protected) {
-      final added = [
-        for (final group in AccessGroup.values)
-          if (draft.contains(group) && !role.groups.contains(group)) group,
-      ];
-      if (added.isNotEmpty) {
-        // Warning two of two. Not `destructive: true` — nothing is being
-        // deleted — so it keeps the default icon.
-        final confirmed = await showConfirmDialog(
-          context: context,
-          title: kAccessOperatorConfirmTitle,
-          message: kAccessOperatorConfirmMessage(added),
-          confirmLabel: kAccessOperatorConfirmLabel,
-        );
-        if (!confirmed || !mounted) return;
-      }
-    }
 
     _saving = true;
 
@@ -1042,10 +948,6 @@ class _RoleNameDialogState extends State<_RoleNameDialog> {
       setState(() => _error = kAccessRoleInvalidNameNote);
       return;
     }
-    if (isProtectedRoleName(name)) {
-      setState(() => _error = kAccessRoleProtectedNameNote);
-      return;
-    }
     if (widget.taken.contains(name)) {
       setState(() => _error = kAccessRoleDuplicateNameNote);
       return;
@@ -1225,15 +1127,24 @@ class _DeleteRoleDialogState extends State<_DeleteRoleDialog> {
   /// computes. A copy that looked only at the primary role would tell somebody
   /// a delete was safe that the repository then refuses, which is the one thing
   /// this pre-check exists to avoid.
+  ///
+  /// The anonymous account is a holder for the in-use question and not for
+  /// the lockout one, exactly as the repository counts it: a logged-out panel
+  /// cannot manage anybody, but a role it holds cannot be deleted from under
+  /// it.
   void _decide(List<AccessRole> roles, List<(String, List<String>)> users) {
     final granting = {
       for (final role in roles)
         if (role.groups.contains(AccessGroup.users)) role.name,
     };
     final rolesHeld = {for (final user in users) user.$1: user.$2};
+    final peopleHold = {
+      for (final entry in rolesHeld.entries)
+        if (entry.key != kAnonymousUsername) entry.key: entry.value,
+    };
 
     final holdersOfUsers = [
-      for (final entry in rolesHeld.entries)
+      for (final entry in peopleHold.entries)
         if (entry.value.any(granting.contains)) entry.key,
     ]..sort();
 
@@ -1242,9 +1153,9 @@ class _DeleteRoleDialogState extends State<_DeleteRoleDialog> {
     // would make a station unconfigurable out of the box.
     if (holdersOfUsers.isNotEmpty) {
       final after = {...granting}..remove(widget.name);
-      if (!rolesHeld.values.any((held) => held.any(after.contains))) {
+      if (!peopleHold.values.any((held) => held.any(after.contains))) {
         _lockout = LastUsersHolderException(
-          rolesHeld[holdersOfUsers.first]!.firstWhere(granting.contains),
+          peopleHold[holdersOfUsers.first]!.firstWhere(granting.contains),
           holdersOfUsers,
         );
         _block = _RoleDeleteBlock.wouldLeaveNobodyManagingAccess;
