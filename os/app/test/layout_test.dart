@@ -11,33 +11,50 @@ Rect _globalRect(WidgetTester tester, Finder f) {
   return MatrixUtils.transformRect(ro.getTransformTo(null), ro.paintBounds);
 }
 
+/// The on-screen keyboard's inset, which is what makes this reproduce.
+///
+/// A `SingleChildScrollView` only clips once it can actually scroll, so on an
+/// idle 1080-tall panel the step fits and the overhanging label is painted in
+/// full. Raising the keyboard shrinks the viewport by ~200px, the content
+/// starts scrolling, the clip engages — and the operator, who is typing, is
+/// exactly the person for whom the keyboard is up. Remove this and the test
+/// still fails for the right reason (the assertion is on geometry, not on
+/// pixels), but it stops describing the bug that was reported.
+const double _keyboardInset = 200;
+
 Widget _step({List<Widget>? body, Widget? secondary}) => MaterialApp(
       theme: buildTheme(),
-      home: Scaffold(
-        body: SafeArea(
-          child: Form(
-            child: SetupStep(
-              title: 'Station',
-              subtitle: 'A subtitle, as every real step has.',
-              body: body ??
-                  [
-                    Field(
-                      label: 'Station name',
-                      helper: 'Shown in the browser tab, and the hostname',
-                      initial: '',
-                      validator: validateStationName,
-                      onChanged: (_) {},
-                    ),
-                    PasswordField(
-                      label: "Password for the 'centroid' login",
-                      helper: 'The operator account on this machine',
-                      initial: '',
-                      onChanged: (_) {},
-                    ),
-                  ],
-              secondary: secondary,
-              primary:
-                  FilledButton(onPressed: () {}, child: const Text('Continue')),
+      home: Builder(
+        builder: (context) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+              viewInsets: const EdgeInsets.only(bottom: _keyboardInset)),
+          child: Scaffold(
+            body: SafeArea(
+              child: Form(
+                child: SetupStep(
+                  title: 'Station',
+                  subtitle: 'A subtitle, as every real step has.',
+                  body: body ??
+                      [
+                        Field(
+                          label: 'Station name',
+                          helper: 'Shown in the browser tab, and the hostname',
+                          initial: '',
+                          validator: validateStationName,
+                          onChanged: (_) {},
+                        ),
+                        PasswordField(
+                          label: "Password for the 'centroid' login",
+                          helper: 'The operator account on this machine',
+                          initial: '',
+                          onChanged: (_) {},
+                        ),
+                      ],
+                  secondary: secondary,
+                  primary: FilledButton(
+                      onPressed: () {}, child: const Text('Continue')),
+                ),
+              ),
             ),
           ),
         ),
