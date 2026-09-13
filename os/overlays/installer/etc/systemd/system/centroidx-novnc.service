@@ -1,0 +1,22 @@
+[Unit]
+Description=Browser view of the installer (noVNC over https)
+After=network.target centroidx-remote-access.service centroidx-gui.service
+Wants=centroidx-remote-access.service
+# No config, no service. On a stick where the credential unit failed there is
+# no certificate to serve and no password to authenticate against.
+ConditionPathExists=/run/centroidx/novnc.crt
+
+[Service]
+# https is load-bearing, not decoration. noVNC cannot speak VeNCrypt, so the
+# VNC leg runs in weston's password-only mode and negotiates RA2ne -- which
+# needs window.crypto.subtle, and browsers only expose that on a secure origin.
+# Served over plain http the page loads and then cannot authenticate at all.
+# Same constraint the station's own noVNC container documents.
+ExecStart=/usr/bin/websockify --web /usr/share/novnc \
+  --cert /run/centroidx/novnc.crt --key /run/centroidx/novnc.key \
+  443 127.0.0.1:5900
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,7 @@
 [Unit]
 Description=CentroidX station installer (graphical)
-After=local-fs.target seatd.service systemd-udev-settle.service
-Wants=seatd.service systemd-udev-settle.service
+After=local-fs.target seatd.service systemd-udev-settle.service centroidx-remote-access.service
+Wants=seatd.service systemd-udev-settle.service centroidx-remote-access.service
 Conflicts=getty@tty1.service
 # Hand over to the text installer if weston or the app cannot start -- a panel
 # with no GPU, a missing bundle, a compositor that will not take the DRM device.
@@ -34,7 +34,17 @@ Environment=XDG_RUNTIME_DIR=/run/centroidx-gui
 Environment=KEYBOARD_LAYOUTS=is,en,pl
 RuntimeDirectory=centroidx-gui
 RuntimeDirectoryMode=0700
-ExecStart=/usr/bin/weston --config=/etc/xdg/weston/weston.ini --log=/run/centroidx-gui/weston.log
+# ~30 file descriptors per VNC client against the default 1024 soft limit is
+# the real ceiling under several viewers, and fd exhaustion kills weston's
+# internal clients and the compositor with them. Measured on hq-skjar,
+# 2026-09-02; the station's compose carries the same number for the same
+# reason. It matters here because the VNC server lives inside weston's own
+# process, not in a container beside it.
+LimitNOFILE=16384
+# Not weston directly: `[output] mirror-of=` needs the literal DRM connector
+# name, which is a property of the panel in front of you. The wrapper reads it
+# from /sys/class/drm and templates the real weston.ini into /run.
+ExecStart=/usr/local/bin/centroidx-gui-launch
 # weston exits when the app does (autolaunch watch=true). A successful install
 # reboots from inside the app, so reaching here at all means something stopped.
 Restart=no

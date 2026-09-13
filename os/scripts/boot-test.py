@@ -245,6 +245,27 @@ class Qmp:
         self.cmd('input-send-event',
                  events=[{'type': 'btn', 'data': {'down': False, 'button': 'left'}}])
 
+def check_vnc(port, timeout):
+    """Read the RFB greeting from the forwarded VNC port. Returns problems."""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=5) as s:
+                s.settimeout(5)
+                greeting = s.recv(12)
+            if greeting.startswith(b'RFB 00'):
+                print(f'  vnc: {greeting.decode(errors="replace").strip()} '
+                      f'on forwarded port {port}')
+                return []
+            last = f'greeting was {greeting!r}, not an RFB version string'
+        except OSError as e:
+            last = str(e)
+        time.sleep(1)
+    return [f'nothing answered RFB on the guest\'s VNC output ({last}) -- '
+            f'weston did not bring up the drm,vnc mirror']
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--usb', required=True, help='raw installer USB image')
@@ -252,6 +273,8 @@ def main():
     ap.add_argument('--slow', type=float, default=1.0,
                     help='multiply every wait; use ~10 for TCG with no KVM')
     ap.add_argument('--keep-running', action='store_true')
+    ap.add_argument('--vnc-port', type=int, default=5901,
+                    help='host port forwarded to the guest VNC output')
     a = ap.parse_args()
 
     os.makedirs(a.out, exist_ok=True)
@@ -281,6 +304,14 @@ def main():
            '-drive', f'file={a.usb},format=raw,if=none,id=usbdisk,snapshot=on',
            '-device', 'virtio-vga',
            '-device', 'virtio-tablet-pci',   # absolute pointer, for tap()
+           # Explicit, where there used to be nothing: QEMU adds a default
+           # user-mode NIC when no -netdev is given, which is why the installer
+           # already showed a 10.0.2.x address in these screenshots. Naming it
+           # is what allows the hostfwd, and the hostfwd is what lets the test
+           # prove weston's VNC output is listening -- the one thing about the
+           # drm,vnc mirror that cannot be read off a screenshot.
+           '-netdev', f'user,id=net0,hostfwd=tcp::{a.vnc_port}-:5900',
+           '-device', 'virtio-net-pci,netdev=net0',
            '-display', 'none',
            '-serial', f'file:{serial}',
            '-qmp', f'unix:{qmp},server,nowait']
@@ -335,6 +366,15 @@ def main():
                     f'{label}: only {d:.1%} of the screen changed in '
                     f'{wait * a.slow:.0f}s after the tap -- the step did not advance')
             prev = px
+        # The remote view. weston mirrors the panel onto a VNC output
+        # (--backend=drm,vnc plus [output] mirror-of=), and a screenshot cannot
+        # tell you whether that second head came up -- the panel looks
+        # identical either way. One TCP read can: an RFB greeting means weston
+        # loaded the vnc backend as a secondary, bound the port, and is serving.
+        # It does not prove the mirror shows the right pixels, which needs eyes
+        # on a client, but it does prove the chain exists.
+        problems.extend(check_vnc(a.vnc_port, timeout=30 * a.slow))
+
         if problems:
             raise RuntimeError('; '.join(problems))
         if not a.keep_running:
