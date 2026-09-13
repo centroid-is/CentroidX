@@ -42,10 +42,16 @@ class SetupStep extends StatelessWidget {
               color: t.colorScheme.onSurfaceVariant,
             )),
           ],
-          const SizedBox(height: 24),
+          // 24 less the label overhang the scroll view now carries as padding,
+          // so the gap under the subtitle is unchanged.
+          const SizedBox(height: 24 - labelOverhang),
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.only(bottom: keyboardReserve),
+              // The top padding is not spacing: a scroll view clips at its own
+              // edge, and the first field's floating label is painted above
+              // that edge. See [labelOverhang].
+              padding: const EdgeInsets.only(
+                  top: labelOverhang, bottom: keyboardReserve),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: body,

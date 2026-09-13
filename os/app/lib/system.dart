@@ -95,6 +95,37 @@ Future<InstallResult> runInstaller(
 
 Future<void> reboot() => Process.run('systemctl', ['reboot']);
 
+/// Offered beside Reboot when an install has failed. Rebooting a machine whose
+/// disk was just wiped drops it at the firmware; powering it off is usually
+/// what the operator wanted anyway, and it is one fewer reason to reach behind
+/// a panel for the switch.
+Future<void> powerOff() => Process.run('systemctl', ['poweroff']);
+
+/// Every non-loopback IPv4 this machine currently holds.
+///
+/// `dart:io` rather than parsing `ip -o -4 addr` (which is what the shell
+/// installer's banner does, because it has no other option): the list is the
+/// same and this needs no subprocess. The station's own About page builds the
+/// equivalent from NetworkManager over D-Bus — there is no NetworkManager on
+/// the USB, so the source differs even though the answer does not.
+Future<List<String>> hostAddresses() async {
+  try {
+    final ifs = await NetworkInterface.list(
+      includeLoopback: false,
+      includeLinkLocal: false,
+      type: InternetAddressType.IPv4,
+    );
+    return [
+      for (final i in ifs)
+        for (final a in i.addresses) a.address,
+    ];
+  } on OSError {
+    return const [];
+  } on SocketException {
+    return const [];
+  }
+}
+
 Future<String?> _out(String exe, List<String> args) async {
   try {
     final r = await Process.run(exe, args);

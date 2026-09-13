@@ -425,6 +425,16 @@ jobs:
           G="$mnt/etc/systemd/system/centroidx-gui.service"
           t "handover on failure"                               grep -q "^OnFailure=centroidx-installer.service" "$G"
           t "handover on clean exit too"                        grep -q "^OnSuccess=centroidx-installer.service" "$G"
+          # Networking. Asserted rather than assumed because it is three
+          # separate things that each look fine alone: the USB had no network
+          # stack at all until now, and an installer that reports "no network"
+          # on every panel would be indistinguishable from one whose DHCP
+          # simply had not landed yet.
+          t "DHCP config shipped"                               test -f "$mnt/etc/systemd/network/10-dhcp.network"
+          t "networkd enabled"                                  test -L "$W/systemd-networkd.service"
+          # Path not hardcoded: iproute2 has moved between /bin, /sbin and
+          # /usr/sbin across Debian releases and the merged-usr transition.
+          t "ip(8) present, so the text installer can report an address"  sh -c "test -x '$mnt/usr/sbin/ip' -o -x '$mnt/sbin/ip' -o -x '$mnt/usr/bin/ip'"
 
           if [ "$fail" != 0 ]; then
             echo "--- enabled units ---";        ls -la "$W" 2>&1 | head -20

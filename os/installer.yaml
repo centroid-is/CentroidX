@@ -37,6 +37,15 @@ actions:
       - dosfstools
       - kbd
       - ncurses-bin
+      # Networking. minbase debootstrap installs Priority: required only, so
+      # `ip` is not there -- and until this the installer had no network at
+      # all: no DHCP client, no addresses, nothing. The address is worth having
+      # on screen by itself (a panel on DHCP is otherwise unreachable until
+      # somebody goes and reads the router), and it is the prerequisite for
+      # ever driving this remotely. systemd-networkd and systemd-resolved come
+      # with systemd and cost no download; see overlays/installer/etc/systemd/
+      # network/10-dhcp.network.
+      - iproute2
       # The graphical front end: weston for a display, seatd for the DRM/input
       # seat (on bare metal a systemd service, not the separate privileged
       # container the station uses), mesa for the GL renderer.

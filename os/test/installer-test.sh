@@ -64,10 +64,59 @@ done
 expect_false "rejects 64 characters" valid_station_name "$(printf 'a%.0s' $(seq 64))"
 expect_true  "accepts 63 characters" valid_station_name "$(printf 'a%.0s' $(seq 63))"
 
+# --------------------------------------------------------------- passwords
+# The rule is a deny list, and the deny list is short on purpose: it is the set
+# of characters that turn a quoting slip at one of the four layers these values
+# pass through into executed code or a truncated value. Everything else
+# printable is allowed, because refusing a character an operator wants costs
+# them a password and buys nothing. os/app/lib/answers.dart must agree
+# character for character.
+echo "password_ok"
+for p in 'Plain12345' 'a-pass:with@odd%chars' 'dots.and_unders~/+' \
+         'hash#pass1' '#leading12' 'trailing1#' 'bang!pass1' 'comma,pass' \
+         'equals=pass' 'question?p1' 'star*pass12' 'caret^pass1' \
+         'brack[et]s1' 'brace{s}pass'; do
+  expect_true "accepts '$p'" password_ok "$p"
+done
+# '#' in particular: it was refused by the allow list this replaced, for no
+# reason that survives inspection. compose's dotenv only opens a comment on
+# ' #', and a space is refused below.
+# The $ in has$dollar is test data, like the one in the read_kv block above.
+# shellcheck disable=SC2016
+for p in 'has space1' "$(printf 'tab\tstop1')" 'has$dollar' 'back`tick' \
+         "quote'pass" 'double"quo' 'back\slash' 'semi;colon' 'amper&sand' \
+         'pipe|char1' 'gt>pass123' 'lt<pass123' 'paren(then)' '' \
+         "$(printf 'newline\npass')" 'þorlákur12'; do
+  expect_false "rejects '$p'" password_ok "$p"
+done
+
 # ---------------------------------------------------------- keyboard layout
 echo "valid_keyboard_layout"
 for l in is en pl; do expect_true "accepts $l" valid_keyboard_layout "$l"; done
 for l in de IS '' 'is ' us; do expect_false "rejects '$l'" valid_keyboard_layout "$l"; done
+
+# ----------------------------------------------------------- root_partition
+# This is the one that got away. The installer resolved the target's root
+# partition from `lsblk -pno NAME,PARTLABEL`, whose NAME column carries the
+# tree-drawing glyphs when --list is not given -- so it mounted "└─/dev/sda2",
+# which is not a device, and the install failed on a real panel AFTER the image
+# had been written. Nothing in CI installs onto a disk, so the table is fed in
+# as recorded text instead; that is the whole reason the awk is its own
+# function.
+echo "root_partition"
+expect_eq "picks the labelled partition out of a --list table" \
+  "$(printf '/dev/sda\n/dev/sda1 esp\n/dev/sda2 root\n' | root_partition)" \
+  '/dev/sda2'
+expect_eq "strips the tree glyphs a table without --list carries" \
+  "$(printf '/dev/sda\n├─/dev/sda1 esp\n└─/dev/sda2 root\n' | root_partition)" \
+  '/dev/sda2'
+expect_eq "is not fooled by partition order" \
+  "$(printf '/dev/nvme0n1\n├─/dev/nvme0n1p1 root\n└─/dev/nvme0n1p2 esp\n' | root_partition)" \
+  '/dev/nvme0n1p1'
+expect_eq "empty when nothing is labelled root" \
+  "$(printf '/dev/sda\n└─/dev/sda1 esp\n' | root_partition)" ''
+expect_eq "empty when the disk has no partitions at all" \
+  "$(printf '/dev/sda\n' | root_partition)" ''
 
 # ---------------------------------------------------------------- seed file
 # questions() in seed mode dies on a bad file. Run it in a subshell so the
@@ -140,6 +189,20 @@ fi
 expect_eq "hostname" "$(cat "$root/etc/hostname")" line1
 expect_true "hosts alias appended" grep -q "$(printf '^127.0.1.1\tline1$')" "$root/etc/hosts"
 expect_true "localhost line kept" grep -q '^127.0.0.1' "$root/etc/hosts"
+
+# The image now ships its own 127.0.1.1 placeholder (rootfs-setup.sh), so this
+# has to replace rather than append: two entries for one address resolve in
+# file order, i.e. to the placeholder, and the station would answer to the
+# wrong name for the rest of its life.
+rootp="$tmp/root1b"; mkdir -p "$rootp/etc"
+printf '127.0.0.1\tlocalhost\n127.0.1.1\tcentroidx-unconfigured\n' > "$rootp/etc/hosts"
+write_target_config "$rootp" >/dev/null 2>&1
+expect_eq "exactly one 127.0.1.1 line" \
+  "$(grep -c '^127\.0\.1\.1' "$rootp/etc/hosts")" 1
+expect_true "and it is the station" \
+  grep -q "$(printf '^127.0.1.1\tline1$')" "$rootp/etc/hosts"
+expect_false "the placeholder is gone" \
+  grep -q 'centroidx-unconfigured' "$rootp/etc/hosts"
 expect_false "no wg0.conf without a VPN" test -e "$root/etc/wireguard/wg0.conf"
 expect_true "says the station has no remote access" grep -q 'no VPN configured' <<<"$out"
 
@@ -154,6 +217,9 @@ if command -v wg >/dev/null 2>&1; then
   expect_true  "Address is the answer" grep -qx 'Address = 192.0.2.42/24' "$wg0"
   expect_true  "endpoint goes through the obfuscator" grep -qx "Endpoint = 127.0.0.1:$OBF_PORT" "$wg0"
   expect_true  "obfuscator config written" grep -qx 'key = obf' "$root/etc/wg-obfuscator.conf"
+  # Without this line the obfuscator defaults to AUTO, which on the client side
+  # sends no masking at all -- the DPI evasion that is its only purpose is off.
+  expect_true  "obfuscator masks its traffic" grep -qx 'masking = STUN' "$root/etc/wg-obfuscator.conf"
   expect_true  "public key left for the app" test -s "$RUNTIME_DIR/wg-pubkey"
   expect_eq    "and matches the private key" "$(sed -n 's/^PrivateKey = //p' "$wg0" | wg pubkey)" "$(cat "$RUNTIME_DIR/wg-pubkey")"
   expect_false "does not claim there is no remote access" grep -q 'no VPN configured' <<<"$out"
