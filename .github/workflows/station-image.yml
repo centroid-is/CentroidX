@@ -53,6 +53,11 @@ on:
         default: ''
 
 concurrency:
+  # github.workflow is in the group so a run called by main-prerelease.yml or
+  # tag.yml does not serialise against a direct one on the same ref. Whether it
+  # resolves to the caller's name or this file's is NOT documented either way --
+  # if it is this file's, the two collide and the second queues behind the first,
+  # which is the behaviour before this line changed. Slow, never wrong.
   group: station-image-${{ github.workflow }}-${{ github.ref }}
   # Only supersede PR builds. A hand-run release must not be killed by someone
   # merging a PR that touches os/ -- possibly between creating the release and
