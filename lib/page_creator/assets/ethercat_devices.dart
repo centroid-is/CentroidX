@@ -983,6 +983,19 @@ class _EtherCatDeviceTableEditorState
             value: widget.config.problemsOnly,
             onChanged: (v) => setState(() => widget.config.problemsOnly = v),
           ),
+          const SizedBox(height: 16),
+          // Every other asset's form carries these, and without them the only
+          // way to change a table's box was the canvas's grow/shrink buttons,
+          // ten percent a click and both sides at once.
+          SizeField(
+            initialValue: widget.config.size,
+            onChanged: (s) => setState(() => widget.config.size = s),
+          ),
+          const SizedBox(height: 12),
+          CoordinatesField(
+            initialValue: widget.config.coordinates,
+            onChanged: (c) => setState(() => widget.config.coordinates = c),
+          ),
         ],
       ),
     );

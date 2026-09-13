@@ -134,6 +134,24 @@ void main() {
     expect(find.text('ST101.A1.01'), findsOneWidget);
   });
 
+  testWidgets('the config form resizes and moves the table', (tester) async {
+    final config = EtherCatDeviceTableConfig();
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: Builder(builder: config.configure)),
+    ));
+
+    Finder field(String label) => find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.labelText == label);
+    await tester.enterText(field('Width %'), '40');
+    await tester.enterText(field('Height %'), '25');
+    await tester.enterText(field('X 0-100%'), '10');
+    await tester.pump();
+
+    expect(config.size.width, closeTo(0.40, 1e-9));
+    expect(config.size.height, closeTo(0.25, 1e-9));
+    expect(config.coordinates.x, closeTo(0.1, 1e-9));
+  });
+
   group('reset commands', () {
     Future<void> press(
         WidgetTester tester, _FakeStateMan sm, EcCommandWriter writer) async {
