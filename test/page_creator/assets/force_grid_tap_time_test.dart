@@ -41,6 +41,8 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/state_man.dart' show StateMan;
 
+import '../../helpers/test_helpers.dart';
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -239,8 +241,8 @@ class _El9222StateMan implements StateMan {
 Widget _shell({required Widget body, required List<Override> overrides}) =>
     ProviderScope(
       overrides: overrides,
-      child: MaterialApp(
-        home: AccessDeniedPrompt(child: Scaffold(body: Center(child: body))),
+      child: PromptedApp(
+        home: Scaffold(body: Center(child: body)),
       ),
     );
 

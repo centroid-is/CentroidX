@@ -265,9 +265,9 @@ void main() {
   /// refusal has to reach, rather than a listener of the test's own.
   Widget host(List<Override> o) => ProviderScope(
         overrides: o,
-        child: const MaterialApp(
+        child: const PromptedApp(
           home: Scaffold(
-            body: AccessDeniedPrompt(child: AccessTemplatesSection()),
+            body: AccessTemplatesSection(),
           ),
         ),
       );

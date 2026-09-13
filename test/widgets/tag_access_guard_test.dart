@@ -3,9 +3,10 @@
 /// The claim this file exists to check is end-to-end and cannot be assembled
 /// out of unit assertions: an operator taps a control on a locked member, the
 /// prompt appears, **and the PLC never hears about it**. So every test here
-/// pumps a real `BaseScaffold` — which is where `AccessDeniedPrompt` is
-/// mounted — over a real `ProviderContainer`, and asserts on a fake
-/// `StateMan`'s `writes` list rather than on a mock's call log.
+/// pumps a real `BaseScaffold` under a real shell — `AccessDeniedPrompt` is
+/// mounted once above the router, as `centroid-hmi/lib/main.dart` mounts it —
+/// over a real `ProviderContainer`, and asserts on a fake `StateMan`'s
+/// `writes` list rather than on a mock's call log.
 ///
 /// The three things that must all be true at once, and each has its own test:
 ///
@@ -190,8 +191,14 @@ void _registerAppMenu() {
       label: 'Alarm View', path: '/alarm-view', icon: Icons.alarm));
 }
 
-/// A one-route Beamer shell around a real `BaseScaffold`, which is where
-/// `AccessDeniedPrompt` is mounted (`base_scaffold.dart:404`).
+/// A one-route Beamer shell around a real `BaseScaffold`, with
+/// `AccessDeniedPrompt` mounted over the router the way
+/// `centroid-hmi/lib/main.dart` mounts it.
+///
+/// The prompt is above the `Navigator`, not inside the scaffold. It was inside
+/// the scaffold once, and that was the defect: the router keeps every matching
+/// route mounted and `/` matches every path, so one prompt per scaffold was
+/// two prompts — and two dialogs — on a real station.
 Widget _shell({required Widget body, required List<Override> overrides}) {
   final delegate = BeamerDelegate(
     locationBuilder: RoutesLocationBuilder(routes: {
@@ -210,6 +217,12 @@ Widget _shell({required Widget body, required List<Override> overrides}) {
       child: MaterialApp.router(
         routerDelegate: delegate,
         routeInformationParser: BeamerParser(),
+        builder: (context, navigatorChild) => Stack(
+          children: [
+            navigatorChild!,
+            AccessDeniedPrompt(navigatorKey: delegate.navigatorKey),
+          ],
+        ),
       ),
     ),
   );

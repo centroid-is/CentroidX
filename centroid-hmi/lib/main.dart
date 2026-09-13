@@ -77,6 +77,7 @@ import 'package:tfc/core/secure_storage/macos.dart';
 import 'package:tfc/core/secure_storage/other.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import 'package:tfc/widgets/access_denied_prompt.dart';
 import 'package:tfc/widgets/access_session_ended_notice.dart';
 import 'package:tfc/widgets/proposal_banner.dart';
 import 'package:tfc/widgets/onscreen_keyboard.dart';
@@ -1086,6 +1087,26 @@ class MyApp extends ConsumerWidget {
                   // is indistinguishable from a hung one to the person
                   // standing at it. Renders nothing until it fires.
                   const AccessSessionEndedNotice(),
+                  // Says a write was refused, once, from the same "mounted
+                  // exactly once" slot and for the same reason. It used to be
+                  // mounted inside `BaseScaffold`, which meant one per page --
+                  // and the router keeps more than one page mounted, because
+                  // `RoutesLocationBuilder` stacks a page for every matching
+                  // route and `/` matches every path. Two scaffolds meant two
+                  // subscriptions to one broadcast stream, so one refused
+                  // write raised two dialogs with two stacked scrims: Close
+                  // twice, and the dim lifting in between.
+                  //
+                  // `routerDelegate.navigatorKey`, handed over directly: this
+                  // Stack is above the Navigator, so the prompt cannot find
+                  // one from its own context. Not `navigatorKeyProvider`,
+                  // which holds the same key but is published in a
+                  // `Future.microtask` and is still null for the first
+                  // build -- a refusal in that window would be dropped for a
+                  // reason that has nothing to do with the panel.
+                  //
+                  // Renders nothing until it fires.
+                  AccessDeniedPrompt(navigatorKey: routerDelegate.navigatorKey),
                   if (kKnowledgeEnabled && drawingVisible) const DrawingOverlay(),
                   if (kChatEnabled && chatEnabled && chatVisible) const ChatOverlay(),
                   // Chat FAB and MCP indicator — hidden when a nav

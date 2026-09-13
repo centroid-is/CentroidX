@@ -1,10 +1,11 @@
 /// Goldens for the one surface plan 03-07 puts in front of an operator: the
 /// prompt a refused write produces, over the page the operator was standing on.
 ///
-/// Two images:
+/// Three images:
 ///
 /// * `access_denied_prompt.png`          — nobody signed in: the lock, the permission the write needed, what was refused, the no-replay line, and both actions.
 /// * `access_denied_prompt_elevated.png` — the same refusal for somebody who *is* signed in and whose role lacks the group. The app bar names them; the prompt still offers to sign in as somebody else.
+/// * `access_denied_prompt_stacked_routes.png` — the same refusal on a router holding **two** pages, which is what a station actually runs. One prompt, one barrier. This configuration used to produce two of each; see `_stackedShellHost`.
 ///
 /// **The prompt itself carries no identity, and that is a finding rather than
 /// a defect in this test.** Plan 03-12's `<behavior>` asks the elevated image
@@ -172,13 +173,22 @@ void _registerShellMenu() {
       label: 'Alarm View', path: '/alarm-view', icon: Icons.alarm));
 }
 
-/// A one-route Beamer shell around a real [BaseScaffold].
+/// A one-route Beamer shell around a real [BaseScaffold], with the denial
+/// prompt mounted over the router the way `centroid-hmi/lib/main.dart` mounts
+/// it.
 ///
 /// [BaseScaffold] calls `context.currentBeamLocation`, so it cannot be pumped
-/// without a router above it, and it is [BaseScaffold] that mounts
-/// `AccessDeniedPrompt` (`base_scaffold.dart:404`) — which is the whole point
-/// of capturing the shell rather than the dialog on its own. The
-/// `ProviderScope` sits above `MaterialApp.router` so the root navigator's
+/// without a router above it — and capturing the shell rather than the dialog
+/// on its own is the whole point: what the operator sees is a prompt *over a
+/// plant page*, including how much of the page the barrier dims.
+///
+/// The prompt is in `MaterialApp.builder`, not in the scaffold. It used to be
+/// in the scaffold, and that is exactly what put two of them on a station: the
+/// router keeps every matching route mounted, `/` matches every path, and two
+/// scaffolds meant two dialogs with two stacked scrims. One mount, one scrim,
+/// and these goldens are where the scrim is actually looked at.
+///
+/// The `ProviderScope` sits above `MaterialApp.router` so the root navigator's
 /// overlay, where the dialog lands, is inside it.
 Widget _shellHost({
   required ThemeData theme,
@@ -208,6 +218,70 @@ Widget _shellHost({
         theme: theme,
         routerDelegate: router,
         routeInformationParser: BeamerParser(),
+        builder: (context, navigatorChild) => Stack(
+          children: [
+            navigatorChild!,
+            AccessDeniedPrompt(navigatorKey: router.navigatorKey),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// The same shell with **two** routes stacked, which is what a real station
+/// runs and what the one-route host above cannot show.
+///
+/// `RoutesLocationBuilder` builds a page for every route matching the
+/// location, and `/` matches every path, so standing on `/alarm-view` leaves
+/// the Home page mounted underneath it. Both are `BaseScaffold`s. When the
+/// prompt was mounted inside `BaseScaffold` this configuration produced two
+/// dialogs and two stacked `black54` barriers -- about 0.79 opacity instead of
+/// 0.54 -- and the operator had to press Close twice, watching the page get
+/// lighter in between.
+///
+/// This image is the fixed state of exactly that configuration: two pages, one
+/// prompt, one scrim.
+Widget _stackedShellHost({
+  required ThemeData theme,
+  required AccessSession session,
+  required Stream<AccessDenied> denials,
+}) {
+  final router = BeamerDelegate(
+    initialPath: '/alarm-view',
+    locationBuilder: RoutesLocationBuilder(routes: {
+      '/': (context, state, data) => const BeamPage(
+            key: ValueKey('/'),
+            title: 'Freezer infeed',
+            child: BaseScaffold(title: 'Freezer infeed', body: _PlantPage()),
+          ),
+      '/alarm-view': (context, state, data) => const BeamPage(
+            key: ValueKey('/alarm-view'),
+            title: 'Freezer infeed',
+            child: BaseScaffold(title: 'Freezer infeed', body: _PlantPage()),
+          ),
+    }).call,
+  );
+
+  return ProviderScope(
+    overrides: [
+      accessSessionProvider.overrideWith(() => _FixedSession(session)),
+      accessRepositoryProvider.overrideWith((ref) async => _StubRepository()),
+      accessDenialsProvider.overrideWithValue(denials),
+    ],
+    child: BeamerProvider(
+      routerDelegate: router,
+      child: MaterialApp.router(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        routerDelegate: router,
+        routeInformationParser: BeamerParser(),
+        builder: (context, navigatorChild) => Stack(
+          children: [
+            navigatorChild!,
+            AccessDeniedPrompt(navigatorKey: router.navigatorKey),
+          ],
+        ),
       ),
     ),
   );
@@ -382,6 +456,49 @@ void main() {
         await expectLater(
           find.byType(MaterialApp),
           matchesGoldenFile('goldens/access_denied_prompt_elevated.png'),
+        );
+      });
+    });
+
+    testWidgets('one prompt and one scrim over two stacked routes',
+        (tester) async {
+      await withClock(Clock.fixed(DateTime.utc(2026, 8, 30, 9, 0)), () async {
+        _sizeView(tester, const Size(1280, 800));
+        _registerShellMenu();
+
+        final denials = StreamController<AccessDenied>.broadcast();
+        addTearDown(denials.close);
+
+        await tester.pumpWidget(_stackedShellHost(
+          theme: light,
+          session: _anonymous(),
+          denials: denials.stream,
+        ));
+        await tester.pumpAndSettle();
+
+        // The premise: the router really is holding two pages. Without this
+        // the image would be the one-route picture under a different name.
+        expect(find.byType(BaseScaffold, skipOffstage: false), findsNWidgets(2));
+
+        final barriersAtRest = find.byType(ModalBarrier).evaluate().length;
+
+        denials.add(_denial);
+        await tester.pumpAndSettle();
+
+        // One prompt, and one barrier added by it. This is the subject of the
+        // image: two of them composited to roughly 0.79 and the operator saw
+        // the page lighten when the first of two Closes landed.
+        expect(find.byType(AccessDeniedPrompt, skipOffstage: false),
+            findsOneWidget);
+        expect(find.byKey(kAccessDeniedBodyKey), findsOneWidget);
+        expect(find.byType(ModalBarrier), findsNWidgets(barriersAtRest + 1));
+
+        final context = tester.element(find.byKey(kAccessDeniedBodyKey));
+        _expectPromptIsALock(tester, context);
+
+        await expectLater(
+          find.byType(MaterialApp),
+          matchesGoldenFile('goldens/access_denied_prompt_stacked_routes.png'),
         );
       });
     });

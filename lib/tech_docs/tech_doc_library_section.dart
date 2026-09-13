@@ -1193,8 +1193,9 @@ Then provide a summary of what this PLC code controls and how it is structured.'
       );
     } on AccessDenied {
       // The guard has already published the refusal to
-      // `accessDenialsProvider`, so `AccessDeniedPrompt` (mounted in
-      // `BaseScaffold`) is what tells the operator what is missing. A
+      // `accessDenialsProvider`, so `AccessDeniedPrompt` (mounted once in
+      // `centroid-hmi/lib/main.dart`) is what tells the operator what is
+      // missing. A
       // "Re-index failed: AccessDenied" snackbar would be a second message for
       // one action, and a worse one — it reads like a fault.
       progressNotifier.state = null;
