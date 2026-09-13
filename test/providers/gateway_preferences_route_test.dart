@@ -19,6 +19,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+import 'package:tfc_dart/core/access/guarded_preferences.dart';
+import 'package:tfc_dart/core/config/shared_row_preferences.dart';
+import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc/core/gateway_config.dart';
 import 'package:tfc/core/startup_url.dart';
 import 'package:tfc/providers/database.dart';
@@ -85,6 +88,15 @@ ProviderContainer _container({
 }
 
 void main() {
+  // Main's #465 made the device-local store a process-wide singleton that
+  // `main()` opens before `runApp`, and `createDeviceLocalPreferences()`
+  // throws rather than opening one lazily — a lazily-opened store is how a
+  // station comes up on default pages with its own pages still on disk. Every
+  // test here builds `preferencesProvider`, which reaches it, so the singleton
+  // is seeded in memory rather than a file being opened.
+  setUp(() => setDeviceLocalPreferencesForTest(InMemoryPreferences()));
+  tearDown(resetDeviceLocalPreferencesForTest);
+
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
@@ -184,21 +196,33 @@ void main() {
             'one panel reaching across and changing a value it does not own');
   });
 
-  test('direct mode is unchanged: a plain Preferences, and no slot in sight',
-      () async {
+  test('direct mode takes the row store, and no slot in sight', () async {
     final container = ProviderContainer(overrides: [
       gatewayConfigProvider.overrideWith((ref) async => const GatewayConfig()),
       databaseProvider.overrideWith((ref) async => null),
     ]);
     addTearDown(container.dispose);
 
-    final prefs = await container.read(systemPreferencesProvider.future);
-    await prefs.setString('alarm_man_config', '{"alarms":[]}');
+    final prefs = await container.read(preferencesProvider.future);
 
-    // The direct path writes its memory cache and the device-local mirror,
-    // with no wire anywhere. Reading it back through the same store is the
-    // behaviour every existing direct-mode test relies on.
-    expect(await prefs.getString('alarm_man_config'), '{"alarms":[]}');
+    // What "unchanged" means moved under this arm in main's #465, and the arm
+    // says the new thing rather than being loosened until the old thing
+    // passes. Direct mode used to build a plain `Preferences` whose write
+    // landed in a memory cache and the device-local mirror, so a write-then-
+    // read round trip held with no database at all. It now builds
+    // `SharedRowPreferences` over the shared `config_item` rows, and a shared
+    // write with no Postgres is *refused* — which is the point of the row
+    // store, not a regression in it: a value that only this station can see is
+    // the failure the whole cutover exists to end.
+    //
+    // So the round trip is gone and the type is asserted instead. The write
+    // path with a database behind it is `preferences_provider_test.dart`'s.
+    expect(prefs, isA<SharedRowPreferences>(),
+        reason: 'direct mode reads and writes the shared rows; a plain '
+            'Preferences here would be a station back on its own cache');
+    expect(prefs, isNot(isA<GuardedPreferences>()),
+        reason: 'the check lives in GuardedConfigStore.writePreference — a '
+            'second wrapper would put two audit rows on one write');
     expect(container.read(gatewayPreferencesSlotProvider).api, isNull,
         reason: 'nothing in direct mode may fill the relay slot');
   });

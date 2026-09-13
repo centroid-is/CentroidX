@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:logger/logger.dart';
 
@@ -11,7 +10,6 @@ import 'package:tfc_dart/core/access/guarded_state_man.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:open62541/open62541_types.dart' show DynamicValue;
 import 'package:tfc_dart/core/state_man.dart';
-import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart'
     show ClientConfig, RemoteStateMan;
 import '../core/gateway_state_man.dart';
@@ -32,28 +30,17 @@ part 'state_man.g.dart';
 /// windowed MSIX build with no console is discarded outright.
 final Logger _log = Logger();
 
-/// Reads `key_mappings`, seeding a default when the station has none.
-///
-/// [systemWrites] is where the **seed** goes, and only the seed. It is
-/// optional and falls back to [prefs] so every existing caller and every
-/// existing test keeps working untouched; `stateManProvider` passes
-/// `systemPreferencesProvider` so that a station booting with an empty store
-/// and nobody signed in is not denied its own default (`key_mappings` is a
-/// `configure` key). An operator editing key mappings still goes through the
-/// guarded object, because that write is not this one.
-Future<KeyMappings> fetchKeyMappings(PreferencesApi prefs,
-    {Preferences? systemWrites}) async {
-  var keyMappingsJson = await prefs.getString('key_mappings');
-  if (keyMappingsJson == null) {
-    final defaultKeyMappings = KeyMappings(nodes: {
-      "exampleKey": KeyMappingEntry(
-          opcuaNode: OpcUANodeConfig(namespace: 42, identifier: "identifier"))
-    });
-    keyMappingsJson = jsonEncode(defaultKeyMappings.toJson());
-    await (systemWrites ?? prefs).setString('key_mappings', keyMappingsJson);
-  }
-  return KeyMappings.fromJson(jsonDecode(keyMappingsJson));
-}
+// `fetchKeyMappings` was here, and it is deleted rather than left unused —
+// the same call main made about `KeyMappings.fromPrefs`, one layer up, and for
+// the same reason. It read `key_mappings` out of the preference store and
+// **wrote a two-key example mapping back** when it found nothing. After #465
+// the plant's wiring is `config_item` rows, so that read now finds null on a
+// fully wired plant and the seed would put nonsense into it. Its one remaining
+// caller, `stateManProvider`, reads `store.keyMappings` instead.
+//
+// `RelayedPreferences` still documents this function at its empty-slot write.
+// That note is now historical; the empty-slot behaviour it describes is
+// unchanged and still has other callers.
 
 /// Where [stateManProvider] publishes the relay client's alarm port, and the
 /// only way anything else can reach it.

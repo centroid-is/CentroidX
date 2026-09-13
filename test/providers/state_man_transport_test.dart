@@ -39,6 +39,8 @@ import 'package:tfc_relay_client/tfc_relay_client.dart'
     show ClientConfig, RemoteStateMan;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' show AlarmKeys;
 
+import 'package:tfc/providers/config_store.dart';
+
 import '../helpers/test_helpers.dart';
 
 /// What the gateway client was handed, recorded **before** one existed.
@@ -119,6 +121,15 @@ GatewayStateManFactory _recordingFactory(_RecordedDial into, int deadPort) => ({
         );
 
 void main() {
+  // Main's #465 made the device-local store a process-wide singleton that
+  // `main()` opens before `runApp`, and `createDeviceLocalPreferences()`
+  // throws rather than opening one lazily — a lazily-opened store is how a
+  // station comes up on default pages with its own pages still on disk. Every
+  // test here builds `preferencesProvider`, which reaches it, so the singleton
+  // is seeded in memory rather than a file being opened.
+  setUp(() => setDeviceLocalPreferencesForTest(InMemoryPreferences()));
+  tearDown(resetDeviceLocalPreferencesForTest);
+
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
@@ -253,6 +264,13 @@ void main() {
                       stateManConfig: StateManConfig(opcua: const []),
                     )),
             localPreferencesProvider.overrideWithValue(local),
+            // The plant's wiring is `config_item` rows since main's #465, so
+            // `stateManProvider` reads `store.keyMappings` and no longer looks
+            // at the preference blob. Seeding both keeps the arms above (which
+            // are about `state_man_config`, still a preference) working while
+            // this one gets the mapping from where production gets it.
+            configStoreProvider.overrideWith(
+                (ref) => createTestConfigStore(keyMappings: mappings)),
             stateManFactoryProvider.overrideWithValue(({
               required StateManConfig config,
               required KeyMappings keyMappings,

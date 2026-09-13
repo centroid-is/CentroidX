@@ -731,11 +731,14 @@ final class RelayedPreferences implements Preferences {
   /// copies database rows over the local store — which is precisely the
   /// mechanism that made device-local keys need defending in the first place,
   /// and which must never run on a transport whose shared store is remote.
-  @override
-  Future<void> syncToLocalCache() async {}
-
-  @override
-  Future<void> loadFromPostgres() async {}
+  // `syncToLocalCache` and `loadFromPostgres` were overridden here to
+  // neutralise them. Main's #465 deleted both from `Preferences` along with
+  // the `flutter_preferences` path they belonged to, so there is nothing left
+  // to neutralise and an `@override` on a member no supertype declares would
+  // be a claim this class no longer makes. The hazard they guarded against —
+  // a sync copying shared rows over the device-local store on a transport
+  // whose shared store is remote — cannot happen because the mechanism is
+  // gone, not because this class opts out of it.
 
   Future<void> dispose() async {
     for (final source in _sources) {

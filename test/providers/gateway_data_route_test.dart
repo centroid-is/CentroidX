@@ -234,6 +234,15 @@ Future<ProviderContainer> _gatewayPanelWithoutAClient() async {
 }
 
 void main() {
+  // Main's #465 made the device-local store a process-wide singleton that
+  // `main()` opens before `runApp`, and `createDeviceLocalPreferences()`
+  // throws rather than opening one lazily — a lazily-opened store is how a
+  // station comes up on default pages with its own pages still on disk. Every
+  // test here builds `preferencesProvider`, which reaches it, so the singleton
+  // is seeded in memory rather than a file being opened.
+  setUp(() => setDeviceLocalPreferencesForTest(InMemoryPreferences()));
+  tearDown(resetDeviceLocalPreferencesForTest);
+
   // ---------------------------------------------------------------------------
   // Gap A — timeseries
   // ---------------------------------------------------------------------------

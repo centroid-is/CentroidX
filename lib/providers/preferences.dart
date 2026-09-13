@@ -257,10 +257,6 @@ Future<Preferences> preferences(Ref ref) async {
   final db =
       gateway.isGateway ? null : await ref.watch(databaseProvider.future);
   final localCache = createDeviceLocalPreferences();
-  // Watched, not read: the store is built once and keeps its identity for the
-  // life of the process (`config_store.dart`), so this is a dependency edge
-  // rather than a rebuild source.
-  final store = await ref.watch(configStoreProvider.future);
 
   // **Two stores, because there are two transports, and the split is not
   // cosmetic.**
@@ -280,6 +276,15 @@ Future<Preferences> preferences(Ref ref) async {
   // fix: an alarm rule edited on one panel that never left it. So that arm
   // keeps the relayed store, wrapped in [GuardedPreferences] because there is
   // no `GuardedConfigStore` on this path to hold the check.
+  //
+  // **The store is watched inside the direct arm, never above the branch**,
+  // and that placement is load-bearing rather than tidy. `configStoreProvider`
+  // does `ref.listen(databaseProvider, ...)`, so watching it here at all makes
+  // this provider — which is `keepAlive` and watched by everything — depend on
+  // `databaseProvider` in gateway mode, and a gateway panel would pull its
+  // station's Postgres pool up at boot with no screen asking. That is the
+  // property `database_transport_test.dart`'s `h.touched()` pins, and it
+  // caught this exact line during the merge.
   //
   // **What this merge does not close**: `ConfigStore` itself has no relay
   // route. Preferences reach the backend over the pipe by name, as before, but
@@ -314,6 +319,10 @@ Future<Preferences> preferences(Ref ref) async {
       onDenied: (denial) => reportAccessDenial(ref, denial),
     );
   } else {
+    // Watched, not read: the store is built once and keeps its identity for
+    // the life of the process (`config_store.dart`), so this is a dependency
+    // edge rather than a rebuild source.
+    final store = await ref.watch(configStoreProvider.future);
     prefs = SharedRowPreferences(
       store: store,
       secureStorage: SecureStorage.getInstance(),
