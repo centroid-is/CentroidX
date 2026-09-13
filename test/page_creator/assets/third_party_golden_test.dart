@@ -30,6 +30,8 @@ import 'package:tfc/page_creator/assets/third_party_painter.dart';
 import 'package:tfc/theme.dart' show HmiColorRole;
 import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 
+import '../../helpers/golden_platform.dart';
+
 const _key = Key('third_party_golden');
 
 /// Golden canvas size for a kind, at that machine's true plan aspect ratio.
@@ -264,7 +266,7 @@ class _NoopPainter extends ThirdPartyMachinePainter {
 
 void main() {
   group('ThirdPartyEquipment plan-view goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     // One golden per equipment kind, running. These are the drawings to
     // review — each is a simplified plan view of the real machine, sourced
     // from the manufacturer photos and spec sheets cited at the top of
@@ -1118,7 +1120,7 @@ void main() {
       // regression through where it matters most.
       final previousComparator = goldenFileComparator;
       addTearDown(() => goldenFileComparator = previousComparator);
-      useTolerantGoldenComparator(tolerance: 0.002);
+      useTolerantGoldenComparator();
 
       await loadRealFont();
       // Taller than the field it is named for needs: #385 added the "Extra

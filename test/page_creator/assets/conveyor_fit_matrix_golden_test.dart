@@ -1,8 +1,8 @@
-import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/conveyor.dart';
+import '../../helpers/golden_platform.dart';
 
 const _key = Key('conveyor_fit_matrix');
 
@@ -75,7 +75,7 @@ Widget _matrix(List<Widget> cells) => MaterialApp(
 
 void main() {
   group('Conveyor fit matrix',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('turns across box aspect ratios', (tester) async {
       tester.view.physicalSize = const Size(1500, 1100);
       tester.view.devicePixelRatio = 1.0;

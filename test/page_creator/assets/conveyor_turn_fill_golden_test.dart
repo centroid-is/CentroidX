@@ -16,11 +16,11 @@
 // stores them, so each cell is what that one configured belt looks like on
 // that one screen.
 
-import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/conveyor.dart';
+import '../../helpers/golden_platform.dart';
 
 const _key = Key('conveyor_turn_fill');
 
@@ -86,7 +86,7 @@ Widget _matrix(List<Widget> cells) => MaterialApp(
 
 void main() {
   group('Conveyor turn fill',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('the same belt across window shapes', (tester) async {
       // Desktop, ultrawide, 4:3, square and portrait. The belt should read as
       // the same belt in all of them, filling its box in each.

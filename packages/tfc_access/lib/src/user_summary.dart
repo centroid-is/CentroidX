@@ -7,6 +7,8 @@
 /// `tfc_relay_protocol`, which is where encoding belongs.
 library;
 
+import 'role_set.dart';
+
 /// One row of the users roster, for `AccessAdminApi.listUsers`.
 ///
 /// **Not [AuthenticatedUser].** That type answers "who is this session?" — it
@@ -40,6 +42,8 @@ final class UserSummary {
     this.createdAt,
     this.lastLoginAt,
     this.allowedPages,
+    this.additionalRoles = const <String>[],
+    this.inactivityTimeoutMinutes,
   });
 
   /// The account name — `app_user.username`, the primary key.
@@ -79,6 +83,29 @@ final class UserSummary {
   /// When the account last signed in, or null when it never has.
   final DateTime? lastLoginAt;
 
+  /// The roles this account holds **beyond** [roleName], decoded and in
+  /// order — `app_user.additional_roles`.
+  ///
+  /// Empty is the ordinary case and means "holds only its primary role". The
+  /// primary stays in [roleName] rather than being folded into a single list,
+  /// because the row's own column does: `normaliseRoleNames` derives the whole
+  /// set from the pair, and a DTO that flattened them would have to pick one
+  /// back out to write the row.
+  ///
+  /// Defaults to empty, which is also what a backend older than this field
+  /// means: before an account could hold more than one role, every account
+  /// held exactly its primary. Under-claiming is the safe direction here, as
+  /// it is for [hasPassword].
+  final List<String> additionalRoles;
+
+  /// This account's own inactivity window in minutes, or null to use the
+  /// station default — `app_user.inactivity_timeout_minutes`.
+  ///
+  /// Null is "no value of its own", not "never expires": only
+  /// [stationAccount] makes a session immortal. `resolveInactivityTimeout`
+  /// is the one place the null case and the clamping are decided.
+  final int? inactivityTimeoutMinutes;
+
   /// This account's personal page whitelist, decoded — `app_user.allowed_pages`.
   ///
   /// **Null and empty are different claims**, as everywhere else the whitelist
@@ -95,9 +122,20 @@ final class UserSummary {
   /// this type is about there being nowhere to put one, and that is unchanged.
   final Set<String>? allowedPages;
 
+  /// Every role this account holds, primary first — [roleName] and
+  /// [additionalRoles] composed through the one normaliser.
+  ///
+  /// The DTO's answer to `AccessRepository.rolesOf`, which does the same for a
+  /// drift row. Two derivations of "which roles does this account hold" is how
+  /// the roster and the session start disagreeing about one person, so the
+  /// screens call this rather than reading the two fields.
+  List<String> get roles =>
+      normaliseRoleNames(primary: roleName, additional: additionalRoles);
+
   @override
   String toString() => 'UserSummary($username, role: $roleName, '
       'station: $stationAccount, password: $hasPassword, '
       'created: $createdAt, lastLogin: $lastLoginAt, '
+      'alsoHolds: $additionalRoles, timeout: $inactivityTimeoutMinutes, '
       'pages: $allowedPages)';
 }

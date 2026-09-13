@@ -28,6 +28,7 @@ import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../helpers/test_helpers.dart';
+import '../helpers/golden_platform.dart';
 
 /// Tall enough that the expanded card is laid out and painted at once — the
 /// sections live in a SingleChildScrollView, and anything below the fold
@@ -130,7 +131,7 @@ void main() {
   });
 
   group('server credentials golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('expanded card with a stored password', (tester) async {
       await tester.binding.setSurfaceSize(_surface);
       // 1:1 pixels — this golden is for reading in a PR, not pixel

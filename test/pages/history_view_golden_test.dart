@@ -119,9 +119,7 @@ Future<void> _expectGolden(WidgetTester tester, String name) =>
     expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/$name'));
 
 void main() {
-  // Full-app-surface frames (1400×900): more room for cross-machine
-  // rasterisation drift than the 0.01% default allows for.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   testWidgets('full page — historical graph with three keys', (tester) async {
     await _pump(

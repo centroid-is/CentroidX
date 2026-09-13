@@ -330,6 +330,9 @@ abstract final class AccessMethods {
   static const adminDeleteUser = 'accessAdmin.deleteUser';
   static const adminSetUserRole = 'accessAdmin.setUserRole';
   static const adminSetUserStationAccount = 'accessAdmin.setUserStationAccount';
+  static const adminSetUserRoles = 'accessAdmin.setUserRoles';
+  static const adminSetUserInactivityTimeout =
+      'accessAdmin.setUserInactivityTimeout';
   static const adminSetRolePages = 'accessAdmin.setRolePages';
   static const adminSetUserPages = 'accessAdmin.setUserPages';
   static const adminSetUserPassword = 'accessAdmin.setUserPassword';
@@ -346,6 +349,8 @@ abstract final class AccessMethods {
     adminDeleteUser,
     adminSetUserRole,
     adminSetUserStationAccount,
+    adminSetUserRoles,
+    adminSetUserInactivityTimeout,
     adminSetRolePages,
     adminSetUserPages,
     adminSetUserPassword,

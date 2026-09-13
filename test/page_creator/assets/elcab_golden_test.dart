@@ -9,7 +9,6 @@
 /// To update: flutter test test/page_creator/assets/elcab_golden_test.dart --update-goldens
 library;
 
-import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/elcab.dart';
+import '../../helpers/golden_platform.dart';
 
 const _boundaryKey = Key('elcab_golden');
 
@@ -59,7 +59,7 @@ Future<void> _pumpCabinet(WidgetTester tester, {double? angle}) async {
 
 void main() {
   group('Electrical cabinet golden tests',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('no angle renders exactly as before', (tester) async {
       await _pumpCabinet(tester);
       await expectLater(

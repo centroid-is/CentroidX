@@ -169,6 +169,16 @@ final class _RecordingAdmin implements AccessAdminApi {
           {String? reason}) async =>
       writes.add('setUserStationAccount:$subject:$value');
   @override
+  Future<void> setUserRoles(String subject, List<String> newRoles,
+          {String? reason}) async =>
+      writes.add('setUserRoles:$subject:${newRoles.join('+')}');
+  @override
+  // `null` spelled out: clearing the account's own window is a write, and a
+  // trace that rendered it as an empty string would not tell it from one.
+  Future<void> setUserInactivityTimeout(String subject, int? minutes,
+          {String? reason}) async =>
+      writes.add('setUserInactivityTimeout:$subject:${minutes ?? 'null'}');
+  @override
   // Null and the empty set are recorded differently on purpose: a fake that
   // spelled both `pages=` would let an implementation collapse "no whitelist"
   // into "block all" and still pass every arm below.
@@ -313,6 +323,17 @@ const Map<String, Map<String, Object?>> _validParams = {
   // two apart; a table that only ever sent null would leave the list decode
   // unexercised, and one that only ever sent a list would leave the clear.
   // The clear is covered by the contract kit's own arms.
+  AccessMethods.adminSetUserRoles: {
+    'subject': 'ST999-panel',
+    'newRoles': ['Wire Role']
+  },
+  // A number here and the null form left to the contract kit, the same split
+  // the page rows below use: `_pages` and this parameter both have to survive
+  // a present-null, and both legal shapes need exercising somewhere.
+  AccessMethods.adminSetUserInactivityTimeout: {
+    'subject': 'ST999-panel',
+    'minutes': 30
+  },
   AccessMethods.adminSetRolePages: {
     'subject': 'Wire Role',
     'pages': ['/fillet']
@@ -416,12 +437,14 @@ void main() {
             'with no params row cannot have its post-hello half exercised, '
             'and a row naming nothing on the wire is a claim about surface '
             'that does not exist');
-    expect(AccessMethods.all, hasLength(30),
+    expect(AccessMethods.all, hasLength(32),
         reason: 'twenty-eight was the count the audit cut settled on '
             '(accessTemplates.template removed, no caller anywhere); thirty '
             'since the page-visibility whitelist added setRolePages and '
-            'setUserPages. A thirty-first is an access-control decision, not '
-            'a convenience — grow this literal deliberately');
+            'setUserPages, and thirty-two since multi-role accounts added '
+            'setUserRoles and setUserInactivityTimeout. A thirty-third is an '
+            'access-control decision, not a convenience — grow this literal '
+            'deliberately');
   });
 
   group('the handshake gate covers every access method', () {

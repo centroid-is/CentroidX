@@ -138,10 +138,11 @@ class _RecordingStore extends AccessAdminStore {
     required String username,
     required String password,
     required String roleName,
+    List<String> additionalRoles = const <String>[],
     String origin = 'operator',
     String? reason,
   }) async {
-    calls.add('createUser:$username:$roleName');
+    calls.add('createUser:$username:${[roleName, ...additionalRoles].join('+')}');
     await _hold();
     final boom = createThrowsOnce;
     if (boom != null) {
@@ -152,6 +153,7 @@ class _RecordingStore extends AccessAdminStore {
         username: username,
         password: password,
         roleName: roleName,
+        additionalRoles: additionalRoles,
         origin: origin,
         reason: reason);
   }
@@ -203,15 +205,23 @@ class _RecordingStore extends AccessAdminStore {
   }
 
   @override
-  Future<void> setUserRole(String username, String roleName,
+  Future<void> setUserInactivityTimeout(String username, int? minutes,
       {String origin = 'operator', String? reason}) async {
-    calls.add('setUserRole:$username:$roleName');
+    calls.add('setUserInactivityTimeout:$username:$minutes');
+    return super.setUserInactivityTimeout(username, minutes,
+        origin: origin, reason: reason);
+  }
+
+  @override
+  Future<void> setUserRoles(String username, List<String> roleNames,
+      {String origin = 'operator', String? reason}) async {
+    calls.add('setUserRole:$username:${roleNames.join('+')}');
     final boom = setRoleThrowsOnce;
     if (boom != null) {
       setRoleThrowsOnce = null;
       throw boom;
     }
-    return super.setUserRole(username, roleName,
+    return super.setUserRoles(username, roleNames,
         origin: origin, reason: reason);
   }
 }
@@ -317,8 +327,6 @@ void main() {
         authProviderProvider.overrideWith((ref) async => auth),
         auditSinkProvider.overrideWith((ref) async => sink),
         stationNameProvider.overrideWithValue(_kStation),
-        inactivityTimeoutProvider
-            .overrideWith((ref) async => const Duration(minutes: 15)),
         accessAdminStoreProvider.overrideWith((ref) async {
           if (storeNeverResolves) {
             return Completer<AccessAdminStore?>().future;
@@ -355,6 +363,14 @@ void main() {
     return UncontrolledProviderScope(
       container: c,
       child: MaterialApp(
+        // No splash, for an environment reason rather than a design one: the
+        // Material 3 ink sparkle loads `shaders/ink_sparkle.frag`, and on this
+        // SDK the bundled asset carries Vulkan stages only — so a tap whose
+        // ripple actually animates throws "does not contain appropriate
+        // runtime stage data for current backend (SkSL)" and fails the test
+        // for something no screen here is about. Nothing in this file asserts
+        // a ripple; the goldens live in `access_admin_golden_test.dart`.
+        theme: ThemeData(splashFactory: NoSplash.splashFactory),
         home: Scaffold(
           body: AccessDeniedPrompt(
             child: SingleChildScrollView(
@@ -397,6 +413,128 @@ void main() {
   /// asked for the gate.
   Future<AccessSession> sessionInForce() =>
       container!.read(accessSessionProvider.future);
+
+  // -------------------------------------------------------------------------
+  // The per-account inactivity timeout
+  //
+  // It used to be one device-local number for the whole panel, with a switch
+  // that made every session on that panel immortal. It is an account's own
+  // property now, edited here beside the account it governs.
+  // -------------------------------------------------------------------------
+  group('the inactivity timeout', () {
+    Future<void> seedBob({int? minutes, bool stationAccount = false}) async {
+      await repository.createUser(
+          username: 'bob', password: 'pw', roleName: 'Shift Leader');
+      if (minutes != null) {
+        await repository.setInactivityTimeout('bob', minutes);
+      }
+      if (stationAccount) await repository.setStationAccount('bob', true);
+    }
+
+    Future<int?> storedMinutes() async => (await repository.listUsers())
+        .singleWhere((u) => u.username == 'bob')
+        .inactivityTimeoutMinutes;
+
+    testWidgets('the dialog opens seeded with what the account gets, and saves '
+        'a new value', (tester) async {
+      await seedBob();
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserTimeoutKey('bob')));
+      await tester.pumpAndSettle();
+
+      final field =
+          tester.widget<TextField>(find.byKey(kAccessUserTimeoutFieldKey));
+      expect(field.controller!.text,
+          kDefaultInactivityTimeout.inMinutes.toString(),
+          reason: 'an account with no value of its own still gets a window, '
+              'and the field opens on the one it is actually getting');
+
+      await tester.enterText(find.byKey(kAccessUserTimeoutFieldKey), '45');
+      await tester.tap(find.byKey(kAccessUserTimeoutSaveKey));
+      await tester.pumpAndSettle();
+
+      expect(await storedMinutes(), 45);
+      expect(store!.calls, contains('setUserInactivityTimeout:bob:45'));
+    });
+
+    testWidgets('"Use default" clears the account\'s own value',
+        (tester) async {
+      await seedBob(minutes: 45);
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserTimeoutKey('bob')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserTimeoutDefaultKey));
+      await tester.pumpAndSettle();
+
+      expect(await storedMinutes(), isNull,
+          reason: 'null is the account following the default, which is a '
+              'different state from any number it could be given');
+    });
+
+    testWidgets('an account already on the default is not offered "Use '
+        'default"', (tester) async {
+      await seedBob();
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserTimeoutKey('bob')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessUserTimeoutDefaultKey), findsNothing,
+          reason: 'it would be a button that does nothing');
+    });
+
+    testWidgets('out-of-range input refuses, says the range, and writes '
+        'nothing', (tester) async {
+      await seedBob();
+      await pumpSection(tester, overrides());
+
+      await tester.tap(find.byKey(kAccessUserTimeoutKey('bob')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(kAccessUserTimeoutFieldKey), '0');
+      await tester.tap(find.byKey(kAccessUserTimeoutSaveKey));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessUserTimeoutRangeKey), findsOneWidget);
+      expect(find.byKey(kAccessUserTimeoutFieldKey), findsOneWidget,
+          reason: 'the dialog stays open so the number can be corrected');
+      expect(await storedMinutes(), isNull);
+      expect(store!.calls, isNot(contains(startsWith('setUserInactivityTimeout'))));
+    });
+
+    testWidgets('the row tags an account that has a window of its own',
+        (tester) async {
+      await seedBob(minutes: 45);
+      await pumpSection(tester, overrides());
+
+      expect(find.byKey(kAccessUserTimeoutTagKey('bob')), findsOneWidget);
+      expect(find.text(kAccessUserTimeoutTag(45)), findsOneWidget);
+    });
+
+    testWidgets('an account on the default carries no tag', (tester) async {
+      await seedBob();
+      await pumpSection(tester, overrides());
+
+      expect(find.byKey(kAccessUserTimeoutTagKey('bob')), findsNothing);
+    });
+
+    testWidgets('a station account has no timeout to set', (tester) async {
+      // Disabled because the setting does not apply — its sessions never
+      // expire — and not for lack of a permission, which this screen never
+      // greys anything for. The tooltip is what says which.
+      await seedBob(minutes: 45, stationAccount: true);
+      await pumpSection(tester, overrides());
+
+      final button =
+          tester.widget<IconButton>(find.byKey(kAccessUserTimeoutKey('bob')));
+      expect(button.onPressed, isNull);
+      expect(button.tooltip, kAccessUserTimeoutStationTooltip);
+      expect(find.byKey(kAccessUserTimeoutTagKey('bob')), findsNothing,
+          reason: 'a stored number governs nothing while the flag is set, so '
+              'showing it beside the role would only mislead');
+    });
+  });
 
   /// Signs [username] in on the **real** controller, so the session in force is
   /// elevated and the `users` gate above the section is open.
@@ -729,16 +867,82 @@ void main() {
       await makeUser('bjorn', 'Shift Leader');
       await pumpSection(tester, overrides());
 
+      // A move is now two taps, because the picker is a multi-select: untick
+      // what is held, tick what is wanted.
       await openRolePicker(tester, 'bjorn');
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Shift Leader')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
       await tester.pumpAndSettle();
 
       expect((await userNamed('bjorn'))!.roleName, 'Maintenance');
+      expect((await userNamed('bjorn'))!.additionalRoles, isNull,
+          reason: 'one role is stored as NULL, not as an empty array — a '
+              'single-role account is byte-identical to what v8 wrote');
       expect(cell(tester, kAccessUserRoleKey('bjorn')), 'Maintenance',
           reason: 'the roster is invalidated after every successful write');
       expect(store!.calls.where((c) => c.startsWith('setUserRole')).length, 1);
+    });
+
+    testWidgets('a second role is added beside the first, and both are shown',
+        (tester) async {
+      await makeUser('bjorn', 'Shift Leader');
+      await pumpSection(tester, overrides());
+
+      await openRolePicker(tester, 'bjorn');
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
+      await tester.pumpAndSettle();
+
+      final row = (await userNamed('bjorn'))!;
+      expect(row.roleName, 'Shift Leader',
+          reason: 'the role already held stays primary — ticking a second one '
+              'must not move role_name onto it');
+      expect(decodeAdditionalRoles(row.additionalRoles), ['Maintenance']);
+      expect(cell(tester, kAccessUserRoleKey('bjorn')),
+          'Shift Leader + Maintenance',
+          reason: 'the roster shows every role, so adding one does not read '
+              'as a demotion');
+    });
+
+    testWidgets('what the account may do is the union of its roles',
+        (tester) async {
+      // Shift Leader has no `device`; Maintenance does. Holding both must
+      // grant it — a second role widens and never narrows.
+      await makeUser('bjorn', 'Shift Leader');
+      await pumpSection(tester, overrides());
+
+      await openRolePicker(tester, 'bjorn');
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
+      await tester.pumpAndSettle();
+
+      final who = await realAuth().authenticate('bjorn', 'correct horse');
+      expect(who, isNotNull);
+      expect(who!.roleNames, ['Shift Leader', 'Maintenance']);
+    });
+
+    testWidgets('unticking everything offers no way to save', (tester) async {
+      await makeUser('bjorn', 'Shift Leader');
+      await pumpSection(tester, overrides());
+
+      await openRolePicker(tester, 'bjorn');
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Shift Leader')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessUserRoleNoneKey), findsOneWidget,
+          reason: 'the disabled confirm is never unexplained');
+      await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessUserRoleConfirmKey), findsOneWidget,
+          reason: 'the dialog stays open — an account with no role could not '
+              'sign in and the repository refuses it');
+      expect(store!.calls.where((c) => c.startsWith('setUserRole')), isEmpty);
     });
 
     testWidgets('choosing the role already held writes nothing',
@@ -894,6 +1098,8 @@ void main() {
       await pumpSection(tester, overrides());
 
       await openRolePicker(tester, 'admin');
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Engineering')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
@@ -982,6 +1188,8 @@ void main() {
       expect(find.byKey(kAccessUsersSectionKey), findsOneWidget);
 
       await openRolePicker(tester, 'admin');
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Engineering')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
@@ -1260,6 +1468,11 @@ void main() {
       await pumpSection(tester, overrides());
       await openCreate(tester);
       await fillCreate(tester, username: 'newbie', password: 'correct horse');
+      // The dialog opens with the narrowest role ticked; untick it so that
+      // what this test asserts is the picked role and not a union with the
+      // default.
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Operator')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
       await tester.pumpAndSettle();
 
@@ -1275,6 +1488,29 @@ void main() {
       final who = await realAuth().authenticate('newbie', 'correct horse');
       expect(who?.roleName, 'Maintenance',
           reason: 'the credential reached the repository and nowhere else');
+    });
+
+    testWidgets('an account can be created holding two roles at once',
+        (tester) async {
+      await makeUser('admin', 'Engineering');
+      await pumpSection(tester, overrides());
+      await openCreate(tester);
+      await fillCreate(tester, username: 'newbie', password: 'correct horse');
+      // Operator is ticked by default; add Maintenance beside it.
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(kAccessUserCreateConfirmKey));
+      await tester.pumpAndSettle();
+
+      final row = (await userNamed('newbie'))!;
+      expect(row.roleName, 'Operator');
+      expect(decodeAdditionalRoles(row.additionalRoles), ['Maintenance']);
+      expect(cell(tester, kAccessUserRoleKey('newbie')),
+          'Operator + Maintenance');
+
+      final who = await realAuth().authenticate('newbie', 'correct horse');
+      expect(who?.roleNames, ['Operator', 'Maintenance']);
     });
 
     testWidgets('a failure never renders the exception', (tester) async {

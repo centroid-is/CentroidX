@@ -334,7 +334,8 @@ class FakeAccessServices
         username: params.subject,
         roleName: params.grantedRole,
         hasPassword: params.password.isNotEmpty,
-        createdAt: _nextCreatedAt());
+        createdAt: _nextCreatedAt(),
+        additionalRoles: params.additionalRoles);
     _passwords[params.subject] = params.password;
     _touch('admin.createUser:${params.subject}');
   }
@@ -361,7 +362,9 @@ class FakeAccessServices
           hasPassword: existing.hasPassword,
           createdAt: existing.createdAt,
           lastLoginAt: existing.lastLoginAt,
-          allowedPages: existing.allowedPages);
+          allowedPages: existing.allowedPages,
+          additionalRoles: existing.additionalRoles,
+          inactivityTimeoutMinutes: existing.inactivityTimeoutMinutes);
     }
     _touch('admin.setUserRole:$subject->$newRole');
   }
@@ -380,9 +383,55 @@ class FakeAccessServices
           hasPassword: existing.hasPassword,
           createdAt: existing.createdAt,
           lastLoginAt: existing.lastLoginAt,
-          allowedPages: existing.allowedPages);
+          allowedPages: existing.allowedPages,
+          additionalRoles: existing.additionalRoles,
+          inactivityTimeoutMinutes: existing.inactivityTimeoutMinutes);
     }
     _touch('admin.setUserStationAccount:$subject=$value');
+  }
+
+  @override
+  Future<void> setUserRoles(String subject, List<String> newRoles,
+      {String? reason}) async {
+    requireGroup(AccessGroup.users, subject, 'admin.setUserRoles');
+    final existing = _users[subject];
+    if (existing != null && newRoles.isNotEmpty) {
+      _users[subject] = UserSummary(
+          username: existing.username,
+          roleName: newRoles.first,
+          displayName: existing.displayName,
+          stationAccount: existing.stationAccount,
+          hasPassword: existing.hasPassword,
+          createdAt: existing.createdAt,
+          lastLoginAt: existing.lastLoginAt,
+          allowedPages: existing.allowedPages,
+          additionalRoles: newRoles.skip(1).toList(growable: false),
+          inactivityTimeoutMinutes: existing.inactivityTimeoutMinutes);
+    }
+    _touch('admin.setUserRoles:$subject->${newRoles.join('+')}');
+  }
+
+  @override
+  Future<void> setUserInactivityTimeout(String subject, int? minutes,
+      {String? reason}) async {
+    requireGroup(AccessGroup.users, subject, 'admin.setUserInactivityTimeout');
+    final existing = _users[subject];
+    if (existing != null) {
+      _users[subject] = UserSummary(
+          username: existing.username,
+          roleName: existing.roleName,
+          displayName: existing.displayName,
+          stationAccount: existing.stationAccount,
+          hasPassword: existing.hasPassword,
+          createdAt: existing.createdAt,
+          lastLoginAt: existing.lastLoginAt,
+          allowedPages: existing.allowedPages,
+          additionalRoles: existing.additionalRoles,
+          inactivityTimeoutMinutes: minutes);
+    }
+    // Null and a number are different writes — clearing the account's own
+    // window is not the same as setting one — so the trace tells them apart.
+    _touch('admin.setUserInactivityTimeout:$subject=${minutes ?? 'null'}');
   }
 
   @override
@@ -440,7 +489,9 @@ class FakeAccessServices
           hasPassword: params.password.isNotEmpty,
           createdAt: existing.createdAt,
           lastLoginAt: existing.lastLoginAt,
-          allowedPages: existing.allowedPages);
+          allowedPages: existing.allowedPages,
+          additionalRoles: existing.additionalRoles,
+          inactivityTimeoutMinutes: existing.inactivityTimeoutMinutes);
     }
     _touch('admin.setUserPassword:${params.subject}');
   }

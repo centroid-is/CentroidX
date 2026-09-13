@@ -72,6 +72,7 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 // ---------------------------------------------------------------------------
 // Fixtures — this file's own
@@ -255,14 +256,10 @@ Future<void> _loadRealFonts() async {
 void main() {
   final (light, _) = muted();
 
-  // A full app surface with real text, like `conveyor_gate_force_pane_golden`:
-  // the 0.01% default absorbs antialiasing drift on small painter goldens but
-  // not on a frame this size. A real regression here — a field that lost its
-  // lock, a number that stopped rendering — moves far more than 0.2%.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('conveyor locked-pane golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(_loadRealFonts);
 
     tearDown(() {

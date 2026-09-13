@@ -65,7 +65,7 @@ import 'docker_compose.dart';
 const String createdSubject = 'freshly created (onCreate)';
 
 /// The subject drift lifted from a hand-built v6 shape with `onUpgrade(6, 7)`.
-const String upgradedSubject = 'upgraded from v6 (onUpgrade 6 -> 8)';
+const String upgradedSubject = 'upgraded from v6 (onUpgrade 6 -> 10)';
 
 const List<String> subjects = <String>[createdSubject, upgradedSubject];
 
@@ -341,7 +341,7 @@ Future<int> historyCount(pg.Connection c) async {
 // ---------------------------------------------------------------------------
 
 /// The database exactly as schema v6 leaves it: `alarm_history`'s foreign key
-/// present, none of v8's three columns, and the v6 access tables **without**
+/// present, none of v10's three columns, and the v6 access tables **without**
 /// `allowed_pages`, which is v7's addition.
 ///
 /// The access tables are here even though nothing in this file reads them,
@@ -442,7 +442,7 @@ const List<String> v6Ddl = <String>[
 // ---------------------------------------------------------------------------
 
 void main() {
-  group('alarm_history schema v8, against a real Postgres', () {
+  group('alarm_history schema v10, against a real Postgres', () {
     setUpAll(() async {
       // Two AppDatabase instances are open at once ON PURPOSE — one per
       // subject, each against its own physical database. Drift's warning is
@@ -532,7 +532,7 @@ void main() {
         expect(migrationFailures[subject], isNull,
             reason: 'the migration for the "$subject" subject THREW: '
                 '${describe(migrationFailures[subject])}. Every arm below is '
-                'about the shape v8 produces, and none of them can mean '
+                'about the shape v10 produces, and none of them can mean '
                 'anything until it produces one. On a real station this is '
                 'not a failed test — it is a backend that will not open its '
                 'database.');
@@ -693,7 +693,7 @@ void main() {
     // ------------------------------------------------------------------ 3 --
     group('the upgrade itself', () {
       test(
-          'arm 3: a v6-shaped Postgres database reaches v8 — FK gone, three '
+          'arm 3: a v6-shaped Postgres database reaches v10 — FK gone, three '
           'columns added, partial unique index created', () async {
         final c = conns[upgradedSubject]!;
 
@@ -709,12 +709,15 @@ void main() {
         // The literal, not `drifts[createdSubject]!.schemaVersion`: this arm
         // is about the upgrade arriving at a NAMED version, and reading the
         // number off the thing under test would pass for any number at all.
-        // 8 rather than 7 because main's page-visibility whitelist took 7
-        // when the two branches collided; the alarm change moved up.
-        expect(await readDriftMarker(c), 8,
-            reason: 'the upgraded database did not end at schema version 8. '
+        // 10, not 8: main took 7 (page-visibility whitelist), then 8
+        // (per-account inactivity timeout) and 9 (additional roles), and the
+        // alarm change moved up each time. The file keeps its v8 name — it is
+        // the arm's history, and renaming it on every renumber would lose the
+        // thread rather than record it.
+        expect(await readDriftMarker(c), 10,
+            reason: 'the upgraded database did not end at schema version 10. '
                 'It was stamped 6 and opened with the real AppDatabase, so '
-                'either schemaVersion is not yet 8 or onUpgrade threw.');
+                'either schemaVersion is not yet 10 or onUpgrade threw.');
 
         final fks = await foreignKeysToAlarm(c);
         expect(fks, isEmpty,

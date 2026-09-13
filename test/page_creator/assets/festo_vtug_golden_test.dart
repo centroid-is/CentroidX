@@ -8,6 +8,7 @@ import 'package:tfc/page_creator/assets/vtug.dart';
 import 'package:tfc/painter/festo/valve_symbol.dart';
 import 'package:tfc/painter/festo/vtug.dart';
 import 'package:tfc/theme.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Goldens of the Festo VTUG-14 terminal and its pane.
 ///
@@ -150,7 +151,7 @@ void main() {
         find.byType(VtugWidget),
         matchesGoldenFile('goldens/festo/vtug_idle.png'),
       );
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('coils energised across both bytes', (tester) async {
       // Position 1 coil 14 (bit 0), position 4 coil 12 (bit 7), position 5
@@ -167,7 +168,7 @@ void main() {
         find.byType(VtugWidget),
         matchesGoldenFile('goldens/festo/vtug_energised.png'),
       );
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('a mixed manifold — two positions blanked', (tester) async {
       await tester.pumpWidget(host(drawing(
@@ -182,7 +183,7 @@ void main() {
         find.byType(VtugWidget),
         matchesGoldenFile('goldens/festo/vtug_mixed.png'),
       );
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('two valves held by hand', (tester) async {
       // Position 2 held at port 4 — coil 14 lit. Position 5 held at port 2,
@@ -220,7 +221,7 @@ void main() {
         find.byType(VtugWidget),
         matchesGoldenFile('goldens/festo/vtug_held.png'),
       );
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('nothing arriving — every lamp unknown, node included',
         (tester) async {
@@ -233,7 +234,7 @@ void main() {
         find.byType(VtugWidget),
         matchesGoldenFile('goldens/festo/vtug_dark.png'),
       );
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
   });
 
   group('the pane', () {
@@ -293,7 +294,7 @@ void main() {
         find.byKey(const Key('pane-golden')),
         matchesGoldenFile('goldens/festo/vtug_pane.png'),
       );
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('the same pane on a dark station', (tester) async {
       // The dark variant is not decoration. Every low-emphasis edge in this
@@ -305,7 +306,7 @@ void main() {
         find.byKey(const Key('pane-golden')),
         matchesGoldenFile('goldens/festo/vtug_pane_dark.png'),
       );
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('no command keys — the force section says so', (tester) async {
       await tester.pumpWidget(pane(
@@ -316,7 +317,7 @@ void main() {
         find.byKey(const Key('pane-golden')),
         matchesGoldenFile('goldens/festo/vtug_pane_read_only.png'),
       );
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
   });
 
   group('the valve schematics', () {
@@ -396,7 +397,7 @@ void main() {
         find.byKey(const Key('symbol-grid')),
         matchesGoldenFile('goldens/festo/valve_symbols.png'),
       );
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('the same grid on a dark station', (tester) async {
       await tester.pumpWidget(grid(dark: true));
@@ -404,7 +405,7 @@ void main() {
         find.byKey(const Key('symbol-grid')),
         matchesGoldenFile('goldens/festo/valve_symbols_dark.png'),
       );
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
   });
 
   group('the bus node section', () {
@@ -429,6 +430,6 @@ void main() {
         find.byType(Column).first,
         matchesGoldenFile('goldens/festo/cteu_section.png'),
       );
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
   });
 }

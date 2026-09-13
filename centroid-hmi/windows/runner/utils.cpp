@@ -310,11 +310,35 @@ void ConfigureUnattendedOperation() {
   // Restart after a crash or a hang, but NOT after a reboot or a patch: those
   // are the two cases where coming back automatically would fight whoever is
   // deliberately servicing the machine. The command line is inherited.
+  //
+  // Nor after the operator closes the window: WithdrawCrashRestart takes this
+  // back at that point. Without that, a crash during teardown reads to Windows
+  // as any other crash, and on 2026-09-11 that turned every close into a
+  // relaunch. See shutdown_policy.h.
   const HRESULT restart = ::RegisterApplicationRestart(
       nullptr, RESTART_NO_REBOOT | RESTART_NO_PATCH);
   if (FAILED(restart)) {
     std::cerr << "[startup] RegisterApplicationRestart failed (hr=0x"
               << std::hex << restart << std::dec << ")" << std::endl;
+  }
+}
+
+bool WithdrawCrashRestart() {
+  return SUCCEEDED(::UnregisterApplicationRestart());
+}
+
+void EndProcessWithoutTeardown(int exit_code) {
+  std::cout.flush();
+  std::cerr.flush();
+  std::fflush(nullptr);
+  // TerminateProcess, not ExitProcess: ExitProcess runs every DLL's
+  // DLL_PROCESS_DETACH, and with it the static destructors that crash.
+  ::TerminateProcess(::GetCurrentProcess(), static_cast<UINT>(exit_code));
+  // Terminating the current process does not return. If it somehow did,
+  // waiting is still better than falling through into the teardown this
+  // exists to avoid.
+  for (;;) {
+    ::Sleep(INFINITE);
   }
 }
 

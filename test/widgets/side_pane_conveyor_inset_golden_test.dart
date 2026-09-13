@@ -1,4 +1,3 @@
-import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +7,7 @@ import 'package:tfc/page_creator/assets/conveyor.dart';
 import 'package:tfc/widgets/panes/pane_chrome.dart';
 import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc/widgets/zoomable_canvas.dart';
+import '../helpers/golden_platform.dart';
 
 /// What an operator sees when a docked side pane opens over a conveyor.
 ///
@@ -83,7 +83,7 @@ Widget _plantView(List<ConveyorConfig> assets) {
 
 void main() {
   group('side pane inset vs a turned conveyor',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     Future<void> pumpPage(WidgetTester tester) async {
       // Wide enough that the canvas is height-bound before the pane opens and
       // width-bound after, which is what makes the re-fit shrink it.

@@ -108,9 +108,45 @@ row, not reflashing a station. That is a direct consequence of this being a
 guardrail rather than a security boundary, and the recovery steps belong in the
 deployment doc.
 
-**Users** — a name, a password hash, and exactly one role. One role per user,
-not many; multi-role adds union semantics and an "effective permissions"
-inspector, and is not worth it at this size.
+**Users** — a name, a password hash, and one or more roles.
+
+This started as *exactly* one, on the grounds that multi-role adds union
+semantics and an "effective permissions" inspector and is not worth it at this
+size. **Schema v9 reverses that**, and the reversal is recorded here rather
+than quietly made, because the original ruling is the kind a reader will
+otherwise restore:
+
+* The union turned out to be a set union over `AccessGroup` and nothing else.
+  Roles were already *bundles of capabilities* rather than rungs on a ladder —
+  that split is the whole point of the group model — so composing two is
+  `a ∪ b`. The rules live in one file, `tfc_access/lib/src/role_set.dart`, and
+  are three lines each.
+* The "effective permissions inspector" is a column the accounts screen already
+  had. It reads `Shift Leader + Maintenance` where it used to read one name.
+* What the single role actually cost was a **combinatorial role table**. A
+  person who is a shift leader *and* maintains the line needed a
+  `Shift Leader + Maintenance` role minted for them and kept in step with both
+  originals by hand, forever. That is the failure this model exists to avoid,
+  paid one role at a time.
+* It also cut against SSO. An OIDC provider returns a *list* of group claims,
+  and `AppRole.name` is the primary key precisely so a claim matches a role by
+  name with no mapping table (§3). A single-role user is the one shape that
+  mapping cannot express.
+
+**One of them is the primary role.** `app_user.role_name` — the column with the
+foreign key on it, the one an account carried over from v8 keeps, and the one
+an account falls back to. It is identity, not precedence: it grants nothing the
+others do not. The rest live in `app_user.additional_roles`, a nullable JSON
+array, so every existing row upgrades to NULL and behaves exactly as it did.
+
+**Groups union; page whitelists union with null dominating.** A role with no
+whitelist sees every page, so an account holding one sees every page. That is
+the only internally consistent union — the alternative makes *adding* a role
+remove pages — and it is less alarming than it sounds, because anonymous is the
+`Operator` role and whatever Operator admits is already on screen at every
+unattended panel. The account's personal whitelist still **replaces** the
+composed role level wholesale (§1c of the page-visibility design note is
+unchanged): one account, one personal opinion, however many roles it holds.
 
 **Anonymous is the Operator role.** Not a configurable pointer — a session with
 no user resolves to the role named `Operator`, full stop. That removes a knob
@@ -283,8 +319,14 @@ class AccessSession {
 }
 ```
 
-- Inactivity timeout drops back to anonymous. Default 15 minutes, stored in
-  device-local preferences.
+- Inactivity timeout drops back to anonymous. **Per account**, in
+  `app_user.inactivity_timeout_minutes`; NULL means the account has no value of
+  its own and gets the 15-minute default. It travels with the person rather
+  than with the panel, so an engineer keeps their window wherever they sign in
+  and an operator's is not widened by the screen they happened to use.
+  NULL never means "never": the only session that does not expire belongs to a
+  station account (`app_user.station_account`), which is an administrator
+  saying "this identity is a panel, not a person".
 - **The inactivity timer must be listener-gated** — started in `onListen`,
   stopped in `onCancel`. An always-on `Timer.periodic` in shared plumbing breaks
   unrelated widget tests; this has happened in this repo before.
@@ -619,11 +661,10 @@ Read each new or changed PNG and confirm:
 - Muted equipment-state colours throughout, only fault red saturated, orange
   reserved for forced/override and elevation.
 
-Generate with `flutter test --update-goldens --run-skipped <file>`, confirm it
-then passes *without* `--update-goldens`, and never generate on an SDK that
-fails `./scripts/check-flutter-version.sh` — a golden made on the wrong SDK can
-land just inside tolerance and leave the next person an image already most of
-the way to failing.
+Generate with `scripts/goldens.sh --update <file>`, then confirm it passes
+without `--update`. The script renders on Linux inside the pinned image from
+`docker/goldens/`, which is where goldens are compared — it reads
+`.flutter-version` itself, so there is no longer an SDK to get wrong.
 
 ---
 
@@ -639,15 +680,17 @@ Things that will cost days if rediscovered:
 - **Widget tests** mock OPC UA with a local `_FakeStateMan implements StateMan`
   and override `stateManProvider` — see
   `test/page_creator/assets/start_stop_button_widget_test.dart`.
-- **Goldens**: macOS only, generated with
-  `flutter test --update-goldens --run-skipped <file>`, and the pinned SDK must
-  pass `./scripts/check-flutter-version.sh` first. Look at the PNGs.
+- **Goldens**: Linux only, generated with `scripts/goldens.sh --update <file>`
+  — which renders in the pinned container, so a Mac and a Windows box produce
+  the same PNGs as CI. Look at the PNGs.
 - **Colours** come from `HmiStateColors` / `PaneStatus`, never raw `Colors.*`.
   Forced/override is orange by repo convention — reuse it for the elevated
   state, it is the same idea.
-- **Device-local vs shared**: sessions and the inactivity timeout are
-  device-local (`localPreferencesProvider`); users, roles and audit are shared.
-  Never sync a session.
+- **Device-local vs shared**: a session is device-local
+  (`localPreferencesProvider`) and must never be synced. Users, roles, audit —
+  and the inactivity timeout, which is a column on the account (§5) — are
+  shared. The panel's committed station account stays device-local: it is a
+  property of that screen, not of the plant.
 - **`pg_notify` has an 8000-byte cap** and the backend config watcher fires on
   preference writes — keep role config small and do not stuff audit data through
   it.

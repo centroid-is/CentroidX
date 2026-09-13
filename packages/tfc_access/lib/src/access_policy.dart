@@ -157,6 +157,13 @@ const List<PrefAccessRule> kPrefAccessRules = <PrefAccessRule>[
   // writes nothing, so this rule does not stand between an operator and an
   // alarm ack.
   (kind: PrefRuleKind.exact, match: 'alarm_man_config', group: AccessGroup.configure),
+  // Route parity again: `/advanced/report-editor` is `configure`, so the two
+  // keys that editor saves are too. Without a rule they would fall to the
+  // `administer` default and ship a Shift Leader who can open the report
+  // editor and not save from it. Reading a report writes nothing, so this
+  // rule never stands between an operator and last night's shift.
+  (kind: PrefRuleKind.exact, match: 'report_config', group: AccessGroup.configure),
+  (kind: PrefRuleKind.exact, match: 'shift_config', group: AccessGroup.configure),
 
   // ---------------------------------------------------------------------
   // exact -> operate. These are what a panel writes about *itself*: its theme,
@@ -177,8 +184,6 @@ const List<PrefAccessRule> kPrefAccessRules = <PrefAccessRule>[
   // Written on every poke() — i.e. every pointer-down. A denial here would fire
   // continuously.
   (kind: PrefRuleKind.exact, match: 'access.session', group: AccessGroup.operate),
-  (kind: PrefRuleKind.exact, match: 'access.inactivity_timeout_minutes', group: AccessGroup.operate),
-  (kind: PrefRuleKind.exact, match: 'access.inactivity_timeout_disabled', group: AccessGroup.operate),
 
   // ---------------------------------------------------------------------
   // exact -> administer. Server, database and machine configuration.
@@ -351,6 +356,9 @@ class AccessPolicy {
 
   /// `AccessAdminStore.setUserStationAccount`.
   static const String adminSetUserStationAccount = 'setUserStationAccount';
+  static const String adminSetUserRoles = 'setUserRoles';
+  static const String adminSetUserInactivityTimeout =
+      'setUserInactivityTimeout';
   static const String adminSetRolePages = 'setRolePages';
   static const String adminSetUserPages = 'setUserPages';
 

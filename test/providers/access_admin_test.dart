@@ -99,7 +99,6 @@ class _Harness {
 Future<_Harness> _harness({
   bool withDatabase = true,
   Map<String, ({String password, String roleName})>? users,
-  Duration timeout = const Duration(minutes: 15),
 }) async {
   final db = AppDatabase.inMemoryForTest();
   addTearDown(() => db.close());
@@ -122,7 +121,6 @@ Future<_Harness> _harness({
         .overrideWith((ref) async => withDatabase ? auth : null),
     auditSinkProvider.overrideWith((ref) async => sink),
     stationNameProvider.overrideWithValue(_kStation),
-    inactivityTimeoutProvider.overrideWith((ref) async => timeout),
   ]);
   addTearDown(container.dispose);
 
@@ -600,8 +598,6 @@ Future<AccessSession> _restart(_Harness h) async {
     accessRepositoryProvider.overrideWith((ref) async => h.repository),
     auditSinkProvider.overrideWith((ref) async => h.sink),
     stationNameProvider.overrideWithValue(_kStation),
-    inactivityTimeoutProvider
-        .overrideWith((ref) async => const Duration(minutes: 15)),
   ]);
   addTearDown(container.dispose);
   return container.read(accessSessionProvider.future);

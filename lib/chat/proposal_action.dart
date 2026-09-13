@@ -17,6 +17,8 @@ const _proposalRoutes = <String, String>{
   'page': '/advanced/page-editor',
   'asset': '/advanced/page-editor',
   'asset_update': '/advanced/page-editor',
+  'report': '/advanced/report-editor',
+  'shift_calendar': '/advanced/report-editor',
 };
 
 /// A widget that parses proposal JSON from tool results and provides
@@ -150,6 +152,9 @@ class ProposalAction extends ConsumerWidget {
         return 'Open in Page Editor';
       case 'asset':
         return 'Open in Page Editor';
+      case 'report':
+      case 'shift_calendar':
+        return 'Open in Report Editor';
       default:
         return 'Open in Editor';
     }

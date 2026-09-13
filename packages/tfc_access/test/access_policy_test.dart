@@ -661,6 +661,10 @@ Directory _repoRoot() {
 // providers/theme.dart:52         prefs.setString(_key, scheme.name)               -> 'color_scheme'                exact -> operate    (ColorSchemeNotifier._key, :40)
 // pages/server_config.dart:849    value.remove(StateManConfig.configKey)           -> 'state_man_config'            exact -> administer (const at state_man.dart:457)
 // core/state_man.dart:442,450     prefs.setString(configKey, ...)                  -> 'state_man_config'            exact -> administer
+// core/guarded_report_store.dart      store.saveReports(...)                           -> 'report_config'                exact -> configure  (ReportManConfig.configKey)
+// core/guarded_report_store.dart      store.saveShifts(...)                            -> 'shift_config'                 exact -> configure  (ShiftManConfig.configKey)
+//     Written by raw SQL on flutter_preferences rather than through PreferencesApi, because the MCP server writes the
+//     same two rows and has no Preferences. GuardedReportStore is the seam that gates and audits them instead.
 // panes/color_picker_dialog.dart:66  SharedPreferencesAsync().setStringList(prefsKey, ...)
 //                                                                                  -> 'color_picker_recent_colors' exact -> operate    (RecentColors.prefsKey, :29)
 // page_creator/page.dart:247      prefs.setString(storageKey, jsonString)          -> 'page_editor_data'            exact -> configure  (PageManager.storageKey, :90)
@@ -740,8 +744,6 @@ Directory _repoRoot() {
 // core/server_config_db.dart:55   ServerConfigDb.prefsKey = 'server_config_envelope'   exact -> administer
 //     publish()/remove() write Drift directly, bypassing PreferencesApi entirely — bypass #1 in spec §6, rerouted later
 //     in this phase. The rule is declared now so the reroute lands on a classified key rather than on the default.
-// providers/access.dart:41        kAccessInactivityMinutesPrefKey = 'access.inactivity_timeout_minutes'  exact -> operate
-//     Read-only today (:145). Declared now so the write path a settings screen adds is covered.
 // ---------------------------------------------------------------------------
 
 /// Every preference literal the resolution above produced, and the group it
@@ -755,6 +757,8 @@ const Map<String, AccessGroup> kResolvedPrefInventory = <String, AccessGroup>{
   'page_editor_image:a1b2c3d4': AccessGroup.configure,
   'key_mappings': AccessGroup.configure,
   'alarm_man_config': AccessGroup.configure,
+  'report_config': AccessGroup.configure,
+  'shift_config': AccessGroup.configure,
 
   // A Shift Leader must be able to save a recipe.
   'BATCH.recipes': AccessGroup.setpoints,
@@ -767,7 +771,6 @@ const Map<String, AccessGroup> kResolvedPrefInventory = <String, AccessGroup>{
   'asset_stack_config': AccessGroup.operate,
   'color_picker_recent_colors': AccessGroup.operate,
   'access.session': AccessGroup.operate,
-  'access.inactivity_timeout_minutes': AccessGroup.operate,
   'chat.history': AccessGroup.operate,
   'chat.conversations': AccessGroup.operate,
   'chat.active_conversation': AccessGroup.operate,

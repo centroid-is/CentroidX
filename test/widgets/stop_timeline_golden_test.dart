@@ -10,6 +10,7 @@ import 'package:tfc_dart/core/alarm_interval.dart';
 import 'package:tfc_dart/core/alarm_tree.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
 import 'package:tfc_dart/core/stop_interval_source.dart';
+import '../helpers/golden_platform.dart';
 
 /// Fixed clock, so a golden of a live-edge chart is reproducible.
 final now = DateTime(2026, 8, 29, 14, 22);
@@ -195,7 +196,7 @@ void main() {
             const Size(960, 480));
         await expectLater(find.byType(StopTimelineView),
             matchesGoldenFile('goldens/stop_timeline_collapsed_$name.png'));
-      }, skip: !Platform.isMacOS);
+      }, skip: goldenSkipFlag);
 
       testWidgets('drilled into Multivac ($name)', (tester) async {
         await pump(tester, harness(StopTimelineSpec(), brightness),
@@ -210,7 +211,7 @@ void main() {
 
         await expectLater(find.byType(StopTimelineView),
             matchesGoldenFile('goldens/stop_timeline_expanded_$name.png'));
-      }, skip: !Platform.isMacOS);
+      }, skip: goldenSkipFlag);
     }
 
     for (final brightness in [Brightness.light, Brightness.dark]) {
@@ -223,7 +224,7 @@ void main() {
         await tester.pumpAndSettle();
         await expectLater(find.byType(StopTimelineView),
             matchesGoldenFile('goldens/stop_timeline_table_$name.png'));
-      }, skip: !Platform.isMacOS);
+      }, skip: goldenSkipFlag);
     }
 
     testWidgets('pareto ranked by count instead of lost time', (tester) async {
@@ -237,7 +238,7 @@ void main() {
       await tester.pumpAndSettle();
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_table_by_count.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('scoped to one group', (tester) async {
       await pump(
@@ -250,7 +251,7 @@ void main() {
           const Size(960, 400));
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_scoped.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('an alarm standing since yesterday', (tester) async {
       // The bar reaches the window edge and stops there — it used to paint
@@ -297,7 +298,7 @@ void main() {
       await tester.pumpAndSettle();
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_standing_since_yesterday.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     // --- callouts -------------------------------------------------------
 
@@ -343,7 +344,7 @@ void main() {
             xOfInterval(tester, ago(64), ago(52)));
         await expectLater(find.byType(StopTimelineView),
             matchesGoldenFile('goldens/stop_timeline_callout_$name.png'));
-      }, skip: !Platform.isMacOS);
+      }, skip: goldenSkipFlag);
 
       testWidgets('an alarm identity callout ($name)', (tester) async {
         await pump(tester, harness(StopTimelineSpec(), brightness),
@@ -356,7 +357,7 @@ void main() {
             find.byType(StopTimelineView),
             matchesGoldenFile(
                 'goldens/stop_timeline_leaf_callout_$name.png'));
-      }, skip: !Platform.isMacOS);
+      }, skip: goldenSkipFlag);
     }
 
     // Light, where the edge golden below is dark: "still standing" is the one
@@ -370,7 +371,7 @@ void main() {
           xOfInterval(tester, ago(9), now));
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_callout_standing.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('a callout on the top row opens downward', (tester) async {
       await pump(tester, harness(StopTimelineSpec(), Brightness.light),
@@ -379,7 +380,7 @@ void main() {
       await tapLane(tester, 'g:Line 3', xOfInterval(tester, ago(64), ago(52)));
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_callout_flipped.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('a callout near the edge is clamped, tail off centre',
         (tester) async {
@@ -391,7 +392,7 @@ void main() {
           xOfInterval(tester, ago(1), now));
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_callout_edge.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('a collapsed group callout names what stood under it',
         (tester) async {
@@ -405,7 +406,7 @@ void main() {
           xOfInterval(tester, ago(120), ago(111)));
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_group_callout.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     // The case the count was hopeless for: one bar, six alarms in it, named
     // in the order they fired, with the two that do not fit counted. Both
@@ -427,7 +428,7 @@ void main() {
             find.byType(StopTimelineView),
             matchesGoldenFile(
                 'goldens/stop_timeline_group_callout_crowded_$name.png'));
-      }, skip: !Platform.isMacOS);
+      }, skip: goldenSkipFlag);
     }
 
     testWidgets('a callout at strip height, where nothing else fits',
@@ -440,7 +441,7 @@ void main() {
       await tapLane(tester, 'g:Line 3', 300);
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_callout_compact.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     // --- hiding rows ----------------------------------------------------
 
@@ -456,7 +457,7 @@ void main() {
       await tester.pumpAndSettle();
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_hidden_rows.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('a week-long picked range labels the days', (tester) async {
       // Seven midnight ticks all reading "00:00" said nothing; they name
@@ -470,7 +471,7 @@ void main() {
           const Size(960, 480));
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_week_range.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('strip height drops the brush and detail row', (tester) async {
       await pump(
@@ -480,7 +481,7 @@ void main() {
           const Size(700, 240));
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_strip.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     // The box a freshly dropped asset gets: const StopTimelineSpec()'s
     // 40% x 30% of a 1920x1080 page. The size is only worth having as a
@@ -493,7 +494,7 @@ void main() {
           const Size(860, 400));
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_drop_size.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('a group with no alarms says so', (tester) async {
       await pump(
@@ -519,7 +520,7 @@ void main() {
           const Size(760, 320));
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_empty_group.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('a picked range dates itself in the header and the strip',
         (tester) async {
@@ -536,7 +537,7 @@ void main() {
           const Size(960, 480));
       await expectLater(find.byType(StopTimelineView),
           matchesGoldenFile('goldens/stop_timeline_picked_range.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
 
     testWidgets('the period menu offers intervals and the date picker',
         (tester) async {
@@ -548,6 +549,6 @@ void main() {
       await tester.pumpAndSettle();
       await expectLater(find.byType(MaterialApp),
           matchesGoldenFile('goldens/stop_timeline_period_menu.png'));
-    }, skip: !Platform.isMacOS);
+    }, skip: goldenSkipFlag);
   });
 }

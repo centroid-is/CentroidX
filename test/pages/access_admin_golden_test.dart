@@ -1,7 +1,7 @@
-/// Four goldens of the administration screen — the milestone's last new page.
+/// Five goldens of the administration screen — the milestone's last new page.
 ///
 ///  * `access_admin_elevated.png`         — the page as the person who commissions a
-///    station sees it: three roles with their group summaries and holder counts, three
+///    station sees it: four roles with their group summaries and holder counts, three
 ///    accounts under all four column headings (one of them never signed in), and the
 ///    "guardrail, not security" note **collapsed**.
 ///  * `access_admin_operator_warning.png` — the role editor open on `Operator`: the
@@ -16,6 +16,12 @@
 ///  * `access_admin_locked.png`           — the route as a session without `users` meets
 ///    it: the lock, the group named, the way out still in the app bar and the
 ///    navigation bar.
+///  * `access_admin_roles_picker.png`     — the roles dialog open on an account that
+///    holds two: tick boxes rather than radio buttons, the `primary` tag against the
+///    first, each role's grants underneath, and the sentence saying a second role only
+///    ever widens. This is the picture that has to make "one account, several roles"
+///    legible at a glance — the roster cell behind it (`Shift Leader + Maintenance`)
+///    reads as one person with two roles only if the dialog agrees.
 ///
 /// **[AccessAdminBody], never [AccessAdminPage], for the three body images.** The page is
 /// a `BaseScaffold` wrapper and `BaseScaffold` calls `context.currentBeamLocation`, so it
@@ -80,6 +86,7 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
 
 import '../helpers/golden_tolerance.dart';
+import '../helpers/golden_platform.dart';
 
 // ---------------------------------------------------------------------------
 // Fixtures — this file's own
@@ -111,6 +118,18 @@ List<AccessRole> _roles() => const [
         name: 'Shift Leader',
         groups: {AccessGroup.operate, AccessGroup.setpoints},
       ),
+      // Present so that an account can hold two of these at once, which is
+      // what `linar` does below. It grants `device` and `force` and no
+      // `setpoints`-only overlap with Shift Leader, so the union of the two is
+      // visibly wider than either.
+      AccessRole(
+        name: 'Maintenance',
+        groups: {
+          AccessGroup.operate,
+          AccessGroup.device,
+          AccessGroup.force,
+        },
+      ),
       AccessRole(
         name: 'Engineering',
         groups: {
@@ -133,10 +152,16 @@ UserSummary _user(
   String roleName, {
   required DateTime createdAt,
   DateTime? lastLoginAt,
+  List<String> alsoHolds = const [],
 }) =>
     UserSummary(
       username: username,
       roleName: roleName,
+      // The decoded list, not the column: the roster speaks [UserSummary],
+      // which carries the extra roles already read back — there is no
+      // `encodeAdditionalRoles` here and no credential columns either, because
+      // the type has nowhere to put one.
+      additionalRoles: alsoHolds,
       createdAt: createdAt,
       lastLoginAt: lastLoginAt,
       stationAccount: false,
@@ -150,6 +175,12 @@ UserSummary _user(
 ///
 /// Two of the three hold `Engineering`, so the lockout refusal names two holders and its
 /// sentence has to pluralise.
+///
+/// `linar` holds **two** roles, which is the whole point of one of these rows: the shift
+/// leader who also maintains the line is the person the single-role model made a site
+/// invent a combinatorial "Shift Leader + Maintenance" role for. The roster cell has to
+/// show both, and it has to read as one person rather than as two — see
+/// [kRoleLabelSeparator].
 List<UserSummary> _users() => [
       _user('admin', 'Engineering',
           createdAt: DateTime(2026, 6, 2, 8, 15),
@@ -157,6 +188,7 @@ List<UserSummary> _users() => [
       _user('commissioning', 'Engineering',
           createdAt: DateTime(2026, 6, 2, 8, 20)),
       _user('linar', 'Shift Leader',
+          alsoHolds: const ['Maintenance'],
           createdAt: DateTime(2026, 7, 14, 6, 30),
           lastLoginAt: DateTime(2026, 8, 30, 22, 10)),
     ];
@@ -463,15 +495,57 @@ void _expectNothingClipped(WidgetTester tester, Finder last, double height) {
   );
 }
 
+/// The slack a timestamp column must keep between its text and the column
+/// beside it, in logical pixels.
+///
+/// Not a taste number. At zero the two dates paint end to end and the row
+/// reads `2026-06-02 08:152026-08-31 07:05` — one long number rather than two
+/// dates. 8 is the smallest gap the eye still resolves as a column boundary
+/// and is comfortably clear of layout rounding.
+const double _kMinTimestampGap = 8;
+
+/// Every account row gives its two timestamps room to be two timestamps.
+///
+/// The pixels are already pinned by the baseline beside this, so why assert
+/// it? Because a baseline argues from itself: `--update-goldens` accepts
+/// whatever the code now renders, and a collision re-baselined is a collision
+/// blessed. This says the number out loud, and the actions column has widened
+/// twice at the four flex columns' expense — 192 -> 240 for Pages, 240 -> 288
+/// for the timeout — with the second one landing the collision.
+///
+/// Measured against the text's intrinsic width rather than the cell rects:
+/// adjacent `Expanded`s always abut, so the gap lives inside the cell, between
+/// the glyphs and its edge. Only meaningful with the real face loaded — under
+/// the test harness's default font this measures square Ahem boxes and answers
+/// a question nobody asked, which is why it lives in this file.
+void _expectTimestampColumnsHaveAGap(WidgetTester tester) {
+  for (final user in _users()) {
+    for (final key in [
+      kAccessUserCreatedKey(user.username),
+      kAccessUserLastLoginKey(user.username),
+    ]) {
+      final finder = find.byKey(key);
+      final slack = tester.getRect(finder).width -
+          tester
+              .renderObject<RenderParagraph>(finder)
+              .getMaxIntrinsicWidth(double.infinity);
+      expect(
+        slack,
+        greaterThanOrEqualTo(_kMinTimestampGap),
+        reason: 'the $key cell leaves its timestamp ${slack}px of slack; '
+            'below $_kMinTimestampGap it runs into the next column',
+      );
+    }
+  }
+}
+
 void main() {
   final (light, _) = muted();
 
-  // Frames of prose on a real theme. The 0.01% default absorbs antialiasing drift on
-  // small painter goldens, not on several hundred lines of text.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('access administration goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(_loadRealFonts);
 
     tearDown(() => RouteRegistry().menuItems.clear());
@@ -514,6 +588,7 @@ void main() {
 
         _expectNothingClipped(
             tester, find.byKey(kAccessAdminHonestyKey), size.height);
+        _expectTimestampColumnsHaveAGap(tester);
 
         await expectLater(
           find.byKey(_boundary),
@@ -699,6 +774,56 @@ void main() {
         await expectLater(
           find.byType(MaterialApp),
           matchesGoldenFile('goldens/access_admin_locked.png'),
+        );
+      });
+    });
+
+    testWidgets('the roles dialog on an account that holds two',
+        (tester) async {
+      await withClock(Clock.fixed(_frozen), () async {
+        _sizeView(tester, const Size(900, 760));
+
+        await tester.pumpWidget(_dialogHost(
+          theme: light,
+          store: _AnsweringStore(roleRows: _roles(), userRows: _users()),
+          session: _withUsers(),
+        ));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(kAccessUserChangeRoleKey('linar')));
+        await tester.pumpAndSettle();
+
+        // The state key: the dialog is open and offers every role the store
+        // returned.
+        expect(find.byKey(kAccessUserRoleConfirmKey), findsOneWidget);
+        for (final role in _roles()) {
+          expect(find.byKey(kAccessUserRoleChoiceKey(role.name)),
+              findsOneWidget);
+        }
+
+        // The two the account holds are ticked and the rest are not — the
+        // claim the picture makes and an eye can only half-check, because a
+        // checkbox and its outline differ by a few pixels.
+        expect(find.byIcon(Icons.check_box), findsNWidgets(2));
+        expect(
+          find.byKey(kAccessUserRolePrimaryKey('Shift Leader')),
+          findsOneWidget,
+          reason: 'the role already held stays primary, so ticking a second '
+              'one never moves role_name under somebody',
+        );
+        expect(find.byKey(kAccessUserRolePrimaryKey('Maintenance')),
+            findsNothing);
+
+        // Said in as many words, because an administrator ticking a second
+        // role to "also let them do X" has to know it does not take away Y.
+        expect(find.text(kAccessUserRoleDialogNote), findsOneWidget);
+        expect(find.text(kAccessUserRolePrimaryNote), findsOneWidget);
+        expect(find.byKey(kAccessUserRoleNoneKey), findsNothing);
+        expect(tester.takeException(), isNull);
+
+        await expectLater(
+          find.byType(MaterialApp),
+          matchesGoldenFile('goldens/access_admin_roles_picker.png'),
         );
       });
     });

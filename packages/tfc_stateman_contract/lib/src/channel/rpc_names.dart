@@ -428,6 +428,9 @@ abstract final class HarnessMethods {
   static const accessAdminSetUserRole = '${prefix}access.admin.setUserRole';
   static const accessAdminSetUserStationAccount =
       '${prefix}access.admin.setUserStationAccount';
+  static const accessAdminSetUserRoles = '${prefix}access.admin.setUserRoles';
+  static const accessAdminSetUserInactivityTimeout =
+      '${prefix}access.admin.setUserInactivityTimeout';
   static const accessAdminSetRolePages = '${prefix}access.admin.setRolePages';
   static const accessAdminSetUserPages = '${prefix}access.admin.setUserPages';
   static const accessAdminSetUserPassword =
@@ -444,6 +447,8 @@ abstract final class HarnessMethods {
     accessAdminDeleteUser,
     accessAdminSetUserRole,
     accessAdminSetUserStationAccount,
+    accessAdminSetUserRoles,
+    accessAdminSetUserInactivityTimeout,
     accessAdminSetRolePages,
     accessAdminSetUserPages,
     accessAdminSetUserPassword,

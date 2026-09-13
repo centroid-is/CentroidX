@@ -11,6 +11,7 @@ import 'package:tfc/theme.dart';
 import 'package:tfc_dart/core/state_man.dart' show StateMan;
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Goldens of the two CX variants side by side.
 ///
@@ -57,12 +58,10 @@ Future<void> loadRealFont() async {
 class _FakeStateMan extends Fake implements StateMan {}
 
 void main() {
-  // The CX drawing is dense line work — ports, a 39-band air duct, rotated
-  // text — so text antialiasing drift eats more than the 0.01% default.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('Beckhoff CX variant golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(loadRealFont);
 
     setUp(() {

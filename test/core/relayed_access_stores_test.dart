@@ -130,6 +130,8 @@ final class _RecordingAdminApi implements AccessAdminApi {
   NewUserParams? createdUser;
   SetUserPasswordParams? passwordReset;
   ({String subject, String newRole, String? reason})? roleMove;
+  ({String subject, List<String> roles, String? reason})? roleSet;
+  ({String subject, int? minutes, String? reason})? timeout;
   ({String subject, Set<String>? pages, String? reason})? rolePages;
   ({String subject, Set<String>? pages, String? reason})? userPages;
   List<UserSummary> users = const [];
@@ -157,6 +159,14 @@ final class _RecordingAdminApi implements AccessAdminApi {
   @override
   Future<void> setUserStationAccount(String subject, bool value,
       {String? reason}) async {}
+  @override
+  Future<void> setUserRoles(String subject, List<String> newRoles,
+          {String? reason}) async =>
+      roleSet = (subject: subject, roles: newRoles, reason: reason);
+  @override
+  Future<void> setUserInactivityTimeout(String subject, int? minutes,
+          {String? reason}) async =>
+      timeout = (subject: subject, minutes: minutes, reason: reason);
   @override
   Future<void> setRolePages(String subject, Set<String>? pages,
           {String? reason}) async =>

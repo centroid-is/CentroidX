@@ -308,6 +308,7 @@ final class RelayedAccessAdminStore implements AccessAdminStore {
     required String username,
     required String password,
     required String roleName,
+    List<String> additionalRoles = const <String>[],
     String origin = 'operator',
     String? reason,
   }) =>
@@ -320,6 +321,7 @@ final class RelayedAccessAdminStore implements AccessAdminStore {
             subject: username,
             password: password,
             grantedRole: roleName,
+            additionalRoles: additionalRoles,
             reason: reason,
           )));
 
@@ -332,6 +334,17 @@ final class RelayedAccessAdminStore implements AccessAdminStore {
   Future<void> setUserRole(String username, String roleName,
           {String origin = 'operator', String? reason}) =>
       _guarded(() => _api.setUserRole(username, roleName, reason: reason));
+
+  @override
+  Future<void> setUserRoles(String username, List<String> roleNames,
+          {String origin = 'operator', String? reason}) =>
+      _guarded(() => _api.setUserRoles(username, roleNames, reason: reason));
+
+  @override
+  Future<void> setUserInactivityTimeout(String username, int? minutes,
+          {String origin = 'operator', String? reason}) =>
+      _guarded(
+          () => _api.setUserInactivityTimeout(username, minutes, reason: reason));
 
   @override
   Future<void> setRolePages(String name, Set<String>? pages,

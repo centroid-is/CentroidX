@@ -33,6 +33,7 @@ import 'services/plc_code_service.dart';
 import 'services/tech_doc_service.dart';
 import 'services/tag_service.dart';
 import 'services/trend_service.dart';
+import 'services/report_service.dart';
 import 'expression/expression_validator.dart';
 import 'safety/elicitation_risk_gate.dart';
 import 'services/proposal_feedback_bus.dart';
@@ -58,6 +59,7 @@ import 'tools/tool_registry.dart';
 import 'tools/tool_toggles.dart';
 import 'tools/asset_type_catalog_tools.dart';
 import 'tools/trend_tools.dart';
+import 'tools/report_tools.dart';
 import 'server_instructions.dart';
 
 /// The TFC MCP Server wrapping [McpServer] from mcp_dart.
@@ -154,6 +156,11 @@ class TfcMcpServer {
     // Create trend and context services (Phase 7)
     final accessTemplateService = AccessTemplateService(_database);
     final trendService = TrendService(_database);
+
+    // Static reports: definitions + shift calendar live in the shared
+    // preferences table, so the service works identically standalone and
+    // in-process.
+    final reportService = ReportService(_database);
     final alarmContextService = AlarmContextService(
       alarmService: alarmService,
       tagService: tagService,
@@ -204,6 +211,9 @@ class TfcMcpServer {
     if (toggles.techDocsEnabled && techDocService != null) {
       registerTechDocTools(registry, techDocService);
     }
+    if (toggles.reportsEnabled) {
+      registerReportTools(registry, reportService);
+    }
     // Only when something can actually draw. A standalone server has no
     // window, and a tool that always answers "no window" is worse than a
     // tool that is honestly absent from tools/list.
@@ -239,6 +249,16 @@ class TfcMcpServer {
           configService: configService,
           riskGate: riskGate,
           expressionValidator: expressionValidator,
+          proposalService: proposalService,
+        );
+      }
+      if (toggles.reportsEnabled) {
+        // Same pairing the access-template writes use: proposals carries the
+        // write half, reportsEnabled put the read half on the registry.
+        registerReportWriteTools(
+          registry: registry,
+          service: reportService,
+          riskGate: riskGate,
           proposalService: proposalService,
         );
       }

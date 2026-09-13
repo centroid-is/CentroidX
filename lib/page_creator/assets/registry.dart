@@ -36,6 +36,7 @@ import 'sensor.dart';
 import '../../core/feature_flags.dart';
 import 'connection_info.dart';
 import 'ethercat_link.dart';
+import 'ethercat_devices.dart';
 import 'drawing_viewer.dart';
 import 'third_party.dart';
 import 'alarm_visibility.dart';
@@ -55,6 +56,7 @@ class AssetRegistry {
     SensorConfig: SensorConfig.fromJson,
     ConnectionInfoConfig: ConnectionInfoConfig.fromJson,
     EtherCatLinkConfig: EtherCatLinkConfig.fromJson,
+    EtherCatDeviceTableConfig: EtherCatDeviceTableConfig.fromJson,
     ElevatorConfig: ElevatorConfig.fromJson,
     ConveyorColorPaletteConfig: ConveyorColorPaletteConfig.fromJson,
     ArrowConfig: ArrowConfig.fromJson,
@@ -118,6 +120,7 @@ class AssetRegistry {
     ConveyorGateConfig: ConveyorGateConfig.preview,
     SensorConfig: SensorConfig.preview,
     EtherCatLinkConfig: EtherCatLinkConfig.preview,
+    EtherCatDeviceTableConfig: EtherCatDeviceTableConfig.preview,
     ConnectionInfoConfig: ConnectionInfoConfig.preview,
     ElevatorConfig: ElevatorConfig.preview,
     ConveyorColorPaletteConfig: ConveyorColorPaletteConfig.preview,

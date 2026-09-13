@@ -622,6 +622,18 @@ final class ChannelAccessAdminApi implements AccessAdminApi {
           {'subject': subject, 'value': value, 'reason': reason});
 
   @override
+  Future<void> setUserRoles(String subject, List<String> newRoles,
+          {String? reason}) async =>
+      await _send(HarnessMethods.accessAdminSetUserRoles,
+          {'subject': subject, 'newRoles': newRoles, 'reason': reason});
+
+  @override
+  Future<void> setUserInactivityTimeout(String subject, int? minutes,
+          {String? reason}) async =>
+      await _send(HarnessMethods.accessAdminSetUserInactivityTimeout,
+          {'subject': subject, 'minutes': minutes, 'reason': reason});
+
+  @override
   Future<void> setRolePages(String subject, Set<String>? pages,
           {String? reason}) async =>
       await _send(HarnessMethods.accessAdminSetRolePages,

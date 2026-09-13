@@ -66,12 +66,12 @@ void main() {
             'otherwise — the default must not mint immortal sessions');
   });
 
-  test('schema version is 8', () async {
+  test('schema version is 10', () async {
     final db = AppDatabase.inMemoryForTest();
     addTearDown(() => db.close());
-    // v8 is 14-01's alarm_history change; station_account still arrives in the
-    // v6 arm, which is what the rest of this file is about.
-    expect(db.schemaVersion, 8);
+    // v10 is 14-01's alarm_history change; station_account still arrives in
+    // the v6 arm, which is what the rest of this file is about.
+    expect(db.schemaVersion, 10);
   });
 
   group('upgrading a v5 database — the only upgrade path there is', () {

@@ -106,8 +106,20 @@ ProviderContainer _container({
 
 /// Settles the session future so the filter is answering on a real session
 /// rather than on the boot-window floor.
-Future<void> _settle(ProviderContainer container) =>
-    container.read(accessSessionProvider.future);
+/// Resolves everything `visibleMenuProvider` asks before the filter is read.
+///
+/// **The authority, not just the session.** `resolvePageAccess` answers
+/// `waiting` — which the filter treats as visible, deliberately, so a booting
+/// panel does not blink its menu — while `accessAuthorityProvider` is still
+/// loading. A test that read the filter before it resolved would see every
+/// raised entry regardless of the whitelist, and would pass or fail on
+/// scheduling rather than on the rule under test. `operate` routes
+/// short-circuit ahead of the authority, so only the raised ones were
+/// affected: exactly the ones these tests are about.
+Future<void> _settle(ProviderContainer container) async {
+  await container.read(accessAuthorityProvider.future);
+  await container.read(accessSessionProvider.future);
+}
 
 void main() {
   const home = MenuItem(label: 'Home', path: '/', icon: Icons.home);
@@ -257,6 +269,75 @@ void main() {
       final visible = container.read(visibleMenuProvider).topLevel;
       expect(visible.map((i) => i.label), ['Home', 'Processing']);
       expect(visible.last.children.map((i) => i.path), ['/fillet']);
+    });
+
+    test('a whitelist can grant a built-in, and hides the ones it omits',
+        () async {
+      // The picker offers the built-ins now, so the filter has to honour them
+      // both ways. Before this, no whitelist could name one: they were hidden
+      // from any restricted session and ungrantable.
+      const advanced = MenuItem(
+        label: 'Advanced',
+        path: '/advanced',
+        icon: Icons.settings,
+        isSection: true,
+        children: [
+          MenuItem(
+              label: 'Alarm View', path: '/alarm-view', icon: Icons.alarm),
+          MenuItem(
+              label: 'History View',
+              path: '/advanced/history-view',
+              icon: Icons.history),
+        ],
+      );
+      final container = _container(
+        registry: [home, advanced],
+        session: _sessionWith(pages: const {'/', '/alarm-view'}),
+      );
+      await container.read(accessRepositoryProvider.future);
+      await _settle(container);
+
+      final visible = container.read(visibleMenuProvider).topLevel;
+      expect(visible.map((i) => i.label), ['Home', 'Advanced']);
+      expect(visible.last.children.map((i) => i.path), ['/alarm-view']);
+    });
+
+    test('no whitelist can hide the access screen', () async {
+      // Layer 1 of the no-lockout argument. It was prose in the design note
+      // and nothing enforced it: this filter asks `resolvePageAccess` about
+      // every entry in the tree, so setting any whitelist used to drop the
+      // whole Advanced section — the screen that edits whitelists with it.
+      const advanced = MenuItem(
+        label: 'Advanced',
+        path: '/advanced',
+        icon: Icons.settings,
+        isSection: true,
+        children: [
+          MenuItem(
+              label: 'Page Editor',
+              path: '/advanced/page-editor',
+              icon: Icons.edit),
+          MenuItem(
+              label: 'Access',
+              path: kAccessAdminRoute,
+              icon: Icons.manage_accounts),
+        ],
+      );
+      final container = _container(
+        registry: [home, advanced],
+        // Block all, and every group held: the state an admin can reach in
+        // two clicks and could not previously get back out of from the menu.
+        session: _sessionWith(
+          groups: AccessGroup.values.toSet(),
+          pages: const <String>{},
+        ),
+      );
+      await container.read(accessRepositoryProvider.future);
+      await _settle(container);
+
+      final visible = container.read(visibleMenuProvider).topLevel;
+      expect(visible.map((i) => i.label), ['Advanced']);
+      expect(visible.single.children.map((i) => i.path), [kAccessAdminRoute]);
     });
 
     test('a section with no children at all is kept', () async {

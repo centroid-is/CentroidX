@@ -97,6 +97,34 @@ create_alarm returns the alarm `uid`, and alarm beacon assets bind BY uid:
 create the alarm first, then the asset. Replacing an alarm means replacing
 its asset as a pair.
 
+## Static reports
+
+list_reports, get_report_definition, generate_report, resolve_shift and
+get_shift_calendar read. generate_report takes an offset: 0 is the current
+period, -1 the one before, so "last night's shift" is offset -1 on a
+shift-ranged report.
+
+create_report, update_report, delete_report and set_shift_calendar are
+**proposals like every other write here** — they change nothing. A person
+applies them in the report editor, and that save is checked against their
+session for `configure` and recorded. Say so when you propose one: the
+operator has to approve it.
+
+A report may declare a `window` of activity signals — a `running` rule per
+machine, optionally a `cleaning` one — and the engine then resolves when
+production actually started and concluded, because a fish plant runs while
+there is fish rather than while the clock says shift. Every section carries a
+`scope` saying what its figures cover: `effective` (that production window,
+the default), `nominal` (the whole planned range, the default for alarm
+summaries) or `running` (only the stretches the line was moving).
+
+A report's `sql` section runs one read-only SELECT, with `:from`/`:to` bound
+to the section's own scope and `:nominal_from`/`:nominal_to` to the whole
+range. It may not name the
+access tables (app_user, app_role, audit_entry, access_template,
+access_key_binding) — a report is rendered on a page any operator can open,
+so publishing credentials or the audit record through one is refused.
+
 ## Looking at the screen
 
 screenshot_window returns a PNG of the HMI window as the operator sees it --

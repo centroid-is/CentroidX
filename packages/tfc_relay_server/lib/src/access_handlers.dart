@@ -244,6 +244,26 @@ final class AccessHandlers {
     return null;
   }
 
+  Future<Object?> adminSetUserRoles(rpc.Parameters params) async {
+    await source.accessAdmin.setUserRoles(
+        params['subject'].asString,
+        (params['newRoles'].asList).whereType<String>().toList(growable: false),
+        reason: _reason(params));
+    return null;
+  }
+
+  Future<Object?> adminSetUserInactivityTimeout(rpc.Parameters params) async {
+    // `valueOr(null)` for the same reason `_reason` uses it: clearing the
+    // account's own window sends `{'minutes': null}`, and `.asIntOr` on a
+    // present-null throws `-32602`. Null here means "use the station
+    // default", which is a legal write and not a missing argument.
+    final raw = params['minutes'].valueOr(null);
+    await source.accessAdmin.setUserInactivityTimeout(
+        params['subject'].asString, raw is num ? raw.toInt() : null,
+        reason: _reason(params));
+    return null;
+  }
+
   Future<Object?> adminSetRolePages(rpc.Parameters params) async {
     await source.accessAdmin
         .setRolePages(params['subject'].asString, _pages(params),

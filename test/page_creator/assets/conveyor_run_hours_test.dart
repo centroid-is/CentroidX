@@ -15,6 +15,7 @@ import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 /// The Run hours tile is fixed-width, and the counter it shows is unbounded.
 /// A belt months past its last reset rendered `224:37`, which no longer fit
@@ -45,7 +46,7 @@ void main() {
   });
 
   group('conveyor run hours golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(_loadRealFont);
 
     setUp(() {
@@ -61,7 +62,7 @@ void main() {
           .resetPhysicalSize();
     });
 
-    useTolerantGoldenComparator(tolerance: 0.002);
+    useTolerantGoldenComparator();
 
     // The regression case: a counter past a hundred hours, on a healthy
     // running belt so the tile is the only thing worth looking at.

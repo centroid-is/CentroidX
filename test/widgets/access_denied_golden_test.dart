@@ -69,6 +69,7 @@ import 'package:tfc/widgets/access_status_action.dart';
 import 'package:tfc/widgets/base_scaffold.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
+import '../helpers/golden_platform.dart';
 
 /// The refusal both images show. A jog command on a real-looking tag, refused
 /// for want of `force` — the shape `guarded_state_man_test.dart` drives.
@@ -309,7 +310,7 @@ void main() {
   tearDown(() => RouteRegistry().menuItems.clear());
 
   group('access denied goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('the prompt over a page, nobody signed in', (tester) async {
       await withClock(Clock.fixed(DateTime.utc(2026, 8, 30, 9, 0)), () async {
         _sizeView(tester, const Size(1280, 800));

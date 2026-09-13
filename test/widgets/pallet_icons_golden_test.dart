@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FontLoader;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/converter/icon.dart';
+import '../helpers/golden_platform.dart';
 
 const _iconsKey = Key('pallet_icons');
 
@@ -76,7 +77,7 @@ void main() {
   });
 
   group('pallet icon golden tests',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     // The test environment does not register fonts declared in pubspec.yaml,
     // so without this the icons render as tofu boxes and the golden would
     // happily lock in a missing glyph. TfcIcons.ttf lives in the repo, so

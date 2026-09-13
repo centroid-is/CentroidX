@@ -63,6 +63,7 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/state_man.dart';
+import '../helpers/golden_platform.dart';
 
 /// The saved view the image is opened on.
 const int _viewId = 42;
@@ -307,7 +308,7 @@ void main() {
   tearDown(() => RouteRegistry().menuItems.clear());
 
   group('history view locked-delete golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('the history view, anonymous, with a live delete control',
         (tester) async {
       await withClock(Clock.fixed(_frozen), () async {

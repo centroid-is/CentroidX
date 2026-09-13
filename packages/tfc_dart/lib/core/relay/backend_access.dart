@@ -287,6 +287,19 @@ final class BackendAccessAdmin implements relay.AccessAdminApi {
           origin: kRelayOrigin, reason: reason);
 
   @override
+  Future<void> setUserRoles(String subject, List<String> newRoles,
+          {String? reason}) async =>
+      _require('setUserRoles')
+          .setUserRoles(subject, newRoles, origin: kRelayOrigin, reason: reason);
+
+  @override
+  Future<void> setUserInactivityTimeout(String subject, int? minutes,
+          {String? reason}) async =>
+      _require('setUserInactivityTimeout').setUserInactivityTimeout(
+          subject, minutes,
+          origin: kRelayOrigin, reason: reason);
+
+  @override
   Future<void> setRolePages(String subject, Set<String>? pages,
           {String? reason}) async =>
       _require('setRolePages')

@@ -1,4 +1,3 @@
-import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +6,7 @@ import 'package:tfc/page_creator/assets/link_geometry.dart';
 import 'package:tfc/theme.dart' show HmiStateColors;
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 const _key = Key('ethercat_link_golden');
 
@@ -103,7 +103,7 @@ void main() {
   useTolerantGoldenComparator();
 
   group('EtherCAT link goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('a fresh run is a straight line between two ports',
         (tester) async {
       await tester.pumpWidget(scenario(run: _run(), devices: _devices));

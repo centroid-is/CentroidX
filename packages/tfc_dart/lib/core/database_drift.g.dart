@@ -7045,6 +7045,12 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
       requiredDuringInsert: true,
       defaultConstraints:
           GeneratedColumn.constraintIsAlways('REFERENCES app_role (name)'));
+  static const VerificationMeta _additionalRolesMeta =
+      const VerificationMeta('additionalRoles');
+  @override
+  late final GeneratedColumn<String> additionalRoles = GeneratedColumn<String>(
+      'additional_roles', aliasedName, true,
+      type: DriftSqlType.string, requiredDuringInsert: false);
   static const VerificationMeta _passwordHashMeta =
       const VerificationMeta('passwordHash');
   @override
@@ -7082,16 +7088,24 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
   late final GeneratedColumn<String> allowedPages = GeneratedColumn<String>(
       'allowed_pages', aliasedName, true,
       type: DriftSqlType.string, requiredDuringInsert: false);
+  static const VerificationMeta _inactivityTimeoutMinutesMeta =
+      const VerificationMeta('inactivityTimeoutMinutes');
+  @override
+  late final GeneratedColumn<int> inactivityTimeoutMinutes =
+      GeneratedColumn<int>('inactivity_timeout_minutes', aliasedName, true,
+          type: DriftSqlType.int, requiredDuringInsert: false);
   @override
   List<GeneratedColumn> get $columns => [
         username,
         roleName,
+        additionalRoles,
         passwordHash,
         salt,
         createdAt,
         lastLoginAt,
         stationAccount,
-        allowedPages
+        allowedPages,
+        inactivityTimeoutMinutes
       ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -7114,6 +7128,12 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
           roleName.isAcceptableOrUnknown(data['role_name']!, _roleNameMeta));
     } else if (isInserting) {
       context.missing(_roleNameMeta);
+    }
+    if (data.containsKey('additional_roles')) {
+      context.handle(
+          _additionalRolesMeta,
+          additionalRoles.isAcceptableOrUnknown(
+              data['additional_roles']!, _additionalRolesMeta));
     }
     if (data.containsKey('password_hash')) {
       context.handle(
@@ -7153,6 +7173,13 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
           allowedPages.isAcceptableOrUnknown(
               data['allowed_pages']!, _allowedPagesMeta));
     }
+    if (data.containsKey('inactivity_timeout_minutes')) {
+      context.handle(
+          _inactivityTimeoutMinutesMeta,
+          inactivityTimeoutMinutes.isAcceptableOrUnknown(
+              data['inactivity_timeout_minutes']!,
+              _inactivityTimeoutMinutesMeta));
+    }
     return context;
   }
 
@@ -7166,6 +7193,8 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
           .read(DriftSqlType.string, data['${effectivePrefix}username'])!,
       roleName: attachedDatabase.typeMapping
           .read(DriftSqlType.string, data['${effectivePrefix}role_name'])!,
+      additionalRoles: attachedDatabase.typeMapping.read(
+          DriftSqlType.string, data['${effectivePrefix}additional_roles']),
       passwordHash: attachedDatabase.typeMapping
           .read(DriftSqlType.string, data['${effectivePrefix}password_hash'])!,
       salt: attachedDatabase.typeMapping
@@ -7178,6 +7207,9 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
           .read(DriftSqlType.bool, data['${effectivePrefix}station_account'])!,
       allowedPages: attachedDatabase.typeMapping
           .read(DriftSqlType.string, data['${effectivePrefix}allowed_pages']),
+      inactivityTimeoutMinutes: attachedDatabase.typeMapping.read(
+          DriftSqlType.int,
+          data['${effectivePrefix}inactivity_timeout_minutes']),
     );
   }
 
@@ -7190,8 +7222,34 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
 class AppUserData extends DataClass implements Insertable<AppUserData> {
   final String username;
 
-  /// Matched to [AppRole.name] by name, never by id — see [AppRole].
+  /// This account's **primary** role, matched to [AppRole.name] by name, never
+  /// by id — see [AppRole].
+  ///
+  /// The one with the foreign key on it, and the whole answer for any account
+  /// that holds exactly one role, which is every account carried over from v8.
+  /// It is identity rather than precedence: what the account may do is the
+  /// union of this and [additionalRoles].
   final String roleName;
+
+  /// The roles this account holds **beyond** [roleName] (schema v9): a JSON
+  /// array of `app_role.name` values, or SQL NULL when it holds only its
+  /// primary role.
+  ///
+  /// Written by `encodeAdditionalRoles` and read by `decodeAdditionalRoles`.
+  /// NULL and an empty array mean the same thing here — unlike
+  /// [allowedPages], where the distinction is the feature — so the codec
+  /// writes NULL for both and every account carried over from v8 lands on NULL
+  /// and behaves exactly as it did.
+  ///
+  /// **No foreign key, and it could not have one:** a JSON array cannot
+  /// reference a column. That is handled where it matters instead —
+  /// `AccessRepository.deleteRole` refuses a role anybody holds *either* way
+  /// and `renameRole` rewrites both — and a name in here that matches no role
+  /// row simply grants nothing, which is the fail-closed direction.
+  ///
+  /// Keep it small, for the reason [AppRole.groups] gives: the backend config
+  /// watcher fires on preference writes and `pg_notify` has an 8000-byte cap.
+  final String? additionalRoles;
 
   /// Argon2id over the password with [salt], stored self-describing: the value
   /// carries its own algorithm tag and cost parameters.
@@ -7230,20 +7288,39 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
   /// expressible. It can widen what this account *sees*; it can never widen
   /// what this account may *do*, because the group gate is ANDed on top.
   final String? allowedPages;
+
+  /// How many idle minutes end this account's sessions (schema v8), or NULL
+  /// for the default.
+  ///
+  /// Per account rather than per station: the account knows who walked away
+  /// with what power, the panel does not. **NULL means "no value of its own"**,
+  /// never "never expires" — sessions that must not expire are
+  /// [stationAccount]'s, and only that flag produces one. Every account
+  /// carried over from v7 lands on NULL and keeps the fifteen minutes it had.
+  ///
+  /// The range is enforced by `AccessRepository.setInactivityTimeout` and a
+  /// value outside it is clamped on read by `resolveInactivityTimeout`, so a
+  /// `psql` edit cannot end sessions instantly or never.
+  final int? inactivityTimeoutMinutes;
   const AppUserData(
       {required this.username,
       required this.roleName,
+      this.additionalRoles,
       required this.passwordHash,
       required this.salt,
       required this.createdAt,
       this.lastLoginAt,
       required this.stationAccount,
-      this.allowedPages});
+      this.allowedPages,
+      this.inactivityTimeoutMinutes});
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
     map['username'] = Variable<String>(username);
     map['role_name'] = Variable<String>(roleName);
+    if (!nullToAbsent || additionalRoles != null) {
+      map['additional_roles'] = Variable<String>(additionalRoles);
+    }
     map['password_hash'] = Variable<String>(passwordHash);
     map['salt'] = Variable<String>(salt);
     map['created_at'] = Variable<DateTime>(createdAt);
@@ -7254,6 +7331,10 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
     if (!nullToAbsent || allowedPages != null) {
       map['allowed_pages'] = Variable<String>(allowedPages);
     }
+    if (!nullToAbsent || inactivityTimeoutMinutes != null) {
+      map['inactivity_timeout_minutes'] =
+          Variable<int>(inactivityTimeoutMinutes);
+    }
     return map;
   }
 
@@ -7261,6 +7342,9 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
     return AppUserCompanion(
       username: Value(username),
       roleName: Value(roleName),
+      additionalRoles: additionalRoles == null && nullToAbsent
+          ? const Value.absent()
+          : Value(additionalRoles),
       passwordHash: Value(passwordHash),
       salt: Value(salt),
       createdAt: Value(createdAt),
@@ -7271,6 +7355,9 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       allowedPages: allowedPages == null && nullToAbsent
           ? const Value.absent()
           : Value(allowedPages),
+      inactivityTimeoutMinutes: inactivityTimeoutMinutes == null && nullToAbsent
+          ? const Value.absent()
+          : Value(inactivityTimeoutMinutes),
     );
   }
 
@@ -7280,12 +7367,15 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
     return AppUserData(
       username: serializer.fromJson<String>(json['username']),
       roleName: serializer.fromJson<String>(json['roleName']),
+      additionalRoles: serializer.fromJson<String?>(json['additionalRoles']),
       passwordHash: serializer.fromJson<String>(json['passwordHash']),
       salt: serializer.fromJson<String>(json['salt']),
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
       lastLoginAt: serializer.fromJson<DateTime?>(json['lastLoginAt']),
       stationAccount: serializer.fromJson<bool>(json['stationAccount']),
       allowedPages: serializer.fromJson<String?>(json['allowedPages']),
+      inactivityTimeoutMinutes:
+          serializer.fromJson<int?>(json['inactivityTimeoutMinutes']),
     );
   }
   @override
@@ -7294,27 +7384,35 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
     return <String, dynamic>{
       'username': serializer.toJson<String>(username),
       'roleName': serializer.toJson<String>(roleName),
+      'additionalRoles': serializer.toJson<String?>(additionalRoles),
       'passwordHash': serializer.toJson<String>(passwordHash),
       'salt': serializer.toJson<String>(salt),
       'createdAt': serializer.toJson<DateTime>(createdAt),
       'lastLoginAt': serializer.toJson<DateTime?>(lastLoginAt),
       'stationAccount': serializer.toJson<bool>(stationAccount),
       'allowedPages': serializer.toJson<String?>(allowedPages),
+      'inactivityTimeoutMinutes':
+          serializer.toJson<int?>(inactivityTimeoutMinutes),
     };
   }
 
   AppUserData copyWith(
           {String? username,
           String? roleName,
+          Value<String?> additionalRoles = const Value.absent(),
           String? passwordHash,
           String? salt,
           DateTime? createdAt,
           Value<DateTime?> lastLoginAt = const Value.absent(),
           bool? stationAccount,
-          Value<String?> allowedPages = const Value.absent()}) =>
+          Value<String?> allowedPages = const Value.absent(),
+          Value<int?> inactivityTimeoutMinutes = const Value.absent()}) =>
       AppUserData(
         username: username ?? this.username,
         roleName: roleName ?? this.roleName,
+        additionalRoles: additionalRoles.present
+            ? additionalRoles.value
+            : this.additionalRoles,
         passwordHash: passwordHash ?? this.passwordHash,
         salt: salt ?? this.salt,
         createdAt: createdAt ?? this.createdAt,
@@ -7322,11 +7420,17 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
         stationAccount: stationAccount ?? this.stationAccount,
         allowedPages:
             allowedPages.present ? allowedPages.value : this.allowedPages,
+        inactivityTimeoutMinutes: inactivityTimeoutMinutes.present
+            ? inactivityTimeoutMinutes.value
+            : this.inactivityTimeoutMinutes,
       );
   AppUserData copyWithCompanion(AppUserCompanion data) {
     return AppUserData(
       username: data.username.present ? data.username.value : this.username,
       roleName: data.roleName.present ? data.roleName.value : this.roleName,
+      additionalRoles: data.additionalRoles.present
+          ? data.additionalRoles.value
+          : this.additionalRoles,
       passwordHash: data.passwordHash.present
           ? data.passwordHash.value
           : this.passwordHash,
@@ -7340,6 +7444,9 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       allowedPages: data.allowedPages.present
           ? data.allowedPages.value
           : this.allowedPages,
+      inactivityTimeoutMinutes: data.inactivityTimeoutMinutes.present
+          ? data.inactivityTimeoutMinutes.value
+          : this.inactivityTimeoutMinutes,
     );
   }
 
@@ -7348,63 +7455,82 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
     return (StringBuffer('AppUserData(')
           ..write('username: $username, ')
           ..write('roleName: $roleName, ')
+          ..write('additionalRoles: $additionalRoles, ')
           ..write('passwordHash: $passwordHash, ')
           ..write('salt: $salt, ')
           ..write('createdAt: $createdAt, ')
           ..write('lastLoginAt: $lastLoginAt, ')
           ..write('stationAccount: $stationAccount, ')
-          ..write('allowedPages: $allowedPages')
+          ..write('allowedPages: $allowedPages, ')
+          ..write('inactivityTimeoutMinutes: $inactivityTimeoutMinutes')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(username, roleName, passwordHash, salt,
-      createdAt, lastLoginAt, stationAccount, allowedPages);
+  int get hashCode => Object.hash(
+      username,
+      roleName,
+      additionalRoles,
+      passwordHash,
+      salt,
+      createdAt,
+      lastLoginAt,
+      stationAccount,
+      allowedPages,
+      inactivityTimeoutMinutes);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is AppUserData &&
           other.username == this.username &&
           other.roleName == this.roleName &&
+          other.additionalRoles == this.additionalRoles &&
           other.passwordHash == this.passwordHash &&
           other.salt == this.salt &&
           other.createdAt == this.createdAt &&
           other.lastLoginAt == this.lastLoginAt &&
           other.stationAccount == this.stationAccount &&
-          other.allowedPages == this.allowedPages);
+          other.allowedPages == this.allowedPages &&
+          other.inactivityTimeoutMinutes == this.inactivityTimeoutMinutes);
 }
 
 class AppUserCompanion extends UpdateCompanion<AppUserData> {
   final Value<String> username;
   final Value<String> roleName;
+  final Value<String?> additionalRoles;
   final Value<String> passwordHash;
   final Value<String> salt;
   final Value<DateTime> createdAt;
   final Value<DateTime?> lastLoginAt;
   final Value<bool> stationAccount;
   final Value<String?> allowedPages;
+  final Value<int?> inactivityTimeoutMinutes;
   final Value<int> rowid;
   const AppUserCompanion({
     this.username = const Value.absent(),
     this.roleName = const Value.absent(),
+    this.additionalRoles = const Value.absent(),
     this.passwordHash = const Value.absent(),
     this.salt = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.lastLoginAt = const Value.absent(),
     this.stationAccount = const Value.absent(),
     this.allowedPages = const Value.absent(),
+    this.inactivityTimeoutMinutes = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   AppUserCompanion.insert({
     required String username,
     required String roleName,
+    this.additionalRoles = const Value.absent(),
     required String passwordHash,
     required String salt,
     required DateTime createdAt,
     this.lastLoginAt = const Value.absent(),
     this.stationAccount = const Value.absent(),
     this.allowedPages = const Value.absent(),
+    this.inactivityTimeoutMinutes = const Value.absent(),
     this.rowid = const Value.absent(),
   })  : username = Value(username),
         roleName = Value(roleName),
@@ -7414,23 +7540,28 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
   static Insertable<AppUserData> custom({
     Expression<String>? username,
     Expression<String>? roleName,
+    Expression<String>? additionalRoles,
     Expression<String>? passwordHash,
     Expression<String>? salt,
     Expression<DateTime>? createdAt,
     Expression<DateTime>? lastLoginAt,
     Expression<bool>? stationAccount,
     Expression<String>? allowedPages,
+    Expression<int>? inactivityTimeoutMinutes,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
       if (username != null) 'username': username,
       if (roleName != null) 'role_name': roleName,
+      if (additionalRoles != null) 'additional_roles': additionalRoles,
       if (passwordHash != null) 'password_hash': passwordHash,
       if (salt != null) 'salt': salt,
       if (createdAt != null) 'created_at': createdAt,
       if (lastLoginAt != null) 'last_login_at': lastLoginAt,
       if (stationAccount != null) 'station_account': stationAccount,
       if (allowedPages != null) 'allowed_pages': allowedPages,
+      if (inactivityTimeoutMinutes != null)
+        'inactivity_timeout_minutes': inactivityTimeoutMinutes,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -7438,22 +7569,27 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
   AppUserCompanion copyWith(
       {Value<String>? username,
       Value<String>? roleName,
+      Value<String?>? additionalRoles,
       Value<String>? passwordHash,
       Value<String>? salt,
       Value<DateTime>? createdAt,
       Value<DateTime?>? lastLoginAt,
       Value<bool>? stationAccount,
       Value<String?>? allowedPages,
+      Value<int?>? inactivityTimeoutMinutes,
       Value<int>? rowid}) {
     return AppUserCompanion(
       username: username ?? this.username,
       roleName: roleName ?? this.roleName,
+      additionalRoles: additionalRoles ?? this.additionalRoles,
       passwordHash: passwordHash ?? this.passwordHash,
       salt: salt ?? this.salt,
       createdAt: createdAt ?? this.createdAt,
       lastLoginAt: lastLoginAt ?? this.lastLoginAt,
       stationAccount: stationAccount ?? this.stationAccount,
       allowedPages: allowedPages ?? this.allowedPages,
+      inactivityTimeoutMinutes:
+          inactivityTimeoutMinutes ?? this.inactivityTimeoutMinutes,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -7466,6 +7602,9 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     }
     if (roleName.present) {
       map['role_name'] = Variable<String>(roleName.value);
+    }
+    if (additionalRoles.present) {
+      map['additional_roles'] = Variable<String>(additionalRoles.value);
     }
     if (passwordHash.present) {
       map['password_hash'] = Variable<String>(passwordHash.value);
@@ -7485,6 +7624,10 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     if (allowedPages.present) {
       map['allowed_pages'] = Variable<String>(allowedPages.value);
     }
+    if (inactivityTimeoutMinutes.present) {
+      map['inactivity_timeout_minutes'] =
+          Variable<int>(inactivityTimeoutMinutes.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -7496,12 +7639,14 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     return (StringBuffer('AppUserCompanion(')
           ..write('username: $username, ')
           ..write('roleName: $roleName, ')
+          ..write('additionalRoles: $additionalRoles, ')
           ..write('passwordHash: $passwordHash, ')
           ..write('salt: $salt, ')
           ..write('createdAt: $createdAt, ')
           ..write('lastLoginAt: $lastLoginAt, ')
           ..write('stationAccount: $stationAccount, ')
           ..write('allowedPages: $allowedPages, ')
+          ..write('inactivityTimeoutMinutes: $inactivityTimeoutMinutes, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -14220,23 +14365,27 @@ typedef $$AppRoleTableProcessedTableManager = ProcessedTableManager<
 typedef $$AppUserTableCreateCompanionBuilder = AppUserCompanion Function({
   required String username,
   required String roleName,
+  Value<String?> additionalRoles,
   required String passwordHash,
   required String salt,
   required DateTime createdAt,
   Value<DateTime?> lastLoginAt,
   Value<bool> stationAccount,
   Value<String?> allowedPages,
+  Value<int?> inactivityTimeoutMinutes,
   Value<int> rowid,
 });
 typedef $$AppUserTableUpdateCompanionBuilder = AppUserCompanion Function({
   Value<String> username,
   Value<String> roleName,
+  Value<String?> additionalRoles,
   Value<String> passwordHash,
   Value<String> salt,
   Value<DateTime> createdAt,
   Value<DateTime?> lastLoginAt,
   Value<bool> stationAccount,
   Value<String?> allowedPages,
+  Value<int?> inactivityTimeoutMinutes,
   Value<int> rowid,
 });
 
@@ -14271,6 +14420,10 @@ class $$AppUserTableFilterComposer
   ColumnFilters<String> get username => $composableBuilder(
       column: $table.username, builder: (column) => ColumnFilters(column));
 
+  ColumnFilters<String> get additionalRoles => $composableBuilder(
+      column: $table.additionalRoles,
+      builder: (column) => ColumnFilters(column));
+
   ColumnFilters<String> get passwordHash => $composableBuilder(
       column: $table.passwordHash, builder: (column) => ColumnFilters(column));
 
@@ -14289,6 +14442,10 @@ class $$AppUserTableFilterComposer
 
   ColumnFilters<String> get allowedPages => $composableBuilder(
       column: $table.allowedPages, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<int> get inactivityTimeoutMinutes => $composableBuilder(
+      column: $table.inactivityTimeoutMinutes,
+      builder: (column) => ColumnFilters(column));
 
   $$AppRoleTableFilterComposer get roleName {
     final $$AppRoleTableFilterComposer composer = $composerBuilder(
@@ -14323,6 +14480,10 @@ class $$AppUserTableOrderingComposer
   ColumnOrderings<String> get username => $composableBuilder(
       column: $table.username, builder: (column) => ColumnOrderings(column));
 
+  ColumnOrderings<String> get additionalRoles => $composableBuilder(
+      column: $table.additionalRoles,
+      builder: (column) => ColumnOrderings(column));
+
   ColumnOrderings<String> get passwordHash => $composableBuilder(
       column: $table.passwordHash,
       builder: (column) => ColumnOrderings(column));
@@ -14342,6 +14503,10 @@ class $$AppUserTableOrderingComposer
 
   ColumnOrderings<String> get allowedPages => $composableBuilder(
       column: $table.allowedPages,
+      builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<int> get inactivityTimeoutMinutes => $composableBuilder(
+      column: $table.inactivityTimeoutMinutes,
       builder: (column) => ColumnOrderings(column));
 
   $$AppRoleTableOrderingComposer get roleName {
@@ -14377,6 +14542,9 @@ class $$AppUserTableAnnotationComposer
   GeneratedColumn<String> get username =>
       $composableBuilder(column: $table.username, builder: (column) => column);
 
+  GeneratedColumn<String> get additionalRoles => $composableBuilder(
+      column: $table.additionalRoles, builder: (column) => column);
+
   GeneratedColumn<String> get passwordHash => $composableBuilder(
       column: $table.passwordHash, builder: (column) => column);
 
@@ -14394,6 +14562,9 @@ class $$AppUserTableAnnotationComposer
 
   GeneratedColumn<String> get allowedPages => $composableBuilder(
       column: $table.allowedPages, builder: (column) => column);
+
+  GeneratedColumn<int> get inactivityTimeoutMinutes => $composableBuilder(
+      column: $table.inactivityTimeoutMinutes, builder: (column) => column);
 
   $$AppRoleTableAnnotationComposer get roleName {
     final $$AppRoleTableAnnotationComposer composer = $composerBuilder(
@@ -14441,45 +14612,53 @@ class $$AppUserTableTableManager extends RootTableManager<
           updateCompanionCallback: ({
             Value<String> username = const Value.absent(),
             Value<String> roleName = const Value.absent(),
+            Value<String?> additionalRoles = const Value.absent(),
             Value<String> passwordHash = const Value.absent(),
             Value<String> salt = const Value.absent(),
             Value<DateTime> createdAt = const Value.absent(),
             Value<DateTime?> lastLoginAt = const Value.absent(),
             Value<bool> stationAccount = const Value.absent(),
             Value<String?> allowedPages = const Value.absent(),
+            Value<int?> inactivityTimeoutMinutes = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppUserCompanion(
             username: username,
             roleName: roleName,
+            additionalRoles: additionalRoles,
             passwordHash: passwordHash,
             salt: salt,
             createdAt: createdAt,
             lastLoginAt: lastLoginAt,
             stationAccount: stationAccount,
             allowedPages: allowedPages,
+            inactivityTimeoutMinutes: inactivityTimeoutMinutes,
             rowid: rowid,
           ),
           createCompanionCallback: ({
             required String username,
             required String roleName,
+            Value<String?> additionalRoles = const Value.absent(),
             required String passwordHash,
             required String salt,
             required DateTime createdAt,
             Value<DateTime?> lastLoginAt = const Value.absent(),
             Value<bool> stationAccount = const Value.absent(),
             Value<String?> allowedPages = const Value.absent(),
+            Value<int?> inactivityTimeoutMinutes = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppUserCompanion.insert(
             username: username,
             roleName: roleName,
+            additionalRoles: additionalRoles,
             passwordHash: passwordHash,
             salt: salt,
             createdAt: createdAt,
             lastLoginAt: lastLoginAt,
             stationAccount: stationAccount,
             allowedPages: allowedPages,
+            inactivityTimeoutMinutes: inactivityTimeoutMinutes,
             rowid: rowid,
           ),
           withReferenceMapper: (p0) => p0

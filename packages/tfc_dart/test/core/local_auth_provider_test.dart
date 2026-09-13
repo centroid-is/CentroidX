@@ -183,6 +183,34 @@ void main() {
       expect(user.roleName, 'Engineering');
     });
 
+    test('every role the account holds comes back, primary first', () async {
+      await repo.setRoles('jon', ['Engineering', 'Maintenance']);
+
+      final user = await provider.authenticate('jon', 'hunter2');
+
+      expect(user!.roleName, 'Engineering');
+      expect(user.roleNames, ['Engineering', 'Maintenance']);
+      expect(user.roleLabel, 'Engineering + Maintenance');
+    });
+
+    test('an extra role that no longer exists is carried, not refused',
+        () async {
+      // Unlike the primary role, whose absence refuses the login: a session
+      // built on an undefined group set is worse than a login prompt, while a
+      // missing *extra* is a capability the account no longer has. The session
+      // builder drops it when it unions the roles it can read, so dropping it
+      // narrows — refusing would lock somebody out of a panel because a second
+      // role they held was deleted on another station.
+      await repo.setRoles('jon', ['Engineering', 'Maintenance']);
+      await db.customStatement(
+          "DELETE FROM app_role WHERE name = 'Maintenance'");
+
+      final user = await provider.authenticate('jon', 'hunter2');
+
+      expect(user, isNotNull);
+      expect(user!.roleNames, ['Engineering', 'Maintenance']);
+    });
+
     test('a wrong password returns null', () async {
       expect(await provider.authenticate('jon', 'wrong'), isNull);
     });

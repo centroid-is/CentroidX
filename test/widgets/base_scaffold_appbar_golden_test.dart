@@ -24,6 +24,7 @@ import 'package:tfc/widgets/base_scaffold.dart';
 import 'package:tfc_dart/core/alarm.dart';
 
 import 'alarm_fixture.dart';
+import '../helpers/golden_platform.dart';
 
 /// Frozen so the ticking header does not churn the PNG every run — the same
 /// reason the page-organizer goldens pin it.
@@ -147,7 +148,7 @@ void main() {
       });
 
   group('app-bar header goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('quiet: clock alone on the left, two lines', (tester) async {
       await withClock(_goldenClock, () async {
         await _pump(tester, quiet);

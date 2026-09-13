@@ -48,19 +48,19 @@ Future<Set<String>> _indexNames(GeneratedDatabase db) async {
 /// The three tables added by the v5→v6 migration.
 const _accessTables = ['app_role', 'app_user', 'audit_entry'];
 
-/// Undoes what schema **v8** added to `alarm_history`.
+/// Undoes what schema **v10** added to `alarm_history`.
 ///
 /// The old-version fixtures in this repository are built by creating the
 /// CURRENT schema and removing what came later, so every future version has to
 /// add its own rollback here or the fixture is not the shape it claims to be.
-/// Without these, the SQLite arm of `onUpgrade(5, 8)` — and of
-/// `onUpgrade(6, 8)` — aborts on `duplicate column name: rule_index`. That is
+/// Without these, the SQLite arm of `onUpgrade(5, 10)` — and of
+/// `onUpgrade(6, 10)` — aborts on `duplicate column name: rule_index`. That is
 /// the fixture, not the migration: `alarm_history` is created once, in
-/// `onCreate`, and no upgrade arm re-creates it, so a real pre-v8 database has
+/// `onCreate`, and no upgrade arm re-creates it, so a real pre-v10 database has
 /// none of these columns and the unguarded `ADD COLUMN` is correct.
 ///
 /// The index goes first. SQLite refuses to drop a column an index refers to.
-const _v8Rollback = [
+const _v10Rollback = [
   'DROP INDEX IF EXISTS idx_alarm_history_open',
   'ALTER TABLE alarm_history DROP COLUMN rule_index',
   'ALTER TABLE alarm_history DROP COLUMN ts_source',
@@ -102,14 +102,14 @@ void main() {
     // `access_key_binding` (`access_template_table_test.dart`) and
     // `app_user.station_account` (`station_account_column_test.dart`) all
     // arrive in the same v6 arm this suite covers.
-    test('schema version is 8', () async {
+    test('schema version is 10', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      // v8 is 14-01's alarm_history change (the alarm(uid) FK dropped,
+      // v10 is 14-01's alarm_history change (the alarm(uid) FK dropped,
       // rule_index / ts_source / deactivated_reason added, partial unique
-      // index). This literal is the pin that makes a version bump a deliberate
-      // edit rather than a side effect.
-      expect(db.schemaVersion, 8);
+      // index), which landed after main's 7, 8 and 9. This literal is the pin
+      // that makes a version bump a deliberate edit rather than a side effect.
+      expect(db.schemaVersion, 10);
     });
 
     test('seeds exactly four roles', () async {
@@ -218,7 +218,7 @@ void main() {
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
       await db.customStatement('DROP TABLE app_role');
-      for (final stmt in _v8Rollback) {
+      for (final stmt in _v10Rollback) {
         await db.customStatement(stmt);
       }
       await db.customStatement('PRAGMA user_version = 5');
@@ -294,7 +294,7 @@ void main() {
           reason: 'a v5 database opens straight to the current version — '
               'onUpgrade(5, N) runs every branch above 5 in one pass. Read '
               'off db.schemaVersion rather than written as a literal: the '
-              'literal pin lives in "schema version is 8" above, and this arm '
+              'literal pin lives in "schema version is 10" above, and this arm '
               'is about the upgrade arriving THERE, not about which number '
               'there is');
     });
@@ -494,9 +494,9 @@ void main() {
 
       await db.customStatement('ALTER TABLE app_role DROP COLUMN allowed_pages');
       await db.customStatement('ALTER TABLE app_user DROP COLUMN allowed_pages');
-      // v8 is above 6 as well, so the fixture has to shed it too — see
-      // `_v8Rollback`.
-      for (final stmt in _v8Rollback) {
+      // v10 is above 6 as well, so the fixture has to shed it too — see
+      // `_v10Rollback`.
+      for (final stmt in _v10Rollback) {
         await db.customStatement(stmt);
       }
       await db.customStatement('PRAGMA user_version = 6');
@@ -545,22 +545,21 @@ void main() {
               'spelled — it is not "sees every page"');
     });
 
-    test('leaves schema version at the current version', () async {
+    test('carries on to the current schema version', () async {
       await makeV6Database();
       final db = await reopen();
       addTearDown(() => db.close());
 
       final row = await db.customSelect('PRAGMA user_version').getSingle();
       // Read off the database rather than pinned: the alarm change from
-      // 14-01 took v8 when the two branches collided, so a v6 or v5
-      // database now opens straight through the whitelist arm and on to
-      // 8. The literal pin lives in 'schema version is 8'; this arm is
-      // about the upgrade arriving THERE.
+      // 14-01 took v10 once main had taken 7, 8 and 9, so a v6 or v5 database
+      // now opens straight through every arm above it. The literal pin lives
+      // in 'schema version is 10'; this arm is about the upgrade arriving
+      // THERE.
       expect(row.read<int>('user_version'), db.schemaVersion);
     });
 
-    test('a v5 database reaches the current version in one open, with both columns',
-        () async {
+    test('a v5 database upgrades in one open, with both columns', () async {
       // The `from < 6` arm creates the tables from the current definitions,
       // which already carry the column — so the `from < 7` arm must NOT try to
       // add it again. This is the case the `from >= 6` guard exists for; drop
@@ -573,7 +572,7 @@ void main() {
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
       await db.customStatement('DROP TABLE app_role');
-      for (final stmt in _v8Rollback) {
+      for (final stmt in _v10Rollback) {
         await db.customStatement(stmt);
       }
       await db.customStatement('PRAGMA user_version = 5');
@@ -594,6 +593,240 @@ void main() {
       // 8. The literal pin lives in 'schema version is 8'; this arm is
       // about the upgrade arriving THERE.
       expect(row.read<int>('user_version'), db.schemaVersion);
+    });
+  });
+
+  // The per-account inactivity timeout. Unlike the v7 arm, this one is guarded
+  // by whether the column exists rather than by `from`, so these tests cover
+  // the three ways it can already be there: never (a v7 database), from the v6
+  // arm's createTable in the same open (a v5 database), and from a previous
+  // run (the version rewound over a table that already has it).
+  //
+  // The destination assertions read `schemaVersion` off the database under
+  // test rather than naming a number. These arms are about the upgrade
+  // ARRIVING at the current version, not about which number that is — and the
+  // number has now moved twice under them (14-01's alarm change took 10 after
+  // main took 7, 8 and 9). The literal pin lives in 'schema version is 10'.
+  group('v7 -> v8 upgrade', () {
+    late Directory tempDir;
+    late File dbFile;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('tfc_v8_schema_test');
+      dbFile = File('${tempDir.path}/app.sqlite');
+    });
+
+    tearDown(() {
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    Future<Set<String>> columnNames(GeneratedDatabase db, String table) async {
+      final rows = await db.customSelect('PRAGMA table_info($table)').get();
+      return rows.map((r) => r.read<String>('name')).toSet();
+    }
+
+    Future<AppDatabase> reopen() async {
+      final db = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      await db.customSelect('SELECT 1').getSingle();
+      return db;
+    }
+
+    /// Builds a database at [version] with an account in it, dropping the
+    /// column first unless [keepColumn].
+    Future<void> makeDatabase(int version, {bool keepColumn = false}) async {
+      final db = await reopen();
+      await db.customStatement(
+        "INSERT INTO app_user "
+        "(username, role_name, password_hash, salt, created_at, station_account) "
+        "VALUES ('jon', 'Engineering', 'hash', 'salt', '2026-09-01T00:00:00Z', 0)",
+      );
+      if (!keepColumn) {
+        await db.customStatement(
+            'ALTER TABLE app_user DROP COLUMN inactivity_timeout_minutes');
+      }
+      await db.customStatement('PRAGMA user_version = $version');
+      await db.close();
+    }
+
+    Future<int> userVersion(GeneratedDatabase db) async =>
+        (await db.customSelect('PRAGMA user_version').getSingle())
+            .read<int>('user_version');
+
+    test('adds inactivity_timeout_minutes to app_user', () async {
+      await makeDatabase(7);
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_user'),
+          contains('inactivity_timeout_minutes'));
+      expect(await userVersion(db), db.schemaVersion);
+    });
+
+    test('a carried-over account upgrades to NULL — the default, not "never"',
+        () async {
+      await makeDatabase(7);
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      final users = await db.customSelect('SELECT * FROM app_user').get();
+      expect(users, hasLength(1));
+      expect(users.first.read<int?>('inactivity_timeout_minutes'), isNull);
+    });
+
+    test('an arm re-run over a table that already has the column is harmless',
+        () async {
+      // The case a version guard gets wrong: a branch that renumbers this arm
+      // after the column already landed, or a rewound `user_version`. Without
+      // the existence check SQLite throws "duplicate column name" here.
+      await makeDatabase(7, keepColumn: true);
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_user'),
+          contains('inactivity_timeout_minutes'));
+      expect(await userVersion(db), db.schemaVersion);
+    });
+
+    test('a v5 database reaches the current version in one open', () async {
+      // The v6 arm creates app_user from the current definition, which already
+      // carries the column; the v8 arm must see it and add nothing.
+      final db = await reopen();
+      await db.customStatement('DROP TABLE audit_entry');
+      await db.customStatement('DROP TABLE app_user');
+      await db.customStatement('DROP TABLE app_role');
+      await db.customStatement('PRAGMA user_version = 5');
+      await db.close();
+
+      final upgraded = await reopen();
+      addTearDown(() => upgraded.close());
+
+      expect(await columnNames(upgraded, 'app_user'),
+          contains('inactivity_timeout_minutes'));
+      expect(await userVersion(upgraded), upgraded.schemaVersion);
+    });
+
+    test('the Postgres arm adds the column idempotently', () {
+      // Source-derived, like the parity group below: no test connects to a
+      // server, so the string is what stands behind that arm.
+      final source = File('lib/core/database_drift.dart').readAsStringSync();
+      expect(
+        source,
+        contains('ALTER TABLE app_user ADD COLUMN IF NOT EXISTS '
+            'inactivity_timeout_minutes INTEGER'),
+      );
+    });
+  });
+
+  // v8 -> v9: `app_user.additional_roles`, the roles an account holds beyond
+  // its primary one. Same three shapes as the v8 group above, for the same
+  // reason: the column can arrive from this arm, from the v6 arm's createTable
+  // in the same open (a v5 database), or already be there from a previous run.
+  group('v8 -> v9 upgrade', () {
+    late Directory tempDir;
+    late File dbFile;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('tfc_v9_schema_test');
+      dbFile = File('${tempDir.path}/app.sqlite');
+    });
+
+    tearDown(() {
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    });
+
+    Future<Set<String>> columnNames(GeneratedDatabase db, String table) async {
+      final rows = await db.customSelect('PRAGMA table_info($table)').get();
+      return rows.map((r) => r.read<String>('name')).toSet();
+    }
+
+    Future<AppDatabase> reopen() async {
+      final db = AppDatabase.forTest(
+        DatabaseConfig(),
+        NativeDatabase(dbFile, logStatements: false),
+      );
+      await db.customSelect('SELECT 1').getSingle();
+      return db;
+    }
+
+    Future<void> makeDatabase(int version, {bool keepColumn = false}) async {
+      final db = await reopen();
+      await db.customStatement(
+        "INSERT INTO app_user "
+        "(username, role_name, password_hash, salt, created_at, station_account) "
+        "VALUES ('jon', 'Engineering', 'hash', 'salt', '2026-09-01T00:00:00Z', 0)",
+      );
+      if (!keepColumn) {
+        await db.customStatement(
+            'ALTER TABLE app_user DROP COLUMN additional_roles');
+      }
+      await db.customStatement('PRAGMA user_version = $version');
+      await db.close();
+    }
+
+    Future<int> userVersion(GeneratedDatabase db) async =>
+        (await db.customSelect('PRAGMA user_version').getSingle())
+            .read<int>('user_version');
+
+    test('adds additional_roles to app_user', () async {
+      await makeDatabase(8);
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_user'), contains('additional_roles'));
+      expect(await userVersion(db), db.schemaVersion);
+    });
+
+    test('a carried-over account upgrades to NULL — one role, as it was',
+        () async {
+      await makeDatabase(8);
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      final users = await db.customSelect('SELECT * FROM app_user').get();
+      expect(users, hasLength(1));
+      expect(users.first.read<String?>('additional_roles'), isNull);
+      // And NULL reads back as "holds only its primary role", which is the
+      // whole point of choosing NULL over an empty array for the upgrade.
+      expect(decodeAdditionalRoles(users.first.read<String?>('additional_roles')),
+          isEmpty);
+    });
+
+    test('an arm re-run over a table that already has the column is harmless',
+        () async {
+      await makeDatabase(8, keepColumn: true);
+      final db = await reopen();
+      addTearDown(() => db.close());
+
+      expect(await columnNames(db, 'app_user'), contains('additional_roles'));
+      expect(await userVersion(db), db.schemaVersion);
+    });
+
+    test('a v5 database reaches v9 in one open', () async {
+      final db = await reopen();
+      await db.customStatement('DROP TABLE audit_entry');
+      await db.customStatement('DROP TABLE app_user');
+      await db.customStatement('DROP TABLE app_role');
+      await db.customStatement('PRAGMA user_version = 5');
+      await db.close();
+
+      final upgraded = await reopen();
+      addTearDown(() => upgraded.close());
+
+      expect(await columnNames(upgraded, 'app_user'),
+          contains('additional_roles'));
+      expect(await userVersion(upgraded), upgraded.schemaVersion);
+    });
+
+    test('the Postgres arm adds the column idempotently', () {
+      final source = File('lib/core/database_drift.dart').readAsStringSync();
+      expect(
+        source,
+        contains('ALTER TABLE app_user ADD COLUMN IF NOT EXISTS '
+            'additional_roles TEXT'),
+      );
     });
   });
 

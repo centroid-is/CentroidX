@@ -35,7 +35,11 @@ import 'package:tfc_stateman_contract/tfc_stateman_contract.dart';
 /// `setUserPages` are two new admin *writes*, so each takes a check of its
 /// own. Both grade `users` rather than `configure`, and the pair of checks is
 /// what pins that on every leg rather than only on the direct one.
-const _declaredAccessCheckCount = 29;
+///
+/// 31 since the second merge from main: `setUserRoles` (multi-role accounts,
+/// #512) and `setUserInactivityTimeout` (per-account timeouts, #505) are two
+/// more admin writes, and every write takes a check of its own.
+const _declaredAccessCheckCount = 31;
 
 /// Tokens that mark a check name as asserting a refusal, and the tokens that
 /// mark its permission twin. Exactly 17-CONTEXT D-12's pairing rule, mechanised.

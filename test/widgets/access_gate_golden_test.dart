@@ -69,6 +69,7 @@ import 'package:tfc/widgets/base_scaffold.dart';
 import 'package:tfc/widgets/nav_dropdown.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
+import '../helpers/golden_platform.dart';
 
 const _lockedBoundary = Key('access_locked_page_golden');
 
@@ -397,7 +398,7 @@ void main() {
   tearDownAll(() => EditableText.debugDeterministicCursor = false);
 
   group('access gate goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     tearDown(() {
       // The registry is process-wide and outlives this file.
       RouteRegistry().menuItems.clear();

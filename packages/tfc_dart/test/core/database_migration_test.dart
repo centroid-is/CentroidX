@@ -62,8 +62,9 @@ void main() {
     test('schema version is 8', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      // v8 is 14-01's alarm_history change.
-      expect(db.schemaVersion, 8);
+      // v10 is 14-01's alarm_history change, renumbered twice as main took
+      // 7, 8 and 9 — see the arm's own comment in database_drift.dart.
+      expect(db.schemaVersion, 10);
     });
 
     test('MCP tables support basic CRUD operations', () async {

@@ -11,6 +11,8 @@ import 'package:tfc_dart/core/database.dart' show Database;
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
 
+import '../../helpers/golden_platform.dart';
+
 /// The accept/reject window's control bar.
 ///
 /// It used to be a `Stack`: the chart/table toggle was painted centred ON TOP
@@ -196,5 +198,5 @@ void main() {
       find.byKey(const Key('ratio_control_bar')),
       matchesGoldenFile('goldens/ratio_analysis_control_bar_narrow.png'),
     );
-  }, tags: ['golden'], skip: !Platform.isMacOS);
+  }, tags: ['golden'], skip: goldenSkipFlag);
 }

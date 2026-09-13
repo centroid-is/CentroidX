@@ -1368,6 +1368,9 @@ final class RelaySession {
     _on(AccessMethods.adminSetUserRole, access.adminSetUserRole);
     _on(AccessMethods.adminSetUserStationAccount,
         access.adminSetUserStationAccount);
+    _on(AccessMethods.adminSetUserRoles, access.adminSetUserRoles);
+    _on(AccessMethods.adminSetUserInactivityTimeout,
+        access.adminSetUserInactivityTimeout);
     _on(AccessMethods.adminSetRolePages, access.adminSetRolePages);
     _on(AccessMethods.adminSetUserPages, access.adminSetUserPages);
     _on(AccessMethods.adminSetUserPassword, access.adminSetUserPassword);

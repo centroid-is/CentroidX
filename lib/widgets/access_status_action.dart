@@ -125,7 +125,7 @@ class _ElevatedBadge extends ConsumerWidget {
                 ),
               ),
               Text(
-                session.roleName,
+                session.roleLabel,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.labelSmall?.copyWith(color: orange),

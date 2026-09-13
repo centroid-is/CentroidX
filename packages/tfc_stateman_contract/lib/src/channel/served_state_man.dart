@@ -450,6 +450,9 @@ final class ServedStateMan {
     _on(HarnessMethods.accessAdminDeleteUser, _admDeleteUser);
     _on(HarnessMethods.accessAdminSetUserRole, _admSetUserRole);
     _on(HarnessMethods.accessAdminSetUserStationAccount, _admSetStationAccount);
+    _on(HarnessMethods.accessAdminSetUserRoles, _admSetUserRoles);
+    _on(HarnessMethods.accessAdminSetUserInactivityTimeout,
+        _admSetUserInactivityTimeout);
     _on(HarnessMethods.accessAdminSetRolePages, _admSetRolePages);
     _on(HarnessMethods.accessAdminSetUserPages, _admSetUserPages);
     _on(HarnessMethods.accessAdminSetUserPassword, _admSetUserPassword);
@@ -630,6 +633,26 @@ final class ServedStateMan {
       _access(HarnessMethods.accessAdminSetUserStationAccount, () async {
         await api.accessAdmin.setUserStationAccount(
             params['subject'].asString, params['value'].asBool,
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admSetUserRoles(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminSetUserRoles, () async {
+        await api.accessAdmin.setUserRoles(
+            params['subject'].asString,
+            (params['newRoles'].asList)
+                .whereType<String>()
+                .toList(growable: false),
+            reason: params['reason'].valueOr(null) as String?);
+        return null;
+      });
+
+  Future<Object?> _admSetUserInactivityTimeout(rpc.Parameters params) =>
+      _access(HarnessMethods.accessAdminSetUserInactivityTimeout, () async {
+        final raw = params['minutes'].valueOr(null);
+        await api.accessAdmin.setUserInactivityTimeout(
+            params['subject'].asString, raw is num ? raw.toInt() : null,
             reason: params['reason'].valueOr(null) as String?);
         return null;
       });

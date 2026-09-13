@@ -175,18 +175,48 @@ class AppRole extends Table {
   TextColumn get allowedPages => text().nullable()();
 }
 
-/// A user: a name, a password hash, and exactly one role.
+/// A user: a name, a password hash, and one or more roles.
 ///
-/// One role per user, not many — multi-role adds union semantics and an
-/// "effective permissions" inspector, and is not worth it at this size.
+/// One role was the v6 ruling, on the grounds that multi-role adds union
+/// semantics and an "effective permissions" inspector. Schema v9 reverses it:
+/// the union turned out to be a set union over `AccessGroup` and nothing more
+/// (roles were always bundles, never rungs on a ladder), while the single role
+/// forced sites to mint a combinatorial role for every real person who was
+/// two things at once. See `role_set.dart` for the composition rules.
 class AppUser extends Table {
   @override
   Set<Column> get primaryKey => {username};
 
   TextColumn get username => text()();
 
-  /// Matched to [AppRole.name] by name, never by id — see [AppRole].
+  /// This account's **primary** role, matched to [AppRole.name] by name, never
+  /// by id — see [AppRole].
+  ///
+  /// The one with the foreign key on it, and the whole answer for any account
+  /// that holds exactly one role, which is every account carried over from v8.
+  /// It is identity rather than precedence: what the account may do is the
+  /// union of this and [additionalRoles].
   TextColumn get roleName => text().references(AppRole, #name)();
+
+  /// The roles this account holds **beyond** [roleName] (schema v9): a JSON
+  /// array of `app_role.name` values, or SQL NULL when it holds only its
+  /// primary role.
+  ///
+  /// Written by `encodeAdditionalRoles` and read by `decodeAdditionalRoles`.
+  /// NULL and an empty array mean the same thing here — unlike
+  /// [allowedPages], where the distinction is the feature — so the codec
+  /// writes NULL for both and every account carried over from v8 lands on NULL
+  /// and behaves exactly as it did.
+  ///
+  /// **No foreign key, and it could not have one:** a JSON array cannot
+  /// reference a column. That is handled where it matters instead —
+  /// `AccessRepository.deleteRole` refuses a role anybody holds *either* way
+  /// and `renameRole` rewrites both — and a name in here that matches no role
+  /// row simply grants nothing, which is the fail-closed direction.
+  ///
+  /// Keep it small, for the reason [AppRole.groups] gives: the backend config
+  /// watcher fires on preference writes and `pg_notify` has an 8000-byte cap.
+  TextColumn get additionalRoles => text().nullable()();
 
   /// Argon2id over the password with [salt], stored self-describing: the value
   /// carries its own algorithm tag and cost parameters.
@@ -227,6 +257,20 @@ class AppUser extends Table {
   /// expressible. It can widen what this account *sees*; it can never widen
   /// what this account may *do*, because the group gate is ANDed on top.
   TextColumn get allowedPages => text().nullable()();
+
+  /// How many idle minutes end this account's sessions (schema v8), or NULL
+  /// for the default.
+  ///
+  /// Per account rather than per station: the account knows who walked away
+  /// with what power, the panel does not. **NULL means "no value of its own"**,
+  /// never "never expires" — sessions that must not expire are
+  /// [stationAccount]'s, and only that flag produces one. Every account
+  /// carried over from v7 lands on NULL and keeps the fifteen minutes it had.
+  ///
+  /// The range is enforced by `AccessRepository.setInactivityTimeout` and a
+  /// value outside it is clamped on read by `resolveInactivityTimeout`, so a
+  /// `psql` edit cannot end sessions instantly or never.
+  IntColumn get inactivityTimeoutMinutes => integer().nullable()();
 }
 
 /// The human-action audit trail: append-only, never pruned.
@@ -556,7 +600,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   }
 
   @override
-  int get schemaVersion => 8;
+  int get schemaVersion => 10;
 
   /// The `audit_entry` indexes, created outside Drift because Drift's
   /// `@TableIndex` cannot express `DESC` and every one of these is a
@@ -925,30 +969,102 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
                   'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS allowed_pages TEXT');
             }
           }
+          // The inactivity timeout, per account. One nullable column; every
+          // existing account upgrades to NULL, which is the fifteen-minute
+          // default it already had.
+          //
+          // Guarded by whether the column exists rather than by `from >= N`,
+          // unlike the v7 arm above. Three things can already have put it
+          // there: the v6 arm's `createTable` in this same upgrade (SQLite
+          // builds it from the table definition, which carries the column), a
+          // second station opening the shared Postgres, and a branch that
+          // lands its own arms around this one and renumbers it. An existence
+          // check is right in every merge order; a version comparison is only
+          // right in the one it was written for.
+          if (from < 8) {
+            if (native) {
+              final cols = await m.database
+                  .customSelect("PRAGMA table_info('app_user')")
+                  .get();
+              final present = cols.any(
+                  (r) => r.read<String>('name') == 'inactivity_timeout_minutes');
+              if (!present) {
+                await m.addColumn(appUser, appUser.inactivityTimeoutMinutes);
+              }
+            } else {
+              // Not in the v6 CREATE TABLE literal on purpose: a v5 Postgres
+              // station creates the table there and gets the column here, in
+              // the same open. No test executes this arm — the parity check in
+              // `access_schema_test.dart` is what stands behind the string.
+              await m.database.customStatement(
+                  'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS inactivity_timeout_minutes INTEGER');
+            }
+          }
+          // The extra roles an account holds beyond its primary one. One
+          // nullable column; every existing account upgrades to NULL, which is
+          // "holds only its primary role" — exactly the single-role account it
+          // already was.
+          //
+          // Guarded by an existence check rather than by `from >= N`, for the
+          // reason the v8 arm above gives at length: the v6 arm's
+          // `createTable` in this same upgrade builds `app_user` from the table
+          // definition, which carries this column, and a second station opening
+          // the shared Postgres runs this branch too.
+          if (from < 9) {
+            if (native) {
+              final cols = await m.database
+                  .customSelect("PRAGMA table_info('app_user')")
+                  .get();
+              final present =
+                  cols.any((r) => r.read<String>('name') == 'additional_roles');
+              if (!present) {
+                await m.addColumn(appUser, appUser.additionalRoles);
+              }
+            } else {
+              // Not in the v6 CREATE TABLE literal on purpose, following v8: a
+              // v5 Postgres station creates the table there and gets the column
+              // here, in the same open. No test executes this arm — the parity
+              // check in `access_schema_test.dart` is what stands behind the
+              // string.
+              await m.database.customStatement(
+                  'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS additional_roles TEXT');
+            }
+          }
 
-          // **v7 is main's page-visibility whitelist; this arm is v8.** Both
-          // landed as "the next version" on separate branches and collided at
-          // the merge. main's shipped first, so it keeps 7 and the alarm change
-          // moved up — which is also the safe direction: a station that has
-          // already run 7 gets 8 on its next open, and one that has run
-          // neither gets both in order.
-          // Schema v8: `alarm_history` becomes writable, and an open
+          // **This arm has been renumbered twice and the number is not the
+          // point.** It was v7 on this branch, became v8 when main's
+          // page-visibility whitelist (#495) took 7, and is v10 now that main
+          // has also taken 8 (per-account inactivity timeout, #505) and 9
+          // (additional roles, #512). Each time the rule was the same and it
+          // is main's: whichever arm shipped first keeps its number, and this
+          // one moves up. That is also the safe direction — a station that has
+          // run the earlier arms gets this one on its next open, and one that
+          // has run none of them gets them all in order.
+          //
+          // Schema v10: `alarm_history` becomes writable, and an open
           // activation row becomes a thing the database can hold exactly one
           // of. See 14-CONTEXT D-5.
           //
           // **This is the first migration arm in this repository with an
           // executed Postgres test** — `test/integration/alarm_schema_v8_test
-          // .dart`, twelve legs against a real server, half of them against a
-          // v6 shape built by hand and lifted through this branch. The v6
-          // comment above records that no test had ever run one. v8 does not
-          // inherit that.
-          if (from < 8) {
+          // .dart` (named for the version it was written at), fourteen legs
+          // against a real server, half of them against a v6 shape built by
+          // hand and lifted through this branch. The v6 comment above records
+          // that no test had ever run one. This arm does not inherit that.
+          if (from < 10) {
             if (native) {
+              // Guarded by whether the columns exist rather than by
+              // `from >= N`, which is the convention main's v8 arm above sets
+              // out and the reasoning holds here verbatim: an existence check
+              // is right in every merge order, a version comparison only in
+              // the one it was written for. This arm has now been renumbered
+              // twice, which is the case that reasoning is about.
+              //
               // SQLite has no `ADD COLUMN IF NOT EXISTS` and no
               // `DROP CONSTRAINT`. Neither matters here:
               //
               // * A SQLite database is per-process, so nothing else is racing
-              //   this branch and plain `ADD COLUMN` is safe.
+              //   this branch.
               // * The `alarm_uid -> alarm(uid)` foreign key is already inert.
               //   Drift never issues `PRAGMA foreign_keys = ON` and nothing in
               //   this package sets it in a `beforeOpen`, so SQLite has been
@@ -957,11 +1073,21 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
               //   to remove a constraint that is not enforced would be a
               //   copy-and-swap of the plant's history for no behavioural
               //   change; it is deliberately not done.
-              for (final stmt in [
-                'ALTER TABLE alarm_history ADD COLUMN rule_index INTEGER',
-                'ALTER TABLE alarm_history ADD COLUMN ts_source TEXT',
-                'ALTER TABLE alarm_history ADD COLUMN deactivated_reason TEXT',
+              final cols = await m.database
+                  .customSelect("PRAGMA table_info('alarm_history')")
+                  .get();
+              final present = {
+                for (final r in cols) r.read<String>('name'),
+              };
+              for (final (column, stmt) in const [
+                ('rule_index',
+                    'ALTER TABLE alarm_history ADD COLUMN rule_index INTEGER'),
+                ('ts_source',
+                    'ALTER TABLE alarm_history ADD COLUMN ts_source TEXT'),
+                ('deactivated_reason',
+                    'ALTER TABLE alarm_history ADD COLUMN deactivated_reason TEXT'),
               ]) {
+                if (present.contains(column)) continue;
                 await m.database.customStatement(stmt);
               }
             } else {
@@ -990,7 +1116,8 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
               }
               await _dropAlarmHistoryForeignKeys(m);
             }
-            await _createAlarmHistoryOpenRowIndex(m);          }
+            await _createAlarmHistoryOpenRowIndex(m);
+          }
         },
       );
 

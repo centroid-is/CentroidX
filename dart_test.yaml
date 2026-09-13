@@ -1,13 +1,30 @@
+# Where golden-tagged tests run.
+#
 # Golden-tagged tests used to be skipped everywhere, unconditionally. Nothing
 # ran them for long enough that 23 of them had rotted: stale images, a browse
 # fixture whose PDU framing no longer matched the client, and one test still
 # driving a tree that had become a drill-down navigator. A test nothing runs
 # is not a test.
 #
-# They run now, on macOS only -- the same rule the other 18 golden files
-# already apply with `skip: !Platform.isMacOS`. Goldens are rendered on macOS,
-# and Linux and Windows produce different text rasterisation, so comparing
-# there reports differences that are about the runner rather than the code.
+# They then ran on macOS only. That was the wrong reference platform, for a
+# reason that took a while to surface: our goldens load RobotoMono from repo
+# bytes, so the font data is pinned, but on macOS Skia rasterises glyphs
+# through CoreText -- which belongs to the operating system. A golden authored
+# on macOS 15 could therefore fail on CI's macOS 26 under an identical Flutter
+# 3.44.9, with no change to the code and no way to regenerate out of it. The
+# only lever left was the tolerance, and it kept getting widened: 0.0001 to
+# 0.0005 to 0.002, across 25 files.
+#
+# On Linux, Skia rasterises through the FreeType compiled into the engine
+# binary, which ships inside the SDK -- so `.flutter-version` pins the entire
+# text raster stack and the host OS cannot move it. Measured 2026-09-12:
+# linux/amd64 and linux/arm64 produce byte-identical goldens, as do two fresh
+# containers, so a developer on any machine reproduces CI exactly by running
+# `scripts/goldens.sh` (docker/goldens/).
+#
+# The platform decision for untagged golden tests lives in
+# test/helpers/golden_platform.dart, in one place rather than in each file.
+# This stanza is its equivalent for the tag, and the two must agree.
 #
 # `--update-goldens` still works as before; this only decides where they are
 # *compared*.
@@ -15,11 +32,11 @@ tags:
   golden:
 
 on_os:
-  linux:
+  mac-os:
     tags:
       golden:
-        skip: "Goldens are rendered on macOS; other platforms differ on text rasterisation"
+        skip: "Goldens are rendered on Linux; macOS rasterises glyphs through CoreText, which changes with the OS"
   windows:
     tags:
       golden:
-        skip: "Goldens are rendered on macOS; other platforms differ on text rasterisation"
+        skip: "Goldens are rendered on Linux; other platforms differ on text rasterisation"

@@ -29,6 +29,7 @@ import 'package:tfc/providers/state_man.dart' show stateManProvider;
 import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:tfc_dart/core/state_man.dart' show StateMan;
+import '../../helpers/golden_platform.dart';
 
 void main() {
   group('kSTBChannelBitOrder + bitmaskToLedStates', () {
@@ -332,10 +333,10 @@ void main() {
   // - `RepaintBoundary` + unique `Key` so the matched widget = painter pixels
   // - `tester.pump(Duration.zero)` — NEVER `pumpAndSettle()` (Pitfall 6)
   // - `AlwaysStoppedAnimation(0)` — deterministic frame
-  // - macOS-gated via `skip: !Platform.isMacOS` (QUAL-01)
+  // - macOS-gated via `skip: goldenSkip` (QUAL-01)
   // ---------------------------------------------------------------------------
   group('STBDDI3725 goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     const goldenKey = Key('stb_ddi3725_golden');
 
     Future<void> pumpDDI3725(
@@ -1718,7 +1719,7 @@ void main() {
   // the DDI3725 goldens (CONTEXT.md §Visual Differentiation).
   // ---------------------------------------------------------------------------
   group('STBDDO3705 goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     const goldenKey = Key('stb_ddo3705_golden');
 
     Future<void> pumpDDO3705(
@@ -2154,7 +2155,7 @@ void main() {
   // rendered in light + dark themes. macOS-only per project convention.
   // ---------------------------------------------------------------------------
   group('STBNIP2311 goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     const goldenKey = Key('stb_nip2311_golden');
 
     Future<void> pumpNIP2311(
@@ -2566,7 +2567,7 @@ void main() {
   // only per project golden convention (font rendering parity).
   // ---------------------------------------------------------------------------
   group('STBPDT3100 goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     const goldenKey = Key('stb_pdt3100_golden');
 
     Future<void> pumpPDT3100(
@@ -3261,7 +3262,7 @@ void main() {
   // ---------------------------------------------------------------------------
   group(
     'STBNIP2311 head with modules goldens',
-    skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null,
+    skip: goldenSkip,
     () {
       const goldenKey = Key('stb_nip_with_modules_golden');
 
@@ -3336,7 +3337,7 @@ void main() {
   // Each defect is checked via direct painter introspection or by sampling the
   // pixels of a `Picture` rendered through `PictureRecorder`. This is robust
   // to font-rendering jitter across host platforms (unlike full goldens), so
-  // the tests are not gated by `Platform.isMacOS`.
+  // the tests are not gated by `goldenSkip`.
   // ===========================================================================
   group('STB visual defect regression — header chamfer / bottom bleed / LEDs / labels', () {
     Future<List<int>> renderToPixels(

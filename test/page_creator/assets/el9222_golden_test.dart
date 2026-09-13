@@ -13,6 +13,7 @@ import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Goldens of the EL9222 overcurrent protection terminal.
 ///
@@ -100,13 +101,10 @@ class _El9222StateMan extends Fake implements StateMan {
 }
 
 void main() {
-  // Same reasoning as the conveyor pane goldens — the default tolerance is
-  // too tight for text antialiasing drift, while a real regression moves far
-  // more than 0.2% of the frame.
-  useTolerantGoldenComparator(tolerance: 0.002);
+  useTolerantGoldenComparator();
 
   group('EL9222 golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(loadRealFont);
 
     setUp(() {

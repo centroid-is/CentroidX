@@ -173,8 +173,25 @@ abstract interface class AccessAdminApi {
   /// stay that way.
   Future<void> deleteUser(String subject, {String? reason});
 
-  /// Moves [subject] onto [newRole].
+  /// Moves [subject] onto [newRole], and off everything else.
   Future<void> setUserRole(String subject, String newRole, {String? reason});
+
+  /// Replaces [subject]'s whole role set, primary first.
+  ///
+  /// [setUserRole] is the single-role special case and delegates to this one
+  /// server-side; both are on the wire because both are things the panel
+  /// means, and collapsing them would make "move this account" and "give it a
+  /// second role" indistinguishable in the audit trail.
+  Future<void> setUserRoles(String subject, List<String> newRoles,
+      {String? reason});
+
+  /// Sets [subject]'s own inactivity window in minutes, or clears it with null
+  /// so the account takes the station default.
+  ///
+  /// Not a permission, but it is the width of one person's elevation window,
+  /// which is why it is graded and recorded like every other admin write.
+  Future<void> setUserInactivityTimeout(String subject, int? minutes,
+      {String? reason});
 
   /// Flips [subject]'s station-account flag — whether a signed-in panel ever
   /// signs itself out.
@@ -391,6 +408,7 @@ final class NewUserParams {
     required this.subject,
     required this.password,
     required this.grantedRole,
+    this.additionalRoles = const <String>[],
     this.reason,
   });
 
@@ -406,6 +424,13 @@ final class NewUserParams {
   /// because `AuditRecord.roleName` means *the caller's* role.
   final String grantedRole;
 
+  /// Any further roles it holds beside [grantedRole], in order.
+  ///
+  /// Empty is the ordinary case. Omitted from the frame when empty, so a
+  /// backend that predates multi-role accounts sees exactly the frame it saw
+  /// before and creates exactly the account it created before.
+  final List<String> additionalRoles;
+
   /// The operator's justification, for the audit row. Says why, never who.
   final String? reason;
 
@@ -413,6 +438,7 @@ final class NewUserParams {
         'subject': subject,
         'password': password,
         'grantedRole': grantedRole,
+        if (additionalRoles.isNotEmpty) 'additionalRoles': additionalRoles,
         if (reason != null) 'reason': reason,
       };
 
@@ -420,13 +446,14 @@ final class NewUserParams {
         subject: json['subject'] as String,
         password: json['password'] as String,
         grantedRole: json['grantedRole'] as String,
+        additionalRoles: _rolesFromJson(json['additionalRoles']),
         reason: json['reason'] as String?,
       );
 
   @override
   String toString() =>
       'NewUserParams(subject: $subject, grantedRole: $grantedRole, '
-      'password: <withheld>)';
+      'alsoHolds: $additionalRoles, password: <withheld>)';
 }
 
 /// The arguments of [AccessAdminApi.setUserPassword].
@@ -642,6 +669,14 @@ Map<String, Object?> userSummaryToJson(UserSummary value) => <String, Object?>{
         'lastLoginAtMs': value.lastLoginAt!.toUtc().millisecondsSinceEpoch,
       if (value.allowedPages != null)
         'allowedPages': pagesToJson(value.allowedPages),
+      // Omitted when empty, following `displayName`: a backend that does not
+      // send it means "holds only its primary role", which is what an absent
+      // key decodes to. Order is preserved — the roster renders the set and
+      // `normaliseRoleNames` decides the order, so the wire must not re-sort.
+      if (value.additionalRoles.isNotEmpty)
+        'additionalRoles': value.additionalRoles,
+      if (value.inactivityTimeoutMinutes != null)
+        'inactivityTimeoutMinutes': value.inactivityTimeoutMinutes,
     };
 
 /// The inverse of [userSummaryToJson].
@@ -664,7 +699,20 @@ UserSummary userSummaryFromJson(Map<String, Object?> json) => UserSummary(
       createdAt: _utcFromMs(json['createdAtMs']),
       lastLoginAt: _utcFromMs(json['lastLoginAtMs']),
       allowedPages: _pagesFromJson(json['allowedPages']),
+      additionalRoles: _rolesFromJson(json['additionalRoles']),
+      inactivityTimeoutMinutes: (json['inactivityTimeoutMinutes'] as num?)?.toInt(),
     );
+
+/// A wire `additionalRoles` value as a list, **forgiving and narrowing**.
+///
+/// The opposite ruling to `_pagesFromJson`, and deliberately so — it is
+/// `decodeAdditionalRoles`' ruling, for the same reason: an unreadable role
+/// list costs an account a capability, which is safe, while an unreadable
+/// page list that failed open would show pages the whitelist exists to hide.
+List<String> _rolesFromJson(Object? value) {
+  if (value is! List) return const <String>[];
+  return value.whereType<String>().toList(growable: false);
+}
 
 /// A page whitelist as a wire value: a sorted JSON array, or null.
 ///

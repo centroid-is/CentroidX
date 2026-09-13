@@ -715,6 +715,21 @@ final class ClientAccessAdminApi implements AccessAdminApi {
           {'subject': subject, 'value': value, 'reason': reason});
 
   @override
+  Future<void> setUserRoles(String subject, List<String> newRoles,
+          {String? reason}) async =>
+      await _send(AccessMethods.adminSetUserRoles,
+          {'subject': subject, 'newRoles': newRoles, 'reason': reason});
+
+  @override
+  Future<void> setUserInactivityTimeout(String subject, int? minutes,
+          {String? reason}) async =>
+      // `minutes` null crosses as an explicit null rather than being omitted:
+      // clearing the account's own window is a write, not the absence of one,
+      // and the handler reads it with `valueOr` for exactly that reason.
+      await _send(AccessMethods.adminSetUserInactivityTimeout,
+          {'subject': subject, 'minutes': minutes, 'reason': reason});
+
+  @override
   // `pagesToJson(pages)` and not `pages?.toList()`: null must stay null on the
   // wire (no whitelist) while the empty list must survive as an empty list
   // (block all), and the shared codec is what keeps the two apart at every

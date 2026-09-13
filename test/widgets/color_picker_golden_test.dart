@@ -23,6 +23,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 
 import 'package:tfc/theme.dart';
 import 'package:tfc/widgets/panes/color_picker_dialog.dart';
+import '../helpers/golden_platform.dart';
 
 /// Editor-pane-shaped canvas: the rows live in a ~360px config column, the
 /// dialog is 420px wide — 1024×768 shows both with the surrounding page.
@@ -163,5 +164,5 @@ void main() {
         matchesGoldenFile('goldens/color_picker_dialog_light.png'),
       );
     });
-  }, skip: !Platform.isMacOS);
+  }, skip: goldenSkip);
 }

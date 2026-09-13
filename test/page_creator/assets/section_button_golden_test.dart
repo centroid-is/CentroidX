@@ -18,6 +18,7 @@ import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/golden_platform.dart';
 
 /// Loads real fonts so the pane's labels render as letterforms and its icons
 /// as glyphs instead of the test font's solid boxes — same arrangement as
@@ -52,7 +53,7 @@ Future<void> loadRealFont() async {
 /// commands are unambiguous. Both are things only an eye can check.
 void main() {
   group('section button golden',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     setUpAll(loadRealFont);
 
     tearDown(() => closeSidePane(immediate: true));
@@ -278,11 +279,7 @@ void main() {
     });
 
     group('pane', () {
-      // A full app surface with real text: the 0.01% default absorbs painter
-      // drift, not the antialiasing of a pane full of letterforms. A real
-      // regression here — a missing command, a mode button that lost its
-      // highlight — moves far more than 0.2% of the frame.
-      useTolerantGoldenComparator(tolerance: 0.002);
+      useTolerantGoldenComparator();
 
       Future<void> pumpPane(
         WidgetTester tester,

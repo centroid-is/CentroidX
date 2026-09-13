@@ -87,6 +87,16 @@ add_executable(engine_rebuild_gate_test
 )
 target_include_directories(engine_rebuild_gate_test PRIVATE "..")
 
+# Whether an RDP session change should rebuild the engine at all. Disconnects
+# defer, reconnects probe first; the gate above still decides WHEN. Built with
+# the gate so the two can be exercised end to end -- see the header.
+add_executable(session_rebuild_policy_test
+  "session_rebuild_policy_test.cpp"
+  "../session_rebuild_policy.cpp"
+  "../engine_rebuild_gate.cpp"
+)
+target_include_directories(session_rebuild_policy_test PRIVATE "..")
+
 # The drop-target reference-count model behind the 2026-09-02 crash. Pure
 # logic, no Windows headers -- the one real RevokeDragDrop the fix needs lives
 # in flutter_window.cpp, the reasoning it depends on is tested here.
@@ -95,6 +105,15 @@ add_executable(drag_drop_lifetime_test
   "../drag_drop_lifetime.cpp"
 )
 target_include_directories(drag_drop_lifetime_test PRIVATE "..")
+
+# How the process ends: a closed window withdraws crash-restart, and nothing
+# runs module teardown. Behind the 2026-09-11 loop where every close crashed in
+# dcomp.dll and Windows relaunched the app -- see the header.
+add_executable(shutdown_policy_test
+  "shutdown_policy_test.cpp"
+  "../shutdown_policy.cpp"
+)
+target_include_directories(shutdown_policy_test PRIVATE "..")
 
 # The interposer is fd surgery on a real pipe; it only exists -- and is only
 # testable -- on Windows. The detector logic it feeds is tested above on
@@ -115,7 +134,8 @@ endif()
 set(RUNNER_TEST_TARGETS gpu_watchdog_test gpu_diagnosis_test log_rotation_test
     log_throttle_test output_target_test crash_record_test
     path_utils_test egl_storm_detector_test drag_drop_lifetime_test
-    dart_liveness_test engine_rebuild_gate_test)
+    dart_liveness_test engine_rebuild_gate_test session_rebuild_policy_test
+    shutdown_policy_test)
 if(WIN32)
   list(APPEND RUNNER_TEST_TARGETS stderr_interposer_test)
 endif()
@@ -138,6 +158,8 @@ add_test(NAME egl_storm_detector COMMAND egl_storm_detector_test)
 add_test(NAME drag_drop_lifetime COMMAND drag_drop_lifetime_test)
 add_test(NAME dart_liveness COMMAND dart_liveness_test)
 add_test(NAME engine_rebuild_gate COMMAND engine_rebuild_gate_test)
+add_test(NAME session_rebuild_policy COMMAND session_rebuild_policy_test)
+add_test(NAME shutdown_policy COMMAND shutdown_policy_test)
 if(WIN32)
   add_test(NAME stderr_interposer COMMAND stderr_interposer_test)
 endif()

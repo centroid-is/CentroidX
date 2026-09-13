@@ -69,6 +69,7 @@ import 'package:tfc/widgets/access_status_action.dart';
 import 'package:tfc_access/tfc_access.dart';
 
 import '../helpers/page_editor_harness.dart' show FakeEditorPreferences;
+import '../helpers/golden_platform.dart';
 
 const _appBarBoundary = Key('access_appbar_golden');
 const _dialogBoundary = Key('access_sign_in_dialog_golden');
@@ -378,10 +379,6 @@ Widget _commitHost({required ThemeData theme, required _FixedSession session}) {
 }
 
 /// The Session card, with the panel committed to [panelAccount] or to nobody.
-///
-/// The audit sink is overridden to a no-op rather than left real: the card
-/// records a row on every change it makes, and a golden must not need a
-/// database to render a card it is not changing anything on.
 Widget _sessionCardHost({required ThemeData theme, String? panelAccount}) {
   final prefs = FakeEditorPreferences();
   if (panelAccount != null) {
@@ -390,9 +387,6 @@ Widget _sessionCardHost({required ThemeData theme, String? panelAccount}) {
   return ProviderScope(
     overrides: [
       localPreferencesProvider.overrideWithValue(prefs),
-      accessSessionAuditProvider.overrideWithValue(
-        (station: 'ST301', audit: _NullAudit()),
-      ),
     ],
     child: MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -414,11 +408,6 @@ Widget _sessionCardHost({required ThemeData theme, String? panelAccount}) {
       ),
     ),
   );
-}
-
-class _NullAudit implements AuditSink {
-  @override
-  Future<void> record(AuditRecord entry) async {}
 }
 
 /// Bounded settle.
@@ -478,7 +467,7 @@ void main() {
   tearDownAll(() => EditableText.debugDeterministicCursor = false);
 
   group('access goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('app bar, anonymous', (tester) async {
       _sizeView(tester, const Size(800, 200));
       await tester.pumpWidget(

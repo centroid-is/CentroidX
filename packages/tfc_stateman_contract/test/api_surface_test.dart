@@ -191,6 +191,13 @@ const Set<String> expectedAccessTemplateApi = {
 /// `Operator` — hand it to every logged-out panel on the floor. It is here as
 /// a deliberate decision, not as a convenience.
 ///
+/// `setUserRoles` and `setUserInactivityTimeout` arrived with main's
+/// multi-role accounts (#512) and per-account timeouts (#505). `setUserRole`
+/// stays beside `setUserRoles` rather than being replaced by it: the wire
+/// carries both because the panel means both, and one frame that could mean
+/// either would make "move this account" and "give it a second role"
+/// indistinguishable in the trail.
+///
 /// `setRolePages` and `setUserPages` are the page-visibility whitelist's two
 /// writes, added by the merge that brought the whitelist onto this branch.
 /// They are graded `users` like every other member here and **not**
@@ -213,6 +220,8 @@ const Set<String> expectedAccessAdminApi = {
   'deleteUser',
   'setUserRole',
   'setUserStationAccount',
+  'setUserRoles',
+  'setUserInactivityTimeout',
   'setRolePages',
   'setUserPages',
   'setUserPassword',
@@ -337,7 +346,7 @@ void main() {
       });
     }
 
-    test('the whole surface is 82 members over nine types, 80 distinct names',
+    test('the whole surface is 84 members over nine types, 82 distinct names',
         () {
       final actual = <String>{
         for (final type in wireTypes) ...declaredMemberNames(type),
@@ -358,17 +367,20 @@ void main() {
       // anywhere, seven mirror layers deep. 82 since the page-visibility
       // whitelist merged in and added accessAdmin.setRolePages and
       // .setUserPages — a widening this guard is supposed to catch, and did.
+      // 84 since the second merge from main brought multi-role accounts and
+      // per-account inactivity timeouts, adding .setUserRoles and
+      // .setUserInactivityTimeout beside them.
       final total = wireTypes
           .map((type) => declaredMemberNames(type).length)
           .fold<int>(0, (sum, length) => sum + length);
-      expect(total, 82,
+      expect(total, 84,
           reason: 'the count is written down so a same-size swap — one member '
               'removed, another added — cannot slip through as a coincidence. '
               '82 = 49 before Phase 17, plus four StateManApi getters, plus '
               'the twenty-eight access methods behind them after the access '
               'audit cut accessTemplates.template, minus the dead-code '
               'audit\'s countTimeseriesDataMultiple, plus the whitelist\'s '
-              'two admin writes');
+              'two admin writes and multi-role\'s two');
 
       // The union is SHORTER than the sum, and the gap is named rather than
       // left as an arithmetic surprise: BackendConfigApi.read and .write share
@@ -376,10 +388,10 @@ void main() {
       // happen to share a verb, kept apart on the wire by the
       // `backendConfig.` family segment. Asserting both numbers is what stops
       // a future collision from being absorbed silently by the set.
-      expect(actual, hasLength(80),
+      expect(actual, hasLength(82),
           reason: 'exactly two names appear on two types — read and write, on '
               'StateManApi and BackendConfigApi. A third collision would drop '
-              'this to 79 while the per-type tables above still passed, so it '
+              'this to 81 while the per-type tables above still passed, so it '
               'is counted here on purpose');
       expect(
           expectedStateManApi
@@ -388,7 +400,7 @@ void main() {
             ..sort(),
           ['read', 'write'],
           reason: 'and the two are named, not merely counted — a different '
-              'pair of colliding names would keep the length at 80 and mean '
+              'pair of colliding names would keep the length at 82 and mean '
               'something entirely different');
     });
   });

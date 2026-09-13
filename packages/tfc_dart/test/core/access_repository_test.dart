@@ -142,6 +142,37 @@ Future<int> _rawAuditCountFor(AppDatabase db, String who) async {
   return rows.first.read<int>('c');
 }
 
+
+/// The `additional_roles` column of [username], read with raw SQL.
+///
+/// Raw, for the reason [_rawGroups] gives: a test that asserts on the
+/// repository's own read of the row it just wrote can pass while the row is
+/// wrong — and this column has no foreign key to catch it.
+Future<String?> _rawAdditionalRolesOf(AppDatabase db, String username) async {
+  final rows = await db.customSelect(
+    'SELECT additional_roles FROM app_user WHERE username = ?',
+    variables: [Variable<String>(username)],
+  ).get();
+  if (rows.isEmpty) return null;
+  return rows.first.read<String?>('additional_roles');
+}
+
+/// Inserts a user row holding [roleName] plus [additionalRoles], with raw SQL.
+Future<void> _rawInsertUserWithRoles(
+  AppDatabase db, {
+  required String username,
+  required String roleName,
+  required List<String> additionalRoles,
+}) =>
+    db.customStatement(
+      'INSERT INTO app_user '
+      '(username, role_name, additional_roles, password_hash, salt, '
+      'created_at) '
+      "VALUES ('$username', '$roleName', "
+      "'${encodeAdditionalRoles(additionalRoles)}', 'hash', 'salt', "
+      "'2026-08-28T00:00:00Z')",
+    );
+
 void main() {
   late AppDatabase db;
   late AccessRepository repo;
@@ -1150,6 +1181,336 @@ void main() {
     });
   });
 
+  // ---------------------------------------------------------------------
+  // More than one role per account (schema v9)
+  // ---------------------------------------------------------------------
+
+  group('setRoles', () {
+    test('a single role stores NULL in additional_roles, as v8 wrote it',
+        () async {
+      final db = await _openDb();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUser(db, username: 'jon', roleName: 'Engineering');
+      // A second holder, so moving jon is not trip route (b). The lockout
+      // guard has its own group below; these tests are about the columns.
+      await _rawInsertUser(db, username: 'keeper', roleName: 'Engineering');
+
+      await repo.setRoles('jon', ['Maintenance']);
+
+      expect(await _rawRoleOf(db, 'jon'), 'Maintenance');
+      expect(await _rawAdditionalRolesOf(db, 'jon'), isNull,
+          reason: 'NULL and an empty array must not both be written, or an '
+              'upgrade would rewrite rows it did not change');
+    });
+
+    test('the first name becomes the primary role and the rest the extras',
+        () async {
+      final db = await _openDb();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUser(db, username: 'jon', roleName: 'Engineering');
+      // A second holder, so moving jon is not trip route (b). The lockout
+      // guard has its own group below; these tests are about the columns.
+      await _rawInsertUser(db, username: 'keeper', roleName: 'Engineering');
+
+      await repo.setRoles('jon', ['Operator', 'Maintenance', 'Shift Leader']);
+
+      expect(await _rawRoleOf(db, 'jon'), 'Operator');
+      expect(decodeAdditionalRoles(await _rawAdditionalRolesOf(db, 'jon')),
+          ['Maintenance', 'Shift Leader']);
+    });
+
+    test('rolesOf reads the two columns back as one list', () async {
+      final db = await _openDb();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUser(db, username: 'jon', roleName: 'Engineering');
+      // A second holder, so moving jon is not trip route (b). The lockout
+      // guard has its own group below; these tests are about the columns.
+      await _rawInsertUser(db, username: 'keeper', roleName: 'Engineering');
+      await repo.setRoles('jon', ['Operator', 'Maintenance']);
+
+      final row = (await repo.user('jon'))!;
+      expect(AccessRepository.rolesOf(row), ['Operator', 'Maintenance']);
+    });
+
+    test('duplicates and blanks are tidied rather than refused', () async {
+      final db = await _openDb();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUser(db, username: 'jon', roleName: 'Engineering');
+      // A second holder, so moving jon is not trip route (b). The lockout
+      // guard has its own group below; these tests are about the columns.
+      await _rawInsertUser(db, username: 'keeper', roleName: 'Engineering');
+
+      await repo.setRoles('jon', ['Operator', ' Operator ', 'Maintenance']);
+
+      expect(await _rawRoleOf(db, 'jon'), 'Operator');
+      expect(decodeAdditionalRoles(await _rawAdditionalRolesOf(db, 'jon')),
+          ['Maintenance']);
+    });
+
+    test('an empty list is refused — an account must hold a role', () async {
+      final db = await _openDb();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUser(db, username: 'jon', roleName: 'Engineering');
+      // A second holder, so moving jon is not trip route (b). The lockout
+      // guard has its own group below; these tests are about the columns.
+      await _rawInsertUser(db, username: 'keeper', roleName: 'Engineering');
+
+      await expectLater(
+          repo.setRoles('jon', const []), throwsA(isA<ArgumentError>()));
+      expect(await _rawRoleOf(db, 'jon'), 'Engineering');
+    });
+
+    test('a role that does not exist refuses the whole write', () async {
+      final db = await _openDb();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUser(db, username: 'jon', roleName: 'Engineering');
+      // A second holder, so moving jon is not trip route (b). The lockout
+      // guard has its own group below; these tests are about the columns.
+      await _rawInsertUser(db, username: 'keeper', roleName: 'Engineering');
+
+      await expectLater(repo.setRoles('jon', ['Operator', 'Ghost']),
+          throwsA(isA<MissingRoleError>()));
+      expect(await _rawRoleOf(db, 'jon'), 'Engineering',
+          reason: 'the check runs inside the transaction, so a bad extra role '
+              'does not half-apply the move');
+      expect(await _rawAdditionalRolesOf(db, 'jon'), isNull);
+    });
+
+    test('setRole still means "this one role and nothing else"', () async {
+      final db = await _openDb();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUser(db, username: 'jon', roleName: 'Engineering');
+      // A second holder, so moving jon is not trip route (b). The lockout
+      // guard has its own group below; these tests are about the columns.
+      await _rawInsertUser(db, username: 'keeper', roleName: 'Engineering');
+      await repo.setRoles('jon', ['Engineering', 'Maintenance']);
+
+      await repo.setRole('jon', 'Operator');
+
+      expect(await _rawRoleOf(db, 'jon'), 'Operator');
+      expect(await _rawAdditionalRolesOf(db, 'jon'), isNull);
+    });
+
+    test('an unknown account is UserNotFoundException, not a silent no-op',
+        () async {
+      final db = await _openDb();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await expectLater(repo.setRoles('nobody', ['Operator']),
+          throwsA(isA<UserNotFoundException>()));
+    });
+  });
+
+  group('createUser with several roles', () {
+    test('stores the primary and the extras', () async {
+      final db = await _openDb();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+
+      await repo.createUser(
+        username: 'jon',
+        password: 'correct horse',
+        roleName: 'Operator',
+        additionalRoles: ['Maintenance'],
+      );
+
+      expect(await _rawRoleOf(db, 'jon'), 'Operator');
+      expect(decodeAdditionalRoles(await _rawAdditionalRolesOf(db, 'jon')),
+          ['Maintenance']);
+    });
+
+    test('an extra role that does not exist refuses the account', () async {
+      final db = await _openDb();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+
+      await expectLater(
+        repo.createUser(
+          username: 'jon',
+          password: 'correct horse',
+          roleName: 'Operator',
+          additionalRoles: ['Ghost'],
+        ),
+        throwsA(isA<MissingRoleError>()),
+      );
+      expect(await _rawUserCount(db), 0,
+          reason: 'the caller asked for something this station cannot give; '
+              'finding out at the dialog beats finding out a month later');
+    });
+  });
+
+  group('a role held as an extra is a role held', () {
+    test('deleteRole refuses it and names the holder', () async {
+      final db = await _openDbForeignKeysOff();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUserWithRoles(db,
+          username: 'jon',
+          roleName: 'Engineering',
+          additionalRoles: ['Maintenance']);
+
+      await expectLater(repo.deleteRole('Maintenance'),
+          throwsA(isA<RoleInUseException>()));
+      expect(await _rawRoleNames(db), contains('Maintenance'));
+
+      // And the refusal names them, which is what the roles screen renders.
+      try {
+        await repo.deleteRole('Maintenance');
+        fail('expected a refusal');
+      } on RoleInUseException catch (refusal) {
+        expect(refusal.holders, ['jon']);
+      }
+    });
+
+    test('the holders check does not match a role name by substring', () async {
+      // `additional_roles` is a JSON TEXT column, so a `LIKE '%Shift Leader%'`
+      // implementation would find this account and refuse a delete it should
+      // allow.
+      final db = await _openDbForeignKeysOff();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await repo.upsertRole(const AccessRole(name: 'Shift Leader', groups: {}));
+      await repo
+          .upsertRole(const AccessRole(name: 'Assistant Shift Leader', groups: {}));
+      await _rawInsertUserWithRoles(db,
+          username: 'jon',
+          roleName: 'Engineering',
+          additionalRoles: ['Assistant Shift Leader']);
+
+      await repo.deleteRole('Shift Leader');
+      expect(await _rawRoleNames(db), isNot(contains('Shift Leader')));
+    });
+
+    test('renameRole carries the extras with it', () async {
+      final db = await _openDbForeignKeysOff();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUserWithRoles(db,
+          username: 'jon',
+          roleName: 'Engineering',
+          additionalRoles: ['Maintenance', 'Shift Leader']);
+
+      await repo.renameRole('Maintenance', 'Mechanics');
+
+      expect(decodeAdditionalRoles(await _rawAdditionalRolesOf(db, 'jon')),
+          ['Mechanics', 'Shift Leader'],
+          reason: 'nothing carries a JSON column along on its own, and '
+              'leaving it would strip the role from everybody who held it '
+              'secondarily — a permission change disguised as a rename');
+      expect(await _rawRoleOf(db, 'jon'), 'Engineering');
+    });
+
+    test('a rename of a role held both ways does not list it twice', () async {
+      final db = await _openDbForeignKeysOff();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      // Only reachable by hand in psql — there is no write in this class that
+      // produces it — but the rename must not turn it into a duplicate.
+      await _rawInsertUserWithRoles(db,
+          username: 'jon',
+          roleName: 'Maintenance',
+          additionalRoles: ['Maintenance']);
+
+      await repo.renameRole('Maintenance', 'Mechanics');
+
+      expect(await _rawRoleOf(db, 'jon'), 'Mechanics');
+      expect(decodeAdditionalRoles(await _rawAdditionalRolesOf(db, 'jon')),
+          isEmpty);
+    });
+  });
+
+  group('the last users-holder invariant across several roles', () {
+    test('users held through an extra role counts as holding it', () async {
+      final db = await _openDbForeignKeysOff();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      // Primary role grants nothing near `users`; the second one does.
+      await _rawInsertUserWithRoles(db,
+          username: 'jon',
+          roleName: 'Operator',
+          additionalRoles: ['Engineering']);
+
+      await expectLater(
+          repo.deleteUser('jon'), throwsA(isA<LastUsersHolderException>()));
+      expect(await _rawUserCount(db), 1,
+          reason: 'a guard reading only role_name would have seen an Operator '
+              'and allowed the delete that locks the plant out');
+    });
+
+    test('dropping the extra role that grants users is refused', () async {
+      final db = await _openDbForeignKeysOff();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUserWithRoles(db,
+          username: 'jon',
+          roleName: 'Operator',
+          additionalRoles: ['Engineering']);
+
+      await expectLater(repo.setRoles('jon', ['Operator']),
+          throwsA(isA<LastUsersHolderException>()));
+      expect(decodeAdditionalRoles(await _rawAdditionalRolesOf(db, 'jon')),
+          ['Engineering']);
+    });
+
+    test('keeping it while adding another role is allowed', () async {
+      final db = await _openDbForeignKeysOff();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUserWithRoles(db,
+          username: 'jon',
+          roleName: 'Operator',
+          additionalRoles: ['Engineering']);
+
+      await repo.setRoles('jon', ['Operator', 'Engineering', 'Maintenance']);
+
+      expect(decodeAdditionalRoles(await _rawAdditionalRolesOf(db, 'jon')),
+          ['Engineering', 'Maintenance'],
+          reason: 'the guard must not refuse an edit that takes nothing away');
+    });
+
+    test('deleting the role that grants it through an extra is refused',
+        () async {
+      final db = await _openDbForeignKeysOff();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUserWithRoles(db,
+          username: 'jon',
+          roleName: 'Operator',
+          additionalRoles: ['Engineering']);
+
+      await expectLater(repo.deleteRole('Engineering'),
+          throwsA(isA<LastUsersHolderException>()));
+    });
+
+    test('the refusal names a granting role the holder actually holds',
+        () async {
+      final db = await _openDbForeignKeysOff();
+      addTearDown(db.close);
+      final repo = AccessRepository(db);
+      await _rawInsertUserWithRoles(db,
+          username: 'jon',
+          roleName: 'Operator',
+          additionalRoles: ['Engineering']);
+
+      try {
+        await repo.deleteUser('jon');
+        fail('expected a refusal');
+      } on LastUsersHolderException catch (refusal) {
+        expect(refusal.roleName, 'Engineering',
+            reason: 'naming Operator would send somebody to edit the role '
+                'that has nothing to do with it');
+        expect(refusal.holders, ['jon']);
+      }
+    });
+  });
+
   group('rehashPassword', () {
     test('writes both columns and reports the one row it updated', () async {
       await repo.createFirstUser(username: 'jon', password: 'hunter2');
@@ -1459,6 +1820,67 @@ void main() {
       await repo.setUserAllowedPages('jon', {'/fillet'});
       await repo.setRole('jon', kOperatorRoleName);
       expect((await repo.user('jon'))!.allowedPages, '["/fillet"]');
+    });
+  });
+
+  group('the inactivity timeout on a user', () {
+    setUp(() async {
+      await repo.createFirstUser(username: 'jon', password: 'pw');
+    });
+
+    test('a fresh account has none, meaning it uses the default', () async {
+      // NULL is "no value of its own" — never "never expires". Only the
+      // station-account flag produces a session that does not end.
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes, isNull);
+    });
+
+    test('setInactivityTimeout round-trips, and null clears it', () async {
+      await repo.setInactivityTimeout('jon', 45);
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes, 45);
+
+      await repo.setInactivityTimeout('jon', null);
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes, isNull);
+    });
+
+    test('the ends of the range are accepted', () async {
+      await repo.setInactivityTimeout('jon', kMinInactivityTimeout.inMinutes);
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes,
+          kMinInactivityTimeout.inMinutes);
+
+      await repo.setInactivityTimeout('jon', kMaxInactivityTimeout.inMinutes);
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes,
+          kMaxInactivityTimeout.inMinutes);
+    });
+
+    test('a value outside the range throws rather than clamping', () async {
+      // Clamping would write a number the administrator did not choose and
+      // then record it in the trail as though they had.
+      for (final bad in [0, -5, kMaxInactivityTimeout.inMinutes + 1]) {
+        await expectLater(
+          () => repo.setInactivityTimeout('jon', bad),
+          throwsA(isA<ArgumentError>()),
+          reason: '$bad must be refused',
+        );
+      }
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes, isNull);
+    });
+
+    test('naming no account throws', () async {
+      expect(
+        () => repo.setInactivityTimeout('nobody', 45),
+        throwsA(isA<UserNotFoundException>()),
+      );
+    });
+
+    test('setRole preserves it', () async {
+      await repo.createUser(
+        username: 'ann',
+        password: 'pw',
+        roleName: 'Engineering',
+      );
+      await repo.setInactivityTimeout('jon', 45);
+      await repo.setRole('jon', kOperatorRoleName);
+      expect((await repo.user('jon'))!.inactivityTimeoutMinutes, 45);
     });
   });
 

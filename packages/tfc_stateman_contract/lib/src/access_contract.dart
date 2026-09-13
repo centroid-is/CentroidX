@@ -424,6 +424,48 @@ Future<void> checkSetUserStationAccountRefusesConfigurePermitsUsers(
       action: () => api.accessAdmin.setUserStationAccount('stodvar', true));
 }
 
+/// Replacing an account's whole role set is `users`, like every other admin
+/// write — and it is graded separately from [setUserRole] because it is a
+/// separate wire name, not because the answer differs.
+Future<void> checkSetUserRolesRefusesConfigurePermitsUsers(
+    StateManApi api) async {
+  final h = accessHarnessOf(api);
+  h.actAs(usersSession);
+  await _seed(
+      () => api.accessAdmin.createRole(
+          const AccessRole(name: 'Vaktstjori', groups: {AccessGroup.operate})),
+      'Vaktstjori');
+  await _seed(
+      () => api.accessAdmin.createUser(const NewUserParams(
+          subject: 'fjolhlutverk', password: 'x-9', grantedRole: 'Operator')),
+      'fjolhlutverk');
+  await _refusedThenPermitted(api,
+      denied: configureSession,
+      permitted: usersSession,
+      what: 'replacing an account\'s roles',
+      action: () => api.accessAdmin
+          .setUserRoles('fjolhlutverk', ['Operator', 'Vaktstjori']));
+}
+
+/// The account's own inactivity window. Not a permission — but it is the width
+/// of one person's elevation, which is why it is gated and recorded rather
+/// than left to whoever holds the account.
+Future<void> checkSetUserInactivityTimeoutRefusesConfigurePermitsUsers(
+    StateManApi api) async {
+  final h = accessHarnessOf(api);
+  h.actAs(usersSession);
+  await _seed(
+      () => api.accessAdmin.createUser(const NewUserParams(
+          subject: 'tholinmaedi', password: 'x-9', grantedRole: 'Operator')),
+      'tholinmaedi');
+  await _refusedThenPermitted(api,
+      denied: configureSession,
+      permitted: usersSession,
+      what: 'setting an account inactivity timeout',
+      action: () =>
+          api.accessAdmin.setUserInactivityTimeout('tholinmaedi', 30));
+}
+
 /// The page whitelist is `users`, not `configure` — the whole reason it lives
 /// on the admin surface.
 ///
@@ -804,6 +846,10 @@ const accessChecks = <String, Check<StateManApi>>{
       checkSetUserRoleRefusesConfigurePermitsUsers,
   'flipping a station-account flag refuses configure and permits users':
       checkSetUserStationAccountRefusesConfigurePermitsUsers,
+  'replacing an account\'s roles refuses configure and permits users':
+      checkSetUserRolesRefusesConfigurePermitsUsers,
+  'setting an account inactivity timeout refuses configure and permits users':
+      checkSetUserInactivityTimeoutRefusesConfigurePermitsUsers,
   'setting a role page whitelist refuses configure and permits users':
       checkSetRolePagesRefusesConfigurePermitsUsers,
   'setting an account page whitelist refuses configure and permits users':

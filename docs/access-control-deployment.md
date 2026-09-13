@@ -271,10 +271,11 @@ including a list naming nothing. A whitelist set too tight is **not** a
 lockout and needs no break-glass: it cannot take away the screen that repairs
 it. Two independent reasons, and both are enforced rather than remembered:
 
-* The Advanced routes — the access screen among them — answer to groups alone
-  and are not whitelistable. No whitelist state can hide `/advanced/access`
-  beyond the `users` gate it already has, and the last-`users`-holder
-  invariant guarantees somebody still holds that group.
+* The access screen is exempt from the whitelist. Every other Advanced
+  destination can be granted or withheld like any page, but no whitelist state
+  can hide `/advanced/access` beyond the `users` gate it already has
+  (`routeExemptFromPageWhitelist`), and the last-`users`-holder invariant
+  guarantees somebody still holds that group.
 * Signing in is not a page. The app bar carries the sign-in control on every
   screen, and the refusal page a hidden page shows carries one of its own — so
   a panel whitelisted down to nothing is still a panel somebody can sign in at.
@@ -293,6 +294,33 @@ UPDATE app_user SET allowed_pages = NULL WHERE username = 'lina';
 is a whitelist naming nothing, which hides every page. Writing `'[]'` here by
 reflex is the one way to make this worse rather than better. The same audit
 consequence as above applies: a change made in `psql` leaves no row.
+
+### Upgrading a panel that had "Sessions never expire" on
+
+The inactivity timeout used to be device-local: a minutes value and a switch
+that stopped **every** session on that panel from expiring, including an
+Engineering sign-in made to fix something. It is a column on the account now
+(`app_user.inactivity_timeout_minutes`, NULL meaning the 15-minute default),
+and both old preference keys are ignored and removed at the first start after
+the upgrade, with a line in the log saying so.
+
+Two consequences, and only the second needs anybody to do anything:
+
+* A panel that had a custom **minutes** value goes back to 15 minutes until an
+  administrator gives the accounts a value of their own, on Advanced → Access,
+  in the users list. Nothing is lost that cannot be set again in a dialog.
+* A panel that had the **switch** on and lived signed in as an ordinary account
+  now expires like any other. Before upgrading, make that account a station
+  account on the users list and commit the panel to it at the next sign-in.
+  That is strictly better than the switch was: a station account's session
+  survives a restart, which the switch never managed — it persisted a session
+  with no expiry, and a session with no expiry is exactly what the restore
+  path refuses.
+
+There is deliberately no per-account "never". A session that must not expire
+belongs to a station account, which is an administrator saying "this identity
+is a panel, not a person" — one place to look, and one row in the trail when
+it changes.
 
 ### The database-outage rule, and the cost it accepts
 

@@ -50,6 +50,35 @@ page and asset configuration (list_pages, list_assets, get_asset_detail) and
 can PROPOSE pages and assets (propose_page, propose_asset, update_asset).
 The operator's Accept is what applies them.
 
+### Reports
+Static shift/production reporting over the Collector's timeseries tables and
+the alarm history. A report is a declarative JSON definition (KPI rows,
+aggregate tables, charts, alarm summaries, downtime paretos, custom
+read-only SQL sections, text sections) bound to a period kind — shift, day
+or week — and generated on demand for any period (offset 0 = current,
+negative = backwards in time). Shifts come from a configurable shift
+calendar. A KPI metric can fold several keys into one figure via
+`additional_keys` + `combine` (sum/mean/min/max, default sum) — "plant
+throughput = the three SpeedBatchers summed" is one metric, with rollover-
+safe counter deltas kept intact. A definition may also carry a `window`: one
+or more activity signals (a `running` rule, optionally a `cleaning` one) from
+which the engine resolves when production actually started and concluded, so a
+shift that finished at 13:42 and washed until 15:00 is not reported as two
+hours of zeros. Every section then carries a `scope` — `effective` (that
+production window, the default), `nominal` (the whole planned range, the
+default for alarm summaries) or `running` (only the stretches the line was
+moving). An `sql` section takes one SELECT (or
+WITH … SELECT); the tokens `:from`/`:to` are bound to the section's scope and
+`:nominal_from`/`:nominal_to` to the whole range, as ISO-8601
+UTC text (write `:from::timestamptz` against timestamptz columns), rows are
+capped by `max_rows`. The AI can READ (list_reports,
+get_report_definition, generate_report, resolve_shift, get_shift_calendar).
+The four write tools (create_report, update_report, delete_report,
+set_shift_calendar) return **proposals**, like every other write in this
+server: a person applies them in the report editor, where the save is gated
+on `configure` and audited. An `sql` section may not name the access tables —
+a report is rendered on a page any operator can open.
+
 ## Proposals: the only way anything changes
 
 Every write tool builds a proposal and returns it. It does not touch the

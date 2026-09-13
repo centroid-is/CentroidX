@@ -1602,6 +1602,29 @@ final class _PolicyAccessAdmin with _GroupGate implements AccessAdminApi {
           'role "$from" keeps its name', 'role.rename', from,
           () => _source().renameRole(from, to, reason: reason));
 
+  @override
+  Future<void> setUserRoles(String subject, List<String> newRoles,
+          {String? reason}) =>
+      _write(
+          AccessPolicy.adminSetUserRoles,
+          AccessMethods.adminSetUserRoles,
+          'account "$subject" keeps its roles',
+          'user.role',
+          subject,
+          () => _source().setUserRoles(subject, newRoles, reason: reason));
+
+  @override
+  Future<void> setUserInactivityTimeout(String subject, int? minutes,
+          {String? reason}) =>
+      _write(
+          AccessPolicy.adminSetUserInactivityTimeout,
+          AccessMethods.adminSetUserInactivityTimeout,
+          'account "$subject" keeps its inactivity window',
+          'user.inactivity_timeout',
+          subject,
+          () => _source()
+              .setUserInactivityTimeout(subject, minutes, reason: reason));
+
   /// A whitelist write is `users`, like every other member here.
   ///
   /// Not `configure`, and the distinction is the point: a page whitelist is

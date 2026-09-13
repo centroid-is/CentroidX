@@ -8,6 +8,7 @@ import 'package:tfc/theme.dart' show solarized;
 import 'package:tfc/widgets/nav_alarm_badge.dart';
 import 'package:tfc/widgets/nav_dropdown.dart' show TopLevelNavIndicator;
 import 'package:tfc_dart/core/alarm.dart';
+import '../helpers/golden_platform.dart';
 
 const _barKey = Key('nav_alarm_bar_golden');
 
@@ -156,7 +157,7 @@ void main() {
   ];
 
   group('Navigation alarm badge golden tests',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('quiet bar is untouched', (tester) async {
       await tester.pumpWidget(buildBar(destinations: quiet));
       await expectLater(

@@ -29,13 +29,20 @@ import 'package:tfc/providers/preferences.dart';
 /// A stand-in for `LocalAuthProvider` that honours the same null-versus-throw
 /// contract: null for an unrecognised credential, a throw for infrastructure.
 class _FakeAuthProvider implements AuthProvider, PasswordSelfService {
-  _FakeAuthProvider(this.users, {this.stationAccounts = const {}});
+  _FakeAuthProvider(
+    this.users, {
+    this.stationAccounts = const {},
+    this.extraRoles = const {},
+  });
 
   /// username -> (password, roleName)
   final Map<String, ({String password, String roleName})> users;
 
   /// Usernames flagged as station accounts (schema v8).
   final Set<String> stationAccounts;
+
+  /// username -> the roles it holds beyond its primary one (schema v9).
+  final Map<String, List<String>> extraRoles;
 
   /// When set, `authenticate` throws instead of answering — a database outage.
   bool unavailable = false;
@@ -54,6 +61,7 @@ class _FakeAuthProvider implements AuthProvider, PasswordSelfService {
     return AuthenticatedUser(
       username: username,
       roleName: cred.roleName,
+      additionalRoles: extraRoles[username] ?? const [],
       stationAccount: stationAccounts.contains(username),
     );
   }
@@ -163,10 +171,20 @@ class _Harness {
 
 const String _kStation = 'test-panel';
 
+/// [timeout] is what an account with **no** stored minutes resolves to: the
+/// default. An account that has a value of its own gets ten milliseconds per
+/// stored minute — the countdown runs on real timers, and a window measured in
+/// minutes cannot be waited out in a test.
+///
+/// Ten, rather than one, because the stored number still has to be a legal
+/// one: `AccessRepository.setInactivityTimeout` refuses anything outside
+/// 1..480, so the scale decides how long a test window can be. At ×10 the
+/// ceiling is a comfortable 4.8s instead of 480ms.
 Future<_Harness> _harness({
-  Duration? timeout = const Duration(minutes: 15),
+  Duration timeout = const Duration(minutes: 15),
   Map<String, ({String password, String roleName})>? users,
   Set<String> stationAccounts = const {},
+  Map<String, List<String>> extraRoles = const {},
   bool withDatabase = true,
   AppDatabase? reuseDb,
 }) async {
@@ -187,7 +205,8 @@ Future<_Harness> _harness({
             'jon': (password: 'correct horse', roleName: 'Engineering'),
             'sigga': (password: 'hunter2', roleName: 'Shift Leader'),
           },
-      stationAccounts: stationAccounts);
+      stationAccounts: stationAccounts,
+      extraRoles: extraRoles);
   final sink = _RecordingSink();
 
   final container = ProviderContainer(
@@ -197,7 +216,8 @@ Future<_Harness> _harness({
       authProviderProvider.overrideWith((ref) async => withDatabase ? auth : null),
       auditSinkProvider.overrideWith((ref) async => sink),
       stationNameProvider.overrideWithValue(_kStation),
-      inactivityTimeoutProvider.overrideWith((ref) async => timeout),
+      inactivityTimeoutResolverProvider.overrideWithValue((minutes) =>
+          minutes == null ? timeout : Duration(milliseconds: minutes * 10)),
     ],
   );
   addTearDown(container.dispose);
@@ -383,24 +403,75 @@ void main() {
               'station account');
     });
 
-    test('with expiry disabled, the session never expires and poke leaves it '
-        'that way', () async {
-      // The panel-PC station account: sign in once at commissioning, live
-      // signed in forever. `expiresAt: null` is the model's own "never" —
-      // `isExpiredAt` already treats it so — and _attach declines to arm a
-      // monitor for it, so there is no countdown to fire.
-      final h = await _harness(timeout: null);
+    test('the account\'s own timeout wins over the default', () async {
+      // The whole point of the change: the window belongs to whoever signed
+      // in, not to the panel they happened to walk up to.
+      final h = await _harness(timeout: const Duration(minutes: 15));
       await h.settle();
+      await h.repository.createUser(
+          username: 'jon', password: 'correct horse', roleName: 'Engineering');
+      await h.repository.setInactivityTimeout('jon', 20);
+
+      final pinned = DateTime.utc(2026, 8, 28, 12);
+      await withClock(Clock.fixed(pinned), () async {
+        await h.notifier.signIn('jon', 'correct horse');
+      });
+
+      expect(h.session!.inactivityTimeout, const Duration(milliseconds: 200));
+      expect(h.session!.expiresAt, pinned.add(const Duration(milliseconds: 200)),
+          reason: 'the harness scales stored minutes into milliseconds; what '
+              'is asserted is that the row decided the window, not the '
+              'default');
+    });
+
+    test('an account with no value of its own gets the default', () async {
+      // NULL in the column is "no value of its own", never "never expires" —
+      // the one way to read it wrong that would mint immortal sessions for
+      // every account carried over from v7.
+      final h = await _harness(timeout: const Duration(minutes: 15));
+      await h.settle();
+      await h.repository.createUser(
+          username: 'jon', password: 'correct horse', roleName: 'Engineering');
 
       await h.notifier.signIn('jon', 'correct horse');
-      expect(h.session!.isElevated, isTrue);
-      expect(h.session!.expiresAt, isNull);
 
-      h.notifier.poke();
+      expect(h.session!.inactivityTimeout, const Duration(minutes: 15));
+      expect(h.session!.expiresAt, isNotNull);
+    });
+
+    test('two accounts on one panel each get their own window', () async {
+      final h = await _harness();
       await h.settle();
-      expect(h.session!.expiresAt, isNull,
-          reason: 'an activity extension must not conjure an expiry onto a '
-              'session configured to have none');
+      await h.repository.createUser(
+          username: 'jon', password: 'correct horse', roleName: 'Engineering');
+      await h.repository.setInactivityTimeout('jon', 20);
+      await h.repository.createUser(
+          username: 'sigga', password: 'hunter2', roleName: 'Shift Leader');
+      await h.repository.setInactivityTimeout('sigga', 90);
+
+      await h.notifier.signIn('jon', 'correct horse');
+      expect(h.session!.inactivityTimeout, const Duration(milliseconds: 200));
+
+      await h.notifier.signIn('sigga', 'hunter2');
+      expect(h.session!.inactivityTimeout, const Duration(milliseconds: 900),
+          reason: 'signing in over another session must take the new '
+              'account\'s window, not keep the previous one\'s');
+    });
+
+    test('a station account has no timeout at all', () async {
+      final h = await _harness(stationAccounts: {'freezer'}, users: {
+        'freezer': (password: 'cold', roleName: kOperatorRoleName),
+      });
+      await h.settle();
+      await h.repository.createUser(
+          username: 'freezer', password: 'cold', roleName: kOperatorRoleName);
+      // Even with minutes stored against it: the flag outranks the column.
+      await h.repository.setInactivityTimeout('freezer', 20);
+
+      await h.notifier.signIn('freezer', 'cold');
+
+      expect(h.session!.inactivityTimeout, isNull);
+      expect(h.session!.expiresAt, isNull);
     });
 
     test('the stored payload carries no password, hash or salt', () async {
@@ -513,10 +584,12 @@ void main() {
         overrides: [
           accessRepositoryProvider.overrideWith((ref) async => null),
           authProviderProvider.overrideWith((ref) async => null),
-          auditSinkProvider.overrideWith((ref) async => _RecordingSink()),
+          // The build's own failure: it awaits this before it can publish a
+          // session, so the provider lands in `AsyncError` — which is the
+          // state this test is about.
+          auditSinkProvider
+              .overrideWith((ref) async => throw StateError('no sink')),
           stationNameProvider.overrideWithValue(_kStation),
-          inactivityTimeoutProvider
-              .overrideWith((ref) async => throw StateError('no prefs')),
         ],
       );
       addTearDown(container.dispose);
@@ -821,7 +894,7 @@ void main() {
     };
 
     Future<_Harness> panel({
-      Duration? timeout = const Duration(minutes: 15),
+      Duration timeout = const Duration(minutes: 15),
       AppDatabase? reuseDb,
     }) async {
       final h = await _harness(
@@ -843,7 +916,8 @@ void main() {
     }
 
     /// Sign the panel in as `freezer` and commit it. The commissioning act.
-    Future<_Harness> committed({Duration? timeout = const Duration(minutes: 15)}) async {
+    Future<_Harness> committed(
+        {Duration timeout = const Duration(minutes: 15)}) async {
       final h = await panel(timeout: timeout);
       await h.settle();
       await h.notifier.signIn('freezer', 'panel pw');
@@ -1127,6 +1201,331 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
+  // The per-account timeout, after the sign-in that established it
+  // -------------------------------------------------------------------------
+  group('the account timeout while a session is running', () {
+    /// A harness with `jon` as a real row, signed in and listened to.
+    Future<_Harness> signedInJon({int? minutes}) async {
+      final h = await _harness();
+      await h.settle();
+      await h.repository.createUser(
+          username: 'jon', password: 'correct horse', roleName: 'Engineering');
+      if (minutes != null) {
+        await h.repository.setInactivityTimeout('jon', minutes);
+      }
+      _listen(h);
+      await h.notifier.signIn('jon', 'correct horse');
+      return h;
+    }
+
+    test('shortening it mid-session pulls the expiry in', () async {
+      final h = await signedInJon(minutes: 400);
+      final before = h.session!.expiresAt!;
+
+      await h.repository.setInactivityTimeout('jon', 100);
+      await h.notifier.refreshGroupsFromRoles();
+
+      expect(h.session!.inactivityTimeout, const Duration(milliseconds: 1000));
+      expect(h.session!.expiresAt!.isBefore(before), isTrue,
+          reason: 'an administrator narrowing the window must narrow the '
+              'session already running under it');
+      expect(h.session!.isElevated, isTrue,
+          reason: 'narrowed, not ended — there is time left on the new value');
+      expect(h.notifier.timerIsRunning, isTrue,
+          reason: 'the monitor counts the old value until it is replaced, so '
+              'the swap has to re-arm one for the new one');
+    });
+
+    test('lengthening it mid-session does not extend the session', () async {
+      final h = await signedInJon(minutes: 200);
+      final before = h.session!.expiresAt!;
+
+      await h.repository.setInactivityTimeout('jon', 400);
+      await h.notifier.refreshGroupsFromRoles();
+
+      expect(h.session!.expiresAt, before,
+          reason: 'an edit in another tab is not activity at the panel; the '
+              'wider window applies from the next pointer-down');
+    });
+
+    test('a shortened window is persisted, so a restart cannot restore the '
+        'wider one', () async {
+      final h = await signedInJon(minutes: 400);
+
+      await h.repository.setInactivityTimeout('jon', 100);
+      await h.notifier.refreshGroupsFromRoles();
+
+      final stored = jsonDecode((await h.storedPayload())!) as Map;
+      expect(DateTime.parse(stored['expiresAt'] as String).toUtc(),
+          h.session!.expiresAt!.toUtc());
+    });
+
+    test('the timeout is re-resolved on restore, and the payload cannot widen '
+        'it', () async {
+      // The payload deliberately carries no timeout — like the groups and the
+      // pages, it is re-read from the row. A stored expiry further out than
+      // the account's current window is pulled in.
+      final h = await _harness();
+      await h.settle();
+      await h.repository.createUser(
+          username: 'jon', password: 'correct horse', roleName: 'Engineering');
+      await h.repository.setInactivityTimeout('jon', 50);
+      await h.writeStoredPayload(jsonEncode({
+        'username': 'jon',
+        'roleName': 'Engineering',
+        'displayName': null,
+        'expiresAt':
+            clock.now().add(const Duration(days: 1)).toUtc().toIso8601String(),
+      }));
+
+      final restart = await _harness(reuseDb: h.db);
+      final session = await restart.settle();
+
+      expect(session.isElevated, isTrue);
+      expect(session.inactivityTimeout, const Duration(milliseconds: 500));
+      expect(
+          session.expiresAt!
+              .isBefore(clock.now().add(const Duration(minutes: 1))),
+          isTrue,
+          reason: 'a hand-edited payload naming a far-future expiry must not '
+              'outlive the window the administrator set');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // More than one role (schema v9)
+  // -------------------------------------------------------------------------
+
+  group('several roles', () {
+    test('the session holds the union of what its roles grant', () async {
+      // Shift Leader has no `device` and no `force`; Maintenance has both and
+      // no `configure`. Holding both must grant everything either grants.
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+
+      await h.notifier.signIn('sigga', 'hunter2');
+
+      final session = h.session!;
+      expect(session.roleNames, ['Shift Leader', 'Maintenance']);
+      expect(session.can(AccessGroup.setpoints), isTrue,
+          reason: 'from Shift Leader');
+      expect(session.can(AccessGroup.device), isTrue, reason: 'from Maintenance');
+      expect(session.can(AccessGroup.force), isTrue, reason: 'from Maintenance');
+      expect(session.can(AccessGroup.configure), isFalse,
+          reason: 'neither role grants it, and a union invents nothing');
+    });
+
+    test('the primary role is identity, not precedence', () async {
+      // `Operator` primarily, `Engineering` additionally. What the account may
+      // do comes from both, so it administers — a resolution that looked only
+      // at `role_name` would deny it.
+      final h = await _harness(
+        users: {'jon': (password: 'correct horse', roleName: kOperatorRoleName)},
+        extraRoles: {
+          'jon': ['Engineering'],
+        },
+      );
+      await h.settle();
+
+      await h.notifier.signIn('jon', 'correct horse');
+
+      expect(h.session!.roleName, kOperatorRoleName);
+      expect(h.session!.can(AccessGroup.administer), isTrue);
+    });
+
+    test('the trail row names every role, not just the first', () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+
+      await h.notifier.signIn('sigga', 'hunter2');
+
+      final login = h.sink.rows.firstWhere((r) => r.itemKey == 'login');
+      expect(login.roleName, 'Shift Leader + Maintenance',
+          reason: 'a row saying only the primary role would misdescribe the '
+              'authority a write was made under');
+    });
+
+    test('page whitelists union across the roles', () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+      await h.repository.setRoleAllowedPages('Shift Leader', {'/line'});
+      await h.repository.setRoleAllowedPages('Maintenance', {'/drives'});
+
+      await h.notifier.signIn('sigga', 'hunter2');
+
+      expect(h.session!.allowedPages, {'/line', '/drives'});
+      expect(h.session!.pageVisible('/line'), isTrue);
+      expect(h.session!.pageVisible('/packing'), isFalse);
+    });
+
+    test('a role with no whitelist admits every page for the whole account',
+        () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+      await h.repository.setRoleAllowedPages('Shift Leader', {'/line'});
+
+      await h.notifier.signIn('sigga', 'hunter2');
+
+      expect(h.session!.allowedPages, isNull,
+          reason: 'Maintenance has no whitelist, so it sees every page — and '
+              'binding it to the other role would make adding a role *remove* '
+              'pages');
+    });
+
+    test('the personal override still replaces the whole role level',
+        () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+      await h.repository.setRoleAllowedPages('Shift Leader', {'/line'});
+      await h.repository.setRoleAllowedPages('Maintenance', {'/drives'});
+      await h.repository.createUser(
+        username: 'sigga',
+        password: 'hunter2',
+        roleName: 'Shift Leader',
+        additionalRoles: ['Maintenance'],
+      );
+      await h.repository.setUserAllowedPages('sigga', {'/only'});
+
+      await h.notifier.signIn('sigga', 'hunter2');
+
+      expect(h.session!.allowedPages, {'/only'});
+    });
+
+    test('an extra role that has been deleted is dropped, not a refusal',
+        () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Ghost'],
+      });
+      await h.settle();
+
+      final result = await h.notifier.signIn('sigga', 'hunter2');
+
+      expect(result, AccessSignInResult.ok);
+      expect(h.session!.roleNames, ['Shift Leader'],
+          reason: 'the session answers as the roles that actually resolved; '
+              'refusing the login would lock somebody out because a second '
+              'role they held was deleted on another station');
+    });
+
+    test('a role added on another station reaches a live session', () async {
+      final h = await _harness();
+      await h.settle();
+      await h.repository.createUser(
+        username: 'jon',
+        password: 'correct horse',
+        roleName: kOperatorRoleName,
+      );
+      h.auth.users['jon'] =
+          (password: 'correct horse', roleName: kOperatorRoleName);
+      _listen(h);
+      await h.notifier.signIn('jon', 'correct horse');
+      expect(h.session!.can(AccessGroup.administer), isFalse);
+
+      // Somebody on the access screen ticks a second role.
+      await h.repository.setRoles('jon', [kOperatorRoleName, 'Engineering']);
+      await h.notifier.refreshGroupsFromRoles();
+
+      expect(h.session!.roleNames, [kOperatorRoleName, 'Engineering']);
+      expect(h.session!.can(AccessGroup.administer), isTrue,
+          reason: 'a second role must take effect the way a role edit does — '
+              'without the person signing out and back in');
+    });
+
+    test('a restart re-resolves every role from the database', () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+      await h.notifier.signIn('sigga', 'hunter2');
+      expect(h.session!.roleNames, ['Shift Leader', 'Maintenance']);
+
+      // The same database and the same preference store: a relaunch.
+      final again = await _harness(reuseDb: h.db, extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      final restored = await again.settle();
+
+      expect(restored.isElevated, isTrue);
+      expect(restored.roleNames, ['Shift Leader', 'Maintenance']);
+      expect(restored.can(AccessGroup.device), isTrue);
+    });
+
+    test('an extra role deleted while the station was off does not restore',
+        () async {
+      final h = await _harness(extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      await h.settle();
+      await h.notifier.signIn('sigga', 'hunter2');
+
+      await h.repository.deleteRole('Maintenance');
+      final again = await _harness(reuseDb: h.db, extraRoles: {
+        'sigga': ['Maintenance'],
+      });
+      final restored = await again.settle();
+
+      expect(restored.isElevated, isTrue,
+          reason: 'the primary role still resolves, so the account keeps its '
+              'session');
+      expect(restored.roleNames, ['Shift Leader']);
+      expect(restored.can(AccessGroup.device), isFalse,
+          reason: 'the payload stores names, never groups — so a role that is '
+              'gone takes its groups with it');
+    });
+  });
+
+  group('the retired per-station settings', () {
+    test('are removed from the device-local store at boot', () async {
+      // Support reads the preferences mirror. A stale `true` disable flag
+      // sitting in it would look like it still meant something — and it is
+      // exactly the setting whose replacement (a station account) somebody
+      // will need to be told about.
+      final h = await _harness();
+      final prefs = h.container.read(localPreferencesProvider);
+      await prefs.setInt('access.inactivity_timeout_minutes', 45);
+      await prefs.setBool('access.inactivity_timeout_disabled', true);
+
+      final restart = await _harness(reuseDb: h.db);
+      await restart.settle();
+
+      final after = restart.container.read(localPreferencesProvider);
+      expect(await after.containsKey('access.inactivity_timeout_minutes'),
+          isFalse);
+      expect(await after.containsKey('access.inactivity_timeout_disabled'),
+          isFalse);
+    });
+
+    test('a session under the old disable flag now expires like any other',
+        () async {
+      // The upgrade's one behavioural change, asserted rather than assumed:
+      // the flag is ignored, so a human signing in on a panel that had it set
+      // gets their account's window.
+      final h = await _harness(timeout: const Duration(milliseconds: 200));
+      await h.container
+          .read(localPreferencesProvider)
+          .setBool('access.inactivity_timeout_disabled', true);
+      await h.settle();
+      _listen(h);
+
+      await h.notifier.signIn('jon', 'correct horse');
+      expect(h.session!.expiresAt, isNotNull);
+
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      expect(h.session!.isElevated, isFalse);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Self-service password change
   //
   // Four results, and the two of them that write a row. The assertions that
@@ -1295,8 +1694,6 @@ void main() {
               .overrideWith((ref) async => _NoSelfServiceAuthProvider()),
           auditSinkProvider.overrideWith((ref) async => sink),
           stationNameProvider.overrideWithValue(_kStation),
-          inactivityTimeoutProvider
-              .overrideWith((ref) async => const Duration(minutes: 15)),
         ],
       );
       addTearDown(container.dispose);

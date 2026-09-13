@@ -1,4 +1,3 @@
-import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/conveyor.dart';
 import 'package:tfc/page_creator/assets/conveyor_gate.dart';
+import '../../helpers/golden_platform.dart';
 
 const _key = Key('conveyor_turn_test');
 
@@ -53,7 +53,7 @@ Widget buildPainterScenario({
 
 void main() {
   group('Conveyor turn golden tests',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('straight conveyor unchanged (regression)', (tester) async {
       await tester.pumpWidget(buildPainterScenario(
         canvasSize: const Size(400, 60),

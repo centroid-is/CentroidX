@@ -69,23 +69,40 @@ which look green on your machine and red on `main`.
 
 **1. Goldens.** The widget tests compare rendered PNGs byte for byte
 (`test/**/goldens/`), and different Flutter versions rasterise the same drawing
-slightly differently — antialiasing along an edge shifts by a pixel or two.
-`test/helpers/golden_tolerance.dart` absorbs a hair of that drift, but a golden
-regenerated on a different Flutter than CI's will eventually go red on an image
-nobody touched. The near-miss is worse than the miss: a golden authored on the
-wrong version that happens to land inside the 0.01% tolerance passes CI and
-leaves the next person an image already half-way to the threshold.
-**Regenerate goldens on the pinned version, never on anything else:**
+slightly differently — antialiasing along an edge shifts by a pixel or two. So
+goldens are rendered on one pinned toolchain, on one reference platform.
+
+**The reference platform is Linux, and goldens are rendered in a container:**
 
 ```sh
-# the goldens CI verifies
-flutter test --update-goldens
-# plus the design-review ones, which carry @Tags(['golden']) and are skipped
-# by default in dart_test.yaml
-flutter test --update-goldens --run-skipped -t golden
+scripts/goldens.sh                       # verify every golden
+scripts/goldens.sh test/painter          # verify one directory
+scripts/goldens.sh --update test/painter/auger_conveyor_test.dart
 ```
 
-Goldens compare only on macOS (`skip: !Platform.isMacOS`).
+On Linux you can equally well run `flutter test` directly — the script only
+exists so a Mac or a Windows box can reach the same renderer. It builds
+`docker/goldens/` on first use (a few minutes, cached after), reading the
+Flutter version from `.flutter-version` so the image cannot drift from CI.
+
+Why Linux rather than macOS, where these used to be authored: our goldens load
+RobotoMono from repo bytes, so the font data is already pinned and the host's
+installed fonts are never consulted. What is left is the glyph rasteriser. On
+macOS, Skia rasterises glyphs through CoreText — part of the operating system
+— so a golden authored on macOS 15 could fail on CI's macOS 26 under an
+identical Flutter 3.44.9, with nothing changed and no way to regenerate out of
+it. The only lever was the tolerance, and it kept widening. On Linux, Skia
+rasterises through the FreeType compiled into the engine binary, which ships
+inside the SDK: pin `.flutter-version` and the whole text raster stack is
+pinned with it.
+
+The container runs on your machine's **native** architecture. linux/amd64 and
+linux/arm64 were measured producing byte-identical goldens, so an Apple Silicon
+Mac reproduces CI's amd64 output without paying for emulation.
+
+Pass the specific test file or directory you changed. `--update-goldens`
+rewrites every golden the run produces, not just the failing ones, so a blanket
+update re-baselines images nobody touched and buries the real change.
 
 When a golden fails on CI, the comparator writes the expected/actual/diff PNGs
 to a `failures/` directory next to the test; the `flutter-test` job uploads them
