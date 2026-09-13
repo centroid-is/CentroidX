@@ -41,6 +41,27 @@ String? validatePassword(String? value) {
 String? validateRequired(String? value) =>
     (value ?? '').trim().isEmpty ? 'Required' : null;
 
+/// The layouts a station's keyboards offer -- the panel, VNC and the on-screen
+/// keyboard alike -- by the codes docker-compose.yml's KEYBOARD_LAYOUTS uses.
+/// The installer asks which one the station STARTS in; the others stay one
+/// Alt+Shift, or one globe key, away.
+class KeyboardLayout {
+  const KeyboardLayout(this.code, this.name);
+  final String code;
+  final String name;
+}
+
+const List<KeyboardLayout> keyboardLayouts = [
+  KeyboardLayout('is', 'Icelandic'),
+  KeyboardLayout('en', 'English'),
+  KeyboardLayout('pl', 'Polish'),
+];
+
+String? validateKeyboardLayout(String? value) =>
+    keyboardLayouts.any((l) => l.code == value)
+        ? null
+        : 'One of ${keyboardLayouts.map((l) => l.code).join(', ')}';
+
 String? validateStationName(String? value) {
   final v = (value ?? '').trim();
   if (v.isEmpty) return 'Required';
@@ -75,6 +96,10 @@ class Answers {
   String rootPassword = '';
   String vncPassword = '';
   String dbPassword = '';
+  // First in the list is the default: the image's own locale is en_US, so
+  // without an explicit answer the compose fallback would start an Icelandic
+  // plant's panels in English.
+  String keyboardLayout = keyboardLayouts.first.code;
 
   // Remote access. All empty means the station installs without VPN access,
   // which firstboot reports loudly rather than silently.
@@ -108,6 +133,7 @@ class Answers {
       'ROOT_PASSWORD=$rootPassword',
       'VNC_PASSWORD=$vncPassword',
       'DB_PASSWORD=$dbPassword',
+      'KEYBOARD_DEFAULT=$keyboardLayout',
     ];
     if (vpnWanted && vpnComplete) {
       lines.addAll([

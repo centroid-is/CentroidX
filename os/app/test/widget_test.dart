@@ -53,6 +53,27 @@ void main() {
     });
   });
 
+  group('keyboard layout', () {
+    test('accepts only the three the station offers', () {
+      for (final l in keyboardLayouts) {
+        expect(validateKeyboardLayout(l.code), isNull);
+      }
+      expect(validateKeyboardLayout('de'), isNotNull);
+      expect(validateKeyboardLayout('IS'), isNotNull);
+      expect(validateKeyboardLayout(''), isNotNull);
+      expect(validateKeyboardLayout(null), isNotNull);
+    });
+
+    test('defaults to the first layout and reaches station.env', () {
+      final a = Answers()..stationName = 'line1';
+      expect(a.keyboardLayout, keyboardLayouts.first.code);
+      expect(a.toStationEnv(),
+          contains('KEYBOARD_DEFAULT=${keyboardLayouts.first.code}\n'));
+      a.keyboardLayout = 'pl';
+      expect(a.toStationEnv(), contains('KEYBOARD_DEFAULT=pl\n'));
+    });
+  });
+
   group('station.env', () {
     test('is key=value the shell installer can parse, and omits VPN when skipped', () {
       final a = Answers()

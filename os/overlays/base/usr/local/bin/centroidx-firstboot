@@ -137,6 +137,11 @@ load_conf() {
   DOCKER_UPDATE_PASSWORD="$(read_kv "$ENVFILE" DOCKER_UPDATE_BASIC_AUTH_PASS)"
   : "${STATION_NAME:=$(read_kv "$ENVFILE" NOVNC_STATION_NAME)}"
   : "${STATION_NAME:=$(hostname)}"
+  # The layout the keyboards start in, chosen at install time. Empty is a valid
+  # answer -- the weston wrapper then falls back to the host locale -- so this
+  # is carried, not defaulted.
+  KEYBOARD_DEFAULT="$(read_kv "$CONF" KEYBOARD_DEFAULT)"
+  KEYBOARD_DEFAULT="${KEYBOARD_DEFAULT:-$(read_kv "$ENVFILE" KEYBOARD_DEFAULT)}"
 }
 
 gen() { openssl rand -base64 24 | tr -d '\n/+=' | cut -c1-24; }
@@ -180,6 +185,9 @@ log "writing $ENVFILE"
   echo "# Set at install time."
   echo "DB_PASSWORD=${DB_PASSWORD}"
   echo "VNC_PASSWORD=${VNC_PASSWORD}"
+  echo "# The layout the panel, VNC and the on-screen keyboard start in; the"
+  echo "# others in KEYBOARD_LAYOUTS stay one Alt+Shift or globe key away."
+  echo "KEYBOARD_DEFAULT=${KEYBOARD_DEFAULT}"
   echo
   echo "# Generated here; no human needs to know these."
   echo "FLUTTER_KEYRING_PASSWORD=${FLUTTER_KEYRING_PASSWORD}"

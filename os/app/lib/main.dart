@@ -166,6 +166,16 @@ class _SetupFlowState extends State<SetupFlow> {
               initial: _answers.dbPassword,
               onChanged: (v) => _answers.dbPassword = v,
             ),
+            // Last on the form, deliberately: boot-test.py taps the first
+            // field by coordinates read off a screenshot, so the name stays
+            // where it is.
+            ChoiceField(
+              label: 'Keyboard layout the station starts in',
+              helper: 'The other two stay one Alt+Shift, or one globe key, away',
+              options: {for (final l in keyboardLayouts) l.code: l.name},
+              value: _answers.keyboardLayout,
+              onChanged: (v) => setState(() => _answers.keyboardLayout = v),
+            ),
           ],
           secondary: OutlinedButton(
             onPressed: () => _go(_Stage.disk),

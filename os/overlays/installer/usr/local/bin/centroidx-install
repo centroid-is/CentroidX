@@ -56,6 +56,11 @@ VPN_SERVER_PUBKEY=""
 VPN_ADDRESS=""
 VPN_ALLOWED_IPS=""
 WG_PUBKEY=""
+# The layout the station's keyboards start in. The compose file hands it to
+# weston as KEYBOARD_DEFAULT; the other layouts stay one Alt+Shift (or one globe
+# key) away. Same three codes the weston wrapper in centroid-is/dockers accepts.
+KEYBOARD_DEFAULT=""
+KEYBOARD_LAYOUTS="is en pl"
 # wg-obfuscator listens here and wg talks to it over loopback; upstream default.
 OBF_PORT=13255
 
@@ -206,6 +211,7 @@ questions() {
     VPN_SERVER_PUBKEY="$(read_kv "$SEED" VPN_SERVER_PUBKEY)"
     VPN_ADDRESS="$(read_kv "$SEED" VPN_ADDRESS)"
     VPN_ALLOWED_IPS="$(read_kv "$SEED" VPN_ALLOWED_IPS)"
+    KEYBOARD_DEFAULT="$(read_kv "$SEED" KEYBOARD_DEFAULT)"
     local missing=""
     for v in STATION_NAME CENTROID_PASSWORD ROOT_PASSWORD VNC_PASSWORD DB_PASSWORD; do
       [ -n "${!v}" ] || missing="$missing $v"
@@ -217,6 +223,21 @@ questions() {
     done
     valid_station_name "$STATION_NAME" \
       || die "$SEED: STATION_NAME must be a DNS label -- letters, digits and hyphens, not starting or ending with one"
+    # VPN is optional, but all-or-nothing once any of it is given: a half-filled
+    # wg0.conf brings the station up looking configured and unreachable. The
+    # obfuscation key is the one exception, because without it the tunnel simply
+    # goes direct to the endpoint. Same rule the setup app's vpnComplete applies.
+    if [ -n "$VPN_ENDPOINT$VPN_OBFUSCATOR_KEY$VPN_SERVER_PUBKEY$VPN_ADDRESS$VPN_ALLOWED_IPS" ]; then
+      missing=""
+      for v in VPN_ENDPOINT VPN_SERVER_PUBKEY VPN_ADDRESS VPN_ALLOWED_IPS; do
+        [ -n "${!v}" ] || missing="$missing $v"
+      done
+      [ -z "$missing" ] || die "$SEED: VPN settings are all-or-nothing; missing:$missing"
+    fi
+    # Optional in the file; the panel's keyboards start in Icelandic unless told.
+    : "${KEYBOARD_DEFAULT:=is}"
+    valid_keyboard_layout "$KEYBOARD_DEFAULT" \
+      || die "$SEED: KEYBOARD_DEFAULT must be one of: $KEYBOARD_LAYOUTS"
     return
   fi
   bold "Station settings"
@@ -233,7 +254,35 @@ questions() {
   ask_pass VNC_PASSWORD       "Password for the VNC/remote screen"
   ask_pass DB_PASSWORD        "Password for the database"
   echo
+  keyboard_question
   vpn_questions
+}
+
+# The station offers Icelandic, English and Polish on the panel, over VNC and on
+# the on-screen keyboard (docker-compose.yml, KEYBOARD_LAYOUTS). Which one it
+# STARTS in is the per-station answer: the compose default falls back to the
+# host locale, and the image's locale is en_US -- so a plant that wants
+# Icelandic first has to say so somewhere, and this is where.
+keyboard_question() {
+  local answer
+  bold "Keyboard"
+  echo "  The panel offers Icelandic (is), English (en) and Polish (pl). Alt+Shift"
+  echo "  on a keyboard and the globe key on the on-screen one switch between them."
+  while :; do
+    read -r -p "  Layout the station starts in [is/en/pl] (is): " answer
+    answer="${answer:-is}"
+    valid_keyboard_layout "$answer" && break
+    echo "  One of: $KEYBOARD_LAYOUTS"
+  done
+  KEYBOARD_DEFAULT="$answer"
+  echo
+}
+
+valid_keyboard_layout() {
+  case " $KEYBOARD_LAYOUTS " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
 }
 
 # Everything this station needs to reach the VPN. The private key is NOT among
@@ -253,9 +302,10 @@ vpn_questions() {
   ask VPN_ENDPOINT        "VPN server address and port (e.g. vpn.example.is:13255)"
   ask VPN_OBFUSCATOR_KEY  "Obfuscation key (shared with the server)"
   ask VPN_SERVER_PUBKEY   "Server's WireGuard public key"
-  ask VPN_ADDRESS         "This station's VPN address (e.g. 10.13.1.42/24)"
-  read -r -p "  Routed through the tunnel [10.13.1.0/24]: " VPN_ALLOWED_IPS
-  [ -n "$VPN_ALLOWED_IPS" ] || VPN_ALLOWED_IPS="10.13.1.0/24"
+  # No defaults for the addresses: a product default would be one site's
+  # topology, and the examples are the documentation range on purpose.
+  ask VPN_ADDRESS         "This station's VPN address (e.g. 192.0.2.42/24)"
+  ask VPN_ALLOWED_IPS     "Subnet routed through the tunnel (e.g. 192.0.2.0/24)"
   echo
 }
 
@@ -316,16 +366,13 @@ flash() {
   udevadm settle
 }
 
-seed_station_conf() {
-  local root
-  # By PARTLABEL, not by index: image.yaml sets partlabel: root, and an index
-  # would silently pick whatever partition 2 happens to be if the table the
-  # kernel holds is not the one we just wrote.
-  root="$(lsblk -pno NAME,PARTLABEL "$TARGET" | awk '$2=="root"{print $1; exit}')"
-  [ -n "$root" ] || die "no partition labelled 'root' on $TARGET after flashing"
-  mkdir -p "$TARGET_MNT"
-  mount "$root" "$TARGET_MNT" || die "cannot mount $root"
-  mkdir -p "$TARGET_MNT/etc/centroid"
+# Everything the installer leaves on the target's root filesystem, given its
+# mount point. Split out from the mount/unmount so it can be run against a plain
+# directory: os/test/installer-test.sh does exactly that, which is the only way
+# the files this writes get checked without erasing a disk.
+write_target_config() {   # write_target_config ROOT
+  local root="$1"
+  mkdir -p "$root/etc/centroid"
   {
     echo "# Written by the CentroidX installer on $(date -Is)."
     echo "# centroidx-firstboot PARSES this as key=value -- it does not source it."
@@ -336,37 +383,39 @@ seed_station_conf() {
     printf 'CENTROID_PASSWORD=%s\n' "$CENTROID_PASSWORD"
     printf 'VNC_PASSWORD=%s\n'      "$VNC_PASSWORD"
     printf 'DB_PASSWORD=%s\n'       "$DB_PASSWORD"
-  } > "$TARGET_MNT/etc/centroid/station.conf"
-  chmod 0600 "$TARGET_MNT/etc/centroid/station.conf"
-  echo "${STATION_NAME}" > "$TARGET_MNT/etc/hostname"
+    printf 'KEYBOARD_DEFAULT=%s\n'  "$KEYBOARD_DEFAULT"
+  } > "$root/etc/centroid/station.conf"
+  chmod 0600 "$root/etc/centroid/station.conf"
+  echo "${STATION_NAME}" > "$root/etc/hostname"
   # rootfs-setup.sh writes /etc/hosts without this line and its comment says the
   # alias is added at first boot -- nothing did, so sudo warned "unable to
   # resolve host" on every call. It is written here because this is the first
   # point at which the name is known.
-  printf '127.0.1.1\t%s\n' "$STATION_NAME" >> "$TARGET_MNT/etc/hosts"
+  printf '127.0.1.1\t%s\n' "$STATION_NAME" >> "$root/etc/hosts"
 
   # Remote access is per-station: wg0.conf carries this machine's private key
   # and wg-obfuscator.conf the endpoint and shared obfuscation key, so neither
   # can be baked into an image every station shares. Drop them next to the
   # payload on the USB and they are installed here. (Review #8.)
-  install -d -m 0700 "$TARGET_MNT/etc/wireguard"
+  install -d -m 0700 "$root/etc/wireguard"
   if [ -r "$PAYLOAD/wg0.conf" ]; then
-    install -m 0600 "$PAYLOAD/wg0.conf" "$TARGET_MNT/etc/wireguard/wg0.conf"
+    install -m 0600 "$PAYLOAD/wg0.conf" "$root/etc/wireguard/wg0.conf"
     grn "  installed wg0.conf"
-  else
-    red "  NOTE: no wg0.conf on the USB - this station will have no VPN access."
+  elif [ -z "$VPN_ENDPOINT" ]; then
+    red "  NOTE: no VPN configured - this station will have no remote access."
     red "        Put one at /etc/wireguard/wg0.conf and: systemctl enable --now wg-quick@wg0"
   fi
   if [ -r "$PAYLOAD/wg-obfuscator.conf" ]; then
-    install -m 0600 "$PAYLOAD/wg-obfuscator.conf" "$TARGET_MNT/etc/wg-obfuscator.conf"
+    install -m 0600 "$PAYLOAD/wg-obfuscator.conf" "$root/etc/wg-obfuscator.conf"
     grn "  installed wg-obfuscator.conf"
   fi
 
   # Built from the answers rather than copied, when they were given. The private
   # key is generated HERE, on the machine being installed, so it never exists on
   # the USB or anywhere it could be left behind; only the public half leaves, and
-  # only by being shown on screen for registration.
-  if [ -n "$VPN_ENDPOINT" ] && [ -n "$VPN_SERVER_PUBKEY" ] && [ -n "$VPN_ADDRESS" ]; then
+  # only by being shown on screen for registration. questions() has already
+  # required all four of these together, so there is no half-written config.
+  if [ -n "$VPN_ENDPOINT" ] && [ -n "$VPN_SERVER_PUBKEY" ] && [ -n "$VPN_ADDRESS" ] && [ -n "$VPN_ALLOWED_IPS" ]; then
     local priv pub
     umask 077
     priv="$(wg genkey)"
@@ -379,7 +428,7 @@ seed_station_conf() {
       echo
       echo "[Peer]"
       echo "PublicKey = $VPN_SERVER_PUBKEY"
-      echo "AllowedIPs = ${VPN_ALLOWED_IPS:-10.13.1.0/24}"
+      echo "AllowedIPs = $VPN_ALLOWED_IPS"
       # Through the obfuscator on loopback when there is one, otherwise direct.
       if [ -n "$VPN_OBFUSCATOR_KEY" ]; then
         echo "Endpoint = 127.0.0.1:$OBF_PORT"
@@ -387,8 +436,8 @@ seed_station_conf() {
         echo "Endpoint = $VPN_ENDPOINT"
       fi
       echo "PersistentKeepalive = 25"
-    } > "$TARGET_MNT/etc/wireguard/wg0.conf"
-    chmod 0600 "$TARGET_MNT/etc/wireguard/wg0.conf"
+    } > "$root/etc/wireguard/wg0.conf"
+    chmod 0600 "$root/etc/wireguard/wg0.conf"
 
     if [ -n "$VPN_OBFUSCATOR_KEY" ]; then
       {
@@ -397,8 +446,8 @@ seed_station_conf() {
         echo "source-lport = $OBF_PORT"
         echo "target = $VPN_ENDPOINT"
         echo "key = $VPN_OBFUSCATOR_KEY"
-      } > "$TARGET_MNT/etc/wg-obfuscator.conf"
-      chmod 0600 "$TARGET_MNT/etc/wg-obfuscator.conf"
+      } > "$root/etc/wg-obfuscator.conf"
+      chmod 0600 "$root/etc/wg-obfuscator.conf"
     fi
 
     mkdir -p "$RUNTIME_DIR"
@@ -406,11 +455,27 @@ seed_station_conf() {
     WG_PUBKEY="$pub"
     grn "  generated this station's WireGuard key"
   fi
+}
+
+seed_station_conf() {
+  local root
+  # By PARTLABEL, not by index: image.yaml sets partlabel: root, and an index
+  # would silently pick whatever partition 2 happens to be if the table the
+  # kernel holds is not the one we just wrote.
+  root="$(lsblk -pno NAME,PARTLABEL "$TARGET" | awk '$2=="root"{print $1; exit}')"
+  [ -n "$root" ] || die "no partition labelled 'root' on $TARGET after flashing"
+  mkdir -p "$TARGET_MNT"
+  mount "$root" "$TARGET_MNT" || die "cannot mount $root"
+  write_target_config "$TARGET_MNT"
   sync
   umount "$TARGET_MNT" || die "cannot unmount $root"
 }
 
 # ------------------------------------------------------------------------ main
+# Sourced by os/test/installer-test.sh for the functions above; nothing below
+# this line runs in that case, and nothing above it touches a disk.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
+
 banner
 
 # Before anything else, and at top level so a failure here actually stops the

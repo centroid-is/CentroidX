@@ -146,6 +146,66 @@ class _PasswordFieldState extends State<PasswordField> {
   }
 }
 
+/// One choice out of a few, as a row of full-height buttons. A dropdown would
+/// cost a second tap and a scroll, and a radio dot is a poor finger target;
+/// three buttons the operator can read from a metre away are neither.
+class ChoiceField extends StatelessWidget {
+  const ChoiceField({
+    super.key,
+    required this.label,
+    required this.options,
+    required this.value,
+    required this.onChanged,
+    this.helper,
+  });
+
+  final String label;
+
+  /// Code to display name, in the order the buttons appear.
+  final Map<String, String> options;
+  final String value;
+  final ValueChanged<String> onChanged;
+  final String? helper;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context);
+    final entries = options.entries.toList();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: fieldGap),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: t.inputDecorationTheme.labelStyle),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              for (var i = 0; i < entries.length; i++) ...[
+                if (i > 0) const SizedBox(width: 12),
+                Expanded(
+                  child: entries[i].key == value
+                      ? FilledButton(
+                          onPressed: () => onChanged(entries[i].key),
+                          child: Text(entries[i].value),
+                        )
+                      : OutlinedButton(
+                          onPressed: () => onChanged(entries[i].key),
+                          child: Text(entries[i].value),
+                        ),
+                ),
+              ],
+            ],
+          ),
+          if (helper != null) ...[
+            const SizedBox(height: 8),
+            Text(helper!, style: t.inputDecorationTheme.helperStyle),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 /// A plain text field sized for touch.
 class Field extends StatelessWidget {
   const Field({

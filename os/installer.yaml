@@ -46,6 +46,12 @@ actions:
       - libgl1-mesa-dri
       - libgbm1
       - fonts-dejavu-core
+      # The X11 Compose tables. The embedder the setup app runs on is the one
+      # from the centroid-hmi image, which carries docker/frontend/dead-keys.patch
+      # and reads these to turn a dead key plus a letter into one accented
+      # character. Nothing the installer asks for needs an accent, but the
+      # binary expects the file the station gives it, so it gets the same.
+      - libx11-data
       # `wg genkey`/`wg pubkey`: the station's private key is generated here, on
       # the machine being installed, and never travels on the stick.
       - wireguard-tools

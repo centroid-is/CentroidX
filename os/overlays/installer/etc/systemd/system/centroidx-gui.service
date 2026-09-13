@@ -25,6 +25,13 @@ OnSuccess=centroidx-installer.service
 [Service]
 Type=simple
 Environment=XDG_RUNTIME_DIR=/run/centroidx-gui
+# The on-screen keyboard is the binary from the centroid-is/dockers weston image
+# and reads its language list from weston's environment (weston starts the
+# input method with its own env). Same three the station offers, in the same
+# order; the first is what it opens in, the globe key cycles the rest. On the
+# station the weston wrapper sets this from KEYBOARD_LAYOUTS/KEYBOARD_DEFAULT
+# in .env; there is no wrapper on the stick, so it is set here.
+Environment=KEYBOARD_LAYOUTS=is,en,pl
 RuntimeDirectory=centroidx-gui
 RuntimeDirectoryMode=0700
 ExecStart=/usr/bin/weston --config=/etc/xdg/weston/weston.ini --log=/run/centroidx-gui/weston.log

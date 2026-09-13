@@ -234,3 +234,8 @@ qemu-reset:
 .PHONY: clean
 clean:
 	rm -rf $(GEN) $(PAYLOAD) $(OUT)/*.img $(OUT)/*.img.gz $(OUT)/*.bmap
+
+# The installer functions against a directory, no disk. Any bash; wg optional.
+.PHONY: test
+test:
+	bash test/installer-test.sh

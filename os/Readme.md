@@ -8,7 +8,7 @@ Builds two artifacts:
 | artifact | what it is |
 |---|---|
 | `out/centroidx-<sha>.img.gz` + `.bmap` | a fully configured Debian trixie station; flash onto an SSD |
-| `out/usb-installer.img.gz` + `.bmap` | a USB key that boots, asks five questions, and writes that image onto the station's SSD |
+| `out/usb-installer.img.gz` + `.bmap` | a USB key that boots, asks the per-station questions on the panel, and writes that image onto the station's SSD |
 
 Nothing is configured on the target machine. By the time a station boots, it is
 already configured — which is why nothing here runs ansible.
@@ -90,6 +90,7 @@ Disks never include the USB it booted from.
 | `root` password | the host login |
 | VNC password | the remote screen |
 | database password | timescaledb |
+| keyboard layout | which of Icelandic, English and Polish the panel, VNC and the on-screen keyboard start in (`KEYBOARD_DEFAULT`); the other two stay one Alt+Shift or globe key away |
 | VPN endpoint, keys, addresses | WireGuard over wg-obfuscator; skippable |
 
 Then it writes the image, drops the answers in `/etc/centroid/station.conf`, and
@@ -105,11 +106,43 @@ filling in the VPN screen overwrites a file placed that way.
 To install without touching the screen, put a `station.env` on the USB's FAT
 partition at `centroidx/station.env` — the same `KEY=value` file the UI writes.
 Every value is validated the same way either way: the station name must be a
-DNS label, and passwords are restricted to `[A-Za-z0-9._@%+:~/-]`.
+DNS label, passwords are restricted to `[A-Za-z0-9._@%+:~/-]`, the VPN block
+is all-or-nothing, and `KEYBOARD_DEFAULT` is optional and one of `is`, `en`,
+`pl` (default `is`).
 
 If the graphical installer cannot start — no GPU, a compositor that will not
 take the DRM device — the unit hands over to a text installer on tty1 that asks
 the same questions.
+
+### Keyboards on the stick
+
+The keyboard pieces are the station's own, not copies: the on-screen keyboard
+is the binary from the `centroid-is/dockers` weston image and the Flutter
+embedder is the one from the `centroid-hmi` image, so every keyboard patch that
+lands for the station (the Gboard-style layouts and globe key in the keyboard,
+the dead-keys, numlock and navigation patches in the embedder) is what the
+installer runs the next time it is built. Two things differ from a station and
+are deliberate:
+
+- The compositor is trixie's stock weston 14, not the patched weston 16 image.
+  The dockers patches to weston itself fix the VNC seat's keymap, and the
+  installer has no VNC backend, so there is nothing for them to fix here.
+- There is no weston wrapper resolving `KEYBOARD_*` from `.env`, because there
+  is no `.env` yet. `overlays/installer/etc/xdg/weston/weston.ini` writes the
+  three layouts out for a physical keyboard, and `centroidx-gui.service` hands
+  `KEYBOARD_LAYOUTS=is,en,pl` to weston for the on-screen one.
+
+The layout the operator picks does not change the installer's own keyboard —
+it is the station's answer, written to `station.conf` and from there to
+`KEYBOARD_DEFAULT` in the station's `.env` at first boot.
+
+### Testing the installer without a disk
+
+`make test` runs `test/installer-test.sh`, which sources the installer script
+for its functions and checks the `station.env` parser, the validators, the
+seed-file rules and the files written to the target — into a temporary
+directory, never a device. Any bash will do; the WireGuard cases skip when `wg`
+is not installed. CI runs it in the `validate` job on every pull request.
 
 ### First boot
 
