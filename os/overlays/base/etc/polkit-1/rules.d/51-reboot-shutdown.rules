@@ -1,0 +1,10 @@
+// Let the centroid user reboot and power off from the HMI without a password.
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.freedesktop.login1.reboot" ||
+         action.id == "org.freedesktop.login1.reboot-multiple-sessions" ||
+         action.id == "org.freedesktop.login1.power-off" ||
+         action.id == "org.freedesktop.login1.power-off-multiple-sessions") &&
+        subject.user == "centroid") {
+        return polkit.Result.YES;
+    }
+});

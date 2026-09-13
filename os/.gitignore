@@ -1,0 +1,12 @@
+# build output and fetched inputs
+out/
+overlays/generated/
+station.env
+
+# local QEMU scratch from the old hand-rolled test loop
+*.qcow2
+*.iso
+vm.pid
+vm-*.log
+.DS_Store
+.direnv
