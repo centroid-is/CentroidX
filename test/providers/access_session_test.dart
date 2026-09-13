@@ -580,6 +580,35 @@ void main() {
       expect(h.session!.expiresAt!.isAfter(before), isTrue);
     });
 
+    test('in quick succession publishes no new session, but re-arms the '
+        'countdown', () async {
+      // Every pointer-down pokes. Publishing a session rebuilds the scaffold
+      // and rewrites the device preferences file, so a burst of touches must
+      // not do either until `expiresAt` has moved by a useful amount.
+      const timeout = Duration(minutes: 15);
+      final h = await _harness(timeout: timeout);
+      await h.settle();
+      _listen(h);
+      await h.notifier.signIn('jon', 'correct horse');
+      final signedIn = h.session!;
+      final signedInAt = signedIn.expiresAt!.subtract(timeout);
+
+      await withClock(Clock.fixed(signedInAt.add(const Duration(seconds: 2))),
+          () async {
+        h.notifier.poke();
+      });
+      expect(h.session, same(signedIn),
+          reason: 'two seconds of movement is under the ten-second granularity');
+      expect(h.notifier.timerIsRunning, isTrue);
+
+      await withClock(Clock.fixed(signedInAt.add(const Duration(seconds: 11))),
+          () async {
+        h.notifier.poke();
+      });
+      expect(h.session!.expiresAt,
+          signedInAt.add(const Duration(seconds: 11)).add(timeout));
+    });
+
     test('while elevated re-arms the countdown', () async {
       final h = await _harness(timeout: const Duration(milliseconds: 400));
       await h.settle();

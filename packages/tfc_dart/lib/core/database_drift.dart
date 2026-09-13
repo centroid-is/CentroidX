@@ -571,6 +571,13 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
         'ON audit_entry (item_key, at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_audit_entry_who_at '
         'ON audit_entry (who, at DESC)',
+    // The trail viewer's member count (`memberCountsByAction`) is
+    // `WHERE action_id IN (<up to 500 ids>) GROUP BY action_id` on every page
+    // open. Without this it is a whole-table scan of an append-only table that
+    // retention never prunes — the bulk of the page's load time once the
+    // table is large.
+    'CREATE INDEX IF NOT EXISTS idx_audit_entry_action_id '
+        'ON audit_entry (action_id)',
   ];
 
   /// Create the [_auditIndexStatements] indexes.
@@ -582,6 +589,28 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   Future<void> _createAuditIndexes(Migrator m) async {
     for (final stmt in _auditIndexStatements) {
       await m.database.customStatement(stmt);
+    }
+  }
+
+  /// Re-assert the [_auditIndexStatements] indexes on every open.
+  ///
+  /// **Not a schema arm**, for the same reason [_seedAnonymousAccount] is not:
+  /// every statement is `IF NOT EXISTS`, so an index added to the list after a
+  /// database passed `from < 6` reaches it the first time a build that knows
+  /// about the index opens it, with no version bump to collide with another
+  /// branch's. On an already-indexed database each statement is a catalog
+  /// lookup. The first open that does build one blocks audit inserts on that
+  /// table for as long as the build takes, once.
+  ///
+  /// Never throws: a missing index makes the trail viewer slow, not wrong, and
+  /// must not fail an open.
+  Future<void> _ensureAuditIndexes() async {
+    try {
+      for (final stmt in _auditIndexStatements) {
+        await customStatement(stmt);
+      }
+    } on Object catch (e) {
+      logger.w('Could not ensure the audit_entry indexes: $e');
     }
   }
 
@@ -725,6 +754,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   @override
   MigrationStrategy get migration => MigrationStrategy(
         beforeOpen: (details) async {
+          await _ensureAuditIndexes();
           await _seedAnonymousAccount();
         },
         onCreate: (m) async {
