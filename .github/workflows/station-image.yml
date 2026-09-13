@@ -356,6 +356,29 @@ jobs:
           sudo umount "$mnt"; sudo losetup -d "$loop"; rm -f "$img"
           exit $fail
 
+      # The assertion above proves the pieces are present and wired. This proves
+      # the thing actually boots and draws: QMP screendump captures the guest
+      # framebuffer with no cooperation from the guest, so the screenshots show
+      # what a panel would show. A black first frame means weston did not start;
+      # an empty desktop means the app died (most likely the embedder taken from
+      # the HMI image not matching our bundle); and the third shot says whether
+      # tapping a field raises the on-screen keyboard, which is the only
+      # headless way to exercise the input-method-v1 path.
+      - name: Boot the installer and photograph it
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y qemu-system-x86 ovmf
+          img=$(mktemp /tmp/usb-boot-XXXX.img)
+          gunzip -c out/usb-installer.img.gz > "$img"
+          python3 scripts/boot-test.py --usb "$img" --out out/boot-test
+          rm -f "$img"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: station-boot-test
+          path: os/out/boot-test
+          retention-days: 14
+
       - name: Checksums and provenance
         run: |
           cd out && sha256sum *.img.gz *.bmap | tee SHA256SUMS

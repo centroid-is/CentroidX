@@ -214,6 +214,19 @@ qemu:
 	  -netdev user,id=net0,hostfwd=tcp::2222-:22 -device virtio-net-pci,netdev=net0 \
 	  -vga virtio
 
+# Boot the built USB and screenshot it. Accelerated where /dev/kvm exists, plain
+# TCG where it does not -- about 15x slower, hence SLOW. On an arm64 Mac an
+# x86-64 guest is TCG only (no HVF for a foreign architecture), so expect to
+# wait; SLOW=15 is a reasonable starting point there.
+SLOW ?= 1
+.PHONY: boot-test
+boot-test:
+	@test -f $(OUT)/usb-installer.img.gz || { echo "run 'make usb' first"; exit 1; }
+	@test -f $(OUT)/usb-installer.img || gunzip -k $(OUT)/usb-installer.img.gz
+	python3 scripts/boot-test.py --usb $(OUT)/usb-installer.img \
+	  --out $(OUT)/boot-test --slow $(SLOW)
+	@ls -la $(OUT)/boot-test
+
 .PHONY: qemu-reset
 qemu-reset:
 	rm -f $(OUT)/test-disk.qcow2 $(OUT)/OVMF_VARS.fd

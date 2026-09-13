@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Boot the installer USB in QEMU and photograph what it puts on screen.
+
+This exists because nothing else available to us can show that the graphical
+installer actually works. The image assertion in CI proves the pieces are
+present and wired; it cannot prove weston starts, that the app renders, or that
+the embedder taken from the HMI image links against our bundle -- that last one
+either works or the app dies at startup, and only a boot tells you which.
+
+QEMU's QMP `screendump` captures the guest framebuffer with no cooperation from
+the guest, and `input-send-event` can tap the screen, so the whole
+input-method-v1 -> text-input-v1 -> Flutter keyboard path is testable headlessly.
+
+    boot-test.py --usb out/usb-installer.img --out out/boot-test
+
+Accelerated where KVM exists (CI, any Linux box) and plain TCG where it does
+not. TCG is roughly 15x slower, which is tedious but not disqualifying: the
+timeouts below are generous and scale with --slow.
+"""
+import argparse
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+def find_ovmf():
+    """OVMF's filename is not stable across distributions."""
+    code = [
+        '/usr/share/OVMF/OVMF_CODE_4M.fd',
+        '/usr/share/OVMF/OVMF_CODE.fd',
+        '/usr/share/edk2/x64/OVMF_CODE.4m.fd',
+        '/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd',
+    ]
+    varsf = [
+        '/usr/share/OVMF/OVMF_VARS_4M.fd',
+        '/usr/share/OVMF/OVMF_VARS.fd',
+        '/usr/share/edk2/x64/OVMF_VARS.4m.fd',
+        '/opt/homebrew/opt/qemu/share/qemu/edk2-i386-vars.fd',
+    ]
+    c = next((p for p in code if os.path.exists(p)), None)
+    v = next((p for p in varsf if os.path.exists(p)), None)
+    if not c or not v:
+        sys.exit('no OVMF firmware found; install ovmf (Debian/Ubuntu) or qemu (brew)')
+    return c, v
+
+class Qmp:
+    def __init__(self, path, timeout=120):
+        deadline = time.time() + timeout
+        while True:
+            try:
+                self.s = socket.socket(socket.AF_UNIX)
+                self.s.connect(path)
+                break
+            except OSError:
+                if time.time() > deadline:
+                    raise
+                time.sleep(0.5)
+        self.f = self.s.makefile('rw', encoding='utf-8', newline='\n')
+        self._read()                      # greeting
+        self.cmd('qmp_capabilities')
+
+    def _read(self):
+        while True:
+            line = self.f.readline()
+            if not line:
+                raise RuntimeError('QMP closed')
+            msg = json.loads(line)
+            if 'event' in msg:            # asynchronous, not our reply
+                continue
+            return msg
+
+    def cmd(self, name, **args):
+        self.f.write(json.dumps({'execute': name, 'arguments': args} if args
+                                else {'execute': name}) + '\n')
+        self.f.flush()
+        r = self._read()
+        if 'error' in r:
+            raise RuntimeError(f'{name}: {r["error"]}')
+        return r.get('return')
+
+    def screenshot(self, path):
+        # format=png needs QEMU >= 7.1; fall back to PPM, which every version
+        # can write, rather than failing the whole test over an image container.
+        try:
+            self.cmd('screendump', filename=path, format='png')
+        except RuntimeError:
+            ppm = path.replace('.png', '.ppm')
+            self.cmd('screendump', filename=ppm)
+            return ppm
+        return path
+
+    def tap(self, x, y):
+        """Tap at x,y as a fraction (0..1) of the screen."""
+        X, Y = int(x * 32767), int(y * 32767)
+        for ev in ({'type': 'abs', 'data': {'axis': 'x', 'value': X}},
+                   {'type': 'abs', 'data': {'axis': 'y', 'value': Y}},
+                   {'type': 'btn', 'data': {'down': True, 'button': 'left'}},
+                   {'type': 'btn', 'data': {'down': False, 'button': 'left'}}):
+            self.cmd('input-send-event', events=[ev])
+            time.sleep(0.1)
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--usb', required=True, help='raw installer USB image')
+    ap.add_argument('--out', required=True, help='directory for screenshots and logs')
+    ap.add_argument('--slow', type=float, default=1.0,
+                    help='multiply every wait; use ~10 for TCG with no KVM')
+    ap.add_argument('--keep-running', action='store_true')
+    a = ap.parse_args()
+
+    os.makedirs(a.out, exist_ok=True)
+    code, varsf = find_ovmf()
+    tmp = tempfile.mkdtemp()
+    nvram = os.path.join(tmp, 'OVMF_VARS.fd')
+    shutil.copy(varsf, nvram)
+    target = os.path.join(tmp, 'target.qcow2')
+    subprocess.run(['qemu-img', 'create', '-f', 'qcow2', target, '32G'],
+                   check=True, stdout=subprocess.DEVNULL)
+
+    accel = ['-enable-kvm', '-cpu', 'host'] if os.access('/dev/kvm', os.W_OK) \
+            else ['-accel', 'tcg', '-cpu', 'max']
+    print(f'accelerator: {"kvm" if "-enable-kvm" in accel else "tcg (slow)"}')
+
+    qmp = os.path.join(tmp, 'qmp.sock')
+    serial = os.path.join(a.out, 'serial.log')
+    cmd = ['qemu-system-x86_64', *accel, '-m', '2G', '-smp', '2', '-machine', 'q35',
+           '-drive', f'if=pflash,format=raw,unit=0,readonly=on,file={code}',
+           '-drive', f'if=pflash,format=raw,unit=1,file={nvram}',
+           '-device', 'nvme,serial=deadbeef,drive=nvm',
+           '-drive', f'file={target},format=qcow2,if=none,id=nvm,cache=unsafe',
+           '-device', 'usb-ehci,id=ehci',
+           '-device', 'usb-storage,bus=ehci.0,drive=usbdisk',
+           # snapshot=on: a test boot must not write a machine-id or a journal
+           # into an artifact that later gets written to a real key.
+           '-drive', f'file={a.usb},format=raw,if=none,id=usbdisk,snapshot=on',
+           '-device', 'virtio-vga',
+           '-device', 'virtio-tablet-pci',   # absolute pointer, for tap()
+           '-display', 'none',
+           '-serial', f'file:{serial}',
+           '-qmp', f'unix:{qmp},server,nowait']
+    print(' '.join(cmd))
+    proc = subprocess.Popen(cmd)
+    rc = 0
+    try:
+        q = Qmp(qmp, timeout=60 * a.slow)
+        # Long enough for firmware, GRUB, the kernel, seatd and weston. The app
+        # then sits on the disk-selection screen waiting for a human.
+        for label, wait in (('boot', 45), ('settled', 25)):
+            time.sleep(wait * a.slow)
+            shot = q.screenshot(os.path.join(a.out, f'{label}.png'))
+            print(f'  {label}: {shot}')
+        # Tapping the station-name field should raise the on-screen keyboard,
+        # which is the only headless way to exercise the v1 text-input path.
+        q.tap(0.5, 0.45)
+        time.sleep(5 * a.slow)
+        print('  tapped:', q.screenshot(os.path.join(a.out, 'tapped.png')))
+        if not a.keep_running:
+            try:
+                q.cmd('quit')
+            except Exception:
+                pass
+    except Exception as e:
+        print(f'::error::boot test failed: {e}')
+        rc = 1
+    finally:
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        if os.path.exists(serial):
+            print('--- serial tail ---')
+            with open(serial, errors='replace') as f:
+                print(''.join(f.readlines()[-40:]))
+    sys.exit(rc)
+
+if __name__ == '__main__':
+    main()
