@@ -22,6 +22,7 @@ import 'config_store.dart';
 import 'database.dart';
 import 'gateway.dart';
 import 'gateway_preferences_slot.dart';
+import '../core/gateway_default.dart';
 
 part 'preferences.g.dart';
 
@@ -252,7 +253,7 @@ Future<Preferences> preferences(Ref ref) async {
   try {
     gateway = await ref.read(gatewayConfigProvider.future);
   } catch (_) {
-    gateway = GatewayConfig.defaults;
+    gateway = defaultGatewayConfig();
   }
   final db =
       gateway.isGateway ? null : await ref.watch(databaseProvider.future);

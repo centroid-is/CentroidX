@@ -8,6 +8,8 @@ library;
 
 import 'dart:collection';
 
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open62541/open62541.dart' as ua;
 import 'package:tfc/core/gateway_state_man.dart';
@@ -153,9 +155,24 @@ void main() {
     test('no upstream client objects are handed out', () {
       final adapter = _adapter();
       addTearDown(adapter.close);
-      expect(adapter.clients, isEmpty);
+      // `clients` is deliberately absent rather than empty — asserting it were
+      // empty would require this class to declare it, and declaring it names
+      // `ClientWrapper` and so links `dart:ffi` into the one class whose point
+      // is that this process holds no session. The arm below is what stands in
+      // its place, and it is the stronger statement.
       expect(adapter.deviceClients, isEmpty);
       expect(adapter.connMetaAliases, isEmpty);
+    });
+
+    test('and `clients` is not a member of this class at all', () {
+      final source =
+          File('lib/core/gateway_state_man.dart').readAsStringSync();
+      expect(source, isNot(contains('List<ClientWrapper>')),
+          reason: 'an empty `clients` getter came back once already, from a '
+              'merge that took the older side of this file. Absent, not '
+              'empty: `StateMan` does not declare it, `opcUaSessionsOf` is '
+              'how a caller asks for a live session, and the type name alone '
+              'links open62541 into a browser build.');
     });
 
     test('connection metadata refuses rather than answering emptily', () {

@@ -13,7 +13,9 @@ import 'package:json_annotation/json_annotation.dart';
 import 'package:tfc_dart/core/preferences_api.dart' show PreferencesApi;
 import 'package:tfc/page_creator/page.dart' show AssetPage;
 
-import '../chat/asset_context_menu.dart';
+// Chat is not compiled for the browser; the web arm of this seam makes the
+// asset menus no-ops. See `chat/editor_ai.dart`.
+import '../chat/editor_ai.dart';
 import '../core/feature_flags.dart';
 import '../widgets/proposal_visual.dart';
 import '../providers/page_manager.dart';

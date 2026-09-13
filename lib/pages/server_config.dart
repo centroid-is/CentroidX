@@ -34,7 +34,10 @@ import '../widgets/gateway_identity_dialog.dart';
 import '../widgets/gateway_link_status_row.dart';
 import '../widgets/preferences.dart';
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
-import 'package:tfc_dart/core/state_man.dart';
+// The config types and where they are stored — not `state_man.dart`, whose
+// other occupant is the OPC UA client and so `dart:ffi`.
+import 'package:tfc_dart/core/state_man_types.dart';
+import 'package:tfc_dart/core/state_man_config_storage.dart';
 // The settings type only — `core/database.dart` would pull the drift-backed
 // runtime, and with it `dart:ffi`. This page edits the config, it never opens
 // a connection. See `core/database_config.dart`.
@@ -47,6 +50,7 @@ import '../providers/preferences.dart';
 import '../providers/database.dart';
 // TODO not the best place but cross platform
 import 'package:package_info_plus/package_info_plus.dart';
+import '../core/gateway_default.dart';
 
 // The transport-independent editor widgetry moved to the widgets layer in
 // phase 2 of quick/20260908-unify-config-ui. Re-exported so existing
@@ -213,7 +217,7 @@ class ServerConfigBody extends ConsumerWidget {
     // Absent or still loading reads as direct mode, which is what an
     // unconfigured station runs.
     final gateway = ref.watch(gatewayConfigProvider).valueOrNull ??
-        GatewayConfig.defaults;
+        defaultGatewayConfig();
 
     // The station's own name, for the direct-mode banner and the gateway
     // section's attribution row — the same string every audit row's `station`
@@ -361,7 +365,7 @@ class _TransportModeCardState extends ConsumerState<TransportModeCard> {
   GatewayConfig? _saved;
 
   /// What the operator has typed. Diffed against [_saved] for the save button.
-  GatewayConfig _edited = GatewayConfig.defaults;
+  GatewayConfig _edited = defaultGatewayConfig();
 
   /// A read is in flight. Bounded by [_load]'s `finally`, which is the whole
   /// difference between a spinner and a permanent spinner.
@@ -1279,7 +1283,7 @@ class _ImportExportCardState extends ConsumerState<ImportExportCard> {
     // Absent or still loading reads as direct mode — the transport an
     // unconfigured station runs, and the face this card has always had.
     final gateway = ref.watch(gatewayConfigProvider).valueOrNull ??
-        GatewayConfig.defaults;
+        defaultGatewayConfig();
     if (gateway.isGateway) return const _GatewayImportExportCard();
     return Card(
       child: Padding(

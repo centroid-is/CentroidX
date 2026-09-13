@@ -21,8 +21,8 @@
 ///    own, deliberately, so that the gateway and a future web client never
 ///    pull in open62541's native assets. Every value crossing this class is
 ///    translated, the mirror of `tfc_relay_local`'s `translateOpcUaSample`.
-///  * `StateMan` has fourteen members the API does not: `config`,
-///    `keyMappings`, `updateKeyMappings`, `clients`, `deviceClients`,
+///  * `StateMan` has thirteen members the API does not: `config`,
+///    `keyMappings`, `updateKeyMappings`, `deviceClients`,
 ///    `resolveKey`, `setSubstitution`, `getSubstitution`, `substitutions`,
 ///    `substitutionsChanged`, `isKeyDisabled`, `connMetaAliases`,
 ///    `subscribeConnMeta`, `close`. App code calls all of them.
@@ -50,9 +50,14 @@
 ///    added after construction is a key never served. Dropped, the runtime
 ///    symptom is an alarm banner that simply never updates, with no error
 ///    anywhere.
-///  * **`clients` and `deviceClients` are empty.** They hand out live OPC UA
-///    and Modbus client objects, and in gateway mode this process holds
-///    neither. The eleven call sites are all browse/diagnostic UI —
+///  * **`deviceClients` is empty, and `clients` is not here at all.** They
+///    hand out live Modbus and OPC UA client objects, and in gateway mode this
+///    process holds neither. `clients` went further than empty because
+///    `StateMan` does not declare it and naming `ClientWrapper` would link
+///    `dart:ffi` into the one class whose point is that it holds no session;
+///    the sites that want a live session ask `opcUaSessionsOf`, which tests
+///    for the two classes that can have one. The eleven call sites are all
+///    browse/diagnostic UI —
 ///    `opcua_browse`, `umas_browse`, `opcua_array_index_field`, the Schneider
 ///    asset's raw node read, the server-config live-status chip and the MCP
 ///    node browser — so those degrade to "nothing to show" rather than
@@ -70,7 +75,9 @@ import 'dart:collection';
 import 'package:logger/logger.dart';
 import 'package:open62541/open62541_types.dart' as ua;
 import 'package:tfc_dart/core/config/config_diff.dart';
-import 'package:tfc_dart/core/state_man.dart';
+// The interface only, never `state_man.dart`: that library also holds
+// `OpcUaStateMan` and so `dart:ffi`, and this is the class a browser uses.
+import 'package:tfc_dart/core/state_man_types.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as rp;
 
@@ -208,9 +215,12 @@ class GatewayStateMan implements StateMan {
   @override
   String alias;
 
-  /// Empty: this process holds no OPC UA session. See the library doc.
-  @override
-  List<ClientWrapper> get clients => const [];
+  // `clients` used to be overridden here, returning an empty list. It is gone:
+  // `StateMan` deliberately does not declare it (see `state_man_types.dart`),
+  // nothing reads it off this class — `opcUaSessionsOf` tests for
+  // `OpcUaStateMan` and `GuardedStateMan` only — and naming `ClientWrapper`
+  // linked an open62541 session, and so `dart:ffi`, into a class whose whole
+  // point is that this process holds no session.
 
   /// Empty: this process holds no Modbus or M2400 socket. See the library doc.
   @override

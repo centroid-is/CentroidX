@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import '../core/opcua_sessions.dart';
 import 'package:open62541/open62541.dart'
     show BrowseResultItem, NodeClass, NodeId, ClientApi, DynamicValue;
-import 'package:tfc_dart/core/state_man.dart' show StateMan;
+import 'package:tfc_dart/core/state_man_types.dart' show StateMan;
 
 import 'browse_panel.dart';
 

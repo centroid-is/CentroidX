@@ -5,9 +5,9 @@ import 'package:rxdart/rxdart.dart' show Rx;
 
 import 'package:tfc_dart/core/alarm.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
-import '../chat/ai_context_action.dart';
-import '../chat/asset_context_menu.dart' show buildAlarmContextBlock;
-import '../chat/chat_overlay.dart' show ChatContextType;
+// Chat is not compiled for the browser; see `chat/editor_ai.dart`.
+import '../chat/editor_ai.dart';
+import '../chat/chat_context_types.dart' show ChatContextType;
 import '../core/feature_flags.dart';
 import '../providers/alarm.dart';
 import '../providers/local_gateway_alarm.dart';

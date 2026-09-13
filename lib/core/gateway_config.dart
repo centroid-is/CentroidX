@@ -27,6 +27,7 @@ import 'dart:io';
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_relay_client/tfc_relay_client.dart';
 
+import 'gateway_default.dart';
 import 'gateway_link_status.dart' show isIpLiteralHost;
 
 /// Where a station gets its values from.
@@ -413,11 +414,17 @@ String normalizeGatewayAddress(String raw) {
 /// runs.
 Future<GatewayConfig> readGatewayConfig(PreferencesApi prefs) async {
   final raw = await prefs.getString(GatewayConfig.prefsKey);
-  if (raw == null) return GatewayConfig.defaults;
+  // [defaultGatewayConfig], not [GatewayConfig.defaults]: a station with no row
+  // still gets `direct`, and a browser gets the gateway it was served from,
+  // because `direct` is the one mode a page can never satisfy. Both the absent
+  // row and the corrupt one land here — a client that cannot read its transport
+  // choice must still come up on a transport it could possibly have.
+  final fallback = defaultGatewayConfig();
+  if (raw == null) return fallback;
   try {
     return GatewayConfig.fromJson(jsonDecode(raw) as Map<String, dynamic>);
   } catch (_) {
-    return GatewayConfig.defaults;
+    return fallback;
   }
 }
 

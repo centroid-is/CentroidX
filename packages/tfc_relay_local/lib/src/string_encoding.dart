@@ -71,7 +71,7 @@ library;
 
 import 'dart:convert';
 
-import 'package:tfc_dart/core/state_man.dart' show StateManConfig;
+import 'package:tfc_dart/core/state_man_types.dart' show StateManConfig;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 /// The two encodings a configured server may declare.

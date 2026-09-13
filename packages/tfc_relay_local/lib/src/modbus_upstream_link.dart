@@ -53,7 +53,7 @@ import 'package:open62541/open62541.dart' as ua;
 import 'package:tfc_dart/core/modbus_client_wrapper.dart'
     show ModbusAddressRefusal;
 import 'package:tfc_dart/core/modbus_device_client.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import 'package:tfc_dart/core/umas_types.dart' show UmasException;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 

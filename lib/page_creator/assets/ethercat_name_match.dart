@@ -9,8 +9,10 @@
 /// guessing.
 library;
 
-import 'package:open62541/open62541.dart' show DynamicValue;
-import 'package:tfc_dart/core/state_man.dart' show StateMan;
+// The FFI-free barrel: every HMI asset is in the page editor's closure, and
+// `open62541.dart` is `dart:ffi`, which dart2js cannot compile.
+import 'package:open62541/open62541_types.dart' show DynamicValue;
+import 'package:tfc_dart/core/state_man_types.dart' show StateMan;
 
 import 'common.dart';
 import 'ethercat_asset.dart';

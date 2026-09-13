@@ -28,7 +28,7 @@ import 'package:tfc_dart/core/access/local_auth_provider.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
-import 'package:tfc_dart/core/state_man.dart' show StateMan;
+import 'package:tfc_dart/core/state_man_types.dart' show StateMan;
 import 'package:tfc_relay_client/tfc_relay_client.dart'
     show LinkDown, RemoteStateMan;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart'
@@ -46,6 +46,7 @@ import 'gateway_link.dart';
 import 'gateway_preferences_slot.dart';
 import 'preferences.dart';
 import 'state_man.dart';
+import '../core/gateway_default.dart';
 
 part 'access.g.dart';
 
@@ -181,7 +182,7 @@ Future<AccessAuthority> accessAuthority(Ref ref) async {
   try {
     gateway = await ref.read(gatewayConfigProvider.future);
   } catch (_) {
-    gateway = GatewayConfig.defaults;
+    gateway = defaultGatewayConfig();
   }
   if (gateway.isGateway) {
     return accessAuthorityFor(isGateway: true, hasRepository: false);

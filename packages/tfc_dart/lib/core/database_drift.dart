@@ -8,7 +8,7 @@ import 'dart:isolate';
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
-import 'package:drift/native.dart';
+import 'sqlite_executor.dart';
 import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:drift/isolate.dart';
 import 'package:drift_postgres/drift_postgres.dart';
@@ -37,7 +37,6 @@ import 'config/config_item_table.dart'
     show ConfigChangeTable, ConfigItemTable;
 import 'mcp_tables.dart';
 import 'mcp_database.dart';
-import 'sqlite_loader.dart';
 
 part 'database_drift.g.dart';
 
@@ -559,7 +558,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   @visibleForTesting
   factory AppDatabase.inMemoryForTest() => AppDatabase._(
         DatabaseConfig(),
-        NativeDatabase.memory(logStatements: false),
+        sqliteInMemory(logStatements: false),
       );
 
   /// A generative constructor so a test can *subclass* [AppDatabase] and
@@ -1644,6 +1643,15 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
         },
       );
 
+  // The web branch had these as `isSqliteExecutor(executor)` and
+  // `executor is PgDatabase`. Main's dialect reads supersede both and are the
+  // stricter answer on every platform: the type tests were the D-1 defect —
+  // false on every station, because the app opens its database through a
+  // DriftIsolate and holds a remote proxy — and `executor.dialect` is a
+  // web-safe drift API that also takes the last `PgDatabase` reference out of
+  // this file. `isSqliteExecutor` therefore has no caller left and goes with
+  // it; the rest of `sqlite_executor.dart` stays, because keeping
+  // `drift/native` out of the closure is what that seam is actually for.
   /// Whether this database is Postgres.
   ///
   /// Read off the executor's dialect, as [native] is, and for the same
@@ -1856,8 +1864,9 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     if (sqliteFolder != null) {
       final dbFolder = sqliteFolder;
       final file = File(p.join(dbFolder.path, 'db.sqlite'));
-      // Use a local NativeDatabase (or FlutterQueryExecutor).
-      final executor = NativeDatabase.createInBackground(
+      // A local SQLite file, opened through the seam in
+      // `sqlite_executor.dart` so this library does not import `dart:ffi`.
+      final executor = sqliteInBackground(
         file,
         logStatements: config.debug,
       );
@@ -1896,25 +1905,13 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   /// and passes no `sqliteFolder`, so it throws for a SQLite config.
   static AppDatabase createLocal(Directory folder,
       {bool logStatements = false}) {
-    final executor = NativeDatabase.createInBackground(
+    // Through the seam, so this file names no FFI type. The two callbacks
+    // that used to sit here — the sqlite3 library override and the WAL /
+    // busy_timeout pragmas — moved with it; `setup` takes sqlite3's own
+    // `Database`, which is FFI-bound and unnameable in a web build.
+    final executor = sqliteLocalMirror(
       File(p.join(folder.path, 'config.sqlite')),
       logStatements: logStatements,
-      // Runs inside the background isolate before the file is opened, which is
-      // the only place a library override can go. On the eLinux stations it is
-      // what makes sqlite3 loadable at all — see [loadSqliteOnLinux].
-      isolateSetup: loadSqliteOnLinux,
-      setup: (db) {
-        // `createInBackground` does nothing about journal mode, and in the
-        // default rollback journal a reader blocks a writer across processes
-        // (`bin/page_geometry.dart` reads this file out-of-process). WAL is
-        // durable in the file header, so setting it every open is a no-op —
-        // except on a database restored from a rollback-mode backup, which it
-        // repairs.
-        db.execute('PRAGMA journal_mode = WAL;');
-        // WAL still serialises writers. Without a timeout a concurrent write
-        // returns SQLITE_BUSY immediately instead of waiting.
-        db.execute('PRAGMA busy_timeout = 5000;');
-      },
     );
     return AppDatabase._(DatabaseConfig(), executor);
   }
@@ -1965,8 +1962,9 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     } else if (sqliteFolder != null) {
       final dbFolder = sqliteFolder;
       final file = File(p.join(dbFolder.path, 'db.sqlite'));
-      // Use a local NativeDatabase (or FlutterQueryExecutor).
-      final executor = NativeDatabase.createInBackground(
+      // A local SQLite file, opened through the seam in
+      // `sqlite_executor.dart` so this library does not import `dart:ffi`.
+      final executor = sqliteInBackground(
         file,
         logStatements: config.debug,
       );

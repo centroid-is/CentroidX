@@ -62,7 +62,7 @@ library;
 
 import 'dart:convert';
 
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 
 import 'upstream_link.dart';

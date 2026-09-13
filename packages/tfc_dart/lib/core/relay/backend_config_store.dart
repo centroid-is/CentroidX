@@ -87,7 +87,7 @@ import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart' as relay;
 
-import '../state_man.dart';
+import '../state_man_types.dart';
 import 'backend_access.dart' show kRelayOrigin;
 
 /// The marker [BackendConfigStore.read] puts where a secret value was, and

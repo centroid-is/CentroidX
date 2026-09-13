@@ -10,7 +10,12 @@ import 'package:tfc_dart/core/config/key_mapping_migration.dart'
     show kKeyMappingsMigratedMarkerId;
 import 'package:tfc_dart/core/config/key_mapping_rows.dart';
 import 'package:tfc_dart/core/database.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/preferences.dart';
+// `preferences_watch.dart` was imported here on the web branch and is gone:
+// main's #465 deleted it with the `flutter_preferences` table it polled a
+// digest over. The shared-config watcher below is the replacement.
+import 'package:tfc_dart/core/state_man_types.dart';
+import 'package:tfc_dart/core/state_man_config_storage.dart';
 
 import 'package:logger/logger.dart';
 import 'package:tfc_dart/core/log_config.dart';

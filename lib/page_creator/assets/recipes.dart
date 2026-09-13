@@ -8,7 +8,7 @@ import 'package:tfc/page_creator/assets/button.dart';
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc_access/tfc_access.dart' show AccessDenied;
 import 'package:tfc_dart/core/preferences.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/widgets/dynamic_value.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';

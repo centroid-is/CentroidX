@@ -32,10 +32,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:modbus_client/modbus_client.dart' show ModbusEndianness;
 import 'package:tfc_dart/core/config_document.dart';
-import 'package:tfc_dart/core/modbus_device_client.dart';
-import 'package:tfc_dart/core/state_man.dart';
+import 'package:tfc_dart/core/state_man_types.dart';
+// Live session lookup behind a seam: the sessions themselves are `dart:ffi`.
+import 'live_session_status.dart';
 
-import '../../core/opcua_sessions.dart';
 import '../../core/config_source.dart';
 import '../../providers/state_man.dart';
 import '../connection_status_chip.dart';
@@ -2419,29 +2419,19 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
       itemBuilder: (context, index) {
         final entry = doc.opcua[index];
         final server = entry.value;
-        ClientWrapper? wrapper;
-        if (stateMan != null) {
-          wrapper = opcUaSessionsOf(stateMan).cast<ClientWrapper?>().firstWhere(
-                (w) =>
-                    (server.serverAlias != null &&
-                        server.serverAlias!.isNotEmpty &&
-                        w!.config.serverAlias == server.serverAlias) ||
-                    w!.config.endpoint == server.endpoint,
-                orElse: () => null,
-              );
-        }
+        final live = opcUaLiveStatus(stateMan, server);
         return _ServerConfigCard(
           key: _opcuaKeys[index],
           server: server,
           onUpdate: (edited) => setState(() => entry.update(edited)),
           onRemove: () => _removeAt(doc.opcua, _opcuaKeys, index),
-          connectionStatus: wrapper?.connectionStatus,
-          connectionStream: wrapper?.connectionStream,
+          connectionStatus: live?.connectionStatus,
+          connectionStream: live?.connectionStream,
           // Data-plane health: catches the frozen-session shape where the
           // channel stays formally open but no value ever arrives again,
           // which the event-driven connectionStream can never report.
-          effectiveStatus: wrapper?.effectiveStatus,
-          effectiveStatusStream: wrapper?.effectiveStatusStream,
+          effectiveStatus: live?.effectiveStatus,
+          effectiveStatusStream: live?.effectiveStatusStream,
           stateManLoading: stateManAsync?.isLoading ?? false,
           reorderIndex: reorderable ? index : null,
           liveStatusKnown: widget.source.hasLiveStatus,
@@ -2464,28 +2454,14 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
       itemBuilder: (context, index) {
         final entry = doc.jbtm[index];
         final server = entry.value;
-        M2400DeviceClientAdapter? adapter;
-        if (stateMan != null) {
-          adapter = stateMan.deviceClients
-              .whereType<M2400DeviceClientAdapter>()
-              .cast<M2400DeviceClientAdapter?>()
-              .firstWhere(
-                (dc) =>
-                    (server.serverAlias != null &&
-                        server.serverAlias!.isNotEmpty &&
-                        dc!.serverAlias == server.serverAlias) ||
-                    (dc!.wrapper.host == server.host &&
-                        dc.wrapper.port == server.port),
-                orElse: () => null,
-              );
-        }
+        final live = m2400LiveStatus(stateMan, server);
         return _JbtmServerConfigCard(
           key: _jbtmKeys[index],
           server: server,
           onUpdate: (edited) => setState(() => entry.update(edited)),
           onRemove: () => _removeAt(doc.jbtm, _jbtmKeys, index),
-          connectionStatus: adapter?.connectionStatus,
-          connectionStream: adapter?.connectionStream,
+          connectionStatus: live?.connectionStatus,
+          connectionStream: live?.connectionStream,
           stateManLoading: stateManAsync?.isLoading ?? false,
           reorderIndex: reorderable ? index : null,
           liveStatusKnown: widget.source.hasLiveStatus,
@@ -2508,32 +2484,18 @@ class _StateManConfigEditorState extends ConsumerState<StateManConfigEditor> {
       itemBuilder: (context, index) {
         final entry = doc.modbus[index];
         final server = entry.value;
-        ModbusDeviceClientAdapter? adapter;
-        if (stateMan != null) {
-          adapter = stateMan.deviceClients
-              .whereType<ModbusDeviceClientAdapter>()
-              .cast<ModbusDeviceClientAdapter?>()
-              .firstWhere(
-                (dc) =>
-                    (server.serverAlias != null &&
-                        server.serverAlias!.isNotEmpty &&
-                        dc!.serverAlias == server.serverAlias) ||
-                    (dc!.wrapper.host == server.host &&
-                        dc.wrapper.port == server.port),
-                orElse: () => null,
-              );
-        }
+        final live = modbusLiveStatus(stateMan, server);
         return _ModbusServerConfigCard(
           key: _modbusKeys[index],
           server: server,
           onUpdate: (edited) => setState(() => entry.update(edited)),
           onRemove: () => _removeAt(doc.modbus, _modbusKeys, index),
-          connectionStatus: adapter?.connectionStatus,
-          connectionStream: adapter?.connectionStream,
+          connectionStatus: live?.connectionStatus,
+          connectionStream: live?.connectionStream,
           // TD-004 (v1.1.x): combined TCP + UMAS health stream so the
           // chip surfaces a broken UMAS session as `umasUnhealthy`.
-          effectiveStatus: adapter?.effectiveStatus,
-          effectiveStatusStream: adapter?.effectiveStatusStream,
+          effectiveStatus: live?.effectiveStatus,
+          effectiveStatusStream: live?.effectiveStatusStream,
           stateManLoading: stateManAsync?.isLoading ?? false,
           reorderIndex: reorderable ? index : null,
           liveStatusKnown: widget.source.hasLiveStatus,
