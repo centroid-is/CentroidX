@@ -23,8 +23,18 @@ on:
         type: string
         default: intel
       preload:
+        # true, so every released stick installs with no uplink at all. A
+        # station pulling ~1.9GB of containers on its first boot cannot be
+        # commissioned on a plant with no internet, which is the normal case,
+        # and the operator has no way to tell a slow pull from a hung one.
+        # Costs ~2GB on the stick (16GB, not 8 -- see os/Makefile's USBSIZE)
+        # and the pull time moves from the panel into this runner.
+        #
+        # pull_request builds are unaffected: `inputs` is null there, so the
+        # `inputs.preload || 'false'` below still resolves to false and a
+        # recipe change is still checked in ~the same time as before.
         type: boolean
-        default: false
+        default: true
   pull_request:
     # Duplicated rather than shared with a YAML anchor: GitHub Actions does not
     # officially support anchors in workflow files.
@@ -367,7 +377,10 @@ jobs:
             DOCKER_TTY=
 
       - name: Build installer USB
-        run: make usb DOCKER_TTY=
+        # PRELOAD is passed again, even though this target does not preload
+        # anything: os/Makefile derives USBSIZE from it, and a preloaded
+        # payload does not fit the 4GB default.
+        run: make usb DOCKER_TTY= PRELOAD=${{ inputs.preload || 'false' }}
 
       # The first green build shipped a text-only installer: the bundle was
       # present but not executable, so installer-setup.sh took the fallback

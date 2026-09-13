@@ -27,8 +27,36 @@ IMAGESIZE      ?= 8GB
 # like a broken image rather than a truncated write. Contents are ~2.3GB (a
 # minbase system plus the ~550MB payload), so this fits any 8GB stick with room.
 # Raise it for PRELOAD=true. (Review #9.)
-USBSIZE        ?= 4GB
+# true on every release build: main-prerelease.yml and tag.yml take the
+# workflow_call default in station-image.yml, which is true. A station that has
+# to pull ~1.9GB of containers on its first boot is a station that cannot be
+# commissioned on a plant with no uplink, which is the normal case. PR builds
+# stay false -- they are testing the recipe, not shipping a stick.
+#
+# Assigned BEFORE the USBSIZE below, which branches on it: make expands
+# conditionals in file order, so the other way round the branch would read an
+# empty PRELOAD on every invocation that did not set it on the command line.
 PRELOAD        ?= false
+# Each pulled image is dropped from the local daemon once it is saved and
+# compressed. It is held twice otherwise -- in the daemon and as a tarball
+# inside the rootfs being assembled -- and the CI runner does not have room for
+# that beside an 8GB image, an 8GB USB image and 24GB of debos scratch. Set
+# PRELOAD_KEEP=true when iterating locally, to avoid re-pulling ~1.9GB.
+# NOT `docker image prune`, which would also take the pinned debos image that
+# the very next step runs.
+PRELOAD_KEEP   ?= false
+# Derived from PRELOAD rather than fixed, because the right answer differs by
+# ~2GB and getting it wrong is the truncation failure described above. Without
+# the container images the payload is ~0.55GB and 4GB is generous; with them it
+# is ~2.6GB, which needs 8GB -- and an 8GB image does NOT fit a nominal 8GB
+# stick, so a preloaded USB is a 16GB-stick product. Both images are sparse, so
+# the size here costs nothing to write: bmaptool copies the contents, not the
+# declared size.
+ifeq ($(PRELOAD),true)
+USBSIZE        ?= 8GB
+else
+USBSIZE        ?= 4GB
+endif
 
 OUT            := out
 GEN            := overlays/generated
@@ -105,6 +133,7 @@ preload: generated
 	  out=$(GEN)/var/lib/centroid/preload/$$(echo "$$i" | tr '/:' '__').tar; \
 	  docker save "$$i" -o "$$out"; \
 	  zstd -q -f --rm "$$out"; \
+	  if [ "$(PRELOAD_KEEP)" != true ]; then docker rmi "$$i" >/dev/null 2>&1 || true; fi; \
 	done; \
 	du -sh $(GEN)/var/lib/centroid/preload
 

@@ -56,8 +56,29 @@ make dry-run            # validate all three recipes (works on macOS)
 
 ```bash
 make image GPU=amd      # AMD station instead of Intel
-make preload            # bake the container images in, for an offline install
+make image PRELOAD=true # bake the container images in, for an offline install
 ```
+
+### Offline installs
+
+Every **released** stick is built with `PRELOAD=true` (it is the `workflow_call`
+default in `station-image.yml`, which is what `main-prerelease.yml` and
+`tag.yml` take). The ~1.9GB of container images the compose file names are
+pulled in CI, saved as zstd tarballs inside the station image, and loaded by
+`centroidx-firstboot` on first boot, which then deletes them. A plant with no
+uplink can be commissioned; nothing is downloaded at install time.
+
+The cost is on the stick. `USBSIZE` is derived from `PRELOAD` in the Makefile —
+4GB without, 8GB with — and an 8GB image does **not** fit a nominal 8GB USB
+key, so **a preloaded installer is a 16GB-stick product**. Both images are
+sparse and written with `bmaptool`, so the declared size costs nothing: only
+the ~4.3GB actually present is copied.
+
+PR builds stay `PRELOAD=false`. They are checking the recipe, not shipping a
+stick, and the pull would double the job. `make preload` also drops each image
+from the local daemon once it has been saved, because holding it twice does not
+fit beside debos's scratch on a runner; pass `PRELOAD_KEEP=true` when iterating
+locally to avoid re-pulling.
 
 `docker-compose.yml` is baked in from one directory up, at whatever commit the
 image is built from — there is no ref to pin and no copy to go stale, which is
