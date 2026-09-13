@@ -799,6 +799,146 @@ void main() {
   // Change role
   // -------------------------------------------------------------------------
 
+  group('the anonymous account', () {
+    testWidgets('is pinned first, tagged, and offers roles and pages only',
+        (tester) async {
+      await makeUser('admin', 'Engineering');
+      await pumpSection(tester, overrides());
+
+      final anonymousTop = tester
+          .getTopLeft(find.byKey(kAccessUserRowKey(kAnonymousUsername)))
+          .dy;
+      expect(anonymousTop,
+          lessThan(tester.getTopLeft(find.byKey(kAccessUserRowKey('admin'))).dy));
+      expect(find.byKey(kAccessUserAnonymousTagKey), findsOneWidget);
+      expect(cell(tester, kAccessUserCreatedKey(kAnonymousUsername)),
+          kAccessUserNotApplicable);
+      expect(cell(tester, kAccessUserLastLoginKey(kAnonymousUsername)),
+          kAccessUserNotApplicable);
+
+      expect(find.byKey(kAccessUserChangeRoleKey(kAnonymousUsername)),
+          findsOneWidget);
+      expect(find.byKey(kAccessUserPagesKey(kAnonymousUsername)), findsOneWidget);
+      for (final absent in [
+        kAccessUserSetPasswordKey(kAnonymousUsername),
+        kAccessUserDeleteKey(kAnonymousUsername),
+        kAccessUserStationAccountKey(kAnonymousUsername),
+        kAccessUserTimeoutKey(kAnonymousUsername),
+      ]) {
+        expect(find.byKey(absent), findsNothing,
+            reason: 'absent, not greyed: none of these is a permission refusal');
+      }
+    });
+
+    testWidgets('with nobody else, the first-user window note is still shown',
+        (tester) async {
+      await pumpSection(tester, overrides());
+
+      expect(find.byKey(kAccessUserRowKey(kAnonymousUsername)), findsOneWidget);
+      expect(find.byKey(kAccessUsersEmptyKey), findsOneWidget);
+    });
+
+    testWidgets('its role picker carries the logged-out-panel banner',
+        (tester) async {
+      await pumpSection(tester, overrides());
+      await openRolePicker(tester, kAnonymousUsername);
+
+      expect(find.byKey(kAccessAnonymousWarningKey), findsOneWidget);
+      expect(find.text(kAccessAnonymousBannerNote), findsOneWidget);
+    });
+
+    testWidgets('a person\'s role picker does not', (tester) async {
+      await makeUser('bjorn', 'Shift Leader');
+      await pumpSection(tester, overrides());
+      await openRolePicker(tester, 'bjorn');
+
+      expect(find.byKey(kAccessAnonymousWarningKey), findsNothing);
+    });
+
+    testWidgets('widening it asks first, names the groups, and cancelling '
+        'writes nothing', (tester) async {
+      await pumpSection(tester, overrides());
+      await openRolePicker(tester, kAnonymousUsername);
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
+      await tester.pumpAndSettle();
+      store!.calls.clear();
+      await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
+      await tester.pumpAndSettle();
+
+      expect(find.text(kAccessAnonymousConfirmTitle), findsOneWidget);
+      expect(
+        find.text(kAccessAnonymousConfirmMessage(const [
+          AccessGroup.setpoints,
+          AccessGroup.device,
+          AccessGroup.force,
+        ])),
+        findsOneWidget,
+        reason: 'by label, and only what is added — operate is already held',
+      );
+
+      await tester.tap(find.text('Cancel').last);
+      await tester.pumpAndSettle();
+      expect(store!.calls.where((c) => c.startsWith('setUserRole')), isEmpty);
+      expect((await userNamed(kAnonymousUsername))!.additionalRoles, isNull);
+    });
+
+    testWidgets('confirming the widening applies it to a logged-out panel',
+        (tester) async {
+      await pumpSection(tester, overrides());
+      expect((await sessionInForce()).can(AccessGroup.device), isFalse);
+
+      await openRolePicker(tester, kAnonymousUsername);
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(kAccessAnonymousConfirmLabel));
+      await tester.pumpAndSettle();
+
+      expect(AccessRepository.rolesOf((await userNamed(kAnonymousUsername))!),
+          [kOperatorRoleName, 'Maintenance']);
+      final session = await sessionInForce();
+      expect(session.isElevated, isFalse);
+      expect(session.can(AccessGroup.device), isTrue);
+    });
+
+    testWidgets('narrowing it asks nothing', (tester) async {
+      await repository.setRoles(
+          kAnonymousUsername, [kOperatorRoleName, 'Maintenance']);
+      await pumpSection(tester, overrides());
+      await openRolePicker(tester, kAnonymousUsername);
+      await tester.tap(find.byKey(kAccessUserRoleChoiceKey('Maintenance')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(kAccessUserRoleConfirmKey));
+      await tester.pumpAndSettle();
+
+      expect(find.text(kAccessAnonymousConfirmTitle), findsNothing);
+      expect(AccessRepository.rolesOf((await userNamed(kAnonymousUsername))!),
+          [kOperatorRoleName]);
+    });
+
+    testWidgets('its pages block says what it governs', (tester) async {
+      await pumpSection(tester, overrides());
+      await tester.tap(find.byKey(kAccessUserPagesKey(kAnonymousUsername)));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessAnonymousPagesWarningKey), findsOneWidget);
+    });
+
+    testWidgets('no account can be created under its name', (tester) async {
+      await pumpSection(tester, overrides());
+      await openCreate(tester);
+      await fillCreate(tester, username: 'Anonymous', password: 'pw');
+
+      await tester.tap(find.byKey(kAccessUserCreateConfirmKey));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessUserReservedKey), findsOneWidget);
+      expect(find.text(kAccessUserReservedNameNote), findsOneWidget);
+      expect(store!.calls.where((c) => c.startsWith('createUser')), isEmpty);
+    });
+  });
+
   group('change role', () {
     testWidgets('the picker offers exactly the roles the store returned',
         (tester) async {

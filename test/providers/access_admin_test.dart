@@ -287,7 +287,9 @@ void main() {
       expect(
         (await h.container.read(accessAdminUsersProvider.future))
             .map((u) => u.username),
-        ['jon'],
+        [kAnonymousUsername, 'jon'],
+        reason: 'the reserved account is in the roster too; the accounts '
+            'section pins it first',
       );
     });
 
@@ -499,7 +501,8 @@ void main() {
       );
       expect(h.session!.user, isNull);
       expect(h.session!.can(AccessGroup.users), isFalse);
-      expect(h.session!.groups, await h.repository.anonymousGroups());
+      expect(
+          h.session!.groups, (await h.repository.anonymousAccount()).groups);
       expect(
         await h.storedPayload(),
         isNull,

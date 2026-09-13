@@ -136,43 +136,6 @@ void main() {
     });
   });
 
-  group('isProtectedRoleName', () {
-    test('Operator is protected', () {
-      expect(isProtectedRoleName(kOperatorRoleName), isTrue);
-      expect(isProtectedRoleName('Operator'), isTrue);
-    });
-
-    test('the match is case-insensitive', () {
-      // A rename to a differently-cased 'operator' would leave anonymous with
-      // no role to resolve to, so the guard must not be escapable by casing.
-      expect(isProtectedRoleName('operator'), isTrue);
-      expect(isProtectedRoleName('OPERATOR'), isTrue);
-      expect(isProtectedRoleName('OpErAtOr'), isTrue);
-    });
-
-    test('surrounding whitespace does not escape the guard', () {
-      expect(isProtectedRoleName('  Operator '), isTrue);
-    });
-
-    test('Engineering is an ordinary, deletable role', () {
-      expect(isProtectedRoleName('Engineering'), isFalse);
-      expect(isProtectedRoleName('Shift Leader'), isFalse);
-      expect(isProtectedRoleName('Maintenance'), isFalse);
-    });
-
-    test('a name that merely contains Operator is not protected', () {
-      expect(isProtectedRoleName('Operator Trainee'), isFalse);
-    });
-  });
-
-  group('ProtectedRoleError', () {
-    test('names the role it refused to change', () {
-      final error = ProtectedRoleError('Operator');
-      expect(error, isA<Error>());
-      expect(error.toString(), contains('Operator'));
-    });
-  });
-
   // AuthenticatedUser lives here rather than in its own suite because it is the
   // other half of the same vocabulary: a user is a name plus exactly one role
   // name, and the role name is the only link between the two types.

@@ -94,9 +94,15 @@ Future<Set<String>> _rawRoleNames(AppDatabase db) async {
   return rows.map((r) => r.read<String>('name')).toSet();
 }
 
+/// The number of accounts a person could sign in to, read with raw SQL.
+///
+/// Leaves out the reserved anonymous row, which the seed writes into every
+/// database: the tests counting rows here are about the accounts people make.
 Future<int> _rawUserCount(AppDatabase db) async {
-  final rows =
-      await db.customSelect('SELECT COUNT(*) AS c FROM app_user').get();
+  final rows = await db.customSelect(
+    'SELECT COUNT(*) AS c FROM app_user WHERE username != ?',
+    variables: [Variable<String>(kAnonymousUsername)],
+  ).get();
   return rows.first.read<int>('c');
 }
 
@@ -220,45 +226,101 @@ void main() {
     });
   });
 
-  group('anonymous group resolution', () {
-    test('a fresh database resolves anonymous to {operate}', () async {
-      expect(await repo.anonymousGroups(), {AccessGroup.operate});
+  group('anonymous account resolution', () {
+    test('a fresh database resolves anonymous to Operator: {operate}',
+        () async {
+      final account = await repo.anonymousAccount();
+      expect(account.roleNames, [kOperatorRoleName]);
+      expect(account.groups, {AccessGroup.operate});
+      expect(account.allowedPages, isNull);
     });
 
-    test('editing the Operator row changes what a logged-out panel may do',
-        () async {
-      // The deliberate footgun, asserted so it cannot be "fixed" by accident:
-      // ticking setpoints on Operator grants it to every panel on the floor
-      // with nobody signed in.
+    test('editing a role the account holds changes what a logged-out panel '
+        'may do', () async {
+      // Allowed, and asserted so it cannot be "fixed" by accident: the
+      // accounts and roles screens warn about it at the point of edit.
       await repo.upsertRole(const AccessRole(
         name: kOperatorRoleName,
         groups: {AccessGroup.operate, AccessGroup.setpoints},
       ));
 
-      expect(await repo.anonymousGroups(),
+      expect((await repo.anonymousAccount()).groups,
           {AccessGroup.operate, AccessGroup.setpoints});
     });
 
-    test('an empty Operator row means anonymous can do nothing', () async {
-      // Allowed on purpose. Refusing an empty Operator would be a policy
-      // decision, and this layer has no standing to make one — a site that
-      // wants a panel that does nothing until somebody signs in is entitled
-      // to have it.
+    test('an empty role means anonymous can do nothing', () async {
+      // Allowed on purpose. A site that wants a panel that does nothing until
+      // somebody signs in is entitled to have it.
       await repo
           .upsertRole(const AccessRole(name: kOperatorRoleName, groups: {}));
 
-      expect(await repo.anonymousGroups(), isEmpty);
+      expect((await repo.anonymousAccount()).groups, isEmpty);
     });
 
-    test('a missing Operator row falls back to the seeded {operate}', () async {
-      // Simulates the row being deleted out from under the app in psql. A
+    test('several roles union, and the personal whitelist replaces theirs',
+        () async {
+      await repo.upsertRole(const AccessRole(
+          name: 'Viewer', groups: {AccessGroup.setpoints}));
+      await repo.setRoleAllowedPages(kOperatorRoleName, {'/'});
+      await repo.setRoleAllowedPages('Viewer', {'/trends'});
+      await repo.setRoles(kAnonymousUsername, [kOperatorRoleName, 'Viewer']);
+
+      var account = await repo.anonymousAccount();
+      expect(account.roleNames, [kOperatorRoleName, 'Viewer']);
+      expect(account.groups, {AccessGroup.operate, AccessGroup.setpoints});
+      expect(account.allowedPages, {'/', '/trends'});
+
+      await repo.setUserAllowedPages(kAnonymousUsername, {'/packing'});
+      account = await repo.anonymousAccount();
+      expect(account.allowedPages, {'/packing'});
+    });
+
+    test('the account moved off Operator no longer follows it', () async {
+      await repo.setRole(kAnonymousUsername, 'Shift Leader');
+      await repo.upsertRole(const AccessRole(
+          name: kOperatorRoleName, groups: {AccessGroup.force}));
+
+      expect((await repo.anonymousAccount()).groups,
+          {AccessGroup.operate, AccessGroup.setpoints});
+    });
+
+    test('a missing account row falls back to the Operator role', () async {
+      await db.customStatement(
+          "DELETE FROM app_user WHERE username = '$kAnonymousUsername'");
+      await repo.upsertRole(const AccessRole(
+          name: kOperatorRoleName,
+          groups: {AccessGroup.operate, AccessGroup.device}));
+
+      final account = await repo.anonymousAccount();
+      expect(account.roleNames, [kOperatorRoleName]);
+      expect(account.groups, {AccessGroup.operate, AccessGroup.device});
+    });
+
+    test('an account whose primary role is gone falls back to Operator',
+        () async {
+      final off = await _openDbForeignKeysOff();
+      addTearDown(off.close);
+      final offRepo = AccessRepository(off);
+      await off.customStatement("UPDATE app_user SET role_name = 'Gone' "
+          "WHERE username = '$kAnonymousUsername'");
+
+      expect((await offRepo.anonymousAccount()).roleNames, [kOperatorRoleName]);
+    });
+
+    test('a missing account and a missing Operator fall back to the seeded '
+        '{operate}, unrestricted', () async {
+      // Simulates both rows being deleted out from under the app in psql. A
       // logged-out panel that cannot jog because somebody ran a DELETE is a
       // stopped line; the seeded set is the conservative floor.
-      await db.customStatement("DELETE FROM app_role WHERE name = 'Operator'");
-      expect(await _rawGroups(db, kOperatorRoleName), isNull,
-          reason: 'the row really is gone, so the fallback is what answers');
+      final off = await _openDbForeignKeysOff();
+      addTearDown(off.close);
+      await off.customStatement('DELETE FROM app_user');
+      await off.customStatement(
+          "DELETE FROM app_role WHERE name = 'Operator'");
 
-      expect(await repo.anonymousGroups(), {AccessGroup.operate});
+      final account = await AccessRepository(off).anonymousAccount();
+      expect(account.groups, {AccessGroup.operate});
+      expect(account.allowedPages, isNull);
     });
 
     test('a failing query falls back to the seeded {operate}', () async {
@@ -266,64 +328,92 @@ void main() {
       // must not cost a logged-out panel its ability to jog either.
       await db.close();
 
-      expect(await repo.anonymousGroups(), {AccessGroup.operate});
+      expect((await repo.anonymousAccount()).groups, {AccessGroup.operate});
 
       // Re-open so tearDown's close() has something valid to close.
       db = await _openDb();
     });
   });
 
-  group('the Operator guard', () {
-    test('deleteRole("Operator") throws and leaves the row present', () async {
+  group('the anonymous account guards', () {
+    test('it cannot be deleted, passworded, flagged or timed out', () async {
+      await expectLater(() => repo.deleteUser(kAnonymousUsername),
+          throwsA(isA<AnonymousAccountError>()));
+      await expectLater(() => repo.setPassword(kAnonymousUsername, 'pw'),
+          throwsA(isA<AnonymousAccountError>()));
+      await expectLater(() => repo.setStationAccount(kAnonymousUsername, true),
+          throwsA(isA<AnonymousAccountError>()));
+      await expectLater(() => repo.setInactivityTimeout(kAnonymousUsername, 30),
+          throwsA(isA<AnonymousAccountError>()));
+
+      final row = (await repo.user(kAnonymousUsername))!;
+      expect(row.passwordHash, kAnonymousPasswordSentinel);
+      expect(row.stationAccount, isFalse);
+      expect(row.inactivityTimeoutMinutes, isNull);
+    });
+
+    test('no account can be created under its name, in any casing', () async {
+      for (final name in ['anonymous', 'Anonymous', ' ANONYMOUS ']) {
+        await expectLater(
+          () => repo.createUser(
+              username: name, password: 'pw', roleName: 'Engineering'),
+          throwsA(isA<ReservedUsernameException>()),
+        );
+      }
+      await expectLater(
+        () => repo.createFirstUser(username: 'Anonymous', password: 'pw'),
+        throwsA(isA<ReservedUsernameException>()),
+      );
+    });
+
+    test('it is not counted as an account, so the first-user window is open',
+        () async {
+      expect(await repo.user(kAnonymousUsername), isNotNull);
+      expect(await repo.userCount(), 0);
+      expect(await repo.isUserTableEmpty, isTrue);
+    });
+
+    test('a role it holds is refused deletion, naming it', () async {
       await expectLater(
         () => repo.deleteRole(kOperatorRoleName),
-        throwsA(isA<ProtectedRoleError>()),
+        throwsA(isA<RoleInUseException>().having(
+            (e) => e.holders, 'holders', [kAnonymousUsername])),
       );
-
       expect(await _rawRoleNames(db), contains(kOperatorRoleName));
     });
 
-    test('deleteRole("operator") throws — the guard is case-insensitive',
+    test('Operator is an ordinary role once the account is moved off it',
         () async {
-      await expectLater(
-        () => repo.deleteRole('operator'),
-        throwsA(isA<ProtectedRoleError>()),
-      );
-
-      expect(await _rawRoleNames(db), contains(kOperatorRoleName));
+      await repo.setRole(kAnonymousUsername, 'Shift Leader');
+      await repo.deleteRole(kOperatorRoleName);
+      expect(await _rawRoleNames(db), isNot(contains(kOperatorRoleName)));
     });
 
-    test('deleteRole(" Operator ") throws — and whitespace-tolerant', () async {
-      await expectLater(
-        () => repo.deleteRole(' Operator '),
-        throwsA(isA<ProtectedRoleError>()),
-      );
-
-      expect(await _rawRoleNames(db), contains(kOperatorRoleName));
+    test('renaming a role it holds carries it along', () async {
+      await repo.renameRole(kOperatorRoleName, 'Line');
+      expect((await repo.anonymousAccount()).roleNames, ['Line']);
+      expect(await _rawRoleOf(db, kAnonymousUsername), 'Line');
     });
 
-    test('renameRole away from Operator throws and leaves the name alone',
+    test('it never counts as a users holder', () async {
+      // Even holding Engineering, a logged-out panel is nobody who can sign in
+      // and manage the next account — so the last real holder stays protected.
+      await repo.createFirstUser(username: 'jon', password: 'pw');
+      await repo.setRole(kAnonymousUsername, 'Engineering');
+
+      await expectLater(
+        () => repo.deleteUser('jon'),
+        throwsA(isA<LastUsersHolderException>().having(
+            (e) => e.holders, 'holders', ['jon'])),
+      );
+    });
+
+    test('moving it onto or off a users-granting role never trips the lockout',
         () async {
-      await expectLater(
-        () => repo.renameRole(kOperatorRoleName, 'Ops'),
-        throwsA(isA<ProtectedRoleError>()),
-      );
-
-      final names = await _rawRoleNames(db);
-      expect(names, contains(kOperatorRoleName));
-      expect(names, isNot(contains('Ops')));
-    });
-
-    test('renameRole onto the Operator name throws too', () async {
-      // The mirror image of the guard above: renaming another role *to*
-      // Operator while Operator exists is a primary-key collision, and while
-      // Operator is missing it would silently reassign the anonymous identity.
-      await expectLater(
-        () => repo.renameRole('Shift Leader', 'Operator'),
-        throwsA(isA<ProtectedRoleError>()),
-      );
-
-      expect(await _rawRoleNames(db), contains('Shift Leader'));
+      await repo.createFirstUser(username: 'jon', password: 'pw');
+      await repo.setRole(kAnonymousUsername, 'Engineering');
+      await repo.setRole(kAnonymousUsername, kOperatorRoleName);
+      expect(await _rawRoleOf(db, kAnonymousUsername), kOperatorRoleName);
     });
 
     test('Engineering is an ordinary row and deletes', () async {
@@ -850,8 +940,9 @@ void main() {
   });
 
   group('listUsers', () {
-    test('is empty on a fresh database', () async {
-      expect(await repo.listUsers(), isEmpty);
+    test('holds only the anonymous account on a fresh database', () async {
+      final users = await repo.listUsers();
+      expect(users.map((u) => u.username), [kAnonymousUsername]);
     });
 
     test('returns every row, ordered by username', () async {
@@ -861,9 +952,10 @@ void main() {
 
       final users = await repo.listUsers();
 
-      expect(users.map((u) => u.username), ['ada', 'jon', 'zoe']);
+      expect(users.map((u) => u.username),
+          ['ada', kAnonymousUsername, 'jon', 'zoe']);
       expect(users.map((u) => u.roleName),
-          ['Maintenance', 'Engineering', 'Operator']);
+          ['Maintenance', 'Operator', 'Engineering', 'Operator']);
     });
   });
 
@@ -1799,29 +1891,35 @@ void main() {
     });
   });
 
-  group('anonymousRole', () {
-    test('carries the Operator row whole — groups and pages together',
-        () async {
+  group('anonymousAccount pages', () {
+    test('carries the held role whole — groups and pages together', () async {
       await repo.setRoleAllowedPages(kOperatorRoleName, {'/'});
-      final role = await repo.anonymousRole();
-      expect(role.name, kOperatorRoleName);
-      expect(role.groups, {AccessGroup.operate});
-      expect(role.allowedPages, {'/'});
+      final account = await repo.anonymousAccount();
+      expect(account.roleNames, [kOperatorRoleName]);
+      expect(account.groups, {AccessGroup.operate});
+      expect(account.allowedPages, {'/'});
     });
 
-    test('falls back to the seeded role — unrestricted — with no row', () async {
-      // An outage must not blank every page on a panel. The write guards still
-      // refuse; visibility is not the surface where failing closed is worth it.
-      await db.customStatement('DELETE FROM app_user');
-      await db.customStatement("DELETE FROM app_role WHERE name = 'Operator'");
-      final role = await repo.anonymousRole();
-      expect(role.groups, {AccessGroup.operate});
-      expect(role.allowedPages, isNull);
-    });
-
-    test('anonymousGroups still answers the same groups', () async {
+    test('an empty role whitelist blocks every page and keeps the groups',
+        () async {
       await repo.setRoleAllowedPages(kOperatorRoleName, <String>{});
-      expect(await repo.anonymousGroups(), {AccessGroup.operate});
+      final account = await repo.anonymousAccount();
+      expect(account.groups, {AccessGroup.operate});
+      expect(account.allowedPages, isEmpty);
+    });
+  });
+
+  group('resolveRoles', () {
+    test('primary first, a missing extra dropped', () async {
+      final roles = await repo.resolveRoles(
+          primary: 'Maintenance', additional: ['Gone', kOperatorRoleName]);
+      expect(roles!.map((r) => r.name), ['Maintenance', kOperatorRoleName]);
+    });
+
+    test('null when the primary is missing', () async {
+      expect(
+          await repo.resolveRoles(primary: 'Gone', additional: ['Engineering']),
+          isNull);
     });
   });
 }

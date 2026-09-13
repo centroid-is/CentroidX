@@ -78,7 +78,12 @@ class LocalAuthProvider implements AuthProvider, PasswordSelfService {
     // and saves a pointless derivation.
     if (name.isEmpty || password.isEmpty) return null;
 
-    final row = await repository.user(name);
+    // The reserved account is every logged-out panel, never a person. Refused
+    // by name before the row is read, and burned exactly like an unknown user
+    // so the answer costs the same as any other failure. Its hash is an
+    // undecodable sentinel as well, which is the lock older builds rely on.
+    final anonymous = isAnonymousUsername(name);
+    final row = anonymous ? null : await repository.user(name);
 
     if (row == null) {
       // Username-enumeration resistance: derive anyway, so "no such user" and
@@ -250,6 +255,12 @@ class LocalAuthProvider implements AuthProvider, PasswordSelfService {
     // derivation. Nothing leaks: see the enumeration note above.
     if (currentPassword.isEmpty) {
       return PasswordChangeResult.wrongCurrentPassword;
+    }
+
+    // Unreachable from a session — nobody is ever signed in as the reserved
+    // account — so reaching it is a caller's defect.
+    if (isAnonymousUsername(username)) {
+      throw AnonymousAccountError('change the password of');
     }
 
     final row = await repository.user(username);

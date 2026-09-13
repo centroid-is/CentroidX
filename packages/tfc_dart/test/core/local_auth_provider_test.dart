@@ -251,6 +251,26 @@ void main() {
               'wrong-password path, or the difference enumerates usernames');
     });
 
+    test('the reserved anonymous account never signs in, and costs what an '
+        'absent user costs', () async {
+      expect(await provider.authenticate(kAnonymousUsername, 'hunter2'),
+          isNull);
+      expect(await provider.authenticate(' Anonymous ', 'hunter2'), isNull);
+      expect(LocalAuthProvider.dummyDerivations, 2);
+    });
+
+    test('the anonymous account stays refused even if its row is given a real '
+        'hash by hand', () async {
+      final jon = (await repo.user('jon'))!;
+      await db.customStatement(
+        'UPDATE app_user SET password_hash = ?, salt = ? WHERE username = ?',
+        [jon.passwordHash, jon.salt, kAnonymousUsername],
+      );
+
+      expect(await provider.authenticate(kAnonymousUsername, 'hunter2'),
+          isNull);
+    });
+
     test('a present user costs no dummy derivation', () async {
       await provider.authenticate('jon', 'wrong');
 

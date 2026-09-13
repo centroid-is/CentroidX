@@ -17,7 +17,13 @@ import 'package:postgres/postgres.dart' as pg;
 import 'package:logger/logger.dart';
 // kSeedRoles is the single source of the seeded role names and group sets;
 // tfc_dart -> tfc_access, never the reverse.
-import 'package:tfc_access/tfc_access.dart' show kSeedRoles;
+import 'package:tfc_access/tfc_access.dart'
+    show
+        kAnonymousPasswordSentinel,
+        kAnonymousSaltSentinel,
+        kAnonymousUsername,
+        kOperatorRoleName,
+        kSeedRoles;
 
 import 'alarm.dart';
 import 'database.dart';
@@ -613,12 +619,8 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   /// `Operator` row back to `{operate}`. Deliberately not
   /// `InsertMode.insertOrIgnore`, which is SQLite-only.
   ///
-  /// These are ordinary rows once written: editable and deletable like any
-  /// other. `Operator` is the one exception, and its immutability is enforced
-  /// in the repository layer, not here — Postgres is reachable with `psql`, so
-  /// a database-level guard would be a guarantee this deployment cannot
-  /// actually make. It is an operational guard and it lives where operations
-  /// go through.
+  /// These are ordinary rows once written: editable, renamable and deletable
+  /// like any other.
   Future<void> _seedAccessRoles() async {
     for (final role in kSeedRoles) {
       await into(appRole).insert(
@@ -641,13 +643,96 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   @visibleForTesting
   Future<void> seedAccessRolesForTest() => _seedAccessRoles();
 
+  /// Make sure the reserved anonymous account exists and cannot be signed in
+  /// to.
+  ///
+  /// **Not a schema arm.** It runs from `onCreate` and from `beforeOpen`, which
+  /// drift calls on every open after any upgrade, on both backends — so a
+  /// database at any schema version gets the row the first time a build that
+  /// knows about it opens it, and a row an older build deleted comes back on
+  /// the next open.
+  ///
+  /// Three steps:
+  ///
+  ///  1. Without an `Operator` role there is nothing to seed onto — the
+  ///     Postgres foreign key would refuse the insert — so log and stop.
+  ///     `AccessRepository.anonymousAccount` covers a station in that state.
+  ///  2. Insert the row on `Operator` with `ON CONFLICT DO NOTHING`, the same
+  ///     idiom and for the same reason as [_seedAccessRoles]: several stations
+  ///     open one Postgres, and an existing row's roles and pages are customer
+  ///     data a re-run must not reset.
+  ///  3. Re-assert the columns an older build's accounts screen could have
+  ///     changed — the credential, the station flag, the timeout — and never
+  ///     the roles or the whitelist. A person's account that happened to be
+  ///     named `anonymous` before the name was reserved is adopted this way:
+  ///     it keeps its roles, loses its password, and becomes the panel.
+  ///
+  /// Never throws: a failed seed must not fail an open.
+  Future<void> _seedAnonymousAccount() async {
+    try {
+      final operator = await (select(appRole)
+            ..where((t) => t.name.equals(kOperatorRoleName)))
+          .getSingleOrNull();
+      final existing = await (select(appUser)
+            ..where((t) => t.username.equals(kAnonymousUsername)))
+          .getSingleOrNull();
+      if (existing == null) {
+        if (operator == null) {
+          logger.w('No "$kOperatorRoleName" role to seed the '
+              '"$kAnonymousUsername" account onto — logged-out panels fall '
+              'back to the seeded floor until one exists.');
+          return;
+        }
+        await into(appUser).insert(
+          AppUserCompanion.insert(
+            username: kAnonymousUsername,
+            roleName: kOperatorRoleName,
+            passwordHash: kAnonymousPasswordSentinel,
+            salt: kAnonymousSaltSentinel,
+            createdAt: DateTime.now().toUtc(),
+          ),
+          onConflict: DoNothing(),
+        );
+        return;
+      }
+      final drifted = existing.passwordHash != kAnonymousPasswordSentinel ||
+          existing.salt != kAnonymousSaltSentinel ||
+          existing.stationAccount ||
+          existing.inactivityTimeoutMinutes != null;
+      if (!drifted) return;
+      if (existing.passwordHash != kAnonymousPasswordSentinel) {
+        logger.w('The "$kAnonymousUsername" account carried a password — '
+            'removing it. That name is reserved for every logged-out panel and '
+            'cannot be signed in to.');
+      }
+      await (update(appUser)
+            ..where((t) => t.username.equals(kAnonymousUsername)))
+          .write(const AppUserCompanion(
+        passwordHash: Value(kAnonymousPasswordSentinel),
+        salt: Value(kAnonymousSaltSentinel),
+        stationAccount: Value(false),
+        inactivityTimeoutMinutes: Value(null),
+      ));
+    } on Object catch (e) {
+      logger.w('Could not seed the "$kAnonymousUsername" account: $e');
+    }
+  }
+
+  /// Re-run [_seedAnonymousAccount] from a test.
+  @visibleForTesting
+  Future<void> seedAnonymousAccountForTest() => _seedAnonymousAccount();
+
   @override
   MigrationStrategy get migration => MigrationStrategy(
+        beforeOpen: (details) async {
+          await _seedAnonymousAccount();
+        },
         onCreate: (m) async {
           await m.createAll();
           await _createAuditIndexes(m);
           await _createAccessBindingIndexes(m);
           await _seedAccessRoles();
+          await _seedAnonymousAccount();
         },
         onUpgrade: (m, from, to) async {
           logger.i('Database onUpgrade: $from -> $to');

@@ -338,6 +338,18 @@ void main() {
       expect(record.allowed, isFalse);
     });
 
+    test('role defaults to the seeded role, and records what the panel held '
+        'when told', () {
+      expect(build().roleName, kOperatorRoleName);
+      final record = AuditRecord.loginFailed(
+        who: 'jon',
+        station: 'panel-1',
+        actionId: 'd' * 32,
+        roleName: 'Operator + Viewer',
+      );
+      expect(record.roleName, 'Operator + Viewer');
+    });
+
     test('who is the attempted username', () {
       expect(build(who: 'not-a-user').who, 'not-a-user');
     });
