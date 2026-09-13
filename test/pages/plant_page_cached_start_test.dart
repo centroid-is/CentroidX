@@ -30,6 +30,7 @@ import 'package:tfc/widgets/zoomable_canvas.dart';
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc_dart/core/preferences.dart';
 import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
+import 'package:tfc/providers/web_view_prewarm.dart';
 
 /// Counts how many times a probe asset's subtree was mounted and torn down.
 int _probeMounts = 0;
@@ -119,6 +120,10 @@ Widget _app({
 /// database.
 Override _dbNeverAnswers() =>
     pageManagerProvider.overrideWith((ref) => Completer<PageManager>().future);
+    // Browsers are not warmed under a test: the prewarm waits on the page
+    // manager and then on a two-second timer, which would be left pending
+    // at teardown (#520).
+    webViewPrewarmProvider.overrideWithValue(0),
 
 void main() {
   setUp(() {
@@ -160,6 +165,10 @@ void main() {
     final completer = Completer<PageManager>();
     await tester.pumpWidget(_app(overrides: [
       pageManagerProvider.overrideWith((ref) => completer.future),
+      // Browsers are not warmed under a test: the prewarm waits on the page
+      // manager and then on a two-second timer, which would be left pending
+      // at teardown (#520).
+      webViewPrewarmProvider.overrideWithValue(0),
       bootstrapPageManagerProvider
           .overrideWithValue(_managerWith(['/line-1'])),
     ]));
@@ -181,6 +190,10 @@ void main() {
     final completer = Completer<PageManager>();
     await tester.pumpWidget(_app(overrides: [
       pageManagerProvider.overrideWith((ref) => completer.future),
+      // Browsers are not warmed under a test: the prewarm waits on the page
+      // manager and then on a two-second timer, which would be left pending
+      // at teardown (#520).
+      webViewPrewarmProvider.overrideWithValue(0),
       bootstrapPageManagerProvider
           .overrideWithValue(_managerWith(['/line-1'])),
     ]));
@@ -204,6 +217,10 @@ void main() {
     var served = 0;
     final container = ProviderContainer(overrides: [
       pageManagerProvider.overrideWith((ref) async {
+      // Browsers are not warmed under a test: the prewarm waits on the page
+      // manager and then on a two-second timer, which would be left pending
+      // at teardown (#520).
+      webViewPrewarmProvider.overrideWithValue(0),
         served++;
         return _managerWith(['/line-1']);
       }),
@@ -284,6 +301,10 @@ void main() {
     final completer = Completer<PageManager>();
     await tester.pumpWidget(_app(overrides: [
       pageManagerProvider.overrideWith((ref) => completer.future),
+      // Browsers are not warmed under a test: the prewarm waits on the page
+      // manager and then on a two-second timer, which would be left pending
+      // at teardown (#520).
+      webViewPrewarmProvider.overrideWithValue(0),
       bootstrapPageManagerProvider
           .overrideWithValue(_managerWithProbe('/line-1')),
     ]));

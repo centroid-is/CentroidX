@@ -23,6 +23,7 @@ import 'package:tfc/widgets/zoomable_canvas.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
 import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
+import 'package:tfc/providers/web_view_prewarm.dart';
 
 TransformationController _controller(WidgetTester tester) => tester
     .widget<InteractiveViewer>(find.byType(InteractiveViewer))
@@ -195,6 +196,10 @@ void main() {
       await tester.pumpWidget(ProviderScope(
         overrides: [
           pageManagerProvider.overrideWith((ref) async => manager),
+          // Browsers are not warmed under a test: the prewarm waits on the page
+          // manager and then on a two-second timer, which would be left pending
+          // at teardown (#520).
+          webViewPrewarmProvider.overrideWithValue(0),
           bootstrapPageManagerProvider.overrideWithValue(manager),
         ],
         child: const MaterialApp(

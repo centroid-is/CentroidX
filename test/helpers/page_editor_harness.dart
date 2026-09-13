@@ -54,6 +54,7 @@ import 'test_helpers.dart'
         createTestConfigStore,
         kConfiguringTestSession,
         useInMemoryDeviceLocalPreferences;
+import 'package:tfc/providers/web_view_prewarm.dart';
 
 /// Minimal in-memory [PreferencesApi] so the editor can load and save.
 /// Doubles as the read-back channel for [saveAndReadBack].
@@ -227,6 +228,10 @@ Widget buildEditorUnderTest(PageManager manager, {ThemeData? theme}) {
   return ProviderScope(
     overrides: [
       pageManagerProvider.overrideWith((ref) async => manager),
+      // Browsers are not warmed under a test: the prewarm waits on the page
+      // manager and then on a two-second timer, which every page-editor test
+      // would otherwise leave pending at teardown (#520).
+      webViewPrewarmProvider.overrideWithValue(0),
       // Image blobs go where the pages go — the same `ConfigStore` the
       // manager saves rows into — so saveAndReadBack-style tests see pages
       // and their image bytes in one place.
