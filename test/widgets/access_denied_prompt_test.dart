@@ -140,21 +140,31 @@ List<Override> _tagOverrides({
 
 /// The prompt under a bare `MaterialApp`, with the denial stream driven by the
 /// test and the sign-in opener injected.
+///
+/// The prompt is handed the app's own `navigatorKey`, which is the miniature
+/// of how the shell hands it the router's: it is mounted above the thing it
+/// pushes onto, never inside a page.
 Widget _promptHost({
   required Stream<AccessDenied> denials,
   required AccessSignInOpener openSignIn,
   Widget? child,
 }) {
+  final navigatorKey = GlobalKey<NavigatorState>();
   return ProviderScope(
     overrides: [
       ..._accessOverrides(),
       accessDenialsProvider.overrideWithValue(denials),
     ],
     child: MaterialApp(
+      navigatorKey: navigatorKey,
       home: Scaffold(
         body: Column(
           children: [
-            AccessDeniedPrompt(openSignIn: openSignIn, child: child),
+            AccessDeniedPrompt(
+              navigatorKey: navigatorKey,
+              openSignIn: openSignIn,
+              child: child,
+            ),
           ],
         ),
       ),
@@ -200,7 +210,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Not merely "no text found": the render object occupies no pixels, so
-      // the four Phase 2 goldens containing a BaseScaffold cannot move.
+      // no golden of a page it is mounted over can move.
       expect(tester.getSize(find.byType(AccessDeniedPrompt)), Size.zero);
       expect(find.byType(Dialog), findsNothing);
       expect(find.byKey(kAccessDeniedBodyKey), findsNothing);
@@ -226,9 +236,11 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      // The mount form used by BaseScaffold contributes NO render object,
-      // which is a stronger statement than Size.zero: there is nothing in the
-      // layout for a golden to shift against.
+      // Wrapping a subtree contributes NO render object, which is a stronger
+      // statement than Size.zero: there is nothing in the layout for a golden
+      // to shift against. The shell mounts the prompt childless, but the
+      // section tests still wrap page fragments in one (`PromptedApp`) and
+      // every golden of those pages rests on this.
       expect(
         tester.renderObject(find.byType(AccessDeniedPrompt)),
         same(tester.renderObject(find.byKey(const Key('page')))),
@@ -493,27 +505,15 @@ void main() {
           findsOneWidget);
     });
 
-    testWidgets('a nested prompt does not produce a second prompt',
-        (tester) async {
-      final denials = StreamController<AccessDenied>.broadcast();
-      addTearDown(denials.close);
-      await tester.pumpWidget(_promptHost(
-        denials: denials.stream,
-        openSignIn: _CountingOpener().call,
-        child: AccessDeniedPrompt(
-          openSignIn: _CountingOpener().call,
-          child: const Text('inner-page'),
-        ),
-      ));
-      await tester.pumpAndSettle();
-
-      denials.add(_denial);
-      await tester.pumpAndSettle();
-
-      expect(find.byType(AccessDeniedPrompt), findsNWidgets(2));
-      expect(find.byKey(kAccessDeniedBodyKey), findsOneWidget);
-      expect(find.byType(Dialog), findsOneWidget);
-    });
+    // There was a test here for a prompt nested inside another prompt, and it
+    // pinned `_AccessDeniedPromptScope` -- an inherited widget that let the
+    // inner one stand down. Both are deleted. The scope only ever caught
+    // *descendants*, and the shape that actually reached the plant was two
+    // prompts as *siblings*, one per stacked route, which it could not see.
+    // The prompt is mounted once above the router now, so neither nesting nor
+    // siblings are reachable, and "one mount" is asserted where the mount is:
+    // `BaseScaffold mounts no prompt` below, and the shell-wiring test in
+    // `centroid-hmi/test/access_denied_prompt_mount_test.dart`.
   });
 
   group('the never-replay rule', () {
@@ -581,31 +581,35 @@ void main() {
     setUp(_registerAppMenu);
     tearDown(() => RouteRegistry().menuItems.clear());
 
-    testWidgets('BaseScaffold mounts the prompt exactly once', (tester) async {
+    testWidgets('BaseScaffold mounts no prompt', (tester) async {
+      // The inversion of the test that used to stand here, and the point of
+      // the whole change. `BaseScaffold` looked like "the one place every page
+      // passes through", but the router keeps several pages mounted at once,
+      // so one prompt per scaffold was never one prompt per app. The shell
+      // mounts it now; a scaffold must not.
       await tester.pumpWidget(_shell(
         body: const Text('home-body'),
         overrides: const [],
       ));
       await tester.pumpAndSettle();
 
-      expect(find.byType(AccessDeniedPrompt), findsOneWidget);
-      expect(find.byKey(kAccessDeniedBodyKey), findsNothing);
+      expect(find.descendant(
+        of: find.byType(BaseScaffold),
+        matching: find.byType(AccessDeniedPrompt),
+        skipOffstage: false,
+      ), findsNothing);
     });
 
-    testWidgets('the mount adds no render object to the page', (tester) async {
+    testWidgets('the shell mounts exactly one prompt', (tester) async {
       await tester.pumpWidget(_shell(
-        body: const SizedBox.expand(child: Text('home-body')),
+        body: const Text('home-body'),
         overrides: const [],
       ));
       await tester.pumpAndSettle();
 
-      // The zero-pixel budget, mechanically: the prompt's nearest render
-      // object IS the body's, so there is nothing in the layout for any
-      // Phase 1 or Phase 2 golden to shift against.
-      expect(
-        tester.renderObject(find.byType(AccessDeniedPrompt)),
-        same(tester.renderObject(find.byType(SizedBox).first)),
-      );
+      expect(find.byType(AccessDeniedPrompt, skipOffstage: false),
+          findsOneWidget);
+      expect(find.byKey(kAccessDeniedBodyKey), findsNothing);
     });
 
     testWidgets('a nested BaseScaffold shows one prompt for one denial',
@@ -619,13 +623,77 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      expect(find.byType(AccessDeniedPrompt), findsNWidgets(2));
+      // Two scaffolds, one prompt -- and now for a structural reason rather
+      // than a guard's: the scaffolds do not mount one at all.
+      expect(find.byType(BaseScaffold, skipOffstage: false), findsNWidgets(2));
+      expect(find.byType(AccessDeniedPrompt, skipOffstage: false),
+          findsOneWidget);
 
       denials.add(_denial);
       await tester.pumpAndSettle();
 
       expect(find.byKey(kAccessDeniedBodyKey), findsOneWidget);
       expect(find.byType(Dialog), findsOneWidget);
+    });
+
+    testWidgets('two stacked routes show one prompt for one denial',
+        (tester) async {
+      // The nested case above is the one `_AccessDeniedPromptScope` was built
+      // for, and it is not the shape the plant hit. Beamer's
+      // `RoutesLocationBuilder` stacks a page for *every* matching route
+      // (`lib/providers/menu.dart`), and a route below the top stays mounted.
+      // So on `/alarm-view` the `/` page is still there, with its own
+      // `BaseScaffold`, its own `AccessDeniedPrompt`, and its own
+      // subscription -- a sibling, not a descendant, so the inherited scope
+      // never sees it and the widget-local `_showing` latch is a different
+      // field.
+      //
+      // What the operator got was two dialogs for one refused write: Close
+      // pressed twice, and the barrier visibly lightening in between as the
+      // first of two stacked scrims came off. This is the case
+      // `route_redirect.dart` refuses to use `BaseScaffold` to avoid.
+      final denials = StreamController<AccessDenied>.broadcast();
+      addTearDown(denials.close);
+
+      await tester.pumpWidget(_stackedShell(
+        overrides: [accessDenialsProvider.overrideWithValue(denials.stream)],
+      ));
+      await tester.pumpAndSettle();
+
+      // Both pages really are mounted. This is the guard that stops the test
+      // passing for the wrong reason: if a future change stopped the router
+      // stacking them, one prompt would be trivially true and this test would
+      // be asserting nothing.
+      expect(find.byType(BaseScaffold, skipOffstage: false), findsNWidgets(2));
+
+      // One prompt, from the shell, over two stacked pages.
+      expect(find.byType(AccessDeniedPrompt, skipOffstage: false),
+          findsOneWidget);
+
+      // Every `ModalRoute` carries a barrier, the two page routes included,
+      // so the number that matters is how many the *denial* adds. Counted
+      // rather than assumed: this is the dim the operator described, and one
+      // dialog too many is one `black54` scrim too many -- two of them
+      // composite to about 0.79, which is why the screen visibly lightened
+      // when the first of the two Closes landed.
+      final barriersAtRest = find.byType(ModalBarrier).evaluate().length;
+
+      denials.add(_denial);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(Dialog), findsOneWidget);
+      expect(find.byKey(kAccessDeniedBodyKey), findsOneWidget);
+      expect(find.byType(ModalBarrier), findsNWidgets(barriersAtRest + 1));
+
+      // The operator's symptom, asserted as the operator met it: one Close,
+      // and both the prompt and its scrim are gone. Two dialogs left the
+      // second standing here, behind the second scrim.
+      await tester.tap(find.byKey(kAccessDeniedDismissKey));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(kAccessDeniedBodyKey), findsNothing);
+      expect(find.byType(Dialog), findsNothing);
+      expect(find.byType(ModalBarrier), findsNWidgets(barriersAtRest));
     });
   });
 
@@ -1231,6 +1299,59 @@ Widget _shell({required Widget body, required List<Override> overrides}) {
       child: MaterialApp.router(
         routerDelegate: delegate,
         routeInformationParser: BeamerParser(),
+        builder: _promptAboveTheRouter(delegate),
+      ),
+    ),
+  );
+}
+
+/// The shell's mount, as `centroid-hmi/lib/main.dart` does it: one prompt in
+/// the `MaterialApp.builder` Stack, above the router's `Navigator`, holding
+/// that `Navigator`'s key.
+///
+/// Mirroring it here rather than approximating it is what stops these tests
+/// going green because *nothing* mounts a prompt — which is the way a test for
+/// "exactly one" fails open.
+TransitionBuilder _promptAboveTheRouter(BeamerDelegate delegate) =>
+    (context, navigatorChild) => Stack(
+          children: [
+            navigatorChild!,
+            AccessDeniedPrompt(navigatorKey: delegate.navigatorKey),
+          ],
+        );
+
+/// Two routes stacked the way the router stacks them on a real station.
+///
+/// `RoutesLocationBuilder` builds a page for every route that matches the
+/// location, so beaming to `/alarm-view` leaves `/` mounted underneath it.
+/// Both pages are `BaseScaffold`s, which is what puts two
+/// `AccessDeniedPrompt`s in the tree as siblings rather than as one inside
+/// the other.
+Widget _stackedShell({required List<Override> overrides}) {
+  final delegate = BeamerDelegate(
+    initialPath: '/alarm-view',
+    locationBuilder: RoutesLocationBuilder(routes: {
+      '/': (context, state, data) => const BeamPage(
+            key: ValueKey('/'),
+            title: 'Home',
+            child: BaseScaffold(title: 'Home', body: Text('home-body')),
+          ),
+      '/alarm-view': (context, state, data) => const BeamPage(
+            key: ValueKey('/alarm-view'),
+            title: 'Alarm View',
+            child: BaseScaffold(title: 'Alarm View', body: Text('alarm-body')),
+          ),
+    }).call,
+  );
+
+  return ProviderScope(
+    overrides: [..._accessOverrides(), ...overrides],
+    child: BeamerProvider(
+      routerDelegate: delegate,
+      child: MaterialApp.router(
+        routerDelegate: delegate,
+        routeInformationParser: BeamerParser(),
+        builder: _promptAboveTheRouter(delegate),
       ),
     ),
   );

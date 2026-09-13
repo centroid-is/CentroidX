@@ -12,7 +12,6 @@ import 'package:beamer/beamer.dart';
 import 'package:logger/logger.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'nav_dropdown.dart';
-import 'access_denied_prompt.dart';
 import 'access_status_action.dart';
 import '../core/startup_url.dart';
 import '../models/menu_item.dart';
@@ -637,13 +636,13 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
         behavior: HitTestBehavior.translucent,
         onPointerDown: (_) =>
             ref.read(accessSessionProvider.notifier).poke(),
-        // The denial prompt, mounted in the one place every page passes
-        // through. It passes the body straight back and contributes NO render
-        // object of its own -- not a Stack child, which would re-constrain the
-        // body that Scaffold hands `_BodyBoxConstraints`, and not a zero-size
-        // sibling either. The pixel budget here is zero: this file is in four
-        // Phase 2 goldens and several Phase 1 ones.
-        child: AccessDeniedPrompt(child: widget.body),
+        // No denial prompt here. "The one place every page passes through"
+        // was wrong in the one way that mattered: the router keeps more than
+        // one page mounted at a time -- `/` sits under every path -- so a
+        // prompt per scaffold was two prompts per station, and two dialogs for
+        // one refused write. It is mounted once above the router instead, in
+        // `centroid-hmi/lib/main.dart`; see `AccessDeniedPrompt`.
+        child: widget.body,
       ),
       floatingActionButton: _isFullscreen
           ? FloatingActionButton(
