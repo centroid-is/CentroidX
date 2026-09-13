@@ -416,6 +416,15 @@ void main() {
         final gate = await buildGate(tester, lb, '/advanced/ip-settings');
         expect(gate.group.name, 'administer');
         expect(gate.child, isA<DbusGate>());
+        // ...but it opens during an outage, which is the one thing that makes
+        // a freshly commissioned station recoverable: the database is reached
+        // over the network, so the page that gives the machine an address
+        // cannot be gated behind a group only a working database can grant.
+        // Asserted on the BUILT gate, not on the declaration, because that is
+        // what the router actually honours.
+        expect(gate.allowWhenRepositoryUnavailable, isTrue,
+            reason: 'a new station reaches its database over the network; '
+                'gating this page behind the database is a loop with no entry');
       });
 
       testWidgets('preferences needs administer', (tester) async {
@@ -459,16 +468,23 @@ void main() {
         expect(gate.child, isA<AccessAdminPage>());
       });
 
-      testWidgets('server config is the only route open while the repository is unavailable', (tester) async {
+      testWidgets('exactly two routes stay open while the repository is unavailable', (tester) async {
         // Catches the helper being changed to a per-call-site boolean: the flag
         // is read off every built gate, not off the declaration it came from.
+        //
+        // The pair is what makes a new station recoverable -- IP Settings gives
+        // the machine an address, Server Config points it at a database, and
+        // only then can the repository grant anybody a group. Pinned as a set,
+        // because this list is the blast radius of "reachable with no access
+        // control at all" and should only grow by someone editing this line.
         final lb = createLocationBuilder([_page('Home', '/')]);
         final exempt = <String>[];
         for (final path in kRaisedRoutes.keys) {
           final gate = await buildGate(tester, lb, path);
           if (gate.allowWhenRepositoryUnavailable) exempt.add(path);
         }
-        expect(exempt, ['/advanced/server-config']);
+        expect(exempt,
+            unorderedEquals(['/advanced/server-config', '/advanced/ip-settings']));
       });
 
       testWidgets('every declared path is a real route', (tester) async {
