@@ -11,6 +11,17 @@ QEMU's QMP `screendump` captures the guest framebuffer with no cooperation from
 the guest, and `input-send-event` can tap the screen, so the whole
 input-method-v1 -> text-input-v1 -> Flutter keyboard path is testable headlessly.
 
+Three shots, each answering something the one before it cannot:
+
+    01-disk.png       black => weston never started; an empty desktop => the app
+                      died, most likely the embedder not matching the bundle
+    02-station.png    still the disk step => the tap did not reach the app
+    03-keyboard.png   no panel at the bottom => the field took focus but the
+                      input method did not raise, which is the failure this
+                      whole app exists to avoid
+
+A shot proves a screen was drawn, never that it is the right one -- read them.
+
     boot-test.py --usb out/usb-installer.img --out out/boot-test
 
 Accelerated where KVM exists (CI, any Linux box) and plain TCG where it does
@@ -96,12 +107,16 @@ class Qmp:
     def tap(self, x, y):
         """Tap at x,y as a fraction (0..1) of the screen."""
         X, Y = int(x * 32767), int(y * 32767)
-        for ev in ({'type': 'abs', 'data': {'axis': 'x', 'value': X}},
-                   {'type': 'abs', 'data': {'axis': 'y', 'value': Y}},
-                   {'type': 'btn', 'data': {'down': True, 'button': 'left'}},
-                   {'type': 'btn', 'data': {'down': False, 'button': 'left'}}):
-            self.cmd('input-send-event', events=[ev])
-            time.sleep(0.1)
+        move = [{'type': 'abs', 'data': {'axis': 'x', 'value': X}},
+                {'type': 'abs', 'data': {'axis': 'y', 'value': Y}}]
+        # Move and click as two batches: a tablet that is still at its old
+        # position when the button goes down clicks the wrong widget, and each
+        # batch is applied atomically.
+        self.cmd('input-send-event', events=move)
+        time.sleep(0.2)
+        self.cmd('input-send-event', events=[
+            {'type': 'btn', 'data': {'down': True, 'button': 'left'}},
+            {'type': 'btn', 'data': {'down': False, 'button': 'left'}}])
 
 def main():
     ap = argparse.ArgumentParser()
@@ -147,17 +162,25 @@ def main():
     rc = 0
     try:
         q = Qmp(qmp, timeout=60 * a.slow)
-        # Long enough for firmware, GRUB, the kernel, seatd and weston. The app
-        # then sits on the disk-selection screen waiting for a human.
-        for label, wait in (('boot', 45), ('settled', 25)):
+        # Coordinates are fractions of the 1280x800 the installer runs at, read
+        # off 01-disk.png rather than guessed: the first attempt tapped the
+        # middle of the screen, landed on empty canvas, and proved only that the
+        # pointer moves. Taken in order, so a shot that does not advance says
+        # which step stopped working.
+        #
+        #   45s  firmware, GRUB, kernel, seatd, weston, and the app's first frame
+        #   then the app waits for a human on the disk step
+        script = [
+            ('01-disk',     None,          45),   # did it boot and draw at all
+            ('02-station',  (0.90, 0.94),   4),   # Continue -> the station step
+            ('03-keyboard', (0.30, 0.26),   5),   # first field -> keyboard up?
+        ]
+        for label, point, wait in script:
+            if point:
+                q.tap(*point)
             time.sleep(wait * a.slow)
             shot = q.screenshot(os.path.join(a.out, f'{label}.png'))
             print(f'  {label}: {shot}')
-        # Tapping the station-name field should raise the on-screen keyboard,
-        # which is the only headless way to exercise the v1 text-input path.
-        q.tap(0.5, 0.45)
-        time.sleep(5 * a.slow)
-        print('  tapped:', q.screenshot(os.path.join(a.out, 'tapped.png')))
         if not a.keep_running:
             try:
                 q.cmd('quit')
