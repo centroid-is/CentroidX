@@ -8,7 +8,7 @@
 /// table, and not touching the 95 devices on them.
 library;
 
-import 'package:tfc_dart/core/state_man.dart' show KeyMappings;
+import 'package:tfc_dart/core/state_man_types.dart' show KeyMappings;
 
 import 'ethercat_subdevice.dart';
 
