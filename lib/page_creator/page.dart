@@ -7,8 +7,15 @@ import 'assets/common.dart';
 import 'assets/registry.dart';
 import '../models/menu_item.dart';
 import 'package:tfc_dart/core/fuzzy_match.dart';
+import 'package:logger/logger.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/page_rows.dart' show fallbackPagePathFor;
+import 'package:tfc_dart/core/config/config_store.dart';
+import 'package:tfc_dart/core/config/preference_payload.dart'
+    show decodePreferencePayload;
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc/converter/icon.dart';
+import '../core/config/page_codec.dart';
 
 part 'page.g.dart';
 
@@ -47,13 +54,40 @@ class AssetPage {
   @JsonKey(name: 'published', defaultValue: true)
   bool published;
 
+  /// A stable handle for this page that survives a rename.
+  ///
+  /// The page map is keyed by path and paths are edited
+  /// (`page_editor.dart`'s `_updatePathInChildren` exists because renames
+  /// happen); a path-keyed row loses the page's history at every rename and
+  /// restamps `parent_id` on every asset on it. This id is the row's
+  /// identity; the path stays in [menuItem] as data.
+  ///
+  /// **It has to be a serialized field.** The editor snapshots its undo
+  /// history as encoded page JSON and saves through [PageManager.copyPages],
+  /// which is `jsonEncode` -> [PageManager.pagesFromJson]. Anything held
+  /// beside the object rather than inside it is gone at the first Ctrl+Z.
+  ///
+  /// Null until minted, and `includeIfNull: false` keeps the change additive
+  /// — a page saved before ids existed round-trips without the key at all.
+  /// See [Asset.id], which works exactly this way for the same reasons.
+  @JsonKey(name: 'id', includeIfNull: false)
+  String? id;
+
   AssetPage(
       {required this.menuItem,
       required this.assets,
       required this.mirroringDisabled,
       this.zoomPanDisabled = false,
       this.navigationPriority,
-      this.published = true});
+      this.published = true,
+      this.id});
+
+  /// This page's [id], minting one if it has none yet.
+  ///
+  /// Mints through [newAssetId] rather than a UUID package for the reason
+  /// that function's doc gives; a page id and an asset id are deliberately
+  /// indistinguishable in shape.
+  String ensureId() => id ??= newAssetId();
 
   /// A copy with individual fields replaced.
   ///
@@ -67,6 +101,7 @@ class AssetPage {
     bool? zoomPanDisabled,
     int? navigationPriority,
     bool? published,
+    String? id,
   }) {
     return AssetPage(
       menuItem: menuItem ?? this.menuItem,
@@ -75,6 +110,7 @@ class AssetPage {
       zoomPanDisabled: zoomPanDisabled ?? this.zoomPanDisabled,
       navigationPriority: navigationPriority ?? this.navigationPriority,
       published: published ?? this.published,
+      id: id ?? this.id,
     );
   }
 
@@ -97,6 +133,35 @@ class AssetListConverter implements JsonConverter<List<Asset>, List<dynamic>> {
   }
 }
 
+/// Off the happy path only: a mirror that would not read, a blob that would
+/// not parse. Nothing here logs per read.
+final Logger _logger = Logger();
+
+/// Where the pages [PageManager] currently holds came from.
+///
+/// The distinction this exists to make is **"empty" versus "not yet loaded"**.
+/// A manager whose [PageManager.pages] is empty may be a station whose layout
+/// really is empty, or one whose [PageManager.load] has not run — and the
+/// re-load trigger in `providers/page_manager.dart` has to tell them apart or
+/// it silently never fires, which looks exactly like a window that never
+/// opened.
+enum PageSource {
+  /// [PageManager.load] has not run on this manager. Every construction
+  /// starts here, including the 64 in `test/`.
+  notLoaded,
+
+  /// Rows from the local mirror, through [pagesOf]. The steady state after
+  /// the migration.
+  rows,
+
+  /// The device-local `page_editor_data` blob, read **read-only**. What a
+  /// station serves between boot and the reconcile that brings it rows.
+  blob,
+
+  /// The built-in default layout, held in memory and persisted nowhere.
+  builtInDefault,
+}
+
 class PageManager {
   static const String storageKey = 'page_editor_data';
   static const String orderStorageKey = 'page_editor_top_level_order';
@@ -114,31 +179,102 @@ class PageManager {
   /// order alone.
   List<String> topLevelOrder = [];
 
-  /// Where [load]'s **seed write** goes, and nowhere else.
+  /// The local mirror [load] reads pages from, or null for the blob-only
+  /// behaviour every construction had before rows existed.
   ///
-  /// A station with no stored `page_editor_data` writes the hardcoded default
-  /// layout at boot, with nobody signed in, against a `configure` key. On the
-  /// guarded store that is a denial — and because the seed is not awaited, it
-  /// surfaces as an unhandled asynchronous error rather than a failed load:
-  /// the station comes up on the default layout, never persists it, and greets
-  /// whoever is standing there with a denial prompt on every cold boot.
+  /// **Reads only, by convention, and the convention is the whole defence.**
+  /// This is the raw [ConfigStore], not the guarded one: it has an ungated
+  /// `writeItems` on it. The same [PageManager] instance is what
+  /// `page_editor.dart` calls [save] through, and that write is a person
+  /// editing pages — it must stay gated, and treating this field as a write
+  /// path would unlock the editor for everybody. The save (03-06) goes
+  /// through `GuardedConfigStore`; nothing in this class writes here.
   ///
-  /// **It is a separate field, and that is the whole point.** The same
-  /// [PageManager] instance is what `page_editor.dart` calls [save] through,
-  /// and that write is a person editing pages — it must stay gated. Handing
-  /// the unchecked store in as [prefs] would unlock the editor for everybody.
-  /// Defaults to [prefs], so every existing construction and every existing
-  /// test is unaffected.
-  final PreferencesApi bootstrapPrefs;
+  /// This replaces the separate bootstrap preferences handle, which existed
+  /// to route [load]'s seed write away from the guarded object. That seed is
+  /// deleted: a station with
+  /// no stored layout wrote the built-in default at boot with nobody signed
+  /// in, against a `configure` key, unawaited — so on a guarded store it was a
+  /// denial prompt on every cold boot rather than a failed load. Its only
+  /// purpose, that a virgin station has a Home page, is served by the
+  /// in-memory default below; the first real Save persists it, gated and
+  /// audited, by a person.
+  final ConfigStore? store;
+
+  /// The one route a page save takes to the shared rows, or null for the
+  /// legacy blob write.
+  ///
+  /// Bound by `providers/page_manager.dart` to **`GuardedConfigStore.write`**
+  /// over `{page, asset}`, checked and audited as `page_editor_data` — never
+  /// to [store], which is the raw object and has an ungated `writeItems` on
+  /// it. Editing pages is a person changing the plant's mimic and is exactly
+  /// what `configure` is for, so the check is not optional and the binding is
+  /// the only thing that supplies it. A [PageManager] built without one — the
+  /// pre-`runApp` manager, and legacy tests — keeps today's blob write and
+  /// therefore cannot reach a shared row at all.
+  final Future<ConfigWriteResult> Function(List<ConfigItem> wanted,
+      {String? reason})? writeItems;
+
+  /// The page and asset rows [pages] were loaded from, as they stood then —
+  /// what a save is a save *over*.
+  ///
+  /// Set by [load] when the rows were the source, null when they were not.
+  /// [save] hands it to `mergeForSave` so that a page another station added,
+  /// changed or deleted since this layout was loaded is kept, adopted or
+  /// refused rather than silently replaced with the copy from an hour ago.
+  /// The editor carries its own copy across the manager rebuilds a save
+  /// triggers, and re-reads it after every successful save and reload.
+  List<ConfigItem>? baselineItems;
+
+  /// Where the pages in memory came from — see [PageSource].
+  PageSource get source => _source;
+  PageSource _source = PageSource.notLoaded;
+
+  /// Whether [load] fell back off the rows: the blob, or the built-in default.
+  ///
+  /// The re-load trigger in `providers/page_manager.dart` reads this. It is a
+  /// named, tested property rather than an inference from `pages.isEmpty`
+  /// because the two differ exactly where it matters: on rollout day a station
+  /// serving a full blob has a hundred pages and no row identities at all.
+  bool get servingFallback =>
+      _source == PageSource.blob || _source == PageSource.builtInDefault;
 
   PageManager({
     required this.pages,
     required this.prefs,
-    PreferencesApi? bootstrapPrefs,
-  }) : bootstrapPrefs = bootstrapPrefs ?? prefs;
+    this.store,
+    this.writeItems,
+  });
 
+  /// Fills [pages] and [topLevelOrder] from the best source this station has.
+  ///
+  /// Order, and each step is a fallback from the one above:
+  ///
+  /// 1. **Rows** from [store]'s local mirror. No Postgres and no network — the
+  ///    snapshot is already in memory by the time this runs.
+  /// 2. **The `page_editor_data` blob** in [prefs], parsed by today's code
+  ///    path. **Read-only.** Nothing is written back and no id is minted: an
+  ///    asset id is derived from its content, so a station one save behind
+  ///    would derive different ids for everything after the divergence point
+  ///    and mint permanent ghost rows on the plant's mimic that no reconcile
+  ///    has any reason to delete. The rows arrive at the next reconcile; the
+  ///    blob stays where it is as rollback insurance.
+  /// 3. **The built-in default layout**, in memory. Persisted nowhere — see
+  ///    [store] for the seed write that used to be here and why it is gone.
+  ///
+  /// [topLevelOrder] is a **shared** preference row since 04-11, and is read
+  /// from [store]'s mirror first: the pre-`runApp` manager is built over the
+  /// device-local store, which never held the shared row — so without this
+  /// read the menu came up in registration order on every restart, whatever
+  /// the operator had arranged. [prefs] is the fallback, for a manager with
+  /// no store and for the one-shot import of the old local copy.
+  ///
+  /// It does not throw. A mirror that will not read and a blob that will not
+  /// parse are both logged and fallen through, because a panel that comes up
+  /// degraded beats one that does not come up.
   Future<void> load() async {
-    final orderJson = await prefs.getString(orderStorageKey);
+    final orderJson =
+        _storedTopLevelOrderJson() ?? await prefs.getString(orderStorageKey);
     if (orderJson != null) {
       try {
         topLevelOrder = (jsonDecode(orderJson) as List).cast<String>();
@@ -146,7 +282,6 @@ class PageManager {
         topLevelOrder = [];
       }
     }
-    String? jsonString = await prefs.getString(storageKey);
     final defaultPages = {
       '/': AssetPage(
         menuItem: const MenuItem(label: 'Home', path: '/', icon: Icons.home),
@@ -154,18 +289,86 @@ class PageManager {
         mirroringDisabled: false,
       ),
     };
+
+    if (_loadFromRows()) return;
+    baselineItems = null;
+
+    final jsonString = await prefs.getString(storageKey);
     if (jsonString != null) {
       try {
         fromJson(jsonString);
         if (pages.isEmpty) {
           pages = defaultPages;
+          _source = PageSource.builtInDefault;
+        } else {
+          _source = PageSource.blob;
         }
       } catch (e) {
+        _logger.e('The stored page layout could not be parsed; this station '
+            'comes up on the built-in default pages and persists nothing: $e');
         pages = defaultPages;
+        _source = PageSource.builtInDefault;
       }
-    } else {
-      // some sane default
-      jsonString = r'''
+      return;
+    }
+
+    // A station that has never stored a layout. In memory only: the seed write
+    // that used to follow this line is deleted.
+    fromJson(_builtInLayoutJson);
+    _source = PageSource.builtInDefault;
+  }
+
+  /// Serves [pages] out of [store]'s mirror, or answers false so [load] falls
+  /// through to the blob.
+  ///
+  /// False on all three of: no store, a store holding no page or asset rows,
+  /// and rows that reassemble into no pages at all. The last is not the same
+  /// as "the mirror is empty" and is treated the same way on purpose — pages
+  /// that could not be rebuilt are pages this station cannot serve.
+  bool _loadFromRows() {
+    final store = this.store;
+    if (store == null) return false;
+    try {
+      final items = store.itemsOf(const {ConfigKind.page, ConfigKind.asset});
+      if (items.isEmpty) return false;
+      final fromRows = pagesOf(items);
+      if (fromRows.isEmpty) return false;
+      pages = fromRows;
+      baselineItems = items;
+      _source = PageSource.rows;
+      return true;
+    } catch (e) {
+      _logger.e('The mirrored page rows could not be read; this station falls '
+          'back to its stored layout: $e');
+      return false;
+    }
+  }
+
+  /// The shared `page_editor_top_level_order` row out of [store]'s mirror, or
+  /// null when there is no store, no row, or a row this build cannot read.
+  String? _storedTopLevelOrderJson() {
+    final store = this.store;
+    if (store == null) return null;
+    try {
+      for (final item in store.itemsOf(const {ConfigKind.preference})) {
+        if (item.id != orderStorageKey) continue;
+        final value = decodePreferencePayload(item.payload);
+        return value is String ? value : null;
+      }
+    } catch (e) {
+      _logger.w('The stored menu order could not be read; falling back to '
+          'the device-local copy: $e');
+    }
+    return null;
+  }
+
+  /// The layout a station that has never stored one comes up on.
+  ///
+  /// Held here rather than written anywhere. It was the *seed*: [load] used to
+  /// persist it at boot with nobody signed in, which on the guarded store is a
+  /// denial. Nothing writes it now — the first Save by a person does, through
+  /// the gate.
+  static const String _builtInLayoutJson = r'''
         {
           "Home": {
             "menu_item": {
@@ -275,20 +478,83 @@ class PageManager {
           }
         }
       ''';
-      fromJson(jsonString);
-      // Through [bootstrapPrefs], not [prefs]: the app initialising itself,
-      // not a person editing pages. Still unawaited, as it always was.
-      bootstrapPrefs.setString(storageKey, jsonString);
+
+  /// Persists [pages] and [topLevelOrder] — rows when [writeItems] is bound,
+  /// the `page_editor_data` blob when it is not.
+  ///
+  /// Returns what the write actually did, or null on the legacy blob path.
+  /// The caller must treat a return as the only evidence of success and an
+  /// exception as the only evidence of failure: `ConfigStoreOfflineException`,
+  /// `ConfigConflict` and `AccessDenied` all propagate unwrapped, and the
+  /// editor's three arms are those three types. A green snackbar over a write
+  /// that reached nothing is C-11, and it is what this shape prevents.
+  ///
+  /// **[topLevelOrder] is written after the rows.** It is a shared row of its
+  /// own, in its own transaction, and a page write can be refused — offline,
+  /// a lost compare-and-swap, a merge conflict. Written first, a refused save
+  /// left every station's menu in an order describing a layout that never
+  /// landed. Written after, a refused save leaves nothing changed, and a menu
+  /// order that fails after the rows landed is a cosmetic complaint rather
+  /// than the wrong plant on the screen. The empty-order guard is unchanged.
+  ///
+  /// The items handed over are **merged** against what the store holds now,
+  /// with [baselineItems] as what this layout was loaded from — see
+  /// `mergeForSave`. That is what turns "replace within kinds" into "replace
+  /// what this editor was shown", and it is what refuses, as a
+  /// `ConfigConflict`, a page that moved on another station while it was also
+  /// edited here.
+  ///
+  /// The blob is **not** dual-written on the rows path. Two records of one
+  /// layout are two records that can disagree, and the blob's readers go
+  /// through the compatibility view instead.
+  Future<ConfigWriteResult?> save({String? reason}) async {
+    final writeItems = this.writeItems;
+    if (writeItems == null) {
+      await prefs.setString(storageKey, toJson());
+      await _saveTopLevelOrder();
+      return null;
     }
+
+    _adoptStoredIdentities();
+    var items = pageItems(pages);
+    final store = this.store;
+    if (store != null) {
+      items = mergeForSave(
+        wanted: items,
+        stored: store.itemsOf(const {ConfigKind.page, ConfigKind.asset}),
+        baseline: baselineItems,
+      );
+    }
+    final result = await writeItems(items, reason: reason);
+    await _saveTopLevelOrder();
+    return result;
   }
 
-  Future<void> save() async {
-    await prefs.setString(storageKey, toJson());
-    // An empty order is never worth writing: it only arises on a manager that
-    // was constructed without load(), and writing it would wipe an order some
-    // other session already stored.
-    if (topLevelOrder.isNotEmpty) {
-      await prefs.setString(orderStorageKey, jsonEncode(topLevelOrder));
+  /// An empty order is never worth writing: it only arises on a manager that
+  /// was constructed without load(), and writing it would wipe an order some
+  /// other session already stored.
+  Future<void> _saveTopLevelOrder() async {
+    if (topLevelOrder.isEmpty) return;
+    await prefs.setString(orderStorageKey, jsonEncode(topLevelOrder));
+  }
+
+  /// Rollout day, at the save: takes the ids off the rows before building the
+  /// items, so a layout loaded from the blob does not mint a second set of
+  /// identities over the ones the migration just wrote.
+  ///
+  /// See [adoptRowIdentities] for what it matches and why it copies rather
+  /// than derives. A no-op in every other state, including a store this
+  /// station cannot read: the fallback there is a save that mints, which is
+  /// the behaviour without this and no worse for having tried.
+  void _adoptStoredIdentities() {
+    final store = this.store;
+    if (store == null) return;
+    try {
+      adoptRowIdentities(
+          pages, store.itemsOf(const {ConfigKind.page, ConfigKind.asset}));
+    } catch (e) {
+      _logger.e('The stored page identities could not be read before saving; '
+          'this save mints ids for any page that has none: $e');
     }
   }
 
@@ -335,9 +601,18 @@ class PageManager {
     final manager = PageManager(
       pages: otherPages ?? pages,
       prefs: prefs,
+      // Carried, or the copy would silently drop back to blob-only behaviour
+      // — the field-by-field rebuild trap [AssetPage.copyWith] documents,
+      // one level up.
+      store: store,
+      // Same reason, and sharper: a copy that dropped this would write the
+      // blob instead of the rows and nothing would say so.
+      writeItems: writeItems,
     );
     final json = manager.toJson();
     manager.fromJson(json);
+    manager._source = _source;
+    manager.baselineItems = baselineItems;
     return manager;
   }
 
@@ -528,6 +803,14 @@ class PageManager {
 
   /// Rewrites every [AssetPage.navigationPriority] from the tree structure, so
   /// each level is numbered 0..n-1 with no gaps or duplicates after a move.
+  ///
+  /// **Dense on purpose**, unlike the gapped `sort_index` the asset rows use.
+  /// Renumbering rewrites every sibling, so one move dirties several pages —
+  /// but there are nine of them and the worst move touches about five, while
+  /// `navigation_priority` lives *inside* the page payload that
+  /// `tfc_mcp_server` and the `tools/svn_*.py` scripts read. Gapping it would
+  /// change that compatibility blob for a saving no page count here can feel.
+  /// Revisit if pages ever number in the hundreds.
   static Map<String, AssetPage> _renumber(Map<String, AssetPage> pages) {
     final result = Map<String, AssetPage>.from(pages);
 
@@ -566,14 +849,20 @@ class PageManager {
     return result;
   }
 
-  /// Generates a slug path from a label, used for migrating old data.
-  static String _slugify(String text) {
-    return text
-        .trim()
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^a-z0-9\s]'), '')
-        .replaceAll(RegExp(r'\s+'), '-');
-  }
+  /// A path for a page whose payload has none, derived from whatever key it
+  /// arrived under.
+  ///
+  /// Two path-less pages would otherwise both key on `''` and one would
+  /// silently overwrite the other. Public because `page_codec.dart`'s
+  /// `pagesOf` reassembles the same map from rows and has to reach the same
+  /// key for the same page — one implementation, not two that can drift.
+  ///
+  /// Delegates to `page_rows.dart` rather than slugifying here, because the
+  /// same fallback now decides the key on the other side of the wire too: the
+  /// MCP server reassembles the pages map out of `config_item` rows without
+  /// Flutter, and an app and a server that slugified differently would
+  /// disagree about which page is which for exactly the pages nobody named.
+  static String fallbackPathFor(String key) => fallbackPagePathFor(key);
 
   /// Decodes an encoded page map — the inverse of [toJson]. Public because
   /// the editor keeps its undo history as encoded strings (cheap to snapshot)
@@ -586,8 +875,9 @@ class PageManager {
       final path = page.menuItem.path;
       // Use the path from menu_item as the key.
       // For backward compat: if path is empty (old sections), generate one.
-      final key =
-          (path != null && path.isNotEmpty) ? path : '/${_slugify(entry.key)}';
+      final key = (path != null && path.isNotEmpty)
+          ? path
+          : fallbackPathFor(entry.key);
       // If the page had an empty path, update the menuItem with the generated path
       if (path == null || path.isEmpty) {
         result[key] = page.copyWith(menuItem: page.menuItem.copyWith(path: key));
@@ -888,6 +1178,10 @@ class _CreatePageWidgetState extends State<CreatePageWidget> {
                   final page = AssetPage(
                     menuItem: menuItem,
                     assets: widget.initialPage?.assets ?? [],
+                    // The row's identity, or the settings edit turns into a delete and a
+                    // re-insert that restamps every asset on the page — the field-by-field
+                    // rebuild trap [AssetPage.copyWith]'s doc names.
+                    id: widget.initialPage?.id,
                     mirroringDisabled: _mirroringDisabled,
                     zoomPanDisabled: _zoomPanDisabled,
                     navigationPriority: widget.initialPage?.navigationPriority,

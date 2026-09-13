@@ -107,7 +107,12 @@ file and call rather than by line.**
 | `lib/pages/access_templates_section.dart:635, 1130` | `store.update(...)`, `store.delete(...)` | `access_template` | `AccessTemplatesSection`, mounted in `KeyRepositoryContent` (04-07) | `correct as-is` — these are calls **on `AccessTemplateStore`**, one row above, not on a database: the `users` gate and the audit row are inside them. Caught by the deliberately broad `.update(`/`.delete(` grep and recorded rather than filtered away, which is the point of the grep being broad. The section writes no binding at all — `bind`/`unbind` are 04-08's, per key |
 | `packages/tfc_dart/lib/core/access/access_repository.dart:358, 373, 412, 545, 552-554, 590, 645, 722, 754-755, 781, 814, 890` | `db.into/update/delete` on `app_role` / `app_user` | roles and users | `accessAdminStoreProvider` (06-04), which wraps `accessRepositoryProvider`; and `lib/pages/first_user.dart:141` for the first-user window alone | `guarded by 06-03` — `AccessAdminStore` asks `kAccessAdminGroup` (`users`) and writes a row, refusals included, above every one of the nine writes that reach these statements. The repository is not decorated: it owns the transaction and the last-`users`-holder invariant that must be evaluated inside it — see §3.3 |
 | `packages/tfc_dart/lib/core/preferences.dart:210, 254, 428` | `secureStorage.delete(key:)`, `db.customInsert(...)`, `database!.db.customUpdate(...)` | secure store, `flutter_preferences` | inside `Preferences` — the implementation `GuardedPreferences` wraps | `correct as-is` — these are the store the guard decorates; the check happens above them |
-| `lib/core/preferences.dart:54-84` | `_prefs.setBool/setInt/setDouble/setString/setStringList/remove/clear` | device-local | `SharedPreferencesWrapper implements PreferencesApi` | `correct as-is` — pure delegation with the caller's key |
+| `packages/tfc_dart/lib/core/sqlite_preferences.dart:403, 415, 452, 470` | `_db.into(_db.configItemTable).insert(...)`, `(_db.update(_db.configItemTable)..where(...)).write(...)`, `_db.into(_db.configChangeTable).insert(...)`, `(_db.delete(_db.configItemTable)..where(...)).go()` | `config_item` and `config_change` in this station's `config.sqlite` | `createDeviceLocalPreferences()` / `localPreferencesProvider` — every device-local preference in the app, and `Preferences.syncToLocalCache` mirroring the shared store down (milestone v1.2, plans 01-03 and 01-05) | `correct as-is` — this **is** the device-local store, at exactly the trust level of the `SharedPreferencesWrapper` it replaced (whose row left this table with `lib/core/preferences.dart` itself, deleted by milestone v1.2 plan 01-06): the path into it is `localPreferencesProvider`, which is *deliberately* unguarded because the session is stored through it and a check there would need a session to read the session. v1.2 opens no write path and closes none — same keys, same callers, a different file. Two things a reader must not conclude from the new tables: the `config_change` row every write appends is a **local** change log that never reaches `audit_entry`, and it is unattributed on purpose (`who: 'anonymous'`, `role_name: ''`, stated in the class doc); and the *shared* values that reach this store through `syncToLocalCache` were checked above `GuardedPreferences` before they were mirrored, so this is the cache fan-out rowed in 2.9, not a second way in |
+| `packages/tfc_dart/lib/core/config/config_store.dart:262, 296, 334-336, 413, 444-464, 556-579` | `remote.into(remote.configItemTable).insert(...)`, `(remote.update(remote.configItemTable)..where(… & rev.equals(…))).write(...)`, `(remote.delete(remote.configItemTable)..where(…)).go()`, `db.into(db.configChangeTable).insert(...)`, and the same four against `_local` for the mirror and the re-home | `config_item` and `config_change` — the **shared** rows in Postgres, and their mirror in this station's `config.sqlite` | `ConfigStore`, the key-mapping repository added by milestone v1.2 plan 02-01. **Nothing in the widget tree reaches it yet**: it has no provider, and the five `key_mappings` write sites still go through `GuardedPreferences` | `correct as-is` — this is the store a guard decorates, at the same layer `Preferences` sits at under `GuardedPreferences`. It performs no access check and writes no `audit_entry` row **by design**, stated in its own library doc: `AccessPolicy`, `AccessSession` and `AuditSink` all need a session and `tfc_dart` core has none, so the attribution (`actionId`, `who`, `roleName`, `reason`) arrives as parameters and the check happens above. The wrapper that supplies it lands in plan 02-05 of the same milestone, and the row here should be re-read then. Three things a reader must not conclude: the `config_change` rows this writes to the **remote** are the shared history and *do* join `audit_entry` by `action_id` (unlike `sqlite_preferences.dart`'s local, unattributed ones two rows up); the mirror writes against `_local` append no change rows at all, because duplicating the shared history locally would be two histories of one event; and the `rev.equals(…)` on every update and every delete is a compare-and-swap rather than a filter — a lost one throws out of the transaction so drift issues ROLLBACK |
+| `packages/tfc_dart/lib/core/config/key_mapping_migration.dart:82, 102` | `copyBlobIntoRows(remote.db, …)`, `copyBlobIntoRowsLocked(db, …)` | `config_item` and `config_change` — the **shared** rows in Postgres, through the row below | `migrateKeyMappingsBlobToRows(Database)`, the one-shot key-mappings migration added by milestone v1.2 plan 02-03 and wired into the remote-attach path by 02-05, which runs before `runApp` | `not widget-reachable` — since plan 03-03 this file issues **no statement of its own**: it names the preference key, the lock id, the marker id and the parser, and the transaction, the lock, the gate, the sort keys and the marker-last ordering are the `blob_migration.dart` row below. The verdict there covers both callers. The reader must not conclude that the delegation widened anything: the lock id (1), the marker (`_migrated.key_mappings`) and the outcomes are the ones 02-03 landed, and its integration suite is what proves the hoist changed nothing |
+| `packages/tfc_dart/lib/core/config/blob_migration.dart:364, 377` | `db.into(db.configItemTable).insert(...)`, `db.into(db.configChangeTable).insert(...)` | `config_item` and `config_change` — the **shared** rows in Postgres | `copyBlobIntoRows(AppDatabase, {prefKey, markerId, lockId, kinds, parse, label})`, the generic blob→rows migration hoisted out of `key_mapping_migration.dart` by milestone v1.2 plan 03-03. Reached from the remote-attach path in `lib/providers/config_store.dart`, twice per attach: once for the key mappings and once for the pages, which is why the parse is a parameter | `not widget-reachable` — a boot-path data migration, not a surface, and the row `key_mapping_migration.dart` used to carry: the two statements moved here unchanged. It performs no access check and writes no `audit_entry` row, and neither is an omission — it runs before any session exists, on every station, from the attach path, and its rows say so (`updated_by`/`who` are the literal `'migration'`, `role_name` is `'system'`). Four things a reader must not conclude: the whole copy is inside **one** transaction whose first statement is `pg_try_advisory_xact_lock($1::int4, $2::int4)`, so two stations booting together cannot both write these rows; the marker `preference` row is written **last inside that same transaction**, so a process killed mid-copy rolls the rows and the marker away together; the `AppDatabase` in these statements is a **parameter**, not a handle the file holds, which is what the §4 hits on it are; and it never writes, rewrites or deletes the `flutter_preferences` blob it read — the blob stays put as rollback insurance until Phase 4 |
+| `packages/tfc_dart/lib/core/config/preference_migration.dart` | `db.into(db.configItemTable).insert(...)`, `(db.update(db.configItemTable)..where(...)).write(...)`, `db.into(db.configChangeTable).insert(...)` | `config_item` and `config_change` — the **shared** rows in Postgres | `migratePreferencesIntoRows(Database)`, the last of the three migrations, added by milestone v1.2 plan 04-11 and wired into the remote-attach path in `lib/providers/config_store.dart` third, after its two siblings, whose markers it checks for before it writes anything | `not widget-reachable` — a boot-path data migration, the same verdict and the same reasons as `blob_migration.dart` above: no access check, no `audit_entry` row, `updated_by`/`who` the literal `'migration'` and `role_name` `'system'`, all of it inside one transaction whose first statement is `pg_try_advisory_xact_lock($1::int4, $2::int4)` under lock id 3. It does not delegate to that module because its input is every remaining row rather than one named blob. **Four things a reader must not conclude.** (1) It does **not** skip a key because a `config_item` row exists — a station on this branch writes rows from its boot defaults (D-7), so an existing row is usually an empty default sitting on top of the operator's real value; `flutter_preferences` is the authority and the row is overwritten, with the `rev` carried forward and bumped. Only the marker stops a second run. (2) The overwrite is logged as an `update` carrying the old side, so the boot default it replaced is restorable and the row does not contradict its own history. (3) Its marker **is** logged, unlike its two siblings' — deliberately, because `config_undo.dart` refuses any action containing an underscore-prefixed preference, so the marker's change row is what makes the whole migration unundoable as a unit; without it one `administer` click would delete every migrated row and leave the marker behind. (4) Images go to `page_image` rows keyed by the stored suffix **verbatim** and the envelope keeps its exemption, so neither writes a change row: routing either onto a `preference` row would put multi-megabyte payloads into a table nothing prunes (C-3), and re-deriving an image id from the bytes would orphan every asset that references the old one |
+| `packages/tfc_dart/lib/core/config/config_change.dart:119, 150` | `factory ConfigChange.update({...})`, `factory ConfigChange.delete({...})` | — | nothing: a value class | `not widget-reachable` — not a store, and not a statement. Two named constructors on the immutable, row-shaped value that *describes* a change somebody else already decided; the file has no `into(`, no `.go()` and no drift import at all, and the rows it describes are written one row above. Caught by the same deliberately broad `.update(`/`.delete(` grep as `counts.update(...)` in the page editor and `_tracker.update(...)` in ip-settings, and recorded rather than filtered away for the same reason |
 | `packages/tfc_dart/lib/core/database_drift.dart:374, 394, 444-527, 702-790, 847-856, 907, 990-1007, 1127-1317` | `into(...)`, `delete(...)`, `customStatement`, `customInsert` | every table | the database's own methods and migrations | `correct as-is` — this file *is* the store |
 | `packages/tfc_dart/lib/core/database.dart:1127, 1647-1656` | `db.customStatement(...)` | timeseries DDL | `Database` table management | `not widget-reachable` — DDL run when a table is created or repaired, not from a control |
 | `packages/tfc_dart/lib/core/alarm.dart:341` | `db.customInsert(r'''...''')` | alarm history | `AlarmMan` recording an alarm transition | `not widget-reachable` — driven by a PLC transition; the operator-facing ack path writes nothing here |
@@ -116,6 +121,7 @@ file and call rather than by line.**
 | `lib/pages/ip_settings.dart:408, 1127` | `connection.delete()`, `connection.update(updatedSettings)` | NetworkManager | `/advanced/ip-settings` | `route-gated (Phase 2)` — `kRaisedRoutes` raises it to `administer` |
 | `lib/pages/ip_settings.dart:588` | `_tracker.update(...)` | — | in-memory traffic-rate tracker | `not widget-reachable` — not a store; a false positive of a deliberately broad grep, recorded rather than filtered away |
 | `lib/pages/page_editor.dart:3706` | `counts.update(asset.displayName, ...)` | — | an in-memory tally of asset kinds, for a label | `not widget-reachable` — not a store; the same broad-grep false positive as the row above. The editor's real persistence is `PageManager`, rowed in §2.9 |
+| `lib/widgets/config_change_row.dart:183` | `byKind.update(record.change.kind, ...)` | — | an in-memory tally of how many entities of each kind one action changed, for the summary line `jon changed 3 assets` | `not widget-reachable` — not a store; the same broad-grep false positive as the two rows above. This file is v1.2 plan 04-06's configuration-history row widget: it renders `ConfigChangeRecord`s the read-only `ConfigChangeStore` returned and holds no handle, no statement and no sink. The enforcement for the surface it draws is the route gate `kRaisedRoutes['/advanced/config-history']` at `configure` |
 | `packages/centroidx_upgrader/lib/src/manager_launcher.dart:170` | `staged.delete()` | filesystem | cleanup of a failed staging write; see 2.7 | `left open: the update path is ungated` — see §3.5 |
 | `packages/tfc_dart/lib/core/state_man.dart:2175` | `wrapper.client.delete()` | — | OPC UA client teardown | `not widget-reachable` — not a store; disposes a connection |
 | `lib/page_creator/assets/web_view.dart:311` | `uri.replace(query: ...)` | — | `withQueryParameter`, building the Web page asset's theme-following address | `not widget-reachable` — not a store; `Uri.replace` returns a copy of a value, matched by the `\breplace\(` alternation meant for drift's `replace`. Recorded rather than filtered away, like the rows above |
@@ -141,13 +147,19 @@ here are therefore grouped by what the handle is used for.
 | `lib/pages/server_config.dart:3209, 3224, 3258` | `ServerConfigDb.fetch(db.db)` / `publish(db.db, ...)` | `flutter_preferences` | `/advanced/server-config` | `guarded by 03-08` — and `route-gated (Phase 2)` besides |
 | `lib/page_creator/assets/graph.dart:823-824`, `lib/providers/timeseries.dart:205, 208` | `db.db.enableNotificationChannel(...)`, `listenToChannel(...)` | LISTEN/NOTIFY | graph assets, the shared timeseries stream | `not widget-reachable` as a write — `enableNotificationChannel` issues DDL for a notify channel, not a data write; noted here rather than left silent |
 | `lib/widgets/panes/database_stats_pane.dart:74, 86` | `db.db.config`, `db.db.customSelect(...)` | reads | the database stats pane | `left open: read permissions are deferred` |
-| `packages/tfc_dart/lib/core/preferences.dart:250, 465, 556`, `packages/tfc_dart/lib/core/preferences_watch.dart:59, 75, 77`, `packages/tfc_dart/lib/core/alarm.dart:338, 362`, `packages/tfc_dart/lib/core/database.dart:512-580`, `packages/tfc_dart/lib/core/access/access_repository.dart:98-100`, `packages/tfc_dart/lib/core/access/drift_audit_sink.dart:53` | `final db = ...!.db`, `AppDatabase db` fields | handles | core machinery | `correct as-is` — the stores holding their own handle |
+| `packages/tfc_dart/lib/core/preferences.dart:213`, `packages/tfc_dart/lib/core/alarm.dart:557, 592`, `packages/tfc_dart/lib/core/database.dart:512-580`, `packages/tfc_dart/lib/core/access/access_repository.dart:98-100`, `packages/tfc_dart/lib/core/access/drift_audit_sink.dart:53` | `final db = ...!.db`, `AppDatabase db` fields | handles | core machinery | `correct as-is` — the stores holding their own handle. **Two of this row's entries are gone since milestone v1.2 plan 04-12.** `preferences_watch.dart` is deleted outright: it polled a digest over `flutter_preferences`, which the cutover retired, and its only production caller went in 04-11. `preferences.dart`'s own three Drift sites went with it — the upsert, the key-set select and the whole-table load were all that table — so what the sweep still finds there is the keychain delete, and the `database` field it keeps is a handle it carries for callers rather than one it uses. `alarm.dart`'s two moved rather than went: alarm history now reaches its handle through `AlarmMan.database` instead of through `preferences.database`, which is what let the acquisition backend stop holding a preferences object it only ever used to read one key |
+| `packages/tfc_dart/lib/core/sqlite_preferences.dart:112`, `lib/providers/preferences.dart:29, 67, 156` | `final AppDatabase _db`, `AppDatabase? _deviceLocalDb`, `AppDatabase.createLocal(dir)`, `deviceLocalDatabase()` | the device-local `config.sqlite` | `SqlitePreferences`, and the process-wide handle `initDeviceLocalPreferences()` opens before `runApp` (v1.2 plan 01-05) | `correct as-is` — the store holding its own handle, and the one place the local database is opened. `_db` is the spelling `HistoryViewStore`, `AccessTemplateStore` and `AuditTrailStore` already use, so no ninth accessor; `_deviceLocalDb` is a **second `AppDatabase` instance** rather than a new accessor onto the shared one — the Postgres connection is still `databaseProvider`'s alone, and pointing the collector at this instance is refused by the factory's own doc. `deviceLocalDatabase()` (v1.2 plan 02-05) hands that same instance to `ConfigStore`, which needs Drift itself rather than the preference view of it; it constructs nothing new except on the degraded path where `config.sqlite` would not open at all, where it answers an in-memory database so the panel still boots |
+| `packages/tfc_dart/lib/core/config/config_store.dart` | `required AppDatabase local`, `final AppDatabase _local`, `AppDatabase? _remote`, `_attach(remote.db)`, `attachRemote(Database)`, `attachRemoteDatabase(AppDatabase)` | two `AppDatabase` handles at once — the local `config.sqlite` and the Postgres connection | `ConfigStore` (v1.2 plan 02-01); the remote is attached rather than constructed, so a station that boots with Postgres unreachable holds a store with `_remote == null` | `correct as-is` — the handle the store of 2.2 writes through, and the same `_db`-family spelling `SqlitePreferences`, `HistoryViewStore` and `AccessTemplateStore` already use, so no new accessor. Two handles rather than one is the design: the local file is a **mirror** of the shared rows and the owner of this station's own, and the asymmetry in the two types is forced — `Database` carries the pool configuration and the connection-error classifier the write path needs, and cannot wrap a SQLite config at all. `attachRemoteDatabase` is `@visibleForTesting`: without it the compare-and-swap could only be exercised against a real Postgres |
+| `packages/tfc_dart/lib/core/config/config_sync.dart` | `final AppDatabase _remote` | the Postgres handle, **read-only** | `_KeyMappingSync`, the sync engine added by milestone v1.2 plan 02-04. A `part` of `config_store.dart`, so it is the same library and the same store object; its life is one attachment and `detachRemote` throws it away | `correct as-is` — this file issues no write of any kind against the remote: it reads `config_change` from a watermark, reads `config_item` revisions and payloads, and hands what it read to the store. Every row it causes to be written is a **local** one and appears in this document already — the mirror and the watermark row, in the `config_store.dart` rows of 2.2. The reader must not conclude that a station pushes anything during a reconcile: the shared rows are Postgres-owned and the only path to them is the compare-and-swap in 2.2, which is why a station whose mirror disagrees with the server adopts the server's row rather than re-asserting its own |
+| `lib/core/config/page_migration.dart:65, 81` | `remote.db` handed to `copyBlobIntoRows(...)`, `AppDatabase db` handed to `copyBlobIntoRowsLocked(...)` | the Postgres handle, **passed straight through** | `migratePageBlobToRows(Database)`, the pages-and-assets migration added by milestone v1.2 plan 03-03 and called from `lib/providers/config_store.dart`'s attach listener directly after the key-mappings one | `not widget-reachable` — a boot-path data migration. This file issues no statement and holds no handle: it is the page codec's `pageItemsFromBlob` plus four constants (the preference key `page_editor_data`, lock id 2, the shared marker `_migrated.pages`, and the kinds `{page, asset}`), because the parse needs Flutter and `tfc_dart` has none. Every write it causes appears in §2.2's `blob_migration.dart` row, under that row's verdict. Two things a reader must not conclude: the pages and the assets share **one** marker deliberately — they come out of one blob in one transaction, so a half-migrated state is unreachable — and it does not delete or rewrite `flutter_preferences.page_editor_data`, which `tools/svn_mirror_page.py` and `bin/page_geometry.dart` still read and which Phase 4 drops |
 | `lib/core/guarded_history_views.dart:85, 98` | `required AppDatabase db`, `final AppDatabase _db` | `AppDatabase` | `historyViewStoreProvider` | `correct as-is` — the handle 2.1's guard delegates through; the check happens above it |
 | `lib/core/access_template_store.dart:163, 176` | `required AppDatabase db`, `final AppDatabase _db` | `AppDatabase` | `AccessTemplateStore` | `correct as-is` — the handle 2.2's guard delegates through; the check happens above it. Same `_db` spelling as `HistoryViewStore`, so no ninth accessor |
 | `packages/tfc_dart/lib/core/report_store.dart` | `_db.customStatement('INSERT INTO flutter_preferences ... ON CONFLICT DO UPDATE')` in `saveReports`/`saveShifts` | `flutter_preferences` (`report_config`, `shift_config`) | the report editor, through `GuardedReportStore` | `guarded by the report subsystem` — raw SQL rather than `PreferencesApi`, deliberately: the MCP server writes the same two rows and has no `Preferences`, so `GuardedPreferences` can never see them. `lib/core/guarded_report_store.dart` is the seam that checks `configure` and records both writes; `kPrefAccessRules` classifies the two keys to match. Reads stay open — generating a report is operate-level work |
 | `lib/core/audit_trail_store.dart:413, 417` | `required AppDatabase db`, `final AppDatabase _db` | `AppDatabase` | `AuditTrailStore` | `correct as-is` — the handle Phase 5's **read-only** trail viewer holds. It is on this table because it names `AppDatabase`, not because it writes: the file contains no `into(`, no `update(` and no `delete(`, and `test/core/audit_trail_store_test.dart` asserts that on the source text rather than leaving it merely true today. The enforcement is the route gate `kRaisedRoutes['/advanced/audit-trail']` (05-07) and deliberately not a store check — a guard here would write a row into the trail every time somebody scrolled the trail, on the same reasoning `access_template_store.dart` gives for its own ungated reads. Same `_db` spelling as `HistoryViewStore` and `AccessTemplateStore`, so no ninth accessor |
+| `lib/core/config_change_store.dart:339, 343` | `required AppDatabase db`, `final AppDatabase _db` | `AppDatabase` | `ConfigChangeStore` | `correct as-is` — the handle milestone v1.2's **read-only** configuration-history reader holds, and the exact counterpart of `lib/core/audit_trail_store.dart` two rows above. It is on this table because it names `AppDatabase`, not because it writes: the file contains no `into(`, no `update(` and no `delete(`, and `test/core/config_change_store_test.dart` asserts that on the source text. The pin matters more here than for the trail — `config_change` is on `kRetentionExemptTables`, so a row written through this object would never be swept. The enforcement is the route gate, on the same reasoning `access_template_store.dart` gives for its own ungated reads; a guard here would record a row every time somebody read the history. Same `_db` spelling as `AuditTrailStore` and `AccessTemplateStore`, so no ninth accessor |
 | `lib/providers/access_templates.dart:109` | `db: db.db` | `AppDatabase` | `accessTemplateStoreProvider` | `correct as-is` — the provider that hands `AccessTemplateStore` its handle, one line, no statement of its own. Same `db.db` spelling `accessRepositoryProvider` and `auditSinkProvider` already use, so no ninth accessor |
 | `lib/providers/audit_trail.dart:53` | `db: db.db` | `AppDatabase` | `auditTrailStoreProvider` | `correct as-is` — the provider that hands the **read-only** `AuditTrailStore` its handle, one line, no statement of its own. It is on this table because it names the `.db` accessor, not because it writes: the file contains no Drift statement at all, and `test/providers/audit_trail_test.dart` asserts on the source text that it holds no audit sink and performs no permission check. The enforcement is the route gate `kRaisedRoutes['/advanced/audit-trail']` (05-07), on the same reasoning `lib/core/audit_trail_store.dart` gives above. Same `db.db` spelling `accessRepositoryProvider`, `auditSinkProvider` and `accessTemplateStoreProvider` already use, so no ninth accessor |
+| `lib/providers/config_history.dart:64` | `db: db.db` | `AppDatabase` | `configChangeStoreProvider` | `correct as-is` — the provider that hands the **read-only** `ConfigChangeStore` its handle, one line, no statement of its own, and the exact counterpart of `lib/providers/audit_trail.dart` above. It is on this table because it names the `.db` accessor: the file contains no Drift statement at all, and `test/core/config_change_store_test.dart` asserts on the source text that it holds no audit sink, no session and no timer. The enforcement is the route gate. Same `db.db` spelling `auditTrailStoreProvider` already uses, so no ninth accessor |
 | `packages/tfc_dart/lib/core/database_drift.g.dart` (176 occurrences) | generated `_$AppDatabase` boilerplate | — | drift codegen | `not widget-reachable` — regenerated from `database_drift.dart`, which is searched above; collapsed by the script and counted |
 
 **Seven accessor spellings at the 2026-08-29 run — `adb`, `dbWrap.db`,
@@ -175,15 +187,15 @@ re-runs the sweep and reconciles them.
 
 | File and line | Call | Store | Reached from | Verdict |
 |---|---|---|---|---|
-| `lib/providers/preferences.dart:26` | `createDeviceLocalPreferences()` — `SharedPreferencesWrapper(SharedPreferencesAsync())` | device-local | the two preference providers, and every site below that has no `ref` | `correct as-is` — this is the one place that is meant to construct it, and after 03-11 it is the only one |
+| `lib/providers/preferences.dart` — the factory | `createDeviceLocalPreferences()`, which since milestone v1.2 plan 01-05 **constructs nothing**: it returns the one `SqlitePreferences` that `initDeviceLocalPreferences()` opened before `runApp`, and throws a `StateError` when that has not run | device-local | the two preference providers, and every site below that has no `ref` | `correct as-is` — the one place that is meant to construct the store, and after 03-11 the only one. The file no longer imports `shared_preferences` and no longer produces a hit in *this* section at all; it keeps its row here because this is where the sanctioned site is recorded, and it now appears in the sweep under 2.3, holding the `AppDatabase` |
 | `lib/providers/collector.dart:21` | `final prefs = SharedPreferencesAsync()` | device-local | `collectorProvider`, at boot | `enforced by 03-09` — spec §6 bypass 2; gone from the tree, and the check would refuse its return |
 | `lib/core/update_channel.dart:29, 41` | `prefs ?? createDeviceLocalPreferences()` | device-local | `readUpdateChannel` / `writeUpdateChannel`, called as tear-offs from `centroid-hmi/lib/main.dart:337, 372` and `lib/widgets/preferences.dart:79-80` | `enforced by 03-11` — the parameter is a `PreferencesApi` now, so the tear-off form is unchanged |
-| `lib/tech_docs/tech_doc_library_section.dart:1197` | field on `_SharedPrefsReader`, from the factory | device-local | the Knowledge Base page's delete-document flow | `enforced by 03-11` |
 | `lib/pages/page_view.dart:259` | `late final PreferencesApi prefs = ref.read(localPreferencesProvider)` | device-local | every asset page, on mount | `enforced by 03-11` — a `ref` exists, so it reads the provider rather than the factory |
 | `lib/widgets/preferences.dart:556` | field on `_DatabaseConfigEditorState` | device-local | nothing — `grep -n sharedPreferences lib/widgets/preferences.dart` returned this line and no other | `enforced by 03-11` — **deleted**, not rerouted; confirmed unreferenced first |
 | `lib/widgets/preferences.dart:822` | `ref.read(localPreferencesProvider)` in `_loadData` | device-local | the preferences page, read path (`localPrefs.getAll()`) | `route-gated (Phase 2)` — `/advanced/preferences` is `administer`; the construction is `enforced by 03-11` |
 | `lib/widgets/panes/color_picker_dialog.dart:46, 70` | the factory, inline in two statics | device-local | any colour picker, anywhere in the app | `enforced by 03-11` — both statics keep their `try`/`catch`, so a broken store is still an empty strip |
-| `centroid-hmi/lib/main.dart:273` | `createDeviceLocalPreferences()` | device-local | app boot, feeding `PageManager(prefs:)` and `pageManager.load()` on the next two lines | `enforced by 03-11` — this is the boot write of `page_editor_data` outside any provider; no `ProviderScope` exists yet, so it calls the factory |
+| `centroid-hmi/lib/main.dart:273` | `createDeviceLocalPreferences()`, after the `await initDeviceLocalPreferences()` that opens the store and runs the one-shot import (v1.2 plan 01-05) | device-local | app boot, feeding `PageManager(prefs:)` and `pageManager.load()` on the next two lines | `enforced by 03-11` — this is the boot write of `page_editor_data` outside any provider; no `ProviderScope` exists yet, so it calls the factory |
+| `lib/core/device_local_store.dart:139` | `SharedPreferencesAsync().getAll()` | device-local — **read only** | `readLegacySharedPreferences`, called once at boot by the one-shot import into the relational config store (milestone v1.2, plan 01-04) | `allow-listed` — the **second** entry in the check, added after the census above. It is the only site that reads the legacy store rather than writing it: nothing is written through this handle, every write goes to `SqlitePreferences`, and neither standard fix applies (there is no `ref` at that point in boot, and the factory returns the store being imported *into*). Time-limited by construction — the entry leaves with the `shared_preferences` dependency after the compatibility release (phase 4). Confirmed to be doing work: the check exits 1 on this line without it |
 
 ### 2.5 Legacy synchronous `SharedPreferences.getInstance()` (script §5 — 6 hits)
 
@@ -200,14 +212,14 @@ that arithmetic is the whole content of the two rows.
 
 | File and line | Call | Store | Reached from | Verdict |
 |---|---|---|---|---|
-| `lib/providers/theme.dart:15, 22, 44, 51` | `await SharedPreferences.getInstance()` | device-local | the theme and colour-scheme notifiers | `left open: device-local UI state, and inside \`lib/providers/\`` — see §3.6. Passes the check on the **directory** rule, not an allow-list entry; a copy of these four lines anywhere else fails the build |
-| `lib/pages/dbus_login.dart:124, 141` | `await SharedPreferences.getInstance()` | device-local | the D-Bus login form | `left open: spec §2 excludes changing this file` — see §3.7. The **one** allow-list entry in the check, carrying that reason inline. Removing the entry makes the build fail on these two lines, which is how the entry was confirmed to be doing work |
+| ~~`lib/providers/theme.dart:15, 22, 44, 51`~~ | ~~`await SharedPreferences.getInstance()`~~ | device-local | the theme and colour-scheme notifiers | `closed (v1.2 plan 01-06)` — both notifiers read `localPreferencesProvider`; see §3.6. The trust level is unchanged (that provider is deliberately unguarded), the store is not |
+| ~~`lib/pages/dbus_login.dart:124, 141`~~ | ~~`await SharedPreferences.getInstance()`~~ | device-local | the D-Bus login form | `closed (v1.2 plan 01-06)` — `loadSavedDbusCredentials` has no `ref` and calls `createDeviceLocalPreferences()`; `_saveCredentials` reads `localPreferencesProvider`. The check's one allow-list entry for this file is deleted with it; see §3.7 |
 
 ### 2.6 Secure storage (script §6 — 33 hits at the 2026-08-29 run, 35 at the 2026-08-30 re-run)
 
 | File and line | Call | Store | Reached from | Verdict |
 |---|---|---|---|---|
-| `lib/pages/dbus_login.dart:134` | `secureStorage.write(key: 'dbus_password', ...)` | OS keychain | the D-Bus login form | `left open: spec §2 excludes changing this file` — see §3.7 |
+| `lib/pages/dbus_login.dart:134` | `secureStorage.write(key: 'dbus_password', ...)` | OS keychain | the D-Bus login form | `left open: secure storage is outside both guards` — see §3.4 and §3.7. Untouched by v1.2 plan 01-06, which moved the file's five *preference* keys and deliberately left the password where it is |
 | `packages/tfc_dart/lib/core/database.dart:214-215, 226` | `SecureStorage.getInstance().write(key: _configLocation, ...)` | OS keychain | `DatabaseConfig` persistence, from `/advanced/server-config` and `/advanced/preferences` | `route-gated (Phase 2)` — both routes are `administer`; the store itself stays outside the guards, see §3.4 |
 | `packages/tfc_dart/lib/core/preferences.dart:205` | `secureStorage.write(key: key, value: value)` | OS keychain | `Preferences.setString(..., secret: true)` | `correct as-is` — inside the object `GuardedPreferences` wraps, so the check happens above it |
 | `lib/core/secure_storage/macos.dart:118, 139, 144`, `lib/core/secure_storage/other.dart:24`, `packages/tfc_dart/lib/core/secure_storage/linux.dart:47` | `_storage.write(key:, value:)` | OS keychain | the platform implementations behind `MySecureStorage` | `left open: secure storage is outside both guards` — see §3.4 |
@@ -253,30 +265,29 @@ in §5.
 | `lib/core/startup_url.dart:24, 26` | `prefs.remove/setString(startupUrlPrefsKey)` | preferences | the startup-page control | `guarded by 03-06` |
 | `lib/core/update_channel.dart:42` | `p.setString(updateChannelPrefsKey, ...)` | preferences | the update-channel control | construction `enforced by 03-11`; the write itself is `guarded by 03-06` |
 | `lib/chat/chat_widget.dart:189, 361, 392, 394` | `prefs.setString/remove(...)` | preferences | the chat provider-settings dialog | `guarded by 03-06` |
-| `lib/providers/state_man.dart:26` | `prefs.setString('key_mappings', ...)` | preferences | `stateManProvider` at boot | `guarded by 03-06` — routed through `systemWrites` |
 | `lib/providers/collector.dart:27` | `prefs.setString(Collector.configLocation, ...)` | preferences | `collectorProvider` at boot | `guarded by 03-09` |
 | `lib/providers/access.dart:694` | `local.setString(kAccessSessionPrefKey, ...)` | device-local preferences | every `poke()`, i.e. every pointer-down | `guarded by 03-06` |
 | `lib/providers/chat.dart:340, 370, 405, 449, 453, 494, 505, 525, 529, 532, 535, 538, 548, 558, 905` | `prefs.setString/remove(chat.*)` | preferences | chat conversation management | `guarded by 03-06` |
-| `lib/providers/theme.dart:23, 52` | `prefs.setString(_key, ...)` | device-local, **legacy sync API** | theme and colour-scheme controls | `left open: device-local UI state, and inside \`lib/providers/\`` — see §3.6 |
-| `lib/tech_docs/tech_doc_upload_service.dart:267` | `prefsReader.setString('page_editor_data', ...)` | preferences | deleting a tech doc on the ungated Knowledge Base page | construction `enforced by 03-11` — the store it writes through comes from the factory at `tech_doc_library_section.dart:1197`; see also §3.1 |
-| `lib/tech_docs/tech_doc_library_section.dart:1206` | `_prefs.setString(key, value)` | device-local | the `PrefsReader` adapter the row above uses | construction `enforced by 03-11` |
-| `lib/pages/key_repository.dart:637, 1933` | `prefs.setString('key_mappings', ...)` | preferences | `/advanced/key-repository` | `guarded by 03-06` — and `route-gated (Phase 2)` besides |
+| `lib/providers/theme.dart:23, 52` | `prefs.setString(_key, ...)` | device-local, via `localPreferencesProvider` | theme and colour-scheme controls | `left open: device-local UI state` — see §3.6. Off the legacy API since v1.2 plan 01-06; still unguarded, because that provider is |
+| `lib/tech_docs/tech_doc_upload_service.dart` | **gone from this section** — the cleanup no longer writes a preference at all | — | — | milestone v1.2 plan 03-05 moved it to the shared configuration store; its row is in §2.11, and the `PrefsReader` adapter it wrote through (`tech_doc_library_section.dart`, the `_SharedPrefsReader` field and its `setString`) is deleted along with the `GuardedPrefsReader` that wrapped it |
+| `lib/pages/key_repository.dart:882, 2417` | `store.saveKeyMappings(...)` | **shared configuration store** | `/advanced/key-repository` — Save, and the JSON import | `guarded by 02-06` — `GuardedConfigStore`, and `route-gated (Phase 2)` besides. One `config_change` row per key that moved, one bounded `audit_entry` over the lot, on one `action_id` |
 | `lib/pages/page_view.dart:270` | `prefs.setString('asset_stack_config', ...)` | device-local | every asset page, on the read path when the key is absent | construction `enforced by 03-11` — the store now comes from `localPreferencesProvider`; the write is unchanged and still once per mount |
-| `lib/pages/dbus_login.dart:127-131` | `prefs.setString/setBool(...)` | device-local, **legacy sync API** | the D-Bus login form | `left open: spec §2 excludes changing this file` — see §3.7 |
+| `lib/pages/dbus_login.dart:127-131` | `prefs.setString/setBool(...)` | device-local, via `localPreferencesProvider` | the D-Bus login form | `left open: station credentials, §2's reasoning survives the move` — see §3.7. Off the legacy API since v1.2 plan 01-06 |
 | `lib/page_creator/page.dart:247` | `prefs.setString(storageKey, jsonString)` | preferences | `PageManager.load()` at boot, **unawaited** | `guarded by 03-06` — routed through `systemWrites` |
 | `lib/page_creator/page.dart:252, 257` | `prefs.setString(storageKey \| orderStorageKey, ...)` | preferences | the page editor's save | `guarded by 03-06` |
 | `lib/page_creator/assets/image_store.dart:96, 129` | `prefs.setString/remove('$keyPrefix$id')` | preferences | page-editor image add and delete | `guarded by 03-06` |
-| `lib/page_creator/assets/common.dart:444` | `prefs.setString('key_mappings', ...)` | preferences | asset key-mapping edits | `guarded by 03-06` |
+| `lib/page_creator/assets/common.dart:846` | `store.saveKeyMappings(next)` | **shared configuration store** | the `+` on any key field in the page editor | `guarded by 02-06` — `GuardedConfigStore`, `configure` on `pref`/`key_mappings`. The `prefs.setString('key_mappings', …)` this row used to name is gone, and with it C-10: it wrote into StateMan's own live map first, emptying the diff it was then measured by |
+| `lib/providers/config_store.dart:43, 60, 108` | `ConfigStore(...)`, `GuardedConfigStore(...)` | **shared configuration store** | once per process, at provider build | `correct as-is` — this is the one construction site, and `scripts/check-preferences-construction.sh` enforces that it stays the only one (its fourth pattern, added by 02-06 and proved non-vacuous by a planted violation). The store cannot be a factory the way `createDeviceLocalPreferences()` is: its snapshot is what every mimic on the station is drawn from, so there must be exactly one per process |
+| `packages/tfc_dart/lib/core/config/shared_row_preferences.dart:327, 346, 366, 388` | `_writer(...)` → `GuardedConfigStore.writePreference` / `writePreferenceAsSystem`, `_secretWriter(...)` → `writeSecret` / `writeSecretAsSystem` | **shared configuration store**, and the OS keychain for a secret | every shared preference write in the app: `preferencesProvider` has served this since milestone v1.2 plan 04-05, in place of `Preferences` over `flutter_preferences` | `correct as-is` — it holds **no** policy, session or audit sink of its own and cannot: every one of its four write paths is a call into the guard one row down, which is where the check happens and where the `action_id` shared by the `audit_entry` and the `config_change` rows is minted. It is deliberately **not** wrapped in `GuardedPreferences` — two wrappers would be two audit rows and two ideas of who wrote one value. Three things a reader must not conclude: a secret still never reaches a row and neither side of its value reaches the trail, but the write **is** checked and recorded; the replace set every write passes is the whole shared preference set, marker rows included, because `writeItems` replaces within a kind; and the system arm no-ops rather than throws when Postgres is unreachable, because a boot default is written on the strength of "storage is empty", which an offline station has not learned |
+| `packages/tfc_dart/lib/core/access/guarded_config_store.dart:213, 251, 275, 357` | `save`, `saveKeyMappings`, `seedDefaultIfEmpty` → `_inner.writeKeyMappings` | **shared configuration store** | every operator configuration write, plus the boot seed | `correct as-is` — this **is** the guard. Check → write → audit, deliberately the reverse of `GuardedPreferences`, because this store can still refuse after the check passes (offline, unsafe pool, another station won the row) and a row written first would claim a save that never happened. `seedDefaultIfEmpty` is the `systemWrites` analogue: no check, `origin: 'system'`, still one audit row |
 | `lib/page_creator/assets/recipes.dart:269` | `prefs.setString(prefKey, jsonEncode(recipes))` | preferences | `_getRecipes` on the **read** path | `guarded by 03-06` |
 | `lib/page_creator/assets/recipes.dart:281` | `prefs.setString(prefKey, ...)` | preferences | `_saveRecipes`, behind a control | `guarded by 03-06` |
 | `lib/widgets/preferences.dart:949-957, 979, 981` | `target.setBool/setInt/setDouble/setStringList/setString(e.key, ...)`, `prefs.remove(e.key)`, `localPrefs.remove(e.key)` | preferences and device-local | the raw preference editor on `/advanced/preferences` | `route-gated (Phase 2)` — `administer`; the key is whatever the operator typed, see §5 |
 | `lib/widgets/panes/color_picker_dialog.dart:70` | `createDeviceLocalPreferences().setStringList(prefsKey, ...)` | device-local | confirming a colour anywhere in the app | construction `enforced by 03-11`; the write stays on the deliberately unguarded device-local store |
-| `lib/core/preferences.dart:54-84` | `_prefs.set*/remove/clear(key)` | device-local | `SharedPreferencesWrapper` | `correct as-is` — delegation with the caller's key |
 | `packages/tfc_dart/lib/core/preferences.dart:344-413, 485-493, 524-532, 565-585` | `_memoryCache.set*`, `localCache?.set*`, `cache.set*` | in-memory and device-local caches | inside `Preferences` | `correct as-is` — the cache fan-out below the guard |
 | `lib/providers/alarm.dart:28` | `systemPrefs.setString('alarm_man_config', ...)` | preferences | `alarmManProvider` at boot, writing the empty default | `guarded by 03-06` — routed through `systemWrites`, and one of the seven sites `kSystemWriteCallSites` names. New since the 2026-08-29 run |
 | `packages/tfc_dart/lib/core/access/guarded_preferences.dart:335, 348, 361, 373, 385` | the five checked `set*` members, each delegating to `_inner.set*` | preferences | every caller of `preferencesProvider` | `correct as-is` — this **is** the guard; the check and the row happen above the delegation |
 | `packages/tfc_dart/lib/core/access/guarded_preferences.dart:532, 545, 558, 570, 582` | the same five members on `systemWrites`, with the session check skipped | preferences | the boot defaults of §3.9 | `left open: the deliberately unchecked write path` — §2.10 and §3.9 price it; this row is the file and line it lives at |
-| `lib/core/guarded_knowledge_stores.dart:660` | `GuardedPrefsReader.setString` delegating to `_inner.setString(key, value)` | device-local | the Knowledge Base page's delete-document cleanup | `guarded by 03-13` — `configure` plus one audit row. The store it writes through is unchanged and is the device-local one; see this phase's `deferred-items.md` §4 |
 | `packages/tfc_dart/lib/core/state_man.dart:442` | `prefs.setString(configKey, ..., secret: true, saveToDb: false)` | secure store | `StateManConfig.fromPrefs` at boot when the key is absent | `guarded by 03-06` — routed through `systemWrites` |
 | `packages/tfc_dart/lib/core/state_man.dart:450` | `prefs.setString(configKey, ...)` | secure store | `StateManConfig.toPrefs`, behind a control | `guarded by 03-06` |
 | `packages/tfc_dart/lib/core/state_man.dart:626` | `prefs.setString('key_mappings', ...)` | preferences | key-mapping save | `guarded by 03-06` |
@@ -296,6 +307,35 @@ they get rows so that they are visible rather than implied.
 |---|---|---|---|---|
 | `GuardedPreferences.systemWrites` (plan 03-05) | the seven write members with the session check skipped | preferences | the boot defaults enumerated in plan 03-06 | `left open: the deliberately unchecked write path` — see §3.9 |
 | `GuardedPreferences.database` (plan 03-05) | `guardedPrefs.database.db` → any raw Drift statement | every table | anything holding the guarded object | `left open: \`implements Preferences\` forces the getter` — see §3.10 |
+
+### 2.11 Writes through the shared configuration store (script §10 — 5 hits, new at the v1.2 phase 2 run)
+
+New because the store is new. Milestone v1.2 phase 2 moved the plant's key
+mappings out of `flutter_preferences.key_mappings` and into one `config_item`
+row per key, and a write through that store matches **nothing** above: it is
+not a `setString`, it carries no key literal at the call site, and it touches
+no Drift API there either.
+
+That is worth stating plainly, because of what the sweep would otherwise have
+reported. `lib/pages/key_repository.dart` and
+`lib/page_creator/assets/common.dart` both went quiet in §2.9 during this
+phase — their `prefs.setString('key_mappings', …)` calls are gone — and
+without §10 the report would have shown two fewer preference writes and called
+it progress, while the most consequential writes in the app carried on through
+a path it could not see. Same failure as an empty §2.4 after the store
+changed name; arriving by migration rather than by deletion.
+
+`packages/tfc_dart/lib/core/state_man.dart` lost its `key_mappings` row here
+rather than gaining a new verdict, for the reason 02-05 removed
+`lib/providers/state_man.dart`'s: `KeyMappings.fromPrefs` is deleted, so the
+write the row named does not exist, and a row for a call site the script
+cannot find fails the coverage test in the reverse direction. The file keeps
+its `state_man_config` rows.
+
+| Site | Call | Store | Reached from | Verdict |
+|---|---|---|---|---|
+| the four sites above | `saveKeyMappings`, `writeKeyMappings`, `seedDefaultIfEmpty` | shared configuration store | the key repository, the page editor's key field, and the boot seed | enumerated individually in §2.9's table — this section is the pattern that finds them, not a second set of rows |
+| `lib/tech_docs/tech_doc_upload_service.dart` | `configStore.save(wanted, kind: ConfigKind.asset, …)` | shared configuration store | deleting a technical document on the Knowledge Base page | `guarded by 03-05` — `GuardedConfigStore`, checked and recorded under the `page_editor_data` key exactly as the preference write it replaces was. **A behaviour change, not a move**: the old code tested `assets is! Map` against a list and wrote the device-local copy, so it stripped nothing, ever (D-4). The route is still ungated — see §3.1 — so `configure` at the guard is what stands between an operator and the plant's layout |
 
 ---
 
@@ -325,9 +365,15 @@ methods are called from app code:
 was deliberately **not** in `kRaisedRoutes`, and `lib/access_routes.dart` named
 it among the pages that "read rather than configure". It does not only read: an
 anonymous session at the panel could delete a technical document, delete a PLC
-asset's index, and — through `tech_doc_upload_service.dart:267` — rewrite
+asset's index, and — through `tech_doc_upload_service.dart`'s cleanup — rewrite
 `page_editor_data`. That is the claim plan 03-14 acted on; the route is raised
-now and both spellings of the sentence are gone from the source.
+now and both spellings of the sentence are gone from the source. Milestone v1.2
+plan 03-05 made that third claim *true*: the cleanup used to write the
+device-local copy of `page_editor_data` and, because it tested `assets is! Map`
+against a list, wrote nothing at all. It now rewrites the shared asset rows
+through `GuardedConfigStore` — so the raised route and the `configure` check
+are what stand between an operator and the plant's layout, and both are in
+place before the write can happen.
 
 **Why this is the same defect as the history view.** A destructive control on a
 page that should stay readable. §6's fourth bypass was exactly that, on
@@ -526,35 +572,54 @@ affordance in `centroid-hmi/lib/main.dart`, or accepting it explicitly on the
 grounds that the binary is signature-checked upstream. Somebody should decide
 which; today neither has been decided, which is why this entry exists.
 
-### 3.6 `lib/providers/theme.dart` — device-local UI state on the legacy API
+### 3.6 `lib/providers/theme.dart` — device-local UI state, still unguarded
 
-Four `SharedPreferences.getInstance()` calls writing `theme_mode` and
-`color_scheme`. Plan 03-01 classifies both as `operate`: they are what a panel
-writes about itself, not plant configuration. The file is inside
-`lib/providers/`, so spec §6's CI grep does not apply to it even once plan 03-11
-extends that grep to the legacy API.
+`theme_mode` and `color_scheme`. Plan 03-01 classifies both as `operate`: they
+are what a panel writes about itself, not plant configuration.
 
-**What closing it would take.** Routing both notifiers through
-`localPreferencesProvider` so the writes pass the guard and appear in the audit
-trail. It is cheap; it is left open because the value is low — an `operate` key
-an anonymous session may write anyway — and because moving it touches the theme
-path, which every golden in the repository depends on.
+**Half-closed by milestone v1.2 plan 01-06.** The four
+`SharedPreferences.getInstance()` calls are gone; both notifiers hold a `ref`
+and read `localPreferencesProvider`. That was the store problem, and it is
+fixed. It was not the guard problem, and this section previously said it would
+be — mistakenly. `localPreferencesProvider` is *deliberately* unguarded (the
+session itself is stored through it, so a check there would need a session to
+read the session), so these two writes still pass no access check and still
+produce no `audit_entry` row. What they do produce now is a `config_change` row
+in the station's own `config.sqlite`, which is a local change log and not the
+audit trail.
 
-### 3.7 `lib/pages/dbus_login.dart` — excluded by the spec
+**What closing it would take.** Unchanged in substance: routing both notifiers
+through a guarded path, which today means `preferencesProvider` — and that
+would make two device-local keys shared between every station pointed at the
+same Postgres, which is wrong for a per-panel theme. Left open because the
+value is low: an `operate` key an anonymous session may write anyway.
 
-Two `SharedPreferences.getInstance()` calls writing five bare keys
-(`connectionType`, `host`, `username`, `autoLogin`, `sshPrivateKeyPath`) and one
-`secureStorage.write(key: 'dbus_password', ...)`.
+### 3.7 `lib/pages/dbus_login.dart` — station credentials, outside the guard
 
-Spec §2 excludes changing this file from the whole milestone, and says why: the
-D-Bus credential is a **station** credential, the same kind of thing as the OPC
-UA session and the Postgres login, and D-Bus is the mechanism *underneath*
-`administer` rather than something `administer` governs. Plan 03-01 still
-classifies all five keys as `administer`, so if the writes are ever routed
+Five bare keys (`connectionType`, `host`, `username`, `autoLogin`,
+`sshPrivateKeyPath`) and one `secureStorage.write(key: 'dbus_password', ...)`.
+
+Spec §2 excluded changing this file from the access-control milestone, and said
+why: the D-Bus credential is a **station** credential, the same kind of thing as
+the OPC UA session and the Postgres login, and D-Bus is the mechanism
+*underneath* `administer` rather than something `administer` governs. Plan 03-01
+still classifies all five keys as `administer`, so if the writes are ever routed
 through the guard the classification is already there.
 
-**What closing it would take.** Lifting the §2 exclusion, then the same
-treatment as any other page. The exclusion is a decision, not an oversight.
+**The store moved anyway, in milestone v1.2 plan 01-06.** That milestone is
+about *where* device-local configuration lives, not about who may write it, so
+§2's exclusion did not apply to it: the two `getInstance()` calls became
+`createDeviceLocalPreferences()` (in the top-level `loadSavedDbusCredentials`,
+which has no `ref`) and `ref.read(localPreferencesProvider)` (in
+`_saveCredentials`, which does). The keys, their values and their trust level
+are unchanged; the `dbus_password` line was not touched and is still §3.4's
+problem. The check's single allow-list entry for this file went with the move —
+so a regression to the old constructor here now fails the build like anywhere
+else.
+
+**What closing the guard gap would take.** Lifting the §2 exclusion, then the
+same treatment as any other page. The exclusion is a decision, not an
+oversight.
 
 ### 3.8 `lib/widgets/tfc_operations.dart` — an unwired D-Bus operation-mode write
 
@@ -581,8 +646,7 @@ writes fire at boot with nobody signed in, on keys that are not `operate`:
 
 | Write | Key | Group | Owner |
 |---|---|---|---|
-| `lib/page_creator/page.dart:247` (unawaited, from `PageManager.load()`) | `page_editor_data` | `configure` | 03-06 |
-| `lib/providers/state_man.dart:26` (`fetchKeyMappings`) | `key_mappings` | `configure` | 03-06 |
+| ~~`lib/page_creator/page.dart` (unawaited, from `PageManager.load()`)~~ **deleted by 03-04** | `page_editor_data` | `configure` | — |
 | `packages/tfc_dart/lib/core/state_man.dart:442` (`StateManConfig.fromPrefs`) | `state_man_config` | `administer` | 03-06 |
 | `packages/tfc_dart/lib/core/alarm.dart:220` (`AlarmMan.create`) | `alarm_man_config` | `configure` | 03-06 |
 | `lib/providers/collector.dart:27` (`collectorProvider`) | `collector_config` | `administer` | 03-09 |
@@ -590,6 +654,19 @@ writes fire at boot with nobody signed in, on keys that are not `operate`:
 Without `systemWrites` each of these is denied on a fresh station and the
 station is broken in a way no screen shows — the page editor case takes the
 pages away entirely.
+
+**One of them has left.** `stateManProvider`'s `key_mappings` default —
+`fetchKeyMappings`, which wrote a one-key example blob through `systemWrites`
+whenever the preference was absent — was deleted by milestone v1.2 plan 02-05.
+Key mappings are `config_item` rows now, and the boot default is
+`GuardedConfigStore.seedDefaultIfEmpty`: no session check, `origin: 'system'`,
+one audit row, and it writes **only** against a shared database that is
+reachable and, once the first reconcile has landed, genuinely empty. That is
+strictly narrower than the write it replaces, which fired on any station whose
+local store happened not to hold the key — including one that simply could not
+reach Postgres. `lib/providers/state_man.dart` therefore no longer appears in
+§2.2 or in the table above; it is still on `kSystemWriteCallSites`, for
+`StateManConfig.fromPrefs`.
 
 **The residual risk.** It is a bypass by construction. Anything holding a
 `GuardedPreferences` can reach it. The controls are that it is a distinct object
@@ -649,6 +726,58 @@ a rebase, which is a product decision belonging to the owner of #440.
 What would settle it either way: decide whether the clock is `administer`
 (most of `/advanced` is) or stays an operator affordance, then either raise
 the route or split the clock section onto a page that is already raised.
+
+### 3.12 `centroid-hmi/lib/main.dart` constructs a second `ConfigStore`
+
+Milestone v1.2 phase 3 plan 04 gave `PageManager.load()` a `ConfigStore` to
+read the station's page rows from, and SC-5 asks for that to happen **before
+`runApp`** — so the first frame is the plant rather than a blank page while
+Postgres is decided. There is no `ref` at that point: `configStoreProvider`
+does not exist until the `ProviderScope` is built, which is after the pages
+are needed. So `main()` opens a second handle, and
+`scripts/check-preferences-construction.sh` carries the only entry in its
+allow list for the `config` pattern.
+
+**Not a hole, and the reasons are structural rather than promised.** The
+handle is constructed with no remote, so `writeItems` refuses every shared
+write at the offline check, before it reaches a diff — it *cannot* write a
+shared row. It is handed to `PageManager` as `store:`, whose documented and
+only use is `itemsOf`; the save path is 03-06's and goes through
+`GuardedConfigStore`. `config.sqlite` is WAL (Phase 1 SC-6), so a second
+handle on the file beside the provider's is safe. And the guard this handle
+does not have is a guard over writes, of which it performs none.
+
+What would settle it: Phase 4, when the blob fallback goes and the pre-`runApp`
+read is the only way a station gets its pages. At that point the handle is
+worth making explicit — a named read-only view over the mirror rather than a
+`ConfigStore` with a convention attached.
+
+### 3.13 `lib/page_creator/page.dart` — the page editor's save
+
+**Verdict: guarded, and the guard is the only route to a shared row.**
+
+`PageManager.save()` has two arms and they are told apart by one field.
+`writeItems` — bound in `lib/providers/page_manager.dart` and nowhere else —
+is `GuardedConfigStore.write` over `{page, asset}` with
+`checkKind: ConfigKind.page`, so every save the app performs is checked
+against `kConfigWriteKeys[ConfigKind.page]` = `page_editor_data` (the key the
+policy already classes as `configure`, and the `item_key` the trail already
+used for a layout change) and recorded as one `audit_entry` over N
+`config_change` rows. Until milestone v1.2 plan 03-06 added that table entry,
+`write(checkKind: page)` threw `ArgumentError` — the gate was deliberately in
+the way, so the save had to add the entry rather than route around the check.
+
+With no binding, `save()` writes the `page_editor_data` preference exactly as
+it did before rows existed. That arm belongs to the pre-`runApp` manager and to
+tests, and it **structurally cannot reach a shared row**: it never touches a
+`ConfigStore`. `PageManager.store` is the raw store and is reads-only by
+convention (§3.12); nothing in the class writes through it. The one thing the
+save does read from it is the stored identities, before it builds its items —
+`adoptRowIdentities`, a copy of ids that already exist as rows, never a
+derivation.
+
+What would settle it: Phase 4, when the blob arm goes entirely and the binding
+is not optional.
 
 ## 4. Is there a fifth?
 
@@ -724,13 +853,20 @@ now finds none, and the `flutter-test` job fails on a tenth.
 **E. Six legacy `SharedPreferences.getInstance()` calls.** An API spec §6 does
 not mention and its proposed CI check would not catch:
 `lib/providers/theme.dart:15, 22, 44, 51` and `lib/pages/dbus_login.dart:124, 141`.
-Owner: plan 03-11, which extends the check to the legacy API. Both files stay
-open on purpose — §3.6 and §3.7.
+Owner: plan 03-11, which extends the check to the legacy API.
 
-**Enforced.** The check searches for this pattern under the same
-outside-`lib/providers/` rule. `theme.dart` passes on the directory rule;
-`dbus_login.dart` is the check's single allow-list entry, carrying §2's
-exclusion as its reason. A seventh call anywhere else fails the build.
+**Enforced, and now empty.** The check searches for this pattern under the same
+outside-`lib/providers/` rule, and milestone v1.2 plan 01-06 moved all six onto
+the device-local store — so the pattern matches nothing today. It stays in the
+script regardless, because `shared_preferences` is still a readable dependency
+for one release and a regression to it is still possible. `dbus_login.dart`'s
+allow-list entry is deleted; the file passes on its own merits now.
+
+That emptiness is why the same plan gave the check a **third** pattern,
+`SqlitePreferences(`. Two patterns matching nothing is a gate that prints
+"clean" while enforcing nothing — the exact silent rot this document opens by
+quoting. The new pattern was proven to bite: a `SqlitePreferences(` planted
+under `lib/widgets/` fails the check by name, and removing it passes.
 
 ### 4.3 Where the answer was "nothing further"
 
@@ -765,10 +901,10 @@ in both directions. Seven files carried hits with no row:
 | `lib/core/guarded_history_views.dart` | 12 | plan 03-10's guard — new, and the shape a closed bypass has |
 | `packages/tfc_dart/lib/core/access/guarded_preferences.dart` | 12 | plan 03-05's guard — new; its two holes were already priced in §2.10 without a file and line, and now have one |
 | `lib/core/network_manager_ops.dart` | 7 | **the one genuine finding — §4.1 F.** Pre-dated the first run and had no row |
-| `packages/tfc_dart/lib/core/preferences_watch.dart` | 3 | already covered in 2.3, but named by bare filename; now a full path |
+| the `flutter_preferences` digest watcher | 3 | already covered in 2.3, but named by bare filename; at that run, a full path. **Gone since**: milestone v1.2 plan 04-12 deleted `preferences_watch.dart` with the table it watched. The row is retired to a description rather than kept as a path — a path the script cannot find fails the reconciliation in the reverse direction, which is the same treatment `GuardedPrefsReader` got below |
 | `packages/tfc_dart/lib/core/secure_storage/interface.dart` | 1 | same — 2.6 named it by bare filename |
 | `lib/providers/alarm.dart` | 1 | plan 03-06's seventh system-write site — new |
-| `lib/core/guarded_knowledge_stores.dart` | 1 | plan 03-13's guard — new |
+| the knowledge guards' page-layout reader | 1 | plan 03-13's guard — new at that run. **Gone since**: milestone v1.2 plan 03-05 moved the delete-document cleanup onto the shared configuration store, so `guarded_knowledge_stores.dart` writes no preference and `GuardedPrefsReader` is deleted. The file's row is retired rather than kept stale — a row the script cannot find fails the reconciliation in the reverse direction |
 
 In the reverse direction **one** row had no hit —
 `packages/tfc_dart/lib/core/database_drift.g.dart`, which the script collapses
@@ -841,36 +977,32 @@ from one behind a Save button.
 | `chat_widget.dart:189` | `kSelectedProvider` | `llm.selected_provider` | prefix `llm.` | `administer` | behind a control |
 | `chat_widget.dart:361` | `prefKey` (switch on provider) | `llm.claude.api_key`, `llm.openai.api_key`, `llm.gemini.api_key` | prefix `llm.` | `administer` | behind a control |
 | `chat_widget.dart:392, 394` | `urlPrefKey` (ternary) | `llm.claude.base_url`, `llm.openai.base_url` | prefix `llm.` | `administer` | behind a control |
-| `providers/state_man.dart:26` | `'key_mappings'` | `key_mappings` | exact `key_mappings` | `configure` | **boot-time** — `fetchKeyMappings` writes a default when absent |
 | `providers/collector.dart:27` | `Collector.configLocation` | `collector_config` | exact `collector_config` | `administer` | **boot-time** — default written when absent |
 | `providers/access.dart:694` | `kAccessSessionPrefKey` | `access.session` | exact `access.session` | `operate` | **read-path** — every `poke()`, i.e. every pointer-down |
 | `providers/chat.dart:340, 370, 405, 449, 525, 905` | `'$kConversationPrefix$id'` | `chat.conversation.<id>` | prefix `chat.` | `operate` | behind a control |
 | `providers/chat.dart:529, 548` | `kConversationList` | `chat.conversations` | prefix `chat.` | `operate` | behind a control |
 | `providers/chat.dart:532, 558` | `kActiveConversation` | `chat.active_conversation` | prefix `chat.` | `operate` | behind a control |
 | `providers/chat.dart:453, 494, 505, 535, 538` | `kChatHistory` | `chat.history` | prefix `chat.` | `operate` | behind a control, plus a one-time migration |
-| `providers/theme.dart:23` | `_key` (`ThemeModeNotifier`) | `theme_mode` | exact `theme_mode` | `operate` | behind a control — **legacy API; never reaches the guard**, §3.6 |
+| `providers/theme.dart:23` | `_key` (`ThemeModeNotifier`) | `theme_mode` | exact `theme_mode` | `operate` | behind a control — device-local store since v1.2 plan 01-06; **still never reaches the guard**, §3.6 |
 | `providers/theme.dart:52` | `_key` (`ColorSchemeNotifier`) | `color_scheme` | exact `color_scheme` | `operate` | behind a control — same |
-| `tech_doc_upload_service.dart:267` | `'page_editor_data'` | `page_editor_data` | exact `page_editor_data` | `configure` | **delete-path** — rewritten when a tech doc is deleted, from an ungated route (§3.1) |
-| `tech_doc_library_section.dart:1203` | `key` (a `PrefsReader` parameter) | `page_editor_data` — the adapter's only caller is the row above | exact `page_editor_data` | `configure` | same |
-| `key_repository.dart:637, 1933` | `'key_mappings'` | `key_mappings` | exact `key_mappings` | `configure` | behind a control, on a `configure`-gated route |
+| `tech_doc_upload_service.dart` (the cleanup) | `kConfigWriteKeys[ConfigKind.asset]` | `page_editor_data` | exact `page_editor_data` | `configure` | **delete-path** — the asset rows are rewritten when a tech doc is deleted. Since v1.2 plan 03-05 the key is the guard's `item_key` rather than a preference key: the layout is rows now, and this is the string that keeps one query over the trail spanning the cutover. The `PrefsReader` adapter that used to carry it is deleted |
+| `key_repository.dart:882, 2417` | `kConfigWriteKeys[ConfigKind.keyMapping]` | `key_mappings` | exact `key_mappings` | `configure` | behind a control, on a `configure`-gated route — through the configuration store since 02-06 |
 | `page_view.dart:264` | `'asset_stack_config'` | `asset_stack_config` | exact `asset_stack_config` | `operate` | **read-path** — written when the key is absent, on mount of any asset page |
-| `dbus_login.dart:127-131` | five literals | `connectionType`, `host`, `username`, `autoLogin`, `sshPrivateKeyPath` | five exact rules | `administer` | behind a control — **legacy API**, §3.7 |
-| `page_creator/page.dart:247` | `storageKey` | `page_editor_data` | exact `page_editor_data` | `configure` | **boot-time, unawaited** — a denial here surfaces as an unhandled async error and a default that never persists |
-| `page_creator/page.dart:252` | `storageKey` | `page_editor_data` | exact | `configure` | behind a control |
-| `page_creator/page.dart:257` | `orderStorageKey` | `page_editor_top_level_order` | exact `page_editor_top_level_order` | `configure` | behind a control |
-| `image_store.dart:96, 129` | `'$keyPrefix$id'` | `page_editor_image:<id>` | prefix `page_editor_image:` | `configure` | behind a control |
-| `page_creator/assets/common.dart:444` | `'key_mappings'` | `key_mappings` | exact | `configure` | behind a control |
+| `dbus_login.dart:127-131` | five literals | `connectionType`, `host`, `username`, `autoLogin`, `sshPrivateKeyPath` | five exact rules | `administer` | behind a control — device-local store since v1.2 plan 01-06; **still never reaches the guard**, §3.7 |
+| ~~`page_creator/page.dart` boot seed~~ | `storageKey` | `page_editor_data` | exact `page_editor_data` | `configure` | **deleted by 03-04** — it was boot-time and unawaited, so a denial surfaced as an unhandled async error and a default that never persisted |
+| `page_creator/page.dart:454` | `storageKey` | `page_editor_data` | exact | `configure` | behind a control — and **only on a manager with no `writeItems` binding**; the app's manager writes rows instead (§3.13) |
+| `page_creator/page.dart:469` | `orderStorageKey` | `page_editor_top_level_order` | exact `page_editor_top_level_order` | `configure` | behind a control; device-local, and written *before* the rows so the half that can be stale is the cosmetic half |
+| ~~`image_store.dart:96, 129`~~ | `'$keyPrefix$id'` | `page_editor_image:<id>` | prefix `page_editor_image:` | `configure` | **moved by 04-09** — image blobs are `kind='page_image'` rows now, written through `GuardedConfigStore.save`, so they are checked under `kConfigWriteKeys[ConfigKind.pageImage]` = `page_editor_data`, which resolves to the same `configure`. The prefix rule stays in `kPrefAccessRules` for the legacy rows the 04-11 migration will still meet |
+| `page_creator/assets/common.dart:846` | `kConfigWriteKeys[ConfigKind.keyMapping]` | `key_mappings` | exact | `configure` | behind a control — through the configuration store since 02-06, not through preferences |
 | `recipes.dart:269` | `'${widget.config.recipesBucket}.recipes'` | `<bucket>.recipes` | suffix `.recipes` | `setpoints` | **read-path** — `_getRecipes` writes an empty default, so an anonymous operator merely opening a recipes asset triggers it |
 | `recipes.dart:281` | same expression | `<bucket>.recipes` | suffix `.recipes` | `setpoints` | behind a control |
 | `widgets/preferences.dart:949-957, 979, 981` | `e.key` | **cannot be resolved to a literal or a prefix** — the key is whatever row the operator is editing, so the group is whatever rule matches at runtime | every rule, at runtime | varies | behind a control, on the `administer`-gated `/advanced/preferences` |
 | `color_picker_dialog.dart:66` | `prefsKey` | `color_picker_recent_colors` | exact `color_picker_recent_colors` | `operate` | behind a control (confirming a colour) |
 | `tfc_dart/core/state_man.dart:442` | `configKey` | `state_man_config` | exact `state_man_config` | `administer` | **boot-time** — `StateManConfig.fromPrefs` writes a default when absent |
 | `tfc_dart/core/state_man.dart:450` | `configKey` | `state_man_config` | exact | `administer` | behind a control |
-| `tfc_dart/core/state_man.dart:626` | `'key_mappings'` | `key_mappings` | exact | `configure` | behind a control |
 | `tfc_dart/core/alarm.dart:220` | `'alarm_man_config'` | `alarm_man_config` | exact `alarm_man_config` | `configure` | **boot-time** — `AlarmMan.create` writes a default when absent |
 | `tfc_dart/core/alarm.dart:303` | `'alarm_man_config'` | `alarm_man_config` | exact | `configure` | behind a control — `addAlarm`/`removeAlarm`/`updateAlarm`/`setAutoNavigate` only. **`ackAlarm` writes nothing**, so this rule does not stand between an operator and an alarm ack |
 | `read_toggles.dart:38, 114` | `McpConfig.kPrefKey` | `mcp.config` | prefix `mcp.` | `administer` | over MCP, not from a widget (§3.2) |
-| `lib/core/preferences.dart:54-84` | `key` (a parameter) | pass-through — `SharedPreferencesWrapper` delegates the caller's key | n/a | the caller's | n/a |
 | `tfc_dart/core/preferences.dart:344-585` | `key` / `entry.key` (parameters) | pass-through — the cache fan-out inside `Preferences` | n/a | the caller's | n/a |
 | `config_service.dart:64` | `_prefCache.clear()` | **not a preference key** — `_prefCache` is a `TtlCache` (`:45`) | n/a | n/a | n/a |
 | `lib/core/last_route.dart:52` | `lastRoutePrefsKey` | `last_route` | none -- device-local store, outside `kPrefAccessRules` by design (as `startup_url` on the local store) | n/a | on every navigation |

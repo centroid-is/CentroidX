@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:async';
 
 import 'package:logger/logger.dart';
@@ -11,9 +10,9 @@ import 'package:tfc_dart/core/access/guarded_state_man.dart';
 import 'package:tfc_dart/core/modbus_device_client.dart';
 import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:tfc_dart/core/state_man.dart';
-import 'package:tfc_dart/core/preferences.dart';
 import 'access.dart';
 import 'access_policy.dart';
+import 'config_store.dart';
 import 'preferences.dart';
 import 'collector.dart';
 
@@ -22,29 +21,6 @@ part 'state_man.g.dart';
 /// File-level logger. These diagnostics used to go to stderr, which in a
 /// windowed MSIX build with no console is discarded outright.
 final Logger _log = Logger();
-
-/// Reads `key_mappings`, seeding a default when the station has none.
-///
-/// [systemWrites] is where the **seed** goes, and only the seed. It is
-/// optional and falls back to [prefs] so every existing caller and every
-/// existing test keeps working untouched; `stateManProvider` passes
-/// `systemPreferencesProvider` so that a station booting with an empty store
-/// and nobody signed in is not denied its own default (`key_mappings` is a
-/// `configure` key). An operator editing key mappings still goes through the
-/// guarded object, because that write is not this one.
-Future<KeyMappings> fetchKeyMappings(PreferencesApi prefs,
-    {Preferences? systemWrites}) async {
-  var keyMappingsJson = await prefs.getString('key_mappings');
-  if (keyMappingsJson == null) {
-    final defaultKeyMappings = KeyMappings(nodes: {
-      "exampleKey": KeyMappingEntry(
-          opcuaNode: OpcUANodeConfig(namespace: 42, identifier: "identifier"))
-    });
-    keyMappingsJson = jsonEncode(defaultKeyMappings.toJson());
-    await (systemWrites ?? prefs).setString('key_mappings', keyMappingsJson);
-  }
-  return KeyMappings.fromJson(jsonDecode(keyMappingsJson));
-}
 
 /// How the inner, unguarded [StateMan] is built.
 typedef StateManFactory = Future<StateMan> Function({
@@ -69,52 +45,71 @@ Future<StateMan> stateMan(Ref ref) async {
   // Use ref.read instead of ref.watch to break the reactive dependency chain.
   // StateMan reads config once at init; DB reconnects should NOT cascade here
   // and destroy all OPC-UA connections/isolates.
-  final prefs = await ref.read(preferencesProvider.future);
-  // The app's own defaults, for the two writes below. Both fire on a station
-  // that has never been configured, with nobody signed in, against keys the
-  // policy classes as `configure` and `administer` — so on the guarded object
-  // they would be denials at boot.
+  //
+  // The configuration store is deliberately safe to read this way: its object
+  // identity never changes for the life of the process, and the Postgres half
+  // is attached underneath it. See `config_store.dart`.
+  final store = (await ref.read(configStoreProvider.future)).inner;
+  // The app's own default `state_man_config`, written on a station that has
+  // never been configured, with nobody signed in, against a key the policy
+  // classes as `administer` — so on the guarded object it would be a denial at
+  // boot. The key mappings' own boot default is not here any more: it is the
+  // store's `seedDefaultIfEmpty`, which only writes against a reachable and
+  // genuinely empty shared database.
   final systemPrefs = await ref.read(systemPreferencesProvider.future);
   final config = await StateManConfig.fromPrefs(systemPrefs);
 
-  final keyMappings = await fetchKeyMappings(prefs, systemWrites: systemPrefs);
+  // What the shared store holds. A station with no Postgres and an empty
+  // mirror boots on empty mappings, which is the honest answer: it has no
+  // shared configuration, and inventing an example key here would put one key
+  // of nonsense into a plant the moment the database came back.
+  final keyMappings = store.keyMappings;
 
-  // Watch for changes in specific preferences.
-  //
   // A key_mappings save is applied incrementally: unchanged keys keep their
-  // connections and subscriptions untouched, edited OPC UA keys are
-  // re-pointed live, and only edits the adapters cannot absorb in place
-  // (classic-Modbus register specs, M2400 extraction) fall back to a full
-  // provider rebuild — the old "whole world awakens" path.
+  // connections and subscriptions untouched, edited OPC UA keys are re-pointed
+  // live, and only edits the adapters cannot absorb in place (classic-Modbus
+  // register specs, M2400 extraction) fall back to a full provider rebuild —
+  // the old "whole world awakens" path.
+  //
+  // **On the store's stream, not on `Preferences.onPreferencesChanged`.** That
+  // was C-1: this provider reads preferences with `ref.read` on purpose (a
+  // watch would drop every OPC UA connection on each database reconnect), so
+  // it subscribed to the `Preferences` instance that existed at boot — and
+  // `preferencesProvider` builds a *new* one on every reconnect, after which
+  // the listener was attached to an object nobody wrote to again. The symptom
+  // was key-mapping edits silently not applying, forever, after the first
+  // database blip. The store outlives every provider rebuild, so subscribing
+  // to it is the fix rather than a way of avoiding the bug.
+  //
+  // The diff comes from the store, which has already computed it to decide
+  // which rows to write, and goes straight to `updateKeyMappings` — no
+  // re-derivation from two full blobs.
   //
   // Applications are serialized through [pendingApply] so two rapid saves
   // cannot interleave their diffs out of order.
   var pendingApply = Future<void>.value();
-  final listener = prefs.onPreferencesChanged.listen(
-    (key) {
-      if (key == 'key_mappings') {
-        pendingApply = pendingApply.then((_) async {
-          try {
-            final stateMan = await ref.read(stateManProvider.future);
-            final newPrefs = await ref.read(preferencesProvider.future);
-            final result = stateMan.updateKeyMappings(
-                await fetchKeyMappings(newPrefs, systemWrites: systemPrefs));
-            if (result.requiresReload) {
-              _log.i('key_mappings: full reload required '
-                  '(${result.reloadReasons.join('; ')})');
-              ref.invalidateSelf();
-            }
-          } catch (error, stack) {
-            // A key mapping that fails to apply is the direct cause of a dead
-            // key on a page, and this is the only record that it happened.
-            _log.e('Failed to apply key_mappings change: $error',
-                error: error, stackTrace: stack);
+  final listener = store.keyMappingChanges.listen(
+    (diff) {
+      pendingApply = pendingApply.then((_) async {
+        try {
+          final stateMan = await ref.read(stateManProvider.future);
+          final result =
+              stateMan.updateKeyMappings(store.keyMappings, diff: diff);
+          if (result.requiresReload) {
+            _log.i('key_mappings: full reload required '
+                '(${result.reloadReasons.join('; ')})');
+            ref.invalidateSelf();
           }
-        });
-      }
+        } catch (error, stack) {
+          // A key mapping that fails to apply is the direct cause of a dead
+          // key on a page, and this is the only record that it happened.
+          _log.e('Failed to apply key_mappings change: $error',
+              error: error, stackTrace: stack);
+        }
+      });
     },
-    onError: (error, stack) {
-      _log.e('Error in preferences listener: $error',
+    onError: (Object error, StackTrace stack) {
+      _log.e('Error in the key mapping change listener: $error',
           error: error, stackTrace: stack);
     },
   );

@@ -10,6 +10,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:tfc/pages/page_editor.dart' show imageCollectionGrace;
 
 import 'package:tfc/page_creator/assets/editor_clipboard.dart';
 import 'package:tfc/page_creator/assets/image.dart';
@@ -84,14 +85,14 @@ void main() {
     expect(find.byType(PageImage), findsOneWidget);
     expect(selectedCount(tester), 1);
 
-    // Persisted: the asset carries the content-hash id, the blob sits under
-    // its own preference key, not inside the page JSON.
+    // Persisted: the asset carries the content-hash id, the blob sits on its
+    // own `page_image` row, not inside the page JSON.
     final saved = await saveAndReadBack(tester, prefs);
     expect(saved, hasLength(1));
     expect(saved.single['asset_name'], 'ImageConfig');
     final id = saved.single['image_id'] as String;
     expect(id, await PageImageStore.imageIdFor(fixturePngBytes));
-    expect(await PageImageStore(prefs).load(id), fixturePngBytes);
+    expect(await (await imageStoreOf(prefs)).load(id), fixturePngBytes);
     expect(saved.single['natural_aspect'], closeTo(1.5, 0.001));
   });
 
@@ -146,8 +147,12 @@ void main() {
 
   testWidgets('saving deletes orphaned image blobs but keeps referenced ones',
       (tester) async {
+    // The collector spares anything stored in the last day; this test is
+    // about what it takes once that grace is over.
+    imageCollectionGrace = Duration.zero;
+    addTearDown(() => imageCollectionGrace = const Duration(hours: 24));
     final prefs = await pumpEditorWith(tester, []);
-    final store = PageImageStore(prefs);
+    final store = await imageStoreOf(prefs);
     final orphan = await store.save(fixtureJpegBytes);
 
     clipboard.image = fixturePngBytes;

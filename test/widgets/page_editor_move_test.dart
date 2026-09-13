@@ -26,6 +26,8 @@ import 'package:tfc/providers/alarm.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/route_registry.dart';
+import '../helpers/test_helpers.dart'
+    show useInMemoryDeviceLocalPreferences;
 
 /// Minimal in-memory [PreferencesApi] so the editor can load and save.
 class _FakePreferences implements PreferencesApi {
@@ -231,6 +233,11 @@ void main() {
     // `setUpEditorEnvironment`.
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
+
+    // And the store the factory answers, which since v1.2 plan 01-05 is the
+    // one `initDeviceLocalPreferences()` opens rather than a wrapper over the
+    // platform instance above.
+    useInMemoryDeviceLocalPreferences();
 
     // BaseScaffold renders a NavigationBar from the registry, which asserts on
     // fewer than two destinations.

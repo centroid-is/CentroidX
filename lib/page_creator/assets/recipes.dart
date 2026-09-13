@@ -6,6 +6,7 @@ import 'package:json_annotation/json_annotation.dart';
 
 import 'package:tfc/page_creator/assets/button.dart';
 import 'package:tfc/page_creator/assets/common.dart';
+import 'package:tfc_access/tfc_access.dart' show AccessDenied;
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc/providers/preferences.dart';
@@ -306,12 +307,30 @@ class _RecipesState extends ConsumerState<Recipes> {
     );
   }
 
+  /// Saves, and says so when it could not.
+  ///
+  /// Called from inside `setState` callbacks, so it cannot be awaited there
+  /// — but a shared write can be refused (offline, a lost compare-and-swap,
+  /// a denial), and a refusal that lands nowhere leaves a recipe on screen
+  /// that reopening the dialog shows was never stored. The messenger is
+  /// resolved before the first await for the reason every other write surface
+  /// gives: the dialog may be gone by the time the refusal comes back.
   Future<void> _saveRecipes(List<Recipe> recipes) async {
-    await writeRecipes(
-      await ref.read(preferencesProvider.future),
-      widget.config.recipesBucket,
-      recipes,
-    );
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      await writeRecipes(
+        await ref.read(preferencesProvider.future),
+        widget.config.recipesBucket,
+        recipes,
+      );
+    } on AccessDenied {
+      // Already prompted and recorded by the guard.
+      rethrow;
+    } catch (error) {
+      messenger?.showSnackBar(SnackBar(
+        content: Text('Recipes not saved: $error'),
+      ));
+    }
   }
 
   void _addRecipe(String name, List<Recipe> recipes, DynamicValue data,

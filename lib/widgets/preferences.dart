@@ -22,6 +22,7 @@ import '../providers/mcp_bridge.dart';
 import '../providers/preferences.dart';
 import '../providers/theme.dart';
 import '../theme.dart';
+import 'package:tfc_access/tfc_access.dart' show AccessDenied;
 import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/database.dart';
 
@@ -948,17 +949,37 @@ class _PreferencesKeysWidgetState extends ConsumerState<PreferencesKeysWidget>
                         onChanged: (newValue) async {
                           final isInDb = dbFlags[e.key] ?? false;
                           final target = isInDb ? prefs : localPrefs;
+                          // Resolved before the first await: the row may be
+                          // gone by the time a refusal comes back.
+                          final messenger = ScaffoldMessenger.maybeOf(context);
 
-                          if (newValue is bool) {
-                            await target.setBool(e.key, newValue);
-                          } else if (newValue is int) {
-                            await target.setInt(e.key, newValue);
-                          } else if (newValue is double) {
-                            await target.setDouble(e.key, newValue);
-                          } else if (newValue is List<String>) {
-                            await target.setStringList(e.key, newValue);
-                          } else if (newValue is String) {
-                            await target.setString(e.key, newValue);
+                          // A shared write can be refused — offline, a lost
+                          // compare-and-swap, a denial — and every other
+                          // write surface says so. This one used to let the
+                          // throw escape into nowhere and leave the edited
+                          // text on screen over a value that never changed.
+                          try {
+                            if (newValue is bool) {
+                              await target.setBool(e.key, newValue);
+                            } else if (newValue is int) {
+                              await target.setInt(e.key, newValue);
+                            } else if (newValue is double) {
+                              await target.setDouble(e.key, newValue);
+                            } else if (newValue is List<String>) {
+                              await target.setStringList(e.key, newValue);
+                            } else if (newValue is String) {
+                              await target.setString(e.key, newValue);
+                            }
+                          } on AccessDenied {
+                            // Already prompted and recorded by the guard.
+                            rethrow;
+                          } catch (error) {
+                            messenger?.showSnackBar(SnackBar(
+                              content: Text(
+                                  'Not saved — "${e.key}" was not written: '
+                                  '$error'),
+                            ));
+                            return;
                           }
                           // Reload data to reflect changes
                           _loading = true;
@@ -979,10 +1000,23 @@ class _PreferencesKeysWidgetState extends ConsumerState<PreferencesKeysWidget>
                           );
                           if (confirmed) {
                             final isInDb = dbFlags[e.key] ?? false;
-                            if (isInDb) {
-                              await prefs.remove(e.key);
-                            } else {
-                              await localPrefs.remove(e.key);
+                            final messenger =
+                                ScaffoldMessenger.maybeOf(context);
+                            try {
+                              if (isInDb) {
+                                await prefs.remove(e.key);
+                              } else {
+                                await localPrefs.remove(e.key);
+                              }
+                            } on AccessDenied {
+                              rethrow;
+                            } catch (error) {
+                              messenger?.showSnackBar(SnackBar(
+                                content: Text(
+                                    'Not deleted — "${e.key}" was not '
+                                    'removed: $error'),
+                              ));
+                              return;
                             }
                             _drafts.remove(e.key);
                             _expandedKeys.remove(e.key);

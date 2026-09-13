@@ -174,14 +174,8 @@ void main() {
     });
 
     testWidgets('copied key is placed right after the original', (tester) async {
-      late Preferences testPrefs;
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            preferencesProvider.overrideWith((ref) async {
-              testPrefs = await createTestPreferences(
-                keyMappings: KeyMappings(nodes: {
+      final store = await createTestConfigStore(
+        keyMappings: KeyMappings(nodes: {
                   'first_key': KeyMappingEntry(
                     opcuaNode:
                         OpcUANodeConfig(namespace: 1, identifier: 'A'),
@@ -195,16 +189,12 @@ void main() {
                         OpcUANodeConfig(namespace: 3, identifier: 'C'),
                   ),
                 }),
-              );
-              return testPrefs;
-            }),
-            databaseProvider.overrideWith((ref) async => null),
-          ],
-          child: MaterialApp(
-            home: Scaffold(body: KeyRepositoryContent()),
-          ),
-        ),
+        session: kConfiguringTestSession,
       );
+
+      await tester.pumpWidget(buildTestableKeyRepository(
+        configStore: store,
+      ));
       await tester.pumpAndSettle();
 
       // Copy the second key
@@ -220,8 +210,7 @@ void main() {
       await tester.tap(find.text('Save Key Mappings'));
       await tester.pumpAndSettle();
 
-      final savedJson = await testPrefs.getString('key_mappings');
-      final saved = KeyMappings.fromJson(jsonDecode(savedJson!));
+      final saved = store.inner.keyMappings;
       final keys = saved.nodes.keys.toList();
       expect(keys, [
         'first_key',
@@ -232,31 +221,21 @@ void main() {
     });
 
     testWidgets('copied key preserves OPC UA config', (tester) async {
-      late Preferences testPrefs;
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            preferencesProvider.overrideWith((ref) async {
-              testPrefs = await createTestPreferences(
-                keyMappings: KeyMappings(nodes: {
+      final store = await createTestConfigStore(
+        keyMappings: KeyMappings(nodes: {
                   'src_key': KeyMappingEntry(
                     opcuaNode:
                         OpcUANodeConfig(namespace: 5, identifier: 'SrcNode')
                           ..serverAlias = 'main_server',
                   ),
                 }),
-                stateManConfig: sampleStateManConfig(),
-              );
-              return testPrefs;
-            }),
-            databaseProvider.overrideWith((ref) async => null),
-          ],
-          child: MaterialApp(
-            home: Scaffold(body: KeyRepositoryContent()),
-          ),
-        ),
+        session: kConfiguringTestSession,
       );
+
+      await tester.pumpWidget(buildTestableKeyRepository(
+        stateManConfig: sampleStateManConfig(),
+        configStore: store,
+      ));
       await tester.pumpAndSettle();
 
       // Copy the key
@@ -272,8 +251,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Verify the copy has the same OPC UA config
-      final savedJson = await testPrefs.getString('key_mappings');
-      final saved = KeyMappings.fromJson(jsonDecode(savedJson!));
+      final saved = store.inner.keyMappings;
       expect(saved.nodes.containsKey('src_key_copy'), isTrue);
       final copy = saved.nodes['src_key_copy']!;
       expect(copy.opcuaNode?.namespace, 5);
@@ -283,29 +261,19 @@ void main() {
 
     testWidgets('renaming a copied key and saving persists the new name',
         (tester) async {
-      late Preferences testPrefs;
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            preferencesProvider.overrideWith((ref) async {
-              testPrefs = await createTestPreferences(
-                keyMappings: KeyMappings(nodes: {
+      final store = await createTestConfigStore(
+        keyMappings: KeyMappings(nodes: {
                   'original': KeyMappingEntry(
                     opcuaNode:
                         OpcUANodeConfig(namespace: 1, identifier: 'Node1'),
                   ),
                 }),
-              );
-              return testPrefs;
-            }),
-            databaseProvider.overrideWith((ref) async => null),
-          ],
-          child: MaterialApp(
-            home: Scaffold(body: KeyRepositoryContent()),
-          ),
-        ),
+        session: kConfiguringTestSession,
       );
+
+      await tester.pumpWidget(buildTestableKeyRepository(
+        configStore: store,
+      ));
       await tester.pumpAndSettle();
 
       // Copy the key (creates 'original_copy', auto-expanded)
@@ -328,8 +296,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Verify the renamed key is saved, not 'original_copy'
-      final savedJson = await testPrefs.getString('key_mappings');
-      final saved = KeyMappings.fromJson(jsonDecode(savedJson!));
+      final saved = store.inner.keyMappings;
       expect(saved.nodes.containsKey('my_renamed_copy'), isTrue,
           reason: 'Copied key should be saved with renamed name');
       expect(saved.nodes.containsKey('original_copy'), isFalse,
@@ -467,29 +434,19 @@ void main() {
     });
 
     testWidgets('key name updates immediately as user types', (tester) async {
-      late Preferences testPrefs;
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            preferencesProvider.overrideWith((ref) async {
-              testPrefs = await createTestPreferences(
-                keyMappings: KeyMappings(nodes: {
+      final store = await createTestConfigStore(
+        keyMappings: KeyMappings(nodes: {
                   'original': KeyMappingEntry(
                     opcuaNode:
                         OpcUANodeConfig(namespace: 1, identifier: 'Node1'),
                   ),
                 }),
-              );
-              return testPrefs;
-            }),
-            databaseProvider.overrideWith((ref) async => null),
-          ],
-          child: MaterialApp(
-            home: Scaffold(body: KeyRepositoryContent()),
-          ),
-        ),
+        session: kConfiguringTestSession,
       );
+
+      await tester.pumpWidget(buildTestableKeyRepository(
+        configStore: store,
+      ));
       await tester.pumpAndSettle();
 
       // Expand the card
@@ -508,8 +465,7 @@ void main() {
       await tester.tap(find.text('Save Key Mappings'));
       await tester.pumpAndSettle();
 
-      final savedJson = await testPrefs.getString('key_mappings');
-      final saved = KeyMappings.fromJson(jsonDecode(savedJson!));
+      final saved = store.inner.keyMappings;
       expect(saved.nodes.containsKey('renamed'), isTrue,
           reason: 'Key name should update as user types');
       expect(saved.nodes.containsKey('original'), isFalse,
@@ -880,24 +836,13 @@ void main() {
   group('Save and load', () {
     testWidgets('save button persists key mappings to preferences',
         (tester) async {
-      late Preferences testPrefs;
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            preferencesProvider.overrideWith((ref) async {
-              testPrefs = await createTestPreferences();
-              return testPrefs;
-            }),
-            databaseProvider.overrideWith((ref) async => null),
-          ],
-          child: MaterialApp(
-            home: Scaffold(
-              body: KeyRepositoryContent(),
-            ),
-          ),
-        ),
+      final store = await createTestConfigStore(
+        session: kConfiguringTestSession,
       );
+
+      await tester.pumpWidget(buildTestableKeyRepository(
+        configStore: store,
+      ));
       await tester.pumpAndSettle();
 
       // Add a key
@@ -911,33 +856,19 @@ void main() {
       await tester.pumpAndSettle();
 
       // Verify prefs were updated
-      final savedJson = await testPrefs.getString('key_mappings');
-      expect(savedJson, isNotNull);
-      final savedKeyMappings =
-          KeyMappings.fromJson(jsonDecode(savedJson!));
+      final savedKeyMappings = store.inner.keyMappings;
       expect(savedKeyMappings.nodes.containsKey('new_key'), isTrue);
     });
 
     testWidgets('renaming key name and saving persists the new name',
         (tester) async {
-      late Preferences testPrefs;
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            preferencesProvider.overrideWith((ref) async {
-              testPrefs = await createTestPreferences();
-              return testPrefs;
-            }),
-            databaseProvider.overrideWith((ref) async => null),
-          ],
-          child: MaterialApp(
-            home: Scaffold(
-              body: KeyRepositoryContent(),
-            ),
-          ),
-        ),
+      final store = await createTestConfigStore(
+        session: kConfiguringTestSession,
       );
+
+      await tester.pumpWidget(buildTestableKeyRepository(
+        configStore: store,
+      ));
       await tester.pumpAndSettle();
 
       // Add a key (creates 'new_key', auto-expanded)
@@ -957,10 +888,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Verify prefs contain the renamed key, not 'new_key'
-      final savedJson = await testPrefs.getString('key_mappings');
-      expect(savedJson, isNotNull);
-      final savedKeyMappings =
-          KeyMappings.fromJson(jsonDecode(savedJson!));
+      final savedKeyMappings = store.inner.keyMappings;
       expect(savedKeyMappings.nodes.containsKey('my_sensor'), isTrue,
           reason: 'Key should be saved with renamed name "my_sensor"');
       expect(savedKeyMappings.nodes.containsKey('new_key'), isFalse,
@@ -1232,25 +1160,15 @@ void main() {
 
     testWidgets('toggling collection on Modbus key preserves modbusNode config',
         (tester) async {
-      late Preferences testPrefs;
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            preferencesProvider.overrideWith((ref) async {
-              testPrefs = await createTestPreferences(
-                keyMappings: sampleModbusKeyMappings(),
-                stateManConfig: sampleStateManConfigWithModbus(),
-              );
-              return testPrefs;
-            }),
-            databaseProvider.overrideWith((ref) async => null),
-          ],
-          child: MaterialApp(
-            home: Scaffold(body: KeyRepositoryContent()),
-          ),
-        ),
+      final store = await createTestConfigStore(
+        keyMappings: sampleModbusKeyMappings(),
+        session: kConfiguringTestSession,
       );
+
+      await tester.pumpWidget(buildTestableKeyRepository(
+        stateManConfig: sampleStateManConfigWithModbus(),
+        configStore: store,
+      ));
       await tester.pumpAndSettle();
 
       // Expand 'modbus_temp' card
@@ -1278,8 +1196,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Verify modbusNode config is preserved
-      final savedJson = await testPrefs.getString('key_mappings');
-      final saved = KeyMappings.fromJson(jsonDecode(savedJson!));
+      final saved = store.inner.keyMappings;
       final entry = saved.nodes['modbus_temp']!;
       expect(entry.modbusNode, isNotNull,
           reason: 'modbusNode should be preserved after toggling collection');
@@ -1575,20 +1492,20 @@ void main() {
     });
 
     testWidgets(
-        'invoking onReorder moves first card to last position and persists',
-        (tester) async {
-      await tester.pumpWidget(buildTestableKeyRepository(
+        'invoking onReorder moves first card to last position; the keys are '
+        'stored, the arrangement is not (D-5)', (tester) async {
+      final store = await createTestConfigStore(
         keyMappings: threeKeys(),
+        session: kConfiguringTestSession,
+      );
+      await tester.pumpWidget(buildTestableKeyRepository(
+        configStore: store,
         stateManConfig: sampleStateManConfig(),
       ));
       await tester.pumpAndSettle();
 
       // Sanity check: starting order.
       expect(titleOrder(tester), ['alpha', 'bravo', 'charlie']);
-
-      // Capture provider container to inspect persisted prefs after save.
-      final BuildContext ctx = tester.element(find.byType(KeyRepositoryContent));
-      final container = ProviderScope.containerOf(ctx);
 
       // Find the ReorderableListView and invoke its onReorder callback,
       // simulating a drag of index 0 to the end-of-list slot (index 3).
@@ -1600,27 +1517,37 @@ void main() {
       reorderable.onReorder!(0, 3);
       await tester.pumpAndSettle();
 
-      // Visual order updated: alpha is now last.
+      // Visual order updated: alpha is now last. This half is unchanged and
+      // is what the operator sees for the rest of the session.
       expect(titleOrder(tester), ['bravo', 'charlie', 'alpha']);
 
-      // Tap save to flush the new order to preferences.
       await tester.tap(find.text('Save Key Mappings'));
       await tester.pumpAndSettle();
 
-      // Verify persisted JSON preserves the new order.
-      final prefs = await container.read(preferencesProvider.future);
-      final raw = await prefs.getString('key_mappings');
-      expect(raw, isNotNull);
-      final decoded = KeyMappings.fromJson(
-          jsonDecode(raw!) as Map<String, dynamic>);
-      expect(decoded.nodes.keys.toList(), ['bravo', 'charlie', 'alpha']);
+      // What is stored. `config_item` rows carry no order for key mappings —
+      // the codec sorts by key on the way in and the store sorts again on the
+      // way out — so the arrangement does not survive the save. Asserted
+      // rather than left implicit, because until this phase it did survive:
+      // the blob was a JSON object and `nodes` is a LinkedHashMap.
+      // docs/relational-config-deferred-defects.md D-5.
+      final saved = store.inner.keyMappings;
+      expect(saved.nodes.keys.toSet(), {'alpha', 'bravo', 'charlie'},
+          reason: 'every key is stored; only the arrangement is lost');
+      expect(saved.nodes.keys.toList(), ['alpha', 'bravo', 'charlie'],
+          reason: 'sorted by key, not in the order the operator arranged — '
+              'D-5, and a change here means somebody taught the rows an '
+              'order and should say so');
     });
 
     testWidgets(
-        'reorder moves last card to first position and JSON roundtrip preserves order',
-        (tester) async {
-      await tester.pumpWidget(buildTestableKeyRepository(
+        'reorder moves last card to first position; the round trip keeps the '
+        'keys, not the arrangement (D-5)', (tester) async {
+      final store = await createTestConfigStore(
         keyMappings: threeKeys(),
+        session: kConfiguringTestSession,
+      );
+      await tester.pumpWidget(buildTestableKeyRepository(
+        configStore: store,
         stateManConfig: sampleStateManConfig(),
       ));
       await tester.pumpAndSettle();
@@ -1633,17 +1560,14 @@ void main() {
 
       expect(titleOrder(tester), ['charlie', 'alpha', 'bravo']);
 
-      // JSON roundtrip preserves the new order.
-      final BuildContext ctx = tester.element(find.byType(KeyRepositoryContent));
-      final container = ProviderScope.containerOf(ctx);
+      // The round trip preserves the keys, not their arrangement — D-5, as
+      // above. The visual order is the page's own map and stays correct until
+      // the next load.
       await tester.tap(find.text('Save Key Mappings'));
       await tester.pumpAndSettle();
 
-      final prefs = await container.read(preferencesProvider.future);
-      final raw = await prefs.getString('key_mappings');
-      final decoded = KeyMappings.fromJson(
-          jsonDecode(raw!) as Map<String, dynamic>);
-      expect(decoded.nodes.keys.toList(), ['charlie', 'alpha', 'bravo']);
+      final saved = store.inner.keyMappings;
+      expect(saved.nodes.keys.toList(), ['alpha', 'bravo', 'charlie']);
     });
 
     testWidgets('search filter disables reordering (no ReorderableListView)',

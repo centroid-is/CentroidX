@@ -39,31 +39,5 @@ void main() {
       expect(alarms.first.title, equals('Pump Overcurrent'));
       expect(alarms.first.description, equals('Motor current exceeds 15A'));
     });
-
-    test('can insert and query flutter_preferences rows', () async {
-      // Insert preferences
-      await db.into(db.serverFlutterPreferences).insert(
-        ServerFlutterPreferencesCompanion.insert(
-          key: 'theme',
-          value: const Value('dark'),
-          type: 'String',
-        ),
-      );
-      await db.into(db.serverFlutterPreferences).insert(
-        ServerFlutterPreferencesCompanion.insert(
-          key: 'language',
-          value: const Value('en'),
-          type: 'String',
-        ),
-      );
-
-      // Query them back
-      final prefs = await db.select(db.serverFlutterPreferences).get();
-      expect(prefs, hasLength(2));
-
-      final themeRow = prefs.firstWhere((p) => p.key == 'theme');
-      expect(themeRow.value, equals('dark'));
-      expect(themeRow.type, equals('String'));
-    });
   });
 }

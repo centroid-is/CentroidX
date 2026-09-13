@@ -117,6 +117,15 @@ RUN ln -s /usr/lib/x86_64-linux-gnu/libgio-2.0.so.0 /usr/lib/x86_64-linux-gnu/li
 RUN ln -s /usr/lib/x86_64-linux-gnu/libglib-2.0.so.0 /usr/lib/x86_64-linux-gnu/libglib-2.0.so
 RUN ln -s /usr/lib/x86_64-linux-gnu/libsecret-1.so.0 /usr/lib/x86_64-linux-gnu/libsecret-1.so
 
+# package:sqlite3 dlopens the unversioned name. The `sqlite3` package above
+# brings libsqlite3-0, which ships only libsqlite3.so.0 — the unversioned
+# symlink lives in libsqlite3-dev, which no runtime image installs. The local
+# configuration store is opened before runApp, so without this the app does not
+# start at all. Belt and braces: packages/tfc_dart/lib/core/sqlite_loader.dart
+# falls back to the versioned soname from Dart, which covers a station still
+# running an older image; this line covers an image built without that fallback.
+RUN ln -s /usr/lib/x86_64-linux-gnu/libsqlite3.so.0 /usr/lib/x86_64-linux-gnu/libsqlite3.so
+
 RUN useradd -m centroid
 
 # Copy in your Flutter libraries and executable

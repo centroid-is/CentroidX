@@ -137,7 +137,7 @@ void main() {
 
     late PageImageStore store;
 
-    setUp(() => store = PageImageStore(FakeEditorPreferences()));
+    setUp(() async => store = await testImageStore());
 
     Future<ImageConfig> assetWith(List<int> bytes) async {
       final id = await store.save(Uint8List.fromList(bytes));

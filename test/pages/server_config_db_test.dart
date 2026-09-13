@@ -9,7 +9,9 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 import 'package:drift/drift.dart' show Value;
 import 'package:postgres/postgres.dart' as pg;
 import 'package:tfc_access/tfc_access.dart';
-import 'package:tfc_dart/core/access/guarded_preferences.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/preference_payload.dart';
+import 'package:tfc_dart/core/config/shared_row_preferences.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
@@ -48,17 +50,77 @@ Widget _buildCard({
 Future<StoredServerConfig?> _storedRow(AppDatabase db) =>
     ServerConfigDb.fetch(db);
 
-/// A [Preferences] whose writes reach [db]'s `flutter_preferences` table.
+/// The shared configuration store the page gets from `preferencesProvider`,
+/// wired so its rows land in [db].
 ///
-/// `publish` takes a [PreferencesApi] now, so a test that wants the row to be
-/// there for `fetch` to find has to hand it a store that is actually wired to
-/// the database — the same wiring `preferencesProvider` gives the page.
-Preferences _dbPrefs(Database db) =>
-    Preferences(database: db, secureStorage: FakeSecureStorage());
+/// `publish` takes a [PreferencesApi], and since 04-05 that store writes
+/// `kind='preference'` rows rather than `flutter_preferences` rows. A test
+/// that wants the row to be there for `fetch` to find has to hand it a store
+/// wired to the very database `fetch` selects out of — which is what
+/// `remoteDatabase` is for.
+Future<Preferences> _rowPrefs(
+  AppDatabase db, {
+  AccessSession? session,
+  AccessSession Function()? sessionOf,
+  AuditSink? audit,
+  StateManConfig? stateManConfig,
+}) async {
+  // Both caches are process-wide, so a stale entry from an earlier test would
+  // shadow this one's fresh storage. Same reasoning as `createTestPreferences`.
+  Preferences.clearSecretCache();
+  DatabaseConfig.clearPrefsCache();
+  final secureStorage = FakeSecureStorage();
+  final guarded = await createTestConfigStore(
+    remoteDatabase: db,
+    session: session ?? _administer(),
+    sessionOf: sessionOf,
+    audit: audit,
+  );
+  final prefs =
+      SharedRowPreferences(store: guarded, secureStorage: secureStorage);
+  addTearDown(prefs.close);
+  if (stateManConfig != null) {
+    // `StateManConfig.fromPrefs` reads with `secret: true`, so this goes to
+    // the keychain stand-in and never to a row.
+    await secureStorage.write(
+      key: StateManConfig.configKey,
+      value: jsonEncode(stateManConfig.toJson()),
+    );
+  }
+  return prefs;
+}
 
-/// Publishes [config] into [db] the way the page does: through a store.
+/// The envelope row as another station left it — straight into [db], with no
+/// store of ours involved. This is what [ServerConfigDb.fetch] has to find.
+Future<void> _seedRow(AppDatabase db, StoredServerConfig config) =>
+    db.into(db.configItemTable).insertOnConflictUpdate(
+          ConfigItemTableCompanion.insert(
+            kind: ConfigKind.preference.wireName,
+            id: ServerConfigDb.prefsKey,
+            scope: ConfigScope.shared.wireName,
+            payload: ConfigItem.of(
+              kind: ConfigKind.preference,
+              id: ServerConfigDb.prefsKey,
+              value: preferencePayload(
+                  kPrefStringType, jsonEncode(config.toJson())),
+            ).payload,
+            rev: const Value(1),
+            updatedAt: DateTime.now(),
+            updatedBy: 'other-station',
+          ),
+        );
+
+/// The same, for a [Database] wrapper.
 Future<void> _seed(Database db, StoredServerConfig config) =>
-    ServerConfigDb.publish(_dbPrefs(db), config);
+    _seedRow(db.db, config);
+
+/// The `config_change` rows on [db], serialised. The envelope is
+/// history-exempt, so this list must not grow across a publish — and an
+/// absence is only provable by comparing the whole table.
+Future<List<String>> _changeLog(AppDatabase db) async => [
+      for (final row in await db.select(db.configChangeTable).get())
+        row.toString(),
+    ];
 
 /// Anonymous is the Operator role by construction. Handing it an empty group
 /// set would make the denials below pass for the wrong reason.
@@ -124,10 +186,10 @@ void main() {
     late Database wrapper;
     late Preferences prefs;
 
-    setUp(() {
+    setUp(() async {
       db = AppDatabase.inMemoryForTest();
       wrapper = Database(db);
-      prefs = _dbPrefs(wrapper);
+      prefs = await _rowPrefs(db);
     });
 
     tearDown(() async {
@@ -136,6 +198,10 @@ void main() {
     });
 
     test('fetch returns null when nothing stored', () async {
+      // A normal return, and it has to stay one: the import dialog turns this
+      // into "No config stored in the database yet" and offers the operator a
+      // way forward. C-4 is what happens when it stops being distinguishable
+      // from a failure.
       expect(await ServerConfigDb.fetch(db), isNull);
     });
 
@@ -170,7 +236,7 @@ void main() {
       expect(await ServerConfigDb.fetch(db), isNull);
     });
 
-    test('publishing through Preferences writes the row Drift used to write',
+    test('publishing through the store writes the envelope row fetch reads',
         () async {
       final config = StoredServerConfig(
         savedAt: DateTime(2026, 3, 3),
@@ -179,38 +245,90 @@ void main() {
       );
       await ServerConfigDb.publish(prefs, config);
 
-      // Not through `fetch` — straight at the table, so this asserts the
-      // reroute lands in the same row with the same shape rather than
-      // asserting that one half of the reroute agrees with the other.
-      final row = await (db.select(db.flutterPreferences)
-            ..where((t) => t.key.equals(ServerConfigDb.prefsKey)))
+      // Not through `fetch` — straight at the table, so this asserts the two
+      // halves land in the same row rather than asserting that one half of
+      // the reroute agrees with the other.
+      final row = await (db.select(db.configItemTable)
+            ..where((t) => t.kind.equals(ConfigKind.preference.wireName))
+            ..where((t) => t.id.equals(ServerConfigDb.prefsKey))
+            ..where((t) => t.scope.equals(ConfigScope.shared.wireName)))
           .getSingle();
-      expect(row.type, 'String');
-      expect(jsonDecode(row.value!), config.toJson());
+      expect(decodePreferencePayload(row.payload), jsonEncode(config.toJson()));
+    });
+
+    test('the envelope write leaves no config_change row behind', () async {
+      // Seeded so the log is not empty: two empty lists comparing equal
+      // proves nothing about a writer.
+      await prefs.setString('update_channel', 'stable');
+      final before = await _changeLog(db);
+      expect(before, isNotEmpty);
+
+      await ServerConfigDb.publish(
+        prefs,
+        StoredServerConfig(
+            savedBy: 'station-7', envelope: {'ciphertext_b64': 'abc'}),
+      );
+      expect(await _changeLog(db), before,
+          reason: 'C-4: a superseded ciphertext must not gain '
+              'retention-forever as a side effect of a storage move');
+
+      await ServerConfigDb.remove(prefs);
+      expect(await _changeLog(db), before,
+          reason: 'nor may deleting one');
+
+      // And the writes did happen, or the two assertions above would pass on
+      // a store that wrote nothing at all.
+      expect(await ServerConfigDb.fetch(db), isNull);
+      expect(await prefs.getString('update_channel'), 'stable');
     });
 
     test('fetch throws on a corrupt row instead of reporting nothing stored',
         () async {
-      await db.into(db.flutterPreferences).insertOnConflictUpdate(
-            const FlutterPreferencesCompanion(
-              key: Value(ServerConfigDb.prefsKey),
-              value: Value('not json at all'),
-              type: Value('String'),
+      await db.into(db.configItemTable).insertOnConflictUpdate(
+            ConfigItemTableCompanion.insert(
+              kind: ConfigKind.preference.wireName,
+              id: ServerConfigDb.prefsKey,
+              scope: ConfigScope.shared.wireName,
+              payload: ConfigItem.of(
+                kind: ConfigKind.preference,
+                id: ServerConfigDb.prefsKey,
+                value: preferencePayload(kPrefStringType, 'not json at all'),
+              ).payload,
+              rev: const Value(1),
+              updatedAt: DateTime.now(),
+              updatedBy: 'other-station',
+            ),
+          );
+      await expectLater(ServerConfigDb.fetch(db), throwsFormatException);
+    });
+
+    test('a row whose payload is not a preference at all throws too',
+        () async {
+      // Hand-edited, or written by something that does not know the codec.
+      // The row exists, so this is not "nothing stored" and must not read as
+      // it — the operator has something in the database that needs looking at.
+      await db.into(db.configItemTable).insertOnConflictUpdate(
+            ConfigItemTableCompanion.insert(
+              kind: ConfigKind.preference.wireName,
+              id: ServerConfigDb.prefsKey,
+              scope: ConfigScope.shared.wireName,
+              payload: '{"nothing":"the codec recognises"}',
+              rev: const Value(1),
+              updatedAt: DateTime.now(),
+              updatedBy: 'other-station',
             ),
           );
       await expectLater(ServerConfigDb.fetch(db), throwsFormatException);
     });
   });
 
-  group('ServerConfigDb through the guard', () {
+  group('fetch bypasses every cache, deliberately', () {
     late AppDatabase db;
     late Database wrapper;
-    late _RecordingAuditSink audit;
 
     setUp(() {
       db = AppDatabase.inMemoryForTest();
       wrapper = Database(db);
-      audit = _RecordingAuditSink();
     });
 
     tearDown(() async {
@@ -218,21 +336,80 @@ void main() {
       await db.close();
     });
 
-    /// The store the page gets from `preferencesProvider`: the same
-    /// database-backed [Preferences], behind the guard.
-    GuardedPreferences guarded(AccessSession session) => GuardedPreferences(
-          inner: _dbPrefs(wrapper),
-          policy: const AccessPolicy(),
-          session: () => session,
-          audit: audit,
-          station: 'svn-nes-ot-cl02',
-        );
+    test('finds what another station wrote, with no reconcile here', () async {
+      // The store this station holds has never seen the row: no pull, no
+      // sweep, nothing. Importing is precisely the case where the config
+      // worth having is the one *another* client stored after this one
+      // started, so the read must not be able to answer from a snapshot.
+      final prefs = await _rowPrefs(db);
+      expect(await prefs.getString(ServerConfigDb.prefsKey), isNull,
+          reason: 'the snapshot really is empty, so the fetch below cannot '
+              'be passing because of it');
+
+      await _seedRow(
+          db, StoredServerConfig(savedBy: 'other', envelope: {'version': 1}));
+
+      final stored = await ServerConfigDb.fetch(db);
+      expect(stored, isNotNull);
+      expect(stored!.savedBy, 'other');
+    });
+
+    test('reports nothing stored once the row is gone, cache or no cache',
+        () async {
+      final prefs = await _rowPrefs(db);
+      await ServerConfigDb.publish(
+          prefs, StoredServerConfig(savedBy: 'us', envelope: {'version': 1}));
+      expect(await ServerConfigDb.fetch(db), isNotNull);
+
+      // Another station removed it. This station's snapshot still holds the
+      // value it wrote — which is exactly the stale answer `fetch` must not
+      // give.
+      await (db.delete(db.configItemTable)
+            ..where((t) => t.id.equals(ServerConfigDb.prefsKey)))
+          .go();
+      expect(await prefs.getString(ServerConfigDb.prefsKey), isNotNull,
+          reason: 'the cache is stale, which is the point of the test');
+
+      expect(await ServerConfigDb.fetch(db), isNull);
+    });
+  });
+
+  group('ServerConfigDb through the guard', () {
+    late AppDatabase db;
+    late Database wrapper;
+    late _RecordingAuditSink audit;
+    late AccessSession session;
+
+    setUp(() {
+      db = AppDatabase.inMemoryForTest();
+      wrapper = Database(db);
+      audit = _RecordingAuditSink();
+      session = _administer();
+    });
+
+    tearDown(() async {
+      await wrapper.dispose();
+      await db.close();
+    });
+
+    /// The store the page gets from `preferencesProvider`: the row-backed
+    /// shared store, whose one guard resolves the group from the key.
+    ///
+    /// **One store per test, with the session read at each write** — the shape
+    /// `configStoreProvider` uses. Two stores would be two stations with two
+    /// snapshots, and a `remove` whose snapshot has never seen the row is a
+    /// documented no-op that never reaches the guard at all
+    /// (`shared_row_preferences.dart`), so the refusal below would pass for
+    /// entirely the wrong reason.
+    Future<Preferences> guardedPrefs() =>
+        _rowPrefs(db, sessionOf: () => session, audit: audit);
 
     test('an anonymous session cannot publish the shared server config',
         () async {
+      session = _anonymous();
       await expectLater(
         ServerConfigDb.publish(
-            guarded(_anonymous()), StoredServerConfig(envelope: {'version': 1})),
+            await guardedPrefs(), StoredServerConfig(envelope: {'version': 1})),
         throwsA(isA<AccessDenied>()),
       );
 
@@ -246,12 +423,16 @@ void main() {
     });
 
     test('an anonymous session cannot remove it either', () async {
-      await ServerConfigDb.publish(guarded(_administer()),
-          StoredServerConfig(savedBy: 'a', envelope: {'version': 1}));
+      session = _administer();
+      final prefs = await guardedPrefs();
+      await ServerConfigDb.publish(
+          prefs, StoredServerConfig(savedBy: 'a', envelope: {'version': 1}));
       audit.rows.clear();
 
+      // Somebody signed out; the same store is asked to delete it.
+      session = _anonymous();
       await expectLater(
-        ServerConfigDb.remove(guarded(_anonymous())),
+        ServerConfigDb.remove(prefs),
         throwsA(isA<AccessDenied>()),
       );
 
@@ -265,8 +446,9 @@ void main() {
 
     test('an administer session publishes, and the write is in the trail',
         () async {
+      session = _administer();
       await ServerConfigDb.publish(
-        guarded(_administer()),
+        await guardedPrefs(),
         StoredServerConfig(
           savedAt: DateTime(2026, 4, 4),
           savedBy: 'station-9',
@@ -285,6 +467,8 @@ void main() {
       expect(row.groupRequired, 'administer');
       expect(row.who, 'jon');
       expect(row.origin, 'operator');
+      // Neither side of the ciphertext, in the audit row or anywhere else.
+      expect(row.newValue ?? '', isNot(contains('abc')));
     });
   });
 
@@ -364,8 +548,8 @@ void main() {
       // The page publishes through this store now, so it has to be the one
       // wired to `appDb` — otherwise the row never reaches the table `fetch`
       // reads and the assertion below would be measuring the wrong thing.
-      final prefs = await createTestPreferences(
-        database: db,
+      final prefs = await _rowPrefs(
+        appDb,
         stateManConfig: StateManConfig(opcua: [
           OpcUAConfig()
             ..endpoint = 'opc.tcp://10.0.0.1:4840'

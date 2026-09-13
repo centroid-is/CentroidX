@@ -324,17 +324,47 @@ const Duration kMinRetentionDuration = Duration(minutes: 1);
 
 /// Tables the retention machinery must never be pointed at.
 ///
-/// These are the access-control tables from schema v6. `audit_entry` is the
-/// audit trail — append-only, never pruned — and `app_user` / `app_role` are
-/// the identities the trail refers to; a swept role table turns every historic
-/// row into a name with nothing behind it.
+/// Three access-control tables from schema v6 and two configuration tables
+/// from v7. `audit_entry` is the audit trail — append-only, never pruned — and
+/// `app_user` / `app_role` are the identities the trail refers to; a swept
+/// role table turns every historic row into a name with nothing behind it.
+/// `config_change` is the configuration history, which the milestone's locked
+/// decision keeps forever, and `config_item` is the live configuration itself:
+/// a sweep of it would delete the plant's wiring, not a record of it.
 ///
-/// [Database.registerRetentionPolicy] refuses any of these by name. See that
-/// method for why the refusal lives there rather than in a test.
+/// [Database.registerRetentionPolicy] refuses any of these by name, with
+/// [kRetentionExemptionReasons] as the reason it gives. See that method for
+/// why the refusal lives there rather than in a test.
 const Set<String> kRetentionExemptTables = {
   'audit_entry',
   'app_user',
   'app_role',
+  'config_change',
+  'config_item',
+};
+
+/// Why each of [kRetentionExemptTables] is exempt, in the words the refusal
+/// logs.
+///
+/// Per table rather than one sentence, because one sentence would have to be
+/// wrong about something: `audit_entry` and `config_change` are append-only,
+/// and `config_item` is the opposite — live configuration, rewritten on every
+/// save and never pruned. A log line telling the next engineer that
+/// `config_item` is append-only would send them looking for a bug that is not
+/// there.
+const Map<String, String> kRetentionExemptionReasons = {
+  'audit_entry': 'it is the audit trail, append-only and never pruned',
+  'app_user': 'it holds the identities the audit trail names and is never '
+      'pruned; a swept one turns every historic row into a name with nothing '
+      'behind it',
+  'app_role': 'it holds the roles the audit trail names and is never pruned; '
+      'a swept one turns every historic row into a name with nothing behind '
+      'it',
+  'config_change': 'it is the configuration history, append-only and never '
+      'pruned',
+  'config_item': 'it is the live configuration itself — mutable, but never '
+      'pruned; sweeping it would delete the plant\'s wiring rather than a '
+      'record of it',
 };
 
 // https://docs.tigerdata.com/api/latest/data-retention/add_retention_policy/
@@ -744,15 +774,58 @@ class Database {
   /// These errors mean the connection pool is dead and retrying on the same
   /// pool is pointless. The health monitor will detect the outage and trigger
   /// provider recreation with a fresh pool.
-  static bool _isConnectionError(Object e) {
+  ///
+  /// **Why the message is matched as a string rather than the exception typed.**
+  /// The app builds its database with [AppDatabase.spawn], so every statement
+  /// crosses a DriftIsolate and every failure comes back as a
+  /// `DriftRemoteException` wrapping whatever survived isolate serialisation.
+  /// A `catch (e) if (e is SocketException)` therefore never fires on a
+  /// station: the `SocketException` is on the other side of the port and only
+  /// its `toString()` made the trip. The type check above still earns its
+  /// place for the in-process case (the backend, the collector, tests), and
+  /// the string arms are what make this work through the isolate.
+  ///
+  /// Public because `ConfigStore` classifies a failed shared write with it
+  /// (a mid-session outage must read as "Postgres is unreachable", not as a
+  /// generic driver string), and a second string matcher living beside this
+  /// one would go stale the first time a new driver message appeared.
+  static bool isConnectionError(Object e) {
     if (e is SocketException) return true;
     final msg = e.toString();
     return msg.contains('SocketException') ||
         msg.contains('Connection reset by peer') ||
         msg.contains('Connection refused') ||
         msg.contains('Connection closed') ||
-        msg.contains('broken pipe');
+        msg.contains('broken pipe') ||
+        // `StateError('StreamSink is closed')`, thrown by `dart:io`'s
+        // `_Socket.add` when the driver writes to a socket whose peer has gone
+        // away (`io_sink.dart:153`). It arrives with no mention of a socket in
+        // its message, so none of the arms above catch it — and it is the
+        // *first* thing a write meets when a connection dies between
+        // statements rather than during one. Found by
+        // `test/integration/config_store_integration_test.dart`, where an
+        // operator saving key mappings across an outage was told
+        // "Bad state: StreamSink is closed".
+        msg.contains('StreamSink is closed') ||
+        // `postgres`'s own refusal to use a connection it knows is gone
+        // (`v3/connection.dart`: "Attempting to execute query, but connection
+        // is not open."). Same class, one layer up.
+        msg.contains('connection is not open') ||
+        // What a statement already on the wire gets when the socket dies under
+        // it: `PgException('The underlying socket to Postgres has been closed
+        // unexpectedly.')`. The arms above cover a connection that died
+        // *between* statements; this is the one that died *during* one, and
+        // without it a save mid-outage surfaced as a raw driver string rather
+        // than as "the shared database is unreachable".
+        msg.contains('closed unexpectedly') ||
+        // A statement that never came back at all — a hung rather than a
+        // reset peer — is not a different kind of outage to the operator.
+        e is TimeoutException;
   }
+
+  /// The private name the existing call sites use, delegating to
+  /// [isConnectionError] so there is one classifier and not two.
+  static bool _isConnectionError(Object e) => isConnectionError(e);
 
   /// Returns true if [e] is specifically a "column does not exist" error (42703).
   static bool _isMissingColumnError(Object e) {
@@ -889,11 +962,12 @@ class Database {
   Future<void> registerRetentionPolicy(
       String tableName, RetentionPolicy retention) async {
     if (kRetentionExemptTables.contains(tableName)) {
-      logger.e('Retention policy for "$tableName" refused: it is append-only '
-          'and never pruned, and this machinery deletes rows. No policy has '
-          'been installed and none ever will be. If a collected key is named '
-          '"$tableName", rename it — the collector config, not this guard, is '
-          'what needs fixing.');
+      logger.e('Retention policy for "$tableName" refused: '
+          '${kRetentionExemptionReasons[tableName] ?? 'it is never pruned'}, '
+          'and this machinery deletes rows. No policy has been installed and '
+          'none ever will be. If a collected key is named "$tableName", '
+          'rename it — the collector config, not this guard, is what needs '
+          'fixing.');
       return;
     }
     retentionPolicies[tableName] = retention;

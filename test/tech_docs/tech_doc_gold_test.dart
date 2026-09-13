@@ -19,15 +19,23 @@ import 'package:tfc_mcp_server/tfc_mcp_server.dart'
 
 import 'package:tfc_access/tfc_access.dart';
 
+import 'package:tfc_dart/core/config/config_item.dart';
+
+import 'package:tfc/core/config/page_codec.dart' show pageItems;
 import 'package:tfc/core/guarded_knowledge_stores.dart'
     show kKnowledgeWriteGroup;
 import 'package:tfc/drawings/drawing_overlay.dart';
+import 'package:tfc/models/menu_item.dart';
+import 'package:tfc/page_creator/assets/led.dart';
+import 'package:tfc/page_creator/page.dart' show AssetPage;
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/tech_doc.dart';
 import 'package:tfc/tech_docs/tech_doc_library_section.dart';
 import 'package:tfc/tech_docs/tech_doc_section_detail_panel.dart';
 import 'package:tfc/tech_docs/tech_doc_picker.dart';
 import 'package:tfc/tech_docs/tech_doc_upload_service.dart';
+import '../helpers/test_helpers.dart'
+    show createTestConfigStore, kConfiguringTestSession;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -537,24 +545,42 @@ void main() {
       expect(find.text('No resources found'), findsOneWidget);
     });
 
-    testWidgets('deleteAndCleanAssets removes techDocId from preferences',
+    testWidgets('deleteAndCleanAssets unlinks the asset row, then deletes',
         (tester) async {
       final ids = await _seedDocs(index);
       final service = TechDocUploadService(index);
 
-      // Set up fake preferences with an asset linked to doc.
-      final prefs = _FakePrefsReader({
-        'page_editor_data':
-            '{"page1":{"assets":{"pump1":{"techDocId":${ids[0]},"label":"P1"}}}}'
-      });
+      // A layout built through the model — `AssetPage` encodes `assets` as a
+      // List, and the map-shaped string this fixture used to hold is the
+      // shape the old cleanup's `assets is! Map` guard was written against
+      // (D-4). The cleanup writes the shared rows now, not a preference.
+      final linked = LEDConfig(key: 'CN04.Run')
+        ..id = 'led-linked'
+        ..techDocId = ids[0];
+      final store = await createTestConfigStore(
+          session: kConfiguringTestSession);
+      await store.inner.writeItems(
+        kinds: const {ConfigKind.page, ConfigKind.asset},
+        wanted: pageItems({
+          '/': AssetPage(
+            menuItem:
+                const MenuItem(label: 'Home', icon: Icons.home, path: '/'),
+            assets: [linked],
+            mirroringDisabled: false,
+          )..id = 'page-home',
+        }),
+        actionId: 'seed',
+        who: 'test',
+        roleName: 'system',
+      );
 
-      await service.deleteAndCleanAssets(docId: ids[0], prefsReader: prefs);
+      await service.deleteAndCleanAssets(docId: ids[0], configStore: store);
 
-      // techDocId should be removed from preferences.
-      final raw = await prefs.getString('page_editor_data');
-      expect(raw, isNotNull);
-      expect(raw!, isNot(contains('"techDocId"')));
-      expect(raw, contains('"label":"P1"')); // Other fields preserved.
+      final row = store.inner
+          .itemsOf(const {ConfigKind.asset})
+          .singleWhere((item) => item.id == 'led-linked');
+      expect(row.decode()['techDocId'], isNull);
+      expect(row.decode()['key'], 'CN04.Run', reason: 'other fields survive');
 
       // Document should be gone from index.
       expect(await index.getSummary(), hasLength(2));
@@ -1277,16 +1303,3 @@ void main() {
 // Test doubles
 // ---------------------------------------------------------------------------
 
-/// Fake [PrefsReader] for testing deleteAndCleanAssets.
-class _FakePrefsReader implements PrefsReader {
-  final Map<String, String> _data;
-  _FakePrefsReader(this._data);
-
-  @override
-  Future<String?> getString(String key) async => _data[key];
-
-  @override
-  Future<void> setString(String key, String value) async {
-    _data[key] = value;
-  }
-}

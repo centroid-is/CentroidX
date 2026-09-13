@@ -20,6 +20,7 @@ import 'package:tfc_dart/core/database_drift.dart';
 
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/preferences.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 const String _kStation = 'packing-hall-2';
 const String _kPassword = 'correct horse battery staple';
@@ -118,6 +119,7 @@ ProviderSubscription<AsyncValue<AccessSession>> _listen(_Harness h) {
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();

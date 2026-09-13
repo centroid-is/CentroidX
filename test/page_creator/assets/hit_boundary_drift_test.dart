@@ -34,9 +34,11 @@ import 'package:tfc/widgets/hit_boundary.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import '../../helpers/hit_probe.dart';
+import '../../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();

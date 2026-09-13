@@ -592,11 +592,10 @@ class AssetTypeCatalog {
       displayName: 'Image',
       category: 'Visualization',
       description:
-          'A static image (PNG, JPEG, BMP or SVG). The bytes are stored '
-          'under a separate preference key (page_editor_image:<id>) and the '
-          'asset references them by content-hash id; images are added '
-          'through the page editor (file picker or clipboard paste), not '
-          'via MCP.',
+          'A static image (PNG, JPEG, BMP or SVG). The bytes are stored on '
+          'a row of their own (kind=page_image, id=<content hash>) and the '
+          'asset references them by that id; images are added through the '
+          'page editor (file picker or clipboard paste), not via MCP.',
       properties: [
         AssetPropertyInfo(
             name: 'image_id',

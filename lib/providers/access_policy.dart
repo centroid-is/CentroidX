@@ -142,7 +142,6 @@ void reportAccessDenial(Ref ref, AccessDenied denial) {
 /// |---|---|
 /// | `lib/providers/preferences.dart` | declares `systemPreferencesProvider`, the path itself |
 /// | `lib/providers/state_man.dart` | default `key_mappings`, and `StateManConfig.fromPrefs`' default `state_man_config` |
-/// | `lib/providers/page_manager.dart` | the default page layout, seeded **unawaited** by `PageManager.load()` |
 /// | `lib/providers/alarm.dart` | the empty `alarm_man_config` `AlarmMan.create` would otherwise write |
 /// | `lib/page_creator/assets/recipes.dart` | the empty recipe list written on the **read** path, when an asset is opened |
 /// | `lib/providers/collector.dart` | the default `collector_config`, and the carry-over of a config still only on the device |
@@ -150,7 +149,6 @@ void reportAccessDenial(Ref ref, AccessDenied denial) {
 const List<String> kSystemWriteCallSites = [
   'lib/providers/preferences.dart',
   'lib/providers/state_man.dart',
-  'lib/providers/page_manager.dart',
   'lib/providers/alarm.dart',
   'lib/page_creator/assets/recipes.dart',
   'lib/providers/collector.dart',

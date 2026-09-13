@@ -2,14 +2,14 @@
 ///
 /// Every other route in the app declares nothing and therefore answers
 /// [AccessGroup.operate] — what an anonymous session already holds — so this
-/// map is the entire blast radius of route gating. Nine entries are raised:
-/// seven because they configure the station rather than run the line, and two
-/// — the audit trail and the access administration screen — because of the
-/// data they put on the screen. Nothing on the floor changes, with one
+/// map is the entire blast radius of route gating. Ten entries are raised:
+/// seven because they configure the station rather than run the line, and three
+/// — the audit trail, the access administration screen and the configuration
+/// history — because of the data they put on the screen. Nothing on the floor changes, with one
 /// exception, Knowledge Base, which is spelled out below because it does take
 /// something away from an operator.
 ///
-/// **The nine, and why each one.**
+/// **The ten, and why each one.**
 ///
 /// * Page Editor, Alarm Editor, Report Editor and Key Repository need
 ///   `configure`: they author what the station shows, how it alarms and what
@@ -26,6 +26,10 @@
 ///   where both halves of the argument point the same way: it *reads* the
 ///   account list and every role's group set, and it *writes* both. The
 ///   paragraph below says why the read half is the one that matters here.
+/// * The configuration history needs `configure` — the third entry raised for
+///   what it shows, and the one that shows the *least*. See
+///   [kConfigHistoryRoute] for why it is a route of its own rather than a
+///   loosened audit trail.
 ///
 /// **`/advanced/preferences` is a deliberate amendment to the spec's five**,
 /// decided by the user on 2026-08-29 after plan review;
@@ -204,7 +208,30 @@ const String kAccessAdminRoute = '/advanced/access';
 /// so authoring a report cannot become a way to read them.
 const String kReportEditorRoute = '/advanced/report-editor';
 
-/// The ten routes raised above `operate`, and the group each one needs.
+/// The configuration history route, and the reason it is not the audit trail's.
+///
+/// `configure`, deliberately, and a **second entry** rather than a widened
+/// first one. The audit trail sits at `users` because of what it displays:
+/// every write anybody ever made, with old and new values, alongside the
+/// denials that show where a role is configured too tightly. This page displays
+/// configuration changes only — page layouts, assets, key maps, preferences —
+/// and the engineer it exists for is the one who edits those, who holds
+/// `configure` and need not hold `users`.
+///
+/// Lowering [kAuditTrailRoute] to reach this page would have handed the whole
+/// authorization record to everyone who can edit a page (T-04-06a). Raising
+/// this page to `users` would put the history of a page edit behind the gate
+/// that governs accounts, so the engineer who made the edit could not read it.
+/// Two routes, two groups.
+///
+/// Not exempt while the access repository is unavailable, for the audit
+/// trail's reason: the history *is* the database.
+///
+/// The undo that 04-10 builds is a **write**, and its gate is the store's
+/// rather than this route's. A route group is a decision about who may read.
+const String kConfigHistoryRoute = '/advanced/config-history';
+
+/// The eleven routes raised above `operate`, and the group each one needs.
 ///
 /// One const map so that the route table and the navigation menu can never
 /// disagree about which entries are locked. Paths are spelled exactly as in
@@ -219,6 +246,7 @@ const Map<String, AccessGroup> kRaisedRoutes = {
   kServerConfigRoute: AccessGroup.administer,
   '/advanced/ip-settings': AccessGroup.administer,
   '/advanced/preferences': AccessGroup.administer,
+  kConfigHistoryRoute: AccessGroup.configure,
   kAuditTrailRoute: AccessGroup.users,
   kAccessAdminRoute: AccessGroup.users,
 };

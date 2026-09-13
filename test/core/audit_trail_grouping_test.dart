@@ -9,15 +9,21 @@
 // `DateTime.utc(...)` instants. Nothing here reads the clock — an assertion
 // computed from `DateTime.now()` cannot fail when the rule it is about changes.
 
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/core/audit_trail_grouping.dart';
+import 'package:tfc/core/config_change_store.dart';
 import 'package:tfc_access/tfc_access.dart';
+import 'package:tfc_dart/core/config/config_change.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 
 /// The instant the rows in this file are dated from.
 final DateTime _at = DateTime.utc(2026, 8, 30, 12);
 
 int _nextId = 1;
+int _nextChangeId = 1;
 
 /// One `audit_entry` row, with only the fields a grouping assertion cares about
 /// spelled at the call site.
@@ -51,8 +57,49 @@ AuditEntryData row({
       actionId: actionId,
     );
 
+/// One `encodeEntity()`-shaped side. The payload is held constant by default so
+/// a fixture can change position alone and still be a change.
+String _entity({String? parentId, int sortIndex = 0}) => jsonEncode({
+      'parent_id': parentId,
+      'sort_index': sortIndex,
+      'payload': const {'name': 'MOT01'},
+    });
+
+/// One decoded `config_change` row, with only the fields a grouping assertion
+/// cares about spelled at the call site.
+ConfigChangeRecord change({
+  required String actionId,
+  DateTime? at,
+  ConfigKind kind = ConfigKind.asset,
+  String entityId = 'CN04.MOT01',
+  ConfigScope? scope,
+  ConfigChangeOp op = ConfigChangeOp.update,
+  String? oldValue,
+  String? newValue,
+  String who = 'olafur',
+}) =>
+    ConfigChangeRecord(
+      id: _nextChangeId++,
+      change: ConfigChange(
+        at: at ?? _at,
+        actionId: actionId,
+        who: who,
+        station: 'ST101',
+        roleName: 'engineer',
+        kind: kind,
+        entityId: entityId,
+        scope: scope ?? ConfigScope.shared,
+        op: op,
+        oldValue: oldValue ?? _entity(parentId: '/roe', sortIndex: 1),
+        newValue: newValue ?? _entity(parentId: '/roe', sortIndex: 2),
+      ),
+    );
+
 void main() {
-  setUp(() => _nextId = 1);
+  setUp(() {
+    _nextId = 1;
+    _nextChangeId = 1;
+  });
 
   // -------------------------------------------------------------------------
   // groupAuditRows
@@ -354,12 +401,287 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
+  // groupHistoryRows - one action, two kinds of child
+  // -------------------------------------------------------------------------
+
+  group('groupHistoryRows', () {
+    test('an audit row and its change rows are ONE action', () {
+      final actions = groupHistoryRows(
+        auditRows: [row(actionId: 'A', surface: 'config', itemKey: '/roe')],
+        changes: [
+          change(actionId: 'A', entityId: 'asset-1'),
+          change(actionId: 'A', entityId: 'asset-2'),
+          change(actionId: 'A', entityId: 'asset-3'),
+        ],
+      );
+
+      expect(actions, hasLength(1));
+      expect(actions.single.children, hasLength(4));
+      expect(actions.single.auditRows, hasLength(1));
+      expect(actions.single.changes, hasLength(3),
+          reason: '"Jon changed 3 assets on /roe" is a group-by on action_id, '
+              'not a guess.');
+      expect(actions.single.isMulti, isTrue);
+    });
+
+    test('another station writing between the members cannot split the action',
+        () {
+      // The rows come back ordered by `at`, and several stations share one
+      // database, so an interleaved write is routine rather than exotic.
+      // Adjacency grouping would render this as two complete actions that each
+      // under-report what happened.
+      final actions = groupHistoryRows(
+        auditRows: [
+          row(actionId: 'A', at: DateTime.utc(2026, 8, 30, 12, 0, 3)),
+          row(actionId: 'B', at: DateTime.utc(2026, 8, 30, 12, 0, 2)),
+        ],
+        changes: [
+          change(actionId: 'A', at: DateTime.utc(2026, 8, 30, 12, 0, 3)),
+          change(actionId: 'A', at: DateTime.utc(2026, 8, 30, 12, 0, 1)),
+        ],
+      );
+
+      expect(actions.map((a) => a.actionId), ['A', 'B']);
+      expect(actions.first.changes, hasLength(2));
+    });
+
+    test('the actions are newest first across BOTH streams', () {
+      final actions = groupHistoryRows(
+        auditRows: [row(actionId: 'audit', at: DateTime.utc(2026, 8, 30, 10))],
+        changes: [
+          change(actionId: 'newer', at: DateTime.utc(2026, 8, 30, 11)),
+          change(actionId: 'older', at: DateTime.utc(2026, 8, 30, 9)),
+        ],
+      );
+
+      expect(actions.map((a) => a.actionId), ['newer', 'audit', 'older'],
+          reason: 'two newest-first streams merged on `at`. Concatenating '
+              'them would put every audit action above every change-only one '
+              'and call the result chronological.');
+    });
+
+    test('a config child keeps its identity and is not flattened', () {
+      final actions = groupHistoryRows(
+        auditRows: [row(actionId: 'A', surface: 'config')],
+        changes: [
+          change(
+            actionId: 'A',
+            kind: ConfigKind.keyMapping,
+            entityId: 'CN04.MOT01.Speed',
+            scope: ConfigScope.forStation('ST101'),
+            op: ConfigChangeOp.delete,
+          ),
+        ],
+      );
+
+      final child = actions.single.changes.single;
+      expect(child.change.kind, ConfigKind.keyMapping);
+      expect(child.change.entityId, 'CN04.MOT01.Speed');
+      expect(child.change.scope.station, 'ST101');
+      expect(child.change.op, ConfigChangeOp.delete);
+      expect(actions.single.auditRows, hasLength(1),
+          reason: 'AuditEntryData has no kind and no entity_id. Flattening a '
+              'change row into one would throw away exactly the identity undo '
+              'needs.');
+    });
+
+    test('both sides are the whole entity, so a move is visible', () {
+      final actions = groupHistoryRows(
+        auditRows: const [],
+        changes: [
+          change(
+            actionId: 'A',
+            oldValue: _entity(parentId: '/roe', sortIndex: 4),
+            newValue: _entity(parentId: '/baader', sortIndex: 4),
+          ),
+        ],
+      );
+
+      final child = actions.single.changes.single.change;
+      expect(child.oldValue, isNot(child.newValue));
+      expect(child.oldItem!.parentId, '/roe');
+      expect(child.newItem!.parentId, '/baader',
+          reason: 'the sides are encodeEntity(), payload plus position. A '
+              'reader comparing payloads alone would report "no change" for a '
+              'move.');
+    });
+
+    // -----------------------------------------------------------------------
+    // The orphan window
+    // -----------------------------------------------------------------------
+
+    test('an action with no audit header still groups, flagged parentless', () {
+      // The store commits its change rows and writes the audit row after. A
+      // crash in between leaves change rows on an action_id with no header.
+      // That ordering is deliberate - the reverse is worse - so this is a
+      // state the reader must render, not one it may assume away.
+      final actions = groupHistoryRows(
+        auditRows: const [],
+        changes: [
+          change(actionId: 'orphan', entityId: 'asset-1'),
+          change(actionId: 'orphan', entityId: 'asset-2'),
+        ],
+      );
+
+      expect(actions, hasLength(1));
+      expect(actions.single.isParentless, isTrue);
+      expect(actions.single.lead, isNull,
+          reason: 'there is no header row to draw a collapsed line from, and '
+              'inventing one would put a fabricated author on the page.');
+      expect(actions.single.changes, hasLength(2));
+    });
+
+    test('a parentless action still names who made it and when', () {
+      final actions = groupHistoryRows(
+        auditRows: const [],
+        changes: [
+          change(
+              actionId: 'orphan',
+              who: 'jon',
+              at: DateTime.utc(2026, 8, 30, 7)),
+        ],
+      );
+
+      expect(actions.single.who, 'jon');
+      expect(actions.single.at, DateTime.utc(2026, 8, 30, 7),
+          reason: 'the change rows carry who, station and at themselves. An '
+              'action missing its header is still fully attributable.');
+    });
+
+    test('a parentless action names no group rather than inventing one', () {
+      final actions = groupHistoryRows(
+        auditRows: const [],
+        changes: [change(actionId: 'orphan')],
+      );
+
+      expect(actions.single.requiredGroupLabel, '',
+          reason: 'group_required lives on the audit row. Defaulting an '
+              'absent permission to operate is the failure '
+              "AccessGroup.byName's null return exists to prevent.");
+    });
+
+    test('an action holding only audit rows is not parentless', () {
+      final actions = groupHistoryRows(
+        auditRows: [row(actionId: 'A')],
+        changes: const [],
+      );
+
+      expect(actions.single.isParentless, isFalse);
+      expect(actions.single.lead, isNotNull);
+    });
+
+    // -----------------------------------------------------------------------
+    // A kind that writes no change rows is not a partial action
+    // -----------------------------------------------------------------------
+
+    test('an audit row with zero change rows is complete, not partial', () {
+      // A page-image save writes an audit row and, by historyExempt, no change
+      // rows at all. That must not become "this action is partial", and the
+      // absence must not read as "nothing happened".
+      final actions = groupHistoryRows(
+        auditRows: [row(actionId: 'A', surface: 'config')],
+        changes: const [],
+        auditTotalsByActionId: const {'A': 1},
+        changeTotalsByActionId: const {},
+      );
+
+      expect(actions.single.changes, isEmpty);
+      expect(actions.single.hiddenCount, 0);
+      expect(actions.single.isPartial, isFalse,
+          reason: 'an exempt kind writes no config_change rows at all. An '
+              'absent total means "not asked", never "some are hidden".');
+    });
+
+    // -----------------------------------------------------------------------
+    // Hidden counts, from two unfiltered totals
+    // -----------------------------------------------------------------------
+
+    test('hidden counts add up across the two child types', () {
+      final actions = groupHistoryRows(
+        auditRows: [row(actionId: 'A')],
+        changes: [change(actionId: 'A')],
+        auditTotalsByActionId: const {'A': 3},
+        changeTotalsByActionId: const {'A': 9},
+      );
+
+      expect(actions.single.hiddenCount, 10,
+          reason: 'two rows loaded of twelve. Both totals come from an '
+              'unfiltered COUNT(*) GROUP BY action_id, because the excluded '
+              'rows are not in the result set to be counted.');
+      expect(actions.single.isPartial, isTrue);
+    });
+
+    test('an absent total means "not asked", never "none"', () {
+      final actions = groupHistoryRows(
+        auditRows: [row(actionId: 'A')],
+        changes: [change(actionId: 'A'), change(actionId: 'A')],
+      );
+
+      expect(actions.single.hiddenCount, 0);
+      expect(actions.single.isPartial, isFalse);
+    });
+
+    test('a stale total never renders a negative hidden count', () {
+      final actions = groupHistoryRows(
+        auditRows: [row(actionId: 'A'), row(actionId: 'A')],
+        changes: [change(actionId: 'A')],
+        auditTotalsByActionId: const {'A': 1},
+        changeTotalsByActionId: const {'A': 0},
+      );
+
+      expect(actions.single.hiddenCount, 0);
+    });
+
+    test('the strictest permission across the audit children wins', () {
+      final actions = groupHistoryRows(
+        auditRows: [
+          row(actionId: 'A', groupRequired: 'operate'),
+          row(actionId: 'A', groupRequired: 'users'),
+        ],
+        changes: [change(actionId: 'A')],
+      );
+
+      expect(actions.single.requiredGroupLabel, 'users');
+    });
+
+    test('an empty input is an empty list, not an action with no children', () {
+      expect(groupHistoryRows(auditRows: const [], changes: const []), isEmpty);
+    });
+
+    test('children of one action keep each stream order, merged on time', () {
+      final actions = groupHistoryRows(
+        auditRows: [row(actionId: 'A', at: DateTime.utc(2026, 8, 30, 12))],
+        changes: [
+          change(
+              actionId: 'A',
+              entityId: 'second',
+              at: DateTime.utc(2026, 8, 30, 12)),
+          change(
+              actionId: 'A',
+              entityId: 'first',
+              at: DateTime.utc(2026, 8, 30, 11)),
+        ],
+      );
+
+      expect(
+        actions.single.children.map((c) => switch (c) {
+              AuditMemberChild() => 'audit',
+              ConfigChangeChild(:final record) => record.change.entityId,
+            }),
+        ['audit', 'second', 'first'],
+        reason: 'a tie on `at` goes to the audit row, which is the header the '
+            'collapsed line is drawn from.',
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // The known-surface change detector
   // -------------------------------------------------------------------------
 
   group('kKnownAuditSurfaces', () {
-    test('names exactly the five surfaces this build knows about', () {
-      expect(kKnownAuditSurfaces, {'tag', 'pref', 'route', 'auth', 'admin'},
+    test('names exactly the six surfaces this build knows about', () {
+      expect(kKnownAuditSurfaces, {'tag', 'pref', 'route', 'auth', 'admin', 'config'},
           reason: 'This is the one written record of the audit surface '
               'vocabulary, and it is a change-detector rather than a '
               'whitelist. If you are reading this failure you have added a '

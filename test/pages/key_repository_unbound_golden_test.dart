@@ -56,6 +56,11 @@ import 'dart:convert';
 import 'dart:io' show File, Platform;
 
 import 'package:clock/clock.dart';
+import 'package:drift/drift.dart' show driftRuntimeOptions;
+import 'package:tfc_dart/core/access/guarded_config_store.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_store.dart';
+import 'package:tfc_dart/core/database_drift.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show ByteData, FontLoader;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -66,6 +71,7 @@ import 'package:tfc/pages/key_repository.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/access_templates.dart';
 import 'package:tfc/providers/database.dart';
+import 'package:tfc/providers/config_store.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
 import 'package:tfc/theme.dart' show muted;
@@ -203,6 +209,44 @@ StateManConfig _stateManConfig() => StateManConfig(opcua: [
         ..serverAlias = 'main_server',
     ]);
 
+/// A guarded configuration store over two in-memory databases, seeded through
+/// the store's own write path so every payload is codec output.
+///
+/// This file's own fixture, like every other one here: importing
+/// `test_helpers.dart` would execute its top-level state and make a baseline
+/// nobody can reproduce.
+Future<GuardedConfigStore> _configStore() async {
+  driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+  final local = AppDatabase.inMemoryForTest();
+  final remote = AppDatabase.inMemoryForTest();
+  addTearDown(local.close);
+  addTearDown(remote.close);
+
+  final store = ConfigStore(
+    local: local,
+    stationScope: ConfigScope.forStation('golden-station'),
+    station: 'golden-station',
+  );
+  addTearDown(store.close);
+  await store.open();
+  store.attachRemoteDatabase(remote, startSync: false);
+  await store.writeKeyMappings(_keys(),
+      actionId: 'golden-seed', who: 'test', roleName: 'system');
+
+  return GuardedConfigStore(
+    inner: store,
+    policy: const AccessPolicy(),
+    session: _configureOnly,
+    audit: _DiscardingAuditSink(),
+    station: 'golden-station',
+  );
+}
+
+class _DiscardingAuditSink implements AuditSink {
+  @override
+  Future<void> record(AuditRecord entry) async {}
+}
+
 Future<Preferences> _preferences() async {
   Preferences.clearSecretCache();
   DatabaseConfig.clearPrefsCache();
@@ -316,10 +360,14 @@ void main() {
         view.physicalSize = const Size(900, 1000);
 
         final prefs = await _preferences();
+        // The mappings come from `config_item` rows since plan 02-06; the
+        // preferences above still supply `state_man_config`.
+        final configStore = await _configStore();
 
         await tester.pumpWidget(ProviderScope(
           overrides: [
             preferencesProvider.overrideWith((ref) async => prefs),
+            configStoreProvider.overrideWith((ref) async => configStore),
             databaseProvider.overrideWith((ref) async => _FakeDatabase(db)),
             // Thrown, not answered: the page treats it as "nothing to probe",
             // which is the state of a station whose PLC is unreachable and is

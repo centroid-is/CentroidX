@@ -15,7 +15,9 @@ void main() {
       expect(config.serverEnabled, isFalse);
       expect(config.chatEnabled, isFalse);
       expect(config.port, 8765);
-      expect(config.toggles.tagsEnabled, isTrue);
+      // Off, and this is the whole point of the default: a station nobody
+      // has configured exposes no tools.
+      expect(config.toggles, McpToolToggles.allDisabled);
     });
 
     test('fromJson with empty map returns defaults', () {
@@ -23,6 +25,15 @@ void main() {
       expect(config.serverEnabled, isFalse);
       expect(config.chatEnabled, isFalse);
       expect(config.port, McpConfig.defaultPort);
+      expect(config.toggles, McpToolToggles.allDisabled);
+    });
+
+    test('a blob whose toggles key is not a map falls to all-disabled', () {
+      // The non-Map arm of fromJson. Unreadable is undecided, same as absent.
+      expect(McpConfig.fromJson({'toggles': 'nonsense'}).toggles,
+          McpToolToggles.allDisabled);
+      expect(McpConfig.fromJson({'toggles': null}).toggles,
+          McpToolToggles.allDisabled);
     });
 
     test('toJson/fromJson roundtrip preserves all fields', () {
@@ -30,7 +41,15 @@ void main() {
         serverEnabled: true,
         chatEnabled: true,
         port: 9999,
-        toggles: McpToolToggles(tagsEnabled: false, trendsEnabled: false),
+        toggles: McpToolToggles(
+          alarmsEnabled: true,
+          configEnabled: true,
+          drawingsEnabled: true,
+          plcCodeEnabled: true,
+          proposalsEnabled: true,
+          techDocsEnabled: true,
+          screenshotsEnabled: true,
+        ),
       );
       final json = original.toJson();
       final restored = McpConfig.fromJson(json);
@@ -67,16 +86,19 @@ void main() {
   });
 
   group('McpToolToggles data class', () {
-    test('defaults all 8 fields to true', () {
+    test('defaults all 9 fields to false', () {
+      // Named one by one rather than compared to allDisabled, so a tenth
+      // group added with `= true` fails here rather than shipping on.
       const toggles = McpToolToggles();
-      expect(toggles.tagsEnabled, isTrue);
-      expect(toggles.alarmsEnabled, isTrue);
-      expect(toggles.configEnabled, isTrue);
-      expect(toggles.drawingsEnabled, isTrue);
-      expect(toggles.trendsEnabled, isTrue);
-      expect(toggles.plcCodeEnabled, isTrue);
-      expect(toggles.proposalsEnabled, isTrue);
-      expect(toggles.techDocsEnabled, isTrue);
+      expect(toggles.tagsEnabled, isFalse);
+      expect(toggles.alarmsEnabled, isFalse);
+      expect(toggles.configEnabled, isFalse);
+      expect(toggles.drawingsEnabled, isFalse);
+      expect(toggles.trendsEnabled, isFalse);
+      expect(toggles.plcCodeEnabled, isFalse);
+      expect(toggles.proposalsEnabled, isFalse);
+      expect(toggles.techDocsEnabled, isFalse);
+      expect(toggles.screenshotsEnabled, isFalse);
     });
 
     test('allEnabled is a const with all true', () {
@@ -100,17 +122,35 @@ void main() {
       }
     });
 
-    test('fromJson with empty map returns all true (missing keys default to true)',
-        () {
+    test('fromJson with empty map returns all false, key by key', () {
+      // Separately from the constructor default above: these are two
+      // independent `?? false` sites, and pinning only one leaves the other
+      // free to default on.
       final toggles = McpToolToggles.fromJson({});
-      expect(toggles.tagsEnabled, isTrue);
-      expect(toggles.alarmsEnabled, isTrue);
-      expect(toggles.configEnabled, isTrue);
-      expect(toggles.drawingsEnabled, isTrue);
-      expect(toggles.trendsEnabled, isTrue);
-      expect(toggles.plcCodeEnabled, isTrue);
-      expect(toggles.proposalsEnabled, isTrue);
-      expect(toggles.techDocsEnabled, isTrue);
+      expect(toggles.tagsEnabled, isFalse);
+      expect(toggles.alarmsEnabled, isFalse);
+      expect(toggles.configEnabled, isFalse);
+      expect(toggles.drawingsEnabled, isFalse);
+      expect(toggles.trendsEnabled, isFalse);
+      expect(toggles.plcCodeEnabled, isFalse);
+      expect(toggles.proposalsEnabled, isFalse);
+      expect(toggles.techDocsEnabled, isFalse);
+      expect(toggles.screenshotsEnabled, isFalse);
+    });
+
+    test('an explicit true in a stored blob still enables the group', () {
+      // The change must not make it impossible to turn things on. Every
+      // group, individually, because a `?? false` that ignored its input
+      // would pass a test that only checked one.
+      for (final key in McpToolToggles.allJsonKeys) {
+        final toggles = McpToolToggles.fromJson({key: true});
+        expect(toggles.getByKey(key), isTrue,
+            reason: 'an explicit "$key": true did not enable it');
+        for (final other in McpToolToggles.allJsonKeys.where((k) => k != key)) {
+          expect(toggles.getByKey(other), isFalse,
+              reason: 'enabling "$key" also enabled "$other"');
+        }
+      }
     });
 
     test('toJson/fromJson roundtrip', () {
@@ -123,33 +163,38 @@ void main() {
 
       expect(restored.tagsEnabled, isFalse);
       expect(restored.plcCodeEnabled, isFalse);
-      expect(restored.alarmsEnabled, isTrue);
+      expect(restored.alarmsEnabled, isFalse);
     });
 
-    test('fromLegacyMap reads legacy preference keys', () {
+    test('fromLegacyMap takes the keys it is given', () {
       final toggles = McpToolToggles.fromLegacyMap({
-        McpToolToggles.kTechDocsEnabled: false,
-      });
-      expect(toggles.techDocsEnabled, isFalse);
-      expect(toggles.tagsEnabled, isTrue);
-    });
-
-    test('fromLegacyMap with single key disabled returns that field false, rest true',
-        () {
-      final toggles = McpToolToggles.fromLegacyMap({
+        McpToolToggles.kTechDocsEnabled: true,
         McpToolToggles.kTagsEnabled: false,
       });
+      expect(toggles.techDocsEnabled, isTrue);
       expect(toggles.tagsEnabled, isFalse);
-      expect(toggles.alarmsEnabled, isTrue);
-      expect(toggles.configEnabled, isTrue);
-      expect(toggles.drawingsEnabled, isTrue);
-      expect(toggles.trendsEnabled, isTrue);
-      expect(toggles.plcCodeEnabled, isTrue);
-      expect(toggles.proposalsEnabled, isTrue);
+    });
+
+    test('fromLegacyMap leaves a key it was not given disabled', () {
+      // A legacy key nobody wrote is a group nobody enabled. This factory has
+      // no production caller left -- the binary's read was deleted with the
+      // fail-open -- but its default is the same rule as everywhere else.
+      final toggles = McpToolToggles.fromLegacyMap({
+        McpToolToggles.kTagsEnabled: true,
+      });
+      expect(toggles.tagsEnabled, isTrue);
+      expect(toggles.alarmsEnabled, isFalse);
+      expect(toggles.configEnabled, isFalse);
+      expect(toggles.drawingsEnabled, isFalse);
+      expect(toggles.trendsEnabled, isFalse);
+      expect(toggles.plcCodeEnabled, isFalse);
+      expect(toggles.proposalsEnabled, isFalse);
+      expect(toggles.techDocsEnabled, isFalse);
+      expect(toggles.screenshotsEnabled, isFalse);
     });
 
     test('copyWithToggle changes one toggle at a time', () {
-      const toggles = McpToolToggles();
+      const toggles = McpToolToggles.allEnabled;
       final updated = toggles.copyWithToggle('tags', false);
 
       expect(updated.tagsEnabled, isFalse);
@@ -157,10 +202,12 @@ void main() {
     });
 
     test('getByKey returns correct value for each key', () {
-      const toggles = McpToolToggles(tagsEnabled: false);
+      final toggles = McpToolToggles.allEnabled.copyWithToggle('tags', false);
       expect(toggles.getByKey('tags'), isFalse);
       expect(toggles.getByKey('alarms'), isTrue);
-      expect(toggles.getByKey('unknown'), isTrue);
+      // An unknown group is one nobody decided about. It used to answer
+      // true, which is the same trap as a missing key defaulting on.
+      expect(toggles.getByKey('unknown'), isFalse);
     });
 
     test('toolGroupMeta contains 10 entries with key, title, description', () {
@@ -214,27 +261,27 @@ void main() {
       );
     }
 
-    test('allEnabled registers 41 tools (19 read + 13 write + 9 report)',
+    test('allEnabled registers 42 tools (20 read + 13 write + 9 report)',
         () async {
       final server = createServer();
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
         final tools = await client.listTools();
-        expect(tools, hasLength(41));
+        expect(tools, hasLength(42));
       } finally {
         await client.close();
       }
     });
 
-    test('tagsEnabled=false registers 38 tools', () async {
+    test('tagsEnabled=false registers 39 tools', () async {
       final server = createServer(
-        toggles: const McpToolToggles(tagsEnabled: false),
+        toggles: McpToolToggles.allEnabled.copyWithToggle('tags', false),
       );
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
         final tools = await client.listTools();
         final names = tools.map((t) => t.name).toSet();
-        expect(tools, hasLength(38));
+        expect(tools, hasLength(39));
         expect(names, isNot(contains('list_tags')));
         expect(names, isNot(contains('get_tag_value')));
       } finally {
@@ -242,9 +289,9 @@ void main() {
       }
     });
 
-    test('alarmsEnabled=false registers 33 tools', () async {
+    test('alarmsEnabled=false registers 34 tools', () async {
       final server = createServer(
-        toggles: const McpToolToggles(alarmsEnabled: false),
+        toggles: McpToolToggles.allEnabled.copyWithToggle('alarms', false),
       );
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
@@ -255,8 +302,8 @@ void main() {
         // both tagsEnabled && alarmsEnabled), create_alarm, update_alarm,
         // delete_alarm (write tools gated by alarmsEnabled inside the
         // proposalsEnabled block).
-        // 41 total - 8 = 33.
-        expect(tools, hasLength(33));
+        // 42 total - 8 = 34.
+        expect(tools, hasLength(34));
         expect(names, isNot(contains('list_alarms')));
         expect(names, isNot(contains('get_alarm_detail')));
         expect(names, isNot(contains('query_alarm_history')));
@@ -269,17 +316,17 @@ void main() {
       }
     });
 
-    test('proposalsEnabled=false registers 24 tools', () async {
+    test('proposalsEnabled=false registers 25 tools', () async {
       final server = createServer(
-        toggles: const McpToolToggles(proposalsEnabled: false),
+        toggles: McpToolToggles.allEnabled.copyWithToggle('proposals', false),
       );
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
         final tools = await client.listTools();
         final names = tools.map((t) => t.name).toSet();
-        // 41 - 13 - the four report writes, which ride this toggle
+        // 42 - 13 - the four report writes, which ride this toggle
         // because they are proposals like every other write here.
-        expect(tools, hasLength(24));
+        expect(tools, hasLength(25));
         expect(names, isNot(contains('create_report')));
         expect(names, isNot(contains('set_shift_calendar')));
         // The read half stays: reportsEnabled put it there.
@@ -305,15 +352,16 @@ void main() {
     test('configEnabled=false removes config tools and config-dependent write tools',
         () async {
       final server = createServer(
-        toggles: const McpToolToggles(configEnabled: false),
+        toggles: McpToolToggles.allEnabled.copyWithToggle('config', false),
       );
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
         final tools = await client.listTools();
         final names = tools.map((t) => t.name).toSet();
-        // Config read tools removed (8): list_pages, list_assets,
+        // Config read tools removed (9): list_pages, list_assets,
         // get_asset_detail, list_key_mappings, list_alarm_definitions,
-        // list_asset_types, list_access_templates, list_unbound_keys.
+        // check_config_consistency, list_asset_types, list_access_templates,
+        // list_unbound_keys.
         // Config-dependent write tools removed (10): create_alarm,
         // update_alarm, delete_alarm (the alarm write tools need
         // configEnabled for their lookups), create_key_mapping,
@@ -370,16 +418,7 @@ void main() {
       // Prompts are gated: alarm prompts require alarmsEnabled,
       // diagnose_equipment requires tagsEnabled && alarmsEnabled.
       final server = createServer(
-        toggles: const McpToolToggles(
-          tagsEnabled: false,
-          alarmsEnabled: false,
-          configEnabled: false,
-          drawingsEnabled: false,
-          trendsEnabled: false,
-          plcCodeEnabled: false,
-          proposalsEnabled: false,
-          techDocsEnabled: false,
-        ),
+        toggles: McpToolToggles.allDisabled,
       );
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
@@ -413,7 +452,7 @@ void main() {
 
     test('configEnabled=false omits config snapshot resource', () async {
       final server = createServer(
-        toggles: const McpToolToggles(configEnabled: false),
+        toggles: McpToolToggles.allEnabled.copyWithToggle('config', false),
       );
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
@@ -429,7 +468,7 @@ void main() {
 
     test('configEnabled=true registers config snapshot resource', () async {
       final server = createServer(
-        toggles: const McpToolToggles(configEnabled: true),
+        toggles: McpToolToggles.allDisabled.copyWithToggle('config', true),
       );
       final client = await MockMcpClient.connect(server.mcpServer);
       try {
@@ -445,7 +484,7 @@ void main() {
 
     test('alarmsEnabled=false omits alarm-dependent prompts', () async {
       final server = createServer(
-        toggles: const McpToolToggles(alarmsEnabled: false),
+        toggles: McpToolToggles.allEnabled.copyWithToggle('alarms', false),
       );
       final client = await MockMcpClient.connect(server.mcpServer);
       try {

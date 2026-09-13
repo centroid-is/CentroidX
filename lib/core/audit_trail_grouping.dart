@@ -17,6 +17,8 @@ library;
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 
+import 'config_change_store.dart';
+
 /// The audit surfaces this build knows how to talk about.
 ///
 /// ## What this is for
@@ -51,7 +53,21 @@ import 'package:tfc_dart/core/database_drift.dart';
 /// `admin` row with no change of any kind: no new chip either, because the
 /// existing `users` chip already covers rows carrying `groupRequired: 'users'`.
 /// Nothing branched on membership then and nothing branches on it now.
-const Set<String> kKnownAuditSurfaces = {'tag', 'pref', 'route', 'auth', 'admin'};
+///
+/// Phase 4 then added the sixth, `config` — the surface a page save, an asset
+/// edit or a key-mapping import writes its `audit_entry` header on, with the
+/// `config_change` rows of the same `action_id` beneath it. The cost was again
+/// this one line and the one assertion that pins it. Nothing branches on
+/// membership: a `config` action is found by its `action_id`, never by its
+/// surface string.
+const Set<String> kKnownAuditSurfaces = {
+  'tag',
+  'pref',
+  'route',
+  'auth',
+  'admin',
+  'config',
+};
 
 /// One human action and the rows of it this query could see.
 ///
@@ -152,10 +168,7 @@ List<AuditAction> groupAuditRows(
   List<AuditEntryData> rows, {
   Map<String, int> totalsByActionId = const {},
 }) {
-  final byAction = <String, List<AuditEntryData>>{};
-  for (final row in rows) {
-    byAction.putIfAbsent(row.actionId, () => <AuditEntryData>[]).add(row);
-  }
+  final byAction = _groupByKey<AuditEntryData>(rows, (row) => row.actionId);
 
   return [
     for (final entry in byAction.entries)
@@ -168,6 +181,287 @@ List<AuditAction> groupAuditRows(
         totalRowCount: totalsByActionId[entry.key] ?? entry.value.length,
       ),
   ];
+}
+
+/// One child of an action: either an `audit_entry` member row or a
+/// `config_change` row.
+///
+/// ## Why a union and not a widened [AuditEntryData]
+///
+/// The obvious cheap move is to synthesise an [AuditEntryData] for each change
+/// row and reuse everything below unchanged. It does not survive contact with
+/// the data: `audit_entry` has no `kind` and no `entity_id`, so the flattening
+/// would throw away precisely the identity 04-07's undo has to name — *which*
+/// asset, in *which* scope — and would replace it with an `item_key` string
+/// nothing can parse back. The two child types answer different questions and
+/// stay two types.
+///
+/// Sealed, so a renderer's `switch` is exhaustive and a third child type
+/// arriving is a compile error at every site rather than a silently skipped
+/// branch.
+sealed class ActionChild {
+  const ActionChild();
+
+  /// The correlation id this child shares with its siblings.
+  String get actionId;
+
+  /// When it happened. The merge key, and the only field both child types are
+  /// asked for by name.
+  DateTime get at;
+
+  /// Who did it. Present on both tables, which is what lets an action with no
+  /// header still be attributable.
+  String get who;
+}
+
+/// One `audit_entry` row, as a child of its action.
+final class AuditMemberChild extends ActionChild {
+  const AuditMemberChild(this.row);
+
+  final AuditEntryData row;
+
+  @override
+  String get actionId => row.actionId;
+
+  @override
+  DateTime get at => row.at;
+
+  @override
+  String get who => row.who;
+}
+
+/// One `config_change` row, as a child of its action.
+///
+/// [ConfigChangeRecord] is a value type — an id and a decoded [ConfigChange] —
+/// and importing it here does not give this file a database. Everything below
+/// is still a pure function over values.
+final class ConfigChangeChild extends ActionChild {
+  const ConfigChangeChild(this.record);
+
+  final ConfigChangeRecord record;
+
+  @override
+  String get actionId => record.change.actionId;
+
+  @override
+  DateTime get at => record.change.at;
+
+  @override
+  String get who => record.change.who;
+}
+
+/// One human action, its `audit_entry` members and its `config_change` rows.
+///
+/// [AuditAction]'s counterpart for the config history, and deliberately a
+/// second type rather than a widened first one: [AuditAction.lead] is
+/// non-nullable and three widgets rely on it, while an action here may have no
+/// header at all (see [isParentless]).
+class HistoryAction {
+  const HistoryAction({
+    required this.actionId,
+    required this.children,
+    required this.totalAuditRowCount,
+    required this.totalChangeCount,
+  });
+
+  /// The correlation id every child shares.
+  final String actionId;
+
+  /// Every child of this action that survived the filters, newest first.
+  ///
+  /// Merged from two newest-first streams on `at`, ties to the audit side.
+  /// Neither stream is re-sorted: each arrives in the order its store's
+  /// `ORDER BY` produced, and a second copy of that ordering rule here would
+  /// be a second thing to keep in step.
+  final List<ActionChild> children;
+
+  /// How many `audit_entry` rows this action has in the table, filters aside.
+  final int totalAuditRowCount;
+
+  /// How many `config_change` rows it has, filters aside.
+  ///
+  /// **Zero is a real and ordinary value.** `historyExempt` kinds — a page
+  /// image, the `server_config_envelope` ciphertext — write no change rows at
+  /// all, so an action that saved one is complete with none. That is why
+  /// [hiddenCount] treats an absent total as "not asked" rather than deriving
+  /// it: "no history" and "nothing happened" are different statements and this
+  /// type must not collapse them.
+  final int totalChangeCount;
+
+  /// The `audit_entry` rows among [children], in order.
+  List<AuditEntryData> get auditRows =>
+      [for (final child in children) if (child is AuditMemberChild) child.row];
+
+  /// The `config_change` rows among [children], in order.
+  List<ConfigChangeRecord> get changes => [
+        for (final child in children)
+          if (child is ConfigChangeChild) child.record
+      ];
+
+  /// The row a collapsed line is drawn from, or **null** when this action has
+  /// no `audit_entry` row at all.
+  ///
+  /// See [isParentless]. Nullable where [AuditAction.lead] is not, because
+  /// synthesising a header would put a fabricated author and a fabricated
+  /// permission on the page.
+  AuditEntryData? get lead {
+    for (final child in children) {
+      if (child is AuditMemberChild) return child.row;
+    }
+    return null;
+  }
+
+  /// True when the action's `audit_entry` row is missing.
+  ///
+  /// ## The orphan window, which is real and accepted
+  ///
+  /// The store commits its `config_change` rows and writes the `audit_entry`
+  /// row afterwards. A crash between the two leaves change rows on an
+  /// `action_id` with no header. The ordering is deliberate: the reverse loses
+  /// the changes and keeps a header describing them, which is worse.
+  ///
+  /// It is also what a station-scoped action looks like to a Postgres-backed
+  /// reader whose header lives in another store (C-13).
+  ///
+  /// Either way the rows exist and say what changed, who changed it and when.
+  /// Dropping the action would hide a real write; crashing on it would hide
+  /// every other write with it. It renders, flagged.
+  bool get isParentless => lead == null;
+
+  /// When the action happened — its newest child.
+  DateTime get at => children.first.at;
+
+  /// Who made it. Taken from the header when there is one and from the change
+  /// rows when there is not: both tables carry `who`, so a parentless action is
+  /// still fully attributable.
+  String get who => children.first.who;
+
+  /// How many of this action's rows the filters excluded, across both tables.
+  ///
+  /// Clamped per side at zero: a stale or wrong total must never render
+  /// "-2 changes hidden".
+  int get hiddenCount {
+    final hiddenAudit = totalAuditRowCount - auditRows.length;
+    final hiddenChanges = totalChangeCount - changes.length;
+    return (hiddenAudit > 0 ? hiddenAudit : 0) +
+        (hiddenChanges > 0 ? hiddenChanges : 0);
+  }
+
+  /// True when this view of the action is incomplete.
+  bool get isPartial => hiddenCount > 0;
+
+  /// True when the action gets an expander.
+  bool get isMulti => children.length > 1 || hiddenCount > 0;
+
+  /// The strictest permission across the audit children, or the empty string.
+  ///
+  /// `group_required` lives on `audit_entry` only, so a parentless action
+  /// yields the empty string. That is the honest answer: naming a group the
+  /// rows do not carry would be an invention, and defaulting an unknown
+  /// permission downward is the failure `AccessGroup.byName`'s null return
+  /// exists to prevent. See [strictestGroupName].
+  String get requiredGroupLabel =>
+      strictestGroupName(auditRows.map((row) => row.groupRequired));
+}
+
+/// `audit_entry` rows and `config_change` rows as one list of actions, newest
+/// action first.
+///
+/// The config history's entry point, sharing [groupAuditRows]'s core rather
+/// than forking it: the same map-based grouping, the same first-appearance
+/// ordering contract, the same "an absent total means we did not ask" rule.
+/// [groupAuditRows] is unchanged and its callers are untouched.
+///
+/// ## Why both streams are inputs
+///
+/// Driving from the audit side alone would never ask about an action whose
+/// header is missing, so an orphaned save would be invisible — and an orphaned
+/// save is exactly what a reader most needs to see. Driving from the change
+/// side alone would lose an action that legitimately wrote no change rows,
+/// which is what every `historyExempt` kind does. Both streams are read and
+/// both are grouped.
+///
+/// ## Ordering
+///
+/// The two inputs are each newest-first and are **merged** on `at`, ties to the
+/// audit side; neither is sorted. A plain `Map` then collects the children, and
+/// its key-insertion iteration order is the output contract — first-appearance
+/// order, which over a newest-first merge is newest-action-first.
+///
+/// Concatenating the streams instead would put every action with a header above
+/// every action without one and call the result chronological.
+///
+/// ## What this does not do
+///
+/// It does not filter. It receives what SQL returned and adds nothing back,
+/// which is why the two totals are passed in: the excluded rows are not
+/// available to be re-included.
+List<HistoryAction> groupHistoryRows({
+  required List<AuditEntryData> auditRows,
+  required List<ConfigChangeRecord> changes,
+  Map<String, int> auditTotalsByActionId = const {},
+  Map<String, int> changeTotalsByActionId = const {},
+}) {
+  final merged = _mergeNewestFirst(
+    [for (final row in auditRows) AuditMemberChild(row)],
+    [for (final record in changes) ConfigChangeChild(record)],
+  );
+
+  final byAction = _groupByKey<ActionChild>(merged, (child) => child.actionId);
+
+  return [
+    for (final entry in byAction.entries)
+      HistoryAction(
+        actionId: entry.key,
+        children: List.unmodifiable(entry.value),
+        // An absent total means the companion query was not run, so the
+        // visible rows are all this can claim. Never zero: zero would be a
+        // statement about the action rather than the absence of one — and for
+        // the change side a genuine zero is also what an exempt kind produces,
+        // so the two cases must not be conflated.
+        totalAuditRowCount: auditTotalsByActionId[entry.key] ??
+            entry.value.whereType<AuditMemberChild>().length,
+        totalChangeCount: changeTotalsByActionId[entry.key] ??
+            entry.value.whereType<ConfigChangeChild>().length,
+      ),
+  ];
+}
+
+/// Two newest-first lists as one, ties going to [a].
+///
+/// A merge and not a sort: each input's internal order is preserved exactly,
+/// including the `id DESC` tiebreak its store applied to rows sharing an
+/// instant. Re-sorting here would discard that and reshuffle a page save under
+/// the operator.
+List<ActionChild> _mergeNewestFirst(
+    List<AuditMemberChild> a, List<ConfigChangeChild> b) {
+  final merged = <ActionChild>[];
+  var i = 0;
+  var j = 0;
+  while (i < a.length && j < b.length) {
+    merged.add(b[j].at.isAfter(a[i].at) ? b[j++] : a[i++]);
+  }
+  while (i < a.length) {
+    merged.add(a[i++]);
+  }
+  while (j < b.length) {
+    merged.add(b[j++]);
+  }
+  return merged;
+}
+
+/// [items] bucketed by [key], in key-insertion order.
+///
+/// The core both group functions share. A plain `Map` is used and its iteration
+/// order relied on: Dart's default `Map` is a `LinkedHashMap` and iterates in
+/// key-insertion order, which is the whole output contract of both callers.
+Map<String, List<T>> _groupByKey<T>(
+    Iterable<T> items, String Function(T) key) {
+  final byKey = <String, List<T>>{};
+  for (final item in items) {
+    byKey.putIfAbsent(key(item), () => <T>[]).add(item);
+  }
+  return byKey;
 }
 
 /// The strictest of [names], or the empty string when there is nothing to rank.

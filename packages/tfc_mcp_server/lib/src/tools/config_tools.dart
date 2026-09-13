@@ -2,6 +2,9 @@ import 'dart:convert';
 
 import 'package:mcp_dart/mcp_dart.dart';
 
+import 'package:tfc_dart/tfc_dart_core.dart'
+    show ConfigInconsistency;
+
 import '../services/config_service.dart';
 import 'tool_registry.dart';
 
@@ -12,6 +15,7 @@ import 'tool_registry.dart';
 ///   Level 1: list_pages / list_assets (summaries)
 ///   Level 2: get_asset_detail (full page config)
 ///   Supporting: list_key_mappings, list_alarm_definitions
+///   Diagnostic: check_config_consistency
 ///
 /// All tools enforce a limit parameter to prevent context window overflow.
 void registerConfigTools(ToolRegistry registry, ConfigService configService) {
@@ -226,4 +230,95 @@ void registerConfigTools(ToolRegistry registry, ConfigService configService) {
       );
     },
   );
+
+  // -- check_config_consistency --
+  registry.registerTool(
+    name: 'check_config_consistency',
+    description:
+        'Check the stored configuration against its own change history: '
+        'every parent_id resolves, every row matches the newest change '
+        'recorded for it (payload AND position), no deleted entity still has '
+        'a row, and no history-exempt entity has change rows. Read-only. Use '
+        'after a cutover, a restore or an undo, or when the history view '
+        'shows something that cannot be right.',
+    inputSchema: JsonSchema.object(
+      properties: {
+        'limit': JsonSchema.integer(
+          description: 'Maximum number of violations to list (default: 50). '
+              'The total count is always reported in full.',
+        ),
+      },
+    ),
+    handler: (arguments, extra) async {
+      final limit = arguments['limit'] as int? ?? 50;
+
+      final List<ConfigInconsistency> violations;
+      try {
+        violations = await configService.checkConsistency();
+      } catch (error) {
+        // Never "no violations". An unreadable `config_item` and a consistent
+        // one are both an empty list, and reporting the first as the second
+        // is the one answer this tool must not give.
+        return CallToolResult(
+          content: [
+            TextContent(
+              text: 'Could not check configuration consistency: $error\n'
+                  'The config_item and config_change tables must both be '
+                  'readable — a database tfc_dart has not migrated yet has '
+                  'neither.',
+            ),
+          ],
+        );
+      }
+
+      if (violations.isEmpty) {
+        return CallToolResult(
+          content: [
+            TextContent(
+              text: 'Configuration is consistent with its change history: '
+                  'no violations.',
+            ),
+          ],
+        );
+      }
+
+      final shown = violations.take(limit).toList();
+      final buffer =
+          StringBuffer('Configuration inconsistencies (${violations.length}');
+      if (shown.length < violations.length) {
+        buffer.write(', showing ${shown.length}');
+      }
+      buffer.writeln('):');
+      for (final violation in shown) {
+        buffer.writeln('  ${violation.invariant.wireName} '
+            '${violation.kindName} ${violation.entityId}'
+            '@${violation.scopeName}: ${violation.summary}');
+        final expected = _capped(violation.expected);
+        final found = _capped(violation.found);
+        if (expected != null) buffer.writeln('    row:     $expected');
+        if (found != null) buffer.writeln('    history: $found');
+      }
+      return CallToolResult(
+        content: [TextContent(text: buffer.toString().trimRight())],
+      );
+    },
+  );
+}
+
+/// How much of a stored value a violation may show.
+///
+/// A violation carries whole entities on both sides, and an entity can be a
+/// page image of several megabytes. Two of those per violation, over a list
+/// that is unbounded by construction, would flood the response and evict the
+/// conversation that asked for it. The count and the invariant are what an
+/// engineer acts on; the values are there to recognise the row, and 256
+/// characters is enough to do that.
+const int _valueRenderCap = 256;
+
+/// [value] cut to [_valueRenderCap] characters, saying so, or null.
+String? _capped(String? value) {
+  if (value == null) return null;
+  if (value.length <= _valueRenderCap) return value;
+  return '${value.substring(0, _valueRenderCap)}… '
+      '(${value.length} chars total)';
 }

@@ -20,26 +20,41 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+import 'package:drift/drift.dart' show driftRuntimeOptions;
+import 'package:flutter/material.dart' show Icons;
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
+import 'package:tfc_dart/core/access/guarded_config_store.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_store.dart';
+import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_mcp_server/tfc_mcp_server.dart';
 
+import 'package:tfc/core/config/page_codec.dart' show pageItems;
 import 'package:tfc/core/guarded_knowledge_stores.dart';
+import 'package:tfc/models/menu_item.dart';
+import 'package:tfc/page_creator/assets/beckhoff.dart';
+import 'package:tfc/page_creator/assets/common.dart' show Asset;
+import 'package:tfc/page_creator/assets/led.dart';
+import 'package:tfc/page_creator/page.dart' show AssetPage;
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/access_policy.dart';
+import 'package:tfc/providers/config_store.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/drawing.dart';
 import 'package:tfc/providers/plc.dart';
 import 'package:tfc/providers/server_database.dart';
 import 'package:tfc/providers/tech_doc.dart';
-import 'package:tfc/tech_docs/tech_doc_library_section.dart'
-    show guardedPageLayoutPrefsProvider, pageLayoutPrefsProvider;
-import 'package:tfc/tech_docs/tech_doc_upload_service.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 const String _kStation = 'test-panel';
+
+/// The `action_id` the fixture layout is seeded under, so the `config_change`
+/// rows a test asserts on are the ones the *cleanup* wrote.
+const String _kSeedAction = 'test-seed';
 
 /// The asset the fixture indexes.
 const String _kAsset = 'CN01';
@@ -79,21 +94,6 @@ class _MemorySecrets implements MySecureStorage {
 
   @override
   Future<void> delete({required String key}) async => _values.remove(key);
-}
-
-/// The device-local store `deleteAndCleanAssets` reads and writes.
-class _MemoryPrefs implements PrefsReader {
-  final Map<String, String> values = {};
-  int writes = 0;
-
-  @override
-  Future<String?> getString(String key) async => values[key];
-
-  @override
-  Future<void> setString(String key, String value) async {
-    writes++;
-    values[key] = value;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +149,33 @@ List<ParsedCodeBlock> _fixtureBlocks() => [
       ),
     ];
 
+/// A layout carrying [docId] twice: on a top-level asset, and on a subdevice
+/// inside a composite.
+///
+/// **Built through the model, never as a JSON string.** The fixture this
+/// replaces hand-wrote `{"page1":{"assets":{"a1":{"techDocId":3}}}}` — an
+/// object where `AssetPage.toJson()` emits an array — so it agreed with the
+/// `assets is! Map<String, dynamic>` guard that skipped every real page, and
+/// the cleanup went a year without removing one id (D-4). Ids are set by hand
+/// so an assertion can name a row.
+Map<String, AssetPage> _layoutLinkedTo(int docId) {
+  final linked = LEDConfig(key: 'CN04.Run')
+    ..id = 'led-linked'
+    ..techDocId = docId;
+  final spare = LEDConfig(key: 'CN05.Run')..id = 'led-spare';
+  final slice = BeckhoffEL1008Config(nameOrId: '1')..techDocId = docId;
+  final rack = BeckhoffCX5010Config()
+    ..id = 'rack'
+    ..subdevices = <Asset>[slice];
+  return {
+    '/': AssetPage(
+      menuItem: const MenuItem(label: 'Home', icon: Icons.home, path: '/'),
+      assets: [linked, spare, rack],
+      mirroringDisabled: false,
+    )..id = 'page-home',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The container
 // ---------------------------------------------------------------------------
@@ -160,7 +187,8 @@ class _Wiring {
     required this.mcpDb,
     required this.denials,
     required this.mainBlockId,
-    required this.prefs,
+    required this.configStore,
+    required this.configRemote,
   });
 
   final ProviderContainer container;
@@ -172,8 +200,31 @@ class _Wiring {
   /// call-graph providers are keyed on.
   final int mainBlockId;
 
-  /// The in-memory store behind `pageLayoutPrefsProvider`.
-  final _MemoryPrefs prefs;
+  /// The shared configuration store the cleanup rewrites, unguarded, so a
+  /// test can seed a layout and read back what the cleanup left.
+  final ConfigStore configStore;
+
+  /// The stand-in for Postgres behind [configStore], for the `config_change`
+  /// rows a cleanup wrote — one per asset that actually moved is the claim
+  /// SC-1 makes, and it cannot be read off the snapshot.
+  final AppDatabase configRemote;
+
+  /// The asset items the store holds right now, by id.
+  Map<String, ConfigItem> get assetsById => {
+        for (final item in configStore.itemsOf(const {ConfigKind.asset}))
+          item.id: item,
+      };
+
+  /// The `config_change` rows written since the store was seeded.
+  Future<List<String>> changedAssetIds() async {
+    final rows = await configRemote.select(configRemote.configChangeTable).get();
+    return [
+      for (final row in rows)
+        if (row.kind == ConfigKind.asset.wireName &&
+            row.actionId != _kSeedAction)
+          row.entityId,
+    ]..sort();
+  }
 
   /// Denials reach `accessDenialsProvider` through a broadcast stream, which
   /// delivers asynchronously. Every assertion on [denials] has to let the
@@ -192,7 +243,11 @@ class _Wiring {
 
 /// A container with the real knowledge providers, an in-memory MCP database
 /// carrying a genuinely indexed asset, and no Postgres.
-Future<_Wiring> _wiring({bool indexFixture = true}) async {
+Future<_Wiring> _wiring({
+  bool indexFixture = true,
+  Map<String, AssetPage>? layout,
+  bool configOnline = true,
+}) async {
   final accessDb = AppDatabase.inMemoryForTest();
   addTearDown(accessDb.close);
   // Force the migration, so the four seeded roles exist.
@@ -214,13 +269,49 @@ Future<_Wiring> _wiring({bool indexFixture = true}) async {
   }
 
   final sink = _RecordingSink();
-  final prefs = _MemoryPrefs();
+  // The shared configuration store the page-layout cleanup rewrites. Real
+  // store, real codec, in-memory databases: the seam under test is the one
+  // production uses, and the only thing standing in is Postgres itself.
+  driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+  final configLocal = AppDatabase.inMemoryForTest();
+  final configRemote = AppDatabase.inMemoryForTest();
+  addTearDown(configLocal.close);
+  addTearDown(configRemote.close);
+  final configStore = ConfigStore(
+    local: configLocal,
+    stationScope: ConfigScope.forStation(_kStation),
+    station: _kStation,
+  );
+  addTearDown(configStore.close);
+  await configStore.open();
+  configStore.attachRemoteDatabase(configRemote, startSync: false);
+  if (layout != null) {
+    await configStore.writeItems(
+      kinds: const {ConfigKind.page, ConfigKind.asset},
+      wanted: pageItems(layout),
+      actionId: _kSeedAction,
+      who: 'test',
+      roleName: 'system',
+    );
+  }
+  if (!configOnline) {
+    // A station that seeded its mirror and then lost Postgres: the snapshot
+    // still answers, and every shared write is refused.
+    configStore.detachRemote();
+  }
 
   final container = ProviderContainer(
     overrides: [
-      // The device-local store the page-layout cleanup writes through, so the
-      // test can see exactly what the guard above it did or did not write.
-      pageLayoutPrefsProvider.overrideWithValue(prefs),
+      // The guarded store, wired to this container's own policy, session and
+      // audit sink — so a refusal here is the same refusal production gets.
+      configStoreProvider.overrideWith((ref) async => GuardedConfigStore(
+            inner: configStore,
+            policy: ref.read(accessPolicyProvider),
+            session: () => sessionInForce(ref),
+            audit: RefAuditSink(ref),
+            station: _kStation,
+            onDenied: (denial) => reportAccessDenial(ref, denial),
+          )),
       // No Postgres. The knowledge indexes get their own in-memory database
       // through `mcpDatabaseProvider`, which is the seam the three providers
       // actually read.
@@ -244,7 +335,8 @@ Future<_Wiring> _wiring({bool indexFixture = true}) async {
     mcpDb: mcpDb,
     denials: denials,
     mainBlockId: mainBlockId,
-    prefs: prefs,
+    configStore: configStore,
+    configRemote: configRemote,
   );
 }
 
@@ -252,6 +344,7 @@ Future<_Wiring> _wiring({bool indexFixture = true}) async {
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
@@ -503,29 +596,102 @@ void main() {
   // The page-layout cleanup a document delete runs
   // -------------------------------------------------------------------------
 
-  group('deleteAndCleanAssets through the wired GuardedPrefsReader', () {
-    /// A layout with one asset carrying `techDocId: 3`, which the cleanup is
-    /// supposed to strip.
-    const layout = '{"page1":{"assets":{"a1":{"techDocId":3}}}}';
+  group('deleteAndCleanAssets through the guarded configuration store', () {
+    const int docId = 3;
+
+    Future<void> clean(_Wiring w, {int id = docId}) async =>
+        w.container.read(techDocUploadServiceProvider)!.deleteAndCleanAssets(
+              docId: id,
+              configStore:
+                  await w.container.read(configStoreProvider.future),
+            );
+
+    test('the fixture is a real page — its assets encode as a List', () {
+      final json = _layoutLinkedTo(docId)['/']!.toJson();
+
+      // The pin, and the reason this file no longer hand-writes its layout.
+      // The cleanup used to skip any page whose `assets` was not a
+      // `Map<String, dynamic>` — which is every page the app can produce, so
+      // it never stripped a single `techDocId`. The fixture it was tested
+      // against built `assets` as a map, so the test agreed with the bug.
+      // If this ever fails, the shape moved and a map-shaped guard could
+      // come back unnoticed (D-4).
+      expect(json['assets'], isA<List<dynamic>>());
+    });
+
+    test('a configure session strips the id from the asset that referenced it',
+        () async {
+      final w = await _wiring(layout: _layoutLinkedTo(docId));
+      await w.signIn();
+      final before = w.assetsById;
+
+      await clean(w);
+
+      final after = w.assetsById;
+      expect(after['led-linked']!.decode()['techDocId'], isNull);
+      expect(after['led-spare']!.payload, before['led-spare']!.payload,
+          reason: 'an asset that never referenced the document is not '
+              'rewritten, so the diff never sees it and it gets no row');
+      expect(await w.changedAssetIds(), ['led-linked', 'rack']);
+
+      final row =
+          w.sink.rows.where((r) => r.itemKey == 'page_editor_data').single;
+      expect(row.allowed, isTrue);
+      expect(row.who, 'jon');
+      expect(row.station, _kStation);
+      expect(row.reason, contains('$docId'));
+    });
+
+    test('a document referenced by a subdevice rewrites the parent row',
+        () async {
+      final w = await _wiring(layout: _layoutLinkedTo(docId));
+      await w.signIn();
+
+      await clean(w);
+
+      // Subdevices are not rows: they live inside their parent's payload, so
+      // the whole rack is rewritten to clear one slice's link. That is the
+      // documented consequence of top-level-assets-only.
+      final rack = w.assetsById['rack']!;
+      expect(rack.payload, isNot(contains('"techDocId":$docId')));
+      expect((rack.decode()['subdevices'] as List).single['techDocId'], isNull);
+      expect(await w.changedAssetIds(), contains('rack'));
+    });
+
+    test('a document nothing references writes nothing at all', () async {
+      final w = await _wiring(layout: _layoutLinkedTo(docId));
+      await w.signIn();
+      final before = {
+        for (final entry in w.assetsById.entries) entry.key: entry.value.payload
+      };
+
+      await clean(w, id: 99);
+
+      expect({
+        for (final entry in w.assetsById.entries) entry.key: entry.value.payload
+      }, before);
+      expect(await w.changedAssetIds(), isEmpty);
+      expect(w.sink.rows.where((r) => r.itemKey == 'page_editor_data'), isEmpty,
+          reason: 'no write means no audit row either — a trail that records '
+              'a save over nothing is a trail nobody can read');
+      // And the document itself still goes.
+      expect(w.sink.rows.map((r) => r.itemKey), contains('tech_doc.99'));
+    });
 
     test('an anonymous session is refused, and nothing is written', () async {
-      final w = await _wiring();
+      final w = await _wiring(layout: _layoutLinkedTo(docId));
       await w.container.read(accessSessionProvider.future);
-      w.prefs.values['page_editor_data'] = layout;
-      final service = w.container.read(techDocUploadServiceProvider)!;
+      final before = w.assetsById['led-linked']!.payload;
 
       await expectLater(
-        service.deleteAndCleanAssets(
-          docId: 3,
-          prefsReader: w.container.read(guardedPageLayoutPrefsProvider),
-        ),
+        clean(w),
         throwsA(isA<AccessDenied>()
             .having((d) => d.itemKey, 'itemKey', 'page_editor_data')),
       );
 
-      expect(w.prefs.writes, 0);
-      expect(w.prefs.values['page_editor_data'], layout,
+      expect(w.assetsById['led-linked']!.payload, before,
           reason: 'the layout must be untouched by a refused cleanup');
+      expect(await w.changedAssetIds(), isEmpty);
       expect(
           w.sink.rows
               .where((r) => r.itemKey == 'page_editor_data')
@@ -538,78 +704,30 @@ void main() {
 
     test('the refusal is not swallowed, so the document is not deleted either',
         () async {
-      final w = await _wiring();
+      final w = await _wiring(layout: _layoutLinkedTo(docId));
       await w.container.read(accessSessionProvider.future);
-      w.prefs.values['page_editor_data'] = layout;
-      final service = w.container.read(techDocUploadServiceProvider)!;
 
-      await expectLater(
-        service.deleteAndCleanAssets(
-          docId: 3,
-          prefsReader: w.container.read(guardedPageLayoutPrefsProvider),
-        ),
-        throwsA(isA<AccessDenied>()
-            .having((d) => d.itemKey, 'itemKey', 'page_editor_data')),
-      );
+      await expectLater(clean(w), throwsA(isA<AccessDenied>()));
 
-      // `deleteAndCleanAssets` wraps its cleanup in a blanket `catch (_)` for
-      // malformed JSON. Without an `on AccessDenied { rethrow; }` arm that
-      // catch eats the refusal and the delete carries on -- the row would then
-      // say `tech_doc.3`, not `page_editor_data`.
+      // `deleteAndCleanAssets` catches a layout it cannot decode. Without an
+      // `on AccessDenied { rethrow; }` arm that catch eats the refusal and
+      // the delete carries on -- the row would then say `tech_doc.3`.
       expect(w.sink.rows.map((r) => r.itemKey), isNot(contains('tech_doc.3')));
     });
 
-    test('a configure session cleans the layout, and one row says so',
+    test('offline, the cleanup fails and the document survives with it',
         () async {
-      final w = await _wiring();
+      final w = await _wiring(
+          layout: _layoutLinkedTo(docId), configOnline: false);
       await w.signIn();
-      w.prefs.values['page_editor_data'] = layout;
-      final service = w.container.read(techDocUploadServiceProvider)!;
 
-      await service.deleteAndCleanAssets(
-        docId: 3,
-        prefsReader: w.container.read(guardedPageLayoutPrefsProvider),
-      );
+      await expectLater(
+          clean(w), throwsA(isA<ConfigStoreOfflineException>()));
 
-      expect(w.prefs.writes, 1);
-      expect(w.prefs.values['page_editor_data'], isNot(contains('techDocId')));
-      final row =
-          w.sink.rows.where((r) => r.itemKey == 'page_editor_data').single;
-      expect(row.allowed, isTrue);
-      expect(row.reason, 'deleteAndCleanAssets');
-      expect(row.who, 'jon');
-      expect(row.station, _kStation);
-    });
-
-    test('the store it writes is the one it writes today -- the guard adds '
-        'none of its own', () async {
-      final w = await _wiring();
-      await w.signIn();
-      w.prefs.values['page_editor_data'] = layout;
-      final service = w.container.read(techDocUploadServiceProvider)!;
-
-      await service.deleteAndCleanAssets(
-        docId: 3,
-        prefsReader: w.container.read(guardedPageLayoutPrefsProvider),
-      );
-
-      // The device-local-versus-shared oddity recorded in the summary is
-      // deliberately unchanged: the guard writes through to exactly the reader
-      // `pageLayoutPrefsProvider` supplies, and to nothing else.
-      expect(w.prefs.values.keys, ['page_editor_data']);
-    });
-
-    test('getString passes through, ungated and unaudited', () async {
-      final w = await _wiring();
-      await w.container.read(accessSessionProvider.future);
-      w.prefs.values['page_editor_data'] = layout;
-
-      final raw = await w.container
-          .read(guardedPageLayoutPrefsProvider)
-          .getString('page_editor_data');
-
-      expect(raw, layout);
-      expect(w.sink.rows, isEmpty);
+      // The layout was not cleaned, so the document must still be there:
+      // a delete that reported success over a failed cleanup is exactly the
+      // dangling reference this method exists to prevent.
+      expect(w.sink.rows.map((r) => r.itemKey), isNot(contains('tech_doc.3')));
     });
   });
 

@@ -25,6 +25,7 @@ import 'package:tfc_dart/core/database_drift.dart';
 
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/preferences.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// A stand-in for `LocalAuthProvider` that honours the same null-versus-throw
 /// contract: null for an unrecognised credential, a throw for infrastructure.
@@ -245,6 +246,7 @@ ProviderSubscription<AsyncValue<AccessSession>> _listen(_Harness h) {
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     // Real Argon2id/PBKDF2 cost makes `createUser` take seconds a piece, and
     // the panel-account tests need real `app_user` rows.
     Pbkdf2Kdf.iterationsForTest = 10;

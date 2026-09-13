@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'package:dbus/dbus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:logger/logger.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:file_picker/file_picker.dart';
@@ -12,6 +11,8 @@ import 'package:path/path.dart' as path;
 import '../dbus/remote.dart';
 import '../theme.dart';
 import '../providers/theme.dart';
+import '../providers/preferences.dart'
+    show createDeviceLocalPreferences, localPreferencesProvider;
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 
 final logger = Logger();
@@ -97,18 +98,26 @@ class LoginCredentials {
 /// Reads the saved D-Bus connection credentials.
 ///
 /// Top-level so [DbusGate] can ask whether a remote bus was ever configured
-/// without building a login form to find out.
+/// without building a login form to find out. That is also why it calls
+/// [createDeviceLocalPreferences] rather than reading
+/// `localPreferencesProvider`: there is no `ref` here. `_saveCredentials`,
+/// which does have one, takes the provider.
+///
+/// The five key names are unchanged. They were written through
+/// `SharedPreferences.getInstance()`, so they sit in the legacy store spelled
+/// `flutter.connectionType` and friends; the one-shot import strips the
+/// prefix, and a station that upgrades still reaches its own bus.
 Future<LoginCredentials> loadSavedDbusCredentials() async {
   logger.d('Loading saved credentials');
-  final prefs = await SharedPreferences.getInstance();
+  final prefs = createDeviceLocalPreferences();
 
   logger.d('Loading saved credentials from prefs');
   final type = ConnectionType.values.byName(
-      prefs.getString('connectionType') ?? ConnectionType.remote.name);
-  final host = prefs.getString('host');
-  final username = prefs.getString('username');
-  final autoLogin = prefs.getBool('autoLogin') ?? false;
-  final sshPrivateKeyPath = prefs.getString('sshPrivateKeyPath');
+      await prefs.getString('connectionType') ?? ConnectionType.remote.name);
+  final host = await prefs.getString('host');
+  final username = await prefs.getString('username');
+  final autoLogin = await prefs.getBool('autoLogin') ?? false;
+  final sshPrivateKeyPath = await prefs.getString('sshPrivateKeyPath');
 
   // Currently read on FlutterSecureStorage is not working on eLinux
   // It just hangs indefinitely.
@@ -161,7 +170,7 @@ class _LoginFormState extends ConsumerState<LoginForm> {
 
   Future<void> _saveCredentials(LoginCredentials creds) async {
     logger.d('Saving credentials: $creds');
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = ref.read(localPreferencesProvider);
     final secureStorage = SecureStorage.getInstance();
 
     await prefs.setString('connectionType', creds.type.name);

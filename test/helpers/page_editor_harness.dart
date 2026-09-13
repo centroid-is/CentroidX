@@ -42,12 +42,36 @@ import 'package:tfc_dart/core/database.dart' show DatabaseConfig;
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/route_registry.dart';
 
-import 'test_helpers.dart' show FakeSecureStorage;
+import 'package:tfc/core/config/page_codec.dart' show pagesOf;
+import 'package:tfc_dart/core/access/guarded_config_store.dart'
+    show GuardedConfigStore;
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_store.dart' show ConfigStore;
+
+import 'test_helpers.dart'
+    show
+        FakeSecureStorage,
+        createTestConfigStore,
+        kConfiguringTestSession,
+        useInMemoryDeviceLocalPreferences;
 
 /// Minimal in-memory [PreferencesApi] so the editor can load and save.
 /// Doubles as the read-back channel for [saveAndReadBack].
 class FakeEditorPreferences implements PreferencesApi {
   final Map<String, Object> _store = {};
+
+  /// The rows the editor saves into, once [editorManagerWith] has built one.
+  ///
+  /// It sits on the preferences fake rather than being threaded through
+  /// sixteen test files because that is what [readBackHomeAssets] is handed —
+  /// the read-back channel moved from the blob to the rows and its signature
+  /// did not have to.
+  ConfigStore? configStore;
+
+  /// The guard over [configStore], which is what a page image is written
+  /// through since 04-09 — image blobs are `kind='page_image'` rows now, not
+  /// preferences, so they no longer live in [_store] at all.
+  GuardedConfigStore? guardedStore;
 
   @override
   Future<String?> getString(String key) async => _store[key] as String?;
@@ -99,10 +123,26 @@ DrawnBoxConfig editorBox(double x, double y, {double? angle}) {
     ..size = const RelativeSize(width: 0.12, height: 0.06);
 }
 
-/// A one-page manager holding [assets], saving into [prefs].
-PageManager editorManagerWith(List<Asset> assets, FakeEditorPreferences prefs) {
+/// A one-page manager holding [assets], saving through a store of its own.
+///
+/// Two in-memory SQLite databases — a mirror and a stand-in for Postgres,
+/// attached through `attachRemoteDatabase`, no Docker — behind a permissive
+/// [GuardedConfigStore]. `kConfiguringTestSession` is what makes the save land:
+/// the default session is an anonymous operator, which the guard refuses, and
+/// an editor test asserting on a read-back is by definition standing somebody
+/// at the panel who may configure.
+///
+/// [prefs] is still where image blobs and the top-level order go, and is what
+/// [readBackHomeAssets] is handed — it carries the store on it.
+Future<PageManager> editorManagerWith(
+    List<Asset> assets, FakeEditorPreferences prefs) async {
+  final guarded =
+      await createTestConfigStore(session: kConfiguringTestSession);
+  prefs.configStore = guarded.inner;
+  prefs.guardedStore = guarded;
   return PageManager(
     prefs: prefs,
+    store: guarded.inner,
     pages: {
       '/': AssetPage(
         menuItem: const MenuItem(label: 'Home', path: '/', icon: Icons.home),
@@ -111,8 +151,32 @@ PageManager editorManagerWith(List<Asset> assets, FakeEditorPreferences prefs) {
         navigationPriority: 0,
       ),
     },
+    writeItems: (wanted, {reason}) => guarded.write(
+      wanted,
+      kinds: const {ConfigKind.page, ConfigKind.asset},
+      checkKind: ConfigKind.page,
+      reason: reason,
+    ),
   );
 }
+
+/// The image store for [prefs]: the guard over the very rows the manager
+/// built beside it saves pages into.
+///
+/// Falls back to a store of its own when [prefs] never went through
+/// [editorManagerWith] — the editor collects orphaned images on every save,
+/// and a provider that threw there would leave that path silently untested.
+/// Idempotent: the store it makes is remembered on [prefs], so seeding blobs
+/// before the editor is built and reading them back afterwards go to one
+/// place.
+Future<PageImageStore> imageStoreOf(FakeEditorPreferences prefs) async =>
+    PageImageStore(prefs.guardedStore ??=
+        await createTestConfigStore(session: kConfiguringTestSession));
+
+/// A [PageImageStore] over a row store of its own, for the tests that only
+/// need somewhere to put bytes.
+Future<PageImageStore> testImageStore() async => PageImageStore(
+    await createTestConfigStore(session: kConfiguringTestSession));
 
 /// The editor lives inside `BaseScaffold`, which reads the current Beamer
 /// location during build, so it needs a router above it.
@@ -162,10 +226,15 @@ Widget buildEditorUnderTest(PageManager manager, {ThemeData? theme}) {
   return ProviderScope(
     overrides: [
       pageManagerProvider.overrideWith((ref) async => manager),
-      // Image blobs go where the pages go, so saveAndReadBack-style tests
-      // see pages and their image bytes in one fake store.
-      pageImageStoreProvider
-          .overrideWith((ref) async => PageImageStore(manager.prefs)),
+      // Image blobs go where the pages go — the same `ConfigStore` the
+      // manager saves rows into — so saveAndReadBack-style tests see pages
+      // and their image bytes in one place.
+      pageImageStoreProvider.overrideWith((ref) async {
+        final prefs = manager.prefs;
+        return prefs is FakeEditorPreferences
+            ? imageStoreOf(prefs)
+            : testImageStore();
+      }),
       // Keep the editor off the database / PLC / alarm stack: BaseScaffold
       // only needs these to decide between the clock and the alarm banner.
       databaseProvider.overrideWith((ref) async => null),
@@ -192,6 +261,13 @@ void setUpEditorEnvironment() {
   // instance must be set."
   SharedPreferencesAsyncPlatform.instance =
       InMemorySharedPreferencesAsync.empty();
+
+  // And the store the factory answers, which since v1.2 plan 01-05 is the
+  // SQLite one `main()` opens before `runApp` rather than a wrapper over the
+  // platform instance above. Both are needed: the canvas reaches the factory
+  // through `localPreferencesProvider`, and the legacy platform instance is
+  // still what `Preferences` and the import path read.
+  useInMemoryDeviceLocalPreferences();
 
   // IO-module configs kick off stateManProvider, which builds the real
   // Preferences and asks for SecureStorage. Linux and macOS fall back to
@@ -229,8 +305,8 @@ Future<FakeEditorPreferences> pumpEditorWith(
   addTearDown(tester.view.reset);
 
   final prefs = FakeEditorPreferences();
-  await tester
-      .pumpWidget(buildEditorUnderTest(editorManagerWith(assets, prefs)));
+  await tester.pumpWidget(
+      buildEditorUnderTest(await editorManagerWith(assets, prefs)));
   await tester.pumpAndSettle();
   return prefs;
 }
@@ -382,8 +458,24 @@ Future<List<Map<String, dynamic>>> saveAndReadBack(
 /// saved yet. The read-back half of [saveAndReadBack], for tests that save
 /// some other way than the FAB (e.g. Ctrl/Cmd+S).
 List<Map<String, dynamic>>? readBackHomeAssets(FakeEditorPreferences prefs) {
-  // The manager writes the whole page map under a single key; find the entry
-  // that parses as one and contains our page.
+  // The rows, when the manager under test has a store — which since v1.2
+  // phase 3 is every editor test. One row per top-level asset, reassembled by
+  // the codec so paint order comes back off `sort_index` exactly as the app
+  // reads it, and re-encoded so the shape is the JSON these call sites always
+  // got rather than live objects.
+  final store = prefs.configStore;
+  if (store != null) {
+    final items = store.itemsOf(const {ConfigKind.page, ConfigKind.asset});
+    if (items.isEmpty) return null; // Nothing saved yet.
+    final home = pagesOf(items)['/'];
+    if (home == null) return null;
+    final encoded = jsonDecode(jsonEncode(home.toJson()['assets']));
+    return (encoded as List).cast<Map<String, dynamic>>();
+  }
+
+  // The blob, for a manager built without a store. The manager writes the
+  // whole page map under a single key; find the entry that parses as one and
+  // contains our page.
   for (final value in prefs._store.values) {
     if (value is! String) continue;
     final Object? decoded;

@@ -1,0 +1,45 @@
+{
+  "blob": "{\"/\":{\"assets\":[{\"asset_name\":\"LEDConfig\",\"coordinates\":{\"angle\":null,\"x\":0.1,\"y\":0.1},\"id\":\"3ba33c4a3cc896e949b2ac9e\",\"key\":\"CN04.Run\",\"led_type\":\"circle\",\"off_color\":{\"role\":\"grey\"},\"on_color\":{\"role\":\"green\"},\"plcAssetKey\":null,\"size\":{\"height\":0.03,\"width\":0.03},\"techDocId\":null,\"text\":\"Run\",\"textPos\":\"right\"},{\"asset_name\":\"LEDConfig\",\"coordinates\":{\"angle\":null,\"x\":0.2,\"y\":0.1},\"id\":\"bde87bf687409b7253e68b37\",\"key\":\"CN04.Run\",\"led_type\":\"circle\",\"off_color\":{\"role\":\"grey\"},\"on_color\":{\"role\":\"green\"},\"plcAssetKey\":null,\"size\":{\"height\":0.03,\"width\":0.03},\"techDocId\":null,\"text\":\"Run\",\"textPos\":\"right\"},{\"asset_name\":\"LEDConfig\",\"coordinates\":{\"angle\":null,\"x\":0.3,\"y\":0.1},\"id\":\"1f05c67e33c6754b58ce24f0\",\"key\":\"CN04.Stop\",\"led_type\":\"circle\",\"off_color\":{\"role\":\"grey\"},\"on_color\":{\"role\":\"red\"},\"plcAssetKey\":null,\"size\":{\"height\":0.03,\"width\":0.03},\"techDocId\":null,\"text\":\"Stop\",\"textPos\":\"right\"}],\"id\":\"8a5edab282632443219e051e\",\"menu_item\":{\"children\":[],\"icon\":\"home\",\"is_section\":false,\"label\":\"Home\",\"path\":\"/\"},\"mirroring_disabled\":false,\"navigation_priority\":0,\"published\":true,\"zoom_pan_disabled\":false},\"/diagnostics\":{\"assets\":[],\"id\":\"0622fa5a59797fe675101e4d\",\"menu_item\":{\"children\":[],\"icon\":\"build\",\"is_section\":false,\"label\":\"Diagnostics\",\"path\":\"/diagnostics\"},\"mirroring_disabled\":true,\"navigation_priority\":5,\"published\":true,\"zoom_pan_disabled\":false}}",
+  "items": [
+    {
+      "kind": "page",
+      "id": "8a5edab282632443219e051e",
+      "scope": "shared",
+      "parent_id": null,
+      "sort_index": null,
+      "payload": "{\"id\":\"8a5edab282632443219e051e\",\"menu_item\":{\"children\":[],\"icon\":\"home\",\"is_section\":false,\"label\":\"Home\",\"path\":\"/\"},\"mirroring_disabled\":false,\"navigation_priority\":0,\"published\":true,\"zoom_pan_disabled\":false}"
+    },
+    {
+      "kind": "page",
+      "id": "0622fa5a59797fe675101e4d",
+      "scope": "shared",
+      "parent_id": null,
+      "sort_index": null,
+      "payload": "{\"id\":\"0622fa5a59797fe675101e4d\",\"menu_item\":{\"children\":[],\"icon\":\"build\",\"is_section\":false,\"label\":\"Diagnostics\",\"path\":\"/diagnostics\"},\"mirroring_disabled\":true,\"navigation_priority\":5,\"published\":true,\"zoom_pan_disabled\":false}"
+    },
+    {
+      "kind": "asset",
+      "id": "3ba33c4a3cc896e949b2ac9e",
+      "scope": "shared",
+      "parent_id": "8a5edab282632443219e051e",
+      "sort_index": 0,
+      "payload": "{\"asset_name\":\"LEDConfig\",\"coordinates\":{\"angle\":null,\"x\":0.1,\"y\":0.1},\"id\":\"3ba33c4a3cc896e949b2ac9e\",\"key\":\"CN04.Run\",\"led_type\":\"circle\",\"off_color\":{\"role\":\"grey\"},\"on_color\":{\"role\":\"green\"},\"plcAssetKey\":null,\"size\":{\"height\":0.03,\"width\":0.03},\"techDocId\":null,\"text\":\"Run\",\"textPos\":\"right\"}"
+    },
+    {
+      "kind": "asset",
+      "id": "bde87bf687409b7253e68b37",
+      "scope": "shared",
+      "parent_id": "8a5edab282632443219e051e",
+      "sort_index": 1,
+      "payload": "{\"asset_name\":\"LEDConfig\",\"coordinates\":{\"angle\":null,\"x\":0.2,\"y\":0.1},\"id\":\"bde87bf687409b7253e68b37\",\"key\":\"CN04.Run\",\"led_type\":\"circle\",\"off_color\":{\"role\":\"grey\"},\"on_color\":{\"role\":\"green\"},\"plcAssetKey\":null,\"size\":{\"height\":0.03,\"width\":0.03},\"techDocId\":null,\"text\":\"Run\",\"textPos\":\"right\"}"
+    },
+    {
+      "kind": "asset",
+      "id": "1f05c67e33c6754b58ce24f0",
+      "scope": "shared",
+      "parent_id": "8a5edab282632443219e051e",
+      "sort_index": 2,
+      "payload": "{\"asset_name\":\"LEDConfig\",\"coordinates\":{\"angle\":null,\"x\":0.3,\"y\":0.1},\"id\":\"1f05c67e33c6754b58ce24f0\",\"key\":\"CN04.Stop\",\"led_type\":\"circle\",\"off_color\":{\"role\":\"grey\"},\"on_color\":{\"role\":\"red\"},\"plcAssetKey\":null,\"size\":{\"height\":0.03,\"width\":0.03},\"techDocId\":null,\"text\":\"Stop\",\"textPos\":\"right\"}"
+    }
+  ]
+}

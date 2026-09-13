@@ -55,6 +55,11 @@ import '../chat/palette_context_menu.dart';
 import '../widgets/proposal_visual.dart';
 import '../providers/proposal_state.dart';
 import 'package:flutter/services.dart';
+import 'package:tfc_dart/core/config/config_item.dart'
+    show ConfigItem, ConfigKind;
+import 'package:tfc_dart/core/config/config_store_errors.dart'
+    show ConfigConflict, ConfigStoreOfflineException;
+import '../core/config/page_codec.dart' show adoptIdentitiesFrom, pagesOf;
 
 /// File-level logger. Diagnostics here must survive a windowed MSIX build
 /// with no console, which is the one thing stderr cannot do.
@@ -732,6 +737,16 @@ class _EditorSnapshot {
   final bool navOrderDirty;
 }
 
+/// How long an image nobody references yet is spared by the collector.
+///
+/// An image is stored the moment it is picked and referenced only once its
+/// page is saved, on whichever station picked it; a save on another station
+/// in that window must not take it. A day is long enough for any page to be
+/// saved and short enough that an orphan does not outlive a shift. Mutable so
+/// a test can turn the grace off and watch an orphan go.
+@visibleForTesting
+Duration imageCollectionGrace = const Duration(hours: 24);
+
 class PageEditor extends ConsumerStatefulWidget {
   /// Optional proposal JSON passed via Beamer route data.
   /// When non-null, the editor pre-populates from the proposal instead of
@@ -808,6 +823,13 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       FocusNode(debugLabel: 'PageEditor shortcuts');
   String? _copiedAssets;
   Map<String, AssetPage> _temporaryPages = {};
+
+  /// The page and asset rows this session's layout was loaded from — what a
+  /// save is a save *over*. See `mergeForSave`. Captured when the layout is
+  /// taken from the manager and refreshed after every save and reload, so it
+  /// always describes what is on the canvas rather than what the (rebuilt)
+  /// manager last loaded.
+  List<ConfigItem>? _baselineItems;
   String? _currentPage;
 
   /// Working copy of [PageManager.topLevelOrder]: the full top level — pages
@@ -1016,6 +1038,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     ref.read(pageManagerProvider.future).then((pageManager) {
       setState(() {
         _temporaryPages = pageManager.copyWith().pages;
+        _baselineItems = pageManager.baselineItems;
         _topLevelOrder = List.of(pageManager.topLevelOrder);
         _currentPage = pageManager.pages.keys.firstOrNull;
 
@@ -1623,6 +1646,8 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       assets: assets,
       mirroringDisabled: mirroringDisabled,
       zoomPanDisabled: zoomPanDisabled,
+      // A proposal over an existing page keeps that page's row.
+      id: _temporaryPages[key]?.id,
     );
 
     _temporaryPages[key] = page;
@@ -1754,6 +1779,7 @@ class _PageEditorState extends ConsumerState<PageEditor> {
             MenuItem(label: title, path: pageKey, icon: Icons.auto_awesome),
         assets: newAssets,
         mirroringDisabled: false,
+        id: _temporaryPages[pageKey]?.id,
       );
       _currentPage = pageKey;
     }
@@ -1952,6 +1978,96 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     if (!_isProposal) _markRoutePayloadResolved();
   }
 
+  /// Where to report a failed save from, resolved before the first await:
+  /// looking an ancestor up off a dead element throws, and `mounted` is not a
+  /// sufficient guard once this subtree has been deactivated.
+  ScaffoldMessengerState? get _messenger =>
+      mounted ? ScaffoldMessenger.maybeOf(context) : null;
+
+  Color? get _errorColour =>
+      mounted ? Theme.of(context).colorScheme.error : null;
+
+  /// What the operator calls the row `id` collided on.
+  ///
+  /// `ConfigConflict.key` is a 24-hex row id, which means nothing at a panel.
+  /// The page or the asset it names is on screen, so name that instead — and
+  /// name the page an asset sits on, because "Run" is on eleven pages.
+  ///
+  /// [saved] is the manager's map, not `_temporaryPages`: the ids are stamped
+  /// onto the copy the save built, so the canvas's own objects do not carry
+  /// them and looking there finds nothing to name.
+  String _describeConflicted(String id, Map<String, AssetPage> saved) {
+    for (final entry in saved.entries) {
+      final page = entry.value;
+      final where = page.menuItem.label.isNotEmpty
+          ? page.menuItem.label
+          : entry.key;
+      if (page.id == id) return 'The page "$where"';
+      for (final asset in page.assets) {
+        if (asset.id != id) continue;
+        final text = asset.text;
+        final what = (text != null && text.isNotEmpty)
+            ? text
+            : asset.displayName;
+        return '"$what" on the page "$where"';
+      }
+    }
+    // A row this editor is not showing: another station added a page since
+    // this session opened it. Still a real conflict, and still worth saying.
+    return 'Part of this layout';
+  }
+
+  /// The Reload action on a conflict snackbar: re-reads the layout from the
+  /// store and clears the dirty state, so the operator sees the other
+  /// station's edit rather than being left to guess how to get it.
+  ///
+  /// It discards this session's unsaved edits, which is what the operator is
+  /// choosing by pressing it — the alternative on a conflict is a merge, and
+  /// there is no merge.
+  Future<void> _reloadAfterConflict() async {
+    final container = _container;
+    if (container == null && !mounted) return;
+    final pageManager = container != null
+        ? await container.read(pageManagerProvider.future)
+        : await ref.read(pageManagerProvider.future);
+    // The conflict is evidence the snapshot is behind Postgres — that is what
+    // a lost compare-and-swap means — so the sweep runs first, or a Reload
+    // pressed before the notification-driven pull lands would show the
+    // operator the layout they already had, with their edits discarded for
+    // nothing. Offline it resolves at once with nothing done.
+    try {
+      await pageManager.store?.resync();
+    } catch (e) {
+      debugPrint('resync before reload failed; loading the snapshot as is: $e');
+    }
+    // `load()` on the manager itself rather than an invalidate-and-re-read:
+    // the store is the authority and it is now holding the other station's
+    // rows, so this is a synchronous snapshot read, and it does not depend on
+    // the provider being rebuilt to happen.
+    await pageManager.load();
+    if (!mounted) return;
+    setState(() {
+      _temporaryPages = pageManager.copyWith().pages;
+      _baselineItems = pageManager.baselineItems;
+      _topLevelOrder = List.of(pageManager.topLevelOrder);
+      if (!_temporaryPages.containsKey(_currentPage)) {
+        _currentPage = _temporaryPages.keys.firstOrNull;
+      }
+      // The history is of a layout that is no longer the stored one; keeping
+      // it would let Ctrl+Z put the discarded edits back over the reload.
+      _undoHistory.clear();
+      _updateCurrentJson();
+      _savedJson = _currentJson;
+      _navOrderDirty = false;
+    });
+    // And everything else holding the layout follows the reload.
+    if (container != null) {
+      container.invalidate(pageManagerProvider);
+    } else {
+      ref.invalidate(pageManagerProvider);
+    }
+  }
+
   Future<void> _saveToPrefs() async {
     // Two callers, and only one of them has a live `ref`. The save button and
     // Ctrl+S run with this editor on screen; the banner's accept runs from a
@@ -1959,13 +2075,63 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     // is captured when the callbacks are published, so it is set exactly when
     // the banner path is possible and null for an ordinary save.
     final container = _container;
+    // Resolved here, before the first await, for the reason on [_messenger].
+    final messenger = _messenger;
+    final errorColour = _errorColour;
     final pageManager = container != null
         ? await container.read(pageManagerProvider.future)
         : await ref.read(pageManagerProvider.future);
     pageManager.pages = PageManager.copyPages(_temporaryPages);
     pageManager.topLevelOrder = List.of(_topLevelOrder);
-    await pageManager.save();
-    await _garbageCollectImages();
+    // What this canvas was loaded over, not what the rebuilt manager last
+    // loaded: the two differ after every save, and the merge needs the former.
+    pageManager.baselineItems = _baselineItems;
+    // The three arms the store refuses through, mirroring the key repository's
+    // (C-11): nothing below this point runs unless the write returned, so
+    // `_savedJson` is never advanced over a save that reached nothing and the
+    // editor stays dirty with the operator's work still on screen.
+    try {
+      await pageManager.save();
+    } on ConfigStoreOfflineException catch (e) {
+      messenger?.showSnackBar(SnackBar(
+        content: Text('Not saved — the database is unreachable. '
+            'Nothing was written: ${e.attempted}.'),
+        backgroundColor: errorColour,
+      ));
+      return;
+    } on ConfigConflict catch (e) {
+      messenger?.showSnackBar(SnackBar(
+        content: Text('${_describeConflicted(e.key, pageManager.pages)} was '
+            'changed on another '
+            'station. Reload to see it, then make your change again.'),
+        backgroundColor: errorColour,
+        action: SnackBarAction(
+          label: 'Reload',
+          onPressed: () => unawaited(_reloadAfterConflict()),
+        ),
+      ));
+      return;
+    } catch (e) {
+      // AccessDenied falls through here exactly as it did before: the denial
+      // has already been recorded and reported by the guard.
+      messenger?.showSnackBar(SnackBar(
+        content: Text('Failed to save the pages: $e'),
+        backgroundColor: errorColour,
+      ));
+      return;
+    }
+    // The ids the save minted or adopted, back onto the pages still on this
+    // canvas — otherwise an asset added this session is a new row on every
+    // save. And the baseline moves to what the store holds now, so the next
+    // save is measured against this one rather than against the open.
+    adoptIdentitiesFrom(pageManager.pages, _temporaryPages);
+    try {
+      _baselineItems = pageManager.store
+          ?.itemsOf(const {ConfigKind.page, ConfigKind.asset});
+    } catch (e) {
+      debugPrint('baseline not refreshed after save: $e');
+    }
+    await _garbageCollectImages(pageManager);
     if (container != null) {
       container.invalidate(pageManagerProvider);
     } else {
@@ -2013,10 +2179,40 @@ class _PageEditorState extends ConsumerState<PageEditor> {
     if (mounted) setState(() {});
   }
 
+  /// Every page the local mirror holds, as JSON, or empty when this station
+  /// has no rows (or cannot read them) — in which case the blob is still the
+  /// layout and [_temporaryPages] is all of it.
+  Map<String, dynamic> _storedPagesJson(PageManager pageManager) {
+    try {
+      final store = pageManager.store;
+      if (store == null) return const {};
+      final items = store.itemsOf(const {ConfigKind.page, ConfigKind.asset});
+      if (items.isEmpty) return const {};
+      return pagesOf(items)
+          .map((path, page) => MapEntry(path, page.toJson()));
+    } catch (e) {
+      // Same rule as the collector around it: a cleanup that cannot see the
+      // rows keeps whatever it cannot account for rather than deleting it.
+      debugPrint('stored pages unreadable for image GC: $e');
+      return const {};
+    }
+  }
+
   /// Deletes stored image blobs nothing points at any more. Runs on save —
   /// the only moment deletions become permanent — and keeps anything the undo
   /// history or the copy buffer could still bring back.
-  Future<void> _garbageCollectImages() async {
+  Future<void> _garbageCollectImages(PageManager pageManager) async {
+    // Two floors, both because the collector deletes plant-wide rows on the
+    // strength of what *this* station can see.
+    //
+    // A station serving a fallback layout — the blob, or the built-in default
+    // — has no page rows to read references from: every image the plant holds
+    // would look unreferenced, and one save would collect them all.
+    if (pageManager.servingFallback) {
+      debugPrint('image garbage collection skipped: this station is not '
+          'serving the plant\'s page rows yet');
+      return;
+    }
     try {
       // Through the captured container when there is one: this also runs on
       // the banner's accept, where `ref` is dead and the failure would land
@@ -2028,12 +2224,25 @@ class _PageEditorState extends ConsumerState<PageEditor> {
       final referenced = <String>{
         ...PageImageStore.referencedImageIds(
             _temporaryPages.map((name, page) => MapEntry(name, page.toJson()))),
+        // The layout as the *rows* hold it, when this station has rows. Once
+        // pages left the blob, what is on this canvas stopped being the whole
+        // plant's layout: another station's page — added since this session
+        // opened, or simply not loaded here — references images too, and
+        // collecting them would blank a picture on a screen in another room.
+        // Nothing is removed from the set by this; it only ever adds.
+        ...PageImageStore.referencedImageIds(_storedPagesJson(pageManager)),
         for (final snapshot in _undoHistory)
           ...PageImageStore.referencedImageIds(jsonDecode(snapshot.pagesJson)),
         if (_copiedAssets != null)
           ...PageImageStore.referencedImageIds(jsonDecode(_copiedAssets!)),
       };
-      await store.removeUnreferenced(referenced);
+      // The second floor: an image is stored the moment it is picked and is
+      // referenced only once its page is saved, on whichever station picked
+      // it. A save here in between would collect it and leave a hole on that
+      // station's mimic. A day is long enough for any page to be saved and
+      // short enough that an orphan does not outlive a shift.
+      await store.removeUnreferenced(referenced,
+          keepNewerThan: DateTime.now().subtract(imageCollectionGrace));
     } catch (e) {
       // A failed cleanup must never break saving; orphans get another chance
       // on the next save. Still reported: a bare swallow here is how the

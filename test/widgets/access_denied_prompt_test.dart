@@ -1024,6 +1024,12 @@ const Set<String> _kStateManWriteReceivers = {
 /// receiver name from the source rather than trusting this comment.
 const Set<String> _kOtherWriteReceivers = {
   'b',
+  // `providers/page_manager.dart`'s binding of `PageManager.writeItems` to
+  // `GuardedConfigStore.write` — the page editor's save. It is a config-store
+  // write, not a plant write: it reaches no `StateMan`, it is checked as
+  // `page_editor_data`, and its refusals are the store's three
+  // (offline / conflict / AccessDenied), which `page_editor.dart` handles.
+  'guarded',
   'binding',
   'buffer',
   'builder',

@@ -13,6 +13,7 @@ import 'package:tfc_mcp_server/src/services/config_service.dart';
 import 'package:tfc_mcp_server/src/services/proposal_service.dart';
 import 'package:tfc_mcp_server/src/tools/key_mapping_write_tools.dart';
 import 'package:tfc_mcp_server/src/tools/tool_registry.dart';
+import '../helpers/config_rows.dart';
 import '../helpers/mock_mcp_client.dart';
 
 void main() {
@@ -21,16 +22,19 @@ void main() {
     late McpServer mcpServer;
     late MockMcpClient client;
 
-    /// Sample key_mappings JSON with existing entries for update tests.
+    /// Sample key mappings with existing entries for update tests.
+    ///
+    /// The `collect` entries two of these used to carry are gone: they were
+    /// `{'enabled': ...}`, which `CollectEntry` has never had a field for.
+    /// Reading the blob was a bare `jsonDecode` and let that through; reading
+    /// the rows goes through `KeyMappingEntry.fromJson`, which does not.
     final keyMappings = {
       'nodes': {
         'belt.speed': {
           'opcua_node': {'namespace': 2, 'identifier': 'Belt.Speed'},
-          'collect': {'enabled': true},
         },
         'pump3.pressure': {
           'opcua_node': {'namespace': 3, 'identifier': 'Pump3.Pressure'},
-          'collect': {'enabled': false},
         },
         'weigher9v.acceptWeight': {
           'm2400_node': {
@@ -50,14 +54,8 @@ void main() {
       db = ServerDatabase.inMemory();
       await db.customStatement('SELECT 1');
 
-      // Seed key_mappings preference
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'key_mappings',
-              value: Value(jsonEncode(keyMappings)),
-              type: 'String',
-            ),
-          );
+      // Seed the key_mapping rows
+      await seedKeyMappings(db, keyMappings);
 
       final auditService = AuditLogService(db);
 
@@ -97,14 +95,8 @@ void main() {
       db = ServerDatabase.inMemory();
       await db.customStatement('SELECT 1');
 
-      // Seed key_mappings preference
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'key_mappings',
-              value: Value(jsonEncode(keyMappings)),
-              type: 'String',
-            ),
-          );
+      // Seed the key_mapping rows
+      await seedKeyMappings(db, keyMappings);
 
       final auditService = AuditLogService(db);
 
@@ -216,16 +208,16 @@ void main() {
           'identifier': 'Motor.RPM',
         });
 
-        // Verify key_mappings preference is unchanged
-        final query = db.select(db.serverFlutterPreferences)
-          ..where((t) => t.key.equals('key_mappings'));
-        final rows = await query.get();
-        final stored =
-            jsonDecode(rows.first.value!) as Map<String, dynamic>;
-        final nodes = stored['nodes'] as Map<String, dynamic>;
+        // Verify the key_mapping rows are unchanged: a proposal is a
+        // proposal, and nothing here is allowed to write.
+        final rows = await db.customSelect(
+          'SELECT id FROM config_item WHERE kind = ? ORDER BY id',
+          variables: [Variable.withString('key_mapping')],
+        ).get();
+        final ids = rows.map((r) => r.read<String>('id')).toList();
         // The seeded keys are still there and nothing was added
-        expect(nodes.length, 3);
-        expect(nodes.containsKey('motor.rpm'), isFalse);
+        expect(ids, hasLength(3));
+        expect(ids, isNot(contains('motor.rpm')));
       });
     });
 
@@ -330,14 +322,18 @@ void main() {
           'identifier': 'Changed.Value',
         });
 
-        // Verify key_mappings preference is unchanged
-        final query = db.select(db.serverFlutterPreferences)
-          ..where((t) => t.key.equals('key_mappings'));
-        final rows = await query.get();
-        final stored =
-            jsonDecode(rows.first.value!) as Map<String, dynamic>;
-        final nodes = stored['nodes'] as Map<String, dynamic>;
-        final beltNode = nodes['belt.speed'] as Map<String, dynamic>;
+        // Verify the belt.speed row is unchanged: a proposal is a proposal.
+        final found = await db.customSelect(
+          'SELECT payload FROM config_item '
+          'WHERE kind = ? AND id = ? AND scope = ?',
+          variables: [
+            Variable.withString('key_mapping'),
+            Variable.withString('belt.speed'),
+            Variable.withString('shared'),
+          ],
+        ).getSingle();
+        final beltNode =
+            jsonDecode(found.read<String>('payload')) as Map<String, dynamic>;
         final opcuaNode = beltNode['opcua_node'] as Map<String, dynamic>;
         // Original values unchanged
         expect(opcuaNode['namespace'], 2);

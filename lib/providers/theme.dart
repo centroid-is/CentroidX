@@ -1,26 +1,35 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme.dart';
+import 'preferences.dart' show localPreferencesProvider;
 
 part 'theme.g.dart';
 
+/// Both notifiers hold a `ref`, so they read [localPreferencesProvider] rather
+/// than calling the factory — the provider is the overridable route, and a
+/// test that wants a seeded store should not have to open a database to get
+/// one.
+///
+/// The two key names are unchanged on purpose. Until milestone v1.2 they were
+/// written through `SharedPreferences.getInstance()`, whose legacy API stores
+/// them as `flutter.theme_mode` and `flutter.color_scheme`; the one-shot
+/// import in `device_local_store.dart` strips that prefix, so a station
+/// upgrading finds its theme exactly where these two now look for it.
 @riverpod
 class ThemeNotifier extends _$ThemeNotifier {
   static const String _key = 'theme_mode';
 
   @override
   Future<ThemeMode> build() async {
-    final prefs = await SharedPreferences.getInstance();
-    final String? themeName = prefs.getString(_key);
+    final prefs = ref.read(localPreferencesProvider);
+    final String? themeName = await prefs.getString(_key);
     return _themeStringToMode(themeName);
   }
 
   Future<void> setTheme(ThemeMode mode) async {
     state = AsyncData(mode);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_key, mode.name);
+    await ref.read(localPreferencesProvider).setString(_key, mode.name);
   }
 
   static ThemeMode _themeStringToMode(String? themeName) {
@@ -41,14 +50,13 @@ class ColorSchemeNotifier extends _$ColorSchemeNotifier {
 
   @override
   Future<AppColorScheme> build() async {
-    final prefs = await SharedPreferences.getInstance();
-    final String? name = prefs.getString(_key);
+    final prefs = ref.read(localPreferencesProvider);
+    final String? name = await prefs.getString(_key);
     return AppColorScheme.values.asNameMap()[name] ?? AppColorScheme.solarized;
   }
 
   Future<void> setScheme(AppColorScheme scheme) async {
     state = AsyncData(scheme);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_key, scheme.name);
+    await ref.read(localPreferencesProvider).setString(_key, scheme.name);
   }
 }

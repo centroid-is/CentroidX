@@ -20,9 +20,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+import 'package:drift/drift.dart' show Value;
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/preference_payload.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
-import 'package:tfc_dart/core/preferences.dart';
 import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 
 import 'package:tfc/core/server_config_db.dart';
@@ -83,13 +85,28 @@ Database _testDatabase(WidgetTester tester) {
 
 /// Seeds the stored config the dialogs read back.
 ///
-/// `publish` takes a store rather than a database now, so the seed goes
-/// through a [Preferences] wired to the same [Database] — the row that ends up
-/// in `flutter_preferences` is the one it always was, which is why none of
+/// Straight into the `config_item` row `ServerConfigDb.fetch` selects — the
+/// shape another station would have left it in. Going through a store instead
+/// would drag a whole `ConfigStore` and its guard into a file whose subject is
+/// pixels; the dialogs read the row, so the row is what this seeds. None of
 /// these images move.
 Future<void> _seed(Database db, StoredServerConfig config) =>
-    ServerConfigDb.publish(
-        Preferences(database: db, secureStorage: FakeSecureStorage()), config);
+    db.db.into(db.db.configItemTable).insertOnConflictUpdate(
+          ConfigItemTableCompanion.insert(
+            kind: ConfigKind.preference.wireName,
+            id: ServerConfigDb.prefsKey,
+            scope: ConfigScope.shared.wireName,
+            payload: ConfigItem.of(
+              kind: ConfigKind.preference,
+              id: ServerConfigDb.prefsKey,
+              value: preferencePayload(
+                  kPrefStringType, jsonEncode(config.toJson())),
+            ).payload,
+            rev: const Value(1),
+            updatedAt: DateTime.now(),
+            updatedBy: 'other-station',
+          ),
+        );
 
 // ---------------------------------------------------------------------------
 // Fonts — see server_config_reorder_golden_test.dart for the why.

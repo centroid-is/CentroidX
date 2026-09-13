@@ -23,6 +23,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/pages/page_view.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// Minimal labelled asset whose `showLabel` the test drives directly.
 class _LabelVisibilityTestAsset extends BaseAsset {
@@ -89,6 +90,7 @@ Widget _wrap(List<Asset> assets) => ProviderScope(
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();

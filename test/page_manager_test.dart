@@ -4,17 +4,31 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/page_creator/page.dart';
 import 'package:tfc/models/menu_item.dart';
+import 'package:drift/drift.dart' show driftRuntimeOptions;
+import 'package:tfc/core/config/page_codec.dart';
+import 'package:tfc_dart/core/config/config_item.dart';
+import 'package:tfc_dart/core/config/config_store.dart';
+import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
 /// Minimal in-memory implementation of PreferencesApi for tests.
 class FakePreferences implements PreferencesApi {
   final Map<String, Object> _store = {};
 
+  /// Every key this store was asked to write, in order.
+  ///
+  /// The blob fallback is read-only by construction and this is how that is
+  /// asserted rather than assumed: a re-home would show up here as a
+  /// `page_editor_data` entry, and the deleted seed write would too.
+  final List<String> writes = [];
+
   @override
   Future<String?> getString(String key) async => _store[key] as String?;
   @override
-  Future<void> setString(String key, String value) async =>
-      _store[key] = value;
+  Future<void> setString(String key, String value) async {
+    writes.add(key);
+    _store[key] = value;
+  }
   @override
   Future<Set<String>> getKeys({Set<String>? allowList}) async =>
       _store.keys.toSet();
@@ -33,15 +47,25 @@ class FakePreferences implements PreferencesApi {
   @override
   Future<bool> containsKey(String key) async => _store.containsKey(key);
   @override
-  Future<void> setBool(String key, bool value) async => _store[key] = value;
+  Future<void> setBool(String key, bool value) async {
+    writes.add(key);
+    _store[key] = value;
+  }
   @override
-  Future<void> setInt(String key, int value) async => _store[key] = value;
+  Future<void> setInt(String key, int value) async {
+    writes.add(key);
+    _store[key] = value;
+  }
   @override
-  Future<void> setDouble(String key, double value) async =>
-      _store[key] = value;
+  Future<void> setDouble(String key, double value) async {
+    writes.add(key);
+    _store[key] = value;
+  }
   @override
-  Future<void> setStringList(String key, List<String> value) async =>
-      _store[key] = value;
+  Future<void> setStringList(String key, List<String> value) async {
+    writes.add(key);
+    _store[key] = value;
+  }
   @override
   Future<void> remove(String key) async => _store.remove(key);
   @override
@@ -73,6 +97,43 @@ AssetPage _page(String label, String path,
 
 MenuItem _menuRef(String label, String path) {
   return MenuItem(label: label, path: path, icon: Icons.pageview);
+}
+
+/// A raw [ConfigStore] over two in-memory databases, with [pages] already in
+/// its mirror.
+///
+/// The remote is only there because a write has to go somewhere: `writeItems`
+/// refuses offline. Once the rows are in, `load()` reads them out of the
+/// snapshot with nothing attached — which is the point of SC-5.
+Future<ConfigStore> _storeHolding(Map<String, AssetPage> pages,
+    {bool attachRemote = false}) async {
+  driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+  final local = AppDatabase.inMemoryForTest();
+  final remote = AppDatabase.inMemoryForTest();
+  addTearDown(local.close);
+  addTearDown(remote.close);
+
+  final store = ConfigStore(
+    local: local,
+    stationScope: ConfigScope.forStation('test-station'),
+    station: 'test-station',
+  );
+  addTearDown(store.close);
+  await store.open();
+  // A save needs somewhere to write, and `writeItems` refuses offline —
+  // that is the only reason the stand-in remote is ever attached here.
+  if (attachRemote) store.attachRemoteDatabase(remote, startSync: false);
+  if (pages.isNotEmpty) {
+    if (!attachRemote) store.attachRemoteDatabase(remote, startSync: false);
+    await store.writeItems(
+      kinds: const {ConfigKind.page, ConfigKind.asset},
+      wanted: pageItems(pages),
+      actionId: 'test-seed',
+      who: 'test',
+      roleName: 'system',
+    );
+  }
+  return store;
 }
 
 PageManager _manager({Map<String, AssetPage>? pages}) {
@@ -776,6 +837,405 @@ void main() {
       await mgr.load();
 
       expect(mgr.topLevelOrder, isEmpty);
+    });
+  });
+
+  group('load over the local mirror', () {
+    test('rows in the mirror are what the station comes up on', () async {
+      final store = await _storeHolding({
+        '/': _page('Home', '/'),
+        '/roe': _page('Roe', '/roe'),
+      });
+      // A blob that says something else entirely. Rows win, and this is never
+      // read for pages.
+      final prefs = FakePreferences();
+      await prefs.setString(
+          PageManager.storageKey,
+          jsonEncode({
+            '/stale': _page('Stale', '/stale').toJson(),
+          }));
+      prefs.writes.clear();
+
+      final mgr = PageManager(pages: {}, prefs: prefs, store: store);
+      await mgr.load();
+
+      expect(mgr.pages.keys, containsAll(<String>['/', '/roe']));
+      expect(mgr.pages.containsKey('/stale'), isFalse);
+      expect(mgr.source, PageSource.rows);
+      expect(mgr.servingFallback, isFalse);
+      expect(prefs.writes, isEmpty);
+    });
+
+    test('no page rows and a blob present: the blob is served, READ-ONLY',
+        () async {
+      // Rollout day. The mirror is open and holds nothing of these kinds —
+      // rows cannot pre-exist the migration that mints them.
+      final store = await _storeHolding({});
+      final prefs = FakePreferences();
+      await prefs.setString(
+          PageManager.storageKey,
+          jsonEncode({
+            '/': _page('Home', '/').toJson(),
+            '/roe': _page('Roe', '/roe').toJson(),
+          }));
+      prefs.writes.clear();
+
+      final mgr = PageManager(pages: {}, prefs: prefs, store: store);
+      await mgr.load();
+
+      expect(mgr.pages.keys, containsAll(<String>['/', '/roe']));
+      expect(mgr.source, PageSource.blob);
+      expect(mgr.servingFallback, isTrue);
+
+      // T-03-11: not one row, not one preference. A re-home here would derive
+      // content ids from a possibly-stale cache and mint permanent ghost rows
+      // on the plant's mimic that no reconcile has a reason to delete.
+      expect(prefs.writes, isEmpty,
+          reason: 'the blob fallback must write nothing back');
+      expect(
+          store.itemsOf(const {ConfigKind.page, ConfigKind.asset}), isEmpty,
+          reason: 'the fallback must not re-home the blob into rows');
+    });
+
+    test('asset rows whose page is gone are not a layout: the blob still wins',
+        () async {
+      final store = await _storeHolding({});
+      final prefs = FakePreferences();
+      await prefs.setString(PageManager.storageKey,
+          jsonEncode({'/': _page('Home', '/').toJson()}));
+
+      final mgr = PageManager(pages: {}, prefs: prefs, store: store);
+      await mgr.load();
+
+      // Rows that reassemble into no pages are treated as no rows. "Could not
+      // be rebuilt" and "empty" are the same answer here on purpose; what must
+      // never happen is a station coming up blank.
+      expect(mgr.pages.containsKey('/'), isTrue);
+      expect(mgr.source, PageSource.blob);
+    });
+
+    test('a virgin station: the built-in default, in memory, written nowhere',
+        () async {
+      final store = await _storeHolding({});
+      final prefs = FakePreferences();
+
+      final mgr = PageManager(pages: {}, prefs: prefs, store: store);
+      await mgr.load();
+
+      expect(mgr.pages.containsKey('/'), isTrue);
+      expect(mgr.pages['/']!.menuItem.label, 'Home');
+      expect(mgr.source, PageSource.builtInDefault);
+      expect(mgr.servingFallback, isTrue);
+      // T-03-10: the seed is deleted. This used to be an unawaited write of
+      // the plant layout at boot with nobody signed in.
+      expect(prefs.writes, isEmpty);
+      expect(await prefs.getString(PageManager.storageKey), isNull);
+      expect(store.itemsOf(const {ConfigKind.page, ConfigKind.asset}), isEmpty);
+    });
+
+    test('a store-less manager is the legacy path, minus the seed', () async {
+      final prefs = FakePreferences();
+      final mgr = PageManager(pages: {}, prefs: prefs);
+      await mgr.load();
+
+      expect(mgr.pages.containsKey('/'), isTrue);
+      expect(mgr.source, PageSource.builtInDefault);
+      expect(prefs.writes, isEmpty,
+          reason: 'the boot seed write is gone; the first Save by a person '
+              'is what persists a layout');
+      expect(await prefs.getString(PageManager.storageKey), isNull);
+    });
+
+    test('the source starts at notLoaded, which is not "empty"', () {
+      // The distinction the re-load trigger depends on. A manager that has
+      // not loaded is not a manager serving a fallback, or the trigger fires
+      // on a manager nobody has asked to load yet.
+      final mgr = _manager();
+      expect(mgr.source, PageSource.notLoaded);
+      expect(mgr.servingFallback, isFalse);
+    });
+
+    test('rows arriving after a fallback load are picked up by re-loading',
+        () async {
+      // The rollout-day window, at the manager level: the same instance, told
+      // to load again once its mirror has rows, comes up on them.
+      final store = await _storeHolding({});
+      final prefs = FakePreferences();
+      await prefs.setString(PageManager.storageKey,
+          jsonEncode({'/': _page('Home', '/').toJson()}));
+
+      final mgr = PageManager(pages: {}, prefs: prefs, store: store);
+      await mgr.load();
+      expect(mgr.servingFallback, isTrue);
+
+      store.attachRemoteDatabase(AppDatabase.inMemoryForTest(),
+          startSync: false);
+      await store.writeItems(
+        kinds: const {ConfigKind.page, ConfigKind.asset},
+        wanted: pageItems({'/plant': _page('Plant', '/plant')}),
+        actionId: 'reconcile',
+        who: 'test',
+        roleName: 'system',
+      );
+
+      await mgr.load();
+
+      expect(mgr.source, PageSource.rows);
+      expect(mgr.servingFallback, isFalse);
+      expect(mgr.pages.containsKey('/plant'), isTrue);
+    });
+
+    test('the store survives copyWith', () async {
+      // page.dart's hand-rebuild trap: a copy that dropped the store would
+      // silently fall back to blob-only behaviour.
+      final store = await _storeHolding({'/': _page('Home', '/')});
+      final mgr = PageManager(pages: {}, prefs: FakePreferences(), store: store)
+        ..pages = {'/': _page('Home', '/')};
+
+      expect(mgr.copyWith().store, same(store));
+    });
+
+    test('topLevelOrder still comes from preferences when rows are served',
+        () async {
+      final store = await _storeHolding({'/': _page('Home', '/')});
+      final prefs = FakePreferences();
+      await prefs.setString(
+          PageManager.orderStorageKey, jsonEncode(['/alarm-view', '/']));
+
+      final mgr = PageManager(pages: {}, prefs: prefs, store: store);
+      await mgr.load();
+
+      expect(mgr.source, PageSource.rows);
+      expect(mgr.topLevelOrder, ['/alarm-view', '/']);
+    });
+  });
+
+  group('save over the rows', () {
+    /// A manager whose reads and whose writes both go to [store] — what the
+    /// provider builds. The write is the raw `writeItems` here; in the app it
+    /// is the guarded one, and the difference is the access check, not the
+    /// shape.
+    PageManager _managerOn(
+      ConfigStore store,
+      Map<String, AssetPage> pages,
+      FakePreferences prefs, {
+      void Function()? onWrite,
+    }) {
+      return PageManager(
+        pages: pages,
+        prefs: prefs,
+        store: store,
+        writeItems: (wanted, {reason}) {
+          onWrite?.call();
+          return store.writeItems(
+            kinds: const {ConfigKind.page, ConfigKind.asset},
+            wanted: wanted,
+            actionId: 'test-save',
+            who: 'test',
+            roleName: 'configure',
+            reason: reason,
+          );
+        },
+      );
+    }
+
+    test('the rows are written and the page blob is not', () async {
+      final store = await _storeHolding({}, attachRemote: true);
+      final prefs = FakePreferences();
+      final mgr = _managerOn(store, {'/': _page('Home', '/')}, prefs);
+
+      final result = await mgr.save();
+
+      expect(result, isNotNull);
+      expect(result!.diff.added, hasLength(1));
+      expect(store.itemsOf(const {ConfigKind.page}), hasLength(1));
+      expect(prefs.writes, isNot(contains(PageManager.storageKey)),
+          reason: 'the blob is not dual-written: two records of one layout '
+              'are two records that can disagree');
+      expect(await prefs.getString(PageManager.storageKey), isNull);
+    });
+
+    test('the top-level order lands after the rows do', () async {
+      // The order is a shared row in its own transaction, and the page write
+      // can be refused — offline, a lost compare-and-swap, a merge conflict.
+      // Written first, a refused save left every station's menu describing a
+      // layout that never landed; written after, a refused save leaves
+      // nothing changed.
+      final store = await _storeHolding({}, attachRemote: true);
+      final prefs = FakePreferences();
+      String? orderAtWriteTime;
+      final mgr = _managerOn(
+        store,
+        {'/': _page('Home', '/')},
+        prefs,
+        onWrite: () => orderAtWriteTime = prefs._store[
+            PageManager.orderStorageKey] as String?,
+      )..topLevelOrder = ['/', '/roe'];
+
+      await mgr.save();
+
+      expect(orderAtWriteTime, isNull,
+          reason: 'the rows go first; the order follows a write that landed');
+      expect(jsonDecode((await prefs.getString(PageManager.orderStorageKey))!),
+          ['/', '/roe']);
+    });
+
+    test('an empty order is still never written', () async {
+      final store = await _storeHolding({}, attachRemote: true);
+      final prefs = FakePreferences();
+      final mgr = _managerOn(store, {'/': _page('Home', '/')}, prefs);
+
+      await mgr.save();
+
+      expect(prefs.writes, isNot(contains(PageManager.orderStorageKey)));
+    });
+
+    test('a store-less manager still writes the blob, unchanged', () async {
+      final prefs = FakePreferences();
+      final mgr = PageManager(pages: {'/': _page('Home', '/')}, prefs: prefs);
+
+      final result = await mgr.save();
+
+      expect(result, isNull);
+      expect(prefs.writes, contains(PageManager.storageKey));
+    });
+  });
+
+  group('rollout day: the save adopts the identities on the rows', () {
+    // The bad path, and the half of the fix that lives at the save. On cutover
+    // day the manager loaded the blob before the migration wrote a row, so it
+    // holds the whole plant with no identity at all. Minting fresh ids over
+    // that is ~205 removes and ~205 adds that commit cleanly — no rev moved,
+    // so no conflict arm fires — and every identity the migration minted is
+    // gone. 03-04 closes the window at the reconcile; this closes it at Save.
+
+    /// The blob the plant is on, and the rows the migration made from it.
+    const blob = '''
+{
+  "/": {
+    "menu_item": {"label": "Home", "path": "/", "icon": "home", "children": []},
+    "assets": [
+      {
+        "asset_name": "LEDConfig",
+        "coordinates": {"x": 0.1, "y": 0.1, "angle": null},
+        "size": {"width": 0.03, "height": 0.03},
+        "text": "Run", "textPos": "right", "key": "CN04.Run",
+        "on_color": {"role": "green"}, "off_color": {"role": "grey"},
+        "led_type": "circle"
+      },
+      {
+        "asset_name": "LEDConfig",
+        "coordinates": {"x": 0.2, "y": 0.1, "angle": null},
+        "size": {"width": 0.03, "height": 0.03},
+        "text": "Run", "textPos": "right", "key": "CN04.Run",
+        "on_color": {"role": "green"}, "off_color": {"role": "grey"},
+        "led_type": "circle"
+      }
+    ],
+    "mirroring_disabled": false,
+    "navigation_priority": 0
+  },
+  "/roe": {
+    "menu_item": {"label": "Roe", "path": "/roe", "icon": "egg",
+                  "children": []},
+    "assets": [
+      {
+        "asset_name": "LEDConfig",
+        "coordinates": {"x": 0.5, "y": 0.5, "angle": null},
+        "size": {"width": 0.03, "height": 0.03},
+        "text": "Fault", "textPos": "right", "key": "CN09.Fault",
+        "on_color": {"role": "red"}, "off_color": {"role": "grey"},
+        "led_type": "circle"
+      }
+    ],
+    "mirroring_disabled": false,
+    "navigation_priority": 1
+  }
+}
+''';
+
+    /// A store holding the rows `pageItemsFromBlob(deriveIds: true)` makes —
+    /// literally what 03-03's migration writes — and a manager holding the
+    /// SAME blob string as the fallback load left it: id-less.
+    Future<({ConfigStore store, PageManager manager})> rolloutDay() async {
+      driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+      final local = AppDatabase.inMemoryForTest();
+      final remote = AppDatabase.inMemoryForTest();
+      addTearDown(local.close);
+      addTearDown(remote.close);
+      final store = ConfigStore(
+        local: local,
+        stationScope: ConfigScope.forStation('test-station'),
+        station: 'test-station',
+      );
+      addTearDown(store.close);
+      await store.open();
+      store.attachRemoteDatabase(remote, startSync: false);
+      await store.writeItems(
+        kinds: const {ConfigKind.page, ConfigKind.asset},
+        wanted: pageItemsFromBlob(blob),
+        actionId: 'migration',
+        who: 'migration',
+        roleName: 'system',
+      );
+
+      final prefs = FakePreferences();
+      await prefs.setString(PageManager.storageKey, blob);
+      final manager = PageManager(
+        pages: {},
+        prefs: prefs,
+        store: store,
+        writeItems: (wanted, {reason}) => store.writeItems(
+          kinds: const {ConfigKind.page, ConfigKind.asset},
+          wanted: wanted,
+          actionId: 'operator-save',
+          who: 'operator',
+          roleName: 'configure',
+          reason: reason,
+        ),
+      );
+      // The fallback load, exactly as it happened at boot: the rows are
+      // hidden from it, because on cutover day they did not exist yet.
+      manager.fromJson(blob);
+      return (store: store, manager: manager);
+    }
+
+    test('rollout: id-less fallback pages adopt migrated row identities',
+        () async {
+      final w = await rolloutDay();
+      final before = w.store.itemsOf(const {ConfigKind.page, ConfigKind.asset});
+      expect(before, hasLength(5), reason: '2 pages + 3 assets');
+      expect(w.manager.pages.values.every((p) => p.id == null), isTrue,
+          reason: 'the premise: a blob load mints nothing');
+
+      final result = await w.manager.save();
+
+      expect(result!.diff.added, isEmpty);
+      expect(result.diff.changed, isEmpty);
+      expect(result.diff.removed, isEmpty,
+          reason: 'this is the ~410-row remove+add that severs every '
+              'identity the migration minted');
+      // And no row moved behind the diff either.
+      final after = w.store.itemsOf(const {ConfigKind.page, ConfigKind.asset});
+      expect(
+          {for (final item in after) item.id: item.rev},
+          {for (final item in before) item.id: item.rev});
+    });
+
+    test('rollout: one nudged asset writes exactly one changed row', () async {
+      final w = await rolloutDay();
+      final before = w.store.itemsOf(const {ConfigKind.page, ConfigKind.asset});
+      w.manager.pages['/']!.assets.first.coordinates.x = 0.42;
+
+      final result = await w.manager.save();
+
+      expect(result!.diff.changed, hasLength(1));
+      expect(result.diff.changed.single.kind, ConfigKind.asset);
+      expect(result.diff.added, isEmpty);
+      expect(result.diff.removed, isEmpty);
+      // The row it changed is one the migration wrote, not a new one.
+      expect({for (final item in before) item.id},
+          contains(result.diff.changed.single.id));
     });
   });
 

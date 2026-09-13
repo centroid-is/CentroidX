@@ -22,6 +22,8 @@ import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/widgets/zoomable_canvas.dart';
 import 'package:tfc_dart/core/preferences.dart';
 
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
+
 TransformationController _controller(WidgetTester tester) => tester
     .widget<InteractiveViewer>(find.byType(InteractiveViewer))
     .transformationController!;
@@ -169,6 +171,9 @@ void main() {
 
   group('PlantPageView', () {
     setUp(() {
+      // The asset stack reads the device-local store, which on this branch is
+      // opened by main() — a widget test seeds it instead.
+      useInMemoryDeviceLocalPreferences();
       SharedPreferences.setMockInitialValues({});
       SharedPreferencesAsyncPlatform.instance =
           InMemorySharedPreferencesAsync.empty();

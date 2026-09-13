@@ -25,7 +25,7 @@ void main() {
   });
 
   group('kRaisedRoutes', () {
-    test('names exactly the ten routes, each with its group', () {
+    test('names exactly the eleven routes, each with its group', () {
       // Spelled literally rather than derived, so that a change to the map
       // has to be made twice on purpose.
       expect(kRaisedRoutes, {
@@ -37,13 +37,24 @@ void main() {
         '/advanced/server-config': AccessGroup.administer,
         '/advanced/ip-settings': AccessGroup.administer,
         '/advanced/preferences': AccessGroup.administer,
+        '/advanced/config-history': AccessGroup.configure,
         '/advanced/audit-trail': AccessGroup.users,
         '/advanced/access': AccessGroup.users,
       });
     });
 
-    test('has exactly ten entries', () {
-      expect(kRaisedRoutes, hasLength(10));
+    test('has exactly eleven entries', () {
+      expect(kRaisedRoutes, hasLength(11));
+    });
+
+    test('the configuration history is its own configure entry', () {
+      // Its own route rather than a loosened audit trail: the engineer who
+      // edits pages must be able to read what changed without also being
+      // handed every write anybody ever made (T-04-06a).
+      expect(kRaisedRoutes[kConfigHistoryRoute], AccessGroup.configure);
+      expect(kConfigHistoryRoute, '/advanced/config-history');
+      expect(kRaisedRoutes[kAuditTrailRoute], AccessGroup.users,
+          reason: 'the audit trail keeps its own, stricter gate');
     });
 
     test('the three editors need configure', () {

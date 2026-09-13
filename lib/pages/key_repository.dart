@@ -16,6 +16,8 @@ import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
+import 'package:tfc_dart/core/config/config_item.dart' show ConfigItem;
+import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
 import '../widgets/fuzzy_search_bar.dart';
 import '../widgets/bit_mask_grid.dart';
@@ -24,6 +26,7 @@ import '../providers/access_templates.dart';
 import '../providers/preferences.dart';
 import '../providers/state_man.dart';
 import '../providers/database.dart';
+import '../providers/config_store.dart';
 import 'access_templates_section.dart';
 import 'package:tfc_access/tfc_access.dart'
     show AccessTemplate, TagBindingResolver;
@@ -314,6 +317,13 @@ class _KeyRow {
 
 class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
   KeyMappings? _keyMappings;
+
+  /// The store's key mapping items as this page loaded them — what a save is
+  /// a save *over*. Handed to `saveKeyMappings` so a key another station
+  /// added, changed or removed while this page was open is kept, adopted or
+  /// refused rather than replaced with the copy on screen. Refreshed after
+  /// every successful save and every load.
+  List<ConfigItem>? _baselineItems;
 
   /// Encoded snapshot of the last persisted mappings, used for the unsaved
   /// check. Kept as a string so the comparison is one cached encode instead
@@ -818,10 +828,15 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     });
 
     try {
-      final prefs = await ref.read(preferencesProvider.future);
-      _keyMappings = await KeyMappings.fromPrefs(prefs);
+      // The plant's wiring comes from the shared configuration store, one row
+      // per key. `state_man_config` is not this phase's key and still comes
+      // out of preferences.
+      final store = await ref.read(configStoreProvider.future);
+      _keyMappings = store.inner.keyMappings;
+      _baselineItems = store.inner.keyMappingItems;
       _invalidateDerived();
       _savedJson = _currentJson();
+      final prefs = await ref.read(preferencesProvider.future);
       _stateManConfig = await StateManConfig.fromPrefs(prefs);
       _rebuildAliasLists();
     } catch (e) {
@@ -863,18 +878,30 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
     try {
       // The container when the banner drove us here, because `ref` is gone by
       // then; `ref` for an ordinary Save, where no container was ever taken.
-      // Either way the read happens now, so an invalidated preferencesProvider
+      // Either way the read happens now, so an invalidated configStoreProvider
       // hands back the live instance rather than a closed one.
-      final prefs = await (_container?.read(preferencesProvider.future) ??
-          ref.read(preferencesProvider.future));
+      final store = await (_container?.read(configStoreProvider.future) ??
+          ref.read(configStoreProvider.future));
       // Unfocusing above may have committed a rename, so re-encode.
       _invalidateDerived();
       final json = _currentJson();
-      await prefs.setString('key_mappings', json);
+      // The guarded store writes one row per key that actually moved, records
+      // one bounded audit row, and throws rather than reporting a success it
+      // did not have. The three arms below are its three refusals.
+      await store.saveKeyMappings(_keyMappings!, baseline: _baselineItems);
+      // The next save is measured against what the store holds now, not
+      // against the open. Keys the merge kept from another station are in
+      // the store and not on screen; a reload shows them.
+      _baselineItems = store.inner.keyMappingItems;
+      // `json` rather than a fresh read of the store: the store serves its
+      // keys in sorted order, and re-encoding from it would make a repository
+      // whose on-screen order differs (a duplicated key sits beside its
+      // original) look permanently dirty. What matters to [_hasUnsavedChanges]
+      // is that what is on screen is what was written, and it is.
       _savedJson = json;
-      // No stateManProvider invalidate here: the provider's preferences
-      // listener diffs the save and applies it live — it only rebuilds the
-      // whole StateMan when an edit cannot be absorbed in place.
+      // No stateManProvider invalidate here: the provider's store listener
+      // diffs the save and applies it live — it only rebuilds the whole
+      // StateMan when an edit cannot be absorbed in place.
       if (mounted) setState(() {});
 
       messenger?.showSnackBar(
@@ -883,7 +910,36 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
             backgroundColor: Colors.green),
       );
       return true;
+    } on ConfigStoreOfflineException catch (e) {
+      // C-11: what used to be a green snackbar over a write that reached
+      // nothing. The message names the work that did not land, so the operator
+      // knows what to redo.
+      messenger?.showSnackBar(
+        SnackBar(
+            content: Text('Not saved — the database is unreachable. '
+                'Nothing was written: ${e.attempted}.'),
+            backgroundColor: errorColour),
+      );
+      return false;
+    } on ConfigConflict catch (e) {
+      // SC-5. The conflict is per key, so the message names it, and Reload
+      // brings the other station's edit here rather than leaving the operator
+      // to guess how to get it.
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text('"${e.key}" was changed on another station. '
+              'Reload to see it, then save again.'),
+          backgroundColor: errorColour,
+          action: SnackBarAction(
+            label: 'Reload',
+            onPressed: _reloadAfterConflict,
+          ),
+        ),
+      );
+      return false;
     } catch (e) {
+      // AccessDenied falls through here exactly as it did before: the denial
+      // has already been recorded and reported by the guard.
       messenger?.showSnackBar(
         SnackBar(
             content: Text('Failed to save: $e'),
@@ -891,6 +947,28 @@ class _KeyMappingsSectionState extends ConsumerState<_KeyMappingsSection> {
       );
       return false;
     }
+  }
+
+  /// The Reload action on a conflict snackbar.
+  ///
+  /// Discards unsaved edits, so it asks first when there are any — through the
+  /// page's existing confirm dialog rather than a second kind of prompt.
+  Future<void> _reloadAfterConflict() async {
+    if (!mounted) return;
+    if (_hasUnsavedChanges) {
+      final confirm = await showConfirmDialog(
+        context: context,
+        title: 'Reload key mappings',
+        message: 'Another station changed a key while you were editing. '
+            'Reloading discards your unsaved edits and shows what is stored. '
+            'Continue?',
+        confirmLabel: 'Reload',
+        destructive: true,
+      );
+      if (!confirm) return;
+    }
+    if (!mounted) return;
+    await _loadKeyMappings();
   }
 
   final Map<String, GlobalKey> _cardKeys = {};
@@ -2247,8 +2325,8 @@ class _KeyMappingsImportExportCard extends ConsumerWidget {
     // `origin: 'mcp'`. That is named in the copy below, not only here.
     // ---------------------------------------------------------------------
     try {
-      final prefs = await ref.read(preferencesProvider.future);
-      final keyMappings = await KeyMappings.fromPrefs(prefs);
+      final store = await ref.read(configStoreProvider.future);
+      final keyMappings = store.inner.keyMappings;
       final jsonString =
           const JsonEncoder.withIndent('  ').convert(keyMappings.toJson());
 
@@ -2344,10 +2422,14 @@ class _KeyMappingsImportExportCard extends ConsumerWidget {
       );
       if (!confirm) return;
 
-      final prefs = await ref.read(preferencesProvider.future);
-      await prefs.setString('key_mappings', jsonEncode(imported.toJson()));
-      // Applied incrementally by the stateManProvider preferences listener;
-      // it self-invalidates only if the import touches Modbus/M2400 keys.
+      final store = await ref.read(configStoreProvider.future);
+      // A replace, and the store's diff does the delete accounting: a key the
+      // file does not carry becomes a removal row rather than disappearing
+      // inside a rewritten blob. This is the first import that is legible in
+      // the change log.
+      await store.saveKeyMappings(imported);
+      // Applied incrementally by the stateManProvider store listener; it
+      // self-invalidates only if the import touches Modbus/M2400 keys.
 
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2356,6 +2438,22 @@ class _KeyMappingsImportExportCard extends ConsumerWidget {
               'Imported ${imported.nodes.length} key mappings successfully!'),
           backgroundColor: Colors.green,
         ),
+      );
+    } on ConfigStoreOfflineException catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Not imported — the database is unreachable. '
+                'Nothing was written: ${e.attempted}.'),
+            backgroundColor: Theme.of(context).colorScheme.error),
+      );
+    } on ConfigConflict catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Not imported — "${e.key}" was changed on another '
+                'station. Reload the page and import again.'),
+            backgroundColor: Theme.of(context).colorScheme.error),
       );
     } catch (e) {
       if (!context.mounted) return;

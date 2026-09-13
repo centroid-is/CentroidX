@@ -25,7 +25,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/image.dart';
-import 'package:tfc/page_creator/assets/image_store.dart';
 import 'package:tfc/page_creator/page.dart';
 import 'package:tfc/theme.dart';
 
@@ -44,10 +43,10 @@ Future<FakeEditorPreferences> _pumpEditorWithImages(
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
 
-  // Blobs live beside the pages in the same preference store, so seed them
-  // into the prefs the manager will save into.
+  // Blobs live beside the pages, on rows in the same store the manager saves
+  // into, so seed them through the guard that manager was built with.
   final prefs = FakeEditorPreferences();
-  final store = PageImageStore(prefs);
+  final store = await imageStoreOf(prefs);
   final pngId = await store.save(fixturePngBytes);
   final svgId = await store.save(fixtureSvgBytes);
   final bmpId = await store.save(fixtureBmpBytes);

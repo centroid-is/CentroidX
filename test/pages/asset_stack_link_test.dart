@@ -11,6 +11,7 @@ import 'package:tfc/page_creator/assets/ethercat_link.dart';
 import 'package:tfc/page_creator/assets/link_anchors.dart';
 import 'package:tfc/page_creator/assets/link_geometry.dart';
 import 'package:tfc/pages/page_view.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// A visible block standing in for a terminal, so the stack has something with
 /// a real box to position the cable against.
@@ -62,6 +63,7 @@ Future<void> pumpStack(WidgetTester tester, List<Asset> assets,
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     // AssetStack reads the page's mirror flags out of preferences on build.
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =

@@ -417,9 +417,8 @@ class GuardedPreferences implements Preferences {
   /// The wrapped store's database handle, and a hole this class cannot close.
   ///
   /// `implements Preferences` obliges this getter to exist, so anything holding
-  /// a `GuardedPreferences` can reach `prefs.database!.db` and write
-  /// `flutter_preferences` — or anything else — straight through Drift, past
-  /// every check and every row above. Returning null instead would break the
+  /// a `GuardedPreferences` can reach `prefs.database!.db` and write any table
+  /// straight through Drift, past every check and every row above. Returning null instead would break the
   /// preferences editor and `ServerConfigDb`, which legitimately need it.
   ///
   /// **The residual risk is real and is not contained by this file.** What
@@ -427,9 +426,6 @@ class GuardedPreferences implements Preferences {
   /// Drift writers reachable from a widget and gets a verdict per site.
   @override
   Database? get database => _inner.database;
-
-  @override
-  KeyCache get keyCache => _inner.keyCache;
 
   @override
   MySecureStorage get secureStorage => _inner.secureStorage;
@@ -442,17 +438,6 @@ class GuardedPreferences implements Preferences {
 
   @override
   Future<bool> isKeyInDatabase(String key) => _inner.isKeyInDatabase(key);
-
-  // Forwarding a @visibleForTesting member is what "callers change nothing"
-  // costs: the test that calls it holds a Preferences, and after plan 03-06
-  // that Preferences is this one. The ignore covers the forward, not a missing
-  // implementation.
-  @override
-  // ignore: invalid_use_of_visible_for_testing_member
-  Future<void> syncToLocalCache() => _inner.syncToLocalCache();
-
-  @override
-  Future<void> loadFromPostgres() => _inner.loadFromPostgres();
 }
 
 /// The one write path that skips the session check — the app's own boot-time
@@ -643,9 +628,6 @@ class _SystemPreferences implements Preferences {
   Database? get database => _inner.database;
 
   @override
-  KeyCache get keyCache => _inner.keyCache;
-
-  @override
   MySecureStorage get secureStorage => _inner.secureStorage;
 
   @override
@@ -656,11 +638,4 @@ class _SystemPreferences implements Preferences {
 
   @override
   Future<bool> isKeyInDatabase(String key) => _inner.isKeyInDatabase(key);
-
-  @override
-  // ignore: invalid_use_of_visible_for_testing_member
-  Future<void> syncToLocalCache() => _inner.syncToLocalCache();
-
-  @override
-  Future<void> loadFromPostgres() => _inner.loadFromPostgres();
 }

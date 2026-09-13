@@ -83,10 +83,15 @@ void main() {
     // `access_key_binding` (`access_template_table_test.dart`) and
     // `app_user.station_account` (`station_account_column_test.dart`) all
     // arrive in the same v6 arm this suite covers.
-    test('schema version is 7', () async {
+    test('schema version is at least 6', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 9);
+      // At least, not exactly. What this suite cares about is that the access
+      // tables arrived in the `from < 6` arm and that the arm therefore runs
+      // for anything older; the current number is owned by
+      // `database_migration_test.dart`, which is where a bump is asserted
+      // rather than merely tolerated.
+      expect(db.schemaVersion, greaterThanOrEqualTo(6));
     });
 
     test('seeds exactly four roles', () async {
@@ -264,10 +269,11 @@ void main() {
 
       final row =
           await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 9,
+      expect(row.read<int>('user_version'), db.schemaVersion,
           reason: 'a v5 database opens straight to the current version — '
-              'onUpgrade(5, 9) runs the access branch and then the '
-              'page-whitelist branch');
+              'onUpgrade(5, current) runs the access branch, which is the '
+              'whole of the milestone this suite covers, and every arm added '
+              'since');
     });
   });
 
@@ -511,16 +517,19 @@ void main() {
               'spelled — it is not "sees every page"');
     });
 
-    test('carries on to the current schema version', () async {
+    test('leaves schema version at the current one', () async {
       await makeV6Database();
       final db = await reopen();
       addTearDown(() => db.close());
 
       final row = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 9);
+      // The current version, not 7: the config-store arms (v8, v9) run in
+      // the same open, and the number they leave behind is theirs to own.
+      expect(row.read<int>('user_version'), db.schemaVersion);
     });
 
-    test('a v5 database upgrades in one open, with both columns', () async {
+    test('a v5 database reaches the current version in one open, with both '
+        'columns', () async {
       // The `from < 6` arm creates the tables from the current definitions,
       // which already carry the column — so the `from < 7` arm must NOT try to
       // add it again. This is the case the `from >= 6` guard exists for; drop
@@ -545,7 +554,7 @@ void main() {
           contains('allowed_pages'));
       final row =
           await upgraded.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 9);
+      expect(row.read<int>('user_version'), upgraded.schemaVersion);
     });
   });
 
@@ -554,7 +563,7 @@ void main() {
   // the three ways it can already be there: never (a v7 database), from the v6
   // arm's createTable in the same open (a v5 database), and from a previous
   // run (the version rewound over a table that already has it).
-  group('v7 -> v8 upgrade', () {
+  group('the per-account inactivity timeout arm', () {
     late Directory tempDir;
     late File dbFile;
 
@@ -609,7 +618,7 @@ void main() {
 
       expect(await columnNames(db, 'app_user'),
           contains('inactivity_timeout_minutes'));
-      expect(await userVersion(db), 9);
+      expect(await userVersion(db), db.schemaVersion);
     });
 
     test('a carried-over account upgrades to NULL — the default, not "never"',
@@ -634,12 +643,12 @@ void main() {
 
       expect(await columnNames(db, 'app_user'),
           contains('inactivity_timeout_minutes'));
-      expect(await userVersion(db), 9);
+      expect(await userVersion(db), db.schemaVersion);
     });
 
     test('a v5 database reaches the current version in one open', () async {
       // The v6 arm creates app_user from the current definition, which already
-      // carries the column; the v8 arm must see it and add nothing.
+      // carries the column; the timeout arm must see it and add nothing.
       final db = await reopen();
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
@@ -652,7 +661,7 @@ void main() {
 
       expect(await columnNames(upgraded, 'app_user'),
           contains('inactivity_timeout_minutes'));
-      expect(await userVersion(upgraded), 9);
+      expect(await userVersion(upgraded), upgraded.schemaVersion);
     });
 
     test('the Postgres arm adds the column idempotently', () {
@@ -723,7 +732,7 @@ void main() {
       addTearDown(() => db.close());
 
       expect(await columnNames(db, 'app_user'), contains('additional_roles'));
-      expect(await userVersion(db), 9);
+      expect(await userVersion(db), db.schemaVersion);
     });
 
     test('a carried-over account upgrades to NULL — one role, as it was',
@@ -748,10 +757,10 @@ void main() {
       addTearDown(() => db.close());
 
       expect(await columnNames(db, 'app_user'), contains('additional_roles'));
-      expect(await userVersion(db), 9);
+      expect(await userVersion(db), db.schemaVersion);
     });
 
-    test('a v5 database reaches v9 in one open', () async {
+    test('a v5 database reaches the current version in one open', () async {
       final db = await reopen();
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
@@ -764,7 +773,7 @@ void main() {
 
       expect(await columnNames(upgraded, 'app_user'),
           contains('additional_roles'));
-      expect(await userVersion(upgraded), 9);
+      expect(await userVersion(upgraded), upgraded.schemaVersion);
     });
 
     test('the Postgres arm adds the column idempotently', () {

@@ -30,7 +30,7 @@ class McpConfig {
     this.serverEnabled = false,
     this.chatEnabled = false,
     this.port = defaultPort,
-    this.toggles = McpToolToggles.allEnabled,
+    this.toggles = McpToolToggles.allDisabled,
   });
 
   /// Default config for new installations.
@@ -47,7 +47,7 @@ class McpConfig {
       port: json['port'] as int? ?? defaultPort,
       toggles: json['toggles'] is Map<String, dynamic>
           ? McpToolToggles.fromJson(json['toggles'] as Map<String, dynamic>)
-          : McpToolToggles.allEnabled,
+          : McpToolToggles.allDisabled,
     );
   }
 
@@ -104,8 +104,16 @@ class McpConfig {
 
 /// Configuration for which MCP tool groups are enabled.
 ///
-/// All groups default to true (enabled). Disabled groups are not registered
-/// on the MCP server and are invisible to the LLM.
+/// All groups default to **false**. A group is served because somebody
+/// turned it on, never because nobody turned it off: these gate the
+/// SAFE-03/04 surface, and on that surface an absent decision is undecided
+/// rather than yes. Disabled groups are not registered on the MCP server and
+/// are invisible to the LLM.
+///
+/// This is a change in behaviour for an install that predates it. A stored
+/// blob written before a group existed has no key for that group, so the
+/// group reads as off after upgrading and has to be switched on in settings.
+/// Only `screenshots` is actually in that position — see [allJsonKeys].
 class McpToolToggles {
   final bool tagsEnabled;
   final bool alarmsEnabled;
@@ -119,20 +127,59 @@ class McpToolToggles {
   final bool reportsEnabled;
 
   const McpToolToggles({
-    this.tagsEnabled = true,
-    this.alarmsEnabled = true,
-    this.configEnabled = true,
-    this.drawingsEnabled = true,
-    this.trendsEnabled = true,
-    this.plcCodeEnabled = true,
-    this.proposalsEnabled = true,
-    this.techDocsEnabled = true,
-    this.screenshotsEnabled = true,
-    this.reportsEnabled = true,
+    this.tagsEnabled = false,
+    this.alarmsEnabled = false,
+    this.configEnabled = false,
+    this.drawingsEnabled = false,
+    this.trendsEnabled = false,
+    this.plcCodeEnabled = false,
+    this.proposalsEnabled = false,
+    this.techDocsEnabled = false,
+    this.screenshotsEnabled = false,
+    this.reportsEnabled = false,
   });
 
-  /// All groups enabled (default for new installations).
-  static const allEnabled = McpToolToggles();
+  /// All groups enabled.
+  ///
+  /// Spelled out rather than `McpToolToggles()`, which it used to be: the
+  /// constructor defaults every field to `false` now, so the bare form is
+  /// [allDisabled]. Writing it out is what keeps this constant meaning what
+  /// its name says the day a tenth group is added.
+  static const allEnabled = McpToolToggles(
+    tagsEnabled: true,
+    alarmsEnabled: true,
+    configEnabled: true,
+    drawingsEnabled: true,
+    trendsEnabled: true,
+    plcCodeEnabled: true,
+    proposalsEnabled: true,
+    techDocsEnabled: true,
+    screenshotsEnabled: true,
+    reportsEnabled: true,
+  );
+
+  /// All groups disabled: what everything resolves to until somebody says
+  /// otherwise.
+  ///
+  /// This is the plain default, not a special case. `McpToolToggles()` is
+  /// this value, an empty JSON object deserializes to it, and a server
+  /// process whose spawner handed down no toggles runs as it. That was not
+  /// true when this constant was introduced — every field then defaulted to
+  /// `true`, and this existed only for the undecided-spawner case — and the
+  /// change is deliberate: a capability surface should be opened on purpose,
+  /// so absence resolves here for stored config exactly as it already did
+  /// for a missing decision.
+  static const allDisabled = McpToolToggles(
+    tagsEnabled: false,
+    alarmsEnabled: false,
+    configEnabled: false,
+    drawingsEnabled: false,
+    trendsEnabled: false,
+    plcCodeEnabled: false,
+    proposalsEnabled: false,
+    techDocsEnabled: false,
+    screenshotsEnabled: false,
+  );
 
   @override
   bool operator ==(Object other) =>
@@ -216,19 +263,20 @@ class McpToolToggles {
 
   /// Create toggles from a JSON map (within the McpConfig blob).
   ///
-  /// Missing keys default to `true` (enabled).
+  /// Missing keys default to `false` (disabled): a blob that never named a
+  /// group is a blob in which nobody enabled it.
   factory McpToolToggles.fromJson(Map<String, dynamic> json) {
     return McpToolToggles(
-      tagsEnabled: json[_kTags] as bool? ?? true,
-      alarmsEnabled: json[_kAlarms] as bool? ?? true,
-      configEnabled: json[_kConfig] as bool? ?? true,
-      drawingsEnabled: json[_kDrawings] as bool? ?? true,
-      trendsEnabled: json[_kTrends] as bool? ?? true,
-      plcCodeEnabled: json[_kPlcCode] as bool? ?? true,
-      proposalsEnabled: json[_kProposals] as bool? ?? true,
-      techDocsEnabled: json[_kTechDocs] as bool? ?? true,
-      screenshotsEnabled: json[_kScreenshots] as bool? ?? true,
-      reportsEnabled: json[_kReports] as bool? ?? true,
+      tagsEnabled: json[_kTags] as bool? ?? false,
+      alarmsEnabled: json[_kAlarms] as bool? ?? false,
+      configEnabled: json[_kConfig] as bool? ?? false,
+      drawingsEnabled: json[_kDrawings] as bool? ?? false,
+      trendsEnabled: json[_kTrends] as bool? ?? false,
+      plcCodeEnabled: json[_kPlcCode] as bool? ?? false,
+      proposalsEnabled: json[_kProposals] as bool? ?? false,
+      techDocsEnabled: json[_kTechDocs] as bool? ?? false,
+      screenshotsEnabled: json[_kScreenshots] as bool? ?? false,
+      reportsEnabled: json[_kReports] as bool? ?? false,
     );
   }
 
@@ -248,19 +296,19 @@ class McpToolToggles {
 
   /// Create toggles from a map of legacy preference keys to boolean values.
   ///
-  /// Missing keys default to `true` (enabled). Used during migration from
-  /// individual preference keys.
+  /// Missing keys default to `false` (disabled), for the same reason
+  /// [fromJson]'s do. Used during migration from individual preference keys.
   factory McpToolToggles.fromLegacyMap(Map<String, bool> map) {
     return McpToolToggles(
-      tagsEnabled: map[kTagsEnabled] ?? true,
-      alarmsEnabled: map[kAlarmsEnabled] ?? true,
-      configEnabled: map[kConfigEnabled] ?? true,
-      drawingsEnabled: map[kDrawingsEnabled] ?? true,
-      trendsEnabled: map[kTrendsEnabled] ?? true,
-      plcCodeEnabled: map[kPlcCodeEnabled] ?? true,
-      proposalsEnabled: map[kProposalsEnabled] ?? true,
-      techDocsEnabled: map[kTechDocsEnabled] ?? true,
-      screenshotsEnabled: map[kScreenshotsEnabled] ?? true,
+      tagsEnabled: map[kTagsEnabled] ?? false,
+      alarmsEnabled: map[kAlarmsEnabled] ?? false,
+      configEnabled: map[kConfigEnabled] ?? false,
+      drawingsEnabled: map[kDrawingsEnabled] ?? false,
+      trendsEnabled: map[kTrendsEnabled] ?? false,
+      plcCodeEnabled: map[kPlcCodeEnabled] ?? false,
+      proposalsEnabled: map[kProposalsEnabled] ?? false,
+      techDocsEnabled: map[kTechDocsEnabled] ?? false,
+      screenshotsEnabled: map[kScreenshotsEnabled] ?? false,
     );
   }
 
@@ -305,7 +353,9 @@ class McpToolToggles {
       case _kReports:
         return reportsEnabled;
       default:
-        return true;
+        // An unknown group is one nobody decided about, and undecided on a
+        // capability surface is off.
+        return false;
     }
   }
 

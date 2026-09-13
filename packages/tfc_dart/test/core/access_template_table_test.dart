@@ -81,12 +81,14 @@ void main() {
       }
     });
 
-    test('schema version is 7', () async {
+    test('schema version is at least 6', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
       // Read off an open database rather than grepped out of the source: the
-      // value the migrator actually compares `from` against.
-      expect(db.schemaVersion, 9);
+      // value the migrator actually compares `from` against. At least, not
+      // exactly — these tables arrived in the `from < 6` arm, and the current
+      // number belongs to `database_migration_test.dart`.
+      expect(db.schemaVersion, greaterThanOrEqualTo(6));
     });
 
     test('creates the access_key_binding template_name index', () async {
@@ -308,7 +310,9 @@ void main() {
       addTearDown(() => db.close());
 
       final row = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 9);
+      expect(row.read<int>('user_version'), db.schemaVersion,
+          reason: 'the reopen must stamp the version it migrated to, whatever '
+              'that currently is — a v5 database runs every arm from 6 up');
     });
   });
 }

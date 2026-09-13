@@ -64,10 +64,14 @@ import 'package:tfc_dart/core/secure_storage/secure_storage.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
 import 'package:tfc/providers/access.dart';
+import 'package:tfc/providers/access_policy.dart';
+import 'package:tfc/providers/config_store.dart';
 import 'package:tfc/providers/collector.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
+import '../helpers/test_helpers.dart'
+    show createTestConfigStore, useInMemoryDeviceLocalPreferences;
 
 // ---------------------------------------------------------------------------
 // The sweep, parsed
@@ -297,6 +301,18 @@ AccessSession _anonymous() =>
       // `collectorProvider` watches `stateManProvider`, so leaving it real
       // would have this test reaching for a database it does not have.
       collectorProvider.overrideWith((ref) async => null),
+      // Since 04-05 `preferencesProvider` is backed by the configuration
+      // store, so a container without a reachable one is a station with no
+      // Postgres — every preference write below would be refused as offline
+      // before it was ever checked, and this file is about what the *policy*
+      // permits. `sessionOf` rather than `session` because production passes
+      // `() => sessionInForce(ref)`.
+      configStoreProvider.overrideWith((ref) => createTestConfigStore(
+            station: _kStation,
+            sessionOf: () => sessionInForce(ref),
+            audit: sink,
+            onDenied: (denial) => reportAccessDenial(ref, denial),
+          )),
     ],
   );
   addTearDown(container.dispose);
@@ -321,6 +337,7 @@ void main() {
   });
 
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
@@ -342,7 +359,7 @@ void main() {
 
     test('every one of the eight sections is represented', () {
       final sections = hits.map((h) => h.section).toSet();
-      for (final n in ['1', '2', '3', '5', '6', '7', '8', '9']) {
+      for (final n in ['1', '2', '3', '6', '7', '8', '9']) {
         expect(sections, contains(n),
             reason: 'script section $n produced no hits at all');
       }
@@ -350,7 +367,23 @@ void main() {
       // removed nine of its twelve constructions and CI refuses a tenth. It
       // still has the one sanctioned site, so it is asserted separately rather
       // than dropped from the list above.
+      expect(sections, contains('4'));
       expect(raw, contains('lib/providers/preferences.dart'));
+
+      // Section 5 is empty, and that is the finished state rather than a
+      // collapsed grep: milestone v1.2 plan 01-06 moved the last six
+      // `SharedPreferences.getInstance()` calls onto the device-local store.
+      // It is asserted as empty rather than dropped, because the pattern stays
+      // in the script while `shared_preferences` remains a readable dependency
+      // — a regression to it must show up here.
+      //
+      // The store those six calls moved TO is what section 4 grew a second
+      // constructor for in the same plan, so the sweep did not lose sight of
+      // device-local construction when the package under it changed.
+      expect(sections, isNot(contains('5')),
+          reason: 'section 5 has hits again — something reintroduced '
+              'SharedPreferences.getInstance(); it should be reaching '
+              'localPreferencesProvider or createDeviceLocalPreferences()');
     });
   });
 

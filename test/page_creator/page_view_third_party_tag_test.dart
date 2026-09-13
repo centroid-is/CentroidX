@@ -24,6 +24,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/third_party.dart';
 import 'package:tfc/pages/page_view.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 Widget _wrap({required List<Asset> assets}) {
   return ProviderScope(
@@ -61,6 +62,7 @@ ThirdPartyEquipmentConfig _speedBatcher({required bool showTag}) =>
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();

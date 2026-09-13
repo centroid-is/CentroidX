@@ -23,6 +23,7 @@ import 'package:tfc_mcp_server/src/services/config_service.dart';
 import 'package:tfc_mcp_server/src/services/drift_plc_code_index.dart';
 import 'package:tfc_mcp_server/src/services/plc_code_service.dart';
 
+import '../helpers/config_rows.dart';
 import '../helpers/mock_plc_code_index.dart';
 import '../helpers/sample_twincat_files.dart';
 
@@ -972,9 +973,9 @@ void main() {
         {
           'key': 'modbus.sensor1',
           'protocol': 'modbus',
-          'register_type': 'holding',
+          'register_type': 'holdingRegister',
           'address': 100,
-          'data_type': 'INT',
+          'data_type': 'int16',
           'server_alias': 'MODBUS_GATEWAY',
         },
       ]);
@@ -1168,9 +1169,9 @@ void main() {
           },
           'modbus.sensor': {
             'modbus_node': {
-              'register_type': 'holding',
+              'register_type': 'holdingRegister',
               'address': 100,
-              'data_type': 'INT',
+              'data_type': 'int16',
               'server_alias': 'MODBUS_GW',
             },
           },
@@ -1183,9 +1184,11 @@ void main() {
         },
       });
 
-      await db.customStatement(
-        "INSERT INTO flutter_preferences (key, value, type) VALUES ('key_mappings', '$keyMappingsJson', 'String')",
-      );
+      // Rows, not the blob: `ConfigService` stopped reading
+      // `flutter_preferences.key_mappings` when the cutover deleted the
+      // fallback, and a fixture that seeded it would test nothing.
+      await seedKeyMappings(
+          db, jsonDecode(keyMappingsJson) as Map<String, dynamic>);
     });
 
     tearDown(() async {

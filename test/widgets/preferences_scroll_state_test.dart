@@ -93,6 +93,7 @@ Future<void> _editJsonAndUnfocus(WidgetTester tester, String newText) async {
 void main() {
   setUp(Preferences.clearSecretCache);
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
@@ -233,7 +234,7 @@ void main() {
 ///
 /// Confirming is observed through the local store rather than the rendered
 /// list: the row is labelled "(Local)", so the dialog's confirm branch calls
-/// remove() on SharedPreferences. Dismissing must leave it untouched.
+/// remove() on the device-local store. Dismissing must leave it untouched.
 void _deleteDialogTests() {
   group('delete preference confirmation', () {
     /// Opens the confirmation for the first row and returns its key.
@@ -255,8 +256,10 @@ void _deleteDialogTests() {
       final key = RegExp(r'Delete "(.+)"\?').firstMatch(prompt)!.group(1)!;
 
       // Mirror the row into the local store so the confirm branch has
-      // something observable to remove.
-      await SharedPreferencesAsync().setString(key, 'seeded');
+      // something observable to remove. Since v1.2 plan 01-05 that store is
+      // the one the factory answers, not the `SharedPreferencesAsync` platform
+      // instance — the widget writes through `localPreferencesProvider`.
+      await createDeviceLocalPreferences().setString(key, 'seeded');
       return key;
     }
 
@@ -268,7 +271,7 @@ void _deleteDialogTests() {
 
       expect(find.text('Delete preference'), findsNothing,
           reason: 'Enter should activate the focused Delete button');
-      expect(await SharedPreferencesAsync().containsKey(key), isFalse,
+      expect(await createDeviceLocalPreferences().getString(key), isNull,
           reason: 'Enter should confirm, not merely dismiss, the dialog');
     });
 
@@ -279,7 +282,7 @@ void _deleteDialogTests() {
       await tester.pumpAndSettle();
 
       expect(find.text('Delete preference'), findsNothing);
-      expect(await SharedPreferencesAsync().containsKey(key), isTrue,
+      expect(await createDeviceLocalPreferences().getString(key), 'seeded',
           reason: 'Escape must not delete anything');
     });
   });

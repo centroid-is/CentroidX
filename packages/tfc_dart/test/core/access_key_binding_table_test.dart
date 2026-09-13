@@ -97,13 +97,14 @@ Set<String> _keyMappingEntryMembers() => {
 // DDL parsing
 // ---------------------------------------------------------------------------
 
-/// The column names in the raw `CREATE TABLE IF NOT EXISTS [table]` literal in
-/// `database_drift.dart`.
+/// The body of the raw `CREATE TABLE IF NOT EXISTS [table]` literal in
+/// `database_drift.dart` — the text between the statement's outer parens,
+/// still carrying the Dart source's backslash escapes.
 ///
 /// The literal is found in the source rather than exported from the library on
 /// purpose: what ships to a station is the string in that file, so that is
 /// what has to be compared.
-Set<String> _ddlColumns(String table) {
+String _ddlBody(String table) {
   final source = _sourceLinesWithoutComments('lib/core/database_drift.dart')
       .join('\n');
   final match =
@@ -113,12 +114,43 @@ Set<String> _ddlColumns(String table) {
           'database_drift.dart. Either the Postgres arm lost it or it was '
           'commented out — comment lines are stripped before this runs, so a '
           'commented statement cannot satisfy this test.');
+  return match!.group(1)!;
+}
 
-  final body = match!.group(1)!;
-  // Split on top-level commas. These two statements contain no nested
-  // parentheses today; the depth counter is what keeps a future
-  // `NUMERIC(10,2)` from being read as two columns.
-  final columns = <String>{};
+/// [table]'s literal as Postgres will receive it, with the Dart escapes undone.
+///
+/// A single quote inside the single-quoted Dart string the statement lives in
+/// has to be written `\'`, and `CHECK (scope = 'shared')` is the first
+/// statement in this file's reach to contain one. Undoing the escape here is
+/// what lets an assertion be written in the SQL a reader would expect rather
+/// than in Dart source spelling.
+String _ddlSql(String table) =>
+    'CREATE TABLE IF NOT EXISTS $table (${_ddlBody(table).replaceAll(r"\'", "'")})';
+
+/// The words that open a *table-level constraint* rather than a column.
+///
+/// `PRIMARY KEY (kind, id, scope)` and `CONSTRAINT config_item_shared_only
+/// CHECK (...)` sit in the same comma-separated list as the column
+/// definitions, so taking the first token of every part — which is all a
+/// column name ever is — would read them as columns named `PRIMARY` and
+/// `CONSTRAINT` and fail parity against drift. The pre-v7 tables carried no
+/// table-level constraints, so this never came up before.
+const _tableConstraintKeywords = {
+  'PRIMARY',
+  'CONSTRAINT',
+  'UNIQUE',
+  'CHECK',
+  'FOREIGN',
+};
+
+/// The column names in the raw `CREATE TABLE IF NOT EXISTS [table]` literal in
+/// `database_drift.dart`.
+Set<String> _ddlColumns(String table) {
+  final body = _ddlBody(table);
+  // Split on top-level commas. The depth counter is what keeps
+  // `PRIMARY KEY (kind, id, scope)` — and a future `NUMERIC(10,2)` — from
+  // being read as several parts.
+  final parts = <String>[];
   var depth = 0;
   var current = StringBuffer();
   for (final rune in body.runes) {
@@ -126,13 +158,20 @@ Set<String> _ddlColumns(String table) {
     if (ch == '(') depth++;
     if (ch == ')') depth--;
     if (ch == ',' && depth == 0) {
-      columns.add(current.toString().trim().split(RegExp(r'\s+')).first);
+      parts.add(current.toString());
       current = StringBuffer();
     } else {
       current.write(ch);
     }
   }
-  columns.add(current.toString().trim().split(RegExp(r'\s+')).first);
+  parts.add(current.toString());
+
+  final columns = <String>{};
+  for (final part in parts) {
+    final first = part.trim().split(RegExp(r'\s+')).first;
+    if (_tableConstraintKeywords.contains(first.toUpperCase())) continue;
+    columns.add(first);
+  }
   return columns;
 }
 
@@ -181,6 +220,20 @@ void main() {
       _expectColumnParity('access_key_binding', db.accessKeyBindingTable);
     });
 
+    test('config_item: the DDL and the drift table declare the same columns',
+        () {
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      _expectColumnParity('config_item', db.configItemTable);
+    });
+
+    test('config_change: the DDL and the drift table declare the same columns',
+        () {
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+      _expectColumnParity('config_change', db.configChangeTable);
+    });
+
     test('the DDL spells the column names the drift tables are stored under',
         () {
       // Guards the parity tests above against reading the wrong table: drift
@@ -192,6 +245,51 @@ void main() {
       addTearDown(() => db.close());
       expect(db.accessTemplateTable.actualTableName, 'access_template');
       expect(db.accessKeyBindingTable.actualTableName, 'access_key_binding');
+      expect(db.configItemTable.actualTableName, 'config_item');
+      expect(db.configChangeTable.actualTableName, 'config_change');
+    });
+  });
+
+  group("CHECK (scope = 'shared') is on Postgres and nowhere else", () {
+    // The one structural guarantee in the v7 schema, asserted from both
+    // sides. `station:<hostname>` rows are a station's own local state — the
+    // reason they must not reach the shared database is that nothing else
+    // stops them: repository code declining to write them there is a promise
+    // that lasts until somebody writes a second repository.
+    //
+    // The first two assertions are source-derived and carry the usual
+    // disclaimer: nothing here executes the Postgres DDL. The third is the
+    // one that actually runs, and it is the one that would catch the mistake
+    // most likely to be made — putting the constraint on the drift table,
+    // where it would land on both backends and reject every row this
+    // milestone writes.
+    const theCheck = "CHECK (scope = 'shared')";
+
+    test('the config_item Postgres literal carries it', () {
+      expect(_ddlSql('config_item'), contains(theCheck));
+    });
+
+    test('the config_change Postgres literal carries it', () {
+      expect(_ddlSql('config_change'), contains(theCheck));
+    });
+
+    test('the SQLite tables carry no CHECK at all', () async {
+      final db = AppDatabase.inMemoryForTest();
+      addTearDown(() => db.close());
+
+      for (final table in ['config_item', 'config_change']) {
+        final rows = await db.customSelect(
+          "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?",
+          variables: [Variable<String>(table)],
+        ).get();
+        expect(rows, hasLength(1), reason: 'no `$table` table on a fresh '
+            'SQLite database, so the assertion below would pass vacuously');
+        expect(rows.first.read<String>('sql').toUpperCase(), isNot(contains('CHECK')),
+            reason: 'the local database is where station-scoped rows live. A '
+                "CHECK (scope = 'shared') on the drift table would go on both "
+                'backends and reject every row this milestone writes. It '
+                'belongs in the Postgres string literals only.');
+      }
     });
   });
 
