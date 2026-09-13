@@ -8,6 +8,7 @@ import 'package:tfc_dart/core/database_drift.dart';
 
 import '../core/gateway_config.dart';
 import 'gateway.dart';
+import '../core/gateway_default.dart';
 
 part 'database.g.dart';
 
@@ -30,14 +31,16 @@ Future<Database?> database(Ref ref) async {
   // (`gateway.dart:20-24`), and a rebuild of this provider (a database
   // settings save does that) re-reads the current transport anyway.
   //
-  // The catch mirrors `readGatewayConfig`'s own policy: direct mode is the
-  // default in every direction, so a device-local store that cannot be read
-  // leaves the plant running exactly as it does today.
+  // The catch mirrors `readGatewayConfig`'s own policy: a store that cannot
+  // be read leaves the client on whatever transport it could possibly have —
+  // direct on a station, so the plant runs exactly as it does today, and the
+  // serving origin in a browser, where direct is not a configuration that
+  // exists. See `core/gateway_default.dart`.
   GatewayConfig gateway;
   try {
     gateway = await ref.read(gatewayConfigProvider.future);
   } catch (_) {
-    gateway = GatewayConfig.defaults;
+    gateway = defaultGatewayConfig();
   }
   if (gateway.isGateway) {
     return null;

@@ -18,6 +18,7 @@ import '../theme.dart';
 import 'package:tfc_dart/core/preferences.dart';
 // The settings type only — see the note in `pages/server_config.dart`.
 import 'package:tfc_dart/core/database_config.dart';
+import '../core/gateway_default.dart';
 
 /// The MCP card moved to its own library so this one compiles for the web;
 /// re-exported so the preferences page and its tests are unaffected.
@@ -235,7 +236,7 @@ class _DatabaseConfigWidgetState extends ConsumerState<DatabaseConfigWidget> {
     if (gatewayAsync.isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
-    final gateway = gatewayAsync.valueOrNull ?? GatewayConfig.defaults;
+    final gateway = gatewayAsync.valueOrNull ?? defaultGatewayConfig();
     if (_loading || _config == null) {
       return const Center(child: CircularProgressIndicator());
     }

@@ -1,18 +1,15 @@
 import 'dart:async';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as path;
 import '../widgets/base_scaffold.dart';
 import '../widgets/proposal_visual.dart';
 import '../providers/proposal_state.dart';
 import 'package:tfc_dart/core/state_man_types.dart';
+import 'key_mappings_file.dart';
 import 'package:tfc_dart/core/state_man_config_storage.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 // `CollectEntry`/`CollectConfig` only — see the note in `assets/common.dart`.
@@ -2254,23 +2251,11 @@ class _KeyMappingsImportExportCard extends ConsumerWidget {
       final jsonString =
           const JsonEncoder.withIndent('  ').convert(keyMappings.toJson());
 
-      String? savePath;
-      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-        savePath = await FilePicker.platform.saveFile(
-          dialogTitle: 'Export Key Mappings',
-          fileName: 'key_mappings.json',
-          type: FileType.custom,
-          allowedExtensions: ['json'],
-        );
-      } else {
-        final dir = await getApplicationDocumentsDirectory();
-        final ts = DateTime.now().toIso8601String().replaceAll(':', '-');
-        savePath = path.join(dir.path, 'key_mappings_$ts.json');
-      }
-      if (savePath == null) return;
-
-      final file = File(savePath);
-      await file.writeAsString(jsonString);
+      // Where the file went, as a sentence for the strip below: a real path on
+      // a station, a download name in a browser. Null means the operator
+      // dismissed the dialog. See `key_mappings_file.dart`.
+      final savedAs = await saveKeyMappingsFile(jsonString);
+      if (savedAs == null) return;
 
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2280,7 +2265,7 @@ class _KeyMappingsImportExportCard extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Key mappings exported to ${file.path}',
+                'Key mappings exported to $savedAs',
                 // The path is the one line here that may be elided: it can be
                 // arbitrarily long, and letting it wrap without limit would
                 // push the disclosure below off the strip — which is the line
@@ -2315,16 +2300,12 @@ class _KeyMappingsImportExportCard extends ConsumerWidget {
 
   Future<void> _onImport(BuildContext context, WidgetRef ref) async {
     try {
-      final pick = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['json'],
-        dialogTitle: 'Import Key Mappings',
-      );
-      if (pick == null || pick.files.single.path == null) return;
+      // A browser hands over bytes and no path, so the read is behind the same
+      // seam as the write. Null is a dismissed dialog, not a failure.
+      final text = await pickKeyMappingsFile();
+      if (text == null) return;
 
-      final file = File(pick.files.single.path!);
-      final jsonMap =
-          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      final jsonMap = jsonDecode(text) as Map<String, dynamic>;
       final imported = KeyMappings.fromJson(jsonMap);
 
       if (!context.mounted) return;
