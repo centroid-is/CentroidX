@@ -10,6 +10,7 @@ import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/page_creator/assets/conveyor.dart';
 import 'package:tfc/pages/page_view.dart';
 import '../../helpers/golden_platform.dart';
+import '../../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 const _key = Key('conveyor_mirror_test');
 const _background = Color(0xFF1A1A2E);
@@ -56,6 +57,14 @@ void _seedPrefs({bool xMirror = false, bool yMirror = false}) {
       InMemorySharedPreferencesAsync.withData({
     'asset_stack_config': jsonEncode({'xMirror': xMirror, 'yMirror': yMirror}),
   });
+  // The canvas reads `asset_stack_config` through the factory, which since
+  // v1.2 plan 01-05 answers the store `initDeviceLocalPreferences()` opened
+  // rather than a wrapper over the platform instance above. Seed both: the
+  // platform instance is still what `Preferences` reads.
+  useInMemoryDeviceLocalPreferences().setString(
+    'asset_stack_config',
+    jsonEncode({'xMirror': xMirror, 'yMirror': yMirror}),
+  );
 }
 
 // The frequency figure's readability under the flip is pinned in

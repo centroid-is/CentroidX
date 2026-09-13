@@ -16,8 +16,10 @@ import 'package:shared_preferences_platform_interface/in_memory_shared_preferenc
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/access/access_repository.dart';
-import 'package:tfc_dart/core/access/guarded_preferences.dart';
+import 'package:tfc_dart/core/access/guarded_config_store.dart';
+import 'package:tfc_dart/core/config/shared_row_preferences.dart';
 import 'package:tfc_dart/core/access/guarded_state_man.dart';
+import 'package:tfc_dart/core/config/config_diff.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/preferences.dart';
@@ -32,12 +34,16 @@ import 'package:tfc/route_registry.dart';
 import 'package:tfc/providers/access.dart';
 import 'package:tfc/providers/access_policy.dart';
 import 'package:tfc/providers/collector.dart';
+import 'package:tfc/providers/config_store.dart';
 import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/preferences.dart';
 import 'package:tfc/providers/state_man.dart';
+import '../helpers/test_helpers.dart'
+    show createTestConfigStore, useInMemoryDeviceLocalPreferences;
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
@@ -82,10 +88,12 @@ void main() {
 
       // Seven since plan 03-14 raised '/advanced/knowledge-base', eight since
       // 05-07 raised '/advanced/audit-trail', nine since 06-10 raised
-      // '/advanced/access', ten since the report editor joined them; the
-      // length is asserted so an empty or truncated map fails here rather
-      // than showing up as a route that quietly opens.
-      expect(kRaisedRoutes, hasLength(10));
+      // '/advanced/access', eleven since the report editor joined them and
+      // v1.2's 04-06 raised '/advanced/config-history' at `configure` — its
+      // own entry, deliberately not a widened audit-trail one. The length is
+      // asserted so an empty or truncated map fails here rather than showing
+      // up as a route that quietly opens.
+      expect(kRaisedRoutes, hasLength(11));
       expect(
           policy.groupForRoute('/advanced/page-editor'), AccessGroup.configure);
       expect(policy.groupForRoute('/advanced/knowledge-base'),
@@ -95,6 +103,7 @@ void main() {
       // The viewer is not raised, and that is the point of the pair.
       expect(policy.groupForRoute('/reports'), AccessGroup.operate);
       expect(policy.groupForRoute(kServerConfigRoute), AccessGroup.administer);
+      expect(policy.groupForRoute(kConfigHistoryRoute), AccessGroup.configure);
       expect(policy.groupForRoute(kAuditTrailRoute), AccessGroup.users);
       expect(policy.groupForRoute(kAccessAdminRoute), AccessGroup.users);
     });
@@ -250,9 +259,14 @@ void main() {
   });
 
   group('the wrapping', () {
-    test('preferencesProvider answers a GuardedPreferences', () async {
+    test('preferencesProvider answers the row-backed store', () async {
       final w = await _wiring();
-      expect(await w.prefs, isA<GuardedPreferences>());
+      // Since 04-05 the shared store is `config_item` rows and the check lives
+      // one layer down, in `GuardedConfigStore.writePreference` — which is
+      // what lets one `action_id` cover the audit row and the change rows
+      // together. It is still a `Preferences`, which is why no caller changed.
+      expect(await w.prefs, isA<SharedRowPreferences>());
+      expect(await w.prefs, isA<Preferences>());
     });
 
     test('stateManProvider answers a GuardedStateMan around the built inner',
@@ -285,7 +299,7 @@ void main() {
       expect(
           await container.read(auditSinkProvider.future), isA<NullAuditSink>());
       expect(await container.read(preferencesProvider.future),
-          isA<GuardedPreferences>());
+          isA<SharedRowPreferences>());
       expect(await container.read(stateManProvider.future),
           isA<GuardedStateMan>());
     });
@@ -423,10 +437,11 @@ void main() {
       await w.stateMan;
       await w.container.read(pageManagerProvider.future);
       await w.container.read(alarmManProvider.future);
-      // The page-layout seed at `page.dart` is **unawaited**, so a denial
-      // there arrives as an unhandled asynchronous error one microtask later
-      // rather than as a failed provider. Asserting "no throw" alone would
-      // pass while the operator met a prompt on every cold boot.
+      // There is no longer an unawaited write on this path to wait for — the
+      // page-layout seed is deleted — but the pump stays: it is what would
+      // surface a denial arriving a microtask late if one ever came back, and
+      // asserting "no throw" alone would pass while the operator met a prompt
+      // on every cold boot.
       await pumpEventQueue();
 
       expect(w.denials, isEmpty,
@@ -434,11 +449,25 @@ void main() {
 
       // And every default actually landed, so the test cannot pass by nothing
       // having been written at all.
-      expect(await prefs.getString('key_mappings'), isNotNull);
+      //
+      // `key_mappings` is deliberately not here any more. Since 02-05 the boot
+      // default is `GuardedConfigStore.seedDefaultIfEmpty`, which writes one
+      // `config_item` row against a **reachable and genuinely empty** shared
+      // database and does nothing at all offline — and this container has no
+      // database. `guarded_config_store_test.dart`'s "the boot seed" group is
+      // where that write is proved, trail and all.
       expect(
           await prefs.getString('state_man_config', secret: true), isNotNull);
-      expect(await prefs.getString('page_editor_data'), isNotNull);
       expect(await prefs.getString('alarm_man_config'), isNotNull);
+
+      // And `page_editor_data` deliberately did **not** land. Since 03-04 a
+      // station with no stored layout comes up on the built-in default held
+      // in memory and persists nothing: the seed was a write of the plant's
+      // layout at boot, with nobody signed in, against a `configure` key. The
+      // first Save by a person is what stores a layout now — gated, awaited
+      // and audited.
+      expect(await prefs.getString('page_editor_data'), isNull,
+          reason: 'the boot seed is deleted; a write here is it coming back');
     });
 
     test('every boot default is in the trail, marked origin: system', () async {
@@ -448,10 +477,19 @@ void main() {
       await w.container.read(alarmManProvider.future);
       await pumpEventQueue();
 
+      // 'page_editor_data' is not here either, and for a stronger reason: as
+      // of 03-04 there is no boot write of it at all.
+      expect(w.sink.rows.where((r) => r.itemKey == 'page_editor_data'),
+          isEmpty,
+          reason: 'the page-layout seed is deleted; a trail row for it is the '
+              'seed having come back');
+
       for (final key in const [
-        'key_mappings',
+        // 'key_mappings' has moved to the configuration store's own seed —
+        // see the comment in the test above, and
+        // `guarded_config_store_test.dart`'s "writes the example key once, as
+        // the system, with a row".
         'state_man_config',
-        'page_editor_data',
         'alarm_man_config',
       ]) {
         final rows = w.sink.rows.where((r) => r.itemKey == key);
@@ -478,14 +516,110 @@ void main() {
         'key is still refused', () async {
       final w = await _wiring();
       final prefs = await w.prefs;
+      final store = await w.configStore;
       await w.stateMan;
 
-      // `key_mappings` was just seeded through `systemWrites`. An ordinary
-      // write of the very same key, by a session, is a different thing.
-      await expectLater(prefs.setString('key_mappings', '{"nodes":{}}'),
+      // The boot default for these keys went through the unchecked path. An
+      // ordinary write of the very same key, by a session, is a different
+      // thing — and for key mappings it is now the guarded *store* that has to
+      // say so, since that is where the write goes.
+      await expectLater(store.saveKeyMappings(KeyMappings(nodes: {})),
           throwsA(isA<AccessDenied>()));
       await expectLater(prefs.setString('alarm_man_config', '{"alarms":[]}'),
           throwsA(isA<AccessDenied>()));
+    });
+
+    test('a refused key-mapping save is in the trail, and reaches the denial '
+        'stream', () async {
+      final w = await _wiring();
+      final store = await w.configStore;
+
+      await expectLater(store.saveKeyMappings(KeyMappings(nodes: {})),
+          throwsA(isA<AccessDenied>()));
+      await pumpEventQueue();
+
+      final rows = w.sink.rows.where((r) => r.itemKey == 'key_mappings');
+      expect(rows, hasLength(1));
+      expect(rows.single.allowed, isFalse);
+      expect(rows.single.surface, 'pref');
+      expect(rows.single.station, _kStation);
+      expect(w.denials.map((d) => d.itemKey), contains('key_mappings'));
+    });
+  });
+
+  group('the key-mapping live apply survives a reconnect (C-1)', () {
+    test('an edit applies before and after preferencesProvider is rebuilt',
+        () async {
+      // The regression this milestone exists to close. `stateManProvider`
+      // reads preferences with `ref.read` on purpose — a watch would drop
+      // every OPC UA connection on the panel each time the database
+      // reconnected — so the old listener was attached to the `Preferences`
+      // instance that existed at boot. `preferencesProvider` builds a NEW one
+      // on every reconnect, and from that moment the listener was watching an
+      // object nobody wrote to again: key-mapping edits silently stopped
+      // applying, forever, after the first database blip.
+      //
+      // The store outlives every provider rebuild, so the listener now hangs
+      // off it. Rebuilding `preferencesProvider` between two edits is what
+      // tells the two designs apart: the old one applies the first and misses
+      // the second.
+      final w = await _wiring(withConfigStore: true);
+      final store = await w.configStore;
+      await w.stateMan;
+
+      await store.inner.writeKeyMappings(
+          _mappingsOf({'CN04.Belt.Speed': 'GVL.Conveyors[4].Speed'}),
+          actionId: 'a1',
+          who: 'jon',
+          roleName: 'Engineering');
+      await pumpEventQueue();
+      expect(w.inner.appliedDiffs.map((d) => d.added.single.id),
+          ['CN04.Belt.Speed']);
+
+      // The reconnect, as the app performs it.
+      final before = await w.prefs;
+      w.container.invalidate(preferencesProvider);
+      final after = await w.prefs;
+      expect(identical(before, after), isFalse,
+          reason: 'the premise: a rebuild really does replace the object the '
+              'old listener was holding');
+      // And the store did not go with it.
+      expect(identical(store, await w.configStore), isTrue);
+
+      await store.inner.writeKeyMappings(
+          _mappingsOf({
+            'CN04.Belt.Speed': 'GVL.Conveyors[4].Speed',
+            'CN07.Belt.Speed': 'GVL.Conveyors[7].Speed',
+          }),
+          actionId: 'a2',
+          who: 'jon',
+          roleName: 'Engineering');
+      await pumpEventQueue();
+
+      expect(w.inner.appliedDiffs, hasLength(2),
+          reason: 'the second edit never reached StateMan — the listener went '
+              'deaf when preferencesProvider was rebuilt');
+      expect(w.inner.appliedDiffs.last.added.single.id, 'CN07.Belt.Speed');
+      expect(w.inner.appliedMappings.last.nodes.keys,
+          containsAll(['CN04.Belt.Speed', 'CN07.Belt.Speed']));
+    });
+
+    test('the store\'s diff reaches StateMan, not a recomputed one', () async {
+      // SC-3's other half, from the app side: the object handed to
+      // `updateKeyMappings` is the one the store computed while deciding which
+      // rows to write.
+      final w = await _wiring(withConfigStore: true);
+      final store = await w.configStore;
+      await w.stateMan;
+
+      final result = await store.inner.writeKeyMappings(
+          _mappingsOf({'CN04.Belt.Speed': 'GVL.Conveyors[4].Speed'}),
+          actionId: 'a1',
+          who: 'jon',
+          roleName: 'Engineering');
+      await pumpEventQueue();
+
+      expect(identical(w.inner.appliedDiffs.single, result.diff), isTrue);
     });
   });
 
@@ -602,7 +736,8 @@ AccessDenied _denial(String key) => AccessDenied(key, AccessGroup.configure);
 
 /// The two tokens that reach the unchecked write path.
 ///
-/// `systemWrites` is the member on `GuardedPreferences`;
+/// `systemWrites` is the member on `SharedRowPreferences` (and, until 04-12
+/// retires it, on `GuardedPreferences`);
 /// `systemPreferencesProvider` is how everything but `preferences.dart` gets
 /// hold of it. Capping only the first would leave the provider readable from
 /// anywhere, which is the same hole one indirection further out.
@@ -658,6 +793,30 @@ class _FakeStateMan implements StateMan {
   final List<String> reads = [];
   final List<(String, DynamicValue)> writes = [];
   final Map<String, DynamicValue> values = {};
+
+  /// Every diff the live-apply listener handed over, in order. The C-1
+  /// regression is counted here.
+  final List<ConfigDiff> appliedDiffs = [];
+
+  /// The mappings that came with each of them.
+  final List<KeyMappings> appliedMappings = [];
+
+  @override
+  KeyMappingsUpdateResult updateKeyMappings(KeyMappings newKeyMappings,
+      {ConfigDiff? diff}) {
+    appliedMappings.add(newKeyMappings);
+    // Not defaulted to an empty diff: the point of this fake is to see what
+    // the provider passed, and a null here is a provider that stopped passing
+    // the store's own diff.
+    appliedDiffs.add(diff!);
+    return const KeyMappingsUpdateResult(
+      added: {},
+      removed: {},
+      changed: {},
+      resubscribed: {},
+      reloadReasons: [],
+    );
+  }
 
   @override
   Future<void> close() async => closeCalls++;
@@ -738,12 +897,27 @@ class _Wiring {
 
   Future<Preferences> get prefs => container.read(preferencesProvider.future);
   Future<StateMan> get stateMan => container.read(stateManProvider.future);
+  Future<GuardedConfigStore> get configStore =>
+      container.read(configStoreProvider.future);
 }
+
+/// One OPC UA entry per key, built through the model so every payload is codec
+/// output — a hand-written one is structurally different and would make the
+/// diff report keys nobody touched.
+KeyMappings _mappingsOf(Map<String, String> keysToIdentifiers) => KeyMappings(
+      nodes: {
+        for (final entry in keysToIdentifiers.entries)
+          entry.key: KeyMappingEntry(
+            opcuaNode: OpcUANodeConfig(namespace: 4, identifier: entry.value),
+          ),
+      },
+    );
 
 /// A container with the real `preferencesProvider` and `stateManProvider`,
 /// their inner construction faked, and nothing pointed at a real database or a
 /// real PLC.
-Future<_Wiring> _wiring({bool withDatabase = false}) async {
+Future<_Wiring> _wiring(
+    {bool withDatabase = false, bool withConfigStore = true}) async {
   AccessRepository? repository;
   if (withDatabase) {
     final db = AppDatabase.inMemoryForTest();
@@ -780,6 +954,23 @@ Future<_Wiring> _wiring({bool withDatabase = false}) async {
       // `collectorProvider` watches `stateManProvider`, so leaving it real
       // would have this test reaching for a database it does not have.
       collectorProvider.overrideWith((ref) async => null),
+      // On by default since 04-05: `preferencesProvider` is now backed by this
+      // store, so a container without one is a station with no Postgres — and
+      // every preference write in this file would be refused as offline rather
+      // than checked. `sessionOf` rather than `session`, because production
+      // passes `() => sessionInForce(ref)` and the tests below sign in and out
+      // between two writes on one guard.
+      if (withConfigStore)
+        configStoreProvider.overrideWith((ref) => createTestConfigStore(
+              station: _kStation,
+              sessionOf: () => sessionInForce(ref),
+              audit: sink,
+              // Through the provider, exactly as `configStoreProvider` does:
+              // handing the list straight in would leave "a refusal reaches
+              // accessDenialsProvider" passing without the publish ever
+              // happening.
+              onDenied: (denial) => reportAccessDenial(ref, denial),
+            )),
     ],
   );
   addTearDown(container.dispose);

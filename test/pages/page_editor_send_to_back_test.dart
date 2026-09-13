@@ -8,6 +8,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 import 'package:tfc/page_creator/assets/common.dart';
 import 'package:tfc/pages/page_editor.dart';
 import 'package:tfc/pages/page_view.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
 
 /// Z-order in the page editor is list order: `AssetStack` renders
 /// `AssetPage.assets` in sequence, so the head of the list is the back of the
@@ -198,6 +199,7 @@ Offset _pointOn(WidgetTester tester, double fx, double fy) {
 void _secondaryTapTests() {
   group('AssetStack secondary tap', () {
     setUp(() {
+      useInMemoryDeviceLocalPreferences();
       SharedPreferences.setMockInitialValues({});
       SharedPreferencesAsyncPlatform.instance =
           InMemorySharedPreferencesAsync.empty();

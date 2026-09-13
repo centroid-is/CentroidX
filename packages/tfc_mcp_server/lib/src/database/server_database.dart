@@ -47,19 +47,6 @@ class ServerAlarmHistory extends Table {
   DateTimeColumn get acknowledgedAt => dateTime().nullable()();
 }
 
-/// Flutter preferences table (mirrors tfc_dart's FlutterPreferences table).
-class ServerFlutterPreferences extends Table {
-  @override
-  String get tableName => 'flutter_preferences';
-
-  @override
-  Set<Column> get primaryKey => {key};
-
-  TextColumn get key => text()();
-  TextColumn get value => text().nullable()();
-  TextColumn get type => text()();
-}
-
 /// Audit log table for recording all AI tool invocations.
 ///
 /// This table is new to the MCP server (not in tfc_dart). It stores the
@@ -285,7 +272,6 @@ class ServerMcpProposalTable extends Table {
 @DriftDatabase(tables: [
   ServerAlarm,
   ServerAlarmHistory,
-  ServerFlutterPreferences,
   AuditLog,
   PlcCodeBlockTable,
   PlcVariableTable,
@@ -344,9 +330,13 @@ class ServerDatabase extends _$ServerDatabase implements McpDatabase {
           await m.createAll();
         },
         onUpgrade: (m, from, to) async {
-          // The MCP server only reads shared tables (alarm, alarm_history,
-          // flutter_preferences) which are managed by tfc_dart's migrations.
-          // The audit_log table is created by onCreate above.
+          // The MCP server only reads shared tables (alarm, alarm_history)
+          // which are managed by tfc_dart's migrations. The audit_log table
+          // is created by onCreate above.
+          //
+          // `flutter_preferences` was on that list until this server stopped
+          // reading it. Its table class is gone with the read: a schema this
+          // package does not need is a schema that invites the read back.
           //
           // Future schema migrations for shared tables should be handled
           // by tfc_dart; the MCP server just needs to stay compatible.

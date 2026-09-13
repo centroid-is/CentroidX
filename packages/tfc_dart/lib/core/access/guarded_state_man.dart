@@ -37,6 +37,7 @@ import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:open62541/open62541.dart' show DynamicValue;
 import 'package:tfc_access/tfc_access.dart';
 
+import '../config/config_diff.dart';
 import '../state_man.dart';
 import 'dynamic_value_diff.dart';
 
@@ -451,8 +452,9 @@ class GuardedStateMan implements StateMan {
   Future<Stream<DynamicValue>> subscribe(String key) => _inner.subscribe(key);
 
   @override
-  KeyMappingsUpdateResult updateKeyMappings(KeyMappings newKeyMappings) =>
-      _inner.updateKeyMappings(newKeyMappings);
+  KeyMappingsUpdateResult updateKeyMappings(KeyMappings newKeyMappings,
+          {ConfigDiff? diff}) =>
+      _inner.updateKeyMappings(newKeyMappings, diff: diff);
 
   @override
   List<String> get keys => _inner.keys;

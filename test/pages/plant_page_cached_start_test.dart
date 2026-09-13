@@ -29,6 +29,8 @@ import 'package:tfc/widgets/panes/side_pane.dart';
 import 'package:tfc/widgets/zoomable_canvas.dart';
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc_dart/core/preferences.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
+import 'package:tfc/providers/web_view_prewarm.dart';
 
 /// Counts how many times a probe asset's subtree was mounted and torn down.
 int _probeMounts = 0;
@@ -108,7 +110,13 @@ Widget _app({
   String pageName = '/line-1',
 }) =>
     ProviderScope(
-      overrides: overrides,
+      overrides: [
+        ...overrides,
+        // Browsers are not warmed under a test: the prewarm waits on the
+        // page manager and then on a two-second timer, which would be left
+        // pending at teardown (#520).
+        webViewPrewarmProvider.overrideWithValue(0),
+      ],
       child: MaterialApp(
         home: Scaffold(body: PlantPageView(pageName: pageName)),
       ),
@@ -121,6 +129,7 @@ Override _dbNeverAnswers() =>
 
 void main() {
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
@@ -201,6 +210,7 @@ void main() {
     // under a staleness banner, for as long as the reload took.
     var served = 0;
     final container = ProviderContainer(overrides: [
+      webViewPrewarmProvider.overrideWithValue(0),
       pageManagerProvider.overrideWith((ref) async {
         served++;
         return _managerWith(['/line-1']);

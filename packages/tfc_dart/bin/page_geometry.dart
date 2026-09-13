@@ -11,6 +11,25 @@
 /// `get_asset_detail` over MCP hangs on large pages (three timeouts at
 /// 120s/400s/500s on `/boxes/freezers`, which holds 118 assets).
 ///
+/// ## STALE SINCE PHASE 1 -- it reads a file no station writes any more
+///
+/// That preferences file is a `shared_preferences` JSON file, and Phase 1
+/// removed `shared_preferences` from the app. No station has written one
+/// since, so this tool works only against a file captured **before** that
+/// upgrade -- an old panel, or a copy somebody kept. Pointed at a current
+/// station it finds nothing, or finds something stale and says nothing about
+/// how old it is, which is the worse of the two.
+///
+/// This is **not** a casualty of the relational-config cutover. Pages moved
+/// out of `flutter_preferences` into `config_item` rows in Phase 3, but this
+/// tool never read that table either; it was already reading a file by then.
+///
+/// The replacement is a read of the `page` and `asset` `config_item` rows,
+/// which is where the geometry lives now. It is deliberately left unbuilt:
+/// this is a developer tool for arguing about a drawing, not a runtime path,
+/// and nothing on a plant depends on it. Anyone who needs it should write
+/// that read rather than hunting for an old preferences file.
+///
 /// ## Why this exists
 ///
 /// A first attempt at keying `/boxes/freezers` ran a shortest path over

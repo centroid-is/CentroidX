@@ -40,6 +40,7 @@ import '../../helpers/ethercat_fake_state_man.dart';
 import '../../helpers/golden_fonts.dart';
 import '../../helpers/golden_platform.dart';
 import '../../helpers/golden_tolerance.dart';
+import '../../helpers/test_helpers.dart';
 
 const _key = Key('ethercat_cable_ports');
 
@@ -115,6 +116,9 @@ void main() {
   useTolerantGoldenComparator();
 
   setUp(() {
+    // AssetStack reads the device-local store for its layout config; a
+    // process without one open throws at first build.
+    useInMemoryDeviceLocalPreferences();
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.withData({

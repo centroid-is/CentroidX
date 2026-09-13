@@ -21,7 +21,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
 import 'package:tfc/models/menu_item.dart';
-import 'package:tfc/page_creator/assets/image_store.dart';
 import 'package:tfc/page_creator/page.dart';
 import 'package:tfc/pages/page_editor.dart';
 import 'package:tfc/providers/alarm.dart';
@@ -35,12 +34,15 @@ import '../helpers/page_editor_harness.dart'
     show
         FakeEditorPreferences,
         coordsOf,
+        imageStoreOf,
+        testImageStore,
         editorBox,
         pressEditorKey,
         readBackHomeAssets,
         selectedCount,
         setUpEditorEnvironment,
         tapAsset;
+import 'package:tfc/providers/web_view_prewarm.dart';
 
 /// The two pages the operator can be on. Their labels are what the editor's
 /// page selector prints, so they are how the test reads which page is open.
@@ -107,8 +109,16 @@ Widget _appUnderTest(PageManager manager, ProposalStateNotifier proposals) {
   return ProviderScope(
     overrides: [
       pageManagerProvider.overrideWith((ref) async => manager),
-      pageImageStoreProvider
-          .overrideWith((ref) async => PageImageStore(manager.prefs)),
+      // Browsers are not warmed under a test: the prewarm waits on the page
+      // manager and then on a two-second timer, which would be left pending
+      // at teardown (#520).
+      webViewPrewarmProvider.overrideWithValue(0),
+      pageImageStoreProvider.overrideWith((ref) async {
+        final prefs = manager.prefs;
+        return prefs is FakeEditorPreferences
+            ? imageStoreOf(prefs)
+            : testImageStore();
+      }),
       databaseProvider.overrideWith((ref) async => null),
       alarmManProvider
           .overrideWith((ref) => throw StateError('No AlarmMan in tests')),

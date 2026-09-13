@@ -1,7 +1,6 @@
 import 'dart:ui' show Size;
 import 'dart:math' as math;
 
-import 'dart:convert';
 
 import 'package:flutter/rendering.dart';
 import 'package:json_annotation/json_annotation.dart';
@@ -17,10 +16,12 @@ import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/core/modbus_client_wrapper.dart' show ModbusDataType;
 import 'package:tfc_dart/core/collector.dart';
 import 'package:tfc_dart/core/database.dart';
+import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:tfc_dart/core/boolean_expression.dart';
 import 'package:jbtm/src/m2400.dart' show M2400RecordType;
 import '../../providers/state_man.dart';
 import '../../providers/preferences.dart';
+import '../../providers/config_store.dart';
 import '../../widgets/boolean_expression.dart';
 import '../../widgets/bit_mask_grid.dart';
 import '../../widgets/key_mapping_sections.dart';
@@ -837,19 +838,52 @@ class _KeyFieldState extends ConsumerState<KeyField> {
       ),
     );
 
-    if (result != null) {
-      final key = result['key'] as String;
-      final entry = result['entry'] as KeyMappingEntry;
+    if (result == null) return;
+    final key = result['key'] as String;
+    final entry = result['entry'] as KeyMappingEntry;
 
-      final keyMappings = (await ref.read(stateManProvider.future)).keyMappings;
-      keyMappings.nodes[key] = entry;
-      final prefs = await ref.read(preferencesProvider.future);
-      await prefs.setString('key_mappings', jsonEncode(keyMappings.toJson()));
+    final store = await ref.read(configStoreProvider.future);
+    // C-10. This used to be `(await ref.read(stateManProvider.future))
+    // .keyMappings.nodes[key] = entry` — a write into StateMan's own live map,
+    // which is also the baseline the next save is diffed against. Mutating it
+    // first made that diff empty, so the save reported success and wrote
+    // nothing, silently. A **fresh** map built from the store's own read is the
+    // fix: nothing this method touches is reachable from the store or from
+    // StateMan, so the diff sees exactly the one key that moved.
+    final next = KeyMappings(nodes: {
+      ...store.inner.keyMappings.nodes,
+      key: entry,
+    });
 
-      _controller.text = key;
-      widget.onChanged?.call(key);
-      setState(() {});
+    try {
+      await store.saveKeyMappings(next);
+    } on ConfigStoreOfflineException catch (e) {
+      _showSaveFailure('Not saved — the database is unreachable. '
+          'Nothing was written: ${e.attempted}.');
+      return;
+    } on ConfigConflict catch (e) {
+      _showSaveFailure('"${e.key}" was changed on another station. '
+          'Reopen the key repository to see it, then add this key again.');
+      return;
+    } catch (e) {
+      _showSaveFailure('Failed to save key mapping: $e');
+      return;
     }
+
+    if (!mounted) return;
+    _controller.text = key;
+    widget.onChanged?.call(key);
+    setState(() {});
+  }
+
+  /// One arm of [_openKeyMappingDialog]'s three, so a refused write is never
+  /// followed by the field quietly showing a key that was not stored.
+  void _showSaveFailure(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(message),
+      backgroundColor: Theme.of(context).colorScheme.error,
+    ));
   }
 
   @override

@@ -29,8 +29,11 @@ import 'alarm.dart';
 import 'database.dart';
 import 'database_batch_insert.dart';
 import 'database_connections.dart';
+import 'config/config_item_table.dart'
+    show ConfigChangeTable, ConfigItemTable;
 import 'mcp_tables.dart';
 import 'mcp_database.dart';
+import 'sqlite_loader.dart';
 
 part 'database_drift.g.dart';
 
@@ -372,6 +375,31 @@ class AccessKeyBindingTable extends Table {
   DateTimeColumn get updatedAt => dateTime()();
 }
 
+/// **Do not regenerate `database_drift.g.dart` on this branch without checking
+/// the drift version.** `pubspec.yaml` pins `sqlite3: ^2.9.0` — deliberately,
+/// so `sqlite_loader.dart`'s `DynamicLibrary` path keeps working on the eLinux
+/// stations — and that pin caps drift at 2.31.0. The committed generated file
+/// was produced by drift_dev 2.34.x, and 2.31.0 emits neither the
+/// `constraintIsAlways('REFERENCES ...')` column constraints nor the
+/// `*References` classes: a regeneration under the pin silently drops every
+/// foreign key from the schema `createAll` builds for a fresh database.
+/// `test/core/access_schema_test.dart` is what catches it — `app_user.role_name
+/// is a declared foreign key to app_role` fails — so if that test goes red
+/// after a codegen run, the generated file is the suspect, not the schema.
+///
+/// `config_item` and `config_change` are declared in
+/// `config/config_item_table.dart`, not here.
+///
+/// They are the tables this database shares with readers that must not link
+/// open62541 — this library does, through `alarm.dart`. The declarations moved
+/// there so those readers get a generated accessor without it; `AppDatabase`
+/// names the same classes below and generates its own exactly as before, so
+/// nothing about the schema, the migrations or [ConfigItemRow] changed.
+/// `config_change` followed `config_item` when the consistency check
+/// (`config/config_consistency.dart`) had to read the log beside the items
+/// from inside the FFI-free barrel. See that file's header for the full
+/// argument (D-3).
+
 /// Saved History Views (name + keys)
 class HistoryView extends Table {
   IntColumn get id => integer().autoIncrement()();
@@ -444,6 +472,10 @@ class HistoryViewPeriod extends Table {
   // Access template tables (schema v6):
   AccessTemplateTable,
   AccessKeyBindingTable,
+  // Relational configuration tables (schema v10; the NOTIFY trigger is v11
+  // and the paging index v12):
+  ConfigItemTable,
+  ConfigChangeTable,
 ])
 class AppDatabase extends _$AppDatabase implements McpDatabase {
   final DatabaseConfig config;
@@ -550,7 +582,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   }
 
   @override
-  int get schemaVersion => 9;
+  int get schemaVersion => 12;
 
   /// The `audit_entry` indexes, created outside Drift because Drift's
   /// `@TableIndex` cannot express `DESC` and every one of these is a
@@ -636,6 +668,143 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   /// place rather than being copied into both arms.
   Future<void> _createAccessBindingIndexes(Migrator m) async {
     for (final stmt in _accessBindingIndexStatements) {
+      await m.database.customStatement(stmt);
+    }
+  }
+
+  /// The `config_item` and `config_change` indexes.
+  ///
+  /// `idx_config_item_scope_kind` is the one every read of this store goes
+  /// through. The primary key leads with `kind`, so the actual query shape —
+  /// `WHERE kind = ? AND scope = ?` — can only prefix-scan it; leading with
+  /// `scope` is what makes "everything of kind K on this station" an index
+  /// seek rather than a scan of every scope's rows.
+  ///
+  /// The two `config_change` indexes serve reads this phase does not yet
+  /// perform (an entity's history, and the join back to an action). They go in
+  /// now for the same reason the Postgres `CHECK` does: an index is cheapest
+  /// to add before there is data to build it over.
+  ///
+  /// `IF NOT EXISTS` on both backends, for the same reason
+  /// [_auditIndexStatements] uses it: several SVN stations share one database
+  /// and each of them opens it.
+  static const List<String> _configIndexStatements = [
+    'CREATE INDEX IF NOT EXISTS idx_config_item_scope_kind '
+        'ON config_item (scope, kind)',
+    'CREATE INDEX IF NOT EXISTS idx_config_change_entity '
+        'ON config_change (kind, entity_id, scope, id)',
+    'CREATE INDEX IF NOT EXISTS idx_config_change_action '
+        'ON config_change (action_id)',
+    // The history page's default read: `ORDER BY at DESC, id DESC LIMIT 500`
+    // over a time window, on a table that is never pruned. Without this it is
+    // a sequential scan plus a sort that grows for the life of the plant.
+    'CREATE INDEX IF NOT EXISTS idx_config_change_at '
+        'ON config_change (at DESC, id DESC)',
+  ];
+
+  /// Create the [_configIndexStatements] indexes.
+  ///
+  /// Called from `onCreate` and from the `from < 10` and `from < 12` upgrade
+  /// branches, on both
+  /// backends — the statements are identical on each, so they live in one
+  /// place rather than being copied into both arms.
+  /// The two config tables, as Postgres gets them: the raw literals with the
+  /// `CHECK (scope = 'shared')`. Run by the v10 arm and by `onCreate`, so an
+  /// upgraded plant and a freshly provisioned one carry the same constraint.
+  Future<void> _createConfigTablesPostgres(Migrator m) async {
+    await m.database.customStatement(
+        'CREATE TABLE IF NOT EXISTS config_item (kind TEXT NOT NULL, id TEXT NOT NULL, scope TEXT NOT NULL, parent_id TEXT, sort_index INTEGER, payload TEXT NOT NULL, rev BIGINT NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL, PRIMARY KEY (kind, id, scope), CONSTRAINT config_item_shared_only CHECK (scope = \'shared\'))');
+    await m.database.customStatement(
+        'CREATE TABLE IF NOT EXISTS config_change (id SERIAL PRIMARY KEY, at TEXT NOT NULL, action_id TEXT NOT NULL, who TEXT NOT NULL, station TEXT NOT NULL, role_name TEXT NOT NULL, reason TEXT, kind TEXT NOT NULL, entity_id TEXT NOT NULL, scope TEXT NOT NULL, op TEXT NOT NULL, old_value TEXT, new_value TEXT, CONSTRAINT config_change_shared_only CHECK (scope = \'shared\'))');
+  }
+
+  Future<void> _createConfigIndexes(Migrator m) async {
+    for (final stmt in _configIndexStatements) {
+      await m.database.customStatement(stmt);
+    }
+  }
+
+  /// The `config_change` NOTIFY trigger — the server side of the change feed.
+  ///
+  /// **The payload is a constant empty string, and that is the whole design.**
+  /// Postgres delivers one event per identical `(channel, payload)` pair
+  /// signalled within a transaction, so a constant payload is exactly one
+  /// notification per committed action however many rows that action wrote.
+  /// It also makes the 8000-byte `pg_notify` cap structurally unreachable —
+  /// and that cap does not truncate, it *errors the statement that fired the
+  /// trigger*, which is to say it would fail the very save it is reporting.
+  ///
+  /// That is also why the key-carrying variant this class used to have — a
+  /// trigger whose payload named the changed row — is gone rather than reused
+  /// here. It made nine keys saved together into nine distinct payloads and
+  /// nine deliveries, and this channel's receivers do not need to know which
+  /// row moved: what follows an event is a `config_change.id` watermark pull
+  /// that is the same read either way. Its one caller watched
+  /// `flutter_preferences`; both retired in 04-12. The trigger and function it
+  /// installed still exist on any plant it ever ran against, and
+  /// `bin/drop_flutter_preferences.dart` is what removes them.
+  ///
+  /// `AFTER INSERT` only: `config_change` is append-only, so there is no
+  /// UPDATE or DELETE to report. `FOR EACH STATEMENT` rather than
+  /// `FOR EACH ROW`: with a constant payload the two are indistinguishable to
+  /// a receiver, and the statement-level trigger fires once for a multi-row
+  /// insert instead of once per row.
+  ///
+  /// `DROP TRIGGER IF EXISTS` followed by `CREATE`, not
+  /// `CREATE OR REPLACE TRIGGER`, which needs PG14+ and buys nothing here.
+  /// With `CREATE OR REPLACE FUNCTION` that makes the whole arm safe to run
+  /// twice, which it has to be: several SVN stations share one database and
+  /// each of them runs it when it opens.
+  static const List<String> _configChangeNotifyStatements = [
+    'CREATE OR REPLACE FUNCTION notify_config_change() RETURNS TRIGGER AS '
+        '\$\$ BEGIN PERFORM pg_notify(\'config_change\', \'\'); RETURN NULL; END; \$\$ '
+        'LANGUAGE plpgsql',
+    'DROP TRIGGER IF EXISTS config_change_notify ON config_change',
+    'CREATE TRIGGER config_change_notify AFTER INSERT ON config_change '
+        'FOR EACH STATEMENT EXECUTE FUNCTION notify_config_change()',
+  ];
+
+  /// [_configChangeNotifyStatements] as the database would receive them.
+  ///
+  /// Exists because no test in this package can execute them — there is no
+  /// Postgres in `test/core/` — so the only thing left to assert is their
+  /// text, and asserting the *runtime* strings beats reading them back out of
+  /// the source: the source carries Dart's escaping and an adjacent-literal
+  /// concatenation, and a test that matched that text would be matching the
+  /// spelling rather than the statement.
+  @visibleForTesting
+  static List<String> get configChangeNotifyStatementsForTest =>
+      _configChangeNotifyStatements;
+
+  /// Install [_configChangeNotifyStatements] — **on Postgres only**.
+  ///
+  /// Called from `onCreate` and from the `from < 11` upgrade branch, the way
+  /// [_createConfigIndexes] is called from both, so a database that was
+  /// created at v9 and one that was upgraded to it agree. Without the
+  /// `onCreate` call a freshly created Postgres would simply never notify, and
+  /// the symptom would be "one station's edits do not reach the others" with
+  /// nothing in any log to say why.
+  ///
+  /// **The asymmetry is deliberate.** SQLite has no LISTEN/NOTIFY to install
+  /// this on, and the local file has one writer — the station itself, which
+  /// already knows what it wrote. There is nobody there to tell.
+  ///
+  /// The backend is read off `executor.dialect` rather than through [postgres]
+  /// (`executor is PgDatabase`), which is **false on every station**: the app
+  /// opens its database with [AppDatabase.spawn] and the main-isolate executor
+  /// is a drift remote proxy, not a `PgDatabase`. A migration runs inside the
+  /// isolate, where that getter would in fact work — the dialect check is used
+  /// anyway so this codebase has one rule for reading the backend and not two.
+  ///
+  /// **No test executes the Postgres arm**, exactly as the `from < 6` and
+  /// `from < 10` arms say of their own. The inherited gap is recorded in
+  /// `.planning/phases/01-identity-and-audit/deferred-items.md` §1 and is
+  /// still open. What stands behind these three statements is a read of the
+  /// Postgres documentation and the `config_change` DDL directly above; the
+  /// first thing that will run them is a station.
+  Future<void> _createConfigChangeNotifyTrigger(Migrator m) async {
+    if (m.database.executor.dialect != SqlDialect.postgres) return;
+    for (final stmt in _configChangeNotifyStatements) {
       await m.database.customStatement(stmt);
     }
   }
@@ -758,9 +927,20 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           await _seedAnonymousAccount();
         },
         onCreate: (m) async {
+          // On Postgres the two config tables go up from the raw literals
+          // first, so that `createAll`'s `IF NOT EXISTS` finds them and a
+          // freshly provisioned plant gets the `CHECK (scope = 'shared')` the
+          // upgrade path installs. Built from the drift classes alone they
+          // would lack it: the classes carry no CHECK on purpose, because the
+          // same declaration is SQLite's, where station rows must be allowed.
+          if (m.database.executor.dialect == SqlDialect.postgres) {
+            await _createConfigTablesPostgres(m);
+          }
           await m.createAll();
           await _createAuditIndexes(m);
           await _createAccessBindingIndexes(m);
+          await _createConfigIndexes(m);
+          await _createConfigChangeNotifyTrigger(m);
           await _seedAccessRoles();
           await _seedAnonymousAccount();
         },
@@ -917,6 +1097,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
             await _createAccessBindingIndexes(m);
             await _seedAccessRoles();
           }
+
           // The page-visibility whitelist, at both levels. One nullable column
           // per identity table and nothing else: every existing row — the four
           // seeded roles included — upgrades to NULL, which is "no whitelist"
@@ -929,14 +1110,33 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // them. `addColumn` on SQLite would then fail, and the Postgres
           // `IF NOT EXISTS` would be a no-op — so the SQLite side is guarded
           // by `from >= 6` rather than by hoping the order works out.
-          if (from < 7) {
+          // **Guarded by whether the column exists, and open until v10, not
+          // `from < 7` with `from >= 6`.** A version comparison is only right
+          // in the merge order it was written for, and this arm has already
+          // been through the other one: a build of the relational-config
+          // branch stamped `user_version` 7 and 8 for its own arms before
+          // main took those numbers for this column and the next. A database
+          // from such a build opens with `from == 8`, both those arms
+          // skipped, and every `app_user` read failing on a column no later
+          // upgrade would ever add. The v8 and v9 arms below were written
+          // with the probe from the start, for exactly this reason; this one
+          // now matches them, and all three run for anything below the first
+          // version the merged line stamped (10).
+          if (from < 10) {
             if (native) {
-              // Only when the tables predate this upgrade. `from < 6` created
-              // them fresh from the table definitions, which already include
-              // the column.
-              if (from >= 6) {
-                await m.addColumn(appRole, appRole.allowedPages);
-                await m.addColumn(appUser, appUser.allowedPages);
+              for (final (table, column) in const [
+                ('app_role', 'allowed_pages'),
+                ('app_user', 'allowed_pages'),
+              ]) {
+                final cols = await m.database
+                    .customSelect("PRAGMA table_info('$table')")
+                    .get();
+                if (cols.any((r) => r.read<String>('name') == column)) continue;
+                if (table == 'app_role') {
+                  await m.addColumn(appRole, appRole.allowedPages);
+                } else {
+                  await m.addColumn(appUser, appUser.allowedPages);
+                }
               }
             } else {
               // Raw `IF NOT EXISTS` DDL, and the v6 arm's warning applies
@@ -951,6 +1151,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
                   'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS allowed_pages TEXT');
             }
           }
+
           // The inactivity timeout, per account. One nullable column; every
           // existing account upgrades to NULL, which is the fifteen-minute
           // default it already had.
@@ -963,7 +1164,10 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // lands its own arms around this one and renumbers it. An existence
           // check is right in every merge order; a version comparison is only
           // right in the one it was written for.
-          if (from < 8) {
+          // `from < 10` rather than `< 8`, for the reason the arm above gives:
+          // a database stamped 8 or 9 by a pre-merge build of the branch has
+          // never run this arm, and the probe makes the wider window free.
+          if (from < 10) {
             if (native) {
               final cols = await m.database
                   .customSelect("PRAGMA table_info('app_user')")
@@ -982,6 +1186,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
                   'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS inactivity_timeout_minutes INTEGER');
             }
           }
+
           // The extra roles an account holds beyond its primary one. One
           // nullable column; every existing account upgrades to NULL, which is
           // "holds only its primary role" — exactly the single-role account it
@@ -992,7 +1197,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
           // `createTable` in this same upgrade builds `app_user` from the table
           // definition, which carries this column, and a second station opening
           // the shared Postgres runs this branch too.
-          if (from < 9) {
+          if (from < 10) {
             if (native) {
               final cols = await m.database
                   .customSelect("PRAGMA table_info('app_user')")
@@ -1012,11 +1217,121 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
                   'ALTER TABLE app_user ADD COLUMN IF NOT EXISTS additional_roles TEXT');
             }
           }
+
+          // Schema v10: the relational configuration store — `config_item`
+          // holds every configuration entity as one row, `config_change` is
+          // its append-only log.
+          //
+          // Both tables go up on **both** backends now, before either holds a
+          // row. Phase 1 writes only station-scoped rows, into SQLite, and
+          // touches no Postgres read or write path at all — but the `CHECK`
+          // and the three indexes below are cheapest to add to an empty table,
+          // and an empty table is exactly what a shared Postgres has today.
+          //
+          // **The `CHECK (scope = 'shared')` is Postgres-only, and that
+          // asymmetry is the point.** The invariant it makes structural is
+          // that a `station:<hostname>` row never leaves the machine that
+          // wrote it — the rows at that scope are a station's own endpoints
+          // and its own local state, and repository code declining to write
+          // them centrally is a guarantee that lasts until somebody writes a
+          // second repository. A constraint lasts longer. The SQLite side must
+          // **not** carry it: station-scoped rows are the only rows a local
+          // file will ever hold, so the same constraint there would reject
+          // everything this phase writes.
+          //
+          // Datetimes are TEXT on both backends — `updated_at` and `at` are
+          // declared `TEXT`, not `TIMESTAMPTZ`. This database sets
+          // `DriftDatabaseOptions(storeDateTimeAsText: true)` (see the
+          // `options` override) and the root `build.yaml` sets
+          // `store_date_time_values_as_text: true`, so drift reads an ISO
+          // string out of these columns and a `TIMESTAMPTZ` would fail on the
+          // first row. Every existing Postgres arm above writes TEXT for the
+          // same reason. `docs/relational-config-research.md` §3.1 sketches
+          // `TIMESTAMPTZ`; that sketch is wrong for this database.
+          //
+          // `parent_id` carries no `REFERENCES`, deliberately — see
+          // [ConfigItemTable.parentId].
+          //
+          // `rev` is `integer()` on the drift side and `BIGINT` here: drift's
+          // postgres dialect maps `integer()` to `bigint` already, and
+          // `int64()` would change the Dart type to `BigInt`.
+          //
+          // **No test executes the Postgres arm**, exactly as the `from < 6`
+          // arm above says of its own. Phase 1 of the previous milestone
+          // recorded that gap on 2026-08-28 in
+          // `.planning/phases/01-identity-and-audit/deferred-items.md` §1 and
+          // it is still open; this phase inherits it rather than closing it.
+          // What stands behind these two statements is the source-derived
+          // column-parity test in `access_key_binding_table_test.dart`, which
+          // compares these string literals against the drift tables and
+          // nothing more — it does not connect to Postgres and cannot see a
+          // wrong type or a statement that fails at runtime. The first thing
+          // that will actually run them is a station.
+          if (from < 10) {
+            if (native) {
+              await m.createTable(configItemTable);
+              await m.createTable(configChangeTable);
+            } else {
+              // PostgreSQL: raw `IF NOT EXISTS` DDL rather than
+              // `m.createTable`, following the two arms above. Several SVN
+              // stations share one Postgres database and every one of them
+              // runs this branch when it opens, so it has to be safe to run
+              // twice — otherwise the second station aborts the migration and
+              // leaves the database half-upgraded.
+              await _createConfigTablesPostgres(m);
+            }
+            await _createConfigIndexes(m);
+          }
+
+          // Schema v11: the `config_change` NOTIFY trigger — the server half of
+          // "another station's edit arrives without a restart". v10 gave the log
+          // a place to live; this makes writing to it tell anyone listening.
+          //
+          // The arm is Postgres-only and the SQLite side is deliberately
+          // nothing at all, which is why it is one call rather than an
+          // `if (native)` pair like the two arms above: the asymmetry is the
+          // whole content of the arm, so it is stated once, in
+          // [_createConfigChangeNotifyTrigger], instead of being spread across
+          // a branch here and a comment there.
+          //
+          // No table changed, so no codegen: v11 is DDL that lives outside the
+          // drift schema entirely, the way the indexes above do.
+          if (from < 11) {
+            await _createConfigChangeNotifyTrigger(m);
+          }
+
+          // Schema v12: `idx_config_change_at`, the history page's paging
+          // index, which joined `_configIndexStatements` after v11 had
+          // already stamped databases. Re-running the (idempotent) index
+          // creation inside an earlier arm reaches no database that has
+          // passed it; a version of its own does.
+          if (from < 12) {
+            await _createConfigIndexes(m);
+          }
         },
       );
 
-  bool get native => executor is NativeDatabase;
-  bool get postgres => executor is PgDatabase;
+  /// Whether this database is Postgres.
+  ///
+  /// Read off the executor's dialect, as [native] is, and for the same
+  /// reason: `executor is PgDatabase` was false on every station, because the
+  /// app opens its database through a DriftIsolate and the executor it holds
+  /// is a remote proxy. See D-1 in `docs/relational-config-deferred-defects.md`
+  /// for the one site that read the old value and what it did there.
+  bool get postgres => executor.dialect == SqlDialect.postgres;
+
+  /// Whether this database is SQLite — the local mirror, or a test.
+  ///
+  /// Read off the executor's dialect and **not** `executor is NativeDatabase`,
+  /// which is what this was: [createLocal] opens the mirror through
+  /// `NativeDatabase.createInBackground`, whose executor is a
+  /// `DatabaseConnection` over a lazy delegate and never a `NativeDatabase`,
+  /// so the old test was false for every `config.sqlite` the app opens. The
+  /// migration arms branch on this, and the first upgrade of a local mirror
+  /// would have run the Postgres DDL against SQLite — including a
+  /// `CHECK (scope = 'shared')` that rejects every row a station owns. The
+  /// same trap [postgres] documents against itself, one dialect over.
+  bool get native => executor.dialect == SqlDialect.sqlite;
 
   /// Check if the database is reachable by running a real query.
   /// Returns false if the query fails or times out.
@@ -1218,6 +1533,59 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     throw Exception("Unable to create database");
   }
 
+  /// Factory: the device-local configuration store, `config.sqlite` in
+  /// [folder].
+  ///
+  /// This is the one construction point for the local store. Four things
+  /// about it are surprising enough to be worth stating here:
+  ///
+  /// **It is a second [AppDatabase], not a smaller purpose-built database.**
+  /// This repo generates drift monolithically, so listing [ConfigItemTable] in
+  /// a second `@DriftDatabase` would emit a second, distinct `ConfigItemRow`
+  /// class — and the Phase 2 mirror, which wants to be a row copy between two
+  /// instances of one schema, would become a field-by-field translation
+  /// between two same-named incompatible types. The cost of the choice is the
+  /// next paragraph.
+  ///
+  /// **A fresh local file runs the full `onCreate`**, so it gets ~30 tables
+  /// the station will never read locally and four rows in a local `app_role`
+  /// from `_seedAccessRoles`. That is harmless — the seed is
+  /// `onConflict: DoNothing()` and nothing reads local `app_role` — but a
+  /// reader finding those rows would reasonably conclude the access system
+  /// keeps a local copy. It does not.
+  ///
+  /// **Never point the collector at this instance.** [tableExists] queries
+  /// `information_schema`, which SQLite does not have, so it is permanently
+  /// false here and the write path would treat the database as down forever.
+  ///
+  /// **Callers hold this [AppDatabase] directly**, not through the [Database]
+  /// wrapper: the wrapper picks `spawn`/`create` on `config.postgres != null`
+  /// and passes no `sqliteFolder`, so it throws for a SQLite config.
+  static AppDatabase createLocal(Directory folder,
+      {bool logStatements = false}) {
+    final executor = NativeDatabase.createInBackground(
+      File(p.join(folder.path, 'config.sqlite')),
+      logStatements: logStatements,
+      // Runs inside the background isolate before the file is opened, which is
+      // the only place a library override can go. On the eLinux stations it is
+      // what makes sqlite3 loadable at all — see [loadSqliteOnLinux].
+      isolateSetup: loadSqliteOnLinux,
+      setup: (db) {
+        // `createInBackground` does nothing about journal mode, and in the
+        // default rollback journal a reader blocks a writer across processes
+        // (`bin/page_geometry.dart` reads this file out-of-process). WAL is
+        // durable in the file header, so setting it every open is a no-op —
+        // except on a database restored from a rollback-mode backup, which it
+        // repairs.
+        db.execute('PRAGMA journal_mode = WAL;');
+        // WAL still serialises writers. Without a timeout a concurrent write
+        // returns SQLITE_BUSY immediately instead of waiting.
+        db.execute('PRAGMA busy_timeout = 5000;');
+      },
+    );
+    return AppDatabase._(DatabaseConfig(), executor);
+  }
+
   /// Factory: creates an [AppDatabase], spawning a DriftIsolate.
   static Future<AppDatabase> spawn(DatabaseConfig config,
       {Directory? sqliteFolder}) async {
@@ -1250,6 +1618,12 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
 
         return PgDatabase.opened(pool, logStatements: config.debug);
       }, isolateSpawn: _spawnGuardedIsolate);
+      // `connect()` and never the deprecated synchronous `remote()`: the
+      // remote executor reports the server's dialect only after the
+      // isolate's handshake, which `connect()` awaits. `native` and
+      // `postgres` read that dialect, and the migration arms branch on it —
+      // a proxy that still answered "sqlite" here would run the SQLite DDL
+      // against the plant's Postgres.
       final executor = await isolate.connect();
       final db = AppDatabase._(config, executor);
       db._driftIsolate = isolate;
@@ -1835,6 +2209,30 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
     return controller.stream;
   }
 
+  /// Sends one notification on [channelName] — the writer's side of
+  /// [listenToChannel].
+  ///
+  /// Exists for the one thing a trigger cannot do: announce a write that left
+  /// no row for a trigger to fire on. `ConfigStore` uses it after a commit
+  /// that touched a history-exempt item, because those write no `config_change`
+  /// row and are therefore invisible to the `AFTER INSERT` trigger and to the
+  /// `config_change.id` watermark both.
+  ///
+  /// The channel and the payload are **bound variables**, never interpolated:
+  /// both are constructed in this tree today, and a `pg_notify` built by
+  /// string concatenation is one refactor away from being an injection.
+  ///
+  /// A no-op off Postgres, gated on `executor.dialect` rather than
+  /// [postgres] — that getter is false on every station, because the app opens
+  /// its database through [AppDatabase.spawn] and the executor is a
+  /// DriftIsolate remote. SQLite has no LISTEN/NOTIFY and the local file has
+  /// one writer, so there is nobody there to tell.
+  Future<void> notifyChannel(String channelName, String payload) async {
+    if (executor.dialect != SqlDialect.postgres) return;
+    await customStatement(
+        r'SELECT pg_notify($1, $2)', [channelName, payload]);
+  }
+
   /// Enable notifications for a table
   Future<String> enableNotificationChannel(String tableName) async {
     final channelName = 'table_${tableName}_changes';
@@ -1871,56 +2269,6 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   ''');
     } catch (e) {
       // really dont care if the trigger already exists
-      if (e.toString().contains('already exists')) {
-        return channelName;
-      }
-      rethrow;
-    }
-    return channelName;
-  }
-
-  /// Like [enableNotificationChannel], but the payload carries only the value
-  /// of [keyColumn] instead of the whole row.
-  ///
-  /// `pg_notify` payloads are capped at 8000 bytes, and the cap is enforced by
-  /// *erroring the statement that fired the trigger*. A row-payload trigger on
-  /// a table with large values — `flutter_preferences` holds the entire
-  /// `key_mappings` JSON in one row — would therefore make every save of that
-  /// row fail outright. This payload stays a few dozen bytes regardless of row
-  /// size: `{"action": TG_OP, "key": <keyColumn>}`.
-  Future<String> enableKeyedNotificationChannel(
-      String tableName, String keyColumn) async {
-    final channelName = 'table_${tableName}_key_changes';
-
-    await customStatement('''
-    CREATE OR REPLACE FUNCTION "notify_${tableName}_key_change"()
-    RETURNS TRIGGER AS \$\$
-    BEGIN
-      PERFORM pg_notify(
-        '$channelName',
-        json_build_object(
-          'action', TG_OP,
-          'key', CASE WHEN TG_OP = 'DELETE' THEN OLD."$keyColumn" ELSE NEW."$keyColumn" END
-        )::text
-      );
-      RETURN COALESCE(NEW, OLD);
-    END;
-    \$\$ LANGUAGE plpgsql;
-  ''');
-
-    await customStatement('''
-  DROP TRIGGER IF EXISTS "${tableName}_key_notify" ON "$tableName";
-  ''');
-
-    try {
-      await customStatement('''
-  CREATE TRIGGER "${tableName}_key_notify"
-  AFTER INSERT OR UPDATE OR DELETE ON "$tableName"
-  FOR EACH ROW
-  EXECUTE FUNCTION "notify_${tableName}_key_change"();
-  ''');
-    } catch (e) {
-      // Two processes racing DROP+CREATE: losing the race is fine.
       if (e.toString().contains('already exists')) {
         return channelName;
       }

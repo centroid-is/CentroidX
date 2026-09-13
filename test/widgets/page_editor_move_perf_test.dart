@@ -20,9 +20,9 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
-import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
-import 'package:shared_preferences_platform_interface/types.dart';
+import 'package:tfc_dart/core/preferences.dart' show InMemoryPreferences;
+import 'package:tfc/providers/preferences.dart'
+    show setDeviceLocalPreferencesForTest;
 
 import 'package:tfc/page_creator/assets/registry.dart';
 import 'package:tfc/pages/page_editor.dart';
@@ -39,15 +39,13 @@ bool _showsUnsaved(WidgetTester tester) =>
 
 /// In-memory preferences that count reads of the canvas config, so a test
 /// can pin that rebuilds do not re-read it.
-base class _CountingPrefs extends InMemorySharedPreferencesAsync {
-  _CountingPrefs() : super.empty();
-
+class _CountingPrefs extends InMemoryPreferences {
   int assetStackConfigReads = 0;
 
   @override
-  Future<String?> getString(String key, SharedPreferencesOptions options) {
+  Future<String?> getString(String key) {
     if (key == 'asset_stack_config') assetStackConfigReads++;
-    return super.getString(key, options);
+    return super.getString(key);
   }
 }
 
@@ -200,8 +198,12 @@ void main() {
 
   testWidgets('the canvas config is read once per mount, not per drag tick',
       (tester) async {
+    // Counting on the device-local store, which since v1.2 plan 01-05 is what
+    // the canvas reads through `localPreferencesProvider` — the platform
+    // instance below it is no longer on this path.
     final counting = _CountingPrefs();
-    SharedPreferencesAsyncPlatform.instance = counting;
+    setDeviceLocalPreferencesForTest(counting);
+    addTearDown(() => setDeviceLocalPreferencesForTest(null));
 
     await pumpEditorWith(tester, [editorBox(0.3, 0.3)]);
     await tapAsset(tester, 0.3, 0.3);

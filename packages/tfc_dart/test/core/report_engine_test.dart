@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:test/test.dart';
@@ -653,7 +655,7 @@ void main() {
   });
 
   group('ReportStore', () {
-    test('report and shift configs round-trip through flutter_preferences',
+    test('report and shift configs round-trip through the config rows',
         () async {
       final store = ReportStore(db, isPostgres: false);
       expect((await store.loadReports()).reports, isEmpty);
@@ -682,14 +684,23 @@ void main() {
       expect((await store.loadShifts()).shifts.single.name, 'Day');
     });
 
-    test('alarm meta comes from the alarm_man_config blob', () async {
+    test('alarm meta comes from the alarm_man_config row', () async {
       final store = ReportStore(db, isPostgres: false);
+      // The shared row, in the `{type, value}` envelope every preference row
+      // carries. Not `flutter_preferences`: that table is copied across once
+      // at the cutover and dropped, and a report engine still reading it
+      // would name raw uids for every alarm added since.
       await db.customStatement(
-          'INSERT INTO flutter_preferences (key, value, type) VALUES '
-          "('alarm_man_config', ?, 'String')",
+          'INSERT INTO config_item (kind, id, scope, payload, rev, '
+          'updated_at, updated_by) VALUES '
+          "('preference', 'alarm_man_config', 'shared', ?, 1, "
+          "'2026-01-01T00:00:00.000Z', 'test')",
           [
-            '{"alarms": [{"uid": "a1", "title": "Door", '
-                '"countsAsStop": false}, {"uid": "a2", "title": "Jam"}]}'
+            jsonEncode({
+              'type': 'String',
+              'value': '{"alarms": [{"uid": "a1", "title": "Door", '
+                  '"countsAsStop": false}, {"uid": "a2", "title": "Jam"}]}',
+            })
           ]);
       final meta = await store.loadAlarmMeta();
       expect(meta['a1']?.countsAsStop, isFalse);

@@ -32,6 +32,8 @@
 /// anyone can open.
 library;
 
+import 'dart:convert';
+
 import 'package:logger/logger.dart';
 import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/tfc_dart.dart'
@@ -68,7 +70,10 @@ class GuardedReportStore {
     required String station,
     void Function(AccessDenied denial)? onDenied,
     Logger? logger,
+    Future<bool> Function(String key, String json, {required String actionId})?
+        rowWriter,
   })  : _store = store,
+        _rowWriter = rowWriter,
         _session = session,
         _audit = audit,
         _station = station,
@@ -76,6 +81,16 @@ class GuardedReportStore {
         _logger = logger ?? Logger();
 
   final ReportStore _store;
+
+  /// Where a permitted save lands in the app: the shared preference store,
+  /// under this guard's own action id, so the `config_change` rows join the
+  /// `audit_entry` row [_guard] wrote. Returns whether it took the write;
+  /// `false` — no shared row store behind it, the way a test's overridden
+  /// `ReportStore` or a station whose preferences fell back to device-local
+  /// have none — and null alike fall through to [ReportStore]'s own writer,
+  /// which is where a save landed before the rows existed.
+  final Future<bool> Function(String key, String json,
+      {required String actionId})? _rowWriter;
   final AccessSession Function() _session;
   final AuditSink _audit;
   final String _station;
@@ -105,7 +120,13 @@ class GuardedReportStore {
         itemKey: ReportManConfig.configKey,
         reason: 'saveReports',
         newValue: '${config.reports.length} reports',
-        write: () => _store.saveReports(config),
+        write: (actionId) async {
+          if (await _writeRow(ReportManConfig.configKey, config.toJson(),
+              actionId: actionId)) {
+            return;
+          }
+          await _store.saveReports(config);
+        },
       );
 
   /// Saves the shift calendar. Requires [kReportConfigWriteGroup].
@@ -113,8 +134,22 @@ class GuardedReportStore {
         itemKey: ShiftManConfig.configKey,
         reason: 'saveShifts',
         newValue: '${config.shifts.length} shifts',
-        write: () => _store.saveShifts(config),
+        write: (actionId) async {
+          if (await _writeRow(ShiftManConfig.configKey, config.toJson(),
+              actionId: actionId)) {
+            return;
+          }
+          await _store.saveShifts(config);
+        },
       );
+
+  /// Whether [_rowWriter] took the write.
+  Future<bool> _writeRow(String key, Map<String, dynamic> json,
+      {required String actionId}) async {
+    final writer = _rowWriter;
+    if (writer == null) return false;
+    return writer(key, jsonEncode(json), actionId: actionId);
+  }
 
   /// Check, record, then write — the ordering `GuardedStateMan` established
   /// and `HistoryViewStore` reuses.
@@ -128,7 +163,7 @@ class GuardedReportStore {
     required String itemKey,
     required String reason,
     required String newValue,
-    required Future<void> Function() write,
+    required Future<void> Function(String actionId) write,
   }) async {
     final actionId = newActionId();
     final session = _session();
@@ -162,7 +197,7 @@ class GuardedReportStore {
       reason: reason,
       actionId: actionId,
     ));
-    return write();
+    return write(actionId);
   }
 
   AuditRecord _row({

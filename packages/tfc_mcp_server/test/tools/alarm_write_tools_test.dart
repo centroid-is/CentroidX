@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:drift/drift.dart' show Value;
+import 'package:drift/drift.dart' show Variable;
 import 'package:mcp_dart/mcp_dart.dart';
 import 'package:test/test.dart';
 
@@ -13,6 +13,7 @@ import 'package:tfc_mcp_server/src/services/config_service.dart';
 import 'package:tfc_mcp_server/src/services/proposal_service.dart';
 import 'package:tfc_mcp_server/src/tools/alarm_write_tools.dart';
 import 'package:tfc_mcp_server/src/tools/tool_registry.dart';
+import '../helpers/config_rows.dart' as rows;
 import '../helpers/mock_mcp_client.dart';
 import '../helpers/test_database.dart';
 
@@ -128,38 +129,35 @@ void main() {
     ///
     /// The `alarm` table is empty on every deployment -- nothing writes it --
     /// so seeding it would test a lookup no operator ever exercises.
-    Future<void> seedAlarms(List<Map<String, dynamic>> alarms) async {
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'alarm_man_config',
-              value: Value(jsonEncode({'alarms': alarms})),
-              type: 'String',
-            ),
-          );
-    }
+    Future<void> seedAlarms(List<Map<String, dynamic>> alarms) =>
+        rows.seedPreferenceRow(db, 'alarm_man_config', {'alarms': alarms});
 
     /// Rewrites the stored alarm config, the way accepting an edit does.
     ///
-    /// The whole `alarm_man_config` row is replaced on every save, so this is
-    /// an UPDATE where [seedAlarms] is an INSERT.
-    Future<void> reseedAlarms(List<Map<String, dynamic>> alarms) async {
-      await (db.update(db.serverFlutterPreferences)
-            ..where((t) => t.key.equals('alarm_man_config')))
-          .write(ServerFlutterPreferencesCompanion(
-        value: Value(jsonEncode({'alarms': alarms})),
-      ));
-    }
+    /// The whole `alarm_man_config` payload is replaced on every save, so this
+    /// is an UPDATE where [seedAlarms] is an INSERT.
+    Future<void> reseedAlarms(List<Map<String, dynamic>> alarms) =>
+        db.customStatement(
+          'UPDATE config_item SET payload = ? '
+          'WHERE kind = ? AND id = ? AND scope = ?',
+          [
+            // The envelope production writes — see `seedPreferenceRow`.
+            jsonEncode({
+              'type': 'String',
+              'value': jsonEncode({'alarms': alarms}),
+            }),
+            'preference',
+            'alarm_man_config',
+            'shared',
+          ],
+        );
 
-    /// Seeds page config so an alarm can have a beacon pointing at it.
-    Future<void> seedPages(Map<String, dynamic> pages) async {
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'page_editor_data',
-              value: Value(jsonEncode(pages)),
-              type: 'String',
-            ),
-          );
-    }
+    /// Seeds page rows so an alarm can have a beacon pointing at it.
+    ///
+    /// [pages] is keyed by page id and the beacons live in each page's
+    /// `assets` list, which the seed splits into rows the way a save does.
+    Future<void> seedPages(Map<String, Map<String, dynamic>> pages) =>
+        rows.seedPages(db, pages);
 
     Map<String, dynamic> alarmJson({
       required String uid,
@@ -184,12 +182,22 @@ void main() {
 
     /// Reads back the stored alarm config, to prove a tool did not write it.
     Future<List<dynamic>> storedAlarms() async {
-      final query = db.select(db.serverFlutterPreferences)
-        ..where((t) => t.key.equals('alarm_man_config'));
-      final rows = await query.get();
-      if (rows.isEmpty) return const [];
-      return (jsonDecode(rows.first.value!) as Map<String, dynamic>)['alarms']
-          as List<dynamic>;
+      final found = await db.customSelect(
+        'SELECT payload FROM config_item '
+        'WHERE kind = ? AND id = ? AND scope = ?',
+        variables: [
+          Variable.withString('preference'),
+          Variable.withString('alarm_man_config'),
+          Variable.withString('shared'),
+        ],
+      ).get();
+      if (found.isEmpty) return const [];
+      // The row is the `{type, value}` envelope; the document is its value.
+      final envelope =
+          jsonDecode(found.first.read<String>('payload')) as Map<String, dynamic>;
+      final payload =
+          jsonDecode(envelope['value'] as String) as Map<String, dynamic>;
+      return payload['alarms'] as List<dynamic>;
     }
 
     tearDown(() async {
@@ -937,7 +945,8 @@ void main() {
         await setupWithCapturingGate((_) {});
         await seedDuplicatePair();
         await seedPages({
-          'Home': {
+          'page-home': {
+            'menu_item': {'label': 'Home', 'path': 'Home'},
             'assets': [
               {
                 'asset_name': 'AlarmVisibilityConfig',

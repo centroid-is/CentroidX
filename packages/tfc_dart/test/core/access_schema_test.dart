@@ -84,10 +84,15 @@ void main() {
     // `access_key_binding` (`access_template_table_test.dart`) and
     // `app_user.station_account` (`station_account_column_test.dart`) all
     // arrive in the same v6 arm this suite covers.
-    test('schema version is 7', () async {
+    test('schema version is at least 6', () async {
       final db = AppDatabase.inMemoryForTest();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 9);
+      // At least, not exactly. What this suite cares about is that the access
+      // tables arrived in the `from < 6` arm and that the arm therefore runs
+      // for anything older; the current number is owned by
+      // `database_migration_test.dart`, which is where a bump is asserted
+      // rather than merely tolerated.
+      expect(db.schemaVersion, greaterThanOrEqualTo(6));
     });
 
     test('seeds exactly four roles', () async {
@@ -297,10 +302,11 @@ void main() {
 
       final row =
           await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 9,
+      expect(row.read<int>('user_version'), db.schemaVersion,
           reason: 'a v5 database opens straight to the current version — '
-              'onUpgrade(5, 9) runs the access branch and then the '
-              'page-whitelist branch');
+              'onUpgrade(5, current) runs the access branch, which is the '
+              'whole of the milestone this suite covers, and every arm added '
+              'since');
     });
   });
 
@@ -546,16 +552,65 @@ void main() {
               'spelled — it is not "sees every page"');
     });
 
-    test('carries on to the current schema version', () async {
+    test('leaves schema version at the current one', () async {
       await makeV6Database();
       final db = await reopen();
       addTearDown(() => db.close());
 
       final row = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 9);
+      // The current version, not 7: the later arms (through the config
+      // store's v10–v12) run in the same open, and the number they leave
+      // behind is theirs to own.
+      expect(row.read<int>('user_version'), db.schemaVersion);
     });
 
-    test('a v5 database upgrades in one open, with both columns', () async {
+    test('a database stamped 7 or 8 by a pre-merge build of the config '
+        'branch — config tables present, main\'s columns absent — heals',
+        () async {
+      // The renumbering: the relational-config branch shipped its tables as
+      // v7 and its trigger as v8 before main took those numbers for
+      // allowed_pages, inactivity_timeout_minutes and additional_roles. A
+      // database such a build stamped opens at 7 or 8 with none of the
+      // three columns, and a version-guarded arm would skip every one of
+      // them forever. The arms probe for their columns instead.
+      for (final stamped in [7, 8]) {
+        final db = AppDatabase.forTest(
+          DatabaseConfig(),
+          NativeDatabase(dbFile, logStatements: false),
+        );
+        await db.customSelect('SELECT 1').getSingle();
+        await db.customStatement(
+            'ALTER TABLE app_role DROP COLUMN allowed_pages');
+        await db.customStatement(
+            'ALTER TABLE app_user DROP COLUMN allowed_pages');
+        await db.customStatement(
+            'ALTER TABLE app_user DROP COLUMN inactivity_timeout_minutes');
+        await db.customStatement(
+            'ALTER TABLE app_user DROP COLUMN additional_roles');
+        await db.customStatement('PRAGMA user_version = $stamped');
+        await db.close();
+
+        final upgraded = await reopen();
+        expect(await columnNames(upgraded, 'app_role'),
+            contains('allowed_pages'),
+            reason: 'stamped $stamped');
+        expect(
+            await columnNames(upgraded, 'app_user'),
+            containsAll([
+              'allowed_pages',
+              'inactivity_timeout_minutes',
+              'additional_roles',
+            ]),
+            reason: 'stamped $stamped');
+        final row =
+            await upgraded.customSelect('PRAGMA user_version').getSingle();
+        expect(row.read<int>('user_version'), upgraded.schemaVersion);
+        await upgraded.close();
+      }
+    });
+
+    test('a v5 database reaches the current version in one open, with both '
+        'columns', () async {
       // The `from < 6` arm creates the tables from the current definitions,
       // which already carry the column — so the `from < 7` arm must NOT try to
       // add it again. This is the case the `from >= 6` guard exists for; drop
@@ -580,7 +635,7 @@ void main() {
           contains('allowed_pages'));
       final row =
           await upgraded.customSelect('PRAGMA user_version').getSingle();
-      expect(row.read<int>('user_version'), 9);
+      expect(row.read<int>('user_version'), upgraded.schemaVersion);
     });
   });
 
@@ -589,7 +644,7 @@ void main() {
   // the three ways it can already be there: never (a v7 database), from the v6
   // arm's createTable in the same open (a v5 database), and from a previous
   // run (the version rewound over a table that already has it).
-  group('v7 -> v8 upgrade', () {
+  group('the per-account inactivity timeout arm', () {
     late Directory tempDir;
     late File dbFile;
 
@@ -644,7 +699,7 @@ void main() {
 
       expect(await columnNames(db, 'app_user'),
           contains('inactivity_timeout_minutes'));
-      expect(await userVersion(db), 9);
+      expect(await userVersion(db), db.schemaVersion);
     });
 
     test('a carried-over account upgrades to NULL — the default, not "never"',
@@ -670,12 +725,12 @@ void main() {
 
       expect(await columnNames(db, 'app_user'),
           contains('inactivity_timeout_minutes'));
-      expect(await userVersion(db), 9);
+      expect(await userVersion(db), db.schemaVersion);
     });
 
     test('a v5 database reaches the current version in one open', () async {
       // The v6 arm creates app_user from the current definition, which already
-      // carries the column; the v8 arm must see it and add nothing.
+      // carries the column; the timeout arm must see it and add nothing.
       final db = await reopen();
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
@@ -688,7 +743,7 @@ void main() {
 
       expect(await columnNames(upgraded, 'app_user'),
           contains('inactivity_timeout_minutes'));
-      expect(await userVersion(upgraded), 9);
+      expect(await userVersion(upgraded), upgraded.schemaVersion);
     });
 
     test('the Postgres arm adds the column idempotently', () {
@@ -759,7 +814,7 @@ void main() {
       addTearDown(() => db.close());
 
       expect(await columnNames(db, 'app_user'), contains('additional_roles'));
-      expect(await userVersion(db), 9);
+      expect(await userVersion(db), db.schemaVersion);
     });
 
     test('a carried-over account upgrades to NULL — one role, as it was',
@@ -785,10 +840,10 @@ void main() {
       addTearDown(() => db.close());
 
       expect(await columnNames(db, 'app_user'), contains('additional_roles'));
-      expect(await userVersion(db), 9);
+      expect(await userVersion(db), db.schemaVersion);
     });
 
-    test('a v5 database reaches v9 in one open', () async {
+    test('a v5 database reaches the current version in one open', () async {
       final db = await reopen();
       await db.customStatement('DROP TABLE audit_entry');
       await db.customStatement('DROP TABLE app_user');
@@ -801,7 +856,7 @@ void main() {
 
       expect(await columnNames(upgraded, 'app_user'),
           contains('additional_roles'));
-      expect(await userVersion(upgraded), 9);
+      expect(await userVersion(upgraded), upgraded.schemaVersion);
     });
 
     test('the Postgres arm adds the column idempotently', () {
@@ -900,9 +955,13 @@ void main() {
     });
 
     test('the seed needs no schema version of its own', () async {
+      // Main shipped the seed at 9 and the config branch carries 12; the
+      // seed added an arm to neither. Pinned to the number the branch owns
+      // rather than to `db.schemaVersion`, because a seed that quietly took
+      // an arm would move that too.
       final db = await open();
       addTearDown(() => db.close());
-      expect(db.schemaVersion, 9);
+      expect(db.schemaVersion, 12);
     });
   });
 

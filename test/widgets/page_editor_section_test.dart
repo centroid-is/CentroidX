@@ -37,6 +37,8 @@ import 'package:tfc/providers/database.dart';
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc/route_registry.dart';
 import 'package:tfc/widgets/panes/standard_dialog.dart';
+import '../helpers/test_helpers.dart' show useInMemoryDeviceLocalPreferences;
+import 'package:tfc/providers/web_view_prewarm.dart';
 
 /// Minimal in-memory [PreferencesApi] so the editor can load and save.
 class _FakePreferences implements PreferencesApi {
@@ -120,6 +122,10 @@ Widget _buildEditor(PageManager manager) {
   return ProviderScope(
     overrides: [
       pageManagerProvider.overrideWith((ref) async => manager),
+      // Browsers are not warmed under a test: the prewarm waits on the page
+      // manager and then on a two-second timer, which every page-editor test
+      // would otherwise leave pending at teardown (#520).
+      webViewPrewarmProvider.overrideWithValue(0),
       // Keep the editor off the database / PLC / alarm stack: BaseScaffold
       // only needs these to decide between the clock and the alarm banner.
       databaseProvider.overrideWith((ref) async => null),
@@ -175,6 +181,7 @@ void main() {
   setUpAll(_loadMaterialIcons);
 
   setUp(() {
+    useInMemoryDeviceLocalPreferences();
     // The asset canvas constructs SharedPreferencesAsync directly.
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();

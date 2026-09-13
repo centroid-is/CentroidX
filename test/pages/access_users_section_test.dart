@@ -57,6 +57,7 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 import 'package:tfc_dart/core/access/local_auth_provider.dart';
 import 'package:tfc_dart/core/database.dart';
 import 'package:tfc_dart/core/database_drift.dart';
+import '../helpers/test_helpers.dart';
 
 // ---------------------------------------------------------------------------
 // Doubles
@@ -286,6 +287,10 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     SharedPreferencesAsyncPlatform.instance =
         InMemorySharedPreferencesAsync.empty();
+    // The session controller reads the device-local store on build; the
+    // anonymous-account tests read the real controller, and a process with
+    // no device-local store open throws there.
+    useInMemoryDeviceLocalPreferences();
     DatabaseConfig.clearPrefsCache();
     // A production-strength derivation is the better part of a second per
     // account, and nearly every test here creates real rows. The one test that

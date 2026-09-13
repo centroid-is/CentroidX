@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:drift/drift.dart' hide isNotNull, isNull;
@@ -12,6 +11,7 @@ import '../helpers/mock_alarm_reader.dart';
 import '../helpers/mock_mcp_client.dart';
 import '../helpers/mock_state_reader.dart';
 import '../helpers/mock_tech_doc_index.dart';
+import '../helpers/config_rows.dart';
 
 void main() {
   group('diagnose_equipment prompt', () {
@@ -57,29 +57,23 @@ void main() {
       stateReader.setValue('pump3.temperature', 82.5);
       stateReader.setValue('conveyor.speed', 3.2);
 
-      // Definitions the prompt reads, from the preference AlarmMan uses.
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'alarm_man_config',
-              value: Value(jsonEncode({
-                'alarms': [
-                  {
-                    'uid': 'alarm-1',
-                    'title': 'Pump 3 Overcurrent',
-                    'description': 'Current exceeds 15A threshold',
-                    'rules': [],
-                  },
-                  {
-                    'uid': 'alarm-2',
-                    'title': 'Pump 3 Over Temperature',
-                    'description': 'Temperature exceeds 90C',
-                    'rules': [],
-                  },
-                ],
-              })),
-              type: 'String',
-            ),
-          );
+      // Definitions the prompt reads, from the row AlarmMan's config lives in.
+      await seedPreferenceRow(db, 'alarm_man_config', {
+        'alarms': [
+          {
+            'uid': 'alarm-1',
+            'title': 'Pump 3 Overcurrent',
+            'description': 'Current exceeds 15A threshold',
+            'rules': [],
+          },
+          {
+            'uid': 'alarm-2',
+            'title': 'Pump 3 Over Temperature',
+            'description': 'Temperature exceeds 90C',
+            'rules': [],
+          },
+        ],
+      });
 
       // The same alarms as table rows: alarm_history has a foreign key onto
       // alarm(uid), so the history seeded below will not insert without them.
@@ -122,21 +116,17 @@ void main() {
             ),
           );
 
-      // Seed page_editor_data in flutter_preferences for asset lookup
-      final pageEditorData = {
-        'pump3': {
+      // The page row the asset lookup answers from. The pages map is keyed
+      // by the path in the payload, so the path here is what the prompt looks
+      // the panel up by.
+      await seedPages(db, {
+        'page-pump3': {
           'key': 'pump3',
           'title': 'Pump 3 Control Panel',
           'description': 'Main circulation pump',
+          'menu_item': {'label': 'Pump 3', 'path': 'pump3'},
         },
-      };
-      await db.into(db.serverFlutterPreferences).insert(
-            ServerFlutterPreferencesCompanion.insert(
-              key: 'page_editor_data',
-              value: Value(jsonEncode(pageEditorData)),
-              type: 'String',
-            ),
-          );
+      });
 
       server = TfcMcpServer(
         database: db,
