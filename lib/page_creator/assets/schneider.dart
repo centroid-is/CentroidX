@@ -8,6 +8,8 @@ import 'package:open62541/open62541.dart'
     show AttributeId, DynamicValue, LocalizedText, NodeId;
 
 import 'common.dart';
+import 'ethercat_asset.dart';
+import 'link_anchors.dart' show NetworkPort;
 import '../../widgets/panes/pane_chrome.dart';
 import '../../widgets/panes/side_pane.dart';
 import '../../painter/schneider/atv320.dart';
@@ -20,9 +22,25 @@ import '../../widgets/tag_access_guard.dart';
 part 'schneider.g.dart';
 
 @JsonSerializable(explicitToJson: true)
-class SchneiderATV320Config extends BaseAsset {
+class SchneiderATV320Config extends EtherCatAsset {
   @override
   String get displayName => 'Schneider ATV320';
+
+  /// The drive label is the CVS/SPB identifier on the plant pages, line break
+  /// and all; bind-by-name normalises the whitespace away.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  String get ecName =>
+      (label?.isNotEmpty ?? false) ? label! : (text ?? '');
+
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<NetworkPort> get networkPorts => kAtv320Ports;
+
+  /// The PLC model strings this part answers to.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  List<String> get ecModels => const ['ATV320 EtherCAT'];
   @override
   String get category => 'Schneider Devices';
 

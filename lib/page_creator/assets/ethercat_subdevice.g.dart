@@ -6,6 +6,22 @@ part of 'ethercat_subdevice.dart';
 // JsonSerializableGenerator
 // **************************************************************************
 
+EcSubDeviceBinding _$EcSubDeviceBindingFromJson(Map<String, dynamic> json) =>
+    EcSubDeviceBinding(
+      diagKey: json['diagKey'] as String? ?? '',
+      infoKey: json['infoKey'] as String? ?? '',
+      position: (json['position'] as num?)?.toInt() ?? 0,
+      name: json['name'] as String?,
+    );
+
+Map<String, dynamic> _$EcSubDeviceBindingToJson(EcSubDeviceBinding instance) =>
+    <String, dynamic>{
+      'diagKey': instance.diagKey,
+      'infoKey': instance.infoKey,
+      'position': instance.position,
+      if (instance.name case final value?) 'name': value,
+    };
+
 EcBusConfig _$EcBusConfigFromJson(Map<String, dynamic> json) => EcBusConfig(
       label: json['label'] as String? ?? '',
       diagKey: json['diagKey'] as String? ?? '',

@@ -180,6 +180,13 @@ class LocalAuthProvider implements AuthProvider, PasswordSelfService {
     return AuthenticatedUser(
       username: row.username,
       roleName: row.roleName,
+      // Carried across unchecked, on purpose. The primary role above is
+      // verified to exist because a session resolved against a missing one has
+      // an undefined group set; an *extra* role that has gone simply grants
+      // nothing when the session builder unions the roles it can read, which
+      // narrows. Refusing the login over it would lock somebody out of the
+      // panel because a role they also held was deleted.
+      additionalRoles: decodeAdditionalRoles(row.additionalRoles),
       stationAccount: row.stationAccount,
     );
   }

@@ -22,6 +22,8 @@ void DartLiveness::EpochStarted(long long epoch, unsigned long long now_ms) {
   ever_stamped_ = false;
   silent_ = false;
   last_ = DartLivenessStamp();
+  raster_failures_ = 0;
+  raster_lost_ = false;
 }
 
 DartLiveness::Decision DartLiveness::Snapshot(Verdict verdict,
@@ -33,6 +35,7 @@ DartLiveness::Decision DartLiveness::Snapshot(Verdict verdict,
   decision.silence_ms = now_ms > reference ? now_ms - reference : 0;
   decision.last = last_;
   decision.ever_stamped = ever_stamped_;
+  decision.raster_failures = raster_failures_;
   return decision;
 }
 
@@ -68,6 +71,28 @@ DartLiveness::Decision DartLiveness::OnStamp(const DartLivenessStamp& stamp,
             : (was_silent ? Verdict::kRecovered : Verdict::kNothingToSay),
       now_ms);
   decision.silence_ms = closed_gap;
+
+  // The raster verdict. Only a stamp that actually probed moves it: an older
+  // Dart build, or a probe that could not be run, leaves the count where it
+  // was rather than resetting it -- "unknown" must neither clear a real run
+  // of failures nor add to it.
+  if (stamp.raster_probed) {
+    if (stamp.raster_ok) {
+      if (raster_lost_) {
+        decision.raster_recovered = true;
+      }
+      raster_failures_ = 0;
+      raster_lost_ = false;
+    } else {
+      raster_failures_++;
+      if (!raster_lost_ && config_.raster_failures_before_loss > 0 &&
+          raster_failures_ >= config_.raster_failures_before_loss) {
+        raster_lost_ = true;
+        decision.raster_lost = true;
+      }
+    }
+    decision.raster_failures = raster_failures_;
+  }
   return decision;
 }
 
@@ -150,6 +175,33 @@ std::string DescribeLiveness(const DartLiveness::Decision& decision,
              "stamp has arrived at all. Dart main() did not reach the point "
              "where it arms its timer -- the engine started but the app did "
              "not.";
+  }
+  return std::string();
+}
+
+std::string DescribeRaster(const DartLiveness::Decision& decision,
+                           const DartLiveness::Config& config) {
+  const DartLivenessStamp& stamp = decision.last;
+  if (decision.raster_lost) {
+    return "the engine CANNOT RASTERISE: " +
+           std::to_string(decision.raster_failures) +
+           " consecutive liveness stamps (" +
+           Seconds(static_cast<unsigned long long>(decision.raster_failures) *
+                   config.expected_interval_ms) +
+           " s) reported that a 1 x 1 snapshot came back empty or did not "
+           "come back at all, while the UI isolate itself is alive (epoch " +
+           std::to_string(stamp.epoch) + ", tick " +
+           std::to_string(stamp.ticks) + ", " + std::to_string(stamp.frames) +
+           " frame(s) it built since the last stamp that nobody could see). "
+           "This is the 2026-09-12 freeze: the next-frame probe is answered, "
+           "the sentinel adapter is healthy and the engine writes no errors. "
+           "Declaring the renderer lost.";
+  }
+  if (decision.raster_recovered) {
+    return "the engine is rasterising again on its own (epoch " +
+           std::to_string(stamp.epoch) + ", tick " +
+           std::to_string(stamp.ticks) +
+           ") -- the raster loss reported above has ENDED without a rebuild";
   }
   return std::string();
 }

@@ -85,10 +85,15 @@ class _RecordingRepository extends AccessRepository {
     required String username,
     required String password,
     required String roleName,
+    List<String> additionalRoles = const <String>[],
   }) {
     calls.add('createUser:$username');
-    return super
-        .createUser(username: username, password: password, roleName: roleName);
+    return super.createUser(
+      username: username,
+      password: password,
+      roleName: roleName,
+      additionalRoles: additionalRoles,
+    );
   }
 
   @override
@@ -98,9 +103,9 @@ class _RecordingRepository extends AccessRepository {
   }
 
   @override
-  Future<void> setRole(String username, String roleName) {
-    calls.add('setRole:$username->$roleName');
-    return super.setRole(username, roleName);
+  Future<void> setRoles(String username, List<String> roleNames) {
+    calls.add('setRole:$username->${roleNames.join('+')}');
+    return super.setRoles(username, roleNames);
   }
 
   @override

@@ -86,8 +86,9 @@ class AssetTypeInfo {
 class AssetTypeCatalog {
   AssetTypeCatalog._();
 
-  /// All registered asset types, ordered by category then display name.
-  static const List<AssetTypeInfo> all = [
+  /// The asset types as written below, before the shared properties that a
+  /// whole family of them carries are added (see [all]).
+  static const List<AssetTypeInfo> _declared = [
     // ── Basic Indicators ──────────────────────────────────────────────
     AssetTypeInfo(
       assetName: 'LEDConfig',
@@ -1570,6 +1571,52 @@ class AssetTypeCatalog {
             description: 'Initial page number to display (1-based)'),
       ],
     ),
+  ];
+
+  /// The asset types that extend `EtherCatAsset` in the HMI: one EtherCAT
+  /// subdevice each, so each carries the [ecSubDeviceProperty] binding.
+  static const Set<String> etherCatAssetTypes = {
+    'BeckhoffEK1100Config',
+    'BeckhoffEK1110Config',
+    'BeckhoffEL1008Config',
+    'BeckhoffEL2008Config',
+    'BeckhoffEL3054Config',
+    'BeckhoffEL9222Config',
+    'BeckhoffEL2912Config',
+    'BeckhoffEL6070Config',
+    'BeckhoffPS2001Config',
+    'BeckhoffCU2508Config',
+    'BeckhoffEPBoxConfig',
+    'SchneiderATV320Config',
+    'FestoVTUGConfig',
+  };
+
+  /// The binding every EtherCAT device shares, described once.
+  static const AssetPropertyInfo ecSubDeviceProperty = AssetPropertyInfo(
+    name: 'ecSubDevice',
+    type: '{diagKey, infoKey, position, name?}',
+    description: 'Which EtherCAT subdevice this device is, so cables plugged into '
+        'its ports A-D take their colour from the PLC. diagKey / infoKey: the '
+        'key mappings of the master\'s ECT_Diag.Device_<n>_Diag and '
+        'Device_<n>_SlaveInfo arrays. position: 1-based subdevice index in them. '
+        'name: the subdevice\'s p_stat_sName without its "(model)" suffix, e.g. '
+        '"CVS01.CN01.FD01"; when set it wins over position, so the binding '
+        'survives subdevices being added upstream. Omit to leave the device '
+        'unbound. The page editor can bind a whole page by name.',
+  );
+
+  /// All registered asset types, ordered by category then display name.
+  static final List<AssetTypeInfo> all = [
+    for (final t in _declared)
+      etherCatAssetTypes.contains(t.assetName)
+          ? AssetTypeInfo(
+              assetName: t.assetName,
+              displayName: t.displayName,
+              category: t.category,
+              description: t.description,
+              properties: [...t.properties, ecSubDeviceProperty],
+            )
+          : t,
   ];
 
   /// All distinct category names, sorted alphabetically.

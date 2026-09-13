@@ -206,6 +206,61 @@ void main() {
     });
   });
 
+  group('binding', () {
+    final bus = EcBus.fromValues('D',
+        info: array([
+          info('A (X)', addr: 1001),
+          info('B (X)', addr: 1002, prev: 1001),
+          info('C (X)', addr: 1003, prev: 1002),
+        ]));
+
+    test('resolves by name first, then by position', () {
+      expect(
+          EcSubDeviceBinding(diagKey: 'd', position: 1, name: 'c')
+              .resolve(bus)!
+              .label,
+          'C');
+      expect(EcSubDeviceBinding(diagKey: 'd', position: 2).resolve(bus)!.label,
+          'B');
+    });
+
+    test('a name that is no longer there falls back to the position', () {
+      expect(
+          EcSubDeviceBinding(diagKey: 'd', position: 2, name: 'gone')
+              .resolve(bus)!
+              .label,
+          'B');
+    });
+
+    test('drifted when the name has moved since it was bound', () {
+      // A subdevice inserted upstream shifts every position after it.
+      expect(EcSubDeviceBinding(diagKey: 'd', position: 1, name: 'C').drifted(bus),
+          isTrue);
+      expect(EcSubDeviceBinding(diagKey: 'd', position: 3, name: 'C').drifted(bus),
+          isFalse);
+    });
+
+    test('bound needs the array, and a position or a name', () {
+      expect(EcSubDeviceBinding(diagKey: 'd', name: 'C').isBound, isTrue);
+      expect(EcSubDeviceBinding(diagKey: 'd').isBound, isFalse);
+      expect(EcSubDeviceBinding(position: 3).isBound, isFalse);
+      expect(EcSubDeviceBinding().isEmpty, isTrue);
+    });
+
+    test('round-trips through JSON, leaving an absent name absent', () {
+      final json = EcSubDeviceBinding(diagKey: 'd', infoKey: 'i', position: 17)
+          .toJson();
+      expect(json.containsKey('name'), isFalse);
+      final b = EcSubDeviceBinding.fromJson(json);
+      expect(b.position, 17);
+      expect(b.keys, ['d', 'i']);
+    });
+
+    test('names compare without whitespace or case', () {
+      expect(normaliseEcName('CVS01.\nCN01.fd01'), 'CVS01.CN01.FD01');
+    });
+  });
+
   group('master config', () {
     test('round-trips through JSON, leaving an absent count key absent', () {
       final json = EcBusConfig(label: 'Device 1', diagKey: 'd', infoKey: 'i')

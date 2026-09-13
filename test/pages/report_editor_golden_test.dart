@@ -29,6 +29,7 @@ import 'package:tfc_access/tfc_access.dart';
 import 'package:tfc_dart/core/state_man.dart';
 import 'package:tfc_dart/tfc_dart.dart' hide KeyMappings, StateMan;
 
+import '../helpers/golden_platform.dart';
 import '../helpers/golden_tolerance.dart';
 
 class _Db extends AppDatabase {
@@ -274,7 +275,7 @@ void main() {
   final goldenClock = Clock.fixed(DateTime(2026, 9, 1, 12, 20));
 
   group('report editor goldens',
-      skip: !Platform.isMacOS ? 'Golden tests only run on macOS' : null, () {
+      skip: goldenSkip, () {
     testWidgets('shift calendar and expanded report — light',
         (tester) => withClock(goldenClock, () async {
               await pump(tester, dark: false);

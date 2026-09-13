@@ -460,7 +460,26 @@ class Collector {
         streamController.add(history.toList());
       } catch (e) {
         logger.e('Failed to load historical data for key $key: $e');
-        if (!streamController.isClosed) streamController.addError(e);
+        if (cancelled || streamController.isClosed) return;
+        // Open the gate anyway.
+        //
+        // The live listener above holds every sample back until
+        // `historicalData` is non-null, so a history query that never
+        // succeeds meant live samples were buffered for a backfill that was
+        // never coming: the chart showed the error and then never moved
+        // again, however healthy the subscription behind it was. It also
+        // grew `buffer` without bound -- on a 2 Hz key, for as long as the
+        // stream lived.
+        //
+        // An empty window is the honest starting point: no stored history,
+        // and everything from now on. The error still goes out first, so a
+        // key that is genuinely dead says why instead of sitting on a
+        // spinner.
+        final opened = Queue<TimeseriesData<dynamic>>.from(buffer);
+        buffer.clear();
+        historicalData = opened;
+        streamController.addError(e);
+        if (opened.isNotEmpty) streamController.add(opened.toList());
       }
     };
 

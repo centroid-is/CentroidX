@@ -11,8 +11,13 @@
 /// mode is the state the screen already had and the access-admin goldens
 /// already show it.
 ///
-/// To update: flutter test test/widgets/access_pages_editor_test.dart --update-goldens
-@Tags(['golden'])
+/// To update: scripts/goldens.sh --update test/widgets/access_pages_editor_test.dart
+///
+/// The file carries no library-level `@Tags(['golden'])`. It used to, and that
+/// tag skipped the whole file — twelve behavioural tests included — on every
+/// platform but Linux, so the rules this widget exists to enforce were checked
+/// nowhere a developer works. Only the goldens need Linux, so only the golden
+/// group carries [goldenSkip], which is what that helper is for.
 library;
 
 import 'dart:io' show File, Platform;
@@ -23,10 +28,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tfc/models/menu_item.dart';
 import 'package:tfc/page_creator/page.dart';
+import 'package:tfc/providers/menu.dart';
 import 'package:tfc/providers/page_manager.dart';
 import 'package:tfc_dart/core/preferences.dart' show PreferencesApi;
 import 'package:tfc/theme.dart' show muted;
 import 'package:tfc/widgets/access_pages_editor.dart';
+
+import '../helpers/golden_platform.dart';
 
 /// A published page at [path].
 AssetPage _page(String label, String path, {List<MenuItem> children = const []}) =>
@@ -54,6 +62,37 @@ class _NullPrefs implements PreferencesApi {
   dynamic noSuchMethod(Invocation invocation) => null;
 }
 
+/// The app shell's composition, in miniature: the plant's pages, one top-level
+/// built-in, and an Advanced section holding a raised route and the access
+/// screen.
+///
+/// The real `buildTopLevelMenuItems` is not used because it lives in the app
+/// shell package, which this one does not depend on — but the *shape* is what
+/// the picker has to get right, so the shape is what is reproduced: a section
+/// with children, one entry inside it that `kRaisedRoutes` raises, and
+/// `/advanced/access`, which is never offered.
+List<MenuItem> _compose(PageManager manager) => [
+      ...manager.getRootMenuItems(),
+      const MenuItem(
+          label: 'Alarm View', path: '/alarm-view', icon: Icons.alarm),
+      const MenuItem(
+        label: 'Advanced',
+        path: '/advanced',
+        icon: Icons.settings,
+        isSection: true,
+        children: [
+          MenuItem(
+              label: 'Page Editor',
+              path: '/advanced/page-editor',
+              icon: Icons.edit),
+          MenuItem(
+              label: 'Access',
+              path: '/advanced/access',
+              icon: Icons.manage_accounts),
+        ],
+      ),
+    ];
+
 Widget _host({
   required ThemeData theme,
   required AccessPagesLevel level,
@@ -64,6 +103,9 @@ Widget _host({
   return ProviderScope(
     overrides: [
       bootstrapPageManagerProvider.overrideWithValue(manager ?? _plant()),
+      // The picker reads the whole navigation tree, so the test has to compose
+      // one — the same hook `main()` overrides.
+      menuComposerProvider.overrideWithValue(_compose),
     ],
     child: MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -210,7 +252,7 @@ void main() {
       expect(latest, isEmpty);
     });
 
-    testWidgets('every published page is offered, and only pages',
+    testWidgets('every destination is offered — built-ins included',
         (tester) async {
       await tester.pumpWidget(_host(
         theme: ThemeData.light(),
@@ -220,14 +262,93 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      for (final path in ['/', '/fillet', '/packing']) {
+      // The plant's pages, the top-level built-in, and the raised route under
+      // Advanced. The last one is the bug this list grew for: the menu filter
+      // has always hidden built-ins from a whitelisted session, so a picker
+      // that offered only page-manager pages could not grant them back.
+      for (final path in [
+        '/',
+        '/fillet',
+        '/packing',
+        '/alarm-view',
+        '/advanced/page-editor',
+      ]) {
         expect(find.byKey(kAccessPagesRowKey('Operator', path)), findsOneWidget,
             reason: '$path should be offered');
       }
-      // The Advanced routes answer to groups alone and are not whitelistable,
-      // so offering them would imply a control that does not exist.
+    });
+
+    testWidgets('the access screen is never offered', (tester) async {
+      await tester.pumpWidget(_host(
+        theme: ThemeData.light(),
+        level: AccessPagesLevel.role,
+        selection: const <String>{},
+        onChanged: (_) {},
+      ));
+      await tester.pumpAndSettle();
+
+      // No whitelist state may hide it, so there is nothing to grant and a
+      // tick box would be a control that does nothing. It is also the layer
+      // that stops a bad whitelist becoming a station nobody can repair.
       expect(find.byKey(kAccessPagesRowKey('Operator', '/advanced/access')),
           findsNothing);
+    });
+
+    testWidgets('a section is a heading, not a tick box', (tester) async {
+      await tester.pumpWidget(_host(
+        theme: ThemeData.light(),
+        level: AccessPagesLevel.role,
+        selection: const <String>{},
+        onChanged: (_) {},
+      ));
+      await tester.pumpAndSettle();
+
+      // A section is not a route, so a tick on one would have to mean "and its
+      // children" — an inheritance rule evaluated against a stale copy of the
+      // tree shape. It renders as a heading over the leaves instead.
+      expect(find.byKey(kAccessPagesSectionKey('Operator', 'Advanced')),
+          findsOneWidget);
+      expect(find.byKey(kAccessPagesRowKey('Operator', '/advanced')),
+          findsNothing);
+    });
+
+    testWidgets('a raised route says which group it still needs',
+        (tester) async {
+      await tester.pumpWidget(_host(
+        theme: ThemeData.light(),
+        level: AccessPagesLevel.role,
+        selection: const <String>{},
+        onChanged: (_) {},
+      ));
+      await tester.pumpAndSettle();
+
+      // The whitelist narrows and never grants: ticking the page editor for a
+      // role without `configure` leaves it shut, and the row says so rather
+      // than letting somebody find out on the floor.
+      expect(
+        find.text('/advanced/page-editor  ·  needs Configure'),
+        findsOneWidget,
+      );
+      // An unraised page carries no such note — `operate` is what every
+      // undeclared route resolves to and says nothing worth a line.
+      expect(find.text('/fillet'), findsOneWidget);
+    });
+
+    testWidgets('a built-in can be ticked like any other page', (tester) async {
+      Set<String>? latest;
+      await tester.pumpWidget(_host(
+        theme: ThemeData.light(),
+        level: AccessPagesLevel.role,
+        selection: const {'/'},
+        onChanged: (next) => latest = next,
+      ));
+      await tester.pumpAndSettle();
+
+      await tester
+          .tap(find.byKey(kAccessPagesRowKey('Operator', '/alarm-view')));
+      await tester.pumpAndSettle();
+
+      expect(latest, {'/', '/alarm-view'});
     });
   });
 
@@ -282,7 +403,7 @@ void main() {
     });
   });
 
-  group('goldens', () {
+  group('goldens', skip: goldenSkip, () {
     setUpAll(_loadRealFonts);
 
     final (light, dark) = muted();

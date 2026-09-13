@@ -31,6 +31,26 @@ class _PendingStringPreferences extends FakeEditorPreferences {
   Future<String?> getString(String key) => Completer<String?>().future;
 }
 
+/// A session controller that answers a release with [result] and counts the
+/// calls. Overriding [build] keeps the database, the audit sink and the timer
+/// out of a card test.
+class _ReleasingSession extends AccessSessionController {
+  _ReleasingSession({required this.result});
+
+  final bool result;
+  int releaseCalls = 0;
+
+  @override
+  Future<AccessSession> build() async =>
+      AccessSession.anonymous(const {AccessGroup.operate});
+
+  @override
+  Future<bool> releasePanelAccount() async {
+    releaseCalls++;
+    return result;
+  }
+}
+
 ({Widget app, FakeEditorPreferences prefs}) _shell({String? panelAccount}) {
   final prefs = FakeEditorPreferences();
   if (panelAccount != null) {
@@ -111,6 +131,86 @@ void main() {
           reason: 'the same rule the resume applies to a half-written '
               'preference file — one function, so the card and the resume '
               'cannot disagree about it');
+    });
+
+    group('Release panel', () {
+      Widget releaseShell(_ReleasingSession session) {
+        final prefs = FakeEditorPreferences()
+          ..setString(kAccessPanelAccountPrefKey, 'panel_a');
+        return ProviderScope(
+          overrides: [
+            localPreferencesProvider.overrideWithValue(prefs),
+            accessSessionProvider.overrideWith(() => session),
+          ],
+          child: const MaterialApp(
+            home: Scaffold(
+                body: SingleChildScrollView(child: AccessSessionSection())),
+          ),
+        );
+      }
+
+      testWidgets('is offered on a committed panel', (tester) async {
+        final shell = _shell(panelAccount: 'panel_a');
+        await tester.pumpWidget(shell.app);
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(kAccessSessionReleasePanelKey), findsOneWidget);
+      });
+
+      testWidgets('is not offered when there is nothing to release',
+          (tester) async {
+        final shell = _shell();
+        await tester.pumpWidget(shell.app);
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(kAccessSessionReleasePanelKey), findsNothing);
+      });
+
+      testWidgets('confirming releases once', (tester) async {
+        final session = _ReleasingSession(result: true);
+        await tester.pumpWidget(releaseShell(session));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(kAccessSessionReleasePanelKey));
+        await tester.pumpAndSettle();
+        expect(find.text(kAccessSessionReleaseTitle('panel_a')), findsOneWidget);
+
+        // `.last`: the card's own button carries the same words, and the
+        // dialog's confirm is painted above it.
+        await tester.tap(find.text(kAccessSessionReleasePanelLabel).last);
+        await tester.pumpAndSettle();
+
+        expect(session.releaseCalls, 1);
+        expect(find.byKey(kAccessSessionReleaseFailedKey), findsNothing);
+      });
+
+      testWidgets('cancelling releases nothing', (tester) async {
+        final session = _ReleasingSession(result: true);
+        await tester.pumpWidget(releaseShell(session));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(kAccessSessionReleasePanelKey));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
+
+        expect(session.releaseCalls, 0);
+      });
+
+      testWidgets('a refused release says so', (tester) async {
+        final session = _ReleasingSession(result: false);
+        await tester.pumpWidget(releaseShell(session));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(kAccessSessionReleasePanelKey));
+        await tester.pumpAndSettle();
+        // `.last`: the card's own button carries the same words, and the
+        // dialog's confirm is painted above it.
+        await tester.tap(find.text(kAccessSessionReleasePanelLabel).last);
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(kAccessSessionReleaseFailedKey), findsOneWidget);
+      });
     });
 
     testWidgets('claims nothing before the store has answered', (tester) async {

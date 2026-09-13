@@ -259,6 +259,75 @@ void main() {
       expect(visible.last.children.map((i) => i.path), ['/fillet']);
     });
 
+    test('a whitelist can grant a built-in, and hides the ones it omits',
+        () async {
+      // The picker offers the built-ins now, so the filter has to honour them
+      // both ways. Before this, no whitelist could name one: they were hidden
+      // from any restricted session and ungrantable.
+      const advanced = MenuItem(
+        label: 'Advanced',
+        path: '/advanced',
+        icon: Icons.settings,
+        isSection: true,
+        children: [
+          MenuItem(
+              label: 'Alarm View', path: '/alarm-view', icon: Icons.alarm),
+          MenuItem(
+              label: 'History View',
+              path: '/advanced/history-view',
+              icon: Icons.history),
+        ],
+      );
+      final container = _container(
+        registry: [home, advanced],
+        session: _sessionWith(pages: const {'/', '/alarm-view'}),
+      );
+      await container.read(accessRepositoryProvider.future);
+      await _settle(container);
+
+      final visible = container.read(visibleMenuProvider).topLevel;
+      expect(visible.map((i) => i.label), ['Home', 'Advanced']);
+      expect(visible.last.children.map((i) => i.path), ['/alarm-view']);
+    });
+
+    test('no whitelist can hide the access screen', () async {
+      // Layer 1 of the no-lockout argument. It was prose in the design note
+      // and nothing enforced it: this filter asks `resolvePageAccess` about
+      // every entry in the tree, so setting any whitelist used to drop the
+      // whole Advanced section — the screen that edits whitelists with it.
+      const advanced = MenuItem(
+        label: 'Advanced',
+        path: '/advanced',
+        icon: Icons.settings,
+        isSection: true,
+        children: [
+          MenuItem(
+              label: 'Page Editor',
+              path: '/advanced/page-editor',
+              icon: Icons.edit),
+          MenuItem(
+              label: 'Access',
+              path: kAccessAdminRoute,
+              icon: Icons.manage_accounts),
+        ],
+      );
+      final container = _container(
+        registry: [home, advanced],
+        // Block all, and every group held: the state an admin can reach in
+        // two clicks and could not previously get back out of from the menu.
+        session: _sessionWith(
+          groups: AccessGroup.values.toSet(),
+          pages: const <String>{},
+        ),
+      );
+      await container.read(accessRepositoryProvider.future);
+      await _settle(container);
+
+      final visible = container.read(visibleMenuProvider).topLevel;
+      expect(visible.map((i) => i.label), ['Advanced']);
+      expect(visible.single.children.map((i) => i.path), [kAccessAdminRoute]);
+    });
+
     test('a section with no children at all is kept', () async {
       // An empty section is a real state — the page editor creates one before
       // anything is put in it — and nothing was hidden, so nothing should

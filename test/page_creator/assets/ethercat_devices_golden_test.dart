@@ -80,6 +80,22 @@ void main() {
           matchesGoldenFile('goldens/ethercat_devices_narrow.png'));
     });
 
+    testWidgets('config form: size and position like every other asset',
+        (tester) async {
+      await loadRealFont();
+      await tester.pumpWidget(frame(
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Builder(builder: EtherCatDeviceTableConfig().configure),
+        ),
+        width: 520,
+        height: 460,
+      ));
+      await tester.pumpAndSettle();
+      await expectLater(find.byKey(_key),
+          matchesGoldenFile('goldens/ethercat_devices_config.png'));
+    });
+
     for (final (name, bus, pos) in [
       ('warning', 0, 5), // CRC errors on port A in the last hour
       ('gone', 0, 7), // not answering on the bus

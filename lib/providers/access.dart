@@ -16,6 +16,7 @@ import 'dart:convert';
 import 'dart:io' as io;
 
 import 'package:clock/clock.dart';
+import 'package:collection/collection.dart';
 import 'package:logger/logger.dart';
 import 'package:meta/meta.dart';
 import 'package:riverpod/riverpod.dart';
@@ -168,6 +169,39 @@ Future<bool> firstUserWindowOpen(Ref ref) async {
     );
     return false;
   }
+}
+
+/// The roles one session holds, resolved from `app_role` and composed into
+/// the single answer the rest of this file wants.
+///
+/// A tiny value type rather than a record, because every one of its four
+/// getters is a *composition* rule and they belong beside each other: the
+/// groups are a union, the pages are a union with null dominating, the label is
+/// what a trail row and a badge say, and the primary name is identity only. See
+/// `role_set.dart` for why each is what it is.
+///
+/// Never empty — `_rolesOrNull` answers null instead of handing back an empty
+/// one, so `first` is always safe here.
+class _ResolvedRoles {
+  const _ResolvedRoles(this.roles);
+
+  final List<AccessRole> roles;
+
+  /// The account's primary role name, for `AuthenticatedUser.roleName`.
+  String get primary => roles.first.name;
+
+  /// The rest, for `AuthenticatedUser.additionalRoles`.
+  List<String> get additional =>
+      [for (final role in roles.skip(1)) role.name];
+
+  /// Everything these roles together grant.
+  Set<AccessGroup> get groups => unionRoleGroups(roles);
+
+  /// The pages they together admit, or null for every page.
+  Set<String>? get pages => unionRoleAllowedPages(roles);
+
+  /// What a badge shows and what the audit row records.
+  String get label => roleLabelFor([for (final role in roles) role.name]);
 }
 
 /// What a sign-in attempt did.
@@ -375,9 +409,16 @@ class AccessSessionController extends _$AccessSessionController {
     /// The panel's committed account, or anonymous. Deferred rather than
     /// computed up front: the common case restores a human session and never
     /// needs it, and resuming writes an audit row.
-    Future<AccessSession> floor() async =>
-        await _resumePanelAccount(repo) ??
-        await _anonymousSession(repo);
+    ///
+    /// Sets [_onPanelSession] exactly as [_toFloor] does. A panel that resumed
+    /// at boot is the panel's own session; leaving the flag false here made
+    /// its first pointer-down persist it into the human slot, and would now
+    /// leave it with a sign-out that un-commissions it.
+    Future<AccessSession> floor() async {
+      final resumed = await _resumePanelAccount(repo);
+      _onPanelSession = resumed != null;
+      return resumed ?? await _anonymousSession(repo);
+    }
 
     final raw = await _readStoredSession();
     if (raw == null) return floor();
@@ -403,7 +444,7 @@ class AccessSessionController extends _$AccessSessionController {
       await _record(AuditRecord.sessionTimeout(
         who: stored.username,
         station: _station,
-        roleName: stored.roleName,
+        roleName: roleLabelFor(stored.roleNames),
         actionId: newActionId(),
         at: clock.now(),
         reason: 'The session expired at ${stored.expiresAt.toIso8601String()} '
@@ -412,11 +453,14 @@ class AccessSessionController extends _$AccessSessionController {
       return floor();
     }
 
-    final role = repo == null ? null : await _roleOrNull(repo, stored.roleName);
-    if (role == null) {
-      // The role was renamed or deleted, or the database is unreachable. Either
-      // way there is no group set to restore against, and signing somebody in
-      // against an undefined one is worse than making them log in again.
+    final roles = repo == null
+        ? null
+        : await _rolesOrNull(repo, stored.roleName, stored.additionalRoles);
+    if (roles == null) {
+      // The primary role was renamed or deleted, or the database is
+      // unreachable. Either way there is no group set to restore against, and
+      // signing somebody in against an undefined one is worse than making them
+      // log in again.
       Logger().w(
         'The stored session names the role "${stored.roleName}", which cannot '
         'be resolved — starting anonymous.',
@@ -425,15 +469,19 @@ class AccessSessionController extends _$AccessSessionController {
       return floor();
     }
 
-    final account = await _resolveAccount(repo, role, stored.username);
+    final account = await _resolveAccount(repo, roles.pages, stored.username);
     final timeout = _resolveTimeout(account.minutes);
     return AccessSession(
       user: AuthenticatedUser(
         username: stored.username,
-        roleName: role.name,
+        roleName: roles.primary,
+        // Re-resolved, never restored: an extra role deleted while the station
+        // was off is gone from the session the payload comes back as, exactly
+        // as the groups are.
+        additionalRoles: roles.additional,
         displayName: stored.displayName,
       ),
-      groups: role.groups,
+      groups: roles.groups,
       // Both re-resolved from the database like the groups are, and for the
       // same reason: the payload carries neither, so a hand-edited preferences
       // file can widen neither what this panel sees nor how long it stays
@@ -459,8 +507,15 @@ class AccessSessionController extends _$AccessSessionController {
     return cap.isBefore(expiresAt) ? cap : expiresAt;
   }
 
-  /// What [username]'s own `app_user` row adds to a session built on [role]:
-  /// the pages it may see, and its stored inactivity minutes.
+  /// What [username]'s own `app_user` row adds to a session whose roles
+  /// together admit [rolePages]: the pages it may see, and its stored
+  /// inactivity minutes.
+  ///
+  /// [rolePages] is the **already-unioned** role level — `_ResolvedRoles.pages`
+  /// — so this method never sees how many roles the account holds. Composing
+  /// the roles and then composing the personal override are two steps in that
+  /// order, and keeping them apart is what lets the personal override stay a
+  /// straight replacement however many roles it is replacing.
   ///
   /// One read for both, so the two halves cannot come from two reads of a row
   /// somebody is editing.
@@ -481,10 +536,10 @@ class AccessSessionController extends _$AccessSessionController {
   /// controls still refuse. A blink must not mint an immortal session either.
   Future<({Set<String>? pages, int? minutes})> _resolveAccount(
     AccessRepository? repo,
-    AccessRole role,
+    Set<String>? rolePages,
     String? username,
   ) async {
-    final inherited = effectiveAllowedPages(user: null, role: role.allowedPages);
+    final inherited = effectiveAllowedPages(user: null, role: rolePages);
     if (repo == null || username == null) {
       return (pages: inherited, minutes: null);
     }
@@ -493,7 +548,7 @@ class AccessSessionController extends _$AccessSessionController {
       return (
         pages: effectiveAllowedPages(
           user: decodeAllowedPagesColumn(row?.allowedPages),
-          role: role.allowedPages,
+          role: rolePages,
         ),
         minutes: row?.inactivityTimeoutMinutes,
       );
@@ -534,6 +589,42 @@ class AccessSessionController extends _$AccessSessionController {
       role.groups,
       operatorAllowedPages: role.allowedPages,
     );
+  }
+
+  /// Every role an account holds, read from `app_role` and composed.
+  ///
+  /// Returns null when the **primary** role cannot be resolved — deleted,
+  /// renamed, or the database would not answer. There is no group set to build
+  /// a session on then, and signing somebody in against an undefined one is
+  /// worse than making them log in again.
+  ///
+  /// An **extra** role that cannot be resolved is dropped with a warning and
+  /// the rest of the set stands. The two are treated differently on purpose:
+  /// the primary role is the account's identity and its absence is a state
+  /// nothing can act on, while a missing extra is a capability the account no
+  /// longer has, and dropping it narrows. Refusing the whole session over it
+  /// would lock somebody out of a panel because a second role they held was
+  /// deleted on another station.
+  Future<_ResolvedRoles?> _rolesOrNull(
+    AccessRepository repo,
+    String primary,
+    Iterable<String> additional,
+  ) async {
+    final wanted = normaliseRoleNames(primary: primary, additional: additional);
+    final resolved = <AccessRole>[];
+    for (final name in wanted) {
+      final role = await _roleOrNull(repo, name);
+      if (role == null) {
+        if (resolved.isEmpty) return null;
+        Logger().w(
+          'Dropping the role "$name", which cannot be resolved, from the '
+          'session — the roles that remain still apply.',
+        );
+        continue;
+      }
+      resolved.add(role);
+    }
+    return _ResolvedRoles(resolved);
   }
 
   Future<AccessRole?> _roleOrNull(AccessRepository repo, String name) async {
@@ -592,8 +683,9 @@ class AccessSessionController extends _$AccessSessionController {
       return AccessSignInResult.badCredentials;
     }
 
-    final role = await _roleOrNull(repo, user.roleName);
-    if (role == null) {
+    final roles =
+        await _rolesOrNull(repo, user.roleName, user.additionalRoles);
+    if (roles == null) {
       // `LocalAuthProvider` already refuses this, so reaching it means a second
       // implementation behind the same seam. Refuse rather than elevate against
       // an undefined group set.
@@ -604,24 +696,51 @@ class AccessSessionController extends _$AccessSessionController {
       return AccessSignInResult.unavailable;
     }
 
-    final account = await _resolveAccount(repo, role, user.username);
+    final account = await _resolveAccount(repo, roles.pages, user.username);
     // The account's own window. A station account has none — the freezer
     // display's identity does not time out anywhere — and that flag is the
     // only thing that can make a session immortal.
     final timeout =
         user.stationAccount ? null : _resolveTimeout(account.minutes);
     final session = AccessSession(
-      user: user,
-      groups: role.groups,
+      // Rebuilt rather than passed through, so the roles the session answers
+      // as are the ones that actually resolved: an extra role the auth
+      // provider carried across and this station cannot read is dropped here
+      // and is not in the trail row below either.
+      user: AuthenticatedUser(
+        username: user.username,
+        roleName: roles.primary,
+        additionalRoles: roles.additional,
+        displayName: user.displayName,
+        stationAccount: user.stationAccount,
+      ),
+      groups: roles.groups,
       allowedPages: account.pages,
       inactivityTimeout: timeout,
       expiresAt: timeout == null ? null : clock.now().add(timeout),
     );
 
+    // A sign-in over a person's live session ends that session, and the trail
+    // has to say so: a `login` for the new account alone would leave the old
+    // one looking signed in until whenever somebody reads past it. Not for the
+    // panel's own session — it is not ending, it is the floor this new session
+    // returns to, and the `session.resume` row marks that when it happens.
+    final replaced = state.valueOrNull;
+    if (replaced != null && replaced.isElevated && !_onPanelSession) {
+      await _record(AuditRecord.logout(
+        who: replaced.user!.username,
+        station: _station,
+        roleName: replaced.roleLabel,
+        actionId: newActionId(),
+        at: clock.now(),
+        reason: 'Replaced by a sign-in as ${user.username}.',
+      ));
+    }
+
     await _record(AuditRecord.login(
       who: user.username,
       station: _station,
-      roleName: role.name,
+      roleName: roles.label,
       actionId: newActionId(),
       at: clock.now(),
     ));
@@ -630,7 +749,13 @@ class AccessSessionController extends _$AccessSessionController {
     // account is a station account. Committing the panel is a separate,
     // deliberate step (see [commitPanelAccount]); until it is taken this
     // behaves exactly like any other login.
-    _onPanelSession = false;
+    //
+    // Except when it *is* the account this panel is already committed to. The
+    // commit prompt is suppressed in exactly that case, so this session is the
+    // panel's identity without ever having been resumed into, and it must
+    // behave like one: no copy in the human slot, and no sign-out.
+    _onPanelSession = user.stationAccount &&
+        user.username == await _readPanelAccount();
     state = AsyncData(session);
     await _persist(session);
     // A sign-in over a live session must not inherit its countdown: `_attach`
@@ -776,7 +901,7 @@ class AccessSessionController extends _$AccessSessionController {
         await _record(AuditRecord.passwordChange(
           who: user.username,
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: newActionId(),
           at: clock.now(),
         ));
@@ -786,7 +911,7 @@ class AccessSessionController extends _$AccessSessionController {
         await _record(AuditRecord.passwordChangeFailed(
           who: user.username,
           station: _station,
-          roleName: session.roleName,
+          roleName: session.roleLabel,
           actionId: newActionId(),
           at: clock.now(),
         ));
@@ -816,7 +941,8 @@ class AccessSessionController extends _$AccessSessionController {
   ///
   /// The panel keeps this identity across restarts, and hands it back whenever
   /// a human's session over it ends — by sign-out, by inactivity, or by the
-  /// app restarting. Signing this account out is what ends the commitment.
+  /// app restarting. [releasePanelAccount] is what ends the commitment; the
+  /// panel's own session has no sign-out (see [signOut]).
   ///
   /// Refuses unless the live session belongs to a `stationAccount`. That flag
   /// is an administrator saying "this identity is a panel, not a person", and
@@ -863,50 +989,104 @@ class AccessSessionController extends _$AccessSessionController {
   /// already committed to the account signing in.
   Future<String?> panelAccount() => _readPanelAccount();
 
+  /// Stop this panel returning to its committed station account.
+  ///
+  /// The deliberate way out of [commitPanelAccount], and the only one: the
+  /// panel's own session has no sign-out (see [signOut]). An administrator's
+  /// act, so it is gated on [AccessGroup.users] like every other write on the
+  /// access page, and it writes a `panel.release` row either way — a refused
+  /// release is somebody trying to decommission a panel.
+  ///
+  /// The usual caller is a person who signed in over the panel (Switch
+  /// account… in the app bar) and pressed Release panel on the Session card.
+  /// Their session stands; the panel simply has no floor to return them to
+  /// when it ends. When the live session **is** the panel's — its own role
+  /// holds `users` — releasing it ends that session too, and the panel lands on
+  /// anonymous. No `logout` row then: nobody signed out, and the release row is
+  /// the record.
+  ///
+  /// Returns true when the panel is released. False when it was not committed,
+  /// when the gate refused, or when the device-local store would not let go.
+  Future<bool> releasePanelAccount() async {
+    final session = state.valueOrNull;
+    final committed = await _readPanelAccount();
+    if (committed == null) {
+      Logger().w('Nothing to release: this panel is not committed to an '
+          'account.');
+      return false;
+    }
+
+    final actionId = newActionId();
+    AuditRecord row({required bool allowed}) => AuditRecord.panelRelease(
+          who: session?.user?.username ?? 'anonymous',
+          station: _station,
+          roleName: session?.roleLabel ?? kOperatorRoleName,
+          actionId: actionId,
+          subject: committed,
+          allowed: allowed,
+          at: clock.now(),
+        );
+
+    if (session == null || !session.can(AccessGroup.users)) {
+      Logger().w(
+        'Refusing to release this panel from "$committed": the live session '
+        'does not hold the users group.',
+      );
+      await _record(row(allowed: false));
+      return false;
+    }
+
+    final wasPanel = _onPanelSession;
+    if (!await _clearPanelAccount()) return false;
+    await _record(row(allowed: true));
+
+    if (wasPanel) {
+      _detach();
+      await _clearStoredSession();
+      await _toFloor();
+    }
+    return true;
+  }
+
   /// Sign out deliberately.
   ///
-  /// Always available, per spec §5 — there is no state in which an operator
-  /// cannot hand the panel back.
+  /// Always available to a **person**, per spec §5 — there is no state in
+  /// which somebody who raised the panel cannot hand it back. A human who
+  /// signed in over a committed panel lands back on the panel's account.
   ///
-  /// Signing out means signing out of **your own** session, which on a
-  /// committed panel resolves into two different-looking outcomes from one
-  /// rule:
+  /// **Refused for the panel's own session.** Nobody at the panel raised it,
+  /// so there is nothing to hand back, and a sign-out that anybody walking past
+  /// could press would un-commission the panel — the panel would sit anonymous
+  /// with its raised pages hidden until somebody who knew the station account's
+  /// password came and signed it back in. Ending the commitment is
+  /// [releasePanelAccount]'s job, gated on `users`. The app bar does not offer
+  /// the button for this session; this is the half that holds if a second
+  /// caller forgets.
   ///
-  /// * A human who signed in over the panel lands back on the panel's account.
-  ///   They did not commit it and do not un-commit it.
-  /// * Somebody signed in *as* the panel's account un-commits the panel and
-  ///   lands on anonymous. This is the documented way out, and the only one —
-  ///   which is why there is no separate de-commissioning control.
+  /// A station account signed in "just this session" is not the panel's own
+  /// session, and signs out like anybody.
   Future<void> signOut() async {
     final current = state.valueOrNull;
+    if (_onPanelSession) {
+      Logger().w(
+        'Refusing to sign out "${current?.user?.username}": it is this '
+        'panel\'s own account. Release the panel on the access page instead.',
+      );
+      return;
+    }
     _detach();
 
     if (current != null && current.isElevated) {
       await _record(AuditRecord.logout(
         who: current.user!.username,
         station: _station,
-        roleName: current.roleName,
+        roleName: current.roleLabel,
         actionId: newActionId(),
         at: clock.now(),
       ));
     }
 
     await _clearStoredSession();
-    // Before `_toFloor`, which would otherwise resume the account being signed
-    // out and turn an explicit sign-out into a no-op.
-    //
-    // The username comparison is not redundant with [_onPanelSession]. That
-    // flag means "this session *is* the resumed panel", and it is false when
-    // somebody signs in fresh as the account the panel is already committed to
-    // — which is reachable, because the commit prompt is suppressed in exactly
-    // that case. Without the comparison their sign-out would resume the panel
-    // instead of ending it, and it would take two sign-outs to do what the
-    // dialog promised one would.
-    final signingOut = current?.user?.username;
-    if (_onPanelSession ||
-        (signingOut != null && signingOut == await _readPanelAccount())) {
-      await _clearPanelAccount();
-    }
     await _toFloor();
   }
 
@@ -1093,7 +1273,7 @@ class AccessSessionController extends _$AccessSessionController {
     await _record(AuditRecord.sessionTimeout(
       who: current.user!.username,
       station: _station,
-      roleName: current.roleName,
+      roleName: current.roleLabel,
       actionId: newActionId(),
       at: clock.now(),
       // Only reachable from a monitor, which exists only for a session with a
@@ -1214,8 +1394,12 @@ class AccessSessionController extends _$AccessSessionController {
       return null;
     }
 
-    final role = await _roleOrNull(repo, row.roleName);
-    if (role == null) {
+    final roles = await _rolesOrNull(
+      repo,
+      row.roleName,
+      decodeAdditionalRoles(row.additionalRoles),
+    );
+    if (roles == null) {
       Logger().w(
         'This panel\'s account "$username" holds the role "${row.roleName}", '
         'which cannot be resolved — staying anonymous without un-committing '
@@ -1227,9 +1411,9 @@ class AccessSessionController extends _$AccessSessionController {
     await _record(AuditRecord.sessionResume(
       who: username,
       station: _station,
-      // The role resolved now, not the one it held when the panel was
+      // The roles resolved now, not the ones it held when the panel was
       // committed.
-      roleName: role.name,
+      roleName: roles.label,
       actionId: newActionId(),
       at: clock.now(),
     ));
@@ -1237,11 +1421,12 @@ class AccessSessionController extends _$AccessSessionController {
     return AccessSession(
       user: AuthenticatedUser(
         username: username,
-        roleName: role.name,
+        roleName: roles.primary,
+        additionalRoles: roles.additional,
         stationAccount: true,
       ),
-      groups: role.groups,
-      allowedPages: (await _resolveAccount(repo, role, username)).pages,
+      groups: roles.groups,
+      allowedPages: (await _resolveAccount(repo, roles.pages, username)).pages,
       // A panel does not time out. Nothing arms for a null `expiresAt` —
       // `_attach` and `poke` both already decline — so this needs no new
       // guard anywhere.
@@ -1393,6 +1578,10 @@ class AccessSessionController extends _$AccessSessionController {
     }
 
     final String roleNameNow;
+    // The extra roles the account holds *now*, from the same read as the
+    // primary one: an administrator who ticked a second role on another
+    // station is why this method exists at all.
+    final List<String> extraRolesNow;
     // The account's own whitelist column, lifted out of the try beside the
     // role name so the session below composes from the same single read.
     final String? userPagesNow;
@@ -1405,6 +1594,7 @@ class AccessSessionController extends _$AccessSessionController {
         return;
       }
       roleNameNow = row.roleName;
+      extraRolesNow = decodeAdditionalRoles(row.additionalRoles);
       userPagesNow = row.allowedPages;
       minutesNow = row.inactivityTimeoutMinutes;
     } on Object catch (e) {
@@ -1412,8 +1602,8 @@ class AccessSessionController extends _$AccessSessionController {
       return;
     }
 
-    final role = await _roleOrNull(repo, roleNameNow);
-    if (role == null) {
+    final roles = await _rolesOrNull(repo, roleNameNow, extraRolesNow);
+    if (roles == null) {
       await drop('the role "$roleNameNow" the account now holds cannot be '
           'resolved — it was deleted or renamed');
       return;
@@ -1428,16 +1618,22 @@ class AccessSessionController extends _$AccessSessionController {
     final next = AccessSession(
       user: AuthenticatedUser(
         username: username,
-        roleName: role.name,
+        roleName: roles.primary,
+        additionalRoles: roles.additional,
         displayName: session.user!.displayName,
+        // Carried, never re-read: the flag is resolved at sign-in and at
+        // resume, and dropping it here turned the panel into a person after any
+        // admin write on its own screen — with a sign-out and a change-password
+        // entry it must not have.
+        stationAccount: session.user!.stationAccount,
       ),
-      groups: role.groups,
+      groups: roles.groups,
       // Composed from the row this method already read, rather than from a
       // second read that could disagree with it. This is what makes an edit on
       // the access screen change the menu on this panel without a restart.
       allowedPages: effectiveAllowedPages(
         user: decodeAllowedPagesColumn(userPagesNow),
-        role: role.allowedPages,
+        role: roles.pages,
       ),
       inactivityTimeout: timeoutNow,
       expiresAt: _narrowed(session.expiresAt, timeoutNow),
@@ -1455,7 +1651,12 @@ class AccessSessionController extends _$AccessSessionController {
 
     // The demotion route and the narrowing route. Either way the stored copy
     // would otherwise restore wider than what is now in force.
-    if (role.name != session.user!.roleName ||
+    //
+    // The whole role list, not just the primary one: a second role added or
+    // taken away changes what restores after a restart even when `role_name`
+    // did not move.
+    if (!const ListEquality<String>()
+            .equals(next.roleNames, session.roleNames) ||
         next.expiresAt != session.expiresAt) {
       await _persist(next);
     }
@@ -1553,19 +1754,28 @@ class AccessSessionController extends _$AccessSessionController {
     }
   }
 
-  Future<void> _clearPanelAccount() async {
-    _onPanelSession = false;
+  /// Remove the commitment. False when the store would not let go of it.
+  ///
+  /// [_onPanelSession] is cleared only when the key is actually gone: a
+  /// release that failed leaves the panel committed, and its session must keep
+  /// behaving as the panel's — no sign-out, no copy in the human slot.
+  Future<bool> _clearPanelAccount() async {
     final local = _local;
-    if (local == null) return;
-    try {
-      await local.remove(kAccessPanelAccountPrefKey);
-    } on Object catch (e) {
-      Logger().w('Could not un-commit this panel: $e');
+    var cleared = true;
+    if (local != null) {
+      try {
+        await local.remove(kAccessPanelAccountPrefKey);
+      } on Object catch (e) {
+        Logger().w('Could not un-commit this panel: $e');
+        cleared = false;
+      }
     }
-    // The one funnel for every way a commitment ends — a sign-out and the
+    if (cleared) _onPanelSession = false;
+    // The one funnel for every way a commitment ends — a release and the
     // three resume refusals all land here — so the read-out follows all of
     // them from a single line.
     ref.invalidate(panelAccountProvider);
+    return cleared;
   }
 }
 

@@ -25,6 +25,7 @@ import json, os, sys
 
 report = sys.argv[1]
 skipped, ran = 0, 0
+stale = []
 with open(report, encoding='utf-8') as fh:
     for line in fh:
         line = line.strip()
@@ -44,6 +45,15 @@ with open(report, encoding='utf-8') as fh:
         reason = (t.get('metadata') or {}).get('skipReason') or ''
         if 'rendered on Linux' in reason:
             skipped += 1
+        # A file that predates the shared guard, or one written from an older
+        # file as a template, carries its own reason string instead. Counting
+        # only the shared one made those invisible here: they skipped on Linux
+        # and this script still printed "ok", which is precisely the silent
+        # defect it exists to catch. Two report golden files sat in that state
+        # after the reference platform moved (#507 then #447), so this is a
+        # fixed bug, not a hypothetical.
+        elif 'only run on' in reason and 'olden' in reason:
+            stale.append(name)
 
 # `runner.os` is not set outside GitHub Actions; fall back to the platform so
 # the script is runnable by hand.
@@ -57,6 +67,13 @@ print(f"{os_name}: {ran} tests reported, {skipped} skipped as golden")
 # platform the skip count is in the hundreds. The floor is deliberately far
 # below that -- it catches the guard collapsing, not the suite growing.
 FLOOR = 60
+
+if stale:
+    sys.exit(f"::error::{len(stale)} golden test(s) carry a hand-written skip "
+             f"reason instead of goldenSkip from "
+             f"test/helpers/golden_platform.dart, so they follow their own "
+             f"idea of the reference platform and this check cannot see them: "
+             f"{stale[:5]}")
 
 if os_name == 'Linux':
     if skipped:

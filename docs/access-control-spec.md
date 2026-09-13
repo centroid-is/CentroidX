@@ -108,9 +108,45 @@ row, not reflashing a station. That is a direct consequence of this being a
 guardrail rather than a security boundary, and the recovery steps belong in the
 deployment doc.
 
-**Users** — a name, a password hash, and exactly one role. One role per user,
-not many; multi-role adds union semantics and an "effective permissions"
-inspector, and is not worth it at this size.
+**Users** — a name, a password hash, and one or more roles.
+
+This started as *exactly* one, on the grounds that multi-role adds union
+semantics and an "effective permissions" inspector and is not worth it at this
+size. **Schema v9 reverses that**, and the reversal is recorded here rather
+than quietly made, because the original ruling is the kind a reader will
+otherwise restore:
+
+* The union turned out to be a set union over `AccessGroup` and nothing else.
+  Roles were already *bundles of capabilities* rather than rungs on a ladder —
+  that split is the whole point of the group model — so composing two is
+  `a ∪ b`. The rules live in one file, `tfc_access/lib/src/role_set.dart`, and
+  are three lines each.
+* The "effective permissions inspector" is a column the accounts screen already
+  had. It reads `Shift Leader + Maintenance` where it used to read one name.
+* What the single role actually cost was a **combinatorial role table**. A
+  person who is a shift leader *and* maintains the line needed a
+  `Shift Leader + Maintenance` role minted for them and kept in step with both
+  originals by hand, forever. That is the failure this model exists to avoid,
+  paid one role at a time.
+* It also cut against SSO. An OIDC provider returns a *list* of group claims,
+  and `AppRole.name` is the primary key precisely so a claim matches a role by
+  name with no mapping table (§3). A single-role user is the one shape that
+  mapping cannot express.
+
+**One of them is the primary role.** `app_user.role_name` — the column with the
+foreign key on it, the one an account carried over from v8 keeps, and the one
+an account falls back to. It is identity, not precedence: it grants nothing the
+others do not. The rest live in `app_user.additional_roles`, a nullable JSON
+array, so every existing row upgrades to NULL and behaves exactly as it did.
+
+**Groups union; page whitelists union with null dominating.** A role with no
+whitelist sees every page, so an account holding one sees every page. That is
+the only internally consistent union — the alternative makes *adding* a role
+remove pages — and it is less alarming than it sounds, because anonymous is the
+`Operator` role and whatever Operator admits is already on screen at every
+unattended panel. The account's personal whitelist still **replaces** the
+composed role level wholesale (§1c of the page-visibility design note is
+unchanged): one account, one personal opinion, however many roles it holds.
 
 **Anonymous is the Operator role.** Not a configurable pointer — a session with
 no user resolves to the role named `Operator`, full stop. That removes a knob
@@ -294,7 +330,16 @@ class AccessSession {
 - **The inactivity timer must be listener-gated** — started in `onListen`,
   stopped in `onCancel`. An always-on `Timer.periodic` in shared plumbing breaks
   unrelated widget tests; this has happened in this repo before.
-- Logging out is explicit and always available in the app bar when elevated.
+- Logging out is explicit and always available in the app bar when a *person*
+  is elevated. The one exception is a panel's committed station account: nobody
+  at the panel raised it, so there is nothing to hand back, and ending it is
+  decommissioning — an administrator releases it on the access page (Session →
+  Release panel, gated on `users`). A person signed in over the panel keeps
+  one-tap sign-out, and it lands them back on the panel's account.
+- Signing in over an elevated session is always available from the app bar:
+  the name in the bar opens a menu with **Switch account…**. Without it, a
+  panel committed to a station account whose raised pages are hidden could
+  only be elevated by signing it out first.
 - Show *who* is logged in, always, when elevated. An operator must be able to
   see at a glance that the panel is still in a raised state.
 

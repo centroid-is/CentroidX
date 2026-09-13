@@ -88,6 +88,10 @@ BeckhoffEK1100Config _$BeckhoffEK1100ConfigFromJson(
       ..textPos = $enumDecodeNullable(_$TextPosEnumMap, json['textPos'])
       ..techDocId = (json['techDocId'] as num?)?.toInt()
       ..plcAssetKey = json['plcAssetKey'] as String?
+      ..ecSubDevice = json['ecSubDevice'] == null
+          ? null
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>)
       ..subdevices =
           const AssetListConverter().fromJson(json['subdevices'] as List)
       ..nameOrId = json['nameOrId'] as String? ?? '';
@@ -103,6 +107,8 @@ Map<String, dynamic> _$BeckhoffEK1100ConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'subdevices': const AssetListConverter().toJson(instance.subdevices),
       'nameOrId': instance.nameOrId,
     };
@@ -129,7 +135,11 @@ BeckhoffEL1008Config _$BeckhoffEL1008ConfigFromJson(
       ..text = json['text'] as String?
       ..textPos = $enumDecodeNullable(_$TextPosEnumMap, json['textPos'])
       ..techDocId = (json['techDocId'] as num?)?.toInt()
-      ..plcAssetKey = json['plcAssetKey'] as String?;
+      ..plcAssetKey = json['plcAssetKey'] as String?
+      ..ecSubDevice = json['ecSubDevice'] == null
+          ? null
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>);
 
 Map<String, dynamic> _$BeckhoffEL1008ConfigToJson(
         BeckhoffEL1008Config instance) =>
@@ -142,6 +152,8 @@ Map<String, dynamic> _$BeckhoffEL1008ConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'nameOrId': instance.nameOrId,
       'descriptionsKey': instance.descriptionsKey,
       'rawStateKey': instance.rawStateKey,
@@ -171,7 +183,11 @@ BeckhoffEL2008Config _$BeckhoffEL2008ConfigFromJson(
       ..text = json['text'] as String?
       ..textPos = $enumDecodeNullable(_$TextPosEnumMap, json['textPos'])
       ..techDocId = (json['techDocId'] as num?)?.toInt()
-      ..plcAssetKey = json['plcAssetKey'] as String?;
+      ..plcAssetKey = json['plcAssetKey'] as String?
+      ..ecSubDevice = json['ecSubDevice'] == null
+          ? null
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>);
 
 Map<String, dynamic> _$BeckhoffEL2008ConfigToJson(
         BeckhoffEL2008Config instance) =>
@@ -184,6 +200,8 @@ Map<String, dynamic> _$BeckhoffEL2008ConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'nameOrId': instance.nameOrId,
       'descriptionsKey': instance.descriptionsKey,
       'rawStateKey': instance.rawStateKey,
@@ -206,7 +224,11 @@ BeckhoffEL9222Config _$BeckhoffEL9222ConfigFromJson(
       ..text = json['text'] as String?
       ..textPos = $enumDecodeNullable(_$TextPosEnumMap, json['textPos'])
       ..techDocId = (json['techDocId'] as num?)?.toInt()
-      ..plcAssetKey = json['plcAssetKey'] as String?;
+      ..plcAssetKey = json['plcAssetKey'] as String?
+      ..ecSubDevice = json['ecSubDevice'] == null
+          ? null
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>);
 
 Map<String, dynamic> _$BeckhoffEL9222ConfigToJson(
         BeckhoffEL9222Config instance) =>
@@ -219,6 +241,8 @@ Map<String, dynamic> _$BeckhoffEL9222ConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'nameOrId': instance.nameOrId,
       'stateKey': instance.stateKey,
       'descriptionsKey': instance.descriptionsKey,
@@ -294,7 +318,11 @@ BeckhoffEL3054Config _$BeckhoffEL3054ConfigFromJson(
       ..text = json['text'] as String?
       ..textPos = $enumDecodeNullable(_$TextPosEnumMap, json['textPos'])
       ..techDocId = (json['techDocId'] as num?)?.toInt()
-      ..plcAssetKey = json['plcAssetKey'] as String?;
+      ..plcAssetKey = json['plcAssetKey'] as String?
+      ..ecSubDevice = json['ecSubDevice'] == null
+          ? null
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>);
 
 Map<String, dynamic> _$BeckhoffEL3054ConfigToJson(
         BeckhoffEL3054Config instance) =>
@@ -307,6 +335,8 @@ Map<String, dynamic> _$BeckhoffEL3054ConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'nameOrId': instance.nameOrId,
       'descriptionsKey': instance.descriptionsKey,
       'stateKey': instance.stateKey,
@@ -329,7 +359,11 @@ BeckhoffEL2912Config _$BeckhoffEL2912ConfigFromJson(
       ..text = json['text'] as String?
       ..textPos = $enumDecodeNullable(_$TextPosEnumMap, json['textPos'])
       ..techDocId = (json['techDocId'] as num?)?.toInt()
-      ..plcAssetKey = json['plcAssetKey'] as String?;
+      ..plcAssetKey = json['plcAssetKey'] as String?
+      ..ecSubDevice = json['ecSubDevice'] == null
+          ? null
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>);
 
 Map<String, dynamic> _$BeckhoffEL2912ConfigToJson(
         BeckhoffEL2912Config instance) =>
@@ -342,6 +376,8 @@ Map<String, dynamic> _$BeckhoffEL2912ConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'nameOrId': instance.nameOrId,
       'underrangeKey': instance.underrangeKey,
       'overrangeKey': instance.overrangeKey,
@@ -364,7 +400,11 @@ BeckhoffPS2001Config _$BeckhoffPS2001ConfigFromJson(
       ..text = json['text'] as String?
       ..textPos = $enumDecodeNullable(_$TextPosEnumMap, json['textPos'])
       ..techDocId = (json['techDocId'] as num?)?.toInt()
-      ..plcAssetKey = json['plcAssetKey'] as String?;
+      ..plcAssetKey = json['plcAssetKey'] as String?
+      ..ecSubDevice = json['ecSubDevice'] == null
+          ? null
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>);
 
 Map<String, dynamic> _$BeckhoffPS2001ConfigToJson(
         BeckhoffPS2001Config instance) =>
@@ -377,6 +417,8 @@ Map<String, dynamic> _$BeckhoffPS2001ConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'nameOrId': instance.nameOrId,
       'stateKey': instance.stateKey,
       'descriptionKey': instance.descriptionKey,
@@ -395,6 +437,10 @@ BeckhoffEL6070Config _$BeckhoffEL6070ConfigFromJson(
       ..textPos = $enumDecodeNullable(_$TextPosEnumMap, json['textPos'])
       ..techDocId = (json['techDocId'] as num?)?.toInt()
       ..plcAssetKey = json['plcAssetKey'] as String?
+      ..ecSubDevice = json['ecSubDevice'] == null
+          ? null
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>)
       ..nameOrId = json['nameOrId'] as String? ?? '';
 
 Map<String, dynamic> _$BeckhoffEL6070ConfigToJson(
@@ -408,6 +454,8 @@ Map<String, dynamic> _$BeckhoffEL6070ConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'nameOrId': instance.nameOrId,
     };
 
@@ -423,6 +471,10 @@ BeckhoffEK1110Config _$BeckhoffEK1110ConfigFromJson(
       ..textPos = $enumDecodeNullable(_$TextPosEnumMap, json['textPos'])
       ..techDocId = (json['techDocId'] as num?)?.toInt()
       ..plcAssetKey = json['plcAssetKey'] as String?
+      ..ecSubDevice = json['ecSubDevice'] == null
+          ? null
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>)
       ..nameOrId = json['nameOrId'] as String? ?? '';
 
 Map<String, dynamic> _$BeckhoffEK1110ConfigToJson(
@@ -436,6 +488,8 @@ Map<String, dynamic> _$BeckhoffEK1110ConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'nameOrId': instance.nameOrId,
     };
 
@@ -452,7 +506,11 @@ BeckhoffCU2508Config _$BeckhoffCU2508ConfigFromJson(
       ..text = json['text'] as String?
       ..textPos = $enumDecodeNullable(_$TextPosEnumMap, json['textPos'])
       ..techDocId = (json['techDocId'] as num?)?.toInt()
-      ..plcAssetKey = json['plcAssetKey'] as String?;
+      ..plcAssetKey = json['plcAssetKey'] as String?
+      ..ecSubDevice = json['ecSubDevice'] == null
+          ? null
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>);
 
 Map<String, dynamic> _$BeckhoffCU2508ConfigToJson(
         BeckhoffCU2508Config instance) =>
@@ -465,6 +523,8 @@ Map<String, dynamic> _$BeckhoffCU2508ConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'nameOrId': instance.nameOrId,
     };
 
@@ -486,7 +546,11 @@ BeckhoffEPBoxConfig _$BeckhoffEPBoxConfigFromJson(Map<String, dynamic> json) =>
       ..text = json['text'] as String?
       ..textPos = $enumDecodeNullable(_$TextPosEnumMap, json['textPos'])
       ..techDocId = (json['techDocId'] as num?)?.toInt()
-      ..plcAssetKey = json['plcAssetKey'] as String?;
+      ..plcAssetKey = json['plcAssetKey'] as String?
+      ..ecSubDevice = json['ecSubDevice'] == null
+          ? null
+          : EcSubDeviceBinding.fromJson(
+              json['ecSubDevice'] as Map<String, dynamic>);
 
 Map<String, dynamic> _$BeckhoffEPBoxConfigToJson(
         BeckhoffEPBoxConfig instance) =>
@@ -499,6 +563,8 @@ Map<String, dynamic> _$BeckhoffEPBoxConfigToJson(
       'textPos': _$TextPosEnumMap[instance.textPos],
       'techDocId': instance.techDocId,
       'plcAssetKey': instance.plcAssetKey,
+      if (instance.ecSubDevice?.toJson() case final value?)
+        'ecSubDevice': value,
       'variant_model': _$EPBoxVariantEnumMap[instance.variantModel]!,
       'nameOrId': instance.nameOrId,
       'stateKey': instance.stateKey,

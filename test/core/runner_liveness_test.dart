@@ -77,12 +77,20 @@ void main() {
   group('RunnerLiveness', () {
     const epoch = EngineEpoch(epoch: 2, reason: 'session change: remote connect');
 
-    RunnerLiveness build(_Recorder recorder, {int Function()? frames}) =>
+    // The raster probe is injected: the real one asks the engine for a 1 x 1
+    // snapshot, which under the widget-test binding's fake clock never comes
+    // back and would time out every stamp five seconds late.
+    RunnerLiveness build(
+      _Recorder recorder, {
+      int Function()? frames,
+      RasterProbe? probe,
+    }) =>
         RunnerLiveness(
           epoch: epoch,
           interval: const Duration(seconds: 10),
           invoke: recorder.invoke,
           readFrames: frames ?? () => 0,
+          probeRaster: probe ?? () async => true,
         );
 
     testWidgets('announces the engine generation the moment it starts',
@@ -267,12 +275,116 @@ void main() {
         epoch: epoch,
         interval: const Duration(seconds: 10),
         invoke: recorder.invoke,
+        probeRaster: () async => true,
       );
       liveness.start();
       await tester.pump(const Duration(seconds: 10));
 
       expect(recorder.of('liveness').single['frames'], isA<int>());
       liveness.stop();
+    });
+  });
+
+  // The 2026-09-12 freeze: the isolate stamps on time with frames counted
+  // while the engine returns an empty image for every snapshot. Every other
+  // detector read healthy; the stamp now carries the one answer that did not.
+  group('RunnerLiveness raster probe', () {
+    const epoch = EngineEpoch(epoch: 2, reason: 'session change: remote disconnect');
+
+    RunnerLiveness build(_Recorder recorder, RasterProbe probe) =>
+        RunnerLiveness(
+          epoch: epoch,
+          interval: const Duration(seconds: 10),
+          invoke: recorder.invoke,
+          readFrames: () => 0,
+          probeRaster: probe,
+        );
+
+    testWidgets('a healthy engine stamps raster ok with no failures',
+        (tester) async {
+      final recorder = _Recorder();
+      final liveness = build(recorder, () async => true);
+      liveness.start();
+      await tester.pump(const Duration(seconds: 10));
+
+      final stamp = recorder.of('liveness').single;
+      expect(stamp['rasterProbed'], isTrue);
+      expect(stamp['rasterOk'], isTrue);
+      expect(stamp['rasterFailures'], 0);
+      liveness.stop();
+    });
+
+    testWidgets('an engine that cannot rasterise is reported on every stamp, '
+        'with the run counted', (tester) async {
+      final recorder = _Recorder();
+      var drawing = false;
+      final liveness = build(recorder, () async => drawing);
+      liveness.start();
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pump(const Duration(seconds: 10));
+      drawing = true;
+      await tester.pump(const Duration(seconds: 10));
+
+      final stamps = recorder.of('liveness');
+      expect(stamps, hasLength(4));
+      expect([for (final s in stamps) s['rasterProbed']], everyElement(isTrue));
+      expect([for (final s in stamps) s['rasterOk']],
+          [false, false, false, true]);
+      expect([for (final s in stamps) s['rasterFailures']], [1, 2, 3, 0]);
+      // The isolate's own clock is untouched by the verdict.
+      expect([for (final s in stamps) s['ticks']], [1, 2, 3, 4]);
+      liveness.stop();
+    });
+
+    testWidgets('a probe that cannot run says so, and is not a failure',
+        (tester) async {
+      final recorder = _Recorder();
+      var canProbe = false;
+      final liveness = build(recorder, () async {
+        if (!canProbe) throw StateError('no engine');
+        return false;
+      });
+      liveness.start();
+      await tester.pump(const Duration(seconds: 10));
+      canProbe = true;
+      await tester.pump(const Duration(seconds: 10));
+
+      final stamps = recorder.of('liveness');
+      expect(stamps[0]['rasterProbed'], isFalse);
+      expect(stamps[0]['rasterOk'], isFalse);
+      expect(stamps[0]['rasterFailures'], 0);
+      expect(stamps[1]['rasterProbed'], isTrue);
+      expect(stamps[1]['rasterFailures'], 1);
+      liveness.stop();
+    });
+
+    testWidgets('a probe that never answers counts as failed after the timeout',
+        (tester) async {
+      // A raster thread that has stopped is a dead renderer, not a dead
+      // isolate: the stamp still goes out, late, saying the probe failed --
+      // so the runner sees a raster loss rather than Dart silence.
+      final recorder = _Recorder();
+      final liveness = build(recorder, () => Completer<bool?>().future);
+      liveness.start();
+      await tester.pump(const Duration(seconds: 10));
+      expect(recorder.of('liveness'), isEmpty);
+      await tester.pump(kRasterProbeTimeout);
+
+      final stamp = recorder.of('liveness').single;
+      expect(stamp['ticks'], 1);
+      expect(stamp['rasterProbed'], isTrue);
+      expect(stamp['rasterOk'], isFalse);
+      expect(stamp['rasterFailures'], 1);
+      liveness.stop();
+    });
+
+    testWidgets('the default probe draws a pixel on a working engine',
+        (tester) async {
+      // The real 1 x 1 snapshot, through the test engine. runAsync because
+      // the engine answers on a real thread, outside the fake clock.
+      final result = await tester.runAsync(probeRasterisation);
+      expect(result, isTrue);
     });
   });
 }
