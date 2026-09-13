@@ -57,8 +57,9 @@ void main() {
         operator: 'agent-7',
       );
 
-      final decoded =
-          decodePendingProposals(encodePendingProposals([older, newer]), now: now);
+      final decoded = decodePendingProposals(
+          encodePendingProposals([older, newer]),
+          now: now);
 
       expect(decoded, hasLength(2));
       expect(decoded[0].title, 'Older');
@@ -105,7 +106,8 @@ void main() {
           proposal(title: 'Good one').toJson(),
           {'title': 'no type or json'},
           42,
-          proposal(title: 'Good two',
+          proposal(
+                  title: 'Good two',
                   json: '{"_proposal_type":"alarm","title":"Good two"}')
               .toJson(),
         ],
@@ -131,12 +133,14 @@ void main() {
       final stale = proposal(
         title: 'Stale',
         json: '{"_proposal_type":"alarm","title":"Stale"}',
-        createdAt: now.subtract(pendingProposalMaxAge + const Duration(minutes: 1)),
+        createdAt:
+            now.subtract(pendingProposalMaxAge + const Duration(minutes: 1)),
       );
       final fresh = proposal(
         title: 'Fresh',
         json: '{"_proposal_type":"alarm","title":"Fresh"}',
-        createdAt: now.subtract(pendingProposalMaxAge - const Duration(minutes: 1)),
+        createdAt:
+            now.subtract(pendingProposalMaxAge - const Duration(minutes: 1)),
       );
       final decoded = decodePendingProposals(
           encodePendingProposals([stale, fresh]),
@@ -160,7 +164,8 @@ void main() {
           proposal(
             title: 'p$i',
             json: '{"_proposal_type":"alarm","title":"p$i"}',
-            createdAt: now.subtract(Duration(minutes: pendingProposalLimit + 10 - i)),
+            createdAt:
+                now.subtract(Duration(minutes: pendingProposalLimit + 10 - i)),
           ),
       ];
       final decoded =
@@ -190,24 +195,37 @@ void main() {
   });
 
   group('PendingProposalStore', () {
-    test('saves and loads through the preferences store', () async {
-      final prefs = InMemoryPreferences();
-      final store = PendingProposalStore(prefs);
+    // The store's load prunes anything older than [pendingProposalMaxAge] by
+    // the *real* clock, while [proposal] stamps a fixed date: the day after
+    // that date this group failed on every branch at once. Pin the clock the
+    // store reads, the way the decode tests pass `now` explicitly.
+    Future<void> pinned(Future<void> Function() body) =>
+        withClock(Clock.fixed(now), body);
 
-      await store.save([proposal(title: 'Kept')]);
-      expect(await prefs.getString(pendingProposalsPrefsKey), isNotNull);
+    test(
+        'saves and loads through the preferences store',
+        () => pinned(() async {
+              final prefs = InMemoryPreferences();
+              final store = PendingProposalStore(prefs);
 
-      final loaded = await store.load();
-      expect(loaded.single.title, 'Kept');
-    });
+              await store.save([proposal(title: 'Kept')]);
+              expect(
+                  await prefs.getString(pendingProposalsPrefsKey), isNotNull);
 
-    test('saving nothing clears the key', () async {
-      final prefs = InMemoryPreferences();
-      final store = PendingProposalStore(prefs);
-      await store.save([proposal()]);
-      await store.save(const []);
-      expect(await prefs.containsKey(pendingProposalsPrefsKey), isFalse);
-    });
+              final loaded = await store.load();
+              expect(loaded.single.title, 'Kept');
+            }));
+
+    test(
+        'saving nothing clears the key',
+        () => pinned(() async {
+              final prefs = InMemoryPreferences();
+              final store = PendingProposalStore(prefs);
+              await store.save([proposal()]);
+              await store.save(const []);
+              expect(
+                  await prefs.containsKey(pendingProposalsPrefsKey), isFalse);
+            }));
 
     test('a corrupt blob loads as nothing pending', () async {
       final prefs = InMemoryPreferences();
@@ -215,11 +233,13 @@ void main() {
       expect(await PendingProposalStore(prefs).load(), isEmpty);
     });
 
-    test('a store that cannot be read or written never throws', () async {
-      final store = PendingProposalStore(_BrokenPreferences());
-      expect(await store.load(), isEmpty);
-      await store.save([proposal()]);
-      await store.save(const []);
-    });
+    test(
+        'a store that cannot be read or written never throws',
+        () => pinned(() async {
+              final store = PendingProposalStore(_BrokenPreferences());
+              expect(await store.load(), isEmpty);
+              await store.save([proposal()]);
+              await store.save(const []);
+            }));
   });
 }
