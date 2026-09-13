@@ -59,6 +59,11 @@ STRIDE = 97
 # clear of hover and five times clear of a real repaint.
 CHANGE_MIN = 0.10
 
+# Two consecutive frames within this of each other count as "stopped moving".
+# Generous enough to ignore a blinking text cursor, tight enough that a
+# sliding keyboard panel does not qualify.
+STILL_MAX = 0.01
+
 
 def uniformity(px):
     """Fraction of sampled pixels that are the single most common colour.
@@ -89,18 +94,36 @@ def changed(a, b):
 
 
 def wait_for_change(get_frame, prev, timeout, poll):
-    """Poll until the frame differs from `prev` by CHANGE_MIN, or time runs out.
+    """Wait for the screen to move, then for it to stop moving.
 
-    Returns (fraction_changed, frame). Always returns the LAST frame read, so
-    the caller judges and photographs the same one it waited on.
+    Returns (fraction_changed, frame), measured on the settled frame.
+
+    Both halves are needed. Without the first, a fixed sleep is either a false
+    failure on a loaded runner or dead time on every green run. Without the
+    second, the poll returns on the first frame past the threshold, which for
+    an animating widget is the middle of the animation -- run 34746637743
+    photographed the on-screen keyboard with one key row showing and the rest
+    still below the fold. It passed, at 11.8% against a 10% bar, and the
+    screenshot was worse evidence than the fixed sleep it replaced.
+
+    "Stopped moving" is two consecutive frames within STILL_MAX of each other,
+    which a blinking text cursor stays under.
     """
     deadline = time.monotonic() + timeout
-    while True:
-        px = get_frame()
-        d = changed(prev, px)
-        if d >= CHANGE_MIN or time.monotonic() >= deadline:
-            return d, px
+    px = get_frame()
+    while changed(prev, px) < CHANGE_MIN and time.monotonic() < deadline:
         time.sleep(poll)
+        px = get_frame()
+    # Settle. Bounded by the same deadline, so a permanently animating screen
+    # cannot hang the run -- it just gets photographed mid-animation.
+    while time.monotonic() < deadline:
+        time.sleep(poll)
+        nxt = get_frame()
+        if changed(px, nxt) < STILL_MAX:
+            px = nxt
+            break
+        px = nxt
+    return changed(prev, px), px
 
 
 def find_ovmf():
