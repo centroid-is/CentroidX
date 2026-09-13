@@ -258,9 +258,11 @@ class AccessPolicy {
   /// unbound key, an unmentioned member, a missing lookup and an unreadable
   /// binding source all answer `operate` rather than "unrestricted".
   /// Bindings raise the requirement; nothing lowers it past the floor. The
-  /// plant does not lock, because the anonymous session maps to the Operator
-  /// role, which holds `operate`; what closes is the free pass an account
-  /// deliberately stripped of `operate` used to get on every unbound key.
+  /// plant does not lock, because the anonymous account is seeded onto the
+  /// Operator role, which holds `operate`; what closes is the free pass an
+  /// account deliberately stripped of `operate` used to get on every unbound
+  /// key. A site that moves the anonymous account onto a role without
+  /// `operate` is choosing a panel that does nothing until somebody signs in.
   AccessGroup groupForTag(String key, {String? member}) {
     final lookup = _tagBindings;
     if (lookup == null) return AccessGroup.operate;
@@ -275,7 +277,7 @@ class AccessPolicy {
       // guard that threw here because Postgres was down would take the
       // plant's controls down with it. An unreadable binding source is
       // indistinguishable from an unbound key, and both answer the operate
-      // floor — which the anonymous Operator role holds.
+      // floor — which the anonymous account's seeded role holds.
       return AccessGroup.operate;
     }
   }

@@ -6,24 +6,14 @@ import 'package:meta/meta.dart';
 import 'access_group.dart';
 import 'allowed_pages.dart';
 
-/// The name of the role an unauthenticated panel resolves to.
+/// The name of the seeded role the anonymous account starts out holding.
 ///
-/// Anonymous **is** the Operator role — by construction, not through a
-/// configurable pointer. That removes a knob nobody needs and keeps "anonymous
-/// is operator" true without anyone having to maintain it.
-///
-/// Two consequences follow, and both are enforced rather than documented:
-///
-/// * The row named here cannot be deleted or renamed. A logged-out panel would
-///   otherwise lose its identity entirely. See [isProtectedRoleName] and
-///   [ProtectedRoleError].
-/// * Editing that row changes what an *unauthenticated* panel may do. Ticking
-///   `setpoints` on Operator silently grants it to every panel on the floor
-///   with nobody signed in. The roles screen must say so at the point of edit;
-///   it is the one footgun this simplification creates.
-///
-/// Call sites compare against this constant rather than a string literal, so
-/// there is exactly one place the protected name is written down.
+/// An ordinary role: it may be edited, renamed or deleted like any other.
+/// What a panel with nobody signed in may do is decided by the reserved
+/// account in `anonymous_account.dart`, which the seed puts on this role so an
+/// upgraded station's logged-out panels keep exactly the groups and pages they
+/// had. It is also the floor a panel falls back to when that account cannot be
+/// read — see `AccessRepository.anonymousAccount`.
 const String kOperatorRoleName = 'Operator';
 
 /// A role: a name and the set of groups it grants.
@@ -76,19 +66,17 @@ class AccessRole {
   /// **A page path, never a section path**, and never a role or a group: this
   /// is the identity side of the relation pointing at pages, which is the
   /// direction that fails closed when a page is renamed away. The inverse —
-  /// pages naming roles — is ruled out by [kOperatorRoleName]'s reasoning and
-  /// by `MenuItem.requiredGroup`'s doc.
+  /// pages naming roles — is ruled out by `MenuItem.requiredGroup`'s doc.
   ///
   /// A role's whitelist governs everyone holding it who has no personal
-  /// override, and — because anonymous *is* [kOperatorRoleName] — the Operator
-  /// row's whitelist governs every logged-out panel on the floor.
+  /// override — the anonymous account included, so a role that account holds
+  /// governs every logged-out panel on the floor.
   final Set<String>? allowedPages;
 
   /// True for the rows written by the schema-v6 seed migration.
   ///
   /// Informational only — a seeded role is an ordinary row afterwards and may
-  /// be edited or deleted like any other. `Operator` is the sole exception, and
-  /// that is enforced by [isProtectedRoleName], not by this flag.
+  /// be edited, renamed or deleted like any other.
   final bool seeded;
 
   /// Whether this role grants [g].
@@ -168,37 +156,12 @@ class AccessRole {
       'pages: ${encodeAllowedPages() ?? 'all'})';
 }
 
-/// True when [name] names a role the system refuses to delete or rename.
-///
-/// Only `Operator`, and the match is case-insensitive and whitespace-tolerant:
-/// a rename to `operator` or `" Operator "` would leave an unauthenticated
-/// panel with no role to resolve to, so the guard must not be escapable by
-/// typography.
-bool isProtectedRoleName(String name) =>
-    name.trim().toLowerCase() == kOperatorRoleName.toLowerCase();
-
-/// Thrown when something tries to delete or rename a protected role.
-///
-/// An [Error] rather than an [Exception]: reaching it means a caller skipped
-/// the [isProtectedRoleName] check, which is a defect in the caller, not a
-/// condition to recover from at runtime.
-class ProtectedRoleError extends Error {
-  ProtectedRoleError(this.roleName);
-
-  /// The role that was being deleted or renamed.
-  final String roleName;
-
-  @override
-  String toString() => 'ProtectedRoleError: the role "$roleName" cannot be '
-      'deleted or renamed — an unauthenticated panel resolves to it.';
-}
-
 /// The four roles written by the schema-v6 seed migration.
 ///
-/// After seeding these are **ordinary rows** — editable and deletable like any
-/// other, with `Operator` the single exception (see [kOperatorRoleName]). They
-/// exist so a freshly commissioned station has something sensible to assign,
-/// not as a fixed hierarchy.
+/// After seeding these are **ordinary rows** — editable, renamable and
+/// deletable like any other (a role the anonymous account holds is refused
+/// deletion the way any held role is). They exist so a freshly commissioned
+/// station has something sensible to assign, not as a fixed hierarchy.
 ///
 /// `AppRole.name` is the primary key on purpose, so an OIDC group claim of
 /// `"Shift Leader"` will one day match by name with no mapping table.

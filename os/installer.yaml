@@ -1,0 +1,120 @@
+{{- $suite := or .suite "trixie" -}}
+{{- $mirror := or .mirror "http://deb.debian.org/debian" -}}
+{{- $usbimage := or .usbimage "usb-installer.img" -}}
+{{- $usbsize := or .usbsize "16GB" -}}
+# The USB key. Plug it into a station, it boots straight to the installer, asks
+# five questions, and writes the station image onto the SSD.
+#
+# The payload (image .gz + .bmap + image-info) is assembled into out/payload/ by
+# the Makefile, so that this recipe never has to know where the image came from.
+architecture: amd64
+
+actions:
+  - action: debootstrap
+    suite: {{ $suite }}
+    components: [ main, non-free-firmware ]
+    mirror: {{ $mirror }}
+    variant: minbase
+
+  - action: apt
+    recommends: false
+    description: Minimal bootable system plus the flasher
+    packages:
+      - linux-image-amd64
+      - systemd-sysv
+      - udev
+      - grub-efi-amd64
+      - efibootmgr
+      # bmaptool skips the holes in a sparse image, so a 8GB image with 2GB of
+      # data writes 2GB. `bmap-tools` is a transitional package on trixie.
+      - bmaptool
+      - zstd
+      - gzip
+      - util-linux
+      - parted
+      - gdisk
+      - e2fsprogs
+      - dosfstools
+      - kbd
+      - ncurses-bin
+      # The graphical front end: weston for a display, seatd for the DRM/input
+      # seat (on bare metal a systemd service, not the separate privileged
+      # container the station uses), mesa for the GL renderer.
+      - weston
+      - seatd
+      - libinput10
+      - libgl1-mesa-dri
+      - libgbm1
+      - fonts-dejavu-core
+      # The X11 Compose tables. The embedder the setup app runs on is the one
+      # from the centroid-hmi image, which carries docker/frontend/dead-keys.patch
+      # and reads these to turn a dead key plus a letter into one accented
+      # character. Nothing the installer asks for needs an accent, but the
+      # binary expects the file the station gives it, so it gets the same.
+      - libx11-data
+      # `wg genkey`/`wg pubkey`: the station's private key is generated here, on
+      # the machine being installed, and never travels on the stick.
+      - wireguard-tools
+      - ca-certificates
+      # all-hardware: the stick has to boot machines nobody profiled first
+      - firmware-misc-nonfree
+      - firmware-linux-free
+
+  - action: overlay
+    source: overlays/installer
+    description: Installer unit and script
+
+  - action: overlay
+    source: out/payload
+    destination: /opt/centroidx
+    description: Station image payload
+
+  # Built by the setup-app CI job (flutter-elinux) and downloaded into out/.
+  # Empty on a local `make usb`, which yields a text-only installer -- the
+  # graphical unit only enables itself when it finds a binary here.
+  - action: overlay
+    source: out/app-bundle
+    destination: /opt/centroidx-setup
+    description: Setup app bundle
+
+  - action: overlay
+    source: out/bin
+    destination: /usr/local/bin
+    description: centroidx-keyboard and the matched embedder
+
+  - action: run
+    chroot: true
+    label: installer-setup
+    script: scripts/installer-setup.sh
+
+  - action: image-partition
+    imagename: {{ $usbimage }}
+    imagesize: {{ $usbsize }}
+    partitiontype: gpt
+    partitions:
+      - name: ESP
+        partlabel: esp
+        fs: vfat
+        start: 1MiB
+        end: 513MiB
+        flags: [ boot, esp ]
+        parttype: c12a7328-f81f-11d2-ba4b-00a0c93ec93b
+      - name: root
+        partlabel: installer
+        fs: ext4
+        start: 513MiB
+        end: 100%
+    mountpoints:
+      - mountpoint: /
+        partition: root
+      - mountpoint: /boot/efi
+        partition: ESP
+
+  - action: filesystem-deploy
+    setup-fstab: true
+    setup-kernel-cmdline: true
+
+  - action: run
+    chroot: true
+    label: bootloader
+    script: scripts/bootloader.sh

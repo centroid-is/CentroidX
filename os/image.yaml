@@ -1,0 +1,58 @@
+{{- $image := or .image "centroidx.img" -}}
+{{- $imagesize := or .imagesize "8GB" -}}
+{{- $suite := or .suite "trixie" -}}
+{{- $gpu := or .gpu "intel" -}}
+{{- $mirror := or .mirror "http://deb.debian.org/debian" -}}
+# Bootable station image. Flash onto an SSD with bmaptool; it grows to the disk
+# on first boot.
+architecture: amd64
+
+actions:
+  - action: recipe
+    recipe: rootfs.yaml
+    # These MUST be listed. debos's recipe action starts the sub-recipe's
+    # template map empty and copies in only this block -- the parent's -t
+    # arguments are not inherited (actions/recipe_action.go). Without them
+    # `make image GPU=amd` silently built the Intel image while image-info said
+    # amd, and `make print-recipe` went through the same path so it could not
+    # show the difference either. (Review #4.)
+    variables:
+      suite: {{ $suite }}
+      gpu: {{ $gpu }}
+      mirror: {{ $mirror }}
+
+  - action: image-partition
+    imagename: {{ $image }}
+    imagesize: {{ $imagesize }}
+    partitiontype: gpt
+    partitions:
+      - name: ESP
+        partlabel: esp
+        fs: vfat
+        start: 1MiB
+        end: 513MiB
+        flags: [ boot, esp ]
+        # Discoverable Partitions Spec type GUIDs. The root one is what lets
+        # systemd-repart (or anything else) recognise this partition on a
+        # machine it has never seen.
+        parttype: c12a7328-f81f-11d2-ba4b-00a0c93ec93b
+      - name: root
+        partlabel: root
+        fs: ext4
+        start: 513MiB
+        end: 100%
+        parttype: 4f68bce3-e8cd-4db1-96e7-fbcaf984b709
+    mountpoints:
+      - mountpoint: /
+        partition: root
+      - mountpoint: /boot/efi
+        partition: ESP
+
+  - action: filesystem-deploy
+    setup-fstab: true
+    setup-kernel-cmdline: true
+
+  - action: run
+    chroot: true
+    label: bootloader
+    script: scripts/bootloader.sh

@@ -175,6 +175,9 @@ whole of getting from there to a site that runs.
    migration and are ordinary rows afterwards. Read them and re-tick them to
    suit the site — noting that out of the box **only `Engineering` grants
    `users`**, which is the group carrying the roles and users screen itself.
+   The reserved `anonymous` account — every panel with nobody signed in — is
+   seeded onto `Operator` at the same time; change which roles it holds from
+   the accounts list, not by editing `Operator`.
 2. **Create the first account.** The page at `/access/first-user` creates one
    only while `app_user` is empty, and forces it to `Engineering`; a caller
    cannot ask for anything else. That is why there is no default password on a
@@ -287,6 +290,7 @@ an unrelated reason, the `psql` equivalent is one statement per level, and
 
 ```sql
 UPDATE app_role SET allowed_pages = NULL WHERE name = 'Operator';
+UPDATE app_user SET allowed_pages = NULL WHERE username = 'anonymous';
 UPDATE app_user SET allowed_pages = NULL WHERE username = 'lina';
 ```
 
@@ -362,17 +366,34 @@ waits, and never opens.
 
 ## 5. What must not be changed
 
-**The `Operator` role cannot be deleted or renamed.** This is enforced in code
-(`isProtectedRoleName` / `ProtectedRoleError` in `packages/tfc_access`), and
-the guard is case-insensitive and whitespace-trimmed, so `operator` and
-`" Operator "` are refused too.
+**The `anonymous` account cannot be deleted, signed in to, given a password,
+made a station account or given a timeout.** It is every panel with nobody
+signed in. This is enforced in code (`AnonymousAccountError` in
+`packages/tfc_access`, the guards in `AccessRepository`), and no other account
+may be created under the name in any capitalisation. Every open of the
+database re-seeds a deleted row and resets a password, station flag or timeout
+somebody gave it by hand; its roles and pages are left alone.
 
-**Editing `Operator`'s groups is not a small edit.** Anonymous resolves to
-`Operator`, so its group set is what every logged-out panel on the floor may
+**Changing the roles `anonymous` holds is not a small edit — nor is editing a
+role it holds.** Their union is what every logged-out panel on the floor may
 do. Widening it hands those permissions to anybody walking past a panel;
 narrowing it can lock out routine operation everywhere at once, with no
 logged-in user anywhere to notice the change was deliberate. Change it with the
-same care as a PLC download, and note the change in change control.
+same care as a PLC download, and note the change in change control. A role
+`anonymous` holds cannot be deleted until it is moved off it.
+
+**Stations on an older build share the database during an upgrade.** They
+still resolve a logged-out panel to the `Operator` role, and they list
+`anonymous` as an ordinary account whose controls they do not refuse. Nothing
+they do there can sign anybody in — its hash is undecodable on every build —
+but a password, station flag or timeout set from an old build lasts only until
+a new build next opens the database, and a delete lasts only until the same
+moment. Move `anonymous` off `Operator` only once every station runs the new
+build, or old-build panels keep answering as `Operator`.
+
+**An account literally named `anonymous` from before the name was reserved is
+adopted.** It keeps its roles, loses its password, and becomes every logged-out
+panel. Rename the person's account before upgrading if that is not wanted.
 
 **The audit table's schema.** `audit_entry`'s columns are the audit contract
 (`AuditRecord` in `packages/tfc_access`) one for one. Adding a column is a

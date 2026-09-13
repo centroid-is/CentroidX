@@ -1,0 +1,8 @@
+// Let the centroid user manage NetworkManager without a password prompt: the
+// HMI offers network settings and there is nobody at the panel to authenticate.
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0 &&
+        subject.user == "centroid") {
+        return polkit.Result.YES;
+    }
+});

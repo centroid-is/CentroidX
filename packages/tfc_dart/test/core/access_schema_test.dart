@@ -385,7 +385,8 @@ void main() {
         "VALUES ('jon', 'Engineering', 'hash', 'salt', '2026-08-28T00:00:00Z')",
       );
 
-      final rows = await db.customSelect('SELECT * FROM app_user').get();
+      final rows = await db.customSelect(
+          "SELECT * FROM app_user WHERE username != 'anonymous'").get();
       expect(rows, hasLength(1));
       expect(rows.first.read<String>('role_name'), 'Engineering');
     });
@@ -510,7 +511,8 @@ void main() {
             reason: '${row.read<String>('name')} must carry over unrestricted');
       }
 
-      final users = await db.customSelect('SELECT * FROM app_user').get();
+      final users = await db.customSelect(
+          "SELECT * FROM app_user WHERE username != 'anonymous'").get();
       expect(users, hasLength(1));
       expect(users.first.read<String?>('allowed_pages'), isNull,
           reason: 'a v6 account follows its role, and NULL is how that is '
@@ -673,7 +675,8 @@ void main() {
       final db = await reopen();
       addTearDown(() => db.close());
 
-      final users = await db.customSelect('SELECT * FROM app_user').get();
+      final users = await db.customSelect(
+          "SELECT * FROM app_user WHERE username != 'anonymous'").get();
       expect(users, hasLength(1));
       expect(users.first.read<int?>('inactivity_timeout_minutes'), isNull);
     });
@@ -787,7 +790,8 @@ void main() {
       final db = await reopen();
       addTearDown(() => db.close());
 
-      final users = await db.customSelect('SELECT * FROM app_user').get();
+      final users = await db.customSelect(
+          "SELECT * FROM app_user WHERE username != 'anonymous'").get();
       expect(users, hasLength(1));
       expect(users.first.read<String?>('additional_roles'), isNull);
       // And NULL reads back as "holds only its primary role", which is the
@@ -829,6 +833,98 @@ void main() {
         contains('ALTER TABLE app_user ADD COLUMN IF NOT EXISTS '
             'additional_roles TEXT'),
       );
+    });
+  });
+
+  group('the anonymous account seed', () {
+    Future<AppDatabase> open() async {
+      final db = AppDatabase.inMemoryForTest();
+      await db.customSelect('SELECT 1').getSingle();
+      return db;
+    }
+
+    Future<List<QueryRow>> anonymousRows(AppDatabase db) => db
+        .customSelect("SELECT * FROM app_user WHERE username = 'anonymous'")
+        .get();
+
+    test('a fresh database has the account, on Operator, unable to sign in',
+        () async {
+      final db = await open();
+      addTearDown(() => db.close());
+
+      final rows = await anonymousRows(db);
+      expect(rows, hasLength(1));
+      final row = rows.single;
+      expect(row.read<String>('role_name'), kOperatorRoleName);
+      expect(row.read<String?>('additional_roles'), isNull);
+      expect(row.read<String?>('allowed_pages'), isNull);
+      expect(row.read<String>('password_hash'), kAnonymousPasswordSentinel);
+      expect(row.read<String>('salt'), kAnonymousSaltSentinel);
+      expect(row.read<bool>('station_account'), isFalse);
+    });
+
+    test('re-running the seed is harmless and keeps what was configured',
+        () async {
+      final db = await open();
+      addTearDown(() => db.close());
+      await db.customStatement("UPDATE app_user SET role_name = 'Maintenance', "
+          "additional_roles = '[\"Operator\"]', allowed_pages = '[\"/\"]' "
+          "WHERE username = 'anonymous'");
+
+      await db.seedAnonymousAccountForTest();
+      await db.seedAnonymousAccountForTest();
+
+      final row = (await anonymousRows(db)).single;
+      expect(row.read<String>('role_name'), 'Maintenance');
+      expect(row.read<String?>('additional_roles'), '["Operator"]');
+      expect(row.read<String?>('allowed_pages'), '["/"]');
+    });
+
+    test('a credential, station flag or timeout set by an older build is reset',
+        () async {
+      final db = await open();
+      addTearDown(() => db.close());
+      await db.customStatement("UPDATE app_user SET password_hash = 'x', "
+          "salt = 'y', station_account = 1, inactivity_timeout_minutes = 30 "
+          "WHERE username = 'anonymous'");
+
+      await db.seedAnonymousAccountForTest();
+
+      final row = (await anonymousRows(db)).single;
+      expect(row.read<String>('password_hash'), kAnonymousPasswordSentinel);
+      expect(row.read<String>('salt'), kAnonymousSaltSentinel);
+      expect(row.read<bool>('station_account'), isFalse);
+      expect(row.read<int?>('inactivity_timeout_minutes'), isNull);
+    });
+
+    test('a deleted row comes back on the next seed', () async {
+      final db = await open();
+      addTearDown(() => db.close());
+      await db.customStatement(
+          "DELETE FROM app_user WHERE username = 'anonymous'");
+
+      await db.seedAnonymousAccountForTest();
+
+      expect(await anonymousRows(db), hasLength(1));
+    });
+
+    test('with no Operator role the seed stands aside without failing',
+        () async {
+      final db = await open();
+      addTearDown(() => db.close());
+      await db.customStatement(
+          "DELETE FROM app_user WHERE username = 'anonymous'");
+      await db.customStatement("DELETE FROM app_role WHERE name = 'Operator'");
+
+      await db.seedAnonymousAccountForTest();
+
+      expect(await anonymousRows(db), isEmpty);
+    });
+
+    test('the seed needs no schema version of its own', () async {
+      final db = await open();
+      addTearDown(() => db.close());
+      expect(db.schemaVersion, 9);
     });
   });
 

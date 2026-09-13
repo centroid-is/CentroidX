@@ -53,8 +53,29 @@ jobs:
     with:
       run_integration_tests: 'false'
 
+  # The USB installer for the OS under the containers, built from this same
+  # commit. It is ~1.3GB and takes ~12 minutes, but it runs beside the three app
+  # builds rather than after them, so it costs the run no wall-clock.
+  #
+  # Deliberately NOT a hard dependency of `publish` -- see the `if` there. A
+  # debos or apt failure must not be able to hold the app prerelease hostage;
+  # that is the mistake that deadlocked releases from #243 until #271.
+  station-image:
+    uses: ./.github/workflows/station-image.yml
+    secrets: inherit
+
   publish:
-    needs: [windows-build, macos-build, linux-build, manager-build]
+    needs: [windows-build, macos-build, linux-build, manager-build, station-image]
+    # `!cancelled()` plus an explicit roll-call of the jobs that are genuinely
+    # required. station-image is in `needs` only to be waited for -- its result
+    # is not consulted, so a failed image publishes an app prerelease without
+    # one instead of publishing nothing at all.
+    if: >-
+      !cancelled()
+      && needs.windows-build.result == 'success'
+      && needs.macos-build.result == 'success'
+      && needs.linux-build.result == 'success'
+      && needs.manager-build.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download Windows portable build
@@ -101,6 +122,37 @@ jobs:
           path: manager/
           merge-multiple: true
 
+      # continue-on-error because station-image is allowed to have failed: with
+      # no artifact this step goes red, the asset is left out, and the release
+      # still publishes. Checked by name below rather than trusted.
+      - name: Download station USB installer
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: station-usb-installer
+          path: release/
+
+
+      # upload-artifact roots an artifact at the least common ancestor of its
+      # upload paths, which for os/out/usb-installer.* puts both files at the
+      # artifact root -- so they should already be at release/. That is an
+      # implicit consequence of those paths rather than a guarantee, and the only
+      # symptom of being wrong is a release quietly missing its installer. So it
+      # is normalised instead of assumed, and the release publishes either way.
+      - name: Put the installer where the asset list expects it
+        run: |
+          set -euo pipefail
+          cd release
+          for f in usb-installer.img.gz usb-installer.img.bmap; do
+            [ -f "$f" ] && continue
+            found=$(find . -name "$f" -type f -print -quit)
+            if [ -n "$found" ]; then
+              echo "::warning::$f was at $found, not the artifact root - moving it"
+              mv "$found" "$f"
+            fi
+          done
+          ls -l usb-installer.* 2>/dev/null || echo "no station installer in this run"
+
       - name: Assemble release assets
         run: |
           set -euo pipefail
@@ -119,11 +171,28 @@ jobs:
           ls -lh manager/ 2>/dev/null || true
 
           cd release
-          sha256sum centroidx_windows_x64.zip centroidx_windows_amd64.msix \
-                    centroidx-sideload.cer \
-                    centroidx_darwin_arm64.dmg \
-                    centroidx_linux_x64.tar.gz \
-                    centroidx-manager_* > SHA256SUMS.txt
+
+          # Named, never globbed -- if a build stops producing one of these the
+          # checksum step fails rather than quietly publishing without it.
+          sums=( centroidx_windows_x64.zip centroidx_windows_amd64.msix
+                 centroidx-sideload.cer
+                 centroidx_darwin_arm64.dmg
+                 centroidx_linux_x64.tar.gz )
+          sums+=( centroidx-manager_* )
+
+          # The station installer is the one asset allowed to be missing, so it
+          # is tested for instead. Both halves or neither: bmaptool needs the
+          # .bmap to flash the sparse image, and a .bmap without its image is
+          # just confusing.
+          if [ -f usb-installer.img.gz ] && [ -f usb-installer.img.bmap ]; then
+            sums+=( usb-installer.img.gz usb-installer.img.bmap )
+            echo "station installer present: $(du -h usb-installer.img.gz | cut -f1)"
+          else
+            echo "::warning::no station USB installer in this run - publishing without it"
+            rm -f usb-installer.img.gz usb-installer.img.bmap
+          fi
+
+          sha256sum "${sums[@]}" > SHA256SUMS.txt
           ls -lh
           cat SHA256SUMS.txt
 
@@ -134,6 +203,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          # The release is deleted and recreated on every run, so an asset
+          # cannot simply be left in place between runs -- everything published
+          # has to be passed to `create` below. That is why station-image is
+          # built here rather than uploaded to main-latest out of band.
+          assets=( release/centroidx_windows_x64.zip
+                   release/centroidx_windows_amd64.msix
+                   release/centroidx-sideload.cer
+                   release/centroidx_darwin_arm64.dmg
+                   release/centroidx_linux_x64.tar.gz
+                   release/centroidx-manager_windows_amd64.exe
+                   release/centroidx-manager_darwin_arm64.dmg
+                   release/centroidx-manager_linux_amd64
+                   release/SHA256SUMS.txt )
+
+          STATION_ROW=''
+          if [ -f release/usb-installer.img.gz ]; then
+            assets+=( release/usb-installer.img.gz release/usb-installer.img.bmap )
+            STATION_ROW='| Station OS (x64) | `usb-installer.img.gz` — write to a USB key and boot it to install Debian + the container stack on a station; `.bmap` is for `bmaptool` |'
+          fi
+
           gh release delete main-latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
           gh release create main-latest \
             --repo "$GITHUB_REPOSITORY" \
@@ -151,16 +241,9 @@ jobs:
           | Windows (x64) | \`centroidx_windows_amd64.msix\` — sideload installer, used by the in-app updater's latest channel |
           | Windows (x64) | \`centroidx-sideload.cer\` — public signing certificate; the MSIX will not install until this is in \`LocalMachine\\TrustedPeople\` |
           | Linux (x64) | \`centroidx_linux_x64.tar.gz\` — GTK3 desktop bundle |
+          ${STATION_ROW}
 
           The \`centroidx-manager_*\` assets are the version manager built from this same commit; its **Latest** channel installs the packages above.
 
           Checksums in \`SHA256SUMS.txt\`." \
-            release/centroidx_windows_x64.zip \
-            release/centroidx_windows_amd64.msix \
-            release/centroidx-sideload.cer \
-            release/centroidx_darwin_arm64.dmg \
-            release/centroidx_linux_x64.tar.gz \
-            release/centroidx-manager_windows_amd64.exe \
-            release/centroidx-manager_darwin_arm64.dmg \
-            release/centroidx-manager_linux_amd64 \
-            release/SHA256SUMS.txt
+            "${assets[@]}"

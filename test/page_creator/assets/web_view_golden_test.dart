@@ -130,7 +130,10 @@ Future<void> _loadFonts() async {
 void main() {
   setUpAll(_loadFonts);
 
-  tearDown(() => WebViewAssetView.debugSurfaceFactory = null);
+  tearDown(() async {
+    WebViewAssetView.debugSurfaceFactory = null;
+    await WebViewSurfacePool.instance.clear();
+  });
 
   group('web view golden tests',
       skip: goldenSkip, () {

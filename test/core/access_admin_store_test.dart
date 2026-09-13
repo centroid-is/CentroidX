@@ -198,6 +198,15 @@ AccessRole _shiftLead() => const AccessRole(
       groups: {AccessGroup.operate, AccessGroup.setpoints},
     );
 
+/// Every account a person made, read straight from the repository.
+///
+/// Leaves out the reserved anonymous row the seed writes into every database:
+/// the assertions using this are about the accounts these tests create.
+Future<List<AppUserData>> _people(AccessRepository repository) async =>
+    (await repository.listUsers())
+        .where((u) => u.username != kAnonymousUsername)
+        .toList();
+
 void main() {
   late AppDatabase db;
   late _RecordingRepository repository;
@@ -328,7 +337,7 @@ void main() {
 
       final users = await store.listUsers();
 
-      expect(users.map((u) => u.username), ['jon']);
+      expect(users.map((u) => u.username), [kAnonymousUsername, 'jon']);
       expect(sink.rows, isEmpty);
       expect(denials, isEmpty);
     });
@@ -691,7 +700,7 @@ void main() {
       expect(row.member, 'bob');
       expect(row.oldValue, isNull);
       expect(row.newValue, 'Shift Leader');
-      expect((await repository.listUsers()).single.username, 'bob');
+      expect((await _people(repository)).single.username, 'bob');
     });
 
     test('deleteUser records user.delete naming the role held', () async {
@@ -709,7 +718,7 @@ void main() {
       expect(row.member, 'bob');
       expect(row.oldValue, 'Shift Leader');
       expect(row.newValue, isNull);
-      expect((await repository.listUsers()).map((u) => u.username), ['admin1']);
+      expect((await _people(repository)).map((u) => u.username), ['admin1']);
     });
 
     test('setUserRole records user.role with the old and the new role',
@@ -743,7 +752,7 @@ void main() {
       expect(row.oldValue, 'false');
       expect(row.newValue, 'true');
       expect(
-          (await repository.listUsers())
+          (await _people(repository))
               .singleWhere((u) => u.username == 'freezer')
               .stationAccount,
           isTrue);
@@ -766,7 +775,7 @@ void main() {
               'it is on the user.pages rows');
       expect(row.newValue, '45');
       expect(
-          (await repository.listUsers()).single.inactivityTimeoutMinutes, 45);
+          (await _people(repository)).single.inactivityTimeoutMinutes, 45);
     });
 
     test('clearing the timeout records the move back to the default',
@@ -782,7 +791,7 @@ void main() {
       final row = sink.rows.single;
       expect(row.oldValue, '45');
       expect(row.newValue, isNull);
-      expect((await repository.listUsers()).single.inactivityTimeoutMinutes,
+      expect((await _people(repository)).single.inactivityTimeoutMinutes,
           isNull);
     });
 
@@ -887,7 +896,7 @@ void main() {
         (s) => s.createUser(
             username: 'bob', password: 'pw', roleName: 'Shift Leader'),
       );
-      expect(await repository.listUsers(), isEmpty);
+      expect(await _people(repository), isEmpty);
     });
 
     test('deleteUser', () async {
@@ -895,7 +904,7 @@ void main() {
           username: 'bob', password: 'pw', roleName: 'Shift Leader');
       repository.calls.clear();
       await expectGated('user.delete', (s) => s.deleteUser('bob'));
-      expect((await repository.listUsers()).single.username, 'bob');
+      expect((await _people(repository)).single.username, 'bob');
     });
 
     test('setUserRole', () async {
@@ -904,7 +913,7 @@ void main() {
       repository.calls.clear();
       await expectGated(
           'user.role', (s) => s.setUserRole('bob', 'Maintenance'));
-      expect((await repository.listUsers()).single.roleName, 'Shift Leader');
+      expect((await _people(repository)).single.roleName, 'Shift Leader');
     });
 
     test('setUserStationAccount', () async {
@@ -913,7 +922,7 @@ void main() {
       repository.calls.clear();
       await expectGated('user.station_account',
           (s) => s.setUserStationAccount('freezer', true));
-      expect((await repository.listUsers()).single.stationAccount, isFalse);
+      expect((await _people(repository)).single.stationAccount, isFalse);
     });
 
     test('setUserInactivityTimeout', () async {
@@ -922,18 +931,18 @@ void main() {
       repository.calls.clear();
       await expectGated('user.inactivity_timeout',
           (s) => s.setUserInactivityTimeout('bob', 45));
-      expect((await repository.listUsers()).single.inactivityTimeoutMinutes,
+      expect((await _people(repository)).single.inactivityTimeoutMinutes,
           isNull);
     });
 
     test('setUserPassword', () async {
       await repository.createUser(
           username: 'bob', password: 'pw', roleName: 'Shift Leader');
-      final before = (await repository.listUsers()).single.passwordHash;
+      final before = (await _people(repository)).single.passwordHash;
       repository.calls.clear();
       await expectGated(
           'user.password', (s) => s.setUserPassword('bob', 'new-one'));
-      expect((await repository.listUsers()).single.passwordHash, before);
+      expect((await _people(repository)).single.passwordHash, before);
     });
 
     test('setRolePages', () async {
@@ -976,7 +985,7 @@ void main() {
               'transaction, which is precisely the condition this layer '
               'cannot pre-check. So the allowed row is written after the call '
               'returns, and a refusal leaves nothing claiming it happened.');
-      expect((await repository.listUsers()).single.username, 'admin1');
+      expect((await _people(repository)).single.username, 'admin1');
     });
 
     test('LastUsersHolderException: unticking users from the only role',
@@ -1021,7 +1030,7 @@ void main() {
         throwsA(isA<UserExistsException>()),
       );
       expect(sink.rows, isEmpty);
-      expect((await repository.listUsers()).single.roleName, 'Shift Leader');
+      expect((await _people(repository)).single.roleName, 'Shift Leader');
     });
 
     test('UserNotFoundException: resetting an absent account password',
@@ -1035,15 +1044,27 @@ void main() {
       expect(sink.rows, isEmpty);
     });
 
-    test('ProtectedRoleError: deleting Operator', () async {
+    test('AnonymousAccountError: deleting the anonymous account', () async {
+      final store = buildStore();
+
+      await expectLater(
+        () => store.deleteUser(kAnonymousUsername),
+        throwsA(isA<AnonymousAccountError>()),
+        reason: 'it is an Error because reaching it means a caller skipped a '
+            'check; a screen offering a Delete on the anonymous row must fail '
+            'loudly rather than be swallowed here.',
+      );
+      expect(sink.rows, isEmpty);
+      expect(await repository.user(kAnonymousUsername), isNotNull);
+    });
+
+    test('RoleInUseException: deleting a role the anonymous account holds',
+        () async {
       final store = buildStore();
 
       await expectLater(
         () => store.deleteRole(kOperatorRoleName),
-        throwsA(isA<ProtectedRoleError>()),
-        reason: 'it is an Error because reaching it means a caller skipped a '
-            'check; a screen offering a Delete on the Operator row must fail '
-            'loudly rather than be swallowed here.',
+        throwsA(isA<RoleInUseException>()),
       );
       expect(sink.rows, isEmpty);
       expect(await repository.role(kOperatorRoleName), isNotNull);

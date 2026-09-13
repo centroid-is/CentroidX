@@ -268,32 +268,36 @@ class _PendingChange {
 /// no policy. Gating is not this class's job and is not this phase's job —
 /// Phase 1 records and resolves, Phase 3 enforces.
 ///
-/// ## The Operator footgun
+/// ## The anonymous account
 ///
-/// Anonymous **is** the role named [kOperatorRoleName]. A session with nobody
-/// signed in resolves to that row, by construction rather than through a
-/// configurable pointer.
+/// A session with nobody signed in answers as the reserved `app_user` row
+/// named [kAnonymousUsername] (`anonymous_account.dart`). It holds roles and a
+/// page whitelist like any account, and [anonymousAccount] composes them.
 ///
-/// Two things follow, and both are enforced here rather than documented
-/// somewhere and hoped for:
+/// The row is special in exactly these ways, all enforced here:
 ///
-///  * [deleteRole] and [renameRole] refuse that name. A logged-out panel would
-///    otherwise lose the identity it resolves to.
-///  * **Editing the Operator row changes what an *unauthenticated* panel may
-///    do.** Ticking `setpoints` on Operator silently grants it to every panel
-///    on the floor with nobody signed in. That is allowed — it is the knob a
-///    site turns when it wants a permissive line — but it is the one footgun
-///    this simplification creates, and **the Phase 6 roles screen must say so
-///    at the point of edit**, not in a help page. This sentence is here so
-///    whoever writes that screen finds it.
+///  * [deleteUser], [setPassword], [setStationAccount], [setInactivityTimeout]
+///    and [rehashPassword] refuse it with [AnonymousAccountError];
+///    [createUser] and [createFirstUser] refuse its name with
+///    [ReservedUsernameException].
+///  * It never counts as an account holding [AccessGroup.users] for
+///    [_requireAUsersHolderRemains] — a logged-out panel cannot manage anybody
+///    back into the roles screen — and it never counts toward [userCount], so
+///    the first-user window of a fresh station stays open.
+///  * It **does** count as a holder in [_holdersOf]: a role it holds is refused
+///    deletion, with `anonymous` named, like any held role.
+///
+/// **Editing the roles it holds changes what an *unauthenticated* panel may
+/// do.** That is allowed — it is the knob a site turns when it wants a
+/// permissive line — and the accounts screen says so at the point of edit.
 class AccessRepository {
   AccessRepository(this.db, {Logger? logger}) : _logger = logger ?? Logger();
 
   final AppDatabase db;
   final Logger _logger;
 
-  /// The groups seeded onto `Operator`, used as the fallback in
-  /// [anonymousGroups].
+  /// The groups seeded onto `Operator`, used as the last fallback in
+  /// [anonymousAccount].
   static final Set<AccessGroup> _seededOperatorGroups =
       kSeedRoles.firstWhere((r) => r.name == kOperatorRoleName).groups;
 
@@ -314,63 +318,100 @@ class AccessRepository {
     return row == null ? null : _toRole(row);
   }
 
-  /// The groups a session with nobody signed in currently holds.
+  /// Every role named by [primary] and [additional], read from `app_role`,
+  /// primary first.
   ///
-  /// Reads the row named [kOperatorRoleName] — whatever it says today, which
-  /// is the point (see the class comment's footgun note).
-  ///
-  /// Falls back to the seeded `{operate}` when the row is missing or the query
-  /// throws. Both cases are real: an operator can delete the row in `psql`, and
-  /// the shared Postgres server can be unreachable for a minute. Neither should
-  /// cost a logged-out panel its ability to jog a conveyor — a panel that goes
-  /// dead because the database blinked is a stopped line. The seeded set is the
-  /// conservative floor rather than a guess: it is the narrowest thing Operator
-  /// has ever been.
-  ///
-  /// Delegates to [anonymousRole] so the two answers come from one read and
-  /// one set of fallbacks. Kept as its own method because its callers ask only
-  /// this question.
-  Future<Set<AccessGroup>> anonymousGroups() async =>
-      (await anonymousRole()).groups;
+  /// Null when the **primary** role does not exist: there is no identity to
+  /// build a session on. A missing *extra* is dropped with a warning — losing a
+  /// role narrows, losing the account's identity does not. Throws when the
+  /// database does, which is this layer's convention; callers that must not
+  /// fail decide what a throw means for them.
+  Future<List<AccessRole>?> resolveRoles({
+    required String primary,
+    Iterable<String> additional = const <String>[],
+  }) async {
+    final names = normaliseRoleNames(primary: primary, additional: additional);
+    if (names.isEmpty) return null;
+    final resolved = <AccessRole>[];
+    for (final name in names) {
+      final found = await role(name);
+      if (found == null) {
+        if (resolved.isEmpty) return null;
+        _logger.w('The role "$name" no longer exists — dropping it from the '
+            'account that holds it as an extra.');
+        continue;
+      }
+      resolved.add(found);
+    }
+    return resolved;
+  }
 
-  /// The whole `Operator` row — groups **and** page whitelist — as it stands.
+  /// What a panel with nobody signed in may do and see, as it stands.
   ///
-  /// [anonymousGroups] answers half of this and is kept as a delegating
-  /// wrapper so its callers are untouched. This is the version a session
-  /// builder wants: anonymous resolves to [kOperatorRoleName] by construction
-  /// and has no `app_user` row, so the Operator role *is* the anonymous
-  /// session — both halves of it, read from the same row at the same moment,
-  /// which is what stops the groups and the whitelist coming from two
-  /// different reads of a row somebody is editing.
+  /// Read from the reserved [kAnonymousUsername] row: every role it holds,
+  /// composed through `role_set.dart`, and its personal page whitelist on top.
+  /// One read of the row and one read per role, at the moment the session is
+  /// built, so an edit takes effect without a restart.
   ///
-  /// Falls back to the seeded Operator role — `{operate}` and **no
-  /// whitelist** — when the row is missing or the query throws, for the reason
-  /// [anonymousGroups] gives: a panel that goes dead because the database
-  /// blinked is a stopped line. The fallback deliberately carries a null
-  /// whitelist rather than an empty one: failing closed here would blank every
-  /// page on every panel during an outage, and visibility is not the surface
-  /// where that trade is worth making (the write guards still refuse).
-  Future<AccessRole> anonymousRole() async {
-    AccessRole seeded() => AccessRole(
-          name: kOperatorRoleName,
-          groups: {..._seededOperatorGroups},
-          seeded: true,
-        );
+  /// **Never throws**, and falls back in two steps, because a panel that goes
+  /// dead because the database blinked is a stopped line:
+  ///
+  ///  1. the row is missing, or its primary role no longer exists → the
+  ///     [kOperatorRoleName] role alone, with no personal override. That is
+  ///     what anonymous resolved to before the account existed, and what the
+  ///     seed puts the account on.
+  ///  2. that role is missing too, or any read throws → the seeded Operator
+  ///     role: `{operate}` and **no whitelist**. Null rather than empty on
+  ///     purpose: failing closed here would blank every page on every panel
+  ///     during an outage, and visibility is not the surface where that trade
+  ///     is worth making (the write guards still refuse). `{operate}` is the
+  ///     conservative floor rather than a guess — the narrowest thing a
+  ///     logged-out panel has ever held.
+  Future<AnonymousAccount> anonymousAccount() async {
+    AnonymousAccount seeded() => AnonymousAccount(roles: [
+          AccessRole(
+            name: kOperatorRoleName,
+            groups: {..._seededOperatorGroups},
+            seeded: true,
+          ),
+        ]);
     try {
+      final row = await user(kAnonymousUsername);
+      if (row != null) {
+        final roles = await resolveRoles(
+          primary: row.roleName,
+          additional: decodeAdditionalRoles(row.additionalRoles),
+        );
+        if (roles != null) {
+          return AnonymousAccount(
+            roles: roles,
+            pagesOverride: decodeAllowedPagesColumn(row.allowedPages),
+          );
+        }
+        _logger.w(
+          'The "$kAnonymousUsername" account holds the role "${row.roleName}", '
+          'which no longer exists — falling back to "$kOperatorRoleName".',
+        );
+      } else {
+        _logger.w(
+          'No "$kAnonymousUsername" account in app_user — falling back to the '
+          '"$kOperatorRoleName" role. The next open of the database re-seeds '
+          'it.',
+        );
+      }
       final operator = await role(kOperatorRoleName);
       if (operator == null) {
         _logger.w(
-          'No "$kOperatorRoleName" role in app_role — falling back to the '
-          'seeded anonymous role. Someone has deleted the row that an '
-          'unauthenticated panel resolves to.',
+          'No "$kOperatorRoleName" role in app_role either — falling back to '
+          'the seeded anonymous floor.',
         );
         return seeded();
       }
-      return operator;
+      return AnonymousAccount(roles: [operator]);
     } on Object catch (e) {
       _logger.w(
-        'Could not read the "$kOperatorRoleName" role — falling back to the '
-        'seeded anonymous role: $e',
+        'Could not read the "$kAnonymousUsername" account — falling back to '
+        'the seeded anonymous floor: $e',
       );
       return seeded();
     }
@@ -429,9 +470,7 @@ class AccessRepository {
   /// Insert [role], or update the groups of an existing row with that name.
   ///
   /// A rename is not expressible here — the name is the primary key, so
-  /// changing it is an insert plus a delete, which is [renameRole]. That is why
-  /// the protected-name guard lives on [deleteRole] and [renameRole] and not on
-  /// this method: this method cannot remove a name.
+  /// changing it is an insert plus a delete, which is [renameRole].
   ///
   /// `seeded` is left as it was on an update. It records where the row came
   /// from, and editing a seeded role does not make it stop having been seeded.
@@ -482,13 +521,11 @@ class AccessRepository {
 
   /// Delete the role named [name].
   ///
-  /// Throws [ProtectedRoleError] for [kOperatorRoleName] — case-insensitively
-  /// and whitespace-tolerantly, via [isProtectedRoleName], so neither
-  /// `operator` nor `' Operator '` slips past.
-  ///
   /// A role that accounts still hold is refused in application code, with the
   /// holders named — [RoleInUseException] — and the check runs inside the
-  /// transaction that would otherwise perform the delete.
+  /// transaction that would otherwise perform the delete. The anonymous
+  /// account is a holder like any other, so a role every logged-out panel
+  /// depends on cannot disappear from under them.
   ///
   /// It is **not** left to the foreign key. `app_user.role_name` does reference
   /// `app_role.name`, but SQLite enforces that only on a connection whose
@@ -506,7 +543,6 @@ class AccessRepository {
   /// about — moving holders off a role is a fix they can perform, and a plant
   /// with nobody able to manage roles has no fix inside the application at all.
   Future<void> deleteRole(String name) async {
-    if (isProtectedRoleName(name)) throw ProtectedRoleError(name);
     await db.transaction(() async {
       await _requireAUsersHolderRemains(_PendingChange.roleDeleted(name));
 
@@ -564,9 +600,14 @@ class AccessRepository {
   ///
   /// The invariant is computed in Dart, not in SQL. "A role granting `users`"
   /// is `AccessRole.decodeGroups(row.groups).contains(AccessGroup.users)` over
-  /// a JSON TEXT column; [anonymousGroups] reads a role row and decodes it in
+  /// a JSON TEXT column; [anonymousAccount] reads role rows and decodes them in
   /// Dart for the same reason. There are a handful of role rows and this is not
   /// a performance question.
+  ///
+  /// The anonymous account is left out entirely. Whatever it holds, a
+  /// logged-out panel is not somebody who can sign in and manage the next
+  /// account, so counting it would let the last real `users` holder be deleted
+  /// while this guard reported a holder remaining.
   ///
   /// A user row whose `role_name` names no existing role holds nothing. With
   /// the `foreign_keys` pragma off — which is every connection outside the
@@ -593,7 +634,8 @@ class AccessRepository {
     // refuse edits that take nothing away and wave through the one that locks
     // the plant out.
     final rolesHeld = <String, List<String>>{
-      for (final u in userRows) u.username: rolesOf(u),
+      for (final u in userRows)
+        if (u.username != kAnonymousUsername) u.username: rolesOf(u),
     };
     List<String> holdersAgainst(Set<String> grants) => rolesHeld.entries
         .where((e) => e.value.any(grants.contains))
@@ -621,7 +663,9 @@ class AccessRepository {
       case _PendingChangeKind.userDeleted:
         rolesHeld.remove(change.username);
       case _PendingChangeKind.userRolesChanged:
-        rolesHeld[change.username!] = change.roleNames!;
+        if (change.username != kAnonymousUsername) {
+          rolesHeld[change.username!] = change.roleNames!;
+        }
       case _PendingChangeKind.roleGroupsReplaced:
         if (change.groups!.contains(AccessGroup.users)) {
           grantingAfter.add(change.roleName!);
@@ -637,21 +681,14 @@ class AccessRepository {
     throw LastUsersHolderException(lastGrantingRole, holdersNow);
   }
 
-  /// Rename the role [from] to [to], carrying its users with it.
-  ///
-  /// Throws [ProtectedRoleError] when either end is the protected name:
-  /// renaming *away* from it would leave an unauthenticated panel with no role
-  /// to resolve to, and renaming *onto* it would either collide with the
-  /// primary key or silently hand the anonymous identity to a different set of
-  /// groups.
+  /// Rename the role [from] to [to], carrying its users with it — the
+  /// anonymous account included, so a logged-out panel keeps what it held.
   ///
   /// `app_user.role_name` references `app_role.name` with no `ON UPDATE
   /// CASCADE`, so this is an insert, a repoint and a delete inside one
   /// transaction rather than an `UPDATE app_role SET name = ...`, which the
   /// foreign key would refuse the moment any user held the role.
   Future<void> renameRole(String from, String to) async {
-    if (isProtectedRoleName(from)) throw ProtectedRoleError(from);
-    if (isProtectedRoleName(to)) throw ProtectedRoleError(to);
     final target = to.trim();
     if (target.isEmpty) {
       throw ArgumentError.value(to, 'to', 'must not be blank');
@@ -729,11 +766,17 @@ class AccessRepository {
   /// asks in order to decide which screen to show.
   Future<bool> get isUserTableEmpty async => await userCount() == 0;
 
-  /// The number of rows in `app_user`.
+  /// The number of accounts in `app_user` that a person could sign in to.
+  ///
+  /// The reserved anonymous account is not counted. The seed writes it on the
+  /// first open of every database, so counting it would close a fresh
+  /// station's first-user window before anybody had created an account.
   Future<int> userCount() async {
     final count = db.appUser.username.count();
-    final row =
-        await (db.selectOnly(db.appUser)..addColumns([count])).getSingle();
+    final row = await (db.selectOnly(db.appUser)
+          ..addColumns([count])
+          ..where(db.appUser.username.equals(kAnonymousUsername).not()))
+        .getSingle();
     return row.read(count) ?? 0;
   }
 
@@ -789,6 +832,7 @@ class AccessRepository {
     if (name.isEmpty) {
       throw ArgumentError.value(username, 'username', 'must not be blank');
     }
+    if (isAnonymousUsername(name)) throw ReservedUsernameException(name);
     if (password.isEmpty) {
       // Deliberately not `ArgumentError.value(password, ...)`: that puts the
       // credential into the message, and from there into whatever logs it.
@@ -855,7 +899,10 @@ class AccessRepository {
   /// nothing.
   ///
   /// [username] is trimmed and nothing else. It is not case-folded — the
-  /// primary key is case-sensitive TEXT, see [user].
+  /// primary key is case-sensitive TEXT, see [user] — with one exception:
+  /// any casing of [kAnonymousUsername] is refused with
+  /// [ReservedUsernameException], so no person's account can read as the
+  /// logged-out panel.
   Future<void> createUser({
     required String username,
     required String password,
@@ -866,6 +913,7 @@ class AccessRepository {
     if (name.isEmpty) {
       throw ArgumentError.value(username, 'username', 'must not be blank');
     }
+    if (isAnonymousUsername(name)) throw ReservedUsernameException(name);
     if (password.isEmpty) {
       // Deliberately not `ArgumentError.value(password, ...)`: that puts the
       // credential into the message, and from there into whatever logs it.
@@ -918,7 +966,10 @@ class AccessRepository {
   /// account by construction rather than by anybody remembering. That is a
   /// property to preserve: **no cascade may ever be added here**, and no admin
   /// screen may offer a delete, prune or export path over the trail.
+  ///
+  /// Throws [AnonymousAccountError] for the anonymous account.
   Future<void> deleteUser(String username) async {
+    if (username == kAnonymousUsername) throw AnonymousAccountError('delete');
     await db.transaction(() async {
       final existing = await (db.select(db.appUser)
             ..where((t) => t.username.equals(username)))
@@ -941,8 +992,12 @@ class AccessRepository {
   ///
   /// No lockout guard, deliberately: the flag is not a permission — it only
   /// changes whether the account's sessions expire — so no flip can take the
-  /// last `users` holder away.
+  /// last `users` holder away. Throws [AnonymousAccountError] for the
+  /// anonymous account, which never has a session to keep alive.
   Future<void> setStationAccount(String username, bool value) async {
+    if (username == kAnonymousUsername) {
+      throw AnonymousAccountError('make a station account of');
+    }
     final updated = await (db.update(db.appUser)
           ..where((t) => t.username.equals(username)))
         .write(AppUserCompanion(stationAccount: Value(value)));
@@ -958,8 +1013,12 @@ class AccessRepository {
   /// [UserNotFoundException] when there is no such account.
   ///
   /// No lockout guard, for the reason [setStationAccount] gives: a timeout is
-  /// not a permission.
+  /// not a permission. Throws [AnonymousAccountError] for the anonymous
+  /// account: anonymous is what a session times out *into*.
   Future<void> setInactivityTimeout(String username, int? minutes) async {
+    if (username == kAnonymousUsername) {
+      throw AnonymousAccountError('set an inactivity timeout on');
+    }
     if (minutes != null && !isValidInactivityTimeoutMinutes(minutes)) {
       throw ArgumentError.value(minutes, 'minutes',
           'must be ${kMinInactivityTimeout.inMinutes}..'
@@ -1047,8 +1106,12 @@ class AccessRepository {
   /// no value for the same reason.
   ///
   /// No lockout guard: a password is not a permission, so no password can
-  /// remove the last holder.
+  /// remove the last holder. Throws [AnonymousAccountError] for the anonymous
+  /// account, which must never be signed in to.
   Future<void> setPassword(String username, String password) async {
+    if (username == kAnonymousUsername) {
+      throw AnonymousAccountError('set a password on');
+    }
     if (password.isEmpty) {
       // Deliberately not `ArgumentError.value(password, ...)`: that puts the
       // credential into the message, and from there into whatever logs it.
@@ -1098,6 +1161,9 @@ class AccessRepository {
   ///   user already has, so it must not grow [setPassword]'s validation: there
   ///   is no new password here to validate.
   Future<int> rehashPassword(String username, PasswordHash hash) async {
+    if (username == kAnonymousUsername) {
+      throw AnonymousAccountError('rehash the password of');
+    }
     final updated =
         await (db.update(db.appUser)..where((t) => t.username.equals(username)))
             .write(AppUserCompanion(

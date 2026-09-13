@@ -1,0 +1,14 @@
+#!/bin/bash
+# Borrowed from tfc-nix/iso.nix: a failed install must leave its error on the
+# screen, not reboot into a loop that never shows it.
+/usr/local/bin/centroidx-install
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo
+  printf '\033[1;31m%s\033[0m\n' "  INSTALLATION DID NOT COMPLETE (exit $rc)"
+  echo "  The target disk may be partly written. Nothing has been rebooted."
+  echo "  Note the error above before power-cycling."
+  echo
+  echo "  This message stays on screen for one hour."
+  sleep 3600
+fi

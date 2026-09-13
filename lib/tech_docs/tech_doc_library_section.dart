@@ -128,9 +128,9 @@ class _TechDocLibrarySectionState extends ConsumerState<TechDocLibrarySection> {
   ///
   /// That case is reachable, not theoretical. `AccessSession.anonymous`
   /// (`packages/tfc_access/lib/src/access_session.dart`) builds its groups from
-  /// the customer-editable `Operator` role, so an admin who ticks `configure`
-  /// on that row hands [kKnowledgeWriteGroup] to every panel on the floor with
-  /// nobody signed in. On such a station the affordances render and the writes
+  /// the roles the customer-editable `anonymous` account holds, so an admin who
+  /// gives that account a role with `configure` hands [kKnowledgeWriteGroup] to
+  /// every panel on the floor with nobody signed in. On such a station the affordances render and the writes
   /// the configured policy permits must go through. [_isWriteEnabled] still
   /// gates them, so an anonymous session *without* `configure` never reaches
   /// this getter.
