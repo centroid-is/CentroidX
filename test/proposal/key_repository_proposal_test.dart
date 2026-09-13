@@ -99,13 +99,16 @@ void main() {
       // Cleared through the stored slots rather than `ref.read(...)`: these
       // run from the banner, which outlives this section, and `ref` throws
       // once the widget is disposed. See the disposal group below.
-      expect(
-        RegExp(r'_commitSlot\?\.state = null')
-            .allMatches(source)
-            .length,
-        greaterThanOrEqualTo(2),
-        reason: 'both commit and discard must clear the banner callbacks',
-      );
+      // Both go through _unstage, which retires the slots once nothing is
+      // left staged -- a batch is decided one row at a time now.
+      for (final fn in ['_commitProposals', '_discardProposals']) {
+        final body = source.substring(source.indexOf('Future<void> $fn('));
+        expect(body, contains('_unstage(done)'),
+            reason: '$fn must retire the banner callbacks');
+      }
+      final unstage = source.substring(source.indexOf('void _unstage('));
+      expect(unstage, contains('_commitSlot?.state = null'));
+      expect(unstage, contains('_discardSlot?.state = null'));
     });
   });
 
@@ -182,7 +185,7 @@ void main() {
     });
 
     test('a delete carries no fields to merge', () {
-      final applyLoop = source.substring(source.indexOf('for (final m in _proposedMappings)'));
+      final applyLoop = source.substring(source.indexOf('for (final (m, _) in picked)'));
       final deleteAt = applyLoop.indexOf("m['_op'] == 'delete'");
       final mergeAt = applyLoop.indexOf('?? KeyMappingEntry()');
       expect(deleteAt, greaterThan(-1));

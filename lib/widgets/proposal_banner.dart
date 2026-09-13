@@ -25,8 +25,8 @@ class _ProposalBannerState extends ConsumerState<ProposalBanner> {
   ///
   /// Accept cannot write anything by itself -- applying a proposal belongs to
   /// the editor that owns the data -- so when no editor has staged it yet,
-  /// Accept beams to that editor and remembers the id here. The listener in
-  /// [build] fires the commit the moment the editor publishes one, which is
+  /// Accept beams to that editor and remembers the id here. The listeners in
+  /// [build] fire the commit the moment the editor publishes one, which is
   /// what makes a single press finish the job the button's label promises.
   int? _autoCommitId;
 
@@ -35,14 +35,31 @@ class _ProposalBannerState extends ConsumerState<ProposalBanner> {
     // Completes an Accept that had to open an editor first. See
     // [_autoCommitId]; registered before the early returns below so it stays
     // armed across the rebuild that empties the banner.
+    //
+    // The per-proposal seam is preferred: an editor that offers a commit for
+    // exactly the armed id can be told to save exactly that one, whatever
+    // else has arrived in the queue since the press. Editors offer it before
+    // they publish the batch commit below, so this listener wins whenever it
+    // can.
+    ref.listen<Map<int, ProposalItemActions>>(proposalItemActionsProvider,
+        (previous, offered) {
+      final armed = _autoCommitId;
+      if (armed == null) return;
+      final item = offered[armed];
+      if (item == null) return;
+      _autoCommitId = null;
+      // A microtask later, for the reason given on the batch listener.
+      Future.microtask(() => item.commit(armed));
+    });
+    // The batch seam, for an editor that offers nothing per proposal.
     ref.listen<Future<void> Function()?>(proposalCommitProvider,
         (previous, commit) {
       final armed = _autoCommitId;
       if (armed == null || commit == null) return;
       _autoCommitId = null;
       // Only while the queue is still exactly the proposal that was accepted.
-      // An editor stages every pending proposal of its type and commits them
-      // as one save, so a proposal that arrived in the meantime would be
+      // Such an editor stages every pending proposal of its type and commits
+      // them as one save, so a proposal that arrived in the meantime would be
       // written by an Accept the operator never pressed on it.
       final pending = ref.read(proposalStateProvider).proposals;
       if (pending.length != 1 || pending.first.id != armed) return;
@@ -55,6 +72,12 @@ class _ProposalBannerState extends ConsumerState<ProposalBanner> {
     });
 
     final state = ref.watch(proposalStateProvider);
+    // An armed Accept outlives its proposal only as a stale trigger: decided
+    // elsewhere in the meantime, it must not fire on a later staging.
+    if (_autoCommitId != null &&
+        !state.proposals.any((p) => p.id == _autoCommitId)) {
+      _autoCommitId = null;
+    }
     if (!state.hasPending) return const SizedBox.shrink();
 
     // Stay visible on the editor page too. The in-editor bar is now purely
@@ -205,9 +228,10 @@ class _ProposalBannerState extends ConsumerState<ProposalBanner> {
                   ),
                   _buildViewButton(p),
                   const SizedBox(width: 4),
-                  // One row out of a batch: the editors stage and commit a
-                  // whole batch, so there is no seam that saves just this
-                  // one. Opening its editor is as far as this row can go.
+                  // One row out of a batch. Accept saves this row and nothing
+                  // else through the editor's per-proposal commit; Reject
+                  // un-stages and drops this row and nothing else. The rest
+                  // of the batch stays pending, and stays acceptable.
                   _buildAcceptButton(p, isWholeQueue: false),
                   const SizedBox(width: 4),
                   _buildRejectButton(p, isWholeQueue: false),
@@ -303,28 +327,20 @@ class _ProposalBannerState extends ConsumerState<ProposalBanner> {
   /// the only thing on screen that was actually removing the alarm.
   ///
   /// The work belongs to the editor that owns the data, so Accept either
-  /// fires the commit that editor published, or opens it and fires the commit
-  /// as soon as it appears (see [_autoCommitId]). [isWholeQueue] says whether
-  /// committing would save this proposal and nothing else: true for the
-  /// single-proposal banner, false for a row of a batch, where the editors'
-  /// batch-at-a-time commit would save the operator's other rows too.
+  /// fires a commit that editor offered, or opens it and fires the commit as
+  /// soon as one appears (see [_autoCommitId]).
+  ///
+  /// The commit it prefers is the per-proposal one on
+  /// [proposalItemActionsProvider], which saves this proposal and nothing
+  /// else -- so a row of a batch can be accepted on its own, leaving the rest
+  /// pending. [isWholeQueue] only matters for an editor that offers nothing
+  /// per proposal: its batch commit may be fired when this proposal is the
+  /// whole queue (the single-proposal banner), and never for a row of a
+  /// batch, where it would save the operator's other rows too.
   Widget _buildAcceptButton(PendingProposal proposal,
       {required bool isWholeQueue}) {
     return TextButton(
-      onPressed: () {
-        if (isWholeQueue) {
-          final commit = ref.read(proposalCommitProvider);
-          if (commit != null) {
-            commit();
-            return;
-          }
-          // Nothing staged: the editor has to see the proposal before it can
-          // save it. Arm the commit so the operator's one press still
-          // finishes, rather than leaving them to press again.
-          _autoCommitId = proposal.id;
-        }
-        if (!_openEditorTakes(proposal)) _autoCommitId = null;
-      },
+      onPressed: () => _accept(proposal, isWholeQueue: isWholeQueue),
       style: TextButton.styleFrom(
         foregroundColor: Colors.green,
         padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -335,34 +351,43 @@ class _ProposalBannerState extends ConsumerState<ProposalBanner> {
     );
   }
 
+  void _accept(PendingProposal proposal, {required bool isWholeQueue}) {
+    final item = ref.read(proposalItemActionsProvider)[proposal.id];
+    if (item != null) {
+      item.commit(proposal.id);
+      return;
+    }
+    if (isWholeQueue) {
+      final commit = ref.read(proposalCommitProvider);
+      if (commit != null) {
+        commit();
+        return;
+      }
+    }
+    // Nothing staged: the editor has to see the proposal before it can save
+    // it. Arm the commit so the operator's one press still finishes, rather
+    // than leaving them to press again.
+    _autoCommitId = proposal.id;
+    if (!_openEditorTakes(proposal)) _autoCommitId = null;
+  }
+
   /// Reject for one proposal: revert the staged edit, then mark it rejected
   /// -- the same two halves as Accept, and in the same order.
   ///
-  /// Never a bare `rejectProposal()` while an editor has the whole queue
-  /// staged. That only does the second half: the banner went away and the
-  /// staged assets stayed on the page, where the operator's next save wrote
-  /// them exactly as an accept would have. Reported on 2026-09-02 against a
-  /// `propose_asset` batch: a rejected 35-asset "ST101 cabinet layout"
-  /// proposal persisted to /+ST101. So when this proposal is the whole queue,
-  /// the editor's published discard is the whole job -- it restores the
-  /// pre-proposal snapshot and marks the row rejected.
-  ///
-  /// For one row of a batch ([isWholeQueue] false) discarding would revert
-  /// the operator's other rows too, so the plain reject stands -- and the
-  /// editor that staged it un-stages its copy off the feedback stream.
+  /// Never a bare `rejectProposal()` while an editor has the proposal staged.
+  /// That only does the second half: the banner went away and the staged
+  /// assets stayed on the page, where the operator's next save wrote them
+  /// exactly as an accept would have. Reported on 2026-09-02 against a
+  /// `propose_asset` batch: a rejected 35-asset cabinet-layout proposal
+  /// persisted to its page. The per-proposal discard on
+  /// [proposalItemActionsProvider] does both halves for exactly this row;
+  /// the editor's batch discard does them for the whole queue, and is only
+  /// fired when this proposal is the whole queue. With nothing staged there
+  /// is nothing to revert, so the plain reject is the whole job.
   Widget _buildRejectButton(PendingProposal proposal,
       {required bool isWholeQueue}) {
     return TextButton(
-      onPressed: () {
-        if (isWholeQueue) {
-          final discard = ref.read(proposalDiscardProvider);
-          if (discard != null) {
-            discard();
-            return;
-          }
-        }
-        ref.read(proposalStateProvider.notifier).rejectProposal(proposal.id);
-      },
+      onPressed: () => _reject(proposal, isWholeQueue: isWholeQueue),
       style: TextButton.styleFrom(
         foregroundColor: Colors.red,
         padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -371,6 +396,22 @@ class _ProposalBannerState extends ConsumerState<ProposalBanner> {
       ),
       child: const Text('Reject'),
     );
+  }
+
+  void _reject(PendingProposal proposal, {required bool isWholeQueue}) {
+    final item = ref.read(proposalItemActionsProvider)[proposal.id];
+    if (item != null) {
+      item.discard(proposal.id);
+      return;
+    }
+    if (isWholeQueue) {
+      final discard = ref.read(proposalDiscardProvider);
+      if (discard != null) {
+        discard();
+        return;
+      }
+    }
+    ref.read(proposalStateProvider.notifier).rejectProposal(proposal.id);
   }
 
   Widget _buildViewButton(PendingProposal proposal) {

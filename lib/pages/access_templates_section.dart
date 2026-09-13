@@ -228,6 +228,14 @@ const String kAccessTemplateGroupRequiredNote =
 /// worse than no trail, because it would be believed.
 const String kAccessTemplateMcpOrigin = 'mcp';
 
+/// A binding was accepted on its own while the template it names is still a
+/// pending proposal in the same batch. Applying it would only fail at the
+/// store, so it is held back and the operator is told which row to accept
+/// first. The proposal stays pending.
+String kAccessTemplateProposalWaitsNote(String template) =>
+    'That binding names the template "$template", which is still a pending '
+    'proposal. Accept the template first; the binding stays pending.';
+
 /// The store refused the delete because keys are still bound (spec §7d).
 ///
 /// The list is read at the **accept**, from the store's own query, not from
@@ -382,6 +390,16 @@ class _AccessTemplatesSectionState
   final List<Map<String, dynamic>> _proposed = [];
   final List<int> _proposalIds = [];
 
+  /// What the banner fires for one row of the batch: apply and accept that
+  /// proposal alone, or un-stage and reject it alone. One instance for the
+  /// life of this State, so the slot can tell our entries from the key
+  /// mappings section's on the same page.
+  late final ProposalItemActions _itemActions = ProposalItemActions(
+    commit: (id) => _commitProposals(only: {id}),
+    discard: (id) => _discardProposals(only: {id}),
+  );
+  StateController<Map<int, ProposalItemActions>>? _itemSlot;
+
   /// The banner's callback slots, captured when publishing.
   ///
   /// Held rather than re-read, for the reason `_KeyMappingsSection` records
@@ -439,8 +457,10 @@ class _AccessTemplatesSectionState
     // that replaced us has already published its own.
     final commitSlot = _commitSlot;
     final discardSlot = _discardSlot;
+    final itemSlot = _itemSlot;
     final commit = _commitProposals;
     final discard = _discardProposals;
+    final items = _itemActions;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (commitSlot != null &&
           commitSlot.mounted &&
@@ -452,6 +472,7 @@ class _AccessTemplatesSectionState
           discardSlot.state == discard) {
         discardSlot.state = null;
       }
+      if (itemSlot != null && itemSlot.mounted) itemSlot.withdraw(items);
     });
     _listController.dispose();
     super.dispose();
@@ -530,6 +551,11 @@ class _AccessTemplatesSectionState
   void _publishProposalCallbacks() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // The per-row actions go up first: the banner's armed Accept takes the
+      // first seam that can save exactly the row it was pressed on.
+      final itemSlot = ref.read(proposalItemActionsProvider.notifier);
+      itemSlot.offer(_proposalIds, _itemActions);
+      _itemSlot = itemSlot;
       final commitSlot = ref.read(proposalCommitProvider.notifier);
       commitSlot.state = _commitProposals;
       _commitSlot = commitSlot;
@@ -544,16 +570,64 @@ class _AccessTemplatesSectionState
     });
   }
 
-  /// Applies the staged batch through the store, then marks what landed.
+  /// The staged entries a commit or discard is about: every one, or the ones
+  /// whose proposal id is in [only]. As pairs, because the lists can shift
+  /// under an await -- the listener drops an accepted entry the moment its
+  /// id leaves the queue -- so an index taken before is worthless after.
+  ///
+  /// In the order the store needs them: creates and updates, then binds,
+  /// then deletes. A binding names a template that has to exist by then, and
+  /// a delete is refused while a binding still holds the template. Proposal
+  /// order is only the order the agent's calls happened to arrive in, and an
+  /// agent that binds before it creates should not cost the operator a
+  /// second press.
+  List<(Map<String, dynamic>, int)> _pick(Set<int>? only) {
+    final picked = [
+      for (var i = 0; i < _proposed.length; i++)
+        if (only == null || only.contains(_proposalIds[i]))
+          (_proposed[i], _proposalIds[i]),
+    ];
+    int rank(Map<String, dynamic> p) => switch (p['_op']) {
+          'bind' => 1,
+          'delete' => 2,
+          _ => 0,
+        };
+    return [
+      for (var r = 0; r <= 2; r++)
+        for (final entry in picked)
+          if (rank(entry.$1) == r) entry,
+    ];
+  }
+
+  /// The template names a bind proposal would bind keys to.
+  static Iterable<String> _templatesNamedBy(Map<String, dynamic> bind) sync* {
+    for (final entry in bind['bindings'] as List) {
+      if (entry is! Map) continue;
+      final template = entry['template'];
+      if (template is String && template.isNotEmpty) yield template;
+    }
+  }
+
+  /// Applies the staged batch -- every proposal, or [only] those ids --
+  /// through the store, then marks what landed. The rest stays staged, still
+  /// the banner's to accept or reject.
   ///
   /// Each proposal is applied on its own and keeps its own fate. A refusal or
   /// a blocked delete leaves **that** proposal pending and lets the rest
   /// through, because a sweep is a list of independent changes and failing all
   /// forty because one template is still bound would be the wrong answer to
   /// the wrong question.
-  Future<void> _commitProposals() async {
+  ///
+  /// A bind accepted on its own while the template it names is still a
+  /// pending proposal here is held back with a note saying which row to
+  /// accept first, rather than sent to the store to fail. Within one press
+  /// [_pick] orders creates ahead of binds, so "Accept all" needs no such
+  /// note.
+  Future<void> _commitProposals({Set<int>? only}) async {
     final container = _container;
     if (container == null || _proposed.isEmpty) return;
+    final picked = _pick(only);
+    if (picked.isEmpty) return;
 
     final AccessTemplateStore? store;
     try {
@@ -567,14 +641,28 @@ class _AccessTemplatesSectionState
       return;
     }
 
+    final pickedIds = {for (final (_, id) in picked) id};
+    final stillProposed = <String>{
+      for (var i = 0; i < _proposed.length; i++)
+        if (!pickedIds.contains(_proposalIds[i]) &&
+            _proposed[i]['_op'] == 'create')
+          _proposed[i]['name'] as String,
+    };
+
     final applied = <int>[];
-    final keptProposals = <Map<String, dynamic>>[];
-    final keptIds = <int>[];
-    for (var i = 0; i < _proposed.length; i++) {
+    for (final (proposal, id) in picked) {
+      if (proposal['_op'] == 'bind') {
+        final waitsFor = _templatesNamedBy(proposal)
+            .where(stillProposed.contains)
+            .firstOrNull;
+        if (waitsFor != null) {
+          _report(kAccessTemplateProposalWaitsNote(waitsFor));
+          continue;
+        }
+      }
       try {
-        await _applyProposal(store, _proposed[i]);
-        applied.add(_proposalIds[i]);
-        continue;
+        await _applyProposal(store, proposal);
+        applied.add(id);
       } on AccessDenied {
         // Swallowed: see the note at [_write]. The store's `onDenied` has
         // already put the shared prompt naming `users` on screen, and a
@@ -585,8 +673,6 @@ class _AccessTemplatesSectionState
       } on Object catch (error) {
         _report(kAccessTemplateProposalFailedNote(error));
       }
-      keptProposals.add(_proposed[i]);
-      keptIds.add(_proposalIds[i]);
     }
 
     // 04-05: nothing else notices a write. One invalidate for the batch.
@@ -614,43 +700,66 @@ class _AccessTemplatesSectionState
           'accepted. They are done; the banner may still list them.');
     }
 
-    _replaceBatch(keptProposals, keptIds);
+    _unstage(applied);
   }
 
-  /// Drops the whole batch without touching either table.
-  Future<void> _discardProposals() async {
+  /// Drops the batch -- every proposal, or [only] those ids -- without
+  /// touching either table.
+  Future<void> _discardProposals({Set<int>? only}) async {
     final container = _container;
     if (container == null) return;
+    final picked = _pick(only);
     final notifier = container.read(proposalStateProvider.notifier);
+    final rejected = <int>[];
     var failed = 0;
-    for (final id in _proposalIds) {
+    for (final (_, id) in picked) {
       try {
         await notifier.rejectProposal(id);
+        rejected.add(id);
       } on Object {
         failed++;
       }
     }
     if (failed > 0) {
-      _report('$failed of ${_proposalIds.length} proposals could not be '
+      _report('$failed of ${picked.length} proposals could not be '
           'marked rejected. Press Reject again.');
     }
-    _replaceBatch(const [], const []);
+    _unstage(rejected);
   }
 
-  /// Leaves [proposals] staged and takes the banner's buttons away when the
-  /// batch is empty.
+  /// Drops staged proposals the operator decided on a surface that never
+  /// asks this section: the banner's Reject on a row it had not yet been
+  /// offered, the chat batch card's Reject all, a dismiss. Left staged, a
+  /// rejected template was written by the next Accept all as if it had been
+  /// accepted. Returns how many were dropped.
+  int _dropDecidedElsewhere(ProposalState state) {
+    final live = {for (final p in state.proposals) p.id};
+    final gone = [
+      for (final id in _proposalIds)
+        if (!live.contains(id)) id,
+    ];
+    if (gone.isNotEmpty) _unstage(gone);
+    return gone.length;
+  }
+
+  /// Takes [ids] out of the batch and retires whatever banner controls they
+  /// were behind: their rows, and the batch's Accept/Reject once nothing is
+  /// left. Tolerant of an id the listener already dropped.
   ///
-  /// The lists are replaced before the `mounted` check rather than after: a
-  /// section that has gone away still has to stop offering an Accept for
-  /// changes that are already applied.
-  void _replaceBatch(
-      List<Map<String, dynamic>> proposals, List<int> ids) {
-    _proposed
-      ..clear()
-      ..addAll(proposals);
-    _proposalIds
-      ..clear()
-      ..addAll(ids);
+  /// The lists move before the `mounted` check rather than after: a section
+  /// that has gone away still has to stop offering an Accept for changes
+  /// that are already applied.
+  void _unstage(Iterable<int> ids) {
+    final gone = ids.toSet();
+    for (var i = _proposalIds.length - 1; i >= 0; i--) {
+      if (!gone.contains(_proposalIds[i])) continue;
+      _proposed.removeAt(i);
+      _proposalIds.removeAt(i);
+    }
+    final itemSlot = _itemSlot;
+    if (gone.isNotEmpty && itemSlot != null && itemSlot.mounted) {
+      itemSlot.withdraw(_itemActions, gone);
+    }
     if (_proposed.isEmpty) {
       _commitSlot?.state = null;
       _discardSlot?.state = null;
@@ -727,7 +836,11 @@ class _AccessTemplatesSectionState
     // A proposal arriving while this page is open joins the batch. No
     // "already showing one" guard: a sweep can land in pieces.
     ref.listen<ProposalState>(proposalStateProvider, (previous, next) {
-      if (_stageProposals(storeAsync.valueOrNull) > 0) setState(() {});
+      // And one decided elsewhere leaves the batch, so it is always exactly
+      // what is still pending of this type.
+      final changed =
+          _stageProposals(storeAsync.valueOrNull) + _dropDecidedElsewhere(next);
+      if (changed > 0) setState(() {});
     });
 
     // Staged from build rather than from initState, because there is nothing

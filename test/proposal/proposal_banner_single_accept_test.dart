@@ -301,9 +301,12 @@ void main() {
 
   testWidgets('a proposal that arrives mid-flight is not accepted too',
       (tester) async {
-    // The editors stage and commit a whole batch. If a second proposal lands
-    // between the press and the editor publishing, committing would save it
-    // as well -- on an Accept the operator never pressed on it.
+    // If a second proposal lands between the press and the editor
+    // publishing, it must not be saved on an Accept the operator never
+    // pressed on it. The editor now offers a commit per proposal, so the
+    // armed Accept saves exactly the one that was pressed -- the arrival is
+    // left pending. (Before that seam existed the only commit was the whole
+    // batch, and the guard's answer was to save nothing at all.)
     await pumpApp(tester, initialPath: '/');
 
     proposals.addProposal(
@@ -316,10 +319,12 @@ void main() {
     proposals.addProposal(_proposal(2, _alarm('AIR_LOW', 'Air pressure low')));
     await tester.pumpAndSettle();
 
-    expect(alarmMan.calls, isEmpty,
-        reason: 'the queue is no longer the one proposal that was accepted');
-    expect(container.read(proposalStateProvider).proposals, hasLength(2),
-        reason: 'both stay pending for the operator to review as a batch');
+    expect(alarmMan.calls, ['remove:FREEZER_HIGH'],
+        reason: 'exactly the proposal that was accepted, and nothing that '
+            'arrived in the meantime');
+    expect(container.read(proposalStateProvider).proposals.map((p) => p.id),
+        [2],
+        reason: 'the arrival stays pending for the operator to decide on');
   });
 
   testWidgets('Accept never marks a proposal accepted without applying it',
