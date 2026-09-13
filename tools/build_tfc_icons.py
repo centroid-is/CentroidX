@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Generate the custom pallet glyphs and merge them into assets/fonts/TfcIcons.ttf.
+"""Generate the custom TfcIcons glyphs and merge them into assets/fonts/TfcIcons.ttf.
 
 TfcIcons.ttf was originally produced by Fontello, but no Fontello config was kept
 in the repo. Rather than round-trip the whole font through Fontello again (which
 would risk shifting the existing code points that lib/converter/icon.dart hard
 codes), this script appends new glyphs to the existing font in place.
 
-The icons are built out of axis-aligned rectangles only, so the glyph outlines
-are described directly in font units and the matching SVG sources are written
-out for reference / future re-generation.
+The icons are built out of axis-aligned rectangles and straight-edged polygons
+only, so the glyph outlines are described directly in font units and the
+matching SVG sources are written out for reference / future re-generation.
 
 Design space: the usual Fontello 1000x1000 viewBox with y pointing down and the
 baseline at ascent = 850 font units, i.e. fontY = 850 - svgY.
@@ -31,12 +31,17 @@ ASCENT = 850  # font units above the baseline; svgY 0 maps here
 EM = 1000
 ADVANCE = 1000
 
+# A shape is either a rectangle (x0, y0, x1, y1) or a polygon, a list of
+# (x, y) points. Both are in SVG coordinates.
+Rect = tuple[float, float, float, float]
+Polygon = list[tuple[float, float]]
+
 # --------------------------------------------------------------------------
 # Icon geometry (SVG coordinates: 0..1000, y down)
 # --------------------------------------------------------------------------
 
 
-def pallet_top_rects() -> list[tuple[float, float, float, float]]:
+def pallet_top_rects() -> list[Rect]:
     """Pallet seen from above: five deck boards over three stringers."""
     left, right = 70, 930
     top, bottom = 210, 790
@@ -57,7 +62,7 @@ def pallet_top_rects() -> list[tuple[float, float, float, float]]:
     return rects
 
 
-def pallet_stack_rects() -> list[tuple[float, float, float, float]]:
+def pallet_stack_rects() -> list[Rect]:
     """Pallet from the side carrying ten rows of boxes."""
     left, right = 60, 940
     rects = []
@@ -91,9 +96,24 @@ def pallet_stack_rects() -> list[tuple[float, float, float, float]]:
     return rects
 
 
+def ethercat_polygons() -> list[Polygon]:
+    """The EtherCAT mark: a right-pointing arrow over a left-pointing one.
+
+    Each arrow is a bar with a half arrowhead, its slanted edge running out to
+    the bar's far corner. Measured off the 152 px touch icon ethercat.org
+    publishes (the red arrow in the upper half, the black one below), then
+    scaled 6.5x and centred in the 1000 box. The glyph is one colour; the icon
+    asset's colour picker stands in for the red and black.
+    """
+    upper = [(58, 321), (585, 321), (585, 191), (942, 471), (58, 471)]
+    lower = [(143, 529), (942, 529), (942, 679), (494, 679), (494, 809)]
+    return [upper, lower]
+
+
 ICONS = {
     "pallet_top": (0xE806, pallet_top_rects),
     "pallet_stack": (0xE807, pallet_stack_rects),
+    "ethercat": (0xE808, ethercat_polygons),
 }
 
 
@@ -102,38 +122,64 @@ ICONS = {
 # --------------------------------------------------------------------------
 
 
-def write_svg(name: str, rects) -> None:
+def _is_rect(shape) -> bool:
+    return isinstance(shape, tuple) and len(shape) == 4
+
+
+def _outline(shape) -> Polygon:
+    """Any shape as a polygon in SVG coordinates."""
+    if _is_rect(shape):
+        x0, y0, x1, y1 = shape
+        # Bottom-left first, then up: the order the rectangle-only version of
+        # this script drew in, so the existing glyphs rebuild byte-identical.
+        return [(x0, y1), (x0, y0), (x1, y0), (x1, y1)]
+    return list(shape)
+
+
+def write_svg(name: str, shapes) -> None:
     os.makedirs(SVG_DIR, exist_ok=True)
-    body = "\n".join(
-        '  <rect x="{:g}" y="{:g}" width="{:g}" height="{:g}"/>'.format(
-            x0, y0, x1 - x0, y1 - y0
-        )
-        for x0, y0, x1, y1 in rects
-    )
+    lines = []
+    for shape in shapes:
+        if _is_rect(shape):
+            x0, y0, x1, y1 = shape
+            lines.append(
+                '  <rect x="{:g}" y="{:g}" width="{:g}" height="{:g}"/>'.format(
+                    x0, y0, x1 - x0, y1 - y0
+                )
+            )
+        else:
+            points = " ".join("{:g},{:g}".format(x, y) for x, y in shape)
+            lines.append('  <polygon points="{}"/>'.format(points))
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {em} {em}" '
         'width="{em}" height="{em}">\n{body}\n</svg>\n'
-    ).format(em=EM, body=body)
+    ).format(em=EM, body="\n".join(lines))
     path = os.path.join(SVG_DIR, name + ".svg")
     with open(path, "w") as fh:
         fh.write(svg)
     print("wrote", os.path.relpath(path, REPO))
 
 
-def draw_glyph(rects):
-    """Rectangles -> a TrueType glyph.
+def draw_glyph(shapes):
+    """Shapes -> a TrueType glyph.
 
     Every contour is wound clockwise in font (y-up) space, so overlapping
-    rectangles union under the non-zero fill rule and no boolean op is needed.
+    shapes union under the non-zero fill rule and no boolean op is needed.
     """
     pen = TTGlyphPen(None)
-    for x0, y0, x1, y1 in rects:
+    for shape in shapes:
         # svg y down -> font y up
-        fy0, fy1 = ASCENT - y1, ASCENT - y0
-        pen.moveTo((x0, fy0))
-        pen.lineTo((x0, fy1))
-        pen.lineTo((x1, fy1))
-        pen.lineTo((x1, fy0))
+        points = [(x, ASCENT - y) for x, y in _outline(shape)]
+        # Shoelace sum; positive means counter-clockwise in y-up space.
+        area = sum(
+            x0 * y1 - x1 * y0
+            for (x0, y0), (x1, y1) in zip(points, points[1:] + points[:1])
+        )
+        if area > 0:
+            points.reverse()
+        pen.moveTo(points[0])
+        for point in points[1:]:
+            pen.lineTo(point)
         pen.closePath()
     return pen.glyph()
 
@@ -145,12 +191,12 @@ def main() -> None:
     order = font.getGlyphOrder()
 
     for name, (codepoint, builder) in ICONS.items():
-        rects = builder()
-        write_svg(name, rects)
+        shapes = builder()
+        write_svg(name, shapes)
 
         if name not in order:
             order = list(order) + [name]
-        glyf[name] = draw_glyph(rects)
+        glyf[name] = draw_glyph(shapes)
         hmtx[name] = (ADVANCE, 0)
 
         for table in font["cmap"].tables:
