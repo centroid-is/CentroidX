@@ -87,6 +87,31 @@
 /// only the host, which the parameter never changes. There is no web build to
 /// apply it to (see above); an `<iframe>` would take its `src` from the same
 /// function.
+///
+/// ## Warm browsers
+///
+/// A tile is a widget on a page, and a page is torn down when the operator
+/// navigates away. Tearing the browser down with it meant every return to
+/// the page paid the full price again — starting an engine, then fetching
+/// and rendering a dashboard — which on the plant was three seconds of cover
+/// for a page the operator had been looking at a moment ago.
+///
+/// So a tile that leaves the screen no longer disposes its browser: it parks
+/// it in [WebViewSurfacePool], keyed by the address it is on, and the next
+/// tile started for that address takes the parked browser over as it is,
+/// page and all, without navigating. The page is on screen the same frame
+/// the tile is. A parked browser keeps running — a dashboard keeps polling —
+/// which is exactly what makes it current when it comes back; the pool is
+/// bounded (see [kWebViewWarmBrowsers]) so that cost cannot grow with the
+/// number of pages visited, and the oldest parked browser is disposed for
+/// real to make room.
+///
+/// Each engine survives its widget leaving the tree differently. WKWebView
+/// lives in its controller and is re-wrapped by a new platform view. CEF's
+/// browser is closed only by an explicit `dispose`, and its texture is just
+/// re-shown. WebView2's Flutter widget disposes the native view with itself
+/// unless it was created with a keep-alive handle, so the Windows surface
+/// holds one; see [_WebView2Surface].
 library;
 
 import 'dart:async';
@@ -490,6 +515,87 @@ abstract class WebViewSurfaceLoading {
 /// failure with nothing ever shown puts it back.
 const Duration kWebViewRevealTimeout = Duration(seconds: 8);
 
+/// How many browsers stay warm after their tiles have left the screen.
+///
+/// Each one is a live page — a Grafana tab is a couple of hundred megabytes
+/// and polls its data source — so this is the trade between a page that
+/// comes back at once and an HMI that grows a browser for every page ever
+/// visited. Three covers an operator switching between a couple of
+/// dashboards and the mimic; the fourth address visited costs the oldest its
+/// browser. See the library doc, "Warm browsers".
+const int kWebViewWarmBrowsers = 3;
+
+/// Browsers parked by tiles that left the screen, waiting for the same
+/// address to be asked for again. See the library doc, "Warm browsers".
+///
+/// Keyed by the address the browser is on, so a tile only ever takes over a
+/// browser showing the page it wants — including the theme parameter, which
+/// is part of the effective URL. Two tiles on the same address park two
+/// browsers, and each takes the most recently parked one back.
+///
+/// Process-wide by design: the tile that parks a browser is gone by the time
+/// the one that wants it exists, so nothing shorter-lived could hand it over.
+/// [instance] is replaceable so tests can start from an empty lot.
+class WebViewSurfacePool {
+  WebViewSurfacePool({this.capacity = kWebViewWarmBrowsers});
+
+  /// The lot every [WebViewAssetView] parks in and takes from.
+  static WebViewSurfacePool instance = WebViewSurfacePool();
+
+  /// Browsers kept at once. Zero parks nothing: every browser handed to
+  /// [park] is disposed on the spot.
+  final int capacity;
+
+  /// Oldest first.
+  final List<_ParkedSurface> _parked = [];
+
+  int get size => _parked.length;
+
+  /// The addresses parked, oldest first.
+  Iterable<String> get urls => _parked.map((p) => p.url);
+
+  /// Keeps [surface], which is showing [url], for a later [take].
+  ///
+  /// Over [capacity], the browser parked longest ago is disposed for real.
+  void park(String url, WebViewSurface surface) {
+    if (capacity <= 0) {
+      _drop(surface);
+      return;
+    }
+    _parked.add(_ParkedSurface(url, surface));
+    while (_parked.length > capacity) {
+      _drop(_parked.removeAt(0).surface);
+    }
+  }
+
+  /// The browser most recently parked on [url], removed from the lot, or
+  /// null when none is.
+  WebViewSurface? take(String url) {
+    for (var i = _parked.length - 1; i >= 0; i--) {
+      if (_parked[i].url == url) return _parked.removeAt(i).surface;
+    }
+    return null;
+  }
+
+  /// Disposes every parked browser.
+  Future<void> clear() async {
+    final parked = List.of(_parked);
+    _parked.clear();
+    for (final p in parked) {
+      await p.surface.dispose().catchError((Object _) {});
+    }
+  }
+
+  static void _drop(WebViewSurface surface) =>
+      unawaited(surface.dispose().catchError((Object _) {}));
+}
+
+class _ParkedSurface {
+  const _ParkedSurface(this.url, this.surface);
+  final String url;
+  final WebViewSurface surface;
+}
+
 /// Builds the browser for [config], or null where this platform has none.
 typedef WebViewSurfaceFactory = WebViewSurface? Function(
     WebViewAssetConfig config);
@@ -631,10 +737,11 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
     _start();
   }
 
-  /// Tears the browser down and forgets what was loaded, so a later [_start]
-  /// navigates afresh.
+  /// Parks the browser and forgets what was loaded, so a later [_start]
+  /// starts afresh — taking the parked browser back if it is on the same
+  /// address, navigating a new one otherwise.
   void _stop() {
-    _teardown();
+    _teardown(keep: true);
     _surface = null;
     _unavailable = false;
     _unavailableReason = null;
@@ -646,6 +753,17 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
     final uri = _effectiveUrl;
     if (uri == null) return;
     _loadedUrl = uri.toString();
+    // A browser already on this page beats starting one: it is taken over as
+    // it stands, and not navigated, so the page is up the same frame the tile
+    // is. It proved its engine present when it first ran, so the availability
+    // probe — a channel round trip — is not repeated either.
+    final parked = WebViewSurfacePool.instance.take(_loadedUrl!);
+    if (parked != null) {
+      _surface = parked;
+      _watchLoad(parked);
+      _armTimer();
+      return;
+    }
     final factory = WebViewAssetView.debugSurfaceFactory ?? _defaultFactory;
     final surface = factory(config);
     if (surface == null) {
@@ -744,7 +862,8 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
     // answer is about a browser nobody is looking at any more.
     if (!mounted || _surface != surface) return;
     setState(() {
-      _teardown();
+      // A browser that cannot render is nothing to keep warm.
+      _teardown(keep: false);
       _unavailable = true;
       _unavailableReason = reason;
       _loadedUrl = null;
@@ -768,7 +887,13 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
     });
   }
 
-  void _teardown() {
+  /// Lets go of the browser: parked for the next tile on this address when
+  /// [keep] is set, disposed otherwise.
+  ///
+  /// A browser whose page never came up is disposed either way — parking it
+  /// would hand the next tile a "Can't reach" that nothing retries until a
+  /// reload tick, where a fresh browser at least tries again on the spot.
+  void _teardown({required bool keep}) {
     _reloadTimer?.cancel();
     _reloadTimer = null;
     _capTimer?.cancel();
@@ -780,15 +905,24 @@ class _WebViewAssetViewState extends State<WebViewAssetView> {
     _capElapsed = false;
     _veilMounted = false;
     final surface = _surface;
+    final url = _loadedUrl;
     _surface = null;
+    if (surface == null) return;
+    final failed = surface is WebViewSurfaceLoading &&
+        (surface as WebViewSurfaceLoading).load.value.phase ==
+            WebViewLoadPhase.failed;
+    if (keep && url != null && !failed) {
+      WebViewSurfacePool.instance.park(url, surface);
+      return;
+    }
     // No .timeout() here: this runs from dispose, where a pending timeout
     // timer would outlive the element it belongs to.
-    unawaited(surface?.dispose().catchError((Object _) {}));
+    unawaited(surface.dispose().catchError((Object _) {}));
   }
 
   @override
   void dispose() {
-    _teardown();
+    _teardown(keep: true);
     super.dispose();
   }
 
@@ -978,10 +1112,31 @@ class _PlatformWebViewSurface
 /// and the controller that can navigate afterwards only arrives later, via
 /// `onWebViewCreated`. [navigate] therefore has to work in three situations —
 /// before the widget is built, after it is built but before the controller
-/// exists, and normally — which is what [_wanted] and [_initialUrl] are for.
+/// exists, and normally — which is what [_wanted] and [_applied] are for.
+///
+/// ## Surviving the widget
+///
+/// The plugin's widget owns its native view: the Flutter element disposing
+/// disposes the WebView2 with it, which would make a parked surface (see the
+/// library doc, "Warm browsers") an empty shell. Unless it was created with a
+/// keep-alive handle — then the native side moves the WebView2 into a
+/// keep-alive table when the widget goes, and a later widget created with
+/// the same handle takes it back, page and all, in place of starting one. So
+/// every surface holds a handle for its lifetime, and [build] after a park
+/// is just the plugin widget built again. The handle is what [dispose] has
+/// to release, or the native view outlives everything.
+///
+/// Taking the view back replays `onWebViewCreated` with a fresh controller.
+/// The address it should be on is whatever was last handed to the engine —
+/// [_applied], which a theme flip's in-place navigation moves on from the
+/// `initialUrlRequest` — so the replay compares against that and does not
+/// reload a page that is already there.
 class _WebView2Surface
     implements WebViewSurface, WebViewSurfaceAvailability, WebViewSurfaceLoading {
   _WebView2Surface(WebViewAssetConfig config);
+
+  /// Keeps the native WebView2 alive while no widget shows it.
+  final InAppWebViewKeepAlive _keepAlive = InAppWebViewKeepAlive();
 
   final ValueNotifier<WebViewLoad> _load =
       ValueNotifier(const WebViewLoad.loading());
@@ -1012,9 +1167,10 @@ class _WebView2Surface
   /// The most recent [navigate] target, whether or not it has been applied.
   Uri? _wanted;
 
-  /// What went into `initialUrlRequest`, so [_onCreated] can tell an address
-  /// that is already loading from one that arrived while we had no controller.
-  String? _initialUrl;
+  /// The address last handed to the engine — `initialUrlRequest`, or the
+  /// last `loadUrl` — so [_onCreated] can tell an address that is already
+  /// loading from one that arrived while we had no controller.
+  String? _applied;
 
   bool _disposed = false;
 
@@ -1025,21 +1181,26 @@ class _WebView2Surface
     // No controller yet: [build] will bake this in, or [_onCreated] will
     // apply it. Either way it is not lost, and it is not an error.
     if (controller == null || _disposed) return;
+    _applied = uri.toString();
     await controller.loadUrl(urlRequest: URLRequest(url: WebUri(uri.toString())));
   }
 
   // Typed `dynamic` because that is what the platform interface declares:
   // the callback is handed `controllerFromPlatform?.call(c) ?? c`, and we
   // pass no `controllerFromPlatform`, so what arrives is the raw controller.
+  //
+  // Runs once per widget the engine is shown through: on first creation, and
+  // again each time a parked view is taken back (see the class doc).
   void _onCreated(dynamic raw) {
     if (raw is! PlatformInAppWebViewController) return;
     final controller = raw;
     _controller = controller;
     final wanted = _wanted?.toString();
     // Only if the address moved on while the browser was starting — otherwise
-    // initialUrlRequest is already loading it and a second load would be a
-    // visible double-fetch.
-    if (_disposed || wanted == null || wanted == _initialUrl) return;
+    // the engine is already on it and a second load would be a visible
+    // double-fetch, or on a taken-back view a reload of a page already up.
+    if (_disposed || wanted == null || wanted == _applied) return;
+    _applied = wanted;
     unawaited(controller
         .loadUrl(urlRequest: URLRequest(url: WebUri(wanted)))
         .catchError((Object _) {}));
@@ -1054,7 +1215,8 @@ class _WebView2Surface
       PlatformInAppWebViewWidgetCreationParams(
         initialUrlRequest: _wanted == null
             ? null
-            : URLRequest(url: WebUri((_initialUrl = _wanted.toString()))),
+            : URLRequest(url: WebUri((_applied = _wanted.toString()))),
+        keepAlive: _keepAlive,
         onWebViewCreated: _onCreated,
         onProgressChanged: (_, progress) => _onProgress(progress),
         // Belt and braces for the progress reveal above.
@@ -1099,6 +1261,15 @@ class _WebView2Surface
           .catchError((Object _) {});
     }
     widget?.dispose();
+    // The widget's dispose leaves a kept-alive native view in the plugin's
+    // table on purpose; this is what actually frees it.
+    try {
+      await InAppWebViewPlatform.instance
+          ?.createPlatformInAppWebViewControllerStatic()
+          .disposeKeepAlive(_keepAlive);
+    } catch (_) {
+      // A plugin that cannot reach its native side has nothing to free.
+    }
   }
 }
 
