@@ -71,7 +71,21 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
   }
 
   final List<AlarmConfig> _proposedAlarms = [];
-  final List<int> _proposalIds = [];
+
+  /// The proposal id behind each entry of [_proposedAlarms], index for
+  /// index. Null for an entry staged off the route: the chat batch card
+  /// accepts a proposal before it beams here, so that one has no id left to
+  /// mark and no row in the queue -- see [_stageRoutedProposal].
+  final List<int?> _proposalIds = [];
+
+  /// What the banner fires for one row of the batch: apply and accept that
+  /// alarm alone, or un-stage and reject it alone. One instance for the life
+  /// of this State, so the slot can tell our entries from another editor's.
+  late final ProposalItemActions _itemActions = ProposalItemActions(
+    commit: (id) => _commitProposals(only: {id}),
+    discard: (id) => _discardProposals(only: {id}),
+  );
+  StateController<Map<int, ProposalItemActions>>? _itemSlot;
 
   /// Uids among [_proposedAlarms] that accepting should *remove*.
   ///
@@ -122,6 +136,7 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
       final isDelete = map.remove('_op') == 'delete';
       final config = AlarmConfig.fromJson(map);
       _proposedAlarms.add(config);
+      _proposalIds.add(null);
       if (isDelete) _proposedDeleteUids.add(config.uid);
       _publishProposalCallbacks();
     } catch (_) {
@@ -144,16 +159,85 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
     }
   }
 
-  /// Marks the route payload resolved, so a later mount of this page does not
-  /// stage it again. See [_stageRoutedProposal].
+  /// Marks the route payload resolved once the proposal it carries has been
+  /// decided, so a later mount of this page does not stage it again. See
+  /// [_stageRoutedProposal].
   ///
   /// Recorded on the notifier because the record has to outlive this State.
-  void _markRoutePayloadResolved([ProviderContainer? container]) {
+  /// Decided means: not still staged here off the route (an id-less entry),
+  /// and not still pending in the queue. A batch is now decided one row at a
+  /// time, so this is asked after every decision; while the routed proposal
+  /// is still up it says nothing.
+  void _settleRoutePayload([ProviderContainer? container]) {
     final json = widget.proposalData;
     if (json == null) return;
     final scope = container ?? _container;
     if (scope == null) return;
+    if (_proposalIds.contains(null)) return;
+    final pending = scope.read(proposalStateProvider).proposals;
+    if (pending.any((p) => p.proposalJson == json)) return;
     scope.read(proposalStateProvider.notifier).markRoutePayloadResolved(json);
+  }
+
+  /// Drops staged alarms the operator decided on a surface that never asks
+  /// this page: the banner's Reject on a row it had not yet been offered, the
+  /// chat batch card's Reject all, a dismiss. Left staged, a rejected alarm
+  /// was written by the next Accept all as if it had been accepted.
+  ///
+  /// Only entries with an id can be decided elsewhere; a routed entry lives
+  /// here alone. Returns how many were dropped.
+  int _dropDecidedElsewhere(ProposalState state) {
+    final live = {for (final p in state.proposals) p.id};
+    final gone = <AlarmConfig>[];
+    for (var i = 0; i < _proposalIds.length; i++) {
+      final id = _proposalIds[i];
+      if (id != null && !live.contains(id)) gone.add(_proposedAlarms[i]);
+    }
+    if (gone.isNotEmpty) _unstage(gone);
+    return gone.length;
+  }
+
+  /// The staged entries a commit or discard is about: every one, or the ones
+  /// whose proposal id is in [only]. As pairs, because the lists can shift
+  /// under an await -- the listener drops an accepted alarm the moment its
+  /// id leaves the queue -- so an index taken before is worthless after.
+  List<(AlarmConfig, int?)> _pick(Set<int>? only) => [
+        for (var i = 0; i < _proposedAlarms.length; i++)
+          if (only == null ||
+              (_proposalIds[i] != null && only.contains(_proposalIds[i])))
+            (_proposedAlarms[i], _proposalIds[i]),
+      ];
+
+  /// Takes [alarms] out of the batch, by identity, keeping the ids and the
+  /// delete flags in step, and retires whatever banner controls they were
+  /// behind: their rows, and the batch's Accept/Reject once nothing is left.
+  /// Tolerant of an entry the listener already dropped. Through the stored
+  /// controllers, because this runs from the banner's callbacks after this
+  /// page may be gone.
+  void _unstage(Iterable<AlarmConfig> alarms) {
+    final gone = <int>[];
+    for (final alarm in alarms) {
+      final i = _proposedAlarms.indexWhere((a) => identical(a, alarm));
+      if (i < 0) continue;
+      final id = _proposalIds[i];
+      if (id != null) gone.add(id);
+      _proposedAlarms.removeAt(i);
+      _proposalIds.removeAt(i);
+      // The delete flag leaves with the alarm it marks: left behind, a uid
+      // staged for deletion in one batch marks an unrelated alarm that
+      // happens to reuse the uid in the next one, and accepting that batch
+      // removes it instead of writing it.
+      _proposedDeleteUids.remove(alarm.uid);
+    }
+    final itemSlot = _itemSlot;
+    if (gone.isNotEmpty && itemSlot != null && itemSlot.mounted) {
+      itemSlot.withdraw(_itemActions, gone);
+    }
+    if (_proposedAlarms.isEmpty) {
+      _show = null;
+      _commitSlot?.state = null;
+      _discardSlot?.state = null;
+    }
   }
 
   /// Stages every pending alarm proposal in one batch.
@@ -206,6 +290,11 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
   void _publishProposalCallbacks() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // The per-row actions go up first: the banner's armed Accept takes the
+      // first seam that can save exactly the row it was pressed on.
+      final itemSlot = ref.read(proposalItemActionsProvider.notifier);
+      itemSlot.offer(_proposalIds.whereType<int>(), _itemActions);
+      _itemSlot = itemSlot;
       final commitSlot = ref.read(proposalCommitProvider.notifier);
       commitSlot.state = _commitProposals;
       _commitSlot = commitSlot;
@@ -219,8 +308,10 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
     });
   }
 
-  /// Applies every staged alarm, then marks the proposals accepted.
-  Future<void> _commitProposals() async {
+  /// Applies the staged alarms -- every one, or [only] those proposal ids --
+  /// then marks them accepted. The rest of the batch stays staged, still the
+  /// banner's to accept or reject.
+  Future<void> _commitProposals({Set<int>? only}) async {
     if (_proposedAlarms.isEmpty) return;
     // Through the container, never `ref`: this is the banner's accept, and by
     // the time it runs this page may be disposed. `ref` throws then, and it
@@ -228,12 +319,14 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
     // start -- which is how a batch could be written and left pending.
     final container = _container;
     if (container == null) return;
+    final picked = _pick(only);
+    if (picked.isEmpty) return;
     // Deliberately NOT wrapped in a try: a failure here must abort before
     // anything is marked accepted. Swallowing it and running the accept loop
     // anyway would write zero alarms and still mark all N proposals accepted,
     // which is exactly the loss the ordering below exists to prevent.
     final alarmMan = await container.read(alarmManProvider.future);
-    for (final a in _proposedAlarms) {
+    for (final (a, _) in picked) {
       // updateAlarm writes the uid back -- in place now, but still written --
       // so routing a removal through it would leave the alarm standing and
       // delete nothing.
@@ -248,7 +341,8 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
     // Awaited, and only after the alarms are in: acceptProposal marks the row
     // accepted in the database, so doing it first would lose them on failure.
     final notifier = container.read(proposalStateProvider.notifier);
-    for (final id in _proposalIds) {
+    for (final (_, id) in picked) {
+      if (id == null) continue;
       try {
         await notifier.acceptProposal(id);
       } catch (e) {
@@ -258,48 +352,41 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
         debugPrint('alarm proposal $id could not be marked accepted: $e');
       }
     }
-    _clearStagedBatch();
+    _retire([for (final (a, _) in picked) a]);
   }
 
-  /// Drops the whole batch without adding any alarm.
-  Future<void> _discardProposals() async {
+  /// Drops the batch -- every entry, or [only] those proposal ids -- without
+  /// adding any alarm.
+  Future<void> _discardProposals({Set<int>? only}) async {
     // See [_commitProposals]: this is the banner's reject, and reaching for
     // `ref` here is what threw "Cannot use ref after the widget was disposed"
     // before a single proposal could be marked rejected.
     final container = _container;
     if (container == null) return;
+    final picked = _pick(only);
     final notifier = container.read(proposalStateProvider.notifier);
-    for (final id in _proposalIds) {
+    for (final (_, id) in picked) {
+      if (id == null) continue;
       try {
         await notifier.rejectProposal(id);
       } catch (e) {
         debugPrint('alarm proposal $id could not be marked rejected: $e');
       }
     }
-    _clearStagedBatch();
+    _retire([for (final (a, _) in picked) a]);
   }
 
-  /// Drops the staged batch and retires the banner, whether or not this page
-  /// is still on screen.
+  /// Drops [alarms] from the staged batch and retires the banner controls
+  /// they were behind, whether or not this page is still on screen.
   ///
   /// The slots go through the stored controllers rather than `ref.read`, for
   /// the same reason the callbacks do; only the rebuild depends on [mounted].
-  void _clearStagedBatch() {
-    // Before the lists are emptied is as good as after; what matters is that
-    // the route payload stops being stageable at the same moment the batch
-    // it staged stops existing.
-    _markRoutePayloadResolved();
-    _proposedAlarms.clear();
-    _proposalIds.clear();
-    // Cleared with the alarms it annotates. Left behind, a uid staged for
-    // deletion in one batch marks an unrelated alarm that happens to reuse
-    // the uid in the next one, and accepting that batch removes it instead
-    // of writing it.
-    _proposedDeleteUids.clear();
-    _show = null;
+  void _retire(List<AlarmConfig> alarms) {
+    _unstage(alarms);
+    // After the lists have moved: the route payload stops being stageable
+    // the moment the proposal it carries is no longer staged or pending.
+    _settleRoutePayload();
     if (mounted) setState(() {});
-    _commitSlot?.state = null;
-    _discardSlot?.state = null;
   }
 
   /// Accept the proposal with the (possibly edited) alarm config from the form.
@@ -348,19 +435,20 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
     // staged forever: the alarm was written, and the amber staged strip, the
     // highlighted row and the "Accept Proposal" pane all stayed up over an
     // alarm that was already saved.
-    if (_proposalIds.isNotEmpty) {
+    if (_proposedAlarms.isNotEmpty) {
+      final first = _proposedAlarms.first;
+      final id = _proposalIds.first;
       // Removed only AFTER the await returns. Dropping it first meant a
       // failed accept left the id out of _proposalIds while still in state,
       // and the next listener tick re-staged it as a duplicate.
-      final id = _proposalIds.first;
-      await container.read(proposalStateProvider.notifier).acceptProposal(id);
-      _proposalIds.removeAt(0);
-    }
-    // The alarm leaves the batch however it was staged. The delete flag
-    // leaves with the alarm it marks: dropping it earlier would leave a
-    // still-staged removal looking like an ordinary update.
-    if (_proposedAlarms.isNotEmpty) {
-      _proposedDeleteUids.remove(_proposedAlarms.removeAt(0).uid);
+      if (id != null) {
+        final notifier = container.read(proposalStateProvider.notifier);
+        await notifier.acceptProposal(id);
+      }
+      // The alarm leaves the batch however it was staged, and its delete
+      // flag with it: dropping that earlier would leave a still-staged
+      // removal looking like an ordinary update.
+      _unstage([first]);
     }
 
     // Told through the handle, not a fresh lookup: navigating away mid-accept
@@ -374,16 +462,11 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
 
     _show = null;
     if (mounted) setState(() {});
-    // Through the stored controllers, for the same reason: the accept may
-    // have outlived the page, and the banner still has to lose its buttons.
-    if (_proposedAlarms.isEmpty) {
-      // The batch the route staged is gone, so the payload must stop being
-      // stageable with it -- otherwise coming back to this page stages the
-      // alarm that was just written and puts the strip back over it.
-      _markRoutePayloadResolved(container);
-      _commitSlot?.state = null;
-      _discardSlot?.state = null;
-    }
+    // Once the routed alarm is neither staged nor pending, the payload must
+    // stop being stageable -- otherwise coming back to this page stages the
+    // alarm that was just written and puts the strip back over it. The
+    // banner's buttons went with the batch in [_unstage].
+    _settleRoutePayload(container);
   }
 
   @override
@@ -400,8 +483,10 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
     // banner's buttons away from a live batch.
     final commitSlot = _commitSlot;
     final discardSlot = _discardSlot;
+    final itemSlot = _itemSlot;
     final commit = _commitProposals;
     final discard = _discardProposals;
+    final items = _itemActions;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       // `mounted` on the controllers, not on us: a frame later the whole
       // ProviderScope may be gone too -- the app shutting down, or a test
@@ -416,6 +501,7 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
           discardSlot.state == discard) {
         discardSlot.state = null;
       }
+      if (itemSlot != null && itemSlot.mounted) itemSlot.withdraw(items);
     });
     super.dispose();
   }
@@ -425,7 +511,10 @@ class _AlarmEditorPageState extends ConsumerState<AlarmEditorPage> {
     // Reactively watch for new alarm proposals arriving via MCP.
     ref.listen<ProposalState>(proposalStateProvider, (prev, next) {
       // No "already showing one" guard: a later proposal joins the batch.
-      if (_stageAlarmProposals() > 0) setState(() {});
+      // And one decided elsewhere leaves it, so the batch is always exactly
+      // what is still pending of this type.
+      final changed = _stageAlarmProposals() + _dropDecidedElsewhere(next);
+      if (changed > 0) setState(() {});
     });
 
     return BaseScaffold(

@@ -373,6 +373,74 @@ final proposalCommitProvider =
 final proposalDiscardProvider =
     StateProvider<Future<void> Function()?>((ref) => null);
 
+/// Accept and reject for ONE staged proposal, leaving the rest staged.
+///
+/// [proposalCommitProvider] and [proposalDiscardProvider] act on an editor's
+/// whole staged batch, and for a long time that was the only seam there was.
+/// The banner's per-row Accept could do no more than open the editor, and its
+/// per-row Reject dropped the proposal from the queue while three of the four
+/// editors kept their copy staged -- so the next "Accept all" wrote it anyway.
+/// An operator shown five proposals who wanted three of them had no move that
+/// took just those three, and rejected all five (2026-09-13).
+///
+/// So an editor that has a proposal staged offers, per proposal id, a commit
+/// that applies and marks accepted exactly that one, and a discard that
+/// un-stages and marks rejected exactly that one. Both leave every other
+/// staged proposal where it is: still staged, still pending, still acceptable
+/// afterwards. Because [commit] is scoped to its id, the banner can fire it
+/// without the whole-queue guard it needs for [proposalCommitProvider] -- a
+/// proposal that arrives in the meantime cannot be written by it.
+class ProposalItemActions {
+  const ProposalItemActions({required this.commit, required this.discard});
+
+  /// Applies the proposal with [id] through the editor that owns its data,
+  /// then marks it accepted -- in that order, and nothing else is written.
+  final Future<void> Function(int id) commit;
+
+  /// Un-stages the proposal with [id] and marks it rejected.
+  final Future<void> Function(int id) discard;
+}
+
+/// Which pending proposals an editor has staged and can act on one at a time,
+/// keyed by proposal id.
+///
+/// Keyed by id rather than one slot per editor because two sections on the
+/// same page -- key mappings and access templates on the key repository --
+/// each stage their own type, and the banner has to know which of them holds
+/// the row it is about to act on. An id that is absent is not staged anywhere
+/// the banner can reach; its Accept opens the editor instead.
+///
+/// Editors add ids through [ProposalItemSlot.offer] and remove them through
+/// [ProposalItemSlot.withdraw], which only ever removes entries holding that
+/// editor's own [ProposalItemActions] -- the same "only if it is still ours"
+/// rule the batch slots are cleared by.
+final proposalItemActionsProvider =
+    StateProvider<Map<int, ProposalItemActions>>((ref) => const {});
+
+/// The two moves an editor makes on [proposalItemActionsProvider].
+extension ProposalItemSlot
+    on StateController<Map<int, ProposalItemActions>> {
+  /// Offers [actions] for every id in [ids], replacing whatever was there.
+  void offer(Iterable<int> ids, ProposalItemActions actions) {
+    if (ids.isEmpty) return;
+    state = {...state, for (final id in ids) id: actions};
+  }
+
+  /// Withdraws [actions] from [ids], or from every id when [ids] is null.
+  ///
+  /// Entries holding another editor's actions are left alone.
+  void withdraw(ProposalItemActions actions, [Iterable<int>? ids]) {
+    final only = ids?.toSet();
+    final next = <int, ProposalItemActions>{
+      for (final e in state.entries)
+        if (!identical(e.value, actions) ||
+            (only != null && !only.contains(e.key)))
+          e.key: e.value,
+    };
+    if (next.length != state.length) state = next;
+  }
+}
+
 /// How the banner hands a proposal to an editor that is already on screen.
 ///
 /// The banner's View and "Review all" beam to the proposal's editor route.

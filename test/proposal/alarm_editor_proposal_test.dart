@@ -89,7 +89,7 @@ void main() {
 
   group('commit applies before it accepts', () {
     test('writes the alarms, then marks the proposals accepted', () {
-      final commit = source.substring(source.indexOf('_commitProposals() async'));
+      final commit = source.substring(source.indexOf('_commitProposals({Set<int>? only}) async'));
       final write = commit.indexOf('alarmMan.updateAlarm(a)');
       final accept = commit.indexOf('acceptProposal');
       expect(write, greaterThan(-1));
@@ -125,7 +125,7 @@ void main() {
       // updateAlarm removes then re-adds, so routing a delete through it
       // would write the alarm straight back and delete nothing.
       final commit =
-          source.substring(source.indexOf('_commitProposals() async'));
+          source.substring(source.indexOf('_commitProposals({Set<int>? only}) async'));
       expect(commit, contains('alarmMan.removeAlarm('));
     });
 
@@ -149,8 +149,15 @@ void main() {
     });
 
     test('accepting one edited alarm leaves the rest of the batch staged', () {
-      expect(source, contains('_proposalIds.removeAt(0)'));
-      expect(source, contains('_proposedAlarms.removeAt(0)'));
+      // The form edits the first of the batch; only that one leaves it, by
+      // identity, with its id and delete flag kept in step.
+      final accept = source.substring(
+          source.indexOf('Future<void> _acceptProposalWithConfig('));
+      expect(accept, contains('final first = _proposedAlarms.first;'));
+      expect(accept, contains('_unstage([first])'));
+      final unstage = source.substring(source.indexOf('void _unstage('));
+      expect(unstage, contains('_proposedAlarms.removeAt(i)'));
+      expect(unstage, contains('_proposalIds.removeAt(i)'));
     });
   });
 
@@ -184,7 +191,7 @@ void main() {
 
     test('neither banner callback reaches for ref', () {
       for (final fn in ['_commitProposals', '_discardProposals']) {
-        final body = bodyOf('Future<void> $fn()');
+        final body = bodyOf('Future<void> $fn({Set<int>? only})');
         for (final use in ['ref.read', 'ref.watch', 'ref.invalidate']) {
           expect(body, isNot(contains(use)),
               reason: '$fn runs from the banner, after this State may be gone');
@@ -193,7 +200,7 @@ void main() {
     });
 
     test('commit writes and refreshes through the captured container', () {
-      final body = bodyOf('Future<void> _commitProposals()');
+      final body = bodyOf('Future<void> _commitProposals({Set<int>? only})');
       expect(body, contains('container.read(alarmManProvider.future)'));
       expect(body, contains('container.invalidate(alarmManProvider)'),
           reason: 'the alarm list still has to rebuild for whoever is '
@@ -202,7 +209,7 @@ void main() {
 
     test('both callbacks bail when no container was ever captured', () {
       for (final fn in ['_commitProposals', '_discardProposals']) {
-        final body = bodyOf('Future<void> $fn()');
+        final body = bodyOf('Future<void> $fn({Set<int>? only})');
         expect(body, contains('final container = _container;'));
         expect(body, contains('if (container == null) return;'),
             reason: 'writing nothing beats writing half and marking it done');
@@ -213,12 +220,13 @@ void main() {
       // Not `ref.read(proposalCommitProvider.notifier)`: same disposed-ref
       // problem, and these controllers were already being held for dispose().
       for (final fn in ['_commitProposals', '_discardProposals']) {
-        expect(bodyOf('Future<void> $fn()'), contains('_clearStagedBatch()'));
+        expect(bodyOf('Future<void> $fn({Set<int>? only})'),
+            contains('_retire('));
       }
-      final clear = bodyOf('void _clearStagedBatch()');
-      expect(clear, contains('_commitSlot?.state = null;'));
-      expect(clear, contains('_discardSlot?.state = null;'));
-      expect(clear, contains('if (mounted) setState'),
+      final unstage = bodyOf('void _unstage(');
+      expect(unstage, contains('_commitSlot?.state = null;'));
+      expect(unstage, contains('_discardSlot?.state = null;'));
+      expect(bodyOf('void _retire('), contains('if (mounted) setState'),
           reason: 'the batch is dropped either way; only the rebuild is '
               'conditional on this page still being on screen');
     });
@@ -227,23 +235,23 @@ void main() {
       // A bare `catch (_) {}` around the database write is what let the key
       // repository lose a whole batch quietly for weeks.
       for (final fn in ['_commitProposals', '_discardProposals']) {
-        final body = bodyOf('Future<void> $fn()');
+        final body = bodyOf('Future<void> $fn({Set<int>? only})');
         expect(body, isNot(contains('catch (_) {}')));
         expect(body, contains('debugPrint('));
       }
     });
 
-    test('clearing the batch clears the delete flags with it', () {
-      // _proposedDeleteUids is per-batch: it says which of the staged alarms
-      // accepting should *remove*. Survive the clear and it marks the next
-      // batch's alarm of the same uid as a removal, so an ordinary create
-      // deletes the alarm instead of writing it.
+    test('un-staging an alarm clears its delete flag with it', () {
+      // _proposedDeleteUids says which of the staged alarms accepting should
+      // *remove*. Survive the alarm and it marks the next batch's alarm of
+      // the same uid as a removal, so an ordinary create deletes the alarm
+      // instead of writing it.
       //
-      // #241 introduced _clearStagedBatch() on a branch cut before #233 added
+      // #241 introduced the batch clear on a branch cut before #233 added
       // _proposedDeleteUids, so taking either side of that merge whole leaks
       // it. alarm_editor_delete_batch_test.dart pins the behaviour.
-      expect(bodyOf('void _clearStagedBatch()'),
-          contains('_proposedDeleteUids.clear();'));
+      expect(bodyOf('void _unstage('),
+          contains('_proposedDeleteUids.remove(alarm.uid);'));
     });
   });
 
@@ -286,9 +294,11 @@ void main() {
     });
 
     test('the banner slots are retired through the stored controllers', () {
+      // Through _unstage, which clears the slots off the stored controllers
+      // once the batch is empty -- pinned in the disposal group above.
       final body = bodyOf('Future<void> _acceptProposalWithConfig(');
-      expect(body, contains('_commitSlot?.state = null;'));
-      expect(body, contains('_discardSlot?.state = null;'));
+      expect(body, contains('_unstage([first])'));
+      expect(body, isNot(contains('ref.read(proposalCommitProvider')));
     });
   });
 
