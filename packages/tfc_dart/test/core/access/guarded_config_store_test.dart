@@ -18,6 +18,8 @@ import 'package:tfc_dart/core/config/config_item.dart';
 import 'package:tfc_dart/core/config/config_store.dart';
 import 'package:tfc_dart/core/config/config_store_errors.dart';
 import 'package:tfc_dart/core/config/key_mapping_codec.dart';
+import 'package:tfc_dart/core/config/preference_payload.dart';
+import 'package:tfc_dart/core/config/key_mapping_migration.dart';
 import 'package:tfc_dart/core/database_drift.dart';
 import 'package:tfc_dart/core/state_man.dart';
 
@@ -112,6 +114,24 @@ void main() {
   /// tests drive the write path, and a background reconcile would answer for
   /// them.
   void attach() => store.attachRemoteDatabase(remote, startSync: false);
+
+  /// The key-mapping migration's marker, as the plant carries it once the
+  /// migration has looked — the thing that tells "no mappings" from "not
+  /// migrated yet". Written through the raw store so the guard's own audit
+  /// rows stay the test's.
+  Future<void> markMigrated() => store.writeItems(
+        kinds: const {ConfigKind.preference},
+        wanted: [
+          ConfigItem.of(
+            kind: ConfigKind.preference,
+            id: kKeyMappingsMigratedMarkerId,
+            value: preferencePayload(kPrefStringType, '2026-09-13'),
+          ),
+        ],
+        actionId: 'migration',
+        who: 'migration',
+        roleName: 'system',
+      );
 
   group('a permitted save', () {
     test(
@@ -401,6 +421,7 @@ void main() {
   group('the boot seed', () {
     test('writes the example key once, as the system, with a row', () async {
       attach();
+      await markMigrated();
       session = anonymous();
       final guard = newGuard();
 
@@ -415,7 +436,8 @@ void main() {
       expect(row.itemKey, 'key_mappings');
       expect(row.groupRequired, AccessGroup.configure.name,
           reason: 'the trail shows what authority was skipped, not none');
-      expect((await remoteChanges()).single.actionId, row.actionId);
+      // The marker's own change row precedes the seed's.
+      expect((await remoteChanges()).last.actionId, row.actionId);
     });
 
     test('is a silent no-op offline — a station with no Postgres has no '
@@ -428,8 +450,26 @@ void main() {
       expect(sink.rows, isEmpty);
     });
 
+    test('does not seed a plant the key-mapping migration has not looked at',
+        () async {
+      // No mappings and no marker: the migration is running on another
+      // station, or has not run. A seed here lands a junk key beside the
+      // plant\'s four hundred a moment later — permanently, because the
+      // copy only touches ids the blob names.
+      attach();
+      session = anonymous();
+      final guard = newGuard();
+
+      await guard.seedDefaultIfEmpty();
+
+      expect(store.keyMappings.nodes, isEmpty);
+      expect(await remoteMappingRows(), isEmpty);
+      expect(sink.rows, isEmpty);
+    });
+
     test('is a no-op when the plant already has mappings', () async {
       attach();
+      await markMigrated();
       final guard = newGuard();
       await guard.saveKeyMappings(mappingsOf({'A.Key': 'gvl.A'}));
       sink.rows.clear();
@@ -446,6 +486,7 @@ void main() {
       // and its seed. The insert loses on the primary key; a boot path must
       // absorb that rather than take the panel down.
       attach();
+      await markMigrated();
       final guard = newGuard();
       await remote.into(remote.configItemTable).insert(
             ConfigItemTableCompanion.insert(
@@ -537,6 +578,103 @@ void main() {
             reason: '$path must not link a native library into every binary '
                 'that reads configuration');
       }
+    });
+  });
+
+  group('the baseline across two saves', () {
+    test('a key another station added is kept by the first save and by the '
+        'second', () async {
+      // The sequence the first fix got wrong: refreshing the baseline from
+      // every stored row after save 1 put the other station\'s key in the
+      // baseline and not on screen, and save 2 read that as a deletion.
+      attach();
+      final guard = newGuard();
+      await guard.saveKeyMappings(mappingsOf({'A.Key': 'gvl.A'}));
+      // The editor opens here.
+      var onScreen = mappingsOf({'A.Key': 'gvl.A'});
+      var baseline = store.keyMappingItems;
+
+      // Station B adds a key; the sync has applied it to this snapshot.
+      await store.writeItems(
+        kinds: const {ConfigKind.keyMapping},
+        wanted: keyMappingItems(mappingsOf({'A.Key': 'gvl.A', 'B.Key': 'gvl.B'})),
+        actionId: 'station-b',
+        who: 'gudrun',
+        roleName: 'engineer',
+      );
+
+      // Save 1: an unrelated edit on this screen.
+      onScreen = mappingsOf({'A.Key': 'gvl.A1'});
+      await guard.saveKeyMappings(onScreen, baseline: baseline);
+      baseline = guard.keyMappingBaselineAfterSave(onScreen, baseline);
+      expect(store.keyMappings.nodes.keys, containsAll(['A.Key', 'B.Key']),
+          reason: 'save 1 keeps B.Key: added elsewhere, absent here');
+
+      // Save 2: another unrelated edit, still without B.Key on screen.
+      onScreen = mappingsOf({'A.Key': 'gvl.A2'});
+      await guard.saveKeyMappings(onScreen, baseline: baseline);
+
+      expect(store.keyMappings.nodes.keys, containsAll(['A.Key', 'B.Key']),
+          reason: 'save 2 keeps it too: the baseline is the editor\'s view, '
+              'not the store\'s rows');
+      expect(store.keyMappings.nodes['A.Key']!.opcuaNode!.identifier,
+          'gvl.A2');
+    });
+
+    test('a key another station re-pointed is adopted by the first save and '
+        'not written back by the second', () async {
+      attach();
+      final guard = newGuard();
+      await guard.saveKeyMappings(mappingsOf({'A.Key': 'gvl.A', 'B.Key': 'gvl.B'}));
+      var onScreen = mappingsOf({'A.Key': 'gvl.A', 'B.Key': 'gvl.B'});
+      var baseline = store.keyMappingItems;
+
+      // Station B re-points B.Key.
+      await store.writeItems(
+        kinds: const {ConfigKind.keyMapping},
+        wanted: keyMappingItems(mappingsOf({'A.Key': 'gvl.A', 'B.Key': 'gvl.NEW'})),
+        actionId: 'station-b',
+        who: 'gudrun',
+        roleName: 'engineer',
+      );
+
+      onScreen = mappingsOf({'A.Key': 'gvl.A1', 'B.Key': 'gvl.B'});
+      await guard.saveKeyMappings(onScreen, baseline: baseline);
+      baseline = guard.keyMappingBaselineAfterSave(onScreen, baseline);
+      expect(store.keyMappings.nodes['B.Key']!.opcuaNode!.identifier, 'gvl.NEW',
+          reason: 'save 1 adopts theirs: untouched here');
+
+      onScreen = mappingsOf({'A.Key': 'gvl.A2', 'B.Key': 'gvl.B'});
+      await guard.saveKeyMappings(onScreen, baseline: baseline);
+
+      expect(store.keyMappings.nodes['B.Key']!.opcuaNode!.identifier, 'gvl.NEW',
+          reason: 'save 2 adopts it again rather than writing the stale '
+              'on-screen value back over it');
+    });
+  });
+
+  group('the recorded role', () {
+    test('is the composed label of every role the account holds', () async {
+      // An Operator who also holds Engineering saves at configure through
+      // the union. A row reading `Operator` against that write misleads
+      // exactly where a trail gets read; every other guard records the
+      // label, and this one did not.
+      attach();
+      session = const AccessSession(
+        user: AuthenticatedUser(
+          username: 'olafur',
+          roleName: 'Operator',
+          additionalRoles: ['Engineering'],
+        ),
+        groups: {AccessGroup.operate, AccessGroup.configure},
+      );
+      final guard = newGuard();
+
+      await guard.saveKeyMappings(mappingsOf({'A.Key': 'gvl.A'}));
+
+      expect(sink.rows.single.roleName, session.roleLabel);
+      expect(sink.rows.single.roleName, contains('Engineering'));
+      expect((await remoteChanges()).first.roleName, session.roleLabel);
     });
   });
 }

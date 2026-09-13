@@ -75,6 +75,54 @@ class _FakeChangeStore extends Fake implements ConfigChangeStore {
   }
 }
 
+/// A change store that pages: [rows] newest first, handed out [limit] at a
+/// time under the `(at, id)` cursor, the way the real store does. Every
+/// query is recorded so a test can see what the page asked for.
+class _PagedChangeStore extends Fake implements ConfigChangeStore {
+  _PagedChangeStore(this.rows);
+
+  final List<ConfigChangeRecord> rows;
+  final List<ConfigChangeQuery> queries = [];
+
+  @override
+  Future<List<ConfigChangeRecord>> changes(ConfigChangeQuery query) async =>
+      (await changesPage(query)).rows;
+
+  @override
+  Future<ConfigChangePage> changesPage(ConfigChangeQuery query) async {
+    queries.add(query);
+    final before = query.before;
+    final beforeId = query.beforeId;
+    final matching = [
+      for (final row in rows)
+        if (before == null ||
+            row.change.at.isBefore(before) ||
+            (row.change.at.isAtSameMomentAs(before) &&
+                beforeId != null &&
+                row.id < beforeId))
+          row,
+    ];
+    final page = matching.take(query.limit).toList();
+    return ConfigChangePage(
+      rows: page,
+      rawCount: page.length,
+      hasMore: matching.length > query.limit,
+      oldestAt: page.isEmpty ? null : page.last.change.at,
+      oldestId: page.isEmpty ? null : page.last.id,
+    );
+  }
+
+  @override
+  Future<Map<String, int>> changeCountsByAction(
+      Iterable<String> actionIds) async {
+    final ids = actionIds.toList();
+    return {
+      for (final id in ids)
+        id: rows.where((row) => row.change.actionId == id).length,
+    };
+  }
+}
+
 /// The header side of the same read.
 class _FakeAuditStore extends Fake implements AuditTrailStore {
   _FakeAuditStore({this.headers = const <AuditEntryData>[]});
@@ -398,6 +446,59 @@ void main() {
       // would be a second rule to keep in step.
       expect(row.value.length, lessThan(600));
       expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('Load more', () {
+    testWidgets('a full first page offers it; the tap fetches the page '
+        'behind the cursor, and a short page withdraws it', (tester) async {
+      // One row past the cap, each its own action, newest first.
+      final rows = [
+        for (var i = 1; i <= kConfigChangeRowLimit + 1; i++)
+          configGoldenChange(id: i, actionId: 'action-$i'),
+      ];
+      final changeStore = _PagedChangeStore(rows);
+      await tester.pumpWidget(_host(
+        changeStore: changeStore,
+        auditStore: _FakeAuditStore(),
+      ));
+      await _settle(tester);
+
+      expect(changeStore.queries.single.before, isNull);
+      final button = find.byKey(kConfigHistoryLoadMoreKey);
+      await tester.dragUntilVisible(
+        button,
+        find.byType(Scrollable).first,
+        const Offset(0, -600),
+      );
+      await _settle(tester);
+      expect(button, findsOneWidget,
+          reason: 'the first page came back full with one row behind it');
+
+      await tester.tap(button);
+      await _settle(tester);
+
+      expect(changeStore.queries, hasLength(2));
+      expect(changeStore.queries.last.before, rows[kConfigChangeRowLimit - 1].change.at,
+          reason: 'the cursor is the oldest row of the page before');
+      expect(changeStore.queries.last.beforeId, rows[kConfigChangeRowLimit - 1].id);
+      expect(find.byKey(kConfigHistoryLoadMoreKey), findsNothing,
+          reason: 'the second page held one row: nothing behind it');
+    });
+
+    testWidgets('a page that fills the cap exactly, with nothing behind it, '
+        'offers nothing', (tester) async {
+      final rows = [
+        for (var i = 1; i <= kConfigChangeRowLimit; i++)
+          configGoldenChange(id: i, actionId: 'action-$i'),
+      ];
+      await tester.pumpWidget(_host(
+        changeStore: _PagedChangeStore(rows),
+        auditStore: _FakeAuditStore(),
+      ));
+      await _settle(tester);
+
+      expect(find.byKey(kConfigHistoryLoadMoreKey), findsNothing);
     });
   });
 }

@@ -339,6 +339,41 @@ void main() {
       expect(emitted, isEmpty);
     });
 
+    test('a remote holding only the key-mapping marker holds no preferences: '
+        'this station\'s preference rows are kept', () async {
+      // The markers are shared preference rows themselves. Counted as
+      // preferences, the key-mapping marker alone made the remote "hold
+      // preferences", the preference kind was never refused, and a mirror
+      // holding the alarm configuration was emptied against a remote whose
+      // preference migration had not run.
+      await local.into(local.configItemTable).insert(
+            ConfigItemTableCompanion.insert(
+              kind: ConfigKind.preference.wireName,
+              id: 'alarm_man_config',
+              scope: ConfigScope.shared.wireName,
+              payload: jsonEncode({'type': 'String', 'value': '{"alarms":[]}'}),
+              rev: const Value(2),
+              updatedAt: DateTime.utc(2026, 1, 1),
+              updatedBy: 'somebody',
+            ),
+          );
+      await seedMigrationMarker();
+      await store.open();
+      watch();
+
+      store.attachRemoteDatabase(remote);
+      await settled();
+
+      expect(
+          store
+              .itemsOf({ConfigKind.preference})
+              .map((i) => i.id),
+          contains('alarm_man_config'),
+          reason: 'refused: no preference rows on the remote beyond the '
+              'marker, and no preference marker');
+      expect(emitted.where((d) => d.removed.isNotEmpty), isEmpty);
+    });
+
     test('with the migration marker, an empty remote really is empty',
         () async {
       await seedRow('CN04.Belt.Speed', 'GVL.Conveyors[4].Speed');

@@ -19,6 +19,8 @@ import '../config/config_merge.dart';
 import '../config/config_store.dart';
 import '../config/config_store_errors.dart';
 import '../config/key_mapping_codec.dart' as codec;
+import '../config/key_mapping_migration.dart'
+    show kKeyMappingsMigratedMarkerId;
 import '../state_man.dart' show KeyMappingEntry, KeyMappings, OpcUANodeConfig;
 
 /// The `who` of a row written with nobody signed in. Matches
@@ -93,7 +95,7 @@ const Map<ConfigKind, String> kConfigWriteKeys = <ConfigKind, String>{
 /// the blob at boot, moved here so the seed has one definition and lands
 /// through the guarded system path rather than through a preference write.
 final KeyMappings kExampleKeyMappings = KeyMappings(nodes: {
-  'exampleKey': KeyMappingEntry(
+  codec.kExampleKeyMappingId: KeyMappingEntry(
     opcuaNode: OpcUANodeConfig(namespace: 42, identifier: 'identifier'),
   ),
 });
@@ -703,10 +705,23 @@ class GuardedConfigStore {
   /// the reconcile and this write — gets a unique violation out of the store's
   /// transaction. That is logged and swallowed: a boot default must never take
   /// a panel down, and the loser picks the row up at the next reconcile.
+  ///
+  /// - **Unmigrated is not empty either.** The key-mapping migration writes
+  ///   its marker last, in the same transaction as the rows. A snapshot with
+  ///   no mappings *and no marker* is a plant whose migration is still
+  ///   running on another station (this one got `heldByAnother`), or has
+  ///   not run at all — and seeding into that puts a junk key beside the
+  ///   plant's four hundred a moment later, permanently, because the copy
+  ///   only ever touches ids the blob names. The marker is what says the
+  ///   plant has been looked at and has none.
   Future<void> seedDefaultIfEmpty() async {
     if (!_inner.hasRemote) return;
     await _inner.syncSettled;
     if (_inner.keyMappingItems.isNotEmpty) return;
+    final migrated = _inner
+        .itemsOf(const {ConfigKind.preference})
+        .any((item) => item.id == kKeyMappingsMigratedMarkerId);
+    if (!migrated) return;
 
     final itemKey = _keyFor(ConfigKind.keyMapping);
     try {

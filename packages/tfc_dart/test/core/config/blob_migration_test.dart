@@ -65,6 +65,7 @@ List<ConfigItem> _parse(String blob) => [
 Future<MigrationOutcome> runCopy({
   BlobParser parse = _parse,
   Set<ConfigKind> kinds = const {ConfigKind.page, ConfigKind.asset},
+  bool Function(ConfigItemRow row)? isPlaceholder,
 }) =>
     db.transaction(() => copyBlobIntoRowsLocked(
           db,
@@ -73,7 +74,12 @@ Future<MigrationOutcome> runCopy({
           kinds: kinds,
           parse: parse,
           label: 'pages',
+          isPlaceholder: isPlaceholder,
         ));
+
+/// The seed a migration may find in front of it: `p1` as a placeholder at
+/// the seed's revision.
+bool _seedP1(ConfigItemRow row) => row.id == 'p1' && row.rev <= 1;
 
 void main() {
   setUp(() => db = AppDatabase.inMemoryForTest());
@@ -96,12 +102,15 @@ void main() {
   });
 
   group('the gate, generalised to a set of kinds', () {
-    test('a row of a kind in kinds is not enough: only the marker is', () async {
+    test('a row of a kind in kinds is not proof the migration ran — and not '
+        'a licence to copy over it either', () async {
       await seedBlob(_blob);
-      // A row a station seeded, or a station whose copy was rolled back left
-      // behind. Reading it as "the migration ran" is how a plant's real
-      // configuration stayed in the blob forever, silently — see
-      // `_alreadyMigrated`'s doc.
+      // A row a station wrote, or a rolled-back copy left behind. Reading it
+      // as "the migration ran" is how a plant's real configuration stayed in
+      // the blob forever, silently — see `_alreadyMigrated`'s doc. Reading
+      // it as nothing and copying over it is how weeks of edits on rows were
+      // reverted to cutover day. So it is neither: the copy stops, writes
+      // nothing, and says so.
       await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
             kind: ConfigKind.asset.wireName,
             id: 'someone-elses-asset',
@@ -111,19 +120,20 @@ void main() {
             updatedBy: 'someone else',
           ));
 
-      expect(await runCopy(), MigrationOutcome.migrated);
-      expect(await changes(), hasLength(4));
+      expect(await runCopy(), MigrationOutcome.rowsWithoutMarker);
+      expect(await changes(), isEmpty);
       final rows = await items();
-      expect(rows.map((r) => r.id), contains('someone-elses-asset'),
+      expect(rows.map((r) => r.id), ['someone-elses-asset'],
           reason: 'a row the blob does not name is not this migration\'s to '
               'remove');
-      expect(rows.map((r) => r.id), contains(_markerId));
     });
 
-    test('a row the blob names is overwritten, logged as an update, rev bumped',
-        () async {
+    test('a placeholder row the blob names is overwritten, logged as an '
+        'update, rev bumped', () async {
       await seedBlob(_blob);
-      // The seed: same identity as a blob item, placeholder content, rev 1.
+      // The seed: same identity as a blob item, placeholder content, rev 1 —
+      // and named as the placeholder, which is what lets the copy proceed
+      // over it at all.
       await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
             kind: ConfigKind.page.wireName,
             id: 'p1',
@@ -134,7 +144,7 @@ void main() {
             updatedBy: 'a station that could not see the blob',
           ));
 
-      expect(await runCopy(), MigrationOutcome.migrated);
+      expect(await runCopy(isPlaceholder: _seedP1), MigrationOutcome.migrated);
 
       final p1 = (await items()).singleWhere((r) => r.id == 'p1');
       expect(p1.payload, isNot(contains('seeded')),
@@ -148,11 +158,14 @@ void main() {
       expect(log.oldValue, contains('seeded'));
     });
 
-    test('a row edited on the rows — revision two or beyond — is kept, not '
-        'overwritten from the blob', () async {
+    test('rows that are not the seed, with no marker, refuse the copy: '
+        'nothing written, no marker, the plant stays on its rows', () async {
       // Weeks of relational edits on `p1` and a blob nobody has written to
-      // since the seed. The marker is missing — deleted by hand, or the
-      // copy that wrote the rows was on a build before the marker existed.
+      // since cutover day. The marker is missing — deleted by hand, or the
+      // rows were written by a build whose gate never wrote one. Copying
+      // would revert the edits and resurrect every deleted page; refusing
+      // to copy a plant that never migrated would strand it. Neither guess
+      // is made.
       await seedBlob(_blob);
       await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
             kind: ConfigKind.page.wireName,
@@ -164,15 +177,72 @@ void main() {
             updatedBy: 'gudrun',
           ));
 
-      expect(await runCopy(), MigrationOutcome.migrated);
+      expect(await runCopy(isPlaceholder: _seedP1),
+          MigrationOutcome.rowsWithoutMarker,
+          reason: 'p1 at revision 7 is not the placeholder');
 
-      final p1 = (await items()).singleWhere((r) => r.id == 'p1');
-      expect(p1.payload, '{"edited":"on the rows"}');
-      expect(p1.rev, 7);
-      expect((await changes()).where((c) => c.entityId == 'p1'), isEmpty,
-          reason: 'nothing was written for it, so nothing is logged for it');
-      expect((await items()).map((r) => r.id), contains('a0'),
-          reason: 'the rest of the blob still lands');
+      final rows = await items();
+      expect(rows.map((r) => r.id), ['p1'],
+          reason: 'nothing else from the blob landed beside it');
+      expect(rows.single.payload, '{"edited":"on the rows"}');
+      expect(rows.single.rev, 7);
+      expect(await changes(), isEmpty);
+      expect(rows.any((r) => r.id == _markerId), isFalse,
+          reason: 'no marker either: the drop tool must keep refusing until '
+              'somebody has decided which side is the plant');
+    });
+
+    test('a row the editor made — any revision, an id the blob does not '
+        'name — refuses the copy too', () async {
+      // The pages variant of the same state: an earlier build saved the
+      // built-in Home page as rows (random id) and never wrote the marker.
+      // The blob\'s copy of Home carries a derived id, so a copy would not
+      // overwrite it but sit beside it — two pages at one path.
+      await seedBlob(_blob);
+      await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
+            kind: ConfigKind.page.wireName,
+            id: 'random-editor-id',
+            scope: ConfigScope.shared.wireName,
+            payload: '{"path":"/roe"}',
+            rev: const Value(1),
+            updatedAt: DateTime.utc(2026, 6, 1),
+            updatedBy: 'a station',
+          ));
+
+      expect(await runCopy(isPlaceholder: _seedP1),
+          MigrationOutcome.rowsWithoutMarker);
+      expect((await items()).map((r) => r.id), ['random-editor-id']);
+    });
+
+    test('with no placeholder rule, any existing row refuses the copy',
+        () async {
+      await seedBlob(_blob);
+      await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
+            kind: ConfigKind.page.wireName,
+            id: 'p1',
+            scope: ConfigScope.shared.wireName,
+            payload: '{"seeded":true}',
+            rev: const Value(1),
+            updatedAt: DateTime.utc(2026, 1, 1),
+            updatedBy: 'somebody',
+          ));
+
+      expect(await runCopy(), MigrationOutcome.rowsWithoutMarker);
+    });
+
+    test('a row of another kind does not stand in the way', () async {
+      await seedBlob(_blob);
+      await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
+            kind: ConfigKind.keyMapping.wireName,
+            id: 'CN04.Belt.Speed',
+            scope: ConfigScope.shared.wireName,
+            payload: '{}',
+            rev: const Value(9),
+            updatedAt: DateTime.utc(2026, 1, 1),
+            updatedBy: 'somebody',
+          ));
+
+      expect(await runCopy(), MigrationOutcome.migrated);
     });
 
     test('a blob holding one identity twice is unreadable, and unwinds',

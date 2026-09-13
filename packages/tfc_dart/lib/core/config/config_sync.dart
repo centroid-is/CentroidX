@@ -405,8 +405,8 @@ class _ConfigSync {
       final advanceTo = advanceWatermark ? await _maxChangeId() : 0;
 
       final revs = await _remoteRevisions(swept);
-      final refused =
-          await _refusedKinds({for (final ref in revs.keys) ref.$1}, swept);
+      final refused = await _refusedKinds(
+          {for (final ref in revs.keys) if (!_isMarker(ref)) ref.$1}, swept);
 
       final candidates = <_Ref>{};
       for (final entry in revs.entries) {
@@ -616,7 +616,8 @@ class _ConfigSync {
     final query = _remote.selectOnly(t)
       ..addColumns([t.kind])
       ..where(t.kind.isIn(_wireNamesOf(kinds)) &
-          t.scope.equals(ConfigScope.shared.wireName))
+          t.scope.equals(ConfigScope.shared.wireName) &
+          t.id.isNotIn(kMigrationMarkerIds.values.toSet().toList()))
       ..groupBy([t.kind]);
     final rows = await query.get();
     return {
@@ -624,6 +625,17 @@ class _ConfigSync {
         if (ConfigKind.byWireName(row.read(t.kind)!) case final kind?) kind,
     };
   }
+
+  /// Whether [ref] is one of the migration markers.
+  ///
+  /// The markers are shared `preference` rows themselves, so counted as
+  /// rows of their kind they would answer "the remote holds preferences"
+  /// the moment the *key-mapping* migration has run — and [_refusedKinds]
+  /// could never reach the preference marker it was written to consult. A
+  /// remote holding only markers holds no preferences.
+  static bool _isMarker(_Ref ref) =>
+      ref.$1 == ConfigKind.preference &&
+      kMigrationMarkerIds.values.contains(ref.$2);
 
   /// Whether [kind]'s blob→rows migration has run against this remote.
   ///

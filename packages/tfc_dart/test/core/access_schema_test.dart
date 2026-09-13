@@ -523,9 +523,55 @@ void main() {
       addTearDown(() => db.close());
 
       final row = await db.customSelect('PRAGMA user_version').getSingle();
-      // The current version, not 7: the config-store arms (v8, v9) run in
-      // the same open, and the number they leave behind is theirs to own.
+      // The current version, not 7: the later arms (through the config
+      // store's v10–v12) run in the same open, and the number they leave
+      // behind is theirs to own.
       expect(row.read<int>('user_version'), db.schemaVersion);
+    });
+
+    test('a database stamped 7 or 8 by a pre-merge build of the config '
+        'branch — config tables present, main\'s columns absent — heals',
+        () async {
+      // The renumbering: the relational-config branch shipped its tables as
+      // v7 and its trigger as v8 before main took those numbers for
+      // allowed_pages, inactivity_timeout_minutes and additional_roles. A
+      // database such a build stamped opens at 7 or 8 with none of the
+      // three columns, and a version-guarded arm would skip every one of
+      // them forever. The arms probe for their columns instead.
+      for (final stamped in [7, 8]) {
+        final db = AppDatabase.forTest(
+          DatabaseConfig(),
+          NativeDatabase(dbFile, logStatements: false),
+        );
+        await db.customSelect('SELECT 1').getSingle();
+        await db.customStatement(
+            'ALTER TABLE app_role DROP COLUMN allowed_pages');
+        await db.customStatement(
+            'ALTER TABLE app_user DROP COLUMN allowed_pages');
+        await db.customStatement(
+            'ALTER TABLE app_user DROP COLUMN inactivity_timeout_minutes');
+        await db.customStatement(
+            'ALTER TABLE app_user DROP COLUMN additional_roles');
+        await db.customStatement('PRAGMA user_version = $stamped');
+        await db.close();
+
+        final upgraded = await reopen();
+        expect(await columnNames(upgraded, 'app_role'),
+            contains('allowed_pages'),
+            reason: 'stamped $stamped');
+        expect(
+            await columnNames(upgraded, 'app_user'),
+            containsAll([
+              'allowed_pages',
+              'inactivity_timeout_minutes',
+              'additional_roles',
+            ]),
+            reason: 'stamped $stamped');
+        final row =
+            await upgraded.customSelect('PRAGMA user_version').getSingle();
+        expect(row.read<int>('user_version'), upgraded.schemaVersion);
+        await upgraded.close();
+      }
     });
 
     test('a v5 database reaches the current version in one open, with both '

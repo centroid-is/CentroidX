@@ -176,7 +176,7 @@ class ConfigItemRow extends DataClass implements Insertable<ConfigItemRow> {
   /// `'shared'` or `'station:<hostname>'`, and the column that carries
   /// ownership: shared rows are Postgres-owned, station rows never leave the
   /// machine that wrote them. On Postgres a `CHECK` makes that structural —
-  /// see the `from < 7` arm. Here it deliberately does not, because station
+  /// see the `from < 10` arm. Here it deliberately does not, because station
   /// rows are the only rows a local SQLite file will ever hold.
   final String scope;
 

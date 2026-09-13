@@ -221,8 +221,36 @@ Future<DropResult> dropFlutterPreferences(
           'now — it is mid-copy. Let it finish and run this again');
       return DropResult(outcome: DropOutcome.refused, refusals: refusals);
     }
-    return _gatesAndDrop(db, refusals: refusals, environment: environment);
+    // The DROP needs ACCESS EXCLUSIVE on the table, and the key-mapping and
+    // page migrations (advisory locks 1 and 2, not this one) read it under
+    // ACCESS SHARE for the length of a copy. A pending exclusive lock queues
+    // ahead of every new reader, so an unbounded wait here would stall the
+    // drop *and* every station's access to the table for as long as a copy
+    // runs. Bounded, transaction-local, and refused by name when it expires.
+    await db.customStatement("SET LOCAL lock_timeout = '$kDropLockTimeout'");
+    try {
+      return await _gatesAndDrop(db,
+          refusals: refusals, environment: environment);
+    } on Exception catch (e) {
+      if (!_isLockTimeout(e)) rethrow;
+      refusals.add('the DROP waited $kDropLockTimeout for the table lock and '
+          'gave up — a station is reading $kDroppedTable right now (a blob '
+          'migration mid-copy, most likely). Nothing was dropped; run this '
+          'again once it has finished');
+      return DropResult(outcome: DropOutcome.refused, refusals: refusals);
+    }
   });
+}
+
+/// How long the DROP may wait for its table lock. Long enough for a reader
+/// to finish a statement, short enough that a stuck one is reported rather
+/// than joined.
+const String kDropLockTimeout = '30s';
+
+/// Postgres reports an expired `lock_timeout` as SQLSTATE 55P03.
+bool _isLockTimeout(Object e) {
+  final text = '$e';
+  return text.contains('55P03') || text.contains('lock timeout');
 }
 
 Future<DropResult> _gatesAndDrop(

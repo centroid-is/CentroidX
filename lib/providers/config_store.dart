@@ -270,6 +270,14 @@ void _logMigration(String label, MigrationOutcome outcome) {
       _logger.i('$label migration: another station holds the lock and '
           'is running it; this station picks the rows up at its next '
           'reconcile');
+    case MigrationOutcome.rowsWithoutMarker:
+      // The one outcome that needs a person. Not a boot refusal — the plant
+      // runs on the rows it has — but the loudest line this file writes.
+      _logger.e('$label migration: NOT RUN. The shared database already '
+          'holds $label rows that no migration marker vouches for, and the '
+          'blob was not copied over them. Read the tfc_dart log line above '
+          'for what to do; until then the drop tool refuses and this line '
+          'repeats on every boot');
     case MigrationOutcome.noBlob:
       _logger.w('$label migration: the shared database has no $label '
           'blob to copy. On a fresh plant that is expected; on this plant it '

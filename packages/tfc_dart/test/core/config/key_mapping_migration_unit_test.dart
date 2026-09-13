@@ -92,6 +92,29 @@ Future<List<String>> logged(Future<void> Function() body) async {
 }
 
 void main() {
+  group('the seed rule the copy runs under', () {
+    ConfigItemRow row(String id, int rev) => ConfigItemRow(
+          kind: ConfigKind.keyMapping.wireName,
+          id: id,
+          scope: ConfigScope.shared.wireName,
+          payload: '{}',
+          rev: rev,
+          updatedAt: DateTime.utc(2026, 1, 1),
+          updatedBy: 'x',
+        );
+
+    test('the example key at the seed\'s revision is the placeholder', () {
+      expect(isKeyMappingSeedRow(row(kExampleKeyMappingId, 1)), isTrue);
+      expect(isKeyMappingSeedRow(row(kExampleKeyMappingId, 0)), isTrue);
+    });
+
+    test('an edited example is somebody\'s work, and so is any other key',
+        () {
+      expect(isKeyMappingSeedRow(row(kExampleKeyMappingId, 2)), isFalse);
+      expect(isKeyMappingSeedRow(row('CN04.Belt.Speed', 1)), isFalse);
+    });
+  });
+
   setUp(() {
     db = AppDatabase.inMemoryForTest();
   });
@@ -218,11 +241,38 @@ void main() {
       expect(await runCopy(), MigrationOutcome.alreadyDone);
     });
 
-    test('a seeded key mapping row does not count as migrated, and the blob '
-        'overwrites it', () async {
+    test('the boot seed does not count as migrated: the blob is copied and '
+        'the seed is removed', () async {
       await seedBlob(_blob);
-      // What `seedDefaultIfEmpty` — or a station whose copy rolled back —
-      // leaves behind. It must not read as proof the migration ran.
+      // What `seedDefaultIfEmpty` on an earlier build left behind: the
+      // example key, at the seed's revision. It must not read as proof the
+      // migration ran — and once the plant's real mappings are in, a
+      // placeholder for an empty plant is a junk key on a full one.
+      await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
+            kind: ConfigKind.keyMapping.wireName,
+            id: kExampleKeyMappingId,
+            scope: ConfigScope.shared.wireName,
+            payload: '{}',
+            rev: const Value(1),
+            updatedAt: DateTime.utc(2026, 1, 1),
+            updatedBy: 'someone else',
+          ));
+
+      expect(await runCopy(), MigrationOutcome.migrated);
+      final rows = await items();
+      expect(rows.map((r) => r.id), isNot(contains(kExampleKeyMappingId)));
+      expect(rows.map((r) => r.id), contains(kKeyMappingsMigratedMarkerId));
+      expect(
+          (await changes())
+              .where((c) => c.entityId == kExampleKeyMappingId)
+              .single
+              .op,
+          'delete',
+          reason: 'removed on the record, so the history says where it went');
+    });
+
+    test('a mapping somebody made, with no marker, stops the copy', () async {
+      await seedBlob(_blob);
       await db.into(db.configItemTable).insert(ConfigItemTableCompanion.insert(
             kind: ConfigKind.keyMapping.wireName,
             id: 'CN04.Belt.Speed',
@@ -233,12 +283,9 @@ void main() {
             updatedBy: 'someone else',
           ));
 
-      expect(await runCopy(), MigrationOutcome.migrated);
-      final row = (await items()).singleWhere((r) => r.id == 'CN04.Belt.Speed');
-      expect(row.payload, isNot('{}'));
-      expect(row.rev, 2);
-      expect((await changes()).where((c) => c.entityId == 'CN04.Belt.Speed')
-          .single.op, 'update');
+      expect(await runCopy(), MigrationOutcome.rowsWithoutMarker);
+      expect((await items()).map((r) => r.id), ['CN04.Belt.Speed']);
+      expect(await changes(), isEmpty);
     });
 
     test('no key_mappings row at all is noBlob, and writes the marker',

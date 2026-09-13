@@ -104,3 +104,8 @@ List<ConfigItem> keyMappingItemsFromBlob(
 /// is what stops the compatibility row from thrashing.
 String keyMappingBlobOf(Iterable<ConfigItem> items) =>
     canonicalJson(keyMappingsOf(items).toJson());
+
+/// The id of the one mapping a fresh plant is seeded with — the row
+/// `seedDefaultIfEmpty` writes and the only key-mapping row the blob
+/// migration will copy over.
+const String kExampleKeyMappingId = 'exampleKey';

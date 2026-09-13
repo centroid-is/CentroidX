@@ -5,7 +5,7 @@
 // unless it says so:
 //
 // 1. **Column parity** between each raw `CREATE TABLE IF NOT EXISTS` literal
-//    in the `from < 7` Postgres arm and the drift table it is supposed to
+//    in the `from < 10` Postgres arm and the drift table it is supposed to
 //    mirror. This catches a column added on one side and not the other. It
 //    does **not** execute the DDL — see the arm's own comment in
 //    `database_drift.dart` and the header of

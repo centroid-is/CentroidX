@@ -383,6 +383,15 @@ in this order:
   the pages migration has not run (no _migrated.pages row)"* (or
   `key_mappings`), which means the attach
   ordering went wrong and this station is serving what it already had.
+  The other one is *"key mappings migration: NOT RUN. The shared database
+  already holds key mappings rows that no migration marker vouches for"*
+  (or *pages*). That is a database an earlier build of this branch wrote
+  rows into without stamping — a dev box or a test station, never a plant
+  that followed this runbook — and the copy refuses to guess which side is
+  the plant. The tfc_dart line just above it says how to settle it: if the
+  rows are the configuration, insert the `_migrated.key_mappings` (or
+  `_migrated.pages`) marker row; if the blob is, delete the rows and boot
+  again. Nothing was written either way.
 - **The migrated and abandoned counts are information, not a gate.** Read them
   against what you know this plant has — if `alarm_man_config` is missing from
   the families and you know the plant has alarms, that is worth stopping for.

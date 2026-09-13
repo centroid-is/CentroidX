@@ -76,8 +76,12 @@ List<ConfigItem> mergeItemsForSave({
       throw ConfigConflict.created(theirs.id);
     }
 
-    if (theirs.rev != base.rev) {
-      // Changed elsewhere since this editor loaded.
+    if (theirs.rev != base.rev && !_sameContent(theirs, base)) {
+      // Changed elsewhere since this editor loaded. By content, not by
+      // revision alone: an edit undone on another station leaves the row
+      // two revisions on with the content the editor loaded, and calling
+      // that a conflict offers the operator only Reload — which discards
+      // their work over a change that no longer exists.
       if (ours == null) throw ConfigConflict(theirs.id, expectedRev: base.rev);
       if (_sameContent(ours, base)) {
         result[key] = theirs;

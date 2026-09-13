@@ -140,10 +140,12 @@ void main() {
   });
 
   test('a page deleted here that moved on another station is a conflict', () {
+    // Moved in content, not only in revision: a revision bump that left the
+    // page as loaded is an edit somebody undid, and is no move at all.
     final stored = [
       page('p1', '/roe'),
       asset('a1', 'p1', 'A1'),
-      page('p2', '/baader', rev: 2),
+      page('p2', '/baader', rev: 2, label: 'Renamed elsewhere'),
       asset('a2', 'p2', 'A2'),
     ];
     final mine = [editedPage('p1', '/roe'), editedAsset('a1', 'p1', 'A1')];
@@ -200,6 +202,34 @@ void main() {
           mergeForSave(wanted: mine, stored: loaded, baseline: null);
       expect(ids(merged), {'p1', 'a1', 'p2', 'a2'});
       expect(textOf(merged, 'a1'), 'MINE', reason: 'ours wins where ids meet');
+    });
+  });
+
+  group('a revision moved with the content unchanged', () {
+    test('is not a move: the editor decides, no conflict', () {
+      // Another station edited the page and undid it: the page row is two
+      // revisions on with the content this editor loaded.
+      final merged = mergeForSave(
+        wanted: [editedPage('p', '/roe', label: 'Mine')],
+        stored: [page('p', '/roe', rev: 3)],
+        baseline: [page('p', '/roe', rev: 1)],
+      );
+      final saved = merged.singleWhere((i) => i.id == 'p');
+      expect(jsonDecode(saved.payload)['menu_item']['label'], 'Mine');
+    });
+
+    test('an asset re-saved unchanged elsewhere does not block an edit here',
+        () {
+      final merged = mergeForSave(
+        wanted: [
+          editedPage('p', '/roe'),
+          editedAsset('a', 'p', 'MINE'),
+        ],
+        stored: [page('p', '/roe', rev: 1), asset('a', 'p', 'A', rev: 4)],
+        baseline: [page('p', '/roe', rev: 1), asset('a', 'p', 'A', rev: 1)],
+      );
+      final saved = merged.singleWhere((i) => i.id == 'a');
+      expect(jsonDecode(saved.payload)['text'], 'MINE');
     });
   });
 }

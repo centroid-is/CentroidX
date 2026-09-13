@@ -1285,4 +1285,65 @@ void main() {
           isFalse);
     });
   });
+
+  group('the baseline across two saves', () {
+    test('a page another station added is kept by the first save and by the '
+        'second', () async {
+      // The sequence the first fix got wrong: refreshing the baseline from
+      // every stored row after save 1 put the other station\'s page in the
+      // baseline and not on the canvas, and save 2 read that as a deletion.
+      final store = await _storeHolding({'/': _page('Home', '/')},
+          attachRemote: true);
+      final manager = PageManager(
+        pages: {},
+        prefs: FakePreferences(),
+        store: store,
+        writeItems: (wanted, {reason, derivedFrom}) => store.writeItems(
+          kinds: const {ConfigKind.page, ConfigKind.asset},
+          wanted: wanted,
+          actionId: 'operator-save',
+          who: 'operator',
+          roleName: 'configure',
+          reason: reason,
+          derivedFrom: derivedFrom,
+        ),
+      );
+      await manager.load();
+      expect(manager.pages.keys, ['/']);
+
+      // Station B adds a page; the sync has applied it to this snapshot.
+      await store.writeItems(
+        kinds: const {ConfigKind.page, ConfigKind.asset},
+        wanted: pageItems({
+          '/': manager.pages['/']!,
+          '/roe': _page('Roe', '/roe'),
+        }),
+        actionId: 'station-b',
+        who: 'gudrun',
+        roleName: 'engineer',
+      );
+
+      // Save 1: an unrelated edit on this canvas.
+      manager.pages['/'] = _page('Home 1', '/');
+      await manager.save();
+      final afterFirst = store.itemsOf(const {ConfigKind.page});
+      expect(afterFirst.map((p) => p.decode()['menu_item']['path']),
+          containsAll(['/', '/roe']),
+          reason: 'save 1 keeps /roe: added elsewhere, absent here');
+
+      // Save 2: another unrelated edit, /roe still not on this canvas.
+      manager.pages['/'] = _page('Home 2', '/');
+      await manager.save();
+
+      final afterSecond = store.itemsOf(const {ConfigKind.page});
+      expect(afterSecond.map((p) => p.decode()['menu_item']['path']),
+          containsAll(['/', '/roe']),
+          reason: 'save 2 keeps it too: the baseline is the editor\'s view');
+      expect(
+          afterSecond
+              .singleWhere((p) => p.decode()['menu_item']['path'] == '/')
+              .decode()['menu_item']['label'],
+          'Home 2');
+    });
+  });
 }

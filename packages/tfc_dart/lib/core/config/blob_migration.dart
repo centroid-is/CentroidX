@@ -133,6 +133,22 @@ enum MigrationOutcome {
   /// `flutter_preferences` has no row under this key to copy.
   noBlob,
 
+  /// The rows already hold this kind, nobody wrote the marker, and the rows
+  /// are not the boot seed. Nothing was written — not the rows, not the
+  /// marker.
+  ///
+  /// The state an earlier build of this branch left behind: its gate took
+  /// any row of the kind as "migrated" and never wrote the marker, so a plant
+  /// could live on rows for weeks with the blob frozen at cutover day.
+  /// Copying the blob over such rows reverts every edit since and resurrects
+  /// every deleted key; refusing to copy leaves a plant that never migrated
+  /// on its seed. Neither guess is safe, so neither is made: the plant keeps
+  /// running on its rows (the sync engine does not refuse a kind the remote
+  /// holds rows of), the log says exactly which rows stand in the way, and
+  /// the drop tool's marker gate holds until somebody has decided.
+  rowsWithoutMarker,
+
+
   /// The database is not Postgres — a local mirror, or a test. Nothing was
   /// written.
   notPostgres,
@@ -169,6 +185,7 @@ Future<MigrationOutcome> copyBlobIntoRows(
   required BlobParser parse,
   required String label,
   String itemNoun = 'items',
+  bool Function(ConfigItemRow row)? isPlaceholder,
 }) async {
   // C-3: the executor's dialect, never `db.postgres` — see the library doc.
   if (db.executor.dialect != SqlDialect.postgres) {
@@ -223,7 +240,8 @@ Future<MigrationOutcome> copyBlobIntoRows(
       parse: parse,
       label: label,
       itemNoun: itemNoun,
-    );
+          isPlaceholder: isPlaceholder,
+        );
   });
 }
 
@@ -254,10 +272,37 @@ Future<MigrationOutcome> copyBlobIntoRowsLocked(
   required BlobParser parse,
   required String label,
   String itemNoun = 'items',
+  bool Function(ConfigItemRow row)? isPlaceholder,
 }) async {
   if (await _alreadyMigrated(db, markerId: markerId)) {
     _logger.i('$label migration: already migrated; nothing to do');
     return MigrationOutcome.alreadyDone;
+  }
+
+  // Rows of these kinds with no marker beside them. The boot seed is the one
+  // writer that legitimately gets there first — `seedDefaultIfEmpty` on a
+  // station that reached Postgres before any station ran this — and
+  // [isPlaceholder] is how a migration names its seed. Anything else is a
+  // plant that has been edited on rows the marker never vouched for, and
+  // that is [MigrationOutcome.rowsWithoutMarker], not a copy.
+  final existing = await (db.select(db.configItemTable)
+        ..where((t) =>
+            t.kind.isIn([for (final kind in kinds) kind.wireName]) &
+            t.scope.equals(ConfigScope.shared.wireName)))
+      .get();
+  final placeholder = isPlaceholder ?? (_) => false;
+  if (existing.any((row) => !placeholder(row))) {
+    final foreign = existing.where((row) => !placeholder(row)).toList();
+    final highest = foreign.map((r) => r.rev).reduce((a, b) => a > b ? a : b);
+    _logger.e('$label migration: refusing to copy the blob. The rows already '
+        'hold ${foreign.length} ${label} $itemNoun (highest revision '
+        '$highest) and no $markerId marker vouches for them, so this build '
+        'cannot tell a plant that has been living on rows since an earlier '
+        'build from one whose migration never finished. The plant keeps '
+        'running on its rows; nothing was written. To settle it: if the rows '
+        'are the plant\'s configuration, insert the $markerId marker row; '
+        'if the blob is, delete the rows and boot again.');
+    return MigrationOutcome.rowsWithoutMarker;
   }
 
   final blob = await _readBlob(db, prefKey);
@@ -308,6 +353,18 @@ Future<MigrationOutcome> copyBlobIntoRowsLocked(
   for (final item in items) {
     await _writeItem(db, item,
         at: at, actionId: actionId, station: station);
+  }
+
+  // The placeholders the copy was allowed to proceed over, where the blob
+  // did not name them: a seed for an empty plant, on a plant that has just
+  // turned out not to be empty. Left in place it is a junk key beside the
+  // plant's real ones, permanently, because nothing else ever touches an id
+  // the blob does not name. Removed on the record, so the history says
+  // where it went.
+  final named = {for (final item in items) '${item.kind.wireName} ${item.id}'};
+  for (final row in existing) {
+    if (named.contains('${row.kind} ${row.id}')) continue;
+    await _deleteRow(db, row, at: at, actionId: actionId, station: station);
   }
 
   // Last, and no change row of its own: the marker is bookkeeping, not a piece
@@ -376,6 +433,48 @@ ConfigItem _markerItem(String markerId, {DateTime? at}) => ConfigItem.of(
 /// so a station holding the old revision loses its next compare-and-swap
 /// instead of matching a number that means something else now. Same shape,
 /// same reasons, as `preference_migration.dart`'s writer.
+/// Removes [row] — a placeholder the blob did not name — with a `delete`
+/// change row, the way the store records a delete.
+Future<void> _deleteRow(
+  AppDatabase db,
+  ConfigItemRow row, {
+  required DateTime at,
+  required String actionId,
+  required String station,
+}) async {
+  final kind = ConfigKind.byWireName(row.kind);
+  if (kind == null) return;
+  final before = ConfigItem(
+    kind: kind,
+    id: row.id,
+    scope: ConfigScope.shared,
+    parentId: row.parentId,
+    sortIndex: row.sortIndex,
+    payload: row.payload,
+    rev: row.rev,
+  );
+  await (db.delete(db.configItemTable)
+        ..where((t) =>
+            t.kind.equals(row.kind) &
+            t.id.equals(row.id) &
+            t.scope.equals(ConfigScope.shared.wireName)))
+      .go();
+  await _insertChange(
+    db,
+    ConfigChange.of(
+      at: at,
+      actionId: actionId,
+      who: _migrationActor,
+      station: station,
+      roleName: _migrationRole,
+      before: before,
+      after: null,
+    ),
+  );
+  _logger.i('${row.kind} "${row.id}": the boot seed, removed now that the '
+      'blob has been copied in');
+}
+
 Future<void> _writeItem(
   AppDatabase db,
   ConfigItem item, {

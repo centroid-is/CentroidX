@@ -607,9 +607,21 @@ Map<String, _PageGroup> _groupByPage(Iterable<ConfigItem> items) {
   return groups;
 }
 
-/// Whether [stored] is at different revisions from [base], or holds a
-/// different set of assets — anything another station committed since.
+/// Whether another station changed this page since [base] was loaded —
+/// revisions moved **and** the content moved with them.
+///
+/// Revisions alone are the cheap test and the wrong one on their own: an
+/// edit made and then undone elsewhere leaves the page two revisions on
+/// with exactly the content the editor loaded, and calling that a conflict
+/// offers the operator only Reload, which discards their work over a change
+/// that no longer exists. So a revision difference falls through to the
+/// fingerprint, and only content that really differs is a move.
 bool _moved(_PageGroup stored, _PageGroup base) {
+  if (!_revisionsDiffer(stored, base)) return false;
+  return _fingerprint(stored) != _fingerprint(base);
+}
+
+bool _revisionsDiffer(_PageGroup stored, _PageGroup base) {
   if (stored.page?.rev != base.page?.rev) return true;
   final baseRevs = {for (final asset in base.assets) asset.id: asset.rev};
   if (baseRevs.length != stored.assets.length) return true;

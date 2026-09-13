@@ -333,6 +333,28 @@ void main() {
       expect(second.hasMore, isFalse);
     });
 
+    test('the equality arm of the cursor matches an instant written local, '
+        'as production writes them', () async {
+      // Every write stamps `DateTime.now()` — local, with an offset — where
+      // the other cursor test seeds UTC. The `at = ?` arm re-encodes the
+      // cursor through the same type mapping the insert used; this pins
+      // that the local form round-trips through it too.
+      final at = DateTime(2026, 8, 30, 12, 0, 0, 123, 456);
+      await _seed(db, actionId: 'save', at: at, entityId: 'a0');
+      await _seed(db, actionId: 'save', at: at, entityId: 'a1');
+      await _seed(db, actionId: 'save', at: at, entityId: 'a2');
+
+      final first = await store.changesPage(ConfigChangeQuery(limit: 2));
+      final second = await store.changesPage(ConfigChangeQuery(
+        before: first.oldestAt,
+        beforeId: first.oldestId,
+        limit: 2,
+      ));
+
+      expect(second.rows.map((r) => r.change.entityId), ['a0']);
+      expect(second.hasMore, isFalse);
+    });
+
     test('a page that fills the cap exactly, with nothing behind it, is the '
         'last page', () async {
       await _seed(db, actionId: 'A', at: DateTime.utc(2026, 8, 29));

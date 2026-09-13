@@ -233,4 +233,38 @@ void main() {
       expect(byId(baseline), {'a': 'A'});
     });
   });
+
+  group('a revision moved with the content unchanged', () {
+    test('is not a move: the editor decides, no conflict', () {
+      // Station B edited `a` and then undid it: two revisions on, the
+      // content the editor loaded. A conflict here would offer the
+      // operator only Reload, over a change that no longer exists.
+      final merged = mergeItemsForSave(
+        wanted: [edited('a', 'MINE')],
+        stored: [key('a', 'A', rev: 3)],
+        baseline: [key('a', 'A', rev: 1)],
+      );
+      expect(byId(merged), {'a': 'MINE'});
+    });
+
+    test('and a delete here over it stands, for the same reason', () {
+      final merged = mergeItemsForSave(
+        wanted: const [],
+        stored: [key('a', 'A', rev: 3)],
+        baseline: [key('a', 'A', rev: 1)],
+      );
+      expect(merged, isEmpty);
+    });
+
+    test('a revision moved *with* the content is still a move', () {
+      expect(
+        () => mergeItemsForSave(
+          wanted: [edited('a', 'MINE')],
+          stored: [key('a', 'THEIRS', rev: 3)],
+          baseline: [key('a', 'A', rev: 1)],
+        ),
+        throwsA(isA<ConfigConflict>()),
+      );
+    });
+  });
 }

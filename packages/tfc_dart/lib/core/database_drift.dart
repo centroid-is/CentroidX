@@ -466,7 +466,8 @@ class HistoryViewPeriod extends Table {
   // Access template tables (schema v6):
   AccessTemplateTable,
   AccessKeyBindingTable,
-  // Relational configuration tables (schema v7):
+  // Relational configuration tables (schema v10; the NOTIFY trigger is v11
+  // and the paging index v12):
   ConfigItemTable,
   ConfigChangeTable,
 ])
@@ -668,7 +669,8 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
 
   /// Create the [_configIndexStatements] indexes.
   ///
-  /// Called from `onCreate` and from the `from < 8` upgrade branch, on both
+  /// Called from `onCreate` and from the `from < 10` and `from < 12` upgrade
+  /// branches, on both
   /// backends — the statements are identical on each, so they live in one
   /// place rather than being copied into both arms.
   /// The two config tables, as Postgres gets them: the raw literals with the
@@ -741,7 +743,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
 
   /// Install [_configChangeNotifyStatements] — **on Postgres only**.
   ///
-  /// Called from `onCreate` and from the `from < 9` upgrade branch, the way
+  /// Called from `onCreate` and from the `from < 11` upgrade branch, the way
   /// [_createConfigIndexes] is called from both, so a database that was
   /// created at v9 and one that was upgraded to it agree. Without the
   /// `onCreate` call a freshly created Postgres would simply never notify, and
@@ -760,7 +762,7 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
   /// anyway so this codebase has one rule for reading the backend and not two.
   ///
   /// **No test executes the Postgres arm**, exactly as the `from < 6` and
-  /// `from < 8` arms say of their own. The inherited gap is recorded in
+  /// `from < 10` arms say of their own. The inherited gap is recorded in
   /// `.planning/phases/01-identity-and-audit/deferred-items.md` §1 and is
   /// still open. What stands behind these three statements is a read of the
   /// Postgres documentation and the `config_change` DDL directly above; the
@@ -1501,6 +1503,12 @@ class AppDatabase extends _$AppDatabase implements McpDatabase {
 
         return PgDatabase.opened(pool, logStatements: config.debug);
       }, isolateSpawn: _spawnGuardedIsolate);
+      // `connect()` and never the deprecated synchronous `remote()`: the
+      // remote executor reports the server's dialect only after the
+      // isolate's handshake, which `connect()` awaits. `native` and
+      // `postgres` read that dialect, and the migration arms branch on it —
+      // a proxy that still answered "sqlite" here would run the SQLite DDL
+      // against the plant's Postgres.
       final executor = await isolate.connect();
       final db = AppDatabase._(config, executor);
       db._driftIsolate = isolate;

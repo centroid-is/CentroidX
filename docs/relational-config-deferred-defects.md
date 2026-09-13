@@ -670,3 +670,60 @@ written after the page rows and a refusal there is logged rather than
 thrown, so a caller is not told a save failed that landed. The drop tool no
 longer counts a page image the editor's collector removed as a missing row.
 D-1 is fixed (see its entry).
+
+### Follow-up, same day — what the reviewers marked and the first fix pass left
+
+- **Rows without a marker.** The first fix kept an edited row (revision two
+  or beyond) when the blob copy ran over it, which still let the copy
+  overwrite revision-one rows and resurrect every key deleted since cutover.
+  The copy now refuses to guess: any shared row of its kinds that is not the
+  boot seed, with no marker beside it, is `MigrationOutcome.rowsWithoutMarker`
+  — nothing written, no marker, the plant keeps running on its rows, and the
+  log says how to settle it (insert the marker if the rows are the plant,
+  delete the rows if the blob is). The one row a copy may proceed over is
+  `seedDefaultIfEmpty`'s example key at the seed's revision, and when the
+  blob does not name it the copy removes it with a `delete` change row.
+- **The seed waits for the marker.** `seedDefaultIfEmpty` seeded on "no
+  mappings after the first reconcile", which on a station that attached
+  while another held the migration lock put a junk example key beside the
+  plant's four hundred a moment later, permanently. It now also requires the
+  key-mapping marker in the snapshot: no marker means not looked at yet.
+- **A marker is not a preference row.** `_refusedKinds` short-circuited on
+  any shared row of the kind, and the markers are shared `preference` rows,
+  so the preference kind could never be refused once the key-mapping
+  migration had run. Both presence probes now exclude the marker ids.
+- **A revision bump with unchanged content is not a move.** Both merges
+  judged "changed elsewhere" by revision alone, so an edit made and undone
+  on another station raised a conflict whose only remedy discarded the
+  operator's work. Revisions that moved fall through to a content compare
+  in `mergeItemsForSave` and in the page merge's `_moved`.
+- **The drop tool bounds its lock wait.** `SET LOCAL lock_timeout = '30s'`
+  inside the drop transaction, refused by name on expiry, so a blob copy
+  mid-read cannot stall the drop and every other reader of the table.
+- **Tests the reviewers asked for:** the two-save sequence at the guard
+  layer and in the page manager, the `Load more` widget path with a fake
+  that honours the `(at, id)` cursor, the cursor's equality arm with a
+  local-time instant, the composed role label for a multi-role account, and
+  a database stamped 7 or 8 by a pre-merge branch build healing all three
+  of main's columns. Stale schema cross-references in comments were brought
+  up to v10/v11/v12, and the `spawn` site now says why `connect()` and not
+  `remote()`.
+
+**Looked at and left, with the reason.**
+
+- The eleven pre-existing keys the classifier calls unknown (`theme_mode`,
+  `color_scheme`, `asset_stack_config`, `color_picker_recent_colors`, the
+  `dbus_login` credentials, `ntp_servers`, the legacy MCP toggles) were
+  device-local on every build — `SharedPreferences.getInstance()` on main,
+  `localPreferencesProvider` here — and `syncToLocalCache` never uploaded
+  the local file, so no plant dump should carry them. Unknown is the
+  fail-safe answer if one does: the drop refuses and names the key.
+- `noBlob` writing the marker forecloses a blob a pre-relational station
+  writes *afterwards*. That is a mixed fleet, which the runbook rules out:
+  every station and the backend are stopped for the window. Not defended
+  in code.
+- The JSON import of key mappings is a confirmed whole-kind replace and
+  merges against nothing, on purpose.
+- Rollout day: a page renamed in a blob-loaded session is not matched by
+  path when the rows arrive, so the rename lands as an add beside the
+  stored page. One save on one station in one window; left.

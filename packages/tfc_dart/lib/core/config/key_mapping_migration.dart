@@ -87,6 +87,7 @@ Future<MigrationOutcome> migrateKeyMappingsBlobToRows(Database remote) =>
       parse: keyMappingItemsFromBlob,
       label: _label,
       itemNoun: 'keys',
+      isPlaceholder: isKeyMappingSeedRow,
     );
 
 /// The copy itself, with the lock already held and a transaction already open.
@@ -108,4 +109,12 @@ Future<MigrationOutcome> copyKeyMappingsIntoRows(AppDatabase db) =>
       parse: keyMappingItemsFromBlob,
       label: _label,
       itemNoun: 'keys',
+      isPlaceholder: isKeyMappingSeedRow,
     );
+
+/// Whether [row] is the boot seed: `seedDefaultIfEmpty`'s example key, as
+/// it was written, and not a mapping somebody made. The one row the copy
+/// may find in front of it and still proceed over; an edited example (a
+/// revision past the seed's) is somebody's work and is not.
+bool isKeyMappingSeedRow(ConfigItemRow row) =>
+    row.id == kExampleKeyMappingId && row.rev <= 1;

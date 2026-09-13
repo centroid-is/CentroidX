@@ -32,7 +32,7 @@ const _accessTables = [
   'audit_entry',
 ];
 
-/// The relational configuration tables added in the v7→v8 migration.
+/// The relational configuration tables added in the v10 migration.
 const _configTables = [
   'config_item',
   'config_change',
