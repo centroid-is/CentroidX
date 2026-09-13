@@ -44,6 +44,49 @@ import time
 # floor is the background, and the margin to this ceiling is real.
 UNIFORM_MAX = 0.99
 
+# Sampling stride, in pixels, for both measurements below.
+STRIDE = 97
+
+# A tap that navigates repaints most of the screen. Measured on run
+# 34744364926's frames, where the flow never left the disk screen:
+#
+#   cursor moved + Continue's hover highlight   0.995%  and  1.014%
+#   an actually repainted content area         55.8%
+#
+# So "nothing happened" is not near zero -- a hover highlight on a 190x60
+# button is about 1% of the sampled set on its own, and a 1% threshold would
+# have passed one of the two dead frames above. 10% sits an order of magnitude
+# clear of hover and five times clear of a real repaint.
+CHANGE_MIN = 0.10
+
+
+def uniformity(px):
+    """Fraction of sampled pixels that are the single most common colour.
+
+    A compositor that never draws, or an app that died leaving an empty
+    desktop, produces a frame that is essentially one colour.
+    """
+    counts = {}
+    # Every 97th pixel: a prime stride, so it cannot land on a column or row
+    # period and read one stripe of the screen as the whole screen.
+    for k in range(0, len(px) - 3, STRIDE * 3):
+        c = px[k:k + 3]
+        counts[c] = counts.get(c, 0) + 1
+    total = sum(counts.values())
+    return (max(counts.values()) / total) if total else 1.0
+
+
+def changed(a, b):
+    """Fraction of sampled pixels that differ between two frames."""
+    if a is None or len(a) != len(b):
+        return 1.0
+    n = diff = 0
+    for k in range(0, len(b) - 3, STRIDE * 3):
+        n += 1
+        if a[k:k + 3] != b[k:k + 3]:
+            diff += 1
+    return (diff / n) if n else 0.0
+
 
 def find_ovmf():
     """OVMF's filename is not stable across distributions."""
@@ -111,16 +154,12 @@ class Qmp:
             return ppm
         return path
 
-    def uniformity(self):
-        """Fraction of sampled pixels that are the single most common colour.
+    def frame(self):
+        """The guest's current framebuffer as (width, height, RGB bytes).
 
-        A compositor that never draws, or an app that died leaving an empty
-        desktop, produces a frame that is essentially one colour -- and used to
-        pass this test in silence, because rc was only ever set by an exception.
-
-        Measured on a PPM dump rather than the PNG beside it: P6 is a header
-        and then raw RGB triples, where reading a PNG back would mean an
-        inflate and an unfilter pass for a number this coarse.
+        A PPM dump rather than the PNG beside it: P6 is a header and then raw
+        RGB triples, where reading a PNG back would mean an inflate and an
+        unfilter pass for numbers this coarse.
         """
         tmp = os.path.join(tempfile.gettempdir(), 'frame.ppm')
         self.cmd('screendump', filename=tmp)
@@ -142,29 +181,31 @@ class Qmp:
                 j += 1
             fields.append(int(data[i:j]))
             i = j
-        px = data[i + 1:]
-        counts = {}
-        # Every 97th pixel: a prime stride, so it cannot land on a column or row
-        # period and read one stripe of the screen as the whole screen.
-        for k in range(0, len(px) - 3, 97 * 3):
-            c = px[k:k + 3]
-            counts[c] = counts.get(c, 0) + 1
-        total = sum(counts.values())
-        return (max(counts.values()) / total) if total else 1.0
+        return fields[0], fields[1], data[i + 1:]
 
     def tap(self, x, y):
-        """Tap at x,y as a fraction (0..1) of the screen."""
+        """Tap at x,y as a fraction (0..1) of the screen.
+
+        Press and release go in SEPARATE input-send-event calls. QEMU applies
+        one call's events and then emits a single sync, and the guest samples
+        button state at sync boundaries -- so a batch containing both down and
+        up nets out to no change and the guest never sees the button pressed.
+        Observed exactly that: the pointer moved and the button under it lit up
+        with hover, and nothing was ever activated.
+
+        The move is still one batch, so the tablet cannot be sampled
+        mid-way between the old position and the new.
+        """
         X, Y = int(x * 32767), int(y * 32767)
-        move = [{'type': 'abs', 'data': {'axis': 'x', 'value': X}},
-                {'type': 'abs', 'data': {'axis': 'y', 'value': Y}}]
-        # Move and click as two batches: a tablet that is still at its old
-        # position when the button goes down clicks the wrong widget, and each
-        # batch is applied atomically.
-        self.cmd('input-send-event', events=move)
-        time.sleep(0.2)
         self.cmd('input-send-event', events=[
-            {'type': 'btn', 'data': {'down': True, 'button': 'left'}},
-            {'type': 'btn', 'data': {'down': False, 'button': 'left'}}])
+            {'type': 'abs', 'data': {'axis': 'x', 'value': X}},
+            {'type': 'abs', 'data': {'axis': 'y', 'value': Y}}])
+        time.sleep(0.2)
+        self.cmd('input-send-event',
+                 events=[{'type': 'btn', 'data': {'down': True, 'button': 'left'}}])
+        time.sleep(0.12)
+        self.cmd('input-send-event',
+                 events=[{'type': 'btn', 'data': {'down': False, 'button': 'left'}}])
 
 def main():
     ap = argparse.ArgumentParser()
@@ -218,23 +259,36 @@ def main():
         #
         #   45s  firmware, GRUB, kernel, seatd, weston, and the app's first frame
         #   then the app waits for a human on the disk step
+        # label, tap point, settle seconds, must the screen change
         script = [
-            ('01-disk',     None,          45),   # did it boot and draw at all
-            ('02-station',  (0.90, 0.94),   4),   # Continue -> the station step
-            ('03-keyboard', (0.30, 0.26),   5),   # first field -> keyboard up?
+            ('01-disk',     None,          45, False),  # booted and drew at all
+            ('02-station',  (0.90, 0.94),   4, True),   # Continue -> station step
+            ('03-keyboard', (0.30, 0.26),   5, True),   # first field -> keyboard
         ]
-        blank = []
-        for label, point, wait in script:
+        problems, prev = [], None
+        for label, point, wait, must_change in script:
             if point:
                 q.tap(*point)
             time.sleep(wait * a.slow)
             shot = q.screenshot(os.path.join(a.out, f'{label}.png'))
-            u = q.uniformity()
-            print(f'  {label}: {shot}  ({u:.1%} one colour)')
+            _, _, px = q.frame()
+            u = uniformity(px)
+            d = changed(prev, px)
+            print(f'  {label}: {shot}  ({u:.1%} one colour, {d:.1%} changed)')
             if u > UNIFORM_MAX:
-                blank.append(f'{label} is {u:.1%} a single colour')
-        if blank:
-            raise RuntimeError('nothing was drawn: ' + '; '.join(blank))
+                problems.append(f'{label} is {u:.1%} a single colour -- nothing drawn')
+            # A tap that lands on a button but never activates it still moves
+            # the cursor, so the frame is not identical and an equality test
+            # would pass. Run 34744364926 was green exactly that way: the
+            # pointer hovered Continue, the button lit up, and the installer
+            # never left screen one.
+            if must_change and d < CHANGE_MIN:
+                problems.append(
+                    f'{label}: only {d:.1%} of the screen changed after the tap '
+                    f'-- the step did not advance')
+            prev = px
+        if problems:
+            raise RuntimeError('; '.join(problems))
         if not a.keep_running:
             try:
                 q.cmd('quit')
