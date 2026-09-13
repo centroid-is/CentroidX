@@ -64,6 +64,9 @@ ConveyorConfig _$ConveyorConfigFromJson(Map<String, dynamic> json) =>
       tripKey: json['tripKey'] as String?,
       runningKey: json['runningKey'] as String?,
       simulateBatches: json['simulateBatches'] as bool?,
+      load: $enumDecodeNullable(_$ConveyorLoadEnumMap, json['load']),
+      palletOrientation: $enumDecodeNullable(
+          _$PalletOrientationEnumMap, json['palletOrientation']),
       bidirectional: json['bidirectional'] as bool?,
       reverseDirection: json['reverseDirection'] as bool?,
       showFrequency: json['showFrequency'] as bool?,
@@ -111,6 +114,9 @@ Map<String, dynamic> _$ConveyorConfigToJson(ConveyorConfig instance) =>
       'tripKey': instance.tripKey,
       'runningKey': instance.runningKey,
       'simulateBatches': instance.simulateBatches,
+      'load': _$ConveyorLoadEnumMap[instance.load],
+      'palletOrientation':
+          _$PalletOrientationEnumMap[instance.palletOrientation],
       'bidirectional': instance.bidirectional,
       'reverseDirection': instance.reverseDirection,
       'showFrequency': instance.showFrequency,
@@ -130,6 +136,16 @@ Map<String, dynamic> _$ConveyorConfigToJson(ConveyorConfig instance) =>
       'beltWidthRelative': instance.beltWidthRelative,
     };
 
+const _$ConveyorLoadEnumMap = {
+  ConveyorLoad.box: 'box',
+  ConveyorLoad.euroPallet: 'euroPallet',
+};
+
+const _$PalletOrientationEnumMap = {
+  PalletOrientation.alongBelt: 'alongBelt',
+  PalletOrientation.acrossBelt: 'acrossBelt',
+};
+
 const _$AugerOpenEndEnumMap = {
   AugerOpenEnd.left: 'left',
   AugerOpenEnd.right: 'right',
@@ -144,6 +160,9 @@ RollerConveyorConfig _$RollerConveyorConfigFromJson(
       tripKey: json['tripKey'] as String?,
       runningKey: json['runningKey'] as String?,
       simulateBatches: json['simulateBatches'] as bool?,
+      load: $enumDecodeNullable(_$ConveyorLoadEnumMap, json['load']),
+      palletOrientation: $enumDecodeNullable(
+          _$PalletOrientationEnumMap, json['palletOrientation']),
       bidirectional: json['bidirectional'] as bool?,
       reverseDirection: json['reverseDirection'] as bool?,
       showFrequency: json['showFrequency'] as bool?,
@@ -192,6 +211,9 @@ Map<String, dynamic> _$RollerConveyorConfigToJson(
       'tripKey': instance.tripKey,
       'runningKey': instance.runningKey,
       'simulateBatches': instance.simulateBatches,
+      'load': _$ConveyorLoadEnumMap[instance.load],
+      'palletOrientation':
+          _$PalletOrientationEnumMap[instance.palletOrientation],
       'bidirectional': instance.bidirectional,
       'reverseDirection': instance.reverseDirection,
       'showFrequency': instance.showFrequency,
