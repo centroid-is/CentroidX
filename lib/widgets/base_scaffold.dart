@@ -355,6 +355,17 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
         });
   }
 
+  /// True when a person's session ended by the panel taking itself back:
+  /// still elevated, but now as a station account that is not who was signed
+  /// in before.
+  ///
+  /// The username comparison is what keeps a session re-resolving in place
+  /// (an administrator editing the panel's own role) from beaming anywhere.
+  static bool _fellToPanel(AccessSession before, AccessSession after) =>
+      after.isElevated &&
+      after.user!.stationAccount &&
+      after.user!.username != before.user!.username;
+
   /// Beams back to the station's startup page — the sign-out return.
   ///
   /// An anonymous session must not be left staring at a raised page it
@@ -369,9 +380,11 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
   Future<void> _returnToStartupPage() async {
     final stored = await readStartupUrl(ref.read(localPreferencesProvider));
     if (!mounted) return;
-    if (ref.read(accessSessionProvider).valueOrNull?.isElevated ?? false) {
-      return;
-    }
+    // Somebody signed in during the await. A station account is not somebody:
+    // it is the panel's own floor, and falling to it is why this may be
+    // running at all.
+    final now = ref.read(accessSessionProvider).valueOrNull;
+    if (now != null && now.isElevated && !now.user!.stationAccount) return;
     // The full tree, deliberately, not `visibleMenu`. `resolveStartupPath`
     // answers "is this path routable"; whether *this* person may open it is
     // the route gate's question, and it answers with an honest refusal page.
@@ -387,14 +400,25 @@ class _BaseScaffoldState extends ConsumerState<BaseScaffold> {
   @override
   Widget build(BuildContext context) {
     // The sign-out return, and the inactivity expiry's too: both paths end at
-    // the same elevated-to-anonymous transition, so one listener covers the
-    // app-bar button and the timer alike. Registered in build — riverpod
-    // re-registers it per rebuild and removes it on unmount.
+    // the same transition, so one listener covers the app-bar button and the
+    // timer alike. Registered in build — riverpod re-registers it per rebuild
+    // and removes it on unmount.
+    //
+    // Two transitions count as "a session ended". Elevated to anonymous, and a
+    // person's session falling to a *different* station account — a committed
+    // panel taking itself back. The second is still elevated, but the page the
+    // person raised is one the panel's account may not be able to see, which
+    // is the same stranding the first case exists to prevent.
     ref.listen<AsyncValue<AccessSession>>(accessSessionProvider,
         (previous, next) {
-      final wasElevated = previous?.valueOrNull?.isElevated ?? false;
-      final isElevated = next.valueOrNull?.isElevated ?? false;
-      if (wasElevated && !isElevated) unawaited(_returnToStartupPage());
+      final before = previous?.valueOrNull;
+      final after = next.valueOrNull;
+      final wasElevated = before?.isElevated ?? false;
+      final isElevated = after?.isElevated ?? false;
+      if (!wasElevated) return;
+      if (!isElevated || _fellToPanel(before!, after!)) {
+        unawaited(_returnToStartupPage());
+      }
     });
 
     // A raising alarm asking for the screen. The counter is the signal; the

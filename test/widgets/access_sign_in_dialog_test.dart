@@ -492,8 +492,10 @@ void main() {
       // own that a panel they thought they had locked comes back by itself.
       expect(message, contains('sign in over it'));
       expect(message, contains('returns to freezer'));
-      // And the way out, so the prompt is not a one-way door.
-      expect(message, contains('Signing out of freezer ends this'));
+      // And the way out, so the prompt is not a one-way door — which is no
+      // longer a sign-out, so the prompt must not promise one.
+      expect(message, contains('cannot be signed out'));
+      expect(message, contains('Advanced > Access'));
     });
 
     testWidgets('confirming commits the panel', (tester) async {

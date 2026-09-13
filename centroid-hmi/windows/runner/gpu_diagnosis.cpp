@@ -295,6 +295,13 @@ const char* DescribeLossCause(LossCause cause) {
       return "the platform thread did not answer a sent message inside the "
              "timeout. Nothing running on that thread, the engine included, "
              "can be assumed alive.";
+    case LossCause::kRasterFailed:
+      return "the UI isolate reported, on consecutive liveness stamps, that "
+             "the engine returned an EMPTY image for a 1 x 1 snapshot. "
+             "Observed from inside the isolate, not inferred: Dart is alive "
+             "and building frames, the engine cannot rasterise them, and no "
+             "native probe can see that -- the next-frame callback answers, "
+             "the sentinel adapter is healthy, stderr is quiet.";
   }
   return "unknown";
 }
