@@ -38,7 +38,6 @@ import 'package:tfc_relay_client/src/client_config.dart';
 import 'package:tfc_relay_client/src/connection_supervisor.dart';
 import 'package:tfc_relay_client/src/failure_taxonomy.dart';
 import 'package:tfc_relay_client/src/remote_state_man.dart';
-import 'package:tfc_relay_client/src/ws_transport.dart';
 import 'package:tfc_relay_client/src/dial/pinned_dialer_io.dart';
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
 import 'package:tfc_relay_server/tfc_relay_server.dart';

@@ -59,7 +59,6 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:tfc_relay_protocol/tfc_relay_protocol.dart';
