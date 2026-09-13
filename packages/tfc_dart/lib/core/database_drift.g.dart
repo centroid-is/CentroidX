@@ -6579,8 +6579,15 @@ class $AppRoleTable extends AppRole with TableInfo<$AppRoleTable, AppRoleData> {
   late final GeneratedColumn<String> allowedPages = GeneratedColumn<String>(
       'allowed_pages', aliasedName, true,
       type: DriftSqlType.string, requiredDuringInsert: false);
+  static const VerificationMeta _sortOrderMeta =
+      const VerificationMeta('sortOrder');
   @override
-  List<GeneratedColumn> get $columns => [name, groups, seeded, allowedPages];
+  late final GeneratedColumn<int> sortOrder = GeneratedColumn<int>(
+      'sort_order', aliasedName, true,
+      type: DriftSqlType.int, requiredDuringInsert: false);
+  @override
+  List<GeneratedColumn> get $columns =>
+      [name, groups, seeded, allowedPages, sortOrder];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -6613,6 +6620,10 @@ class $AppRoleTable extends AppRole with TableInfo<$AppRoleTable, AppRoleData> {
           allowedPages.isAcceptableOrUnknown(
               data['allowed_pages']!, _allowedPagesMeta));
     }
+    if (data.containsKey('sort_order')) {
+      context.handle(_sortOrderMeta,
+          sortOrder.isAcceptableOrUnknown(data['sort_order']!, _sortOrderMeta));
+    }
     return context;
   }
 
@@ -6630,6 +6641,8 @@ class $AppRoleTable extends AppRole with TableInfo<$AppRoleTable, AppRoleData> {
           .read(DriftSqlType.bool, data['${effectivePrefix}seeded'])!,
       allowedPages: attachedDatabase.typeMapping
           .read(DriftSqlType.string, data['${effectivePrefix}allowed_pages']),
+      sortOrder: attachedDatabase.typeMapping
+          .read(DriftSqlType.int, data['${effectivePrefix}sort_order']),
     );
   }
 
@@ -6671,11 +6684,22 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
   /// Keep it small, for the same reason [groups] says so: the backend config
   /// watcher fires on preference writes and `pg_notify` has an 8000-byte cap.
   final String? allowedPages;
+
+  /// Where this role sits in the Access screen's list, lowest first, or NULL
+  /// for a role nobody has placed — every role until the first reorder, and
+  /// any role created after it.
+  ///
+  /// **Display order only.** Nothing that decides what a session may do reads
+  /// it. Added on open by `_ensureSortOrderColumns` rather than by a schema
+  /// arm, so it takes no version number; `AccessRepository.roles` supplies the
+  /// fallback order for the NULLs.
+  final int? sortOrder;
   const AppRoleData(
       {required this.name,
       required this.groups,
       required this.seeded,
-      this.allowedPages});
+      this.allowedPages,
+      this.sortOrder});
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
@@ -6684,6 +6708,9 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
     map['seeded'] = Variable<bool>(seeded);
     if (!nullToAbsent || allowedPages != null) {
       map['allowed_pages'] = Variable<String>(allowedPages);
+    }
+    if (!nullToAbsent || sortOrder != null) {
+      map['sort_order'] = Variable<int>(sortOrder);
     }
     return map;
   }
@@ -6696,6 +6723,9 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
       allowedPages: allowedPages == null && nullToAbsent
           ? const Value.absent()
           : Value(allowedPages),
+      sortOrder: sortOrder == null && nullToAbsent
+          ? const Value.absent()
+          : Value(sortOrder),
     );
   }
 
@@ -6707,6 +6737,7 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
       groups: serializer.fromJson<String>(json['groups']),
       seeded: serializer.fromJson<bool>(json['seeded']),
       allowedPages: serializer.fromJson<String?>(json['allowedPages']),
+      sortOrder: serializer.fromJson<int?>(json['sortOrder']),
     );
   }
   @override
@@ -6717,6 +6748,7 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
       'groups': serializer.toJson<String>(groups),
       'seeded': serializer.toJson<bool>(seeded),
       'allowedPages': serializer.toJson<String?>(allowedPages),
+      'sortOrder': serializer.toJson<int?>(sortOrder),
     };
   }
 
@@ -6724,13 +6756,15 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
           {String? name,
           String? groups,
           bool? seeded,
-          Value<String?> allowedPages = const Value.absent()}) =>
+          Value<String?> allowedPages = const Value.absent(),
+          Value<int?> sortOrder = const Value.absent()}) =>
       AppRoleData(
         name: name ?? this.name,
         groups: groups ?? this.groups,
         seeded: seeded ?? this.seeded,
         allowedPages:
             allowedPages.present ? allowedPages.value : this.allowedPages,
+        sortOrder: sortOrder.present ? sortOrder.value : this.sortOrder,
       );
   AppRoleData copyWithCompanion(AppRoleCompanion data) {
     return AppRoleData(
@@ -6740,6 +6774,7 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
       allowedPages: data.allowedPages.present
           ? data.allowedPages.value
           : this.allowedPages,
+      sortOrder: data.sortOrder.present ? data.sortOrder.value : this.sortOrder,
     );
   }
 
@@ -6749,13 +6784,15 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
           ..write('name: $name, ')
           ..write('groups: $groups, ')
           ..write('seeded: $seeded, ')
-          ..write('allowedPages: $allowedPages')
+          ..write('allowedPages: $allowedPages, ')
+          ..write('sortOrder: $sortOrder')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(name, groups, seeded, allowedPages);
+  int get hashCode =>
+      Object.hash(name, groups, seeded, allowedPages, sortOrder);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -6763,7 +6800,8 @@ class AppRoleData extends DataClass implements Insertable<AppRoleData> {
           other.name == this.name &&
           other.groups == this.groups &&
           other.seeded == this.seeded &&
-          other.allowedPages == this.allowedPages);
+          other.allowedPages == this.allowedPages &&
+          other.sortOrder == this.sortOrder);
 }
 
 class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
@@ -6771,12 +6809,14 @@ class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
   final Value<String> groups;
   final Value<bool> seeded;
   final Value<String?> allowedPages;
+  final Value<int?> sortOrder;
   final Value<int> rowid;
   const AppRoleCompanion({
     this.name = const Value.absent(),
     this.groups = const Value.absent(),
     this.seeded = const Value.absent(),
     this.allowedPages = const Value.absent(),
+    this.sortOrder = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   AppRoleCompanion.insert({
@@ -6784,6 +6824,7 @@ class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
     required String groups,
     this.seeded = const Value.absent(),
     this.allowedPages = const Value.absent(),
+    this.sortOrder = const Value.absent(),
     this.rowid = const Value.absent(),
   })  : name = Value(name),
         groups = Value(groups);
@@ -6792,6 +6833,7 @@ class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
     Expression<String>? groups,
     Expression<bool>? seeded,
     Expression<String>? allowedPages,
+    Expression<int>? sortOrder,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -6799,6 +6841,7 @@ class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
       if (groups != null) 'groups': groups,
       if (seeded != null) 'seeded': seeded,
       if (allowedPages != null) 'allowed_pages': allowedPages,
+      if (sortOrder != null) 'sort_order': sortOrder,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -6808,12 +6851,14 @@ class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
       Value<String>? groups,
       Value<bool>? seeded,
       Value<String?>? allowedPages,
+      Value<int?>? sortOrder,
       Value<int>? rowid}) {
     return AppRoleCompanion(
       name: name ?? this.name,
       groups: groups ?? this.groups,
       seeded: seeded ?? this.seeded,
       allowedPages: allowedPages ?? this.allowedPages,
+      sortOrder: sortOrder ?? this.sortOrder,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -6833,6 +6878,9 @@ class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
     if (allowedPages.present) {
       map['allowed_pages'] = Variable<String>(allowedPages.value);
     }
+    if (sortOrder.present) {
+      map['sort_order'] = Variable<int>(sortOrder.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -6846,6 +6894,7 @@ class AppRoleCompanion extends UpdateCompanion<AppRoleData> {
           ..write('groups: $groups, ')
           ..write('seeded: $seeded, ')
           ..write('allowedPages: $allowedPages, ')
+          ..write('sortOrder: $sortOrder, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -6921,6 +6970,12 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
   late final GeneratedColumn<int> inactivityTimeoutMinutes =
       GeneratedColumn<int>('inactivity_timeout_minutes', aliasedName, true,
           type: DriftSqlType.int, requiredDuringInsert: false);
+  static const VerificationMeta _sortOrderMeta =
+      const VerificationMeta('sortOrder');
+  @override
+  late final GeneratedColumn<int> sortOrder = GeneratedColumn<int>(
+      'sort_order', aliasedName, true,
+      type: DriftSqlType.int, requiredDuringInsert: false);
   @override
   List<GeneratedColumn> get $columns => [
         username,
@@ -6932,7 +6987,8 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
         lastLoginAt,
         stationAccount,
         allowedPages,
-        inactivityTimeoutMinutes
+        inactivityTimeoutMinutes,
+        sortOrder
       ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -7007,6 +7063,10 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
               data['inactivity_timeout_minutes']!,
               _inactivityTimeoutMinutesMeta));
     }
+    if (data.containsKey('sort_order')) {
+      context.handle(_sortOrderMeta,
+          sortOrder.isAcceptableOrUnknown(data['sort_order']!, _sortOrderMeta));
+    }
     return context;
   }
 
@@ -7037,6 +7097,8 @@ class $AppUserTable extends AppUser with TableInfo<$AppUserTable, AppUserData> {
       inactivityTimeoutMinutes: attachedDatabase.typeMapping.read(
           DriftSqlType.int,
           data['${effectivePrefix}inactivity_timeout_minutes']),
+      sortOrder: attachedDatabase.typeMapping
+          .read(DriftSqlType.int, data['${effectivePrefix}sort_order']),
     );
   }
 
@@ -7129,6 +7191,14 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
   /// value outside it is clamped on read by `resolveInactivityTimeout`, so a
   /// `psql` edit cannot end sessions instantly or never.
   final int? inactivityTimeoutMinutes;
+
+  /// Where this account sits in the Access screen's list, lowest first, or
+  /// NULL for an account nobody has placed, which lists after the placed ones
+  /// by username. The reserved anonymous account never gets one.
+  ///
+  /// Display order only, added on open with no schema version — see
+  /// [AppRole.sortOrder].
+  final int? sortOrder;
   const AppUserData(
       {required this.username,
       required this.roleName,
@@ -7139,7 +7209,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       this.lastLoginAt,
       required this.stationAccount,
       this.allowedPages,
-      this.inactivityTimeoutMinutes});
+      this.inactivityTimeoutMinutes,
+      this.sortOrder});
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
@@ -7161,6 +7232,9 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
     if (!nullToAbsent || inactivityTimeoutMinutes != null) {
       map['inactivity_timeout_minutes'] =
           Variable<int>(inactivityTimeoutMinutes);
+    }
+    if (!nullToAbsent || sortOrder != null) {
+      map['sort_order'] = Variable<int>(sortOrder);
     }
     return map;
   }
@@ -7185,6 +7259,9 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       inactivityTimeoutMinutes: inactivityTimeoutMinutes == null && nullToAbsent
           ? const Value.absent()
           : Value(inactivityTimeoutMinutes),
+      sortOrder: sortOrder == null && nullToAbsent
+          ? const Value.absent()
+          : Value(sortOrder),
     );
   }
 
@@ -7203,6 +7280,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       allowedPages: serializer.fromJson<String?>(json['allowedPages']),
       inactivityTimeoutMinutes:
           serializer.fromJson<int?>(json['inactivityTimeoutMinutes']),
+      sortOrder: serializer.fromJson<int?>(json['sortOrder']),
     );
   }
   @override
@@ -7220,6 +7298,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       'allowedPages': serializer.toJson<String?>(allowedPages),
       'inactivityTimeoutMinutes':
           serializer.toJson<int?>(inactivityTimeoutMinutes),
+      'sortOrder': serializer.toJson<int?>(sortOrder),
     };
   }
 
@@ -7233,7 +7312,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           Value<DateTime?> lastLoginAt = const Value.absent(),
           bool? stationAccount,
           Value<String?> allowedPages = const Value.absent(),
-          Value<int?> inactivityTimeoutMinutes = const Value.absent()}) =>
+          Value<int?> inactivityTimeoutMinutes = const Value.absent(),
+          Value<int?> sortOrder = const Value.absent()}) =>
       AppUserData(
         username: username ?? this.username,
         roleName: roleName ?? this.roleName,
@@ -7250,6 +7330,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
         inactivityTimeoutMinutes: inactivityTimeoutMinutes.present
             ? inactivityTimeoutMinutes.value
             : this.inactivityTimeoutMinutes,
+        sortOrder: sortOrder.present ? sortOrder.value : this.sortOrder,
       );
   AppUserData copyWithCompanion(AppUserCompanion data) {
     return AppUserData(
@@ -7274,6 +7355,7 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       inactivityTimeoutMinutes: data.inactivityTimeoutMinutes.present
           ? data.inactivityTimeoutMinutes.value
           : this.inactivityTimeoutMinutes,
+      sortOrder: data.sortOrder.present ? data.sortOrder.value : this.sortOrder,
     );
   }
 
@@ -7289,7 +7371,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           ..write('lastLoginAt: $lastLoginAt, ')
           ..write('stationAccount: $stationAccount, ')
           ..write('allowedPages: $allowedPages, ')
-          ..write('inactivityTimeoutMinutes: $inactivityTimeoutMinutes')
+          ..write('inactivityTimeoutMinutes: $inactivityTimeoutMinutes, ')
+          ..write('sortOrder: $sortOrder')
           ..write(')'))
         .toString();
   }
@@ -7305,7 +7388,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
       lastLoginAt,
       stationAccount,
       allowedPages,
-      inactivityTimeoutMinutes);
+      inactivityTimeoutMinutes,
+      sortOrder);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -7319,7 +7403,8 @@ class AppUserData extends DataClass implements Insertable<AppUserData> {
           other.lastLoginAt == this.lastLoginAt &&
           other.stationAccount == this.stationAccount &&
           other.allowedPages == this.allowedPages &&
-          other.inactivityTimeoutMinutes == this.inactivityTimeoutMinutes);
+          other.inactivityTimeoutMinutes == this.inactivityTimeoutMinutes &&
+          other.sortOrder == this.sortOrder);
 }
 
 class AppUserCompanion extends UpdateCompanion<AppUserData> {
@@ -7333,6 +7418,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
   final Value<bool> stationAccount;
   final Value<String?> allowedPages;
   final Value<int?> inactivityTimeoutMinutes;
+  final Value<int?> sortOrder;
   final Value<int> rowid;
   const AppUserCompanion({
     this.username = const Value.absent(),
@@ -7345,6 +7431,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     this.stationAccount = const Value.absent(),
     this.allowedPages = const Value.absent(),
     this.inactivityTimeoutMinutes = const Value.absent(),
+    this.sortOrder = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   AppUserCompanion.insert({
@@ -7358,6 +7445,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     this.stationAccount = const Value.absent(),
     this.allowedPages = const Value.absent(),
     this.inactivityTimeoutMinutes = const Value.absent(),
+    this.sortOrder = const Value.absent(),
     this.rowid = const Value.absent(),
   })  : username = Value(username),
         roleName = Value(roleName),
@@ -7375,6 +7463,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
     Expression<bool>? stationAccount,
     Expression<String>? allowedPages,
     Expression<int>? inactivityTimeoutMinutes,
+    Expression<int>? sortOrder,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -7389,6 +7478,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
       if (allowedPages != null) 'allowed_pages': allowedPages,
       if (inactivityTimeoutMinutes != null)
         'inactivity_timeout_minutes': inactivityTimeoutMinutes,
+      if (sortOrder != null) 'sort_order': sortOrder,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -7404,6 +7494,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
       Value<bool>? stationAccount,
       Value<String?>? allowedPages,
       Value<int?>? inactivityTimeoutMinutes,
+      Value<int?>? sortOrder,
       Value<int>? rowid}) {
     return AppUserCompanion(
       username: username ?? this.username,
@@ -7417,6 +7508,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
       allowedPages: allowedPages ?? this.allowedPages,
       inactivityTimeoutMinutes:
           inactivityTimeoutMinutes ?? this.inactivityTimeoutMinutes,
+      sortOrder: sortOrder ?? this.sortOrder,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -7455,6 +7547,9 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
       map['inactivity_timeout_minutes'] =
           Variable<int>(inactivityTimeoutMinutes.value);
     }
+    if (sortOrder.present) {
+      map['sort_order'] = Variable<int>(sortOrder.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -7474,6 +7569,7 @@ class AppUserCompanion extends UpdateCompanion<AppUserData> {
           ..write('stationAccount: $stationAccount, ')
           ..write('allowedPages: $allowedPages, ')
           ..write('inactivityTimeoutMinutes: $inactivityTimeoutMinutes, ')
+          ..write('sortOrder: $sortOrder, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -14098,6 +14194,7 @@ typedef $$AppRoleTableCreateCompanionBuilder = AppRoleCompanion Function({
   required String groups,
   Value<bool> seeded,
   Value<String?> allowedPages,
+  Value<int?> sortOrder,
   Value<int> rowid,
 });
 typedef $$AppRoleTableUpdateCompanionBuilder = AppRoleCompanion Function({
@@ -14105,6 +14202,7 @@ typedef $$AppRoleTableUpdateCompanionBuilder = AppRoleCompanion Function({
   Value<String> groups,
   Value<bool> seeded,
   Value<String?> allowedPages,
+  Value<int?> sortOrder,
   Value<int> rowid,
 });
 
@@ -14147,6 +14245,9 @@ class $$AppRoleTableFilterComposer
 
   ColumnFilters<String> get allowedPages => $composableBuilder(
       column: $table.allowedPages, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<int> get sortOrder => $composableBuilder(
+      column: $table.sortOrder, builder: (column) => ColumnFilters(column));
 
   Expression<bool> appUserRefs(
       Expression<bool> Function($$AppUserTableFilterComposer f) f) {
@@ -14191,6 +14292,9 @@ class $$AppRoleTableOrderingComposer
   ColumnOrderings<String> get allowedPages => $composableBuilder(
       column: $table.allowedPages,
       builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<int> get sortOrder => $composableBuilder(
+      column: $table.sortOrder, builder: (column) => ColumnOrderings(column));
 }
 
 class $$AppRoleTableAnnotationComposer
@@ -14213,6 +14317,9 @@ class $$AppRoleTableAnnotationComposer
 
   GeneratedColumn<String> get allowedPages => $composableBuilder(
       column: $table.allowedPages, builder: (column) => column);
+
+  GeneratedColumn<int> get sortOrder =>
+      $composableBuilder(column: $table.sortOrder, builder: (column) => column);
 
   Expression<T> appUserRefs<T extends Object>(
       Expression<T> Function($$AppUserTableAnnotationComposer a) f) {
@@ -14263,6 +14370,7 @@ class $$AppRoleTableTableManager extends RootTableManager<
             Value<String> groups = const Value.absent(),
             Value<bool> seeded = const Value.absent(),
             Value<String?> allowedPages = const Value.absent(),
+            Value<int?> sortOrder = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppRoleCompanion(
@@ -14270,6 +14378,7 @@ class $$AppRoleTableTableManager extends RootTableManager<
             groups: groups,
             seeded: seeded,
             allowedPages: allowedPages,
+            sortOrder: sortOrder,
             rowid: rowid,
           ),
           createCompanionCallback: ({
@@ -14277,6 +14386,7 @@ class $$AppRoleTableTableManager extends RootTableManager<
             required String groups,
             Value<bool> seeded = const Value.absent(),
             Value<String?> allowedPages = const Value.absent(),
+            Value<int?> sortOrder = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppRoleCompanion.insert(
@@ -14284,6 +14394,7 @@ class $$AppRoleTableTableManager extends RootTableManager<
             groups: groups,
             seeded: seeded,
             allowedPages: allowedPages,
+            sortOrder: sortOrder,
             rowid: rowid,
           ),
           withReferenceMapper: (p0) => p0
@@ -14339,6 +14450,7 @@ typedef $$AppUserTableCreateCompanionBuilder = AppUserCompanion Function({
   Value<bool> stationAccount,
   Value<String?> allowedPages,
   Value<int?> inactivityTimeoutMinutes,
+  Value<int?> sortOrder,
   Value<int> rowid,
 });
 typedef $$AppUserTableUpdateCompanionBuilder = AppUserCompanion Function({
@@ -14352,6 +14464,7 @@ typedef $$AppUserTableUpdateCompanionBuilder = AppUserCompanion Function({
   Value<bool> stationAccount,
   Value<String?> allowedPages,
   Value<int?> inactivityTimeoutMinutes,
+  Value<int?> sortOrder,
   Value<int> rowid,
 });
 
@@ -14412,6 +14525,9 @@ class $$AppUserTableFilterComposer
   ColumnFilters<int> get inactivityTimeoutMinutes => $composableBuilder(
       column: $table.inactivityTimeoutMinutes,
       builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<int> get sortOrder => $composableBuilder(
+      column: $table.sortOrder, builder: (column) => ColumnFilters(column));
 
   $$AppRoleTableFilterComposer get roleName {
     final $$AppRoleTableFilterComposer composer = $composerBuilder(
@@ -14475,6 +14591,9 @@ class $$AppUserTableOrderingComposer
       column: $table.inactivityTimeoutMinutes,
       builder: (column) => ColumnOrderings(column));
 
+  ColumnOrderings<int> get sortOrder => $composableBuilder(
+      column: $table.sortOrder, builder: (column) => ColumnOrderings(column));
+
   $$AppRoleTableOrderingComposer get roleName {
     final $$AppRoleTableOrderingComposer composer = $composerBuilder(
         composer: this,
@@ -14532,6 +14651,9 @@ class $$AppUserTableAnnotationComposer
   GeneratedColumn<int> get inactivityTimeoutMinutes => $composableBuilder(
       column: $table.inactivityTimeoutMinutes, builder: (column) => column);
 
+  GeneratedColumn<int> get sortOrder =>
+      $composableBuilder(column: $table.sortOrder, builder: (column) => column);
+
   $$AppRoleTableAnnotationComposer get roleName {
     final $$AppRoleTableAnnotationComposer composer = $composerBuilder(
         composer: this,
@@ -14586,6 +14708,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             Value<bool> stationAccount = const Value.absent(),
             Value<String?> allowedPages = const Value.absent(),
             Value<int?> inactivityTimeoutMinutes = const Value.absent(),
+            Value<int?> sortOrder = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppUserCompanion(
@@ -14599,6 +14722,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             stationAccount: stationAccount,
             allowedPages: allowedPages,
             inactivityTimeoutMinutes: inactivityTimeoutMinutes,
+            sortOrder: sortOrder,
             rowid: rowid,
           ),
           createCompanionCallback: ({
@@ -14612,6 +14736,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             Value<bool> stationAccount = const Value.absent(),
             Value<String?> allowedPages = const Value.absent(),
             Value<int?> inactivityTimeoutMinutes = const Value.absent(),
+            Value<int?> sortOrder = const Value.absent(),
             Value<int> rowid = const Value.absent(),
           }) =>
               AppUserCompanion.insert(
@@ -14625,6 +14750,7 @@ class $$AppUserTableTableManager extends RootTableManager<
             stationAccount: stationAccount,
             allowedPages: allowedPages,
             inactivityTimeoutMinutes: inactivityTimeoutMinutes,
+            sortOrder: sortOrder,
             rowid: rowid,
           ),
           withReferenceMapper: (p0) => p0

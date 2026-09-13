@@ -220,6 +220,11 @@ OIDC lands, an incoming group claim of `"Shift Leader"` matches the role by name
 with no mapping table, exactly as Ignition and SIMATIC Logon do it. Do not
 replace it with an integer id.
 
+`app_role.sort_order` and `app_user.sort_order` are nullable integers that hold
+the display order of the two lists on the Access screen and nothing else — no
+permission reads them — and they are added on open (`_ensureSortOrderColumns`)
+rather than by a schema version, so they take no migration arm.
+
 ### Struct writes must be diffed to members
 
 Several assets are copy-on-write: clone the struct, set one field, write the

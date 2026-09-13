@@ -595,6 +595,15 @@ void main() {
         expect(find.byKey(kAccessUserAnonymousTagKey), findsOneWidget);
         expect(find.byKey(kAccessUserDeleteKey(kAnonymousUsername)), findsNothing);
         expect(find.byKey(kAccessRoleDeleteKey(kOperatorRoleName)), findsOneWidget);
+        // A drag handle on every role and every person; none on anonymous,
+        // which is pinned first.
+        for (final role in _roles()) {
+          expect(find.byKey(kAccessRoleDragHandleKey(role.name)), findsOneWidget);
+        }
+        for (final user in _users()) {
+          expect(find.byKey(kAccessUserDragHandleKey(user.username)),
+              user.username == kAnonymousUsername ? findsNothing : findsOneWidget);
+        }
         expect(tester.takeException(), isNull);
 
         _expectNothingClipped(

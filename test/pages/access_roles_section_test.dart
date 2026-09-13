@@ -162,6 +162,13 @@ class _RecordingStore extends AccessAdminStore {
     calls.add('renameRole:$from:$to');
     return super.renameRole(from, to, origin: origin, reason: reason);
   }
+
+  @override
+  Future<void> setRoleOrder(List<String> names,
+      {String origin = 'operator', String? reason}) {
+    calls.add('setRoleOrder:${names.join(',')}');
+    return super.setRoleOrder(names, origin: origin, reason: reason);
+  }
 }
 
 /// The `users` gate the composed page puts over this section, in miniature.
@@ -601,6 +608,83 @@ void main() {
           reason: 'spec §1: somebody who may edit a page must not be able to '
               're-scope who may write what');
       expect(await roleNamed('Cleaner'), isNull);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('reorder', () {
+    /// Drags [name]'s handle to just above [target]'s row, in steps: the list
+    /// only moves its gap once the drag has travelled.
+    Future<void> dragAbove(
+        WidgetTester tester, String name, String target) async {
+      final from = tester.getCenter(find.byKey(kAccessRoleDragHandleKey(name)));
+      final to = tester.getCenter(find.byKey(kAccessRoleTileKey(target)));
+      final gesture = await tester.startGesture(from);
+      await tester.pump();
+      for (var i = 0; i < 20; i++) {
+        await gesture.moveBy(Offset(0, (to.dy - from.dy - 40) / 20));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await gesture.up();
+      await tester.pumpAndSettle();
+    }
+
+    double top(WidgetTester tester, String name) =>
+        tester.getTopLeft(find.byKey(kAccessRoleTileKey(name))).dy;
+
+    testWidgets('every role carries a drag handle, Operator included',
+        (tester) async {
+      await pumpSection(tester, overrides());
+
+      for (final role in kSeedRoles) {
+        expect(find.byKey(kAccessRoleDragHandleKey(role.name)), findsOneWidget);
+      }
+    });
+
+    testWidgets('dragging a role above another writes one role.order row and '
+        'the list follows', (tester) async {
+      await pumpSection(tester, overrides());
+      final before = [for (final role in await repository.roles()) role.name];
+      expect(before.first, kOperatorRoleName);
+      final last = before.last;
+
+      await dragAbove(tester, last, kOperatorRoleName);
+
+      final expected = [last, ...before.where((n) => n != last)];
+      expect(store!.calls, contains('setRoleOrder:${expected.join(',')}'));
+      expect(sink.rows.where((r) => r.itemKey == 'role.order'), hasLength(1));
+      expect([for (final role in await repository.roles()) role.name],
+          expected);
+      expect(top(tester, last), lessThan(top(tester, kOperatorRoleName)));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a configure-only session drops, is refused, reaches the '
+        'shared prompt, and the list snaps back', (tester) async {
+      session = _configureOnly();
+      await pumpSection(tester, overrides());
+      final before = [for (final role in await repository.roles()) role.name];
+      final last = before.last;
+
+      await dragAbove(tester, last, kOperatorRoleName);
+
+      expect(find.byKey(kAccessDeniedBodyKey), findsOneWidget);
+      expect(find.text(kAccessDeniedGroupNote(AccessGroup.users)),
+          findsOneWidget);
+      expect([for (final role in await repository.roles()) role.name], before);
+      expect(top(tester, kOperatorRoleName), lessThan(top(tester, last)),
+          reason: 'the refused order must not stay on screen');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('an open editor survives a reorder', (tester) async {
+      await pumpSection(tester, overrides());
+      final last = [for (final role in await repository.roles()) role.name].last;
+      await openEditor(tester, last);
+
+      await dragAbove(tester, last, kOperatorRoleName);
+
+      expect(find.byKey(kAccessRoleSaveKey(last)), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   });
