@@ -19,10 +19,8 @@
 //     half an hour chasing absent data that was never absent.
 //
 // So these tests pin the failure, not the fix: a client whose heartbeat
-// subscription keeps failing while its data plane is healthy must keep a
-// retry armed, must escalate rather than ask forever once the data stops too,
-// must never escalate while the data is still flowing, and must never report
-// a state that claims data is absent when it is arriving.
+// subscription keeps failing must keep a retry armed and back it off, and
+// must never report a state that claims data is absent when it is arriving.
 @Timeout(Duration(seconds: 60))
 library;
 
@@ -302,168 +300,11 @@ void main() {
     });
   });
 
-  group('escalation', () {
-    test('never fires while the data plane is delivering', () async {
-      // The veto that matters. Tearing down and rebuilding the subscriptions
-      // of a client that is delivering sub-second values, because we could
-      // not create a second subscription to watch it with, turns a
-      // diagnostics gap into an outage.
-      final api = FlakyClientApi();
-      final wrapper = ClientWrapper(api, OpcUAConfig());
-      addTearDown(wrapper.dispose);
-      markConnected(wrapper);
-      var escalations = 0;
-      wrapper.onHeartbeatEscalation = () async => escalations++;
-
-      for (var i = 0; i < ClientWrapper.heartbeatFailuresBeforeEscalation * 3;
-          i++) {
-        wrapper.debugSetLastDataTick(DateTime.now());
-        await wrapper.ensureHeartbeat();
-      }
-
-      expect(escalations, 0);
-      expect(wrapper.heartbeatEscalationBlockedBy,
-          contains('data plane is delivering'));
-    });
-
-    test('fires once the data plane has gone quiet too', () async {
-      final api = FlakyClientApi();
-      final wrapper = ClientWrapper(api, OpcUAConfig());
-      addTearDown(wrapper.dispose);
-      markConnected(wrapper);
-      var escalations = 0;
-      wrapper.onHeartbeatEscalation = () async => escalations++;
-      // Nothing has arrived on any subscription.
-      expect(wrapper.dataPlaneLive, isFalse);
-
-      await failHeartbeat(
-          wrapper, ClientWrapper.heartbeatFailuresBeforeEscalation - 1);
-      expect(escalations, 0,
-          reason: 'a server merely busy during a reconnect is not torn down');
-
-      await wrapper.ensureHeartbeat();
-
-      expect(escalations, 1);
-      expect(wrapper.heartbeatEscalations, 1);
-      expect(wrapper.heartbeatFailures, 0,
-          reason: 'the rebuilt session starts a fresh ladder');
-    });
-
-    test('an aged data tick does not count as delivering', () async {
-      final api = FlakyClientApi();
-      final wrapper = ClientWrapper(api, OpcUAConfig());
-      addTearDown(wrapper.dispose);
-      markConnected(wrapper);
-      var escalations = 0;
-      wrapper.onHeartbeatEscalation = () async => escalations++;
-      // Data arrived once, then stopped.
-      wrapper.debugSetLastDataTick(DateTime.now()
-          .subtract(ClientWrapper.dataPlaneQuietAfter * 2));
-
-      await failHeartbeat(
-          wrapper, ClientWrapper.heartbeatFailuresBeforeEscalation);
-
-      expect(escalations, 1);
-    });
-
-    test('respects the cooldown between rebuilds', () async {
-      // A rebuild cancels and recreates every monitored item on the server.
-      // Doing that in a loop against a struggling server is worse than the
-      // problem.
-      final api = FlakyClientApi();
-      final wrapper = ClientWrapper(api, OpcUAConfig());
-      addTearDown(wrapper.dispose);
-      markConnected(wrapper);
-      var escalations = 0;
-      wrapper.onHeartbeatEscalation = () async => escalations++;
-
-      await failHeartbeat(
-          wrapper, ClientWrapper.heartbeatFailuresBeforeEscalation);
-      expect(escalations, 1);
-
-      await failHeartbeat(
-          wrapper, ClientWrapper.heartbeatFailuresBeforeEscalation * 2);
-
-      expect(escalations, 1);
-      expect(wrapper.heartbeatEscalationBlockedBy, contains('cooling down'));
-    });
-
-    test('is bounded -- the budget runs out and it stops rebuilding',
-        () async {
-      // If three rebuilds have not produced a heartbeat, the fault is not one
-      // this client clears by trying harder, and an unbounded rebuild loop is
-      // the retry storm again by another name.
-      final api = FlakyClientApi();
-      final wrapper = ClientWrapper(api, OpcUAConfig());
-      addTearDown(wrapper.dispose);
-      markConnected(wrapper);
-      var escalations = 0;
-      wrapper.onHeartbeatEscalation = () async => escalations++;
-
-      for (var i = 0; i < ClientWrapper.maxHeartbeatEscalations + 2; i++) {
-        wrapper.debugClearHeartbeatEscalationCooldown();
-        await failHeartbeat(
-            wrapper, ClientWrapper.heartbeatFailuresBeforeEscalation);
-      }
-
-      expect(escalations, ClientWrapper.maxHeartbeatEscalations);
-      expect(wrapper.heartbeatEscalationBlockedBy,
-          contains('escalation budget spent'));
-      // Still visible rather than papered over.
-      expect(wrapper.heartbeatUnavailable, isNotNull);
-      expect(wrapper.effectiveStatus, EffectiveDeviceStatus.opcuaUnmonitored);
-      expect(wrapper.heartbeatRetryArmed, isTrue,
-          reason: 'it stops rebuilding, not asking');
-    });
-
-    test('a heartbeat tick returns the escalation budget', () async {
-      final api = FlakyClientApi();
-      final wrapper = ClientWrapper(api, OpcUAConfig());
-      addTearDown(wrapper.dispose);
-      markConnected(wrapper);
-      wrapper.onHeartbeatEscalation = () async {};
-
-      await failHeartbeat(
-          wrapper, ClientWrapper.heartbeatFailuresBeforeEscalation);
-      expect(wrapper.heartbeatEscalations, 1);
-
-      // The rebuild works: a subscription is created and it publishes.
-      api.failure = null;
-      await wrapper.ensureHeartbeat();
-      expect(wrapper.hasHeartbeat, isTrue);
-      expect(wrapper.heartbeatEscalations, 1,
-          reason: 'a created subscription is not yet proof the clock works -- '
-              'one that never publishes is the failure being escalated '
-              'against');
-
-      api.heartbeat.add({NodeId.fromNumeric(0, 2258): DynamicValue(value: 1)});
-      await Future<void>.delayed(Duration.zero);
-
-      expect(wrapper.heartbeatEscalations, 0);
-      expect(wrapper.effectiveStatus, EffectiveDeviceStatus.connected);
-    });
-
-    test('a rebuild that throws does not break the retry chain', () async {
-      final api = FlakyClientApi();
-      final wrapper = ClientWrapper(api, OpcUAConfig());
-      addTearDown(wrapper.dispose);
-      markConnected(wrapper);
-      wrapper.onHeartbeatEscalation =
-          () async => throw StateError('rebuild failed');
-
-      await failHeartbeat(
-          wrapper, ClientWrapper.heartbeatFailuresBeforeEscalation);
-
-      expect(wrapper.heartbeatEscalations, 1);
-      expect(wrapper.heartbeatRetryArmed, isTrue);
-    });
-  });
-
   group('data-plane clock', () {
     test('is fed by data items, not by the heartbeat', () async {
       // If the heartbeat fed it, "the data plane is alive" would be true
-      // exactly when the heartbeat works -- which is useless as a veto on
-      // escalating because the heartbeat does not work.
+      // exactly when the heartbeat works -- and the whole point of the clock
+      // is to describe the data plane when the heartbeat does not work.
       final api = FlakyClientApi(failure: null);
       final wrapper = ClientWrapper(api, OpcUAConfig());
       addTearDown(wrapper.dispose);

@@ -425,11 +425,6 @@ class GuardedStateMan implements StateMan {
   bool isKeyDisabled(String key) => _inner.isKeyDisabled(key);
 
   @override
-  void rebuildClientSubscriptions(ClientWrapper wrapper,
-          {required String why}) =>
-      _inner.rebuildClientSubscriptions(wrapper, why: why);
-
-  @override
   void setSubstitution(String key, String value) =>
       _inner.setSubstitution(key, value);
 

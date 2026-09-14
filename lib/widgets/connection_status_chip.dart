@@ -128,8 +128,8 @@ class ConnectionStatusChip extends StatelessWidget {
         'This server has no health clock: the client could not create\n'
             'the subscription it watches itself with. Values already\n'
             'subscribed may still be arriving normally — but if this\n'
-            'server freezes, nothing will notice. The client backs off and\n'
-            'rebuilds its subscriptions if the data also stops.',
+            'server freezes, nothing will notice. The client keeps\n'
+            'retrying, backing off to five-minute intervals.',
       _ => null,
     };
     final detail = statusDetail?.trim();
