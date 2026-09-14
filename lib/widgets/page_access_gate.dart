@@ -30,6 +30,7 @@ import 'package:tfc_dart/core/access/access_repository.dart';
 
 import '../access_routes.dart';
 import '../providers/access.dart';
+import '../providers/menu.dart' show visibleMenuProvider;
 // `kSessionWhileLoading` only — the single definition of the session a guard
 // resolves on while `accessSessionProvider` is still loading. Imported rather
 // than re-declared so the boot window has one answer across the write guards
@@ -39,6 +40,7 @@ import '../providers/access_policy.dart' show kSessionWhileLoading;
 import 'access_gate.dart';
 import 'access_sign_in_dialog.dart';
 import 'base_scaffold.dart';
+import 'nav_dropdown.dart' show beamSafelyKids;
 
 /// Whether this session may open the page at [path].
 ///
@@ -174,14 +176,49 @@ const Key kPageNotAvailableBodyKey = Key('page-not-available-body');
 /// The Sign in action on the not-available body.
 const Key kPageNotAvailableSignInKey = Key('page-not-available-sign-in');
 
+/// The heading over the pages this session *can* open.
+///
+/// Phrased as an offer rather than an apology: the operator is standing on a
+/// refusal and the useful next sentence is where they may go instead.
+const String kPageNotAvailableElsewhereHeadline = 'Pages you can open';
+
+/// The offered destinations, so a test can find them as a group.
+const Key kPageNotAvailableDestinationsKey =
+    Key('page-not-available-destinations');
+
+/// How many destinations the refusal lists before it stops.
+///
+/// A bound rather than a scroll: this is a way out, not a second menu, and the
+/// navigation bar under it holds the whole of it. Six fits two rows on a panel
+/// without pushing the sign-in button off the bottom.
+const int kPageNotAvailableMaxDestinations = 6;
+
 /// The page a whitelist hides: what happened, and the one thing that might
 /// change it.
 ///
 /// Never a dead end and never an error — the same rules `AccessLockedBody`
-/// follows. It carries no "request access" and no "go back": the app bar and
-/// the navigation bar are both present (the gate brings its own scaffold), so
-/// leaving is already possible, and there is nobody in this build to request
-/// access from.
+/// follows. It carries no "request access" and no "go back": there is nobody
+/// in this build to request access from, and back is wherever the operator
+/// already was.
+///
+/// **It does carry the pages this session can open**, and that is a repair
+/// rather than a decoration. "Leaving is already possible because the gate
+/// brings its own scaffold" was true only while the navigation bar was on it,
+/// and a session whitelisted down to pages inside one section used to get no
+/// bar at all — a refusal screen with nothing on it but a sign-in button that
+/// the operator's own account will not change. The bar is fixed
+/// (`VisibleMenu.showsBar`), and the destinations are named here as well
+/// because this is where the operator is looking, because the bar is
+/// suppressed in fullscreen, and because a lone section in the bar is a
+/// dropdown nobody has a reason to suspect is a dropdown.
+///
+/// **It does not redirect.** Landing the session on the first page it can open
+/// was the other candidate and is the wrong one for the same reason
+/// `resolveStartupPath` refuses to ask the permission question: a panel that
+/// silently substitutes a different page for the one somebody asked for hides
+/// the misconfiguration that put them there, and a deep link or an alarm jump
+/// would quietly land somewhere else. The refusal is honest and the way out is
+/// one tap; that is the trade.
 class PageNotAvailableBody extends ConsumerWidget {
   const PageNotAvailableBody({
     super.key,
@@ -200,6 +237,15 @@ class PageNotAvailableBody extends ConsumerWidget {
     final secondary =
         theme.textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant);
     final session = ref.watch(accessSessionProvider).valueOrNull;
+
+    // The same list the navigation bar is built from, one level deeper. Asked
+    // of `visibleMenuProvider` rather than of the session's whitelist directly,
+    // so a page this station cannot route, or one the group gate still holds
+    // shut, is never offered here as a way out.
+    //
+    // The refused page cannot appear in it: it is refused by the very filter
+    // this list comes out of.
+    final elsewhere = ref.watch(visibleMenuProvider).reachablePages;
 
     return Center(
       key: kPageNotAvailableBodyKey,
@@ -243,6 +289,38 @@ class PageNotAvailableBody extends ConsumerWidget {
                   maxLines: null,
                   overflow: TextOverflow.visible,
                   style: secondary,
+                ),
+              ],
+              // Where this session may go, before the sign-in button rather
+              // than after it: the operator almost certainly has somewhere to
+              // be, and signing in is the fallback rather than the answer.
+              //
+              // Nothing at all when the list is empty — an account that can
+              // open no page is a configuration fault, and an empty heading
+              // promising destinations there are none of is worse than the
+              // refusal on its own.
+              if (elsewhere.isNotEmpty) ...[
+                const SizedBox(height: 24),
+                Text(
+                  kPageNotAvailableElsewhereHeadline,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.titleSmall,
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  key: kPageNotAvailableDestinationsKey,
+                  alignment: WrapAlignment.center,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final item
+                        in elsewhere.take(kPageNotAvailableMaxDestinations))
+                      OutlinedButton.icon(
+                        onPressed: () => beamSafelyKids(context, item),
+                        icon: Icon(item.icon, size: 18),
+                        label: Text(item.label),
+                      ),
+                  ],
                 ),
               ],
               const SizedBox(height: 24),

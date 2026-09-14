@@ -214,12 +214,54 @@ class VisibleMenu {
 
   /// Whether a navigation bar can be built at all.
   ///
-  /// Material's `NavigationBar` asserts at least two destinations, so a
-  /// session whitelisted down to one page or none gets no bar. That is an
-  /// existing, tested state — fullscreen mode already renders
-  /// `bottomNavigationBar: null` — and it is not a dead end: the app bar, with
-  /// its sign-in control, is on every scaffold.
-  bool get showsBar => topLevel.length >= 2;
+  /// **One destination is a bar.** This used to read `length >= 2`, borrowed
+  /// from Material's `NavigationBar`, which asserts on fewer than two
+  /// destinations — and that assert is one widget's constraint, not a rule
+  /// about what an operator may reach. Taking it as a rule stranded exactly
+  /// the session this filter exists to serve.
+  ///
+  /// The failure, reported off a live panel: a whitelist naming only pages
+  /// *nested inside* one section filters down to a single top-level entry —
+  /// the section — so the bar disappeared, the section went with it, and the
+  /// operator was left on "This page is not available" with no navigation at
+  /// all. Adding one unrelated top-level page to the same whitelist made both
+  /// entries appear, which is how the fault was found and why it read as a
+  /// section-filtering bug rather than a counting one. The section filter was
+  /// never wrong; this line was.
+  ///
+  /// `BaseScaffold` renders a lone destination without `NavigationBar` — see
+  /// the bar it builds — so the assert is satisfied by not reaching it.
+  ///
+  /// **Zero destinations is still no bar**, because there is nothing to put in
+  /// one. That covers the boot window and a whitelist that names nothing this
+  /// station can serve; `PageNotAvailableBody` offers the way out there, and
+  /// the app bar with its sign-in control is on every scaffold regardless.
+  bool get showsBar => topLevel.isNotEmpty;
+
+  /// Every page this session can actually open, in tree order, sections
+  /// flattened away.
+  ///
+  /// The same list the bar is built from, walked one level deeper, so a
+  /// refusal screen offering "here is where you can go" cannot come to a
+  /// different answer than the bar standing under it. Sections are dropped:
+  /// they are headings, not destinations, and a section carrying a path
+  /// (legacy data does) must not be offered as one.
+  List<MenuItem> get reachablePages {
+    final out = <MenuItem>[];
+    void walk(List<MenuItem> items) {
+      for (final item in items) {
+        if (item.isNavigationSection) {
+          walk(item.children);
+          continue;
+        }
+        final path = item.path;
+        if (path != null && path.isNotEmpty) out.add(item);
+      }
+    }
+
+    walk(topLevel);
+    return out;
+  }
 
   /// **Recursive, and it has to be.** Riverpod skips notifying listeners when
   /// a rebuilt value compares equal to the old one, so an equality that
@@ -331,7 +373,7 @@ VisibleMenu visibleMenu(Ref ref) {
 /// claiming otherwise.
 ///
 /// Hiding the bar for that window is safe because it is not the way out of
-/// anything: `BaseScaffold` drops it below two destinations already
+/// anything: `BaseScaffold` drops it when nothing survives the filter
 /// (`visibleMenu.showsBar`), so "no bar" is a state the app has always had,
 /// and the window ends the moment the session answers.
 bool _mayOpen(
