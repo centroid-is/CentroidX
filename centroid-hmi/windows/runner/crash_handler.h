@@ -22,6 +22,26 @@
 //
 // The modal abort dialog is suppressed — on a kiosk HMI a message box nobody
 // can click is a hang, not a diagnostic.
+//
+// --- The one class this cannot catch ---------------------------------------
+//
+// A **fail-fast** is not dispatched. RaiseFailFastException and the __fastfail
+// intrinsic hand the process straight to WER: no vectored handler runs, no
+// unhandled-exception filter, no std::terminate, no signal. Nothing below sees
+// it, so no [crash] record and no minidump are written and the log simply ends
+// mid-run. That is not hypothetical here — 0xE0464645 is the fail-fast
+// DirectComposition raises, and this app has produced it twice: at every close
+// on 2026-09-11 (shutdown_policy.h) and once mid-run on 2026-09-14, after a
+// second of UI-isolate work starved the platform thread the compositor's
+// dispatcher queue is bound to.
+//
+// The evidence for that class is Windows' own and it is complete: the
+// Application event log carries an "Application Error" (id 1000) naming the
+// faulting module, exception code and offset, and WER keeps a Report.wer and
+// a dump under %ProgramData%\Microsoft\Windows\WER. InstallCrashHandlers says
+// so in the log at startup, so a reader who finds this file ending in the
+// middle of a run knows where to go next instead of concluding the process
+// vanished without trace.
 
 namespace tfc {
 
